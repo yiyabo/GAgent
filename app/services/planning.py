@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from ..llm import get_default_client
 from ..interfaces import LLMProvider, TaskRepository
-from ..repository import tasks as task_repo
+from ..repository.tasks import default_repo
 
 
 def _parse_json_obj(text: str):
@@ -111,7 +111,7 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
 
     prefix = f"[{title}] "
     created: List[Dict[str, Any]] = []
-    repo = repo or task_repo.default_repo
+    repo = repo or default_repo
 
     for idx, t in enumerate(tasks):
         name = (t.get("name") or "").strip() if isinstance(t, dict) else str(t)

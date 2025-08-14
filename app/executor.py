@@ -1,5 +1,7 @@
+from typing import Optional
 from .llm import get_default_client
-from .repository import tasks as task_repo
+from .interfaces import TaskRepository
+from .repository.tasks import default_repo
 
 
 def _get_task_id_and_name(task):
@@ -13,8 +15,8 @@ def _get_task_id_and_name(task):
     return task_id, name
 
 
-def _fetch_prompt(task_id, default_prompt):
-    prompt = task_repo.get_task_input_prompt(task_id)
+def _fetch_prompt(task_id, default_prompt, repo: TaskRepository):
+    prompt = repo.get_task_input_prompt(task_id)
     return prompt if (isinstance(prompt, str) and prompt.strip()) else default_prompt
 
 
@@ -24,7 +26,8 @@ def _glm_chat(prompt: str) -> str:
     return client.chat(prompt)
 
 
-def execute_task(task):
+def execute_task(task, repo: Optional[TaskRepository] = None):
+    repo = repo or default_repo
     task_id, name = _get_task_id_and_name(task)
 
     default_prompt = (
@@ -32,11 +35,11 @@ def execute_task(task):
         f"Task: {name}.\n"
         f"Length: ~200 words. Use a neutral, professional tone. Avoid domain-specific assumptions unless explicitly provided."
     )
-    prompt = _fetch_prompt(task_id, default_prompt)
+    prompt = _fetch_prompt(task_id, default_prompt, repo)
 
     try:
         content = _glm_chat(prompt)
-        task_repo.upsert_task_output(task_id, content)
+        repo.upsert_task_output(task_id, content)
         print(f"Task {task_id} ({name}) done.")
         return "done"
     except Exception as e:

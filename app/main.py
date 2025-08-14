@@ -8,7 +8,7 @@ from .scheduler import bfs_schedule
 from .executor import execute_task
 from .llm import get_default_client
 from .services.planning import propose_plan_service, approve_plan_service
-from .repository import tasks as task_repo
+from .repository.tasks import default_repo
 from contextlib import asynccontextmanager
 
 
@@ -56,12 +56,12 @@ def _parse_json_obj(text: str):
 
 @app.post("/tasks")
 def create_task(task: TaskCreate):
-    task_id = task_repo.create_task(task.name, status='pending', priority=None)
+    task_id = default_repo.create_task(task.name, status='pending', priority=None)
     return {"id": task_id}
 
 @app.get("/tasks")
 def list_tasks():
-    return task_repo.list_all_tasks()
+    return default_repo.list_all_tasks()
 
 # -------------------------------
 # Generic planning endpoints
@@ -84,12 +84,12 @@ def approve_plan(plan: Dict[str, Any]):
 
 @app.get("/plans")
 def list_plans():
-    return {"plans": task_repo.list_plan_titles()}
+    return {"plans": default_repo.list_plan_titles()}
 
 
 @app.get("/plans/{title}/tasks")
 def get_plan_tasks(title: str):
-    rows = task_repo.list_plan_tasks(title)
+    rows = default_repo.list_plan_tasks(title)
     out: List[Dict[str, Any]] = []
     for r in rows:
         rid, nm, st, pr = r["id"], r["name"], r.get("status"), r.get("priority")
@@ -100,7 +100,7 @@ def get_plan_tasks(title: str):
 
 @app.get("/plans/{title}/assembled")
 def get_plan_assembled(title: str):
-    items = task_repo.list_plan_outputs(title)
+    items = default_repo.list_plan_outputs(title)
     sections = [{"name": it["short_name"], "content": it["content"]} for it in items]
     combined = "\n\n".join([f"{s['name']}\n\n{s['content']}" for s in sections])
     return {"title": title, "sections": sections, "combined": combined}
@@ -119,7 +119,7 @@ def llm_health(ping: bool = False):
 
 @app.get("/tasks/{task_id}/output")
 def get_task_output(task_id: int):
-    content = task_repo.get_task_output_content(task_id)
+    content = default_repo.get_task_output_content(task_id)
     if content is None:
         raise HTTPException(status_code=404, detail="output not found")
     return {"id": task_id, "content": content}
@@ -144,17 +144,17 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         for task in bfs_schedule():
             status = execute_task(task)
             task_id = task["id"] if isinstance(task, dict) else task[0]
-            task_repo.update_task_status(task_id, status)
+            default_repo.update_task_status(task_id, status)
             results.append({"id": task_id, "status": status})
         return results
 
     # Filtered by plan title (prefix)
     prefix = _plan_prefix(title)
-    rows = task_repo.list_tasks_by_prefix(prefix, pending_only=True, ordered=True)
+    rows = default_repo.list_tasks_by_prefix(prefix, pending_only=True, ordered=True)
 
     for task in rows:
         status = execute_task(task)
         task_id = task["id"] if isinstance(task, dict) else task[0]
-        task_repo.update_task_status(task_id, status)
+        default_repo.update_task_status(task_id, status)
         results.append({"id": task_id, "status": status})
     return results

@@ -1,7 +1,7 @@
-from .repository import tasks as task_repo
+from .repository.tasks import default_repo
 
 def bfs_schedule():
-    rows = task_repo.list_tasks_by_status('pending')
+    rows = default_repo.list_tasks_by_status('pending')
     # Ensure stable ordering consistent with previous SQL
     rows_sorted = sorted(
         rows,
