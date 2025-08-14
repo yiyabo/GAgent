@@ -112,3 +112,4 @@ conda run -n LLM python -m pytest --cov=app --cov-report=term-missing
 
 ## Lifespan
 Startup has migrated from `@app.on_event("startup")` to FastAPI Lifespan for forward compatibility.
+# GAgent
