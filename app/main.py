@@ -9,8 +9,16 @@ from .executor import execute_task
 from .llm import get_default_client
 from .services.planning import propose_plan_service, approve_plan_service
 from .repository import tasks as task_repo
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 # -------------------------------
 # Generic plan helpers
@@ -45,10 +53,6 @@ def _parse_json_obj(text: str):
     except Exception:
         pass
     return None
-
-@app.on_event("startup")
-def startup():
-    init_db()
 
 @app.post("/tasks")
 def create_task(task: TaskCreate):

@@ -2,9 +2,14 @@ import os
 import json
 from typing import Any, Dict, Optional
 from urllib import request, error
+from .interfaces import LLMProvider
 
 
-class LLMClient:
+def _truthy(val: Optional[str]) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+class LLMClient(LLMProvider):
     """
     A thin client for GLM-like chat completion APIs.
 
@@ -27,8 +32,17 @@ class LLMClient:
         )
         self.model = model or os.getenv("GLM_MODEL", "glm-4-flash")
         self.timeout = timeout
+        self.mock = _truthy(os.getenv("LLM_MOCK", ""))
 
     def chat(self, prompt: str) -> str:
+        if self.mock:
+            # Return deterministic, parseable content in mock mode
+            if "JSON object" in prompt or "\"tasks\"" in prompt or "tasks" in prompt:
+                return (
+                    '{"title":"Mock Plan","tasks":[{"name":"Mock A","prompt":"Do A"},{"name":"Mock B","prompt":"Do B"}]}'
+                )
+            return "This is a mock completion."
+
         if not self.api_key:
             raise RuntimeError("GLM_API_KEY is not set in environment")
         payload = {
@@ -60,6 +74,8 @@ class LLMClient:
             raise RuntimeError(f"Unexpected LLM response: {obj}")
 
     def ping(self) -> bool:
+        if self.mock:
+            return True
         try:
             _ = self.chat("ping")
             return True
@@ -67,7 +83,12 @@ class LLMClient:
             return False
 
     def config(self) -> Dict[str, Any]:
-        return {"url": self.url, "model": self.model, "has_api_key": bool(self.api_key)}
+        return {
+            "url": self.url,
+            "model": self.model,
+            "has_api_key": bool(self.api_key),
+            "mock": bool(self.mock),
+        }
 
 
 _default_client: Optional[LLMClient] = None

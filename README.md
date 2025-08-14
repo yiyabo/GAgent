@@ -15,6 +15,8 @@ A lightweight FastAPI service that turns a high-level goal into an approved plan
 2) Set environment
 
    export GLM_API_KEY=your_key_here
+   # or use mock mode (no API key needed)
+   # export LLM_MOCK=1
    # optional
    # export GLM_API_URL=https://open.bigmodel.cn/api/paas/v4/chat/completions
    # export GLM_MODEL=glm-4-flash
@@ -49,7 +51,7 @@ A lightweight FastAPI service that turns a high-level goal into an approved plan
 # 1) Propose a plan
 curl -s -X POST http://127.0.0.1:8000/plans/propose \
   -H "Content-Type: application/json" \
-  -d goal:Write a short whitepaper on gene editing
+  -d '{"goal":"Write a short whitepaper on gene editing"}'
 
 # 2) Approve the returned plan (edit as needed), then persist
 # Save previous response as plan.json and run:
@@ -58,7 +60,7 @@ curl -s -X POST http://127.0.0.1:8000/plans/propose \
 # 3) Execute just this plan
 curl -s -X POST http://127.0.0.1:8000/run \
   -H "Content-Type: application/json" \
-  -d {title:Gene Editing Whitepaper}
+  -d '{"title":"Gene Editing Whitepaper"}'
 
 # 4) Assemble final output
 curl -s http://127.0.0.1:8000/plans/Gene%20Editing%20Whitepaper/assembled
@@ -67,3 +69,46 @@ curl -s http://127.0.0.1:8000/plans/Gene%20Editing%20Whitepaper/assembled
 - The service requires GLM_API_KEY; requests to the LLM may fail if unset.
 - Tasks are grouped by name prefix: "[<title>] ". No schema change needed.
 - Legacy, report-specific endpoints have been removed to keep the app generic.
+
+## Architecture
+- **Interfaces** (`app/interfaces/__init__.py`)
+  - `LLMProvider` (chat, ping, config)
+  - `TaskRepository` (task CRUD/query)
+- **LLM client** (`app/llm.py`)
+  - Implements `LLMProvider`
+  - Supports mock mode via `LLM_MOCK`
+- **Repository** (`app/repository/tasks.py`)
+  - `SqliteTaskRepository` implements `TaskRepository`
+  - Module-level functions delegate to `default_repo` for backward compatibility
+- **Services** (`app/services/planning.py`)
+  - Business logic for plan propose/approve with dependency injection (DI)
+- **Scheduler/Executor** (`app/scheduler.py`, `app/executor.py`)
+  - Scheduler queries repository for pending tasks; executor calls LLM via `get_default_client()` and persists outputs
+- **API** (`app/main.py`)
+  - FastAPI app uses Lifespan to init DB
+
+## Mock Mode (no external LLM)
+Enable to develop/test without a real API key. Deterministic outputs; `ping()` always true; `config()` reflects mock.
+
+```bash
+export LLM_MOCK=1
+# now run the server or tests
+```
+
+## Testing
+Run tests (uses temp SQLite DB and mock LLM; no external calls):
+
+```bash
+conda run -n LLM python -m pip install -U pytest  # if needed
+conda run -n LLM python -m pytest -q
+```
+
+Coverage (optional):
+
+```bash
+conda run -n LLM python -m pip install -U pytest-cov
+conda run -n LLM python -m pytest --cov=app --cov-report=term-missing
+```
+
+## Lifespan
+Startup has migrated from `@app.on_event("startup")` to FastAPI Lifespan for forward compatibility.

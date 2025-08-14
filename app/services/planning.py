@@ -1,11 +1,9 @@
 import json
 from typing import Any, Dict, List, Optional
 
-from ..llm import get_default_client, LLMClient
-from ..repository.tasks import (
-    create_task,
-    upsert_task_input,
-)
+from ..llm import get_default_client
+from ..interfaces import LLMProvider, TaskRepository
+from ..repository import tasks as task_repo
 
 
 def _parse_json_obj(text: str):
@@ -31,7 +29,7 @@ def _parse_json_obj(text: str):
     return None
 
 
-def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMClient] = None) -> Dict[str, Any]:
+def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] = None) -> Dict[str, Any]:
     """
     Build a plan via LLM with normalization. Returns { title, tasks }.
     Does not persist anything.
@@ -99,7 +97,7 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMClient] = 
     return {"title": plan.get("title") or title, "tasks": norm_tasks}
 
 
-def approve_plan_service(plan: Dict[str, Any]) -> Dict[str, Any]:
+def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = None) -> Dict[str, Any]:
     """
     Persist tasks from plan into DB with name prefixing by [title].
     Returns { plan: { title }, created: [ {id, name, priority} ] }.
@@ -113,6 +111,7 @@ def approve_plan_service(plan: Dict[str, Any]) -> Dict[str, Any]:
 
     prefix = f"[{title}] "
     created: List[Dict[str, Any]] = []
+    repo = repo or task_repo.default_repo
 
     for idx, t in enumerate(tasks):
         name = (t.get("name") or "").strip() if isinstance(t, dict) else str(t)
@@ -128,8 +127,8 @@ def approve_plan_service(plan: Dict[str, Any]) -> Dict[str, Any]:
         if priority is None:
             priority = (len(created) + 1) * 10
 
-        task_id = create_task(prefix + name, status="pending", priority=priority)
-        upsert_task_input(task_id, prompt_t)
+        task_id = repo.create_task(prefix + name, status="pending", priority=priority)
+        repo.upsert_task_input(task_id, prompt_t)
         created.append({"id": task_id, "name": name, "priority": priority})
 
     return {"plan": {"title": title}, "created": created}
