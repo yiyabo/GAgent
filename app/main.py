@@ -1,14 +1,13 @@
-import json
-import re
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Body
-from .models import TaskCreate, Task
+from .models import TaskCreate
 from .database import init_db
 from .scheduler import bfs_schedule
 from .executor import execute_task
 from .llm import get_default_client
 from .services.planning import propose_plan_service, approve_plan_service
 from .repository.tasks import default_repo
+from .utils import plan_prefix, split_prefix
 from contextlib import asynccontextmanager
 
 
@@ -23,36 +22,7 @@ app = FastAPI(lifespan=lifespan)
 # -------------------------------
 # Generic plan helpers
 # -------------------------------
-def _plan_prefix(title: str) -> str:
-    return f"[{title}] "
-
-
-def _split_prefix(name: str):
-    m = re.match(r"^\[(.*?)\]\s+(.*)$", name)
-    if m:
-        return m.group(1), m.group(2)
-    return None, name
-
-
-def _parse_json_obj(text: str):
-    """Try to parse a JSON object or array from arbitrary LLM output."""
-    # Extract a JSON-looking block first
-    m = re.search(r"\{.*\}", text, flags=re.S)
-    cand = m.group(0) if m else text.strip()
-    try:
-        obj = json.loads(cand)
-        if isinstance(obj, (dict, list)):
-            return obj
-    except Exception:
-        pass
-    # Try single->double quotes
-    try:
-        obj = json.loads(cand.replace("'", '"'))
-        if isinstance(obj, (dict, list)):
-            return obj
-    except Exception:
-        pass
-    return None
+# helpers centralized in app/utils.py: plan_prefix, split_prefix, parse_json_obj
 
 @app.post("/tasks")
 def create_task(task: TaskCreate):
@@ -93,7 +63,7 @@ def get_plan_tasks(title: str):
     out: List[Dict[str, Any]] = []
     for r in rows:
         rid, nm, st, pr = r["id"], r["name"], r.get("status"), r.get("priority")
-        _, short = _split_prefix(nm)
+        _, short = split_prefix(nm)
         out.append({"id": rid, "name": nm, "short_name": short, "status": st, "priority": pr})
     return out
 
@@ -124,7 +94,7 @@ def get_task_output(task_id: int):
         raise HTTPException(status_code=404, detail="output not found")
     return {"id": task_id, "content": content}
 
- # removed legacy endpoint: /reports/protein_binding_site/assembled
+# removed legacy endpoint: /reports/protein_binding_site/assembled
 
 @app.post("/run")
 def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
@@ -149,7 +119,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         return results
 
     # Filtered by plan title (prefix)
-    prefix = _plan_prefix(title)
+    prefix = plan_prefix(title)
     rows = default_repo.list_tasks_by_prefix(prefix, pending_only=True, ordered=True)
 
     for task in rows:

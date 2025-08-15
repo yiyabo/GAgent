@@ -1,32 +1,12 @@
-import json
 from typing import Any, Dict, List, Optional
 
 from ..llm import get_default_client
 from ..interfaces import LLMProvider, TaskRepository
 from ..repository.tasks import default_repo
+from ..utils import parse_json_obj
 
 
-def _parse_json_obj(text: str):
-    """Try to parse a JSON object or array from arbitrary LLM output."""
-    # Extract a JSON-looking block first
-    import re
-
-    m = re.search(r"\{.*\}", text, flags=re.S)
-    cand = m.group(0) if m else text.strip()
-    try:
-        obj = json.loads(cand)
-        if isinstance(obj, (dict, list)):
-            return obj
-    except Exception:
-        pass
-    # Try single->double quotes
-    try:
-        obj = json.loads(cand.replace("'", '"'))
-        if isinstance(obj, (dict, list)):
-            return obj
-    except Exception:
-        pass
-    return None
+# parse_json_obj is centralized in app/utils.py
 
 
 def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] = None) -> Dict[str, Any]:
@@ -59,7 +39,7 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
     client = client or get_default_client()
     try:
         content = client.chat(prompt)
-        obj = _parse_json_obj(content) or {}
+        obj = parse_json_obj(content) or {}
         if isinstance(obj, list):
             plan = {"title": title, "tasks": obj}
         elif isinstance(obj, dict):

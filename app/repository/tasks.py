@@ -1,23 +1,8 @@
-import re
 from typing import Any, Dict, List, Optional
 
 from ..database import get_db
 from ..interfaces import TaskRepository
-
-
-# -------------------------------
-# Helpers for plan prefix handling
-# -------------------------------
-
-def _plan_prefix(title: str) -> str:
-    return f"[{title}] "
-
-
-def _split_prefix(name: str):
-    m = re.match(r"^\[(.*?)\]\s+(.*)$", name)
-    if m:
-        return m.group(1), m.group(2)
-    return None, name
+from ..utils import plan_prefix, split_prefix
 
 
 # -------------------------------
@@ -150,20 +135,20 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 nm = r["name"]
             except Exception:
                 nm = r[0]
-            t, _ = _split_prefix(nm)
+            t, _ = split_prefix(nm)
             if t:
                 titles.add(t)
         return sorted(titles)
 
 
     def list_plan_tasks(self, title: str) -> List[Dict[str, Any]]:
-        prefix = _plan_prefix(title)
+        prefix = plan_prefix(title)
         return self.list_tasks_by_prefix(prefix, pending_only=False, ordered=True)
 
 
     def list_plan_outputs(self, title: str) -> List[Dict[str, Any]]:
         """Return sections with name (short), full name, and content for a plan."""
-        prefix = _plan_prefix(title)
+        prefix = plan_prefix(title)
         with get_db() as conn:
             rows = conn.execute(
                 """
@@ -182,13 +167,9 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 content = r["content"]
             except Exception:
                 name, content = r[0], r[1]
-            _, short = _split_prefix(name)
+            _, short = split_prefix(name)
             out.append({"name": name, "short_name": short, "content": content})
         return out
 
-
-# -------------------------------
-# Backward-compatible module-level API
-# -------------------------------
 
 default_repo = SqliteTaskRepository()
