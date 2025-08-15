@@ -1,10 +1,12 @@
 # Future Plan: Context-Aware LLM Task Runner Roadmap
 
 ## 0. Overview
+
 - Vision: Build a context-aware, dependency-sensitive task runner where a large goal is decomposed into big tasks and finally into minimal executable units (MEUs). Each MEU executes with the right context, curated from a graph of related tasks and documents, with optional human guidance.
 - Key themes: Graph-based context, Human-in-the-loop, Deterministic scheduling, Reproducible runs, Extensible architecture.
 
 ## 1. Current State (Baseline)
+
 - Plan grouping via name prefix: `utils.plan_prefix()` and `utils.split_prefix()`.
 - Task I/O persisted: `task_inputs`, `task_outputs`.
 - Execution: `executor.execute_task()` reads only the task's own input as prompt; no dependency/context assembly.
@@ -12,11 +14,13 @@
 - Services: Planning service proposes/approves plans and seeds tasks with prompts.
 
 ## 2. Phase 0 (Completed)
+
 - Remove module-level repo wrappers; use `default_repo` instance everywhere.
 - Introduce `app/utils.py` and deduplicate helpers (`plan_prefix`, `split_prefix`, `parse_json_obj`).
 - Clean caches and improve `.gitignore`. Tests pass. Repo pushed to GitHub.
 
 ## 3. Phase 1 — Context Graph Foundation (MVP)
+
 Goal: Introduce a lightweight directed graph of task relationships and expose basic APIs to manage and query links. Enable minimal context assembly before execution.
 
 - Big Tasks
@@ -53,6 +57,7 @@ Goal: Introduce a lightweight directed graph of task relationships and expose ba
   - Tests: link CRUD, gather_context, and one E2E run using linked context.
 
 ## 4. Phase 2 — Context Selection, Budgeting, and Summarization
+
 Goal: Choose the most relevant context within a token budget. Add optional semantic retrieval.
 
 - Big Tasks
@@ -77,6 +82,7 @@ Goal: Choose the most relevant context within a token budget. Add optional seman
   - Summaries are produced for oversized items; selection order is tested.
 
 ## 5. Phase 3 — Dependency-Aware Scheduling
+
 Goal: Only schedule tasks whose `requires` dependencies are satisfied; detect and report cycles.
 
 - Big Tasks
@@ -97,6 +103,7 @@ Goal: Only schedule tasks whose `requires` dependencies are satisfied; detect an
   - Cycles are identified with actionable diagnostics.
 
 ## 6. Phase 4 — Root Task and Index Document
+
 Goal: Treat the root task as executable; generate a high-level index (INDEX.md) and global conventions.
 
 - Big Tasks
@@ -115,6 +122,7 @@ Goal: Treat the root task as executable; generate a high-level index (INDEX.md) 
   - Runs that include root context behave consistently with the index rules.
 
 ## 7. Phase 5 — Human-in-the-Loop Controls
+
 Goal: Allow users to guide context and dependencies.
 
 - Big Tasks
@@ -122,7 +130,7 @@ Goal: Allow users to guide context and dependencies.
   2) Context preview, prune, and pin.
 
 - Small Tasks
-  - `POST /tasks/{id}/context/preview` returns candidate bundle with flags to pin/unpin.
+  - `POST /tasks/{task_id}/context/preview` returns candidate bundle with flags to pin/unpin.
   - `approve_context` endpoint applies manual overrides.
 
 - Deliverables
@@ -132,6 +140,7 @@ Goal: Allow users to guide context and dependencies.
   - Operators can add/remove references and re-run deterministically.
 
 ## 8. Phase 6 — Observability and Run Reproducibility
+
 Goal: Make runs traceable and reproducible.
 
 - Big Tasks
@@ -146,6 +155,7 @@ Goal: Make runs traceable and reproducible.
   - Any output can be traced back to its context and parameters.
 
 ## 9. Phase 7 — Quality, Tooling, and CI/CD
+
 Goal: Keep quality high as the system grows.
 
 - Big Tasks
@@ -157,6 +167,7 @@ Goal: Keep quality high as the system grows.
   - Green CI on main; minimum coverage target (e.g., 80%).
 
 ## 10. Data Model (Draft)
+
 - `tasks(id, name, status, priority)`
 - `task_inputs(task_id, prompt)`
 - `task_outputs(task_id, content)`
@@ -165,10 +176,11 @@ Goal: Keep quality high as the system grows.
 - Optional: `runs(id, task_id, used_context_id, started_at, finished_at, status, model, config)`
 
 ## 11. API Sketch (New/Updated)
+
 - Links
   - POST `/context/links` { from_id, to_id, kind }
   - DELETE `/context/links` { from_id, to_id, kind }
-  - GET `/context/links/{task_id}` -> { incoming: [...], outgoing: [...] }
+  - GET `/context/links/{task_id}` -> { task_id, inbound: [...], outbound: [...] }
 - Context
   - POST `/tasks/{task_id}/context/preview` { options } -> bundle
   - POST `/tasks/{task_id}/context/approve` { pins, excludes } -> lock-in overrides
@@ -176,7 +188,8 @@ Goal: Keep quality high as the system grows.
   - POST `/run` { title?, strategy?, use_context?, options? }
 
 ## 12. Execution Prompt Template (Draft)
-```
+
+```text
 You will complete the following task:
 Task: {task_name}
 
@@ -192,6 +205,7 @@ Instructions:
 ```
 
 ## 13. Big/Small Task Breakdown by Phase
+
 - Phase 1 (Graph Foundation)
   - Big: DB schema + Repo + Context service + API + Executor integration
   - Small: migration, CRUD link methods, gatherer, endpoints, tests
@@ -214,16 +228,19 @@ Instructions:
   - Big: CI + coverage + hooks
 
 ## 14. Migration & Compatibility
+
 - Non-breaking: Phases 1–2 add tables/APIs; default behavior remains current unless enabled.
 - Migrations: idempotent `CREATE TABLE IF NOT EXISTS` with versioning table.
 
 ## 15. Risks & Mitigations
+
 - Scope creep: lock each phase with clear ACs and tests.
 - Token blowup: enforce budgets and summaries.
 - Graph misuse: validate kinds and detect cycles early.
 - Reproducibility: snapshot contexts and configs per run.
 
 ## 16. Rough Timeline (Adjustable)
+
 - Phase 1: 1–2 days
 - Phase 2: 2–3 days
 - Phase 3: 1–2 days
@@ -232,6 +249,7 @@ Instructions:
 - Phase 6–7: 1–2 days each
 
 ## 17. Open Questions
+
 - Context limits per model? (configurable by provider)
 - Embedding provider choice and privacy constraints?
 - Human override persistence model (per run vs per task)?
