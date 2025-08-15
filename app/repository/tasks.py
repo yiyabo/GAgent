@@ -171,5 +171,108 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             out.append({"name": name, "short_name": short, "content": content})
         return out
 
+    # -------------------------------
+    # Links (graph) - Phase 1
+    # -------------------------------
+
+    def _ensure_task_links_table(self, conn) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_links (
+                from_id INTEGER,
+                to_id INTEGER,
+                kind TEXT,
+                PRIMARY KEY (from_id, to_id, kind)
+            )
+            """
+        )
+
+    def create_link(self, from_id: int, to_id: int, kind: str) -> None:
+        with get_db() as conn:
+            self._ensure_task_links_table(conn)
+            conn.execute(
+                "INSERT OR IGNORE INTO task_links (from_id, to_id, kind) VALUES (?, ?, ?)",
+                (from_id, to_id, kind),
+            )
+            conn.commit()
+
+    def delete_link(self, from_id: int, to_id: int, kind: str) -> None:
+        with get_db() as conn:
+            self._ensure_task_links_table(conn)
+            conn.execute(
+                "DELETE FROM task_links WHERE from_id=? AND to_id=? AND kind=?",
+                (from_id, to_id, kind),
+            )
+            conn.commit()
+
+    def list_links(
+        self,
+        from_id: Optional[int] = None,
+        to_id: Optional[int] = None,
+        kind: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        where = []
+        params: List[Any] = []
+        if from_id is not None:
+            where.append("from_id=?")
+            params.append(from_id)
+        if to_id is not None:
+            where.append("to_id=?")
+            params.append(to_id)
+        if kind is not None:
+            where.append("kind=?")
+            params.append(kind)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        sql = f"SELECT from_id, to_id, kind FROM task_links {where_sql} ORDER BY from_id ASC, to_id ASC, kind ASC"
+        with get_db() as conn:
+            self._ensure_task_links_table(conn)
+            rows = conn.execute(sql, params).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                out.append({
+                    "from_id": r["from_id"],
+                    "to_id": r["to_id"],
+                    "kind": r["kind"],
+                })
+            except Exception:
+                out.append({
+                    "from_id": r[0],
+                    "to_id": r[1],
+                    "kind": r[2],
+                })
+        return out
+
+    def list_dependencies(self, task_id: int) -> List[Dict[str, Any]]:
+        """Return upstream dependency/reference tasks for the given task.
+
+        Semantics: incoming edges (to_id == task_id) with kind in ('requires','refers').
+        Order: requires first, then refers; each group by (priority, id).
+        """
+        with get_db() as conn:
+            self._ensure_task_links_table(conn)
+            rows = conn.execute(
+                """
+                SELECT t.id, t.name, t.status, t.priority, l.kind
+                FROM task_links l
+                JOIN tasks t ON t.id = l.from_id
+                WHERE l.to_id = ? AND l.kind IN ('requires','refers')
+                ORDER BY CASE l.kind WHEN 'requires' THEN 0 ELSE 1 END,
+                        t.priority ASC, t.id ASC
+                """,
+                (task_id,),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                item = _row_to_dict(r)
+                # Row may be sqlite3.Row; add link kind explicitly
+                item["kind"] = r["kind"]
+            except Exception:
+                item = _row_to_dict(r)
+                item["kind"] = r[4]
+            out.append(item)
+        return out
+
 
 default_repo = SqliteTaskRepository()

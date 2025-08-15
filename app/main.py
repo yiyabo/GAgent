@@ -9,6 +9,7 @@ from .services.planning import propose_plan_service, approve_plan_service
 from .repository.tasks import default_repo
 from .utils import plan_prefix, split_prefix
 from contextlib import asynccontextmanager
+from .services.context import gather_context
 
 
 @asynccontextmanager
@@ -107,12 +108,13 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         t = payload.get("title")
         if isinstance(t, str) and t.strip():
             title = t.strip()
+    use_context = bool((payload or {}).get("use_context", False))
 
     results = []
     if not title:
         # Original behavior: run all pending tasks using scheduler
         for task in bfs_schedule():
-            status = execute_task(task)
+            status = execute_task(task, use_context=use_context)
             task_id = task["id"] if isinstance(task, dict) else task[0]
             default_repo.update_task_status(task_id, status)
             results.append({"id": task_id, "status": status})
@@ -123,8 +125,74 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     rows = default_repo.list_tasks_by_prefix(prefix, pending_only=True, ordered=True)
 
     for task in rows:
-        status = execute_task(task)
+        status = execute_task(task, use_context=use_context)
         task_id = task["id"] if isinstance(task, dict) else task[0]
         default_repo.update_task_status(task_id, status)
         results.append({"id": task_id, "status": status})
     return results
+
+# -------------------------------
+# Context graph endpoints (Phase 1)
+# -------------------------------
+
+@app.post("/context/links")
+def create_link(payload: Dict[str, Any]):
+    try:
+        from_id = int(payload.get("from_id"))
+        to_id = int(payload.get("to_id"))
+        kind = str(payload.get("kind") or "").strip()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid payload")
+    if not from_id or not to_id or not kind:
+        raise HTTPException(status_code=400, detail="from_id, to_id, kind are required")
+    default_repo.create_link(from_id, to_id, kind)
+    return {"ok": True, "link": {"from_id": from_id, "to_id": to_id, "kind": kind}}
+
+
+@app.delete("/context/links")
+def delete_link(payload: Dict[str, Any]):
+    try:
+        from_id = int(payload.get("from_id"))
+        to_id = int(payload.get("to_id"))
+        kind = str(payload.get("kind") or "").strip()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid payload")
+    if not from_id or not to_id or not kind:
+        raise HTTPException(status_code=400, detail="from_id, to_id, kind are required")
+    default_repo.delete_link(from_id, to_id, kind)
+    return {"ok": True}
+
+
+@app.get("/context/links/{task_id}")
+def get_links(task_id: int):
+    inbound = default_repo.list_links(to_id=task_id)
+    outbound = default_repo.list_links(from_id=task_id)
+    return {"task_id": task_id, "inbound": inbound, "outbound": outbound}
+
+
+@app.post("/tasks/{task_id}/context/preview")
+def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
+    payload = payload or {}
+    include_deps = bool(payload.get("include_deps", True))
+    include_plan = bool(payload.get("include_plan", True))
+    try:
+        k = int(payload.get("k", 5))
+    except Exception:
+        k = 5
+    manual_ids = payload.get("manual")
+    if manual_ids and isinstance(manual_ids, list):
+        try:
+            manual = [int(x) for x in manual_ids]
+        except Exception:
+            manual = None
+    else:
+        manual = None
+    bundle = gather_context(
+        task_id,
+        repo=default_repo,
+        include_deps=include_deps,
+        include_plan=include_plan,
+        k=k,
+        manual=manual,
+    )
+    return bundle

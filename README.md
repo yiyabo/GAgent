@@ -10,20 +10,26 @@ A lightweight FastAPI service that turns a high-level goal into an approved plan
 
 1) Install deps (LLM env)
 
-   conda run -n LLM python -m pip install -r requirements.txt
+```bash
+conda run -n LLM python -m pip install -r requirements.txt
+```
 
 2) Set environment
 
-   export GLM_API_KEY=your_key_here
-   # or use mock mode (no API key needed)
-   # export LLM_MOCK=1
-   # optional
-   # export GLM_API_URL=https://open.bigmodel.cn/api/paas/v4/chat/completions
-   # export GLM_MODEL=glm-4-flash
+```bash
+export GLM_API_KEY=your_key_here
+# or use mock mode (no API key needed)
+# export LLM_MOCK=1
+# optional
+# export GLM_API_URL=https://open.bigmodel.cn/api/paas/v4/chat/completions
+# export GLM_MODEL=glm-4-flash
+```
 
 3) Run server
 
-   conda run -n LLM python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```bash
+conda run -n LLM python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
 
 ## Core Endpoints
 
@@ -38,7 +44,7 @@ A lightweight FastAPI service that turns a high-level goal into an approved plan
 - GET /plans/{title}/tasks
   - List tasks for a plan (id, name, short_name, status, priority)
 - POST /run
-  - Body optional: { "title": string } – if set, only runs pending tasks for that plan; otherwise runs all pending tasks
+  - Body optional: { "title"?: string, "use_context"?: boolean } – title filters pending tasks for that plan; use_context includes assembled context in the prompt (default: false).
 - GET /plans/{title}/assembled
   - Assemble completed outputs for a plan ordered by priority
 - Additional:
@@ -46,8 +52,15 @@ A lightweight FastAPI service that turns a high-level goal into an approved plan
   - GET  /tasks – list tasks
   - GET  /tasks/{task_id}/output – fetch generated output for a task
 
+- Context (Phase 1)
+  - POST /context/links – create a link { from_id, to_id, kind }
+  - DELETE /context/links – delete a link
+  - GET /context/links/{task_id} – returns { task_id, inbound, outbound }
+  - POST /tasks/{task_id}/context/preview – returns assembled context bundle { sections, combined }
+
 ## Example (curl)
 
+```bash
 # 1) Propose a plan
 curl -s -X POST http://127.0.0.1:8000/plans/propose \
   -H "Content-Type: application/json" \
@@ -64,11 +77,17 @@ curl -s -X POST http://127.0.0.1:8000/run \
 
 # 4) Assemble final output
 curl -s http://127.0.0.1:8000/plans/Gene%20Editing%20Whitepaper/assembled
+```
 
 ## Notes
 - The service requires GLM_API_KEY; requests to the LLM may fail if unset.
-- Tasks are grouped by name prefix: "[<title>] ". No schema change needed.
+- Tasks are grouped by name prefix: `[<title>] `. No schema change needed.
 - Legacy, report-specific endpoints have been removed to keep the app generic.
+
+## Documentation
+- Phase 1 实施说明（中文）: [Phase1.md](./Phase1.md)
+- 未来规划（中文）: [Future_Plan_cn.md](./Future_Plan_cn.md)
+- Future Plan (English): [Future_Plan.md](./Future_Plan.md)
 
 ## Architecture
 - **Interfaces** (`app/interfaces/__init__.py`)
@@ -112,4 +131,4 @@ conda run -n LLM python -m pytest --cov=app --cov-report=term-missing
 
 ## Lifespan
 Startup has migrated from `@app.on_event("startup")` to FastAPI Lifespan for forward compatibility.
-# GAgent
+
