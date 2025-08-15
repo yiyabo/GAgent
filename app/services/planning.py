@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 from ..llm import get_default_client
 from ..interfaces import LLMProvider, TaskRepository
 from ..repository.tasks import default_repo
-from ..utils import parse_json_obj
+from ..utils import parse_json_obj, plan_prefix
 
 
 # parse_json_obj is centralized in app/utils.py
@@ -89,7 +89,7 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
     if not tasks:
         raise ValueError("Plan has no tasks to approve")
 
-    prefix = f"[{title}] "
+    prefix = plan_prefix(title)
     created: List[Dict[str, Any]] = []
     repo = repo or default_repo
 
