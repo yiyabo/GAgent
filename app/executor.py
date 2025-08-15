@@ -2,6 +2,7 @@ from typing import Optional
 from .llm import get_default_client
 from .interfaces import TaskRepository
 from .repository.tasks import default_repo
+from .services.context import gather_context
 
 
 def _get_task_id_and_name(task):
@@ -26,7 +27,7 @@ def _glm_chat(prompt: str) -> str:
     return client.chat(prompt)
 
 
-def execute_task(task, repo: Optional[TaskRepository] = None):
+def execute_task(task, repo: Optional[TaskRepository] = None, use_context: bool = False):
     repo = repo or default_repo
     task_id, name = _get_task_id_and_name(task)
 
@@ -36,6 +37,16 @@ def execute_task(task, repo: Optional[TaskRepository] = None):
         f"Length: ~200 words. Use a neutral, professional tone. Avoid domain-specific assumptions unless explicitly provided."
     )
     prompt = _fetch_prompt(task_id, default_prompt, repo)
+
+    # Optionally gather and prepend contextual information
+    if use_context:
+        try:
+            bundle = gather_context(task_id, repo=repo)
+            ctx = bundle.get("combined") if isinstance(bundle, dict) else None
+        except Exception:
+            ctx = None
+        if ctx:
+            prompt = f"[Context]\n\n{ctx}\n\n[Task Instruction]\n\n{prompt}"
 
     try:
         content = _glm_chat(prompt)

@@ -80,3 +80,29 @@ class TaskRepository(ABC):
     @abstractmethod
     def list_plan_outputs(self, title: str) -> List[Dict[str, Any]]:
         raise NotImplementedError
+
+    # --- links (graph) ---
+    def create_link(self, from_id: int, to_id: int, kind: str) -> None:
+        """Create a directed link from one task to another.
+
+        Typical kinds: 'requires' (hard dependency), 'refers' (soft reference).
+        Default base implementation raises to signal optional support.
+        """
+        raise NotImplementedError
+
+    def delete_link(self, from_id: int, to_id: int, kind: str) -> None:
+        """Delete a directed link between tasks."""
+        raise NotImplementedError
+
+    def list_links(
+        self,
+        from_id: Optional[int] = None,
+        to_id: Optional[int] = None,
+        kind: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List links filtered by optional endpoints and kind."""
+        raise NotImplementedError
+
+    def list_dependencies(self, task_id: int) -> List[Dict[str, Any]]:
+        """List upstream tasks linked into the given task (e.g., requires/refers)."""
+        raise NotImplementedError
