@@ -106,3 +106,23 @@ class TaskRepository(ABC):
     def list_dependencies(self, task_id: int) -> List[Dict[str, Any]]:
         """List upstream tasks linked into the given task (e.g., requires/refers)."""
         raise NotImplementedError
+
+    # --- context snapshots (Phase 2) ---
+    def upsert_task_context(
+        self,
+        task_id: int,
+        combined: str,
+        sections: List[Dict[str, Any]],
+        meta: Dict[str, Any],
+        label: Optional[str] = "latest",
+    ) -> None:
+        """Persist a context snapshot for a task. Default label 'latest'."""
+        raise NotImplementedError
+
+    def get_task_context(self, task_id: int, label: Optional[str] = "latest") -> Optional[Dict[str, Any]]:
+        """Retrieve a context snapshot for a task by label."""
+        raise NotImplementedError
+
+    def list_task_contexts(self, task_id: int) -> List[Dict[str, Any]]:
+        """List available snapshot labels and metadata for a task."""
+        raise NotImplementedError

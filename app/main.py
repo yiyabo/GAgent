@@ -10,6 +10,95 @@ from .repository.tasks import default_repo
 from .utils import plan_prefix, split_prefix
 from contextlib import asynccontextmanager
 from .services.context import gather_context
+from .services.context_budget import apply_budget
+
+
+def _parse_bool(val, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        v = val.strip().lower()
+        if v in {"true", "1", "yes", "on"}:
+            return True
+        if v in {"false", "0", "no", "off"}:
+            return False
+    return default
+
+
+def _parse_int(val, default: int, min_value: int, max_value: int) -> int:
+    try:
+        i = int(val)
+    except Exception:
+        return default
+    try:
+        i = max(min_value, min(int(i), max_value))
+    except Exception:
+        return default
+    return i
+
+
+def _parse_opt_int(val, min_value: int, max_value: int):
+    if val is None:
+        return None
+    try:
+        i = int(val)
+    except Exception:
+        return None
+    try:
+        i = max(min_value, min(int(i), max_value))
+    except Exception:
+        return None
+    return i
+
+
+def _parse_strategy(val) -> str:
+    if not isinstance(val, str):
+        return "truncate"
+    v = val.strip().lower()
+    return v if v in {"truncate", "sentence"} else "truncate"
+
+
+def _sanitize_manual_list(vals) -> Optional[List[int]]:
+    if not isinstance(vals, list):
+        return None
+    out: List[int] = []
+    for x in vals:
+        try:
+            out.append(int(x))
+        except Exception:
+            continue
+    if not out:
+        return None
+    # dedup and cap size
+    dedup = list(dict.fromkeys(out))
+    return dedup[:50]
+
+
+def _sanitize_context_options(co: Dict[str, Any]) -> Dict[str, Any]:
+    co = co or {}
+    return {
+        "include_deps": _parse_bool(co.get("include_deps"), default=True),
+        "include_plan": _parse_bool(co.get("include_plan"), default=True),
+        "k": _parse_int(co.get("k", 5), default=5, min_value=0, max_value=50),
+        "manual": _sanitize_manual_list(co.get("manual")),
+        "tfidf_k": _parse_opt_int(co.get("tfidf_k"), min_value=0, max_value=50),
+        # budgeting options
+        "max_chars": _parse_opt_int(co.get("max_chars"), min_value=0, max_value=100_000),
+        # non-positive per_section_max considered invalid → None
+        "per_section_max": (
+            None
+            if (co.get("per_section_max") is not None and _parse_opt_int(co.get("per_section_max"), 1, 50_000) is None)
+            else _parse_opt_int(co.get("per_section_max"), min_value=1, max_value=50_000)
+        ),
+        "strategy": _parse_strategy(co.get("strategy")),
+        # snapshot controls
+        "save_snapshot": _parse_bool(co.get("save_snapshot"), default=False),
+        "label": (str(co.get("label")).strip()[:64] if co.get("label") else None),
+    }
 
 
 @asynccontextmanager
@@ -108,13 +197,18 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         t = payload.get("title")
         if isinstance(t, str) and t.strip():
             title = t.strip()
-    use_context = bool((payload or {}).get("use_context", False))
+    use_context = _parse_bool((payload or {}).get("use_context"), default=False)
+    # Phase 2: optional context options forwarded to executor (sanitized)
+    context_options = None
+    co = (payload or {}).get("context_options")
+    if isinstance(co, dict):
+        context_options = _sanitize_context_options(co)
 
     results = []
     if not title:
         # Original behavior: run all pending tasks using scheduler
         for task in bfs_schedule():
-            status = execute_task(task, use_context=use_context)
+            status = execute_task(task, use_context=use_context, context_options=context_options)
             task_id = task["id"] if isinstance(task, dict) else task[0]
             default_repo.update_task_status(task_id, status)
             results.append({"id": task_id, "status": status})
@@ -125,7 +219,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     rows = default_repo.list_tasks_by_prefix(prefix, pending_only=True, ordered=True)
 
     for task in rows:
-        status = execute_task(task, use_context=use_context)
+        status = execute_task(task, use_context=use_context, context_options=context_options)
         task_id = task["id"] if isinstance(task, dict) else task[0]
         default_repo.update_task_status(task_id, status)
         results.append({"id": task_id, "status": status})
@@ -173,20 +267,17 @@ def get_links(task_id: int):
 @app.post("/tasks/{task_id}/context/preview")
 def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
     payload = payload or {}
-    include_deps = bool(payload.get("include_deps", True))
-    include_plan = bool(payload.get("include_plan", True))
-    try:
-        k = int(payload.get("k", 5))
-    except Exception:
-        k = 5
-    manual_ids = payload.get("manual")
-    if manual_ids and isinstance(manual_ids, list):
-        try:
-            manual = [int(x) for x in manual_ids]
-        except Exception:
-            manual = None
-    else:
-        manual = None
+    include_deps = _parse_bool(payload.get("include_deps"), default=True)
+    include_plan = _parse_bool(payload.get("include_plan"), default=True)
+    k = _parse_int(payload.get("k", 5), default=5, min_value=0, max_value=50)
+    # Phase 2 options (optional): budgeting
+    max_chars = _parse_opt_int(payload.get("max_chars"), min_value=0, max_value=100_000)
+    per_section_max = _parse_opt_int(payload.get("per_section_max"), min_value=1, max_value=50_000)
+    # Optional summarization strategy: 'truncate' (default) or 'sentence'
+    strategy = _parse_strategy(payload.get("strategy")) if (max_chars is not None or per_section_max is not None) else None
+    # Optional TF-IDF retrieved items count
+    tfidf_k = _parse_opt_int(payload.get("tfidf_k"), min_value=0, max_value=50)
+    manual = _sanitize_manual_list(payload.get("manual"))
     bundle = gather_context(
         task_id,
         repo=default_repo,
@@ -194,5 +285,12 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
         include_plan=include_plan,
         k=k,
         manual=manual,
+        tfidf_k=tfidf_k,
     )
+    # Apply budget only when options are provided (backward compatible)
+    if (max_chars is not None) or (per_section_max is not None):
+        max_chars = _parse_opt_int(max_chars, min_value=0, max_value=100_000)
+        per_section_max = _parse_opt_int(per_section_max, min_value=1, max_value=50_000)
+        strategy = _parse_strategy(strategy) if strategy else "truncate"
+        bundle = apply_budget(bundle, max_chars=max_chars, per_section_max=per_section_max, strategy=strategy)
     return bundle

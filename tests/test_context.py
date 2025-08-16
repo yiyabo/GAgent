@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from app.database import init_db
 from app.repository.tasks import SqliteTaskRepository
 from app.services.context import gather_context
+from app.services.context_budget import apply_budget
 
 
 def test_repository_links_and_dependencies(tmp_path, monkeypatch):
@@ -109,3 +110,71 @@ def test_api_context_endpoints(tmp_path, monkeypatch):
         r = client.post("/run", json={"title": plan["title"], "use_context": True})
         assert r.status_code == 200
         assert isinstance(r.json(), list)
+
+
+def test_apply_budget_priority_sorting_with_retrieved():
+    sections = [
+        {"task_id": 10, "name": "X", "short_name": "X", "kind": "manual", "content": "m"},
+        {"task_id": 11, "name": "Y", "short_name": "Y", "kind": "sibling", "content": "s"},
+        {"task_id": 12, "name": "Z", "short_name": "Z", "kind": "retrieved", "content": "r"},
+        {"task_id": 13, "name": "A", "short_name": "A", "kind": "dep:refers", "content": "f"},
+        {"task_id": 14, "name": "B", "short_name": "B", "kind": "dep:requires", "content": "q"},
+    ]
+    bundle = {"task_id": 1, "sections": sections, "combined": ""}
+    out = apply_budget(bundle, per_section_max=1000)
+    kinds = [s["kind"] for s in out["sections"]]
+    assert kinds == ["dep:requires", "dep:refers", "retrieved", "sibling", "manual"]
+
+
+def test_gather_context_with_tfidf_retrieval(tmp_path, monkeypatch):
+    test_db = tmp_path / "tfidf_ctx.db"
+    monkeypatch.setattr("app.database.DB_PATH", str(test_db), raising=False)
+
+    init_db()
+    repo = SqliteTaskRepository()
+
+    # Create two tasks in same plan; only B has output
+    a = repo.create_task("[T] A", status="pending", priority=1)
+    b = repo.create_task("[T] B", status="pending", priority=2)
+    repo.upsert_task_input(a, "banana apple")
+    repo.upsert_task_output(b, "banana banana something relevant")
+
+    bundle = gather_context(a, repo=repo, include_deps=False, include_plan=False, tfidf_k=1)
+    secs = bundle.get("sections", [])
+    assert any(s.get("kind") == "retrieved" and s.get("task_id") == b for s in secs)
+
+
+def test_api_context_preview_with_tfidf_option(tmp_path, monkeypatch):
+    os.environ["LLM_MOCK"] = "1"
+    test_db = tmp_path / "api_tfidf.db"
+    monkeypatch.setattr("app.database.DB_PATH", str(test_db), raising=False)
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        plan = {
+            "title": "TF",
+            "tasks": [
+                {"name": "A", "prompt": "banana banana"},
+                {"name": "B", "prompt": "other"},
+            ],
+        }
+        r = client.post("/plans/approve", json=plan)
+        assert r.status_code == 200
+
+        # Get IDs and attach output to B
+        r = client.get(f"/plans/{plan['title']}/tasks")
+        assert r.status_code == 200
+        tasks = r.json()
+        a = next(t for t in tasks if t["short_name"] == "A")
+        b = next(t for t in tasks if t["short_name"] == "B")
+
+        repo = SqliteTaskRepository()
+        repo.upsert_task_output(b["id"], "banana banana text for retrieval")
+
+        # Preview A with tfidf_k=1 and no deps/siblings
+        payload = {"include_deps": False, "include_plan": False, "tfidf_k": 1}
+        r = client.post(f"/tasks/{a['id']}/context/preview", json=payload)
+        assert r.status_code == 200
+        preview = r.json()
+        assert any(s.get("kind") == "retrieved" and s.get("task_id") == b["id"] for s in preview.get("sections", []))

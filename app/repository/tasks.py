@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+import json
 
 from ..database import get_db
 from ..interfaces import TaskRepository
@@ -272,6 +273,121 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 item = _row_to_dict(r)
                 item["kind"] = r[4]
             out.append(item)
+        return out
+
+    # -------------------------------
+    # Context snapshots (Phase 2)
+    # -------------------------------
+
+    def _ensure_task_contexts_table(self, conn) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_contexts (
+                task_id INTEGER,
+                label TEXT,
+                combined TEXT,
+                sections TEXT,
+                meta TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (task_id, label)
+            )
+            """
+        )
+
+    def upsert_task_context(
+        self,
+        task_id: int,
+        combined: str,
+        sections: List[Dict[str, Any]],
+        meta: Dict[str, Any],
+        label: Optional[str] = "latest",
+    ) -> None:
+        with get_db() as conn:
+            self._ensure_task_contexts_table(conn)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO task_contexts (task_id, label, combined, sections, meta)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    label or "latest",
+                    combined or "",
+                    json.dumps(sections or []),
+                    json.dumps(meta or {}),
+                ),
+            )
+            conn.commit()
+
+    def get_task_context(self, task_id: int, label: Optional[str] = "latest") -> Optional[Dict[str, Any]]:
+        with get_db() as conn:
+            self._ensure_task_contexts_table(conn)
+            row = None
+            if label is not None:
+                row = conn.execute(
+                    "SELECT task_id, label, combined, sections, meta, created_at FROM task_contexts WHERE task_id=? AND label=?",
+                    (task_id, label),
+                ).fetchone()
+            if not row:
+                row = conn.execute(
+                    "SELECT task_id, label, combined, sections, meta, created_at FROM task_contexts WHERE task_id=? ORDER BY datetime(created_at) DESC LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+        if not row:
+            return None
+        try:
+            tid = row[0]
+            lbl = row[1]
+            combined = row[2]
+            sections = row[3]
+            meta = row[4]
+            created_at = row[5]
+        except Exception:
+            tid = row["task_id"]
+            lbl = row["label"]
+            combined = row["combined"]
+            sections = row["sections"]
+            meta = row["meta"]
+            created_at = row["created_at"]
+        try:
+            sections_obj = json.loads(sections) if isinstance(sections, str) else sections
+        except Exception:
+            sections_obj = []
+        try:
+            meta_obj = json.loads(meta) if isinstance(meta, str) else meta
+        except Exception:
+            meta_obj = {}
+        return {
+            "task_id": tid,
+            "label": lbl,
+            "combined": combined,
+            "sections": sections_obj,
+            "meta": meta_obj,
+            "created_at": created_at,
+        }
+
+    def list_task_contexts(self, task_id: int) -> List[Dict[str, Any]]:
+        with get_db() as conn:
+            self._ensure_task_contexts_table(conn)
+            rows = conn.execute(
+                "SELECT label, created_at, meta FROM task_contexts WHERE task_id=? ORDER BY datetime(created_at) DESC",
+                (task_id,),
+            ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                lbl = r[0]
+                created_at = r[1]
+                meta = r[2]
+            except Exception:
+                lbl = r["label"]
+                created_at = r["created_at"]
+                meta = r["meta"]
+            try:
+                meta_obj = json.loads(meta) if isinstance(meta, str) else meta
+            except Exception:
+                meta_obj = {}
+            out.append({"label": lbl, "created_at": created_at, "meta": meta_obj})
         return out
 
 
