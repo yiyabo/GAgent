@@ -121,12 +121,47 @@ def main():
     parser.add_argument("--output", type=str, default=OUTPUT_MD, help="Assembled output path (default: output.md)")
     parser.add_argument("--yes", action="store_true", help="Non-interactive: auto-approve and auto-execute where applicable")
     parser.add_argument("--no-open", action="store_true", help="Do not open editor for plan.md")
+    # Context-related options for execution
+    parser.add_argument("--use-context", action="store_true", help="Enable context assembly and budgeting during execution")
+    parser.add_argument("--include-deps", dest="include_deps", action="store_true", help="Include dependency context (default True)")
+    parser.add_argument("--exclude-deps", dest="include_deps", action="store_false", help="Exclude dependency context")
+    parser.set_defaults(include_deps=None)
+    parser.add_argument("--include-plan", dest="include_plan", action="store_true", help="Include sibling/plan context (default True)")
+    parser.add_argument("--exclude-plan", dest="include_plan", action="store_false", help="Exclude sibling/plan context")
+    parser.set_defaults(include_plan=None)
+    parser.add_argument("--tfidf-k", dest="tfidf_k", type=int, help="Number of TF-IDF retrieved items")
+    parser.add_argument("--max-chars", dest="max_chars", type=int, help="Total character budget across sections")
+    parser.add_argument("--per-section-max", dest="per_section_max", type=int, help="Max characters per section")
+    parser.add_argument("--strategy", choices=["truncate", "sentence"], help="Budgeting strategy")
+    parser.add_argument("--save-snapshot", dest="save_snapshot", action="store_true", help="Save context snapshot per execution")
+    parser.add_argument("--label", type=str, help="Snapshot label when saving context")
     args = parser.parse_args()
 
     print("=== GLM Agent ===")
     print("This CLI helps you plan and execute a project with the LLM.")
     print("")
     _ensure_stdio_utf8()
+
+    # helper to build context options from args
+    def _build_context_options_from_args(a) -> Optional[Dict[str, Any]]:
+        co: Dict[str, Any] = {}
+        if a.include_deps is not None:
+            co["include_deps"] = bool(a.include_deps)
+        if a.include_plan is not None:
+            co["include_plan"] = bool(a.include_plan)
+        if a.tfidf_k is not None:
+            co["tfidf_k"] = int(a.tfidf_k)
+        if a.max_chars is not None:
+            co["max_chars"] = int(a.max_chars)
+        if a.per_section_max is not None:
+            co["per_section_max"] = int(a.per_section_max)
+        if a.strategy:
+            co["strategy"] = str(a.strategy)
+        if a.save_snapshot:
+            co["save_snapshot"] = True
+        if a.label:
+            co["label"] = str(a.label)
+        return co or None
 
     # 0) Fast path: execute-only
     if args.execute_only:
@@ -146,7 +181,13 @@ def main():
             print("Title is required for --execute-only. Exiting.")
             return
         try:
-            exec_res = run_tasks({"title": title})
+            payload_run: Dict[str, Any] = {"title": title}
+            if args.use_context:
+                payload_run["use_context"] = True
+                co = _build_context_options_from_args(args)
+                if co:
+                    payload_run["context_options"] = co
+            exec_res = run_tasks(payload_run)
             print(f"Executed {len(exec_res or [])} tasks.")
         except Exception as e:
             print(f"Execution failed: {e}")
@@ -277,7 +318,13 @@ def main():
     if do_run:
         title = parsed.get("title")
         try:
-            exec_res = run_tasks({"title": title})
+            payload_run: Dict[str, Any] = {"title": title}
+            if args.use_context:
+                payload_run["use_context"] = True
+                co = _build_context_options_from_args(args)
+                if co:
+                    payload_run["context_options"] = co
+            exec_res = run_tasks(payload_run)
             print(f"Executed {len(exec_res or [])} tasks.")
         except Exception as e:
             print(f"Execution failed: {e}")

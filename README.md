@@ -1,20 +1,20 @@
 # Generic Plan-Review-Execute Task Runner (FastAPI)
 
-A lightweight FastAPI service that turns a high-level goal into an approved plan of tasks, then executes them via an LLM.
+一个面向生产的 Plan‑Review‑Execute 智能体服务。以“目标 → 计划 → 审阅 → 执行”为主线，提供可观测的上下文编排、预算管理与可扩展的工具能力。本文档以“最终理想形态”为准，当前实现将持续对齐。
 
-- DB: SQLite at ./tasks.db
-- LLM: external API via environment (GLM_API_KEY required)
-- Models: pydantic v2
+- 后端：FastAPI（默认存储 SQLite: ./tasks.db，可插拔）
+- LLM：外部 API（需 GLM_API_KEY）与 Mock 模式
+- 模型与数据：pydantic v2
 
 ## Quickstart
 
-1) Install deps (LLM env)
+1. Install deps (LLM env)
 
 ```bash
 conda run -n LLM python -m pip install -r requirements.txt
 ```
 
-2) Set environment
+1. Set environment
 
 ```bash
 export GLM_API_KEY=your_key_here
@@ -22,14 +22,30 @@ export GLM_API_KEY=your_key_here
 # export LLM_MOCK=1
 # optional
 # export GLM_API_URL=https://open.bigmodel.cn/api/paas/v4/chat/completions
-# export GLM_MODEL=glm-4-flash
 ```
 
-3) Run server
+1. Run server
 
 ```bash
 conda run -n LLM python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
+
+## 愿景与目标能力（最终理想形态）
+
+- 规划与审阅
+  - 基于目标自动生成可执行计划（sections 可调），支持人类审阅与修改后入库。
+- 上下文编排（Context Orchestration）
+  - 多源融合：依赖图（links）、TF‑IDF 检索、手动选择，未来可扩展至代码/文档索引。
+  - 全局去重与稳定优先级：按 `PRIORITY_ORDER` 排序，保证确定性。
+  - 预算管理：总字数（max_chars）、分段上限（per_section_max）、裁剪策略（truncate/sentence）。
+  - 快照留存：`save_snapshot` 与 `label` 追踪每次执行的上下文快照与元数据。
+  - 可观测性：结构化调试日志（`CTX_DEBUG`/`CONTEXT_DEBUG`/`BUDGET_DEBUG`）与可审计输出。
+- 执行器
+  - 幂等执行、顺序/调度控制、可插拔工具（Tooling）以扩展到检索、拉取代码、执行脚本等。
+- API 与 CLI 一致性
+  - `/run` 接收 `use_context` 与 `context_options`；CLI 提供等效参数开关便于批处理与自动化。
+- 存储与可移植性
+  - 默认 SQLite，可平滑替换为外部数据库；Mock LLM 便于在开发/CI 环境运行。
 
 ## Core Endpoints
 
@@ -44,7 +60,27 @@ conda run -n LLM python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --r
 - GET /plans/{title}/tasks
   - List tasks for a plan (id, name, short_name, status, priority)
 - POST /run
-  - Body optional: { "title"?: string, "use_context"?: boolean } – title filters pending tasks for that plan; use_context includes assembled context in the prompt (default: false).
+  - Body optional:
+    - `{ "title"?: string, "use_context"?: boolean, "context_options"?: { "include_deps"?: boolean, "include_plan"?: boolean, "tfidf_k"?: number, "max_chars"?: number, "per_section_max"?: number, "strategy"?: "truncate"|"sentence", "save_snapshot"?: boolean, "label"?: string } }`
+    - Example:
+
+      ```json
+      {
+        "title": "Gene Editing Whitepaper",
+        "use_context": true,
+        "context_options": {
+          "include_deps": true,
+          "include_plan": true,
+          "tfidf_k": 2,
+          "max_chars": 1200,
+          "per_section_max": 300,
+          "strategy": "sentence",
+          "save_snapshot": true,
+          "label": "exp-ctx"
+        }
+      }
+      ```
+
 - GET /plans/{title}/assembled
   - Assemble completed outputs for a plan ordered by priority
 - Additional:
@@ -52,11 +88,23 @@ conda run -n LLM python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --r
   - GET  /tasks – list tasks
   - GET  /tasks/{task_id}/output – fetch generated output for a task
 
-- Context (Phase 1)
+- Context APIs
   - POST /context/links – create a link { from_id, to_id, kind }
   - DELETE /context/links – delete a link
   - GET /context/links/{task_id} – returns { task_id, inbound, outbound }
   - POST /tasks/{task_id}/context/preview – returns assembled context bundle { sections, combined }
+
+## CLI 用法示例
+
+```bash
+# 仅执行某个计划并启用上下文与预算
+conda run -n LLM python agent_cli.py --execute-only --title Demo \
+  --use-context --tfidf-k 2 --per-section-max 200 --strategy sentence \
+  --save-snapshot --label demo-ctx
+
+# 普通执行并启用上下文（不指定 title 将按调度执行 pending）
+conda run -n LLM python agent_cli.py --use-context --tfidf-k 2 --max-chars 1200
+```
 
 ## Example (curl)
 
@@ -81,11 +129,20 @@ curl -s http://127.0.0.1:8000/plans/Gene%20Editing%20Whitepaper/assembled
 
 ## Notes
 - The service requires GLM_API_KEY; requests to the LLM may fail if unset.
-- Tasks are grouped by name prefix: `[<title>] `. No schema change needed.
+- Tasks are grouped by name prefix: `[<title>]`. No schema change needed.
 - Legacy, report-specific endpoints have been removed to keep the app generic.
 
+## 配置与调试（Environment）
+
+- LLM 相关
+  - `GLM_API_KEY`, `GLM_API_URL`（默认 `https://open.bigmodel.cn/api/paas/v4/chat/completions`）, `GLM_MODEL`（如 `glm-4-flash`）
+  - `LLM_MOCK=1`：开启后可在无外部 API 状态下开发/测试
+- 上下文检索/调试
+  - `TFIDF_MAX_CANDIDATES`（默认 500）、`TFIDF_MIN_SCORE`（默认 0.0）
+  - `CTX_DEBUG`/`CONTEXT_DEBUG`/`BUDGET_DEBUG`：开启结构化调试日志
+
 ## Documentation
-- Phase 1 实施说明（中文）: [Phase1.md](./Phase1.md)
+- 中文概览（理想形态）：见本 README
 - 未来规划（中文）: [Future_Plan_cn.md](./Future_Plan_cn.md)
 - Future Plan (English): [Future_Plan.md](./Future_Plan.md)
 
