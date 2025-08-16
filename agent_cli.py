@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from app.database import init_db
 from app.main import propose_plan, approve_plan, run_tasks, get_plan_assembled
+from app.repository.tasks import SqliteTaskRepository
 
 
 PLAN_MD = "plan.md"
@@ -130,11 +131,18 @@ def main():
     parser.add_argument("--exclude-plan", dest="include_plan", action="store_false", help="Exclude sibling/plan context")
     parser.set_defaults(include_plan=None)
     parser.add_argument("--tfidf-k", dest="tfidf_k", type=int, help="Number of TF-IDF retrieved items")
+    parser.add_argument("--tfidf-min-score", dest="tfidf_min_score", type=float, help="Minimum TF-IDF score threshold (overrides env default)")
+    parser.add_argument("--tfidf-max-candidates", dest="tfidf_max_candidates", type=int, help="Max candidate outputs to score for TF-IDF (overrides env default)")
     parser.add_argument("--max-chars", dest="max_chars", type=int, help="Total character budget across sections")
     parser.add_argument("--per-section-max", dest="per_section_max", type=int, help="Max characters per section")
     parser.add_argument("--strategy", choices=["truncate", "sentence"], help="Budgeting strategy")
     parser.add_argument("--save-snapshot", dest="save_snapshot", action="store_true", help="Save context snapshot per execution")
     parser.add_argument("--label", type=str, help="Snapshot label when saving context")
+    parser.add_argument("--schedule", choices=["bfs", "dag"], help="Scheduling strategy for execution (default: bfs)")
+    # Snapshot utilities
+    parser.add_argument("--list-snapshots", action="store_true", help="List context snapshots for a task id")
+    parser.add_argument("--export-snapshot", action="store_true", help="Export a context snapshot by task id and label")
+    parser.add_argument("--task-id", dest="task_id", type=int, help="Target task id for snapshot operations")
     args = parser.parse_args()
 
     print("=== GLM Agent ===")
@@ -151,6 +159,10 @@ def main():
             co["include_plan"] = bool(a.include_plan)
         if a.tfidf_k is not None:
             co["tfidf_k"] = int(a.tfidf_k)
+        if a.tfidf_min_score is not None:
+            co["tfidf_min_score"] = float(a.tfidf_min_score)
+        if a.tfidf_max_candidates is not None:
+            co["tfidf_max_candidates"] = int(a.tfidf_max_candidates)
         if a.max_chars is not None:
             co["max_chars"] = int(a.max_chars)
         if a.per_section_max is not None:
@@ -162,6 +174,43 @@ def main():
         if a.label:
             co["label"] = str(a.label)
         return co or None
+
+    # 0a) Fast path: snapshot utilities
+    if args.list_snapshots or args.export_snapshot:
+        init_db()
+        repo = SqliteTaskRepository()
+        # list snapshots
+        if args.list_snapshots:
+            if not args.task_id:
+                print("task-id is required for --list-snapshots. Exiting.")
+                return
+            snaps = repo.list_task_contexts(int(args.task_id))
+            print(json.dumps({"task_id": int(args.task_id), "snapshots": snaps}, ensure_ascii=False, indent=2))
+            return
+        # export snapshot
+        if args.export_snapshot:
+            if not args.task_id or not args.label:
+                print("task-id and label are required for --export-snapshot. Exiting.")
+                return
+            snap = repo.get_task_context(int(args.task_id), str(args.label))
+            if not snap:
+                print("Snapshot not found.")
+                return
+            out_path = args.output or f"snapshot_{args.task_id}_{args.label}.md"
+            try:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write(f"# Snapshot: task {args.task_id} [{args.label}]\n\n")
+                    f.write("## Combined\n\n")
+                    f.write(snap.get("combined", "") or "")
+                    f.write("\n\n## Sections\n\n")
+                    for s in snap.get("sections", []):
+                        nm = s.get("short_name") or s.get("name") or str(s.get("task_id"))
+                        f.write(f"### {nm}\n\n")
+                        f.write((s.get("content") or "") + "\n\n")
+                print(f"Snapshot exported to {out_path}.")
+            except Exception as e:
+                print(f"Export failed: {e}")
+            return
 
     # 0) Fast path: execute-only
     if args.execute_only:
@@ -187,6 +236,8 @@ def main():
                 co = _build_context_options_from_args(args)
                 if co:
                     payload_run["context_options"] = co
+            if args.schedule:
+                payload_run["schedule"] = args.schedule
             exec_res = run_tasks(payload_run)
             print(f"Executed {len(exec_res or [])} tasks.")
         except Exception as e:
@@ -324,6 +375,8 @@ def main():
                 co = _build_context_options_from_args(args)
                 if co:
                     payload_run["context_options"] = co
+            if args.schedule:
+                payload_run["schedule"] = args.schedule
             exec_res = run_tasks(payload_run)
             print(f"Executed {len(exec_res or [])} tasks.")
         except Exception as e:

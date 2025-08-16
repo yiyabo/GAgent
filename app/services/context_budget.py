@@ -102,6 +102,14 @@ def apply_budget(
         * "sentence": prefer sentence boundaries when cutting
 
     If neither is provided, the bundle is returned unchanged.
+
+    Each section will include a `budget` metadata object with at least:
+    - original_len, new_len, truncated, strategy (from summarizer)
+    - allowed: effective cap applied to the section this round
+    - allowed_by_total: cap imposed by remaining total budget (if any)
+    - allowed_by_per_section: cap imposed by per-section limit (if any)
+    - truncated_reason: one of {"none", "per_section", "total", "both"}
+    - group, index: ordering metadata; group maps to PRIORITY_ORDER
     """
     if not isinstance(bundle, dict):
         return bundle
@@ -131,15 +139,54 @@ def apply_budget(
     new_sections: List[Dict[str, Any]] = []
     combined_parts: List[str] = []
 
-    for s in sections:
+    for idx, s in enumerate(sections):
         content = s.get("content") or ""
-        allow = len(content)
-        if per_cap is not None:
-            allow = min(allow, per_cap)
-        if remaining is not None:
-            allow = min(allow, max(0, remaining))
+        original_len = len(content)
+
+        # Calculate effective allowances before summarization
+        allowed_by_per = min(original_len, per_cap) if per_cap is not None else original_len
+        allowed_by_total = min(original_len, max(0, remaining)) if remaining is not None else original_len
+        allow = min(allowed_by_per, allowed_by_total)
 
         truncated, meta = _summarize(content, allow, strategy)
+
+        # Determine ordering group for metadata (mirrors _priority_key)
+        kind = s.get("kind") or ""
+        try:
+            group = PRIORITY_ORDER.index(kind)
+        except ValueError:
+            if isinstance(kind, str) and kind.startswith("dep:"):
+                if "requires" in kind:
+                    group = 0
+                elif "refers" in kind:
+                    group = 1
+                else:
+                    group = 1
+            else:
+                group = 2 if kind == "sibling" else 3
+
+        # Classify truncation reason
+        per_applied = (per_cap is not None) and (allowed_by_per < original_len)
+        tot_applied = (remaining is not None) and (allowed_by_total < original_len)
+        if not meta.get("truncated"):
+            reason = "none"
+        elif per_applied and tot_applied:
+            reason = "both"
+        elif per_applied:
+            reason = "per_section"
+        elif tot_applied:
+            reason = "total"
+        else:
+            reason = "none"
+
+        meta.update({
+            "allowed": allow,
+            "allowed_by_per_section": allowed_by_per,
+            "allowed_by_total": allowed_by_total,
+            "truncated_reason": reason,
+            "group": group,
+            "index": idx,
+        })
 
         s2 = dict(s)
         s2["content"] = truncated

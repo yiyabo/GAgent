@@ -60,6 +60,15 @@ def execute_task(
                 tfidf_k = int(opts.get("tfidf_k")) if (opts.get("tfidf_k") is not None) else None
             except Exception:
                 tfidf_k = None
+            # Optional TF-IDF thresholds
+            try:
+                tfidf_min_score = float(opts.get("tfidf_min_score")) if (opts.get("tfidf_min_score") is not None) else None
+            except Exception:
+                tfidf_min_score = None
+            try:
+                tfidf_max_candidates = int(opts.get("tfidf_max_candidates")) if (opts.get("tfidf_max_candidates") is not None) else None
+            except Exception:
+                tfidf_max_candidates = None
             manual = None
             mids = opts.get("manual")
             if isinstance(mids, list):
@@ -76,6 +85,8 @@ def execute_task(
                 k=k,
                 manual=manual,
                 tfidf_k=tfidf_k,
+                tfidf_min_score=tfidf_min_score,
+                tfidf_max_candidates=tfidf_max_candidates,
             )
             # Budget options
             max_chars = opts.get("max_chars")
@@ -113,6 +124,8 @@ def execute_task(
                     "k": k,
                     "manual": manual,
                     "tfidf_k": tfidf_k,
+                    "tfidf_min_score": (tfidf_min_score if 'tfidf_min_score' in locals() else None),
+                    "tfidf_max_candidates": (tfidf_max_candidates if 'tfidf_max_candidates' in locals() else None),
                     "max_chars": (max_chars_i if 'max_chars_i' in locals() else None),
                     "per_section_max": (per_section_max_i if 'per_section_max_i' in locals() else None),
                     "strategy": (strategy or "truncate") if strategy else None,

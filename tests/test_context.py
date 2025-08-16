@@ -178,3 +178,30 @@ def test_api_context_preview_with_tfidf_option(tmp_path, monkeypatch):
         assert r.status_code == 200
         preview = r.json()
         assert any(s.get("kind") == "retrieved" and s.get("task_id") == b["id"] for s in preview.get("sections", []))
+
+
+def test_tfidf_tokenizer_keeps_single_char_cjk():
+    # Import internal tokenizer for precise behavior validation
+    from app.services.context import _tokenize
+
+    # Single-character Chinese should be kept
+    assert _tokenize("你") == ["你"]
+    assert _tokenize("好") == ["好"]
+
+
+def test_tfidf_tokenizer_drops_single_char_ascii():
+    from app.services.context import _tokenize
+
+    # Single-character ASCII letters should be dropped
+    assert _tokenize("a") == []
+    assert _tokenize("B") == []
+
+
+def test_tfidf_tokenizer_cjk_with_punctuation():
+    from app.services.context import _tokenize
+
+    # Punctuation should split tokens; CJK singles kept, ASCII singles dropped, digits dropped
+    toks = _tokenize("你，好！ a, b, 1")
+    assert "你" in toks and "好" in toks
+    assert "a" not in toks and "b" not in toks
+    assert "1" not in toks

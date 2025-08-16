@@ -103,3 +103,78 @@ def test_executor_run_saves_context_snapshot_with_budget_info(tmp_path, monkeypa
         bi = meta.get("budget_info")
         assert isinstance(bi, dict)
         assert bi.get("max_chars") == 8
+
+
+def test_apply_budget_zero_max_chars_makes_all_empty():
+    bundle = {
+        "task_id": 1,
+        "sections": [
+            {"task_id": 2, "name": "A", "short_name": "A", "kind": "dep:requires", "content": "ABCDE"},
+            {"task_id": 3, "name": "B", "short_name": "B", "kind": "dep:refers", "content": "12345"},
+        ],
+        "combined": "",
+    }
+    out = apply_budget(bundle, max_chars=0)
+    for s in out["sections"]:
+        assert s["content"] == ""
+        assert s["budget"]["truncated"] is True
+    assert out["budget_info"]["total_new_chars"] == 0
+
+
+def test_apply_budget_negative_caps_treated_as_zero():
+    bundle = {
+        "task_id": 1,
+        "sections": [
+            {"task_id": 2, "name": "A", "short_name": "A", "kind": "dep:requires", "content": "hello"},
+            {"task_id": 3, "name": "B", "short_name": "B", "kind": "dep:refers", "content": "world"},
+        ],
+        "combined": "",
+    }
+    out = apply_budget(bundle, max_chars=-10)
+    for s in out["sections"]:
+        assert s["content"] == ""
+        assert s["budget"]["truncated"] is True
+    assert out["budget_info"]["total_new_chars"] == 0
+
+
+def test_apply_budget_per_section_zero_caps():
+    bundle = {
+        "task_id": 1,
+        "sections": [
+            {"task_id": 2, "name": "A", "short_name": "A", "kind": "dep:requires", "content": "foo"},
+            {"task_id": 3, "name": "B", "short_name": "B", "kind": "dep:refers", "content": "bar"},
+        ],
+        "combined": "",
+    }
+    out = apply_budget(bundle, per_section_max=0)
+    for s in out["sections"]:
+        assert s["content"] == ""
+        assert s["budget"]["truncated"] is True
+    assert out["budget_info"]["total_new_chars"] == 0
+
+
+def test_apply_budget_both_caps_interplay_and_ordering():
+    # Two equal-length sections -> ordering/priorities decide distribution
+    sections = [
+        {"task_id": 10, "name": "R", "short_name": "R", "kind": "dep:requires", "content": "abcd"},
+        {"task_id": 11, "name": "F", "short_name": "F", "kind": "dep:refers", "content": "efgh"},
+    ]
+    bundle = {"task_id": 9, "sections": sections, "combined": ""}
+    out = apply_budget(bundle, max_chars=5, per_section_max=3)
+    s0, s1 = out["sections"][0], out["sections"][1]
+    assert s0["content"] == "abc"  # first takes up to per_section_max=3
+    assert s1["content"] == "ef"   # remaining=2
+    assert out["budget_info"]["total_new_chars"] == 5
+
+
+def test_apply_budget_handles_empty_sections_stably():
+    sections = [
+        {"task_id": 1, "name": "A", "short_name": "A", "kind": "dep:requires", "content": ""},
+        {"task_id": 2, "name": "B", "short_name": "B", "kind": "dep:refers", "content": "hello"},
+    ]
+    bundle = {"task_id": 0, "sections": sections, "combined": ""}
+    out = apply_budget(bundle, max_chars=3)
+    s0, s1 = out["sections"][0], out["sections"][1]
+    assert s0["content"] == "" and s0["budget"]["truncated"] is False
+    assert s1["content"] == "hel" and s1["budget"]["truncated"] is True
+    assert out["budget_info"]["total_new_chars"] == 3

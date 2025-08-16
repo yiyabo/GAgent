@@ -85,14 +85,43 @@ TFIDF_MAX_CANDIDATES = int(os.environ.get("TFIDF_MAX_CANDIDATES", "500"))
 TFIDF_MIN_SCORE = float(os.environ.get("TFIDF_MIN_SCORE", "0"))
 
 
+def _is_cjk_char(ch: str) -> bool:
+    """Return True if the given character is a CJK/Han/Hangul/Kana character.
+    This is a minimal heuristic to keep single-character tokens for CJK languages.
+    """
+    try:
+        code = ord(ch)
+    except Exception:
+        return False
+    return (
+        0x3400 <= code <= 0x4DBF  # CJK Unified Ideographs Extension A
+        or 0x4E00 <= code <= 0x9FFF  # CJK Unified Ideographs
+        or 0xF900 <= code <= 0xFAFF  # CJK Compatibility Ideographs
+        or 0x3040 <= code <= 0x309F  # Hiragana
+        or 0x30A0 <= code <= 0x30FF  # Katakana
+        or 0xAC00 <= code <= 0xD7AF  # Hangul Syllables
+        or 0x1100 <= code <= 0x11FF  # Hangul Jamo
+        or 0x3130 <= code <= 0x318F  # Hangul Compatibility Jamo
+    )
+
+
 @lru_cache(maxsize=4096)
 def _tokenize(text: str) -> List[str]:
     if not text:
         return []
     toks = [m.group(0).lower() for m in _TOKEN_RE.finditer(text)]
-    # Filter stopwords, numeric-only tokens, and single-char noise
-    toks = [t for t in toks if t not in _STOPWORDS and not t.isdigit() and len(t) > 1]
-    return toks
+    # Filter stopwords, numeric-only tokens, and single-char noise (keep single-char CJK)
+    out: List[str] = []
+    for t in toks:
+        if t in _STOPWORDS:
+            continue
+        if t.isdigit():
+            continue
+        if len(t) == 1:
+            if not _is_cjk_char(t[0]):
+                continue
+        out.append(t)
+    return out
 
 
 def _tfidf_scores(query_tokens: List[str], docs_tokens: List[List[str]]) -> List[float]:
@@ -154,6 +183,8 @@ def gather_context(
     k: int = 5,
     manual: Optional[List[int]] = None,
     tfidf_k: Optional[int] = None,
+    tfidf_min_score: Optional[float] = None,
+    tfidf_max_candidates: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Assemble a context bundle for a task.
 
@@ -242,9 +273,21 @@ def gather_context(
             if content and isinstance(content, str) and content.strip():
                 candidates.append((tid, content))
 
+        # Determine effective caps/thresholds (overrides if provided)
+        try:
+            eff_max_candidates = int(tfidf_max_candidates) if (tfidf_max_candidates is not None) else int(TFIDF_MAX_CANDIDATES)
+        except Exception:
+            eff_max_candidates = int(TFIDF_MAX_CANDIDATES)
+        try:
+            eff_min_score = float(tfidf_min_score) if (tfidf_min_score is not None) else float(TFIDF_MIN_SCORE)
+        except Exception:
+            eff_min_score = float(TFIDF_MIN_SCORE)
+
         # Cap candidate size for performance (deterministic order from repo)
-        if len(candidates) > TFIDF_MAX_CANDIDATES:
-            candidates = candidates[:TFIDF_MAX_CANDIDATES]
+        if eff_max_candidates <= 0:
+            candidates = []
+        elif len(candidates) > eff_max_candidates:
+            candidates = candidates[:eff_max_candidates]
 
         if _debug_on():
             _CTX_LOGGER.debug({
@@ -265,7 +308,7 @@ def gather_context(
                 order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
                 added = 0
                 for idx in order:
-                    if scores[idx] < TFIDF_MIN_SCORE:
+                    if scores[idx] < eff_min_score:
                         break
                     tid, _ = candidates[idx]
                     t = _get_task_by_id(tid, repo)
@@ -285,7 +328,7 @@ def gather_context(
                         "query_len": len(tok_q),
                         "added": added,
                         "top_score": (scores[order[0]] if order else 0.0),
-                        "min_score_threshold": TFIDF_MIN_SCORE,
+                        "min_score_threshold": eff_min_score,
                     })
 
     # 5) Normalize ordering by priority groups even if no budget is applied

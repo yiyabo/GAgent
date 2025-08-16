@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Body
 from .models import TaskCreate
 from .database import init_db
-from .scheduler import bfs_schedule
+from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order
 from .executor import execute_task
 from .llm import get_default_client
 from .services.planning import propose_plan_service, approve_plan_service
@@ -41,6 +41,20 @@ def _parse_int(val, default: int, min_value: int, max_value: int) -> int:
     return i
 
 
+def _parse_opt_float(val, min_value: float, max_value: float):
+    if val is None:
+        return None
+    try:
+        f = float(val)
+    except Exception:
+        return None
+    try:
+        f = max(min_value, min(float(f), max_value))
+    except Exception:
+        return None
+    return f
+
+
 def _parse_opt_int(val, min_value: int, max_value: int):
     if val is None:
         return None
@@ -60,6 +74,14 @@ def _parse_strategy(val) -> str:
         return "truncate"
     v = val.strip().lower()
     return v if v in {"truncate", "sentence"} else "truncate"
+
+
+def _parse_schedule(val) -> str:
+    """Parse scheduling strategy for /run: 'bfs' (default) or 'dag'."""
+    if not isinstance(val, str):
+        return "bfs"
+    v = val.strip().lower()
+    return v if v in {"bfs", "dag"} else "bfs"
 
 
 def _sanitize_manual_list(vals) -> Optional[List[int]]:
@@ -86,6 +108,9 @@ def _sanitize_context_options(co: Dict[str, Any]) -> Dict[str, Any]:
         "k": _parse_int(co.get("k", 5), default=5, min_value=0, max_value=50),
         "manual": _sanitize_manual_list(co.get("manual")),
         "tfidf_k": _parse_opt_int(co.get("tfidf_k"), min_value=0, max_value=50),
+        # TF-IDF thresholds (optional overrides of env defaults)
+        "tfidf_min_score": _parse_opt_float(co.get("tfidf_min_score"), min_value=0.0, max_value=1_000_000.0),
+        "tfidf_max_candidates": _parse_opt_int(co.get("tfidf_max_candidates"), min_value=0, max_value=50_000),
         # budgeting options
         "max_chars": _parse_opt_int(co.get("max_chars"), min_value=0, max_value=100_000),
         # non-positive per_section_max considered invalid → None
@@ -198,6 +223,8 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         if isinstance(t, str) and t.strip():
             title = t.strip()
     use_context = _parse_bool((payload or {}).get("use_context"), default=False)
+    # Phase 3: scheduling strategy (bfs|dag)
+    schedule = _parse_schedule((payload or {}).get("schedule"))
     # Phase 2: optional context options forwarded to executor (sanitized)
     context_options = None
     co = (payload or {}).get("context_options")
@@ -207,7 +234,14 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     results = []
     if not title:
         # Original behavior: run all pending tasks using scheduler
-        for task in bfs_schedule():
+        if schedule == "dag":
+            ordered, cycle = requires_dag_order(None)
+            if cycle:
+                raise HTTPException(status_code=400, detail={"error": "cycle_detected", **cycle})
+            tasks_iter = ordered
+        else:
+            tasks_iter = bfs_schedule()
+        for task in tasks_iter:
             status = execute_task(task, use_context=use_context, context_options=context_options)
             task_id = task["id"] if isinstance(task, dict) else task[0]
             default_repo.update_task_status(task_id, status)
@@ -216,9 +250,16 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
 
     # Filtered by plan title (prefix)
     prefix = plan_prefix(title)
-    rows = default_repo.list_tasks_by_prefix(prefix, pending_only=True, ordered=True)
+    if schedule == "dag":
+        ordered, cycle = requires_dag_order(title)
+        if cycle:
+            raise HTTPException(status_code=400, detail={"error": "cycle_detected", **cycle})
+        tasks_iter = ordered
+    else:
+        rows = default_repo.list_tasks_by_prefix(prefix, pending_only=True, ordered=True)
+        tasks_iter = rows
 
-    for task in rows:
+    for task in tasks_iter:
         status = execute_task(task, use_context=use_context, context_options=context_options)
         task_id = task["id"] if isinstance(task, dict) else task[0]
         default_repo.update_task_status(task_id, status)
@@ -277,6 +318,9 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
     strategy = _parse_strategy(payload.get("strategy")) if (max_chars is not None or per_section_max is not None) else None
     # Optional TF-IDF retrieved items count
     tfidf_k = _parse_opt_int(payload.get("tfidf_k"), min_value=0, max_value=50)
+    # Optional TF-IDF thresholds
+    tfidf_min_score = _parse_opt_float(payload.get("tfidf_min_score"), min_value=0.0, max_value=1_000_000.0)
+    tfidf_max_candidates = _parse_opt_int(payload.get("tfidf_max_candidates"), min_value=0, max_value=50_000)
     manual = _sanitize_manual_list(payload.get("manual"))
     bundle = gather_context(
         task_id,
@@ -286,6 +330,8 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
         k=k,
         manual=manual,
         tfidf_k=tfidf_k,
+        tfidf_min_score=tfidf_min_score,
+        tfidf_max_candidates=tfidf_max_candidates,
     )
     # Apply budget only when options are provided (backward compatible)
     if (max_chars is not None) or (per_section_max is not None):
@@ -294,3 +340,20 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
         strategy = _parse_strategy(strategy) if strategy else "truncate"
         bundle = apply_budget(bundle, max_chars=max_chars, per_section_max=per_section_max, strategy=strategy)
     return bundle
+
+# -------------------------------
+# Context snapshots endpoints (Phase 3)
+# -------------------------------
+
+@app.get("/tasks/{task_id}/context/snapshots")
+def list_task_contexts_api(task_id: int):
+    snaps = default_repo.list_task_contexts(task_id)
+    return {"task_id": task_id, "snapshots": snaps}
+
+
+@app.get("/tasks/{task_id}/context/snapshots/{label}")
+def get_task_context_api(task_id: int, label: str):
+    snap = default_repo.get_task_context(task_id, label)
+    if not snap:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    return snap
