@@ -3,8 +3,9 @@ import os
 import logging
 
 # Priority order for budgeting. We keep deterministic ordering.
+# Phase 4: add 'index' with highest priority, before dependencies.
 # Include TF-IDF retrieved items between dep:refers and sibling.
-PRIORITY_ORDER = ("dep:requires", "dep:refers", "retrieved", "sibling", "manual")
+PRIORITY_ORDER = ("index", "dep:requires", "dep:refers", "retrieved", "sibling", "manual")
 
 
 _BUD_LOGGER = logging.getLogger("app.context.budget")

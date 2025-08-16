@@ -60,7 +60,11 @@ def test_gather_context_minimal(tmp_path, monkeypatch):
     assert bundle["task_id"] == b
     secs = bundle["sections"]
     assert len(secs) >= 1
-    assert secs[0]["task_id"] == a and secs[0]["kind"].startswith("dep:")
+    # Phase 4: Global INDEX.md is always included with highest local priority
+    assert secs[0]["kind"] == "index"
+    # First dependency should still be present and be the 'requires' A -> B
+    first_dep = next(s for s in secs if str(s.get("kind", "")).startswith("dep:"))
+    assert first_dep["task_id"] == a and first_dep["kind"].startswith("dep:")
     assert isinstance(bundle["combined"], str) and len(bundle["combined"]) > 0
 
 

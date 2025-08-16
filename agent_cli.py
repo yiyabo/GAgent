@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from app.database import init_db
 from app.main import propose_plan, approve_plan, run_tasks, get_plan_assembled
 from app.repository.tasks import SqliteTaskRepository
+from app.services.index_root import generate_index, write_index
 
 
 PLAN_MD = "plan.md"
@@ -143,6 +144,10 @@ def main():
     parser.add_argument("--list-snapshots", action="store_true", help="List context snapshots for a task id")
     parser.add_argument("--export-snapshot", action="store_true", help="Export a context snapshot by task id and label")
     parser.add_argument("--task-id", dest="task_id", type=int, help="Target task id for snapshot operations")
+    # INDEX.md root-task utilities
+    parser.add_argument("--index-preview", action="store_true", help="Preview generated INDEX.md (dry-run)")
+    parser.add_argument("--index-export", type=str, help="Export generated INDEX.md to the given path (dry-run write)")
+    parser.add_argument("--index-run-root", action="store_true", help="Run root task: generate & write INDEX.md, update history")
     args = parser.parse_args()
 
     print("=== GLM Agent ===")
@@ -211,6 +216,47 @@ def main():
             except Exception as e:
                 print(f"Export failed: {e}")
             return
+
+    # 0b) Fast path: INDEX.md utilities
+    if args.index_preview or args.index_export or args.index_run_root:
+        init_db()
+        repo = SqliteTaskRepository()
+        try:
+            res = generate_index(repo=repo)
+            content = res.get("content") or ""
+            meta = res.get("meta") or {}
+            resolved_path = res.get("path")
+        except Exception as e:
+            print(f"Index generation failed: {e}")
+            return
+
+        if args.index_preview:
+            print(f"=== INDEX preview (resolved path: {resolved_path}) ===\n")
+            try:
+                # Ensure stdout can handle utf-8 content
+                _ensure_stdio_utf8()
+            except Exception:
+                pass
+            print(content)
+
+        if args.index_export:
+            out_path = args.index_export
+            try:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print(f"Generated INDEX.md exported to {out_path}.")
+            except Exception as e:
+                print(f"Export failed: {e}")
+                return
+
+        if args.index_run_root:
+            try:
+                path_written = write_index(content, path=resolved_path, meta=meta)
+                print(f"INDEX.md regenerated at {path_written}. History updated.")
+            except Exception as e:
+                print(f"Write failed: {e}")
+                return
+        return
 
     # 0) Fast path: execute-only
     if args.execute_only:

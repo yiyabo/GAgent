@@ -65,6 +65,34 @@ def _section_for_task(task: Dict[str, Any], repo: TaskRepository, kind: str) -> 
 
 
 # -----------------
+# Global index helpers (Phase 4)
+# -----------------
+
+def _read_index_content() -> str:
+    """Read global INDEX.md (or path from GLOBAL_INDEX_PATH). On failure, return empty string.
+
+    This file is treated as a high-priority, always-included context anchor.
+    """
+    path = os.environ.get("GLOBAL_INDEX_PATH", "INDEX.md")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _index_section() -> Dict[str, Any]:
+    content = _read_index_content()
+    return {
+        "task_id": 0,  # synthetic id for deterministic ordering fallback
+        "name": "INDEX.md",
+        "short_name": "INDEX",
+        "kind": "index",
+        "content": content,
+    }
+
+
+# -----------------
 # TF-IDF utilities
 # -----------------
 
@@ -160,6 +188,9 @@ def _tfidf_scores(query_tokens: List[str], docs_tokens: List[List[str]]) -> List
 
 def _priority_key_local(s: Dict[str, Any]) -> Tuple[int, int]:
     kind = s.get("kind") or ""
+    # Ensure global index sorts before everything else locally
+    if kind == "index":
+        return (-1, int(s.get("task_id") or 0))
     try:
         group = PRIORITY_ORDER.index(kind)
     except ValueError:
@@ -197,6 +228,13 @@ def gather_context(
     """
     sections: List[Dict[str, Any]] = []
     seen_ids = set()
+
+    # 0) Always include global index (INDEX.md) as the top-priority anchor
+    try:
+        sections.append(_index_section())
+    except Exception:
+        # Never block context assembly due to index read issues
+        pass
 
     # 1) Dependencies (requires first, then refers) as provided by repo
     if include_deps:

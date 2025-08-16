@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+import os
 from fastapi import FastAPI, HTTPException, Body
 from .models import TaskCreate
 from .database import init_db
@@ -265,6 +266,44 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         default_repo.update_task_status(task_id, status)
         results.append({"id": task_id, "status": status})
     return results
+
+# -------------------------------
+# Global INDEX.md endpoints (Phase 4)
+# -------------------------------
+
+def _global_index_path() -> str:
+    p = os.environ.get("GLOBAL_INDEX_PATH")
+    return p if (isinstance(p, str) and p.strip()) else "INDEX.md"
+
+
+@app.get("/index")
+def get_global_index():
+    path = _global_index_path()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception:
+        content = ""
+    return {"path": path, "content": content}
+
+
+@app.put("/index")
+def put_global_index(payload: Dict[str, Any] = Body(...)):
+    content = payload.get("content") if isinstance(payload, dict) else None
+    if not isinstance(content, str):
+        raise HTTPException(status_code=400, detail="content (string) is required")
+    path = payload.get("path") if isinstance(payload, dict) else None
+    if not isinstance(path, str) or not path.strip():
+        path = _global_index_path()
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"write failed: {e}")
+    return {"ok": True, "path": path, "bytes": len(content)}
 
 # -------------------------------
 # Context graph endpoints (Phase 1)

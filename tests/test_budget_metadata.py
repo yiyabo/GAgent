@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
 
-from app.services.context_budget import apply_budget
+from app.services.context_budget import apply_budget, PRIORITY_ORDER
 
 
 def test_budget_metadata_per_section_reason_and_ordering():
@@ -14,8 +14,10 @@ def test_budget_metadata_per_section_reason_and_ordering():
     s0, s1 = out["sections"][0], out["sections"][1]
 
     # Sorted by priority: requires first, refers second
-    assert s0["kind"] == "dep:requires" and s0["budget"]["group"] == 0 and s0["budget"]["index"] == 0
-    assert s1["kind"] == "dep:refers"   and s1["budget"]["group"] == 1 and s1["budget"]["index"] == 1
+    expected_req_group = PRIORITY_ORDER.index("dep:requires")
+    expected_ref_group = PRIORITY_ORDER.index("dep:refers")
+    assert s0["kind"] == "dep:requires" and s0["budget"]["group"] == expected_req_group and s0["budget"]["index"] == 0
+    assert s1["kind"] == "dep:refers"   and s1["budget"]["group"] == expected_ref_group and s1["budget"]["index"] == 1
 
     # Per-section cap applied; no total budget
     assert s0["budget"]["allowed_by_per_section"] == 3

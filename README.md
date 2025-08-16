@@ -1,10 +1,12 @@
 # Generic Plan-Review-Execute Task Runner (FastAPI)
 
-一个面向生产的 Plan‑Review‑Execute 智能体服务。以“目标 → 计划 → 审阅 → 执行”为主线，提供可观测的上下文编排、预算管理与可扩展的工具能力。本文档以“最终理想形态”为准，当前实现将持续对齐。
+Read this in Chinese: [Future_Plan_cn.md](./Future_Plan_cn.md)
 
-- 后端：FastAPI（默认存储 SQLite: ./tasks.db，可插拔）
-- LLM：外部 API（需 GLM_API_KEY）与 Mock 模式
-- 模型与数据：pydantic v2
+A production-grade Plan‑Review‑Execute agent. It follows Goal → Plan → Review → Execute with observable context orchestration, strict budgeting, and extensible tooling. This README is the English primary version.
+
+- Backend: FastAPI (SQLite ./tasks.db by default; pluggable)
+- LLM: external API (requires GLM_API_KEY) or Mock mode
+- Models & data: pydantic v2
 
 ## Quickstart
 
@@ -30,22 +32,22 @@ export GLM_API_KEY=your_key_here
 conda run -n LLM python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-## 愿景与目标能力（最终理想形态）
+## Vision & Capabilities (Target State)
 
-- 规划与审阅
-  - 基于目标自动生成可执行计划（sections 可调），支持人类审阅与修改后入库。
-- 上下文编排（Context Orchestration）
-  - 多源融合：依赖图（links）、TF‑IDF 检索、手动选择，未来可扩展至代码/文档索引。
-  - 全局去重与稳定优先级：按 `PRIORITY_ORDER` 排序，保证确定性。
-  - 预算管理：总字数（max_chars）、分段上限（per_section_max）、裁剪策略（truncate/sentence）。
-  - 快照留存：`save_snapshot` 与 `label` 追踪每次执行的上下文快照与元数据。
-  - 可观测性：结构化调试日志（`CTX_DEBUG`/`CONTEXT_DEBUG`/`BUDGET_DEBUG`）与可审计输出。
-- 执行器
-  - 幂等执行、顺序/调度控制、可插拔工具（Tooling）以扩展到检索、拉取代码、执行脚本等。
-- API 与 CLI 一致性
-  - `/run` 接收 `schedule`（`bfs`|`dag`）与 `use_context`、`context_options`；CLI 提供等效参数开关（`--schedule`）便于批处理与自动化。
-  - 存储与可移植性
-  - 默认 SQLite，可平滑替换为外部数据库；Mock LLM 便于在开发/CI 环境运行。
+- Planning & Review
+  - Auto-generate executable plans from a goal (configurable sections), allow human review/edit, then persist.
+- Context Orchestration
+  - Multi-source: dependency graph (links), TF‑IDF retrieval, manual picks; extensible to code/doc indexes.
+  - Global dedup with stable priority via `PRIORITY_ORDER` for determinism.
+  - Budgeting: total chars (`max_chars`), per-section cap (`per_section_max`), trimming strategy (`truncate`/`sentence`).
+  - Snapshots: `save_snapshot` and `label` to persist context snapshots with metadata.
+  - Observability: structured debug logs (`CTX_DEBUG`/`CONTEXT_DEBUG`/`BUDGET_DEBUG`) and auditable outputs.
+- Executor
+  - Idempotent execution, scheduling control, pluggable tools to extend into retrieval, code ops, scripts, etc.
+- API & CLI parity
+  - `/run` supports `schedule` (`bfs`|`dag`), `use_context`, and `context_options`; CLI mirrors these for automation.
+- Storage & portability
+  - SQLite by default; can swap to external DB. Mock LLM enables development/CI without external calls.
 
 ## Core Endpoints
 
@@ -102,55 +104,84 @@ conda run -n LLM python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --r
   - Assemble completed outputs for a plan ordered by priority
 - Additional:
   - POST /tasks – create a single pending task (for advanced/manual usage)
-  - GET  /tasks – list tasks
   - GET  /tasks/{task_id}/output – fetch generated output for a task
 
 - Context APIs
   - POST /context/links – create a link { from_id, to_id, kind }
   - DELETE /context/links – delete a link
   - GET /context/links/{task_id} – returns { task_id, inbound, outbound }
+
   - POST /tasks/{task_id}/context/preview – returns assembled context bundle { sections, combined }
   - GET /tasks/{task_id}/context/snapshots – list context snapshots for a task
   - GET /tasks/{task_id}/context/snapshots/{label} – get a specific snapshot by label
 
-## 调度策略（BFS vs DAG）
+## Global INDEX.md (Root Generator, Phase 4)
 
-- **概览**
-  - **BFS（默认）**：按 `priority ASC, id ASC` 的稳定顺序执行所有 pending 任务；当传入 `title` 时，仅对该计划前缀（`[title] `）下的 pending 任务执行。
-  - **DAG（已支持）**：从 `task_links(kind='requires')` 构建有向无环图；按拓扑顺序执行，保持优先级与 ID 的稳定性作为并列项的确定性 tie-breaker。
-- **依赖语义**
-  - `create_link(from_id, to_id, kind='requires')` 表示：`to_id` 任务“依赖”`from_id`（即边 from → to）。
-  - 依赖收集接口 `list_dependencies(task_id)` 会返回指向该任务的上游（`from_id`）节点，先 `requires` 再 `refers`，且各自内部按 `(priority, id)` 排序。
-- **环检测**
-  - DAG 调度会检测环（例如 A→B→C→A），并报告包含环的任务集合与边信息，以便人工处理或提供覆盖钩子。
-- **稳定次序**
-  - 对于同一层（无依赖或已满足依赖）的节点，使用 `(priority ASC, id ASC)` 作为确定性顺序，保证可复现。
-- **作用域**
-  - 当 `/run` 传入 `title` 时，仅在该计划的任务子集内构建 DAG 并调度；否则对全局 pending 任务执行。
-- **调用方式（API）**
-  - 顶层 `schedule` 字段：`{"schedule":"bfs"|"dag"}`；未提供时默认 `bfs`。若检测到环返回 400。
-- **调用方式（CLI）**
-  - `--schedule bfs|dag`，例如：
+- Overview: Generates a project-wide `INDEX.md` that summarizes plans, context budget, dependencies, detailed tasks, and a changelog.
+- Sections (in order): Table of Contents, Plans Overview, Context Budget, Dependency Summary, Plans, Changelog.
+- Plans Overview columns: Plan, Owner, Stage, Done/Total, Last Updated.
+- Dependency Summary: cycle detection and bottleneck nodes (heuristic: indegree × outdegree).
+- Context Budget: displays `PRIORITY_ORDER`; note that 'index' is always budgeted first.
+- Changelog: last N generations read from `<path>.history.jsonl` (newest first).
 
+CLI
+
+- Preview (no write): `python agent_cli.py --index-preview`
+- Export to path (no history): `python agent_cli.py --index-export /path/to/INDEX.md`
+- Generate and persist (append history): `python agent_cli.py --index-run-root`
+- Respects `GLOBAL_INDEX_PATH` for the default output path. None of these commands call the external LLM; safe offline.
+
+API
+
+- GET `/index` → `{ "path": string, "content": string }` (empty string if the file does not exist)
+- PUT `/index` with body `{ "content": string, "path"?: string }` → writes file and returns `{ "ok": true, "path": string, "bytes": number }`
+
+Environment
+
+- `GLOBAL_INDEX_PATH` sets the default INDEX.md location, e.g.:
+
+  ```bash
+  export GLOBAL_INDEX_PATH=/tmp/INDEX.md
+  ```
+
+## Scheduling (BFS vs DAG)
+
+- Overview
+  - BFS (default): execute all pending tasks in a stable order `(priority ASC, id ASC)`. With `title` set, only tasks under that plan prefix `[title]` + space are executed.
+  - DAG: build a DAG from `task_links(kind='requires')`; execute in topological order with stable tie‑breaking by priority and ID.
+- Dependency semantics
+  - `create_link(from_id, to_id, kind='requires')` means: `to_id` depends on `from_id` (edge from → to).
+  - `list_dependencies(task_id)` returns upstream (`from_id`) nodes; `requires` before `refers`, each internally ordered by `(priority, id)`.
+- Cycle detection
+  - DAG scheduling detects cycles (e.g., A→B→C→A) and reports a 400 with `detail.error = "cycle_detected"` plus `nodes`/`edges`/`names` diagnostics.
+- Stable ordering
+  - For nodes in the same layer, use `(priority ASC, id ASC)` as a deterministic order for reproducibility.
+- Scope
+  - With `/run` `title`, build DAG only for that plan; otherwise run globally pending tasks.
+- How to call (API)
+  - Top-level `schedule`: `{ "schedule": "bfs"|"dag" }`; default `bfs`. Cycles return 400.
+- How to call (CLI)
+  - `--schedule bfs|dag`, e.g.:
+  
     ```bash
     conda run -n LLM python agent_cli.py --execute-only --title Demo --schedule dag --use-context
     ```
+  
 
-
-## CLI 用法示例
+## CLI Examples
 
 ```bash
-# 仅执行某个计划并启用上下文与预算
+# Execute a single plan with context + budgeting
 conda run -n LLM python agent_cli.py --execute-only --title Demo \
   --use-context --tfidf-k 2 --tfidf-min-score 0.15 --tfidf-max-candidates 200 \
   --max-chars 1200 --per-section-max 300 --strategy sentence \
   --save-snapshot --label demo-ctx
 
-# 普通执行并启用上下文（不指定 title 将按调度执行 pending）
+# Run with context (no title => scheduler runs all pending)
 conda run -n LLM python agent_cli.py --use-context --tfidf-k 2 \
   --tfidf-min-score 0.2 --tfidf-max-candidates 100 --max-chars 1200
 
-# DAG 调度（已支持）
+# DAG scheduling
 conda run -n LLM python agent_cli.py --execute-only --title Demo \
   --schedule dag --use-context --tfidf-k 2 --tfidf-min-score 0.1
 ```
@@ -181,21 +212,20 @@ curl -s http://127.0.0.1:8000/plans/Gene%20Editing%20Whitepaper/assembled
 - Tasks are grouped by name prefix: `[<title>]`. No schema change needed.
 - Legacy, report-specific endpoints have been removed to keep the app generic.
 
-## 配置与调试（Environment）
+## Configuration & Debugging (Environment)
 
-- LLM 相关
-  - `GLM_API_KEY`, `GLM_API_URL`（默认 `https://open.bigmodel.cn/api/paas/v4/chat/completions`）, `GLM_MODEL`（如 `glm-4-flash`）
-  - `LLM_MOCK=1`：开启后可在无外部 API 状态下开发/测试
-  - `LLM_RETRIES`（默认 2）, `LLM_BACKOFF_BASE`（秒，默认 0.5）：LLM 客户端重试与指数退避
-- 上下文检索/调试
-  - `TFIDF_MAX_CANDIDATES`（默认 500）、`TFIDF_MIN_SCORE`（默认 0.0）
-  - `CTX_DEBUG`/`CONTEXT_DEBUG`/`BUDGET_DEBUG`：开启结构化调试日志
+- LLM
+  - `GLM_API_KEY`, `GLM_API_URL` (default `https://open.bigmodel.cn/api/paas/v4/chat/completions`), `GLM_MODEL` (e.g., `glm-4-flash`)
+  - `LLM_MOCK=1`: develop/test without external API
+  - Retries/backoff: `LLM_RETRIES` (default 2), `LLM_BACKOFF_BASE` (seconds, default 0.5)
+- Context retrieval/debug
+  - `TFIDF_MAX_CANDIDATES` (default 500), `TFIDF_MIN_SCORE` (default 0.0)
+  - `CTX_DEBUG` / `CONTEXT_DEBUG` / `BUDGET_DEBUG` enable structured debug logs
 
 ## Documentation
-- 中文概览（理想形态）：见本 README
-- 未来规划（中文）: [Future_Plan_cn.md](./Future_Plan_cn.md)
+- Chinese overview: [Future_Plan_cn.md](./Future_Plan_cn.md)
 - Future Plan (English): [Future_Plan.md](./Future_Plan.md)
-- Phase 3 (中文): [Phase3_cn.md](./Phase3_cn.md)
+- Phase 3 (Chinese): [Phase3_cn.md](./Phase3_cn.md)
 
 ## Architecture
 - **Interfaces** (`app/interfaces/__init__.py`)
@@ -214,7 +244,47 @@ curl -s http://127.0.0.1:8000/plans/Gene%20Editing%20Whitepaper/assembled
 - **API** (`app/main.py`)
   - FastAPI app uses Lifespan to init DB
 
+## How It Works (End-to-End)
+
+- **1) Propose a plan**
+  - `app/services/planning.py` → `propose_plan_service(payload)` builds an LLM prompt, calls `app/llm.py` `LLMClient.chat()`, parses with `app/utils.py` `parse_json_obj()`, and returns `{ title, tasks }` without persisting.
+- **2) Approve & persist**
+  - `approve_plan_service(plan)` writes tasks to DB with name prefix `app/utils.py` `plan_prefix(title)`; prompts saved via `TaskRepository.upsert_task_input()`.
+  - Tasks are grouped by plan prefix `[Title]` + space; listing uses `TaskRepository.list_plan_tasks()`.
+- **3) Schedule**
+  - BFS: `app/scheduler.py` `bfs_schedule()` orders pending tasks by `(priority ASC, id ASC)`.
+  - DAG: `requires_dag_order(title?)` builds requires-DAG from `TaskRepository.list_links(kind='requires')`; cycles return diagnostics `{error:"cycle_detected", nodes, edges, names}` where `names` are short via `app/utils.py` `split_prefix()`.
+- **4) Execute**
+  - `app/executor.py` `execute_task(task, use_context, context_options)` fetches prompt (from `task_inputs` or default), optionally gathers context and applies budget, then calls LLM and persists output.
+  - Context: `app/services/context.py` `gather_context()` always includes global `INDEX.md` first (path from `GLOBAL_INDEX_PATH`), then `requires`/`refers` deps, plan siblings, manual items, and optional TF‑IDF retrieval.
+  - Budget: `app/services/context_budget.py` `apply_budget(bundle, max_chars, per_section_max, strategy)` respects `PRIORITY_ORDER = ("index","dep:requires","dep:refers","retrieved","sibling","manual")` for deterministic trimming.
+  - Snapshots: if requested, `TaskRepository.upsert_task_context()` stores `combined`, `sections`, and `meta` under `task_contexts` with labels.
+- **5) Assemble outputs**
+  - `GET /plans/{title}/assembled` uses `TaskRepository.list_plan_outputs()` to order sections by `(priority, id)` and join contents.
+- **6) Root INDEX.md**
+  - `app/services/index_root.py` generates a global `INDEX.md` (plans overview, context budget, dependency summary, plans, changelog). CLI: preview/export/run-root.
+
+## Project Logic & Data Flow
+
+- **Data model**
+  - Tables: `tasks`, `task_inputs`, `task_outputs`, `task_links`, `task_contexts` (created on demand by repository helpers).
+  - Grouping: task names prefixed with `[Title]` + space using `app/utils.py` `plan_prefix()`; parsing with `split_prefix()`.
+- **Flow**
+  - Propose → `propose_plan_service()` → LLM → JSON parsed → review/edit → Approve → `approve_plan_service()` → rows in `tasks`/`task_inputs`.
+  - Link deps via `/context/links` → records in `task_links`.
+  - Schedule (BFS/DAG) → for each task → `execute_task()` → `gather_context()` → `apply_budget()` → `LLMClient.chat()` → `task_outputs`.
+  - Optional snapshots: `upsert_task_context()` → `task_contexts` (retrievable via `/tasks/{id}/context/...`).
+  - Global index path: `GLOBAL_INDEX_PATH` controls `INDEX.md`; context assembly always prioritizes `'index'`.
+- **Determinism & errors**
+  - Stable ordering everywhere: scheduler `(priority,id)`, plan outputs `(priority,id)`, budgeting `PRIORITY_ORDER`.
+  - DAG cycles: 400 with `detail.error = "cycle_detected"` plus `nodes`/`edges`/`names`.
+
+- **Extensibility**
+
+  - Replace `TaskRepository` and `LLMProvider` via DI. Add new context sources or budgeting strategies without breaking existing flows.
+
 ## Mock Mode (no external LLM)
+
 Enable to develop/test without a real API key. Deterministic outputs; `ping()` always true; `config()` reflects mock.
 
 ```bash
@@ -223,6 +293,7 @@ export LLM_MOCK=1
 ```
 
 ## Testing
+
 Run tests (uses temp SQLite DB and mock LLM; no external calls):
 
 ```bash
@@ -238,5 +309,5 @@ conda run -n LLM python -m pytest --cov=app --cov-report=term-missing
 ```
 
 ## Lifespan
-Startup has migrated from `@app.on_event("startup")` to FastAPI Lifespan for forward compatibility.
 
+Startup has migrated from `@app.on_event("startup")` to FastAPI Lifespan for forward compatibility.
