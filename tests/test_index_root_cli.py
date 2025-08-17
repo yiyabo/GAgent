@@ -49,8 +49,8 @@ def test_generate_index_overview_stage_brief_and_dependencies(tmp_path, monkeypa
     assert "| PlanA | — | Executing | 1/3 |" in content
     assert "| PlanB | — | Complete | 2/2 |" in content
 
-    # Budget sidebar includes index-first priority ordering
-    assert "index \u2192 dep:requires \u2192 dep:refers \u2192 retrieved \u2192 sibling \u2192 manual" in content
+    # Budget sidebar includes index-first priority ordering with hierarchy types
+    assert "index → dep:requires → dep:refers → ancestor → retrieved → h_sibling → sibling → manual" in content
 
     # Dependency summary for PlanA
     assert "## Dependency Summary" in content

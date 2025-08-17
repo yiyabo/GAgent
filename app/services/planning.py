@@ -18,9 +18,15 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
     if not isinstance(goal, str) or not goal.strip():
         raise ValueError("Missing 'goal' in request body")
     title = (payload or {}).get("title") or goal.strip()[:60]
-    sections = (payload or {}).get("sections") or 6
+    sections = (payload or {}).get("sections")
     style = (payload or {}).get("style") or ""
     notes = (payload or {}).get("notes") or ""
+
+    # AI自动决定sections数量
+    if sections is None:
+        sections_instruction = "Determine the optimal number of tasks (typically 3-8) based on the complexity and scope of the goal."
+    else:
+        sections_instruction = f"Preferred number of tasks: {sections} (4-8 typical)."
 
     prompt = (
         "You are an expert project planner. Break down the user's goal into a small set of actionable tasks.\n"
@@ -29,7 +35,7 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
         "  \"tasks\": [ { \"name\": string, \"prompt\": string } ]\n"
         "}\n"
         f"Goal: {goal}\n"
-        f"Preferred number of tasks: {sections} (4-8 typical).\n"
+        f"{sections_instruction}\n"
         f"Style (optional): {style}\n"
         f"Notes (optional): {notes}\n"
         "Rules: Do not include markdown code fences. Keep concise prompts for each task."
@@ -80,7 +86,9 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
 def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = None) -> Dict[str, Any]:
     """
     Persist tasks from plan into DB with name prefixing by [title].
-    Returns { plan: { title }, created: [ {id, name, priority} ] }.
+    Optional hierarchical mode: if plan contains {"hierarchical": true}, create a root task
+    and attach all tasks as children (parent_id=root_id).
+    Returns { plan: { title }, created: [ {id, name, priority} ], (root_id?) }.
     """
     if not isinstance(plan, dict):
         raise ValueError("Body must be a JSON object")
@@ -92,6 +100,20 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
     prefix = plan_prefix(title)
     created: List[Dict[str, Any]] = []
     repo = repo or default_repo
+
+    # Optional hierarchical mode (default False for backward compatibility)
+    hierarchical = bool(plan.get("hierarchical"))
+    root_id: Optional[int] = None
+    if hierarchical:
+        root_label = str(plan.get("root_label") or "Plan Root").strip()
+        try:
+            root_priority = int(plan.get("root_priority")) if plan.get("root_priority") is not None else None
+        except Exception:
+            root_priority = None
+        root_name = f"{prefix}{root_label}"  # e.g., "[Title] Plan Root"
+        # Do not pass parent_id for root creation to keep compatibility with repos without parent_id arg
+        root_id = repo.create_task(root_name, status="pending", priority=root_priority)
+        repo.upsert_task_input(root_id, f"Root task node for plan '{title}'.")
 
     for idx, t in enumerate(tasks):
         name = (t.get("name") or "").strip() if isinstance(t, dict) else str(t)
@@ -107,8 +129,15 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
         if priority is None:
             priority = (len(created) + 1) * 10
 
-        task_id = repo.create_task(prefix + name, status="pending", priority=priority)
+        # Only pass parent_id when hierarchical mode is enabled to preserve backward compatibility
+        if hierarchical and root_id is not None:
+            task_id = repo.create_task(prefix + name, status="pending", priority=priority, parent_id=root_id)
+        else:
+            task_id = repo.create_task(prefix + name, status="pending", priority=priority)
         repo.upsert_task_input(task_id, prompt_t)
         created.append({"id": task_id, "name": name, "priority": priority})
 
-    return {"plan": {"title": title}, "created": created}
+    out = {"plan": {"title": title}, "created": created}
+    if hierarchical and root_id is not None:
+        out["root_id"] = root_id
+    return out

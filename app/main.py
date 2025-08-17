@@ -9,10 +9,13 @@ from .llm import get_default_client
 from .services.planning import propose_plan_service, approve_plan_service
 from .repository.tasks import default_repo
 from .utils import plan_prefix, split_prefix
-from contextlib import asynccontextmanager
 from .services.context import gather_context
 from .services.context_budget import apply_budget
-
+from .services.index_root import generate_index
+from app.services.recursive_decomposition import (
+    decompose_task, recursive_decompose_plan, evaluate_task_complexity, should_decompose_task, determine_task_type
+)
+from contextlib import asynccontextmanager
 
 def _parse_bool(val, default: bool = False) -> bool:
     if isinstance(val, bool):
@@ -112,6 +115,10 @@ def _sanitize_context_options(co: Dict[str, Any]) -> Dict[str, Any]:
         # TF-IDF thresholds (optional overrides of env defaults)
         "tfidf_min_score": _parse_opt_float(co.get("tfidf_min_score"), min_value=0.0, max_value=1_000_000.0),
         "tfidf_max_candidates": _parse_opt_int(co.get("tfidf_max_candidates"), min_value=0, max_value=50_000),
+        # hierarchy options (Phase 5)
+        "include_ancestors": _parse_bool(co.get("include_ancestors"), default=False),
+        "include_siblings": _parse_bool(co.get("include_siblings"), default=False),
+        "hierarchy_k": _parse_int(co.get("hierarchy_k", 3), default=3, min_value=0, max_value=20),
         # budgeting options
         "max_chars": _parse_opt_int(co.get("max_chars"), min_value=0, max_value=100_000),
         # non-positive per_section_max considered invalid → None
@@ -142,7 +149,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.post("/tasks")
 def create_task(task: TaskCreate):
-    task_id = default_repo.create_task(task.name, status='pending', priority=None)
+    task_id = default_repo.create_task(task.name, status='pending', priority=None, task_type=task.task_type)
     return {"id": task_id}
 
 @app.get("/tasks")
@@ -180,7 +187,16 @@ def get_plan_tasks(title: str):
     for r in rows:
         rid, nm, st, pr = r["id"], r["name"], r.get("status"), r.get("priority")
         _, short = split_prefix(nm)
-        out.append({"id": rid, "name": nm, "short_name": short, "status": st, "priority": pr})
+        out.append({
+            "id": rid, 
+            "name": nm, 
+            "short_name": short, 
+            "status": st, 
+            "priority": pr,
+            "task_type": r.get("task_type", "atomic"),
+            "depth": r.get("depth", 0),
+            "parent_id": r.get("parent_id")
+        })
     return out
 
 
@@ -257,8 +273,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             raise HTTPException(status_code=400, detail={"error": "cycle_detected", **cycle})
         tasks_iter = ordered
     else:
-        rows = default_repo.list_tasks_by_prefix(prefix, pending_only=True, ordered=True)
-        tasks_iter = rows
+        tasks_iter = bfs_schedule(title)
 
     for task in tasks_iter:
         status = execute_task(task, use_context=use_context, context_options=context_options)
@@ -266,6 +281,69 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         default_repo.update_task_status(task_id, status)
         results.append({"id": task_id, "status": status})
     return results
+
+# -------------------------------
+# Recursive decomposition endpoints (Phase 6)
+# -------------------------------
+
+@app.post("/tasks/{task_id}/decompose")
+def decompose_task_endpoint(task_id: int, payload: Dict[str, Any] = Body(default={})):
+    """Decompose a task into subtasks using AI-driven recursive decomposition.
+    
+    Body parameters:
+    - max_subtasks: Maximum number of subtasks to create (default: 8)
+    - force: Force decomposition even if task already has subtasks (default: false)
+    """
+    max_subtasks = _parse_int(payload.get("max_subtasks", 8), default=8, min_value=2, max_value=20)
+    force = _parse_bool(payload.get("force"), default=False)
+    
+    result = decompose_task(task_id, repo=default_repo, max_subtasks=max_subtasks, force=force)
+    
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Decomposition failed"))
+    
+    return result
+
+
+@app.post("/plans/{title}/decompose")
+def decompose_plan_endpoint(title: str, payload: Dict[str, Any] = Body(default={})):
+    """Recursively decompose all tasks in a plan.
+    
+    Body parameters:
+    - max_depth: Maximum decomposition depth (default: 3)
+    """
+    max_depth = _parse_int(payload.get("max_depth", 3), default=3, min_value=1, max_value=5)
+    
+    result = recursive_decompose_plan(title, repo=default_repo, max_depth=max_depth)
+    
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Plan decomposition failed"))
+    
+    return result
+
+
+@app.get("/tasks/{task_id}/complexity")
+def evaluate_task_complexity_endpoint(task_id: int):
+    """Evaluate the complexity of a task for decomposition planning."""
+    task = default_repo.get_task_info(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    task_name = task.get("name", "")
+    task_prompt = default_repo.get_task_input_prompt(task_id) or ""
+    
+    complexity = evaluate_task_complexity(task_name, task_prompt)
+    task_type = determine_task_type(task)
+    should_decompose = should_decompose_task(task, default_repo)
+    
+    return {
+        "task_id": task_id,
+        "complexity": complexity,
+        "should_decompose": should_decompose,
+        "task_type": task_type.value,
+        "depth": task.get("depth", 0)
+    }
+
 
 # -------------------------------
 # Global INDEX.md endpoints (Phase 4)
@@ -360,6 +438,10 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
     # Optional TF-IDF thresholds
     tfidf_min_score = _parse_opt_float(payload.get("tfidf_min_score"), min_value=0.0, max_value=1_000_000.0)
     tfidf_max_candidates = _parse_opt_int(payload.get("tfidf_max_candidates"), min_value=0, max_value=50_000)
+    # Hierarchy options (Phase 5)
+    include_ancestors = _parse_bool(payload.get("include_ancestors"), default=False)
+    include_siblings = _parse_bool(payload.get("include_siblings"), default=False)
+    hierarchy_k = _parse_int(payload.get("hierarchy_k", 3), default=3, min_value=0, max_value=20)
     manual = _sanitize_manual_list(payload.get("manual"))
     bundle = gather_context(
         task_id,
@@ -371,6 +453,9 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
         tfidf_k=tfidf_k,
         tfidf_min_score=tfidf_min_score,
         tfidf_max_candidates=tfidf_max_candidates,
+        include_ancestors=include_ancestors,
+        include_siblings=include_siblings,
+        hierarchy_k=hierarchy_k,
     )
     # Apply budget only when options are provided (backward compatible)
     if (max_chars is not None) or (per_section_max is not None):
@@ -396,3 +481,40 @@ def get_task_context_api(task_id: int, label: str):
     if not snap:
         raise HTTPException(status_code=404, detail="snapshot not found")
     return snap
+
+# -------------------------------
+# Hierarchy endpoints (Phase 5)
+# -------------------------------
+
+@app.get("/tasks/{task_id}/children")
+def get_task_children(task_id: int):
+    children = default_repo.get_children(task_id)
+    return {"task_id": task_id, "children": children}
+
+
+@app.get("/tasks/{task_id}/subtree")
+def get_task_subtree(task_id: int):
+    subtree = default_repo.get_subtree(task_id)
+    if not subtree:
+        raise HTTPException(status_code=404, detail="task not found")
+    return {"task_id": task_id, "subtree": subtree}
+
+
+@app.post("/tasks/{task_id}/move")
+def move_task(task_id: int, payload: Dict[str, Any] = Body(...)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid payload")
+    new_parent_id_val = payload.get("new_parent_id")
+    new_parent_id: Optional[int]
+    if new_parent_id_val is None:
+        new_parent_id = None
+    else:
+        try:
+            new_parent_id = int(new_parent_id_val)
+        except Exception:
+            raise HTTPException(status_code=400, detail="new_parent_id must be integer or null")
+    try:
+        default_repo.update_task_parent(task_id, new_parent_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "task_id": task_id, "new_parent_id": new_parent_id}

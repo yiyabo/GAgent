@@ -196,13 +196,19 @@ def _priority_key_local(s: Dict[str, Any]) -> Tuple[int, int]:
     except ValueError:
         if isinstance(kind, str) and kind.startswith("dep:"):
             if "requires" in kind:
-                group = 0
+                group = 1  # dep:requires
             elif "refers" in kind:
-                group = 1
+                group = 2  # dep:refers
             else:
-                group = 1
+                group = 2
+        elif kind == "ancestor":
+            group = 3  # ancestor
+        elif kind == "h_sibling":
+            group = 5  # h_sibling
+        elif kind == "sibling":
+            group = 6  # sibling
         else:
-            group = 2 if kind == "sibling" else 3
+            group = 7  # manual and others
     return (group, int(s.get("task_id") or 0))
 
 
@@ -216,6 +222,9 @@ def gather_context(
     tfidf_k: Optional[int] = None,
     tfidf_min_score: Optional[float] = None,
     tfidf_max_candidates: Optional[int] = None,
+    include_ancestors: bool = False,
+    include_siblings: bool = False,
+    hierarchy_k: int = 3,
 ) -> Dict[str, Any]:
     """Assemble a context bundle for a task.
 
@@ -223,6 +232,9 @@ def gather_context(
     - include_plan: include sibling tasks in the same plan prefix
     - k: soft cap for number of items taken from each category
     - manual: optional explicit task IDs to include
+    - include_ancestors: include parent/ancestor tasks in hierarchy
+    - include_siblings: include sibling tasks in hierarchy (same parent)
+    - hierarchy_k: soft cap for hierarchy-based items (ancestors + siblings)
 
     Returns a structured dict with sections and a combined string.
     """
@@ -271,7 +283,50 @@ def gather_context(
                         if len([x for x in sections if x.get("kind") == "sibling"]) >= k:
                             break
 
-    # 3) Manual selections
+    # 3) Hierarchy-based context (ancestors and siblings)
+    if include_ancestors or include_siblings:
+        try:
+            # Get current task info to access hierarchy methods
+            current_task = repo.get_task_info(task_id) if hasattr(repo, 'get_task_info') else None
+            
+            # Add ancestors (parent chain)
+            if include_ancestors and current_task:
+                try:
+                    ancestors = repo.get_ancestors(task_id) if hasattr(repo, 'get_ancestors') else []
+                    for anc in ancestors[:hierarchy_k]:
+                        aid = anc.get("id")
+                        if aid and aid not in seen_ids:
+                            sec = _section_for_task(anc, repo, kind="ancestor")
+                            if sec:
+                                sections.append(sec)
+                                seen_ids.add(aid)
+                except Exception:
+                    pass
+            
+            # Add hierarchy siblings (same parent, different from plan siblings)
+            if include_siblings and current_task:
+                try:
+                    parent_id = current_task.get("parent_id")
+                    if parent_id:
+                        h_siblings = repo.get_children(parent_id) if hasattr(repo, 'get_children') else []
+                        added_h_siblings = 0
+                        for sib in h_siblings:
+                            sid = sib.get("id")
+                            if sid and sid != task_id and sid not in seen_ids:
+                                sec = _section_for_task(sib, repo, kind="h_sibling")
+                                if sec:
+                                    sections.append(sec)
+                                    seen_ids.add(sid)
+                                    added_h_siblings += 1
+                                    if added_h_siblings >= hierarchy_k:
+                                        break
+                except Exception:
+                    pass
+        except Exception:
+            # Never block context assembly due to hierarchy issues
+            pass
+
+    # 4) Manual selections
     if manual:
         for mid in manual:
             if mid in seen_ids:
@@ -283,7 +338,7 @@ def gather_context(
                     sections.append(sec)
                     seen_ids.add(sec["task_id"])
 
-    # 4) Optional TF-IDF retrieval from task_outputs across all tasks
+    # 5) Optional TF-IDF retrieval from task_outputs across all tasks
     if isinstance(tfidf_k, int) and tfidf_k > 0:
         # Query text: prefer current task input prompt, else task name
         me = _get_task_by_id(task_id, repo)
@@ -369,7 +424,7 @@ def gather_context(
                         "min_score_threshold": eff_min_score,
                     })
 
-    # 5) Normalize ordering by priority groups even if no budget is applied
+    # 6) Normalize ordering by priority groups even if no budget is applied
     sections = sorted(sections, key=_priority_key_local)
 
     if _debug_on():

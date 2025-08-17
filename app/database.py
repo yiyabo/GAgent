@@ -17,6 +17,25 @@ def init_db():
         except Exception:
             # Ignore if the column already exists or ALTER is not applicable
             pass
+        # Hierarchy columns (Option B): parent_id, path, depth
+        try:
+            conn.execute('ALTER TABLE tasks ADD COLUMN parent_id INTEGER')
+        except Exception:
+            # Column may already exist
+            pass
+        try:
+            conn.execute('ALTER TABLE tasks ADD COLUMN path TEXT')
+        except Exception:
+            pass
+        try:
+            conn.execute('ALTER TABLE tasks ADD COLUMN depth INTEGER DEFAULT 0')
+        except Exception:
+            pass
+        # Phase 6: Task type for recursive decomposition (root/composite/atomic)
+        try:
+            conn.execute('ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT "atomic"')
+        except Exception:
+            pass
         # Stores the prompt/input for each task
         conn.execute('''CREATE TABLE IF NOT EXISTS task_inputs (
             task_id INTEGER UNIQUE,
@@ -46,9 +65,23 @@ def init_db():
             PRIMARY KEY (task_id, label)
         )''')
 
+        # Backfill hierarchy values for existing rows
+        try:
+            conn.execute("UPDATE tasks SET path = '/' || id WHERE path IS NULL")
+        except Exception:
+            pass
+        try:
+            conn.execute("UPDATE tasks SET depth = 0 WHERE depth IS NULL")
+        except Exception:
+            pass
+
         # Useful indexes
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_name ON tasks(name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_priority_id ON tasks(priority, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent_id ON tasks(parent_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_depth ON tasks(depth)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_inputs_task_id ON task_inputs(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_outputs_task_id ON task_outputs(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_links_to_id ON task_links(to_id)")

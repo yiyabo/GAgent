@@ -4,8 +4,9 @@ import logging
 
 # Priority order for budgeting. We keep deterministic ordering.
 # Phase 4: add 'index' with highest priority, before dependencies.
+# Phase 5: add hierarchy-based context types (ancestor, h_sibling).
 # Include TF-IDF retrieved items between dep:refers and sibling.
-PRIORITY_ORDER = ("index", "dep:requires", "dep:refers", "retrieved", "sibling", "manual")
+PRIORITY_ORDER = ("index", "dep:requires", "dep:refers", "ancestor", "retrieved", "h_sibling", "sibling", "manual")
 
 
 _BUD_LOGGER = logging.getLogger("app.context.budget")
@@ -75,16 +76,22 @@ def _priority_key(s: Dict[str, Any]) -> Tuple[int, int]:
     try:
         group = PRIORITY_ORDER.index(kind)
     except ValueError:
-        # Handle dep:* variants defensively
+        # Handle dep:* variants and hierarchy types defensively
         if isinstance(kind, str) and kind.startswith("dep:"):
             if "requires" in kind:
-                group = 0
+                group = 1  # dep:requires
             elif "refers" in kind:
-                group = 1
+                group = 2  # dep:refers
             else:
-                group = 1
+                group = 2
+        elif kind == "ancestor":
+            group = 3  # ancestor
+        elif kind == "h_sibling":
+            group = 5  # h_sibling
+        elif kind == "sibling":
+            group = 6  # sibling
         else:
-            group = 2 if kind == "sibling" else 3
+            group = 7  # manual and others
     return (group, int(s.get("task_id") or 0))
 
 
@@ -158,13 +165,19 @@ def apply_budget(
         except ValueError:
             if isinstance(kind, str) and kind.startswith("dep:"):
                 if "requires" in kind:
-                    group = 0
+                    group = 1  # dep:requires
                 elif "refers" in kind:
-                    group = 1
+                    group = 2  # dep:refers
                 else:
-                    group = 1
+                    group = 2
+            elif kind == "ancestor":
+                group = 3  # ancestor
+            elif kind == "h_sibling":
+                group = 5  # h_sibling
+            elif kind == "sibling":
+                group = 6  # sibling
             else:
-                group = 2 if kind == "sibling" else 3
+                group = 7  # manual and others
 
         # Classify truncation reason
         per_applied = (per_cap is not None) and (allowed_by_per < original_len)

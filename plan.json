@@ -1,0 +1,50 @@
+{
+  "title": "蛋白质结合位点研究",
+  "tasks": [
+    {
+      "name": "Literature Review",
+      "prompt": "Conduct a comprehensive literature review on protein binding sites, including their structures, functions, and relevance in biological processes.",
+      "priority": 10
+    },
+    {
+      "name": "Data Collection",
+      "prompt": "Collect data on specific protein binding sites, focusing on their characteristics, interactions, and any relevant case studies.",
+      "priority": 20
+    },
+    {
+      "name": "Analysis and Interpretation",
+      "prompt": "Analyze the collected data to identify patterns, relationships, and key findings related to protein binding sites.",
+      "priority": 30
+    },
+    {
+      "name": "Report Structure",
+      "prompt": "Outline the structure of the report, including an introduction, methodology, results, discussion, and conclusion.",
+      "priority": 40
+    },
+    {
+      "name": "Introduction",
+      "prompt": "Write the introduction section of the report, providing background information on protein binding sites and the purpose of the study.",
+      "priority": 50
+    },
+    {
+      "name": "Methodology",
+      "prompt": "Describe the methodology used in the study, including data sources, experimental design, and analysis techniques.",
+      "priority": 60
+    },
+    {
+      "name": "Results",
+      "prompt": "Present the results of the analysis, including tables, figures, and text descriptions of the findings.",
+      "priority": 70
+    },
+    {
+      "name": "Discussion",
+      "prompt": "Discuss the implications of the findings, comparing them with existing literature and highlighting any new insights.",
+      "priority": 80
+    },
+    {
+      "name": "Conclusion",
+      "prompt": "Summarize the key points of the study and suggest potential future research directions.",
+      "priority": 90
+    }
+  ]
+}

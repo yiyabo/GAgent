@@ -33,7 +33,7 @@ class TaskRepository(ABC):
 
     # --- mutations ---
     @abstractmethod
-    def create_task(self, name: str, status: str = "pending", priority: Optional[int] = None) -> int:
+    def create_task(self, name: str, status: str = "pending", priority: Optional[int] = None, parent_id: Optional[int] = None, task_type: str = "atomic") -> int:
         raise NotImplementedError
 
     @abstractmethod
@@ -125,4 +125,46 @@ class TaskRepository(ABC):
 
     def list_task_contexts(self, task_id: int) -> List[Dict[str, Any]]:
         """List available snapshot labels and metadata for a task."""
+        raise NotImplementedError
+
+    # --- hierarchy (Phase 5) ---
+    # Optional: default implementations raise NotImplementedError so legacy repos still instantiate.
+    def get_task_info(self, task_id: int) -> Optional[Dict[str, Any]]:
+        """Return full task info including hierarchy fields (parent_id, path, depth)."""
+        raise NotImplementedError
+
+    def get_parent(self, task_id: int) -> Optional[Dict[str, Any]]:
+        """Return the parent task if any."""
+        raise NotImplementedError
+
+    def get_children(self, parent_id: int) -> List[Dict[str, Any]]:
+        """Return direct children tasks of the given parent."""
+        raise NotImplementedError
+
+    def get_ancestors(self, task_id: int) -> List[Dict[str, Any]]:
+        """Return ordered ancestors from root to the parent of the task."""
+        raise NotImplementedError
+
+    def get_descendants(self, root_id: int) -> List[Dict[str, Any]]:
+        """Return all descendants of a task ordered by path."""
+        raise NotImplementedError
+
+    def get_subtree(self, root_id: int) -> List[Dict[str, Any]]:
+        """Return root followed by all descendants ordered by path."""
+        raise NotImplementedError
+
+    def update_task_parent(self, task_id: int, new_parent_id: Optional[int]) -> None:
+        """Move a task to a different parent (or to root level if new_parent_id is None).
+        
+        This should update the task's parent_id, path, and depth fields consistently.
+        Implementations should handle path/depth recalculation for the moved subtree.
+        """
+        raise NotImplementedError
+    
+    def update_task_type(self, task_id: int, task_type: str) -> None:
+        """Update the task type (root/composite/atomic).
+        
+        This is used by the recursive decomposition service to mark tasks
+        that have been decomposed into subtasks.
+        """
         raise NotImplementedError

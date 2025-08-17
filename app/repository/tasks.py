@@ -15,15 +15,58 @@ class _SqliteTaskRepositoryBase(TaskRepository):
     """SQLite-backed implementation of TaskRepository using context-managed connections."""
 
     # --- mutations ---
-    def create_task(self, name: str, status: str = "pending", priority: Optional[int] = None) -> int:
+    def create_task(self, name: str, status: str = "pending", priority: Optional[int] = None, parent_id: Optional[int] = None, task_type: str = "atomic") -> int:
+        """Create a task. Optionally set parent_id to place it in the hierarchy.
+
+        Backward compatible signature extension: existing callers need not pass parent_id.
+        """
+        # Compute path/depth first
+        if parent_id is None:
+            path = None  # Will be set after getting task_id
+            depth = 0
+        else:
+            with get_db() as conn:
+                prow = conn.execute(
+                    "SELECT path, depth FROM tasks WHERE id=?",
+                    (parent_id,),
+                ).fetchone()
+                if not prow:
+                    raise ValueError(f"Parent task {parent_id} not found")
+                try:
+                    p_path = prow[0]
+                    p_depth = prow[1]
+                except Exception:
+                    p_path = prow["path"]
+                    p_depth = prow["depth"]
+                p_path = p_path or f"/{parent_id}"
+                path = None  # Will be computed after getting task_id
+                depth = (p_depth or 0) + 1
+
         with get_db() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO tasks (name, status, priority) VALUES (?, ?, ?)",
-                (name, status, priority),
+            cursor = conn.execute(
+                "INSERT INTO tasks (name, status, priority, parent_id, depth, task_type) VALUES (?, ?, ?, ?, ?, ?)",
+                (name, status, priority or 100, parent_id, depth, task_type),
+            )
+            task_id = cursor.lastrowid
+
+            # Compute and set path
+            if parent_id is None:
+                new_path = f"/{task_id}"
+            else:
+                prow = conn.execute(
+                    "SELECT path FROM tasks WHERE id=?",
+                    (parent_id,),
+                ).fetchone()
+                p_path = prow[0] if prow else f"/{parent_id}"
+                new_path = f"{p_path}/{task_id}"
+
+            # Update the path
+            conn.execute(
+                "UPDATE tasks SET path=? WHERE id=?",
+                (new_path, task_id),
             )
             conn.commit()
-            return cur.lastrowid
+            return task_id
 
     def upsert_task_input(self, task_id: int, prompt: str) -> None:
         with get_db() as conn:
@@ -52,21 +95,26 @@ class _SqliteTaskRepositoryBase(TaskRepository):
 # -------------------------------
 
 def _row_to_dict(row) -> Dict[str, Any]:
-    try:
-        return {
-            "id": row["id"],
-            "name": row["name"],
-            "status": row["status"],
-            "priority": row.get("priority") if hasattr(row, "get") else row[3] if len(row) > 3 else None,
-        }
-    except Exception:
-        # tuple-like
-        return {
-            "id": row[0],
-            "name": row[1],
-            "status": row[2] if len(row) > 2 else None,
-            "priority": row[3] if len(row) > 3 else None,
-        }
+    return {
+        "id": row[0],
+        "name": row[1],
+        "status": row[2],
+        "priority": row[3],
+    }
+
+
+def _row_to_full(row) -> Dict[str, Any]:
+    """Convert a sqlite row to a full task dict including hierarchy fields."""
+    return {
+        "id": row[0],
+        "name": row[1],
+        "status": row[2],
+        "priority": row[3],
+        "parent_id": row[4],
+        "path": row[5],
+        "depth": row[6],
+        "task_type": row[7],
+    }
 
 
     
@@ -87,16 +135,29 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         return [_row_to_dict(r) for r in rows]
 
 
+    def list_pending_full(self) -> List[Dict[str, Any]]:
+        """Return all pending tasks with hierarchy fields in one query.
+        
+        This batch method reduces database round-trips for schedulers.
+        Returns tasks with: id, name, status, priority, parent_id, path, depth, task_type
+        """
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE status='pending' ORDER BY priority ASC, id ASC"
+            ).fetchall()
+        return [_row_to_full(r) for r in rows]
+
+
     def list_tasks_by_prefix(self, prefix: str, pending_only: bool = False, ordered: bool = True) -> List[Dict[str, Any]]:
         where = "name LIKE ?"
         params = [prefix + "%"]
         if pending_only:
             where += " AND status='pending'"
         order = "ORDER BY priority ASC, id ASC" if ordered else ""
-        sql = f"SELECT id, name, status, priority FROM tasks WHERE {where} {order}"
+        sql = f"SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE {where} {order}"
         with get_db() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [_row_to_dict(r) for r in rows]
+        return [_row_to_full(r) for r in rows]
 
 
     def get_task_input_prompt(self, task_id: int) -> Optional[str]:
@@ -389,6 +450,194 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 meta_obj = {}
             out.append({"label": lbl, "created_at": created_at, "meta": meta_obj})
         return out
+
+    # -------------------------------
+    # Hierarchy CRUD & queries (Phase 5)
+    # -------------------------------
+
+    def get_task_info(self, task_id: int) -> Optional[Dict[str, Any]]:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return _row_to_full(row)
+
+    def get_parent(self, task_id: int) -> Optional[Dict[str, Any]]:
+        with get_db() as conn:
+            row = conn.execute("SELECT parent_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if not row:
+                return None
+            try:
+                pid = row[0]
+            except Exception:
+                pid = row["parent_id"]
+            if pid is None:
+                return None
+            prow = conn.execute(
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id=?",
+                (pid,),
+            ).fetchone()
+        if not prow:
+            return None
+        return _row_to_full(prow)
+
+    def get_children(self, parent_id: int) -> List[Dict[str, Any]]:
+        """Return direct children of a task, ordered by priority and id."""
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE parent_id=? ORDER BY priority ASC, id ASC",
+                (parent_id,),
+            ).fetchall()
+        return [_row_to_full(r) for r in rows]
+
+    def get_ancestors(self, task_id: int) -> List[Dict[str, Any]]:
+        with get_db() as conn:
+            row = conn.execute("SELECT path FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if not row:
+                return []
+            try:
+                path = row[0]
+            except Exception:
+                path = row["path"]
+            if not path:
+                return []
+            # Parse ids from path like '/12/45/79'
+            parts = [p for p in (path.split('/') if path else []) if p]
+            if not parts:
+                return []
+            ancestor_ids = [int(p) for p in parts[:-1]]  # exclude self
+            if not ancestor_ids:
+                return []
+            placeholders = ",".join(["?"] * len(ancestor_ids))
+            rows = conn.execute(
+                f"SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id IN ({placeholders}) ORDER BY depth ASC",
+                ancestor_ids,
+            ).fetchall()
+        return [_row_to_full(r) for r in rows]
+
+    def get_descendants(self, root_id: int) -> List[Dict[str, Any]]:
+        with get_db() as conn:
+            row = conn.execute("SELECT path FROM tasks WHERE id=?", (root_id,)).fetchone()
+            if not row:
+                return []
+            try:
+                root_path = row[0]
+            except Exception:
+                root_path = row["path"]
+            if not root_path:
+                root_path = f"/{root_id}"
+            like_prefix = root_path + "/%"
+            rows = conn.execute(
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE path LIKE ? ORDER BY path ASC",
+                (like_prefix,),
+            ).fetchall()
+        return [_row_to_full(r) for r in rows]
+
+    def get_subtree(self, root_id: int) -> List[Dict[str, Any]]:
+        """Return root task followed by all descendants ordered by path."""
+        root = self.get_task_info(root_id)
+        if not root:
+            return []
+        desc = self.get_descendants(root_id)
+        return [root] + desc
+
+    def update_task_parent(self, task_id: int, new_parent_id: Optional[int]) -> None:
+        """Move a task under a new parent (or to root if None). Updates path/depth for the subtree.
+
+        Prevents cycles: cannot move under its own subtree.
+        """
+        with get_db() as conn:
+            cur = conn.cursor()
+            # Fetch current node info
+            row = cur.execute(
+                "SELECT id, parent_id, path, depth FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError(f"Task {task_id} not found")
+            try:
+                old_parent_id = row[1]
+                old_path = row[2]
+                old_depth = row[3] or 0
+            except Exception:
+                old_parent_id = row["parent_id"]
+                old_path = row["path"]
+                old_depth = (row["depth"] or 0)
+
+            if new_parent_id == old_parent_id:
+                return
+
+            # Determine new parent info
+            if new_parent_id is None:
+                new_parent_path = None
+                new_parent_depth = -1
+                new_root_path = f"/{task_id}"
+                new_depth = 0
+            else:
+                prow = cur.execute(
+                    "SELECT id, path, depth FROM tasks WHERE id=?",
+                    (new_parent_id,),
+                ).fetchone()
+                if not prow:
+                    raise ValueError(f"Parent task {new_parent_id} not found")
+                try:
+                    p_path = prow[1]
+                    p_depth = prow[2]
+                except Exception:
+                    p_path = prow["path"]
+                    p_depth = prow["depth"]
+                p_path = p_path or f"/{new_parent_id}"
+
+                # Prevent cycles: cannot move under own subtree
+                if old_path and (p_path == old_path or p_path.startswith(old_path + "/")):
+                    raise ValueError("Cannot move a task under its own subtree")
+
+                new_parent_path = p_path
+                new_parent_depth = (p_depth or 0)
+                new_root_path = f"{new_parent_path}/{task_id}"
+                new_depth = new_parent_depth + 1
+
+            # Update root node
+            conn.execute(
+                "UPDATE tasks SET parent_id=?, path=?, depth=? WHERE id=?",
+                (new_parent_id, new_root_path, new_depth, task_id),
+            )
+        
+            # Update all descendants' paths and depths
+            if old_path:
+                # Find all descendants that need path/depth updates
+                descendants = conn.execute(
+                    "SELECT id, path FROM tasks WHERE path LIKE ? AND id != ?",
+                    (old_path + "/%", task_id),
+                ).fetchall()
+                
+                for desc_row in descendants:
+                    desc_id = desc_row[0]
+                    desc_old_path = desc_row[1]
+                    
+                    # Calculate new path by replacing the old prefix
+                    if desc_old_path and desc_old_path.startswith(old_path + "/"):
+                        desc_new_path = new_root_path + desc_old_path[len(old_path):]
+                        desc_new_depth = desc_new_path.count("/") - 1
+                        
+                        conn.execute(
+                            "UPDATE tasks SET path=?, depth=? WHERE id=?",
+                            (desc_new_path, desc_new_depth, desc_id),
+                        )
+        
+            conn.commit()
+
+    def update_task_type(self, task_id: int, task_type: str) -> None:
+        """Update the task type (root/composite/atomic)."""
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE tasks SET task_type=? WHERE id=?",
+                (task_type, task_id),
+            )
+            conn.commit()
 
 
 default_repo = SqliteTaskRepository()

@@ -3,6 +3,7 @@ from typing import List, Optional
 
 class TaskCreate(BaseModel):
     name: str
+    task_type: Optional[str] = "atomic"
 
 class Task(BaseModel):
     id: int

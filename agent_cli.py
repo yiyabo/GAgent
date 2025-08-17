@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--execute-only", action="store_true", help="Only execute tasks for a plan title")
     parser.add_argument("--goal", type=str, help="Goal to plan for")
     parser.add_argument("--title", type=str, help="Plan title")
-    parser.add_argument("--sections", type=int, default=6, help="Preferred number of tasks")
+    parser.add_argument("--sections", type=int, help="Preferred number of tasks (if not specified, AI will decide automatically)")
     parser.add_argument("--style", type=str, help="Optional style (e.g., academic, concise)")
     parser.add_argument("--notes", type=str, help="Optional notes/hints")
     parser.add_argument("--output", type=str, default=OUTPUT_MD, help="Assembled output path (default: output.md)")
@@ -148,6 +148,11 @@ def main():
     parser.add_argument("--index-preview", action="store_true", help="Preview generated INDEX.md (dry-run)")
     parser.add_argument("--index-export", type=str, help="Export generated INDEX.md to the given path (dry-run write)")
     parser.add_argument("--index-run-root", action="store_true", help="Run root task: generate & write INDEX.md, update history")
+    # Hierarchy utilities (Phase 5)
+    parser.add_argument("--list-children", action="store_true", help="List direct children for --task-id")
+    parser.add_argument("--get-subtree", action="store_true", help="Get subtree (including root) for --task-id")
+    parser.add_argument("--move-task", action="store_true", help="Move task --task-id under --new-parent-id (omit or -1 for root)")
+    parser.add_argument("--new-parent-id", dest="new_parent_id", type=int, help="New parent id for --move-task (omit or -1 for root)")
     args = parser.parse_args()
 
     print("=== GLM Agent ===")
@@ -258,6 +263,44 @@ def main():
                 return
         return
 
+    # 0c) Fast path: hierarchy utilities
+    if args.list_children or args.get_subtree or args.move_task:
+        init_db()
+        repo = SqliteTaskRepository()
+        # list children
+        if args.list_children:
+            if not args.task_id:
+                print("task-id is required for --list-children. Exiting.")
+                return
+            children = repo.get_children(int(args.task_id))
+            print(json.dumps({"task_id": int(args.task_id), "children": children}, ensure_ascii=False, indent=2))
+            return
+        # get subtree
+        if args.get_subtree:
+            if not args.task_id:
+                print("task-id is required for --get-subtree. Exiting.")
+                return
+            subtree = repo.get_subtree(int(args.task_id))
+            if not subtree:
+                print("Task not found.")
+                return
+            print(json.dumps({"task_id": int(args.task_id), "subtree": subtree}, ensure_ascii=False, indent=2))
+            return
+        # move task
+        if args.move_task:
+            if not args.task_id:
+                print("task-id is required for --move-task. Exiting.")
+                return
+            new_parent_id = None
+            if args.new_parent_id is not None and int(args.new_parent_id) >= 0:
+                new_parent_id = int(args.new_parent_id)
+            try:
+                repo.update_task_parent(int(args.task_id), new_parent_id)
+                print(json.dumps({"ok": True, "task_id": int(args.task_id), "new_parent_id": new_parent_id}, ensure_ascii=False, indent=2))
+            except ValueError as e:
+                print(f"Move failed: {e}")
+            return
+
     # 0) Fast path: execute-only
     if args.execute_only:
         init_db()
@@ -316,12 +359,16 @@ def main():
         title = _safe_input("Project title (leave blank to derive from goal): ").strip()
     sections_n = args.sections
     if args.goal is None and sys.stdin.isatty():
-        raw = _safe_input(f"Preferred number of tasks [{sections_n}]: ").strip()
+        default_text = "auto" if sections_n is None else str(sections_n)
+        raw = _safe_input(f"Preferred number of tasks [{default_text}]: ").strip()
         if raw:
-            try:
-                sections_n = int(raw)
-            except Exception:
-                pass
+            if raw.lower() in ['auto', 'a', '']:
+                sections_n = None
+            else:
+                try:
+                    sections_n = int(raw)
+                except Exception:
+                    pass
     style = args.style
     if style is None and sys.stdin.isatty():
         style = _safe_input("Optional style (e.g., academic, concise): ").strip()
