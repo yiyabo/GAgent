@@ -140,6 +140,13 @@ def main():
     parser.add_argument("--save-snapshot", dest="save_snapshot", action="store_true", help="Save context snapshot per execution")
     parser.add_argument("--label", type=str, help="Snapshot label when saving context")
     parser.add_argument("--schedule", choices=["bfs", "dag", "postorder"], help="Scheduling strategy for execution (default: bfs)")
+    # Rerun utilities
+    parser.add_argument("--rerun-task", type=int, help="Rerun a specific task by ID")
+    parser.add_argument("--rerun-subtree", type=int, help="Rerun a task and all its subtasks by ID")
+    parser.add_argument("--rerun-include-parent", action="store_true", help="Include parent task when using --rerun-subtree")
+    parser.add_argument("--rerun-interactive", action="store_true", help="Interactively select tasks to rerun for a plan")
+    parser.add_argument("--load-plan", type=str, help="Load existing plan from database by title and allow task rerun")
+    parser.add_argument("--list-plans", action="store_true", help="List all existing plans in database")
     # Snapshot utilities
     parser.add_argument("--list-snapshots", action="store_true", help="List context snapshots for a task id")
     parser.add_argument("--export-snapshot", action="store_true", help="Export a context snapshot by task id and label")
@@ -488,11 +495,441 @@ def main():
     except Exception as e:
         print(f"Assemble failed: {e}")
 
+    # 9) Ask if user wants to rerun any tasks
+    if sys.stdin.isatty() and not args.yes:
+        repo = SqliteTaskRepository()
+        all_tasks = repo.list_plan_tasks(parsed.get("title"))
+        
+        if all_tasks:
+            print(f"\n=== Plan Tasks Summary ===")
+            print("ID\tStatus\t\tName")
+            print("-" * 50)
+            
+            for task in all_tasks:
+                status = task.get('status', 'pending')
+                task_id = task.get('id')
+                name = task.get('name', 'Unnamed')
+                
+                status_emoji = {
+                    "pending": "⏳",
+                    "running": "🔄", 
+                    "completed": "✅",
+                    "failed": "❌",
+                    "skipped": "⏭️"
+                }.get(status, "❓")
+                
+                print(f"{task_id}\t{status_emoji} {status}\t{name}")
+            
+            print(f"\nFound {len(all_tasks)} tasks in plan")
+            choice = _safe_input("Do you want to rerun any tasks? [y/N]: ").strip().lower()
+            if choice == 'y':
+                selected_task_ids = _interactive_select_tasks(repo, parsed.get("title"))
+                if selected_task_ids:
+                    print(f"Preparing to rerun {len(selected_task_ids)} tasks...")
+                    
+                    # Use API to rerun selected tasks
+                    import requests
+                    
+                    payload = {
+                        "task_ids": selected_task_ids,
+                        "use_context": args.use_context
+                    }
+                    co = _build_context_options_from_args(args)
+                    if co:
+                        payload["context_options"] = co
+                    
+                    try:
+                        response = requests.post(
+                            "http://127.0.0.1:8000/tasks/rerun/selected",
+                            json=payload,
+                            timeout=600
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        
+                        print(f"✅ Task rerun completed")
+                        
+                        # Calculate success/failure based on actual status
+                        results = result.get('results', [])
+                        successful = sum(1 for r in results if str(r.get('status', '')).strip().lower() in ['completed', 'done'])
+                        failed = len(results) - successful
+                        
+                        print(f"Successful: {successful} tasks")
+                        print(f"Failed: {failed} tasks")
+                        
+                        for task_result in result.get('results', []):
+                            original_status = task_result.get('status', '')
+                            status = str(original_status).strip().lower()
+                            
+                            is_success = status in ['completed', 'done']
+                            print(status)
+                            status_emoji = "✅" if is_success else "❌"
+
+                            print(f"  {status_emoji} Task {task_result['task_id']} ({task_result['name']}): {original_status}")
+                            # Debug: print(f"    DEBUG: original='{original_status}', lower='{status}', success={is_success}")
+                            
+                    except Exception as e:
+                        print(f"❌ Failed to rerun tasks: {e}")
+
     print("\nAll done.")
+
+
+def rerun_single_task(task_id: int, use_context: bool = False, context_options: Optional[Dict[str, Any]] = None):
+    """通过API重新执行单个任务"""
+    import requests
+    
+    init_db()
+    
+    payload = {}
+    if use_context:
+        payload["use_context"] = True
+        if context_options:
+            payload["context_options"] = context_options
+    
+    try:
+        response = requests.post(
+            f"http://127.0.0.1:8000/tasks/{task_id}/rerun",
+            json=payload,
+            timeout=300
+        )
+        response.raise_for_status()
+        result = response.json()
+        print(f"✅ 任务 {task_id} 重新执行完成")
+        print(f"状态: {result['status']}")
+        print(f"类型: {result['rerun_type']}")
+    except Exception as e:
+        print(f"❌ 重新执行任务失败: {e}")
+
+
+def rerun_subtree(task_id: int, use_context: bool = False, include_parent: bool = True, context_options: Optional[Dict[str, Any]] = None):
+    """通过API重新执行任务及其子任务"""
+    import requests
+    
+    init_db()
+    
+    payload = {
+        "include_parent": include_parent
+    }
+    if use_context:
+        payload["use_context"] = True
+        if context_options:
+            payload["context_options"] = context_options
+    
+    try:
+        response = requests.post(
+            f"http://127.0.0.1:8000/tasks/{task_id}/rerun/subtree",
+            json=payload,
+            timeout=600
+        )
+        response.raise_for_status()
+        result = response.json()
+        print(f"✅ 任务子树 {task_id} 重新执行完成")
+        print(f"总共重新执行了 {result['total_tasks']} 个任务")
+        for task_result in result['results']:
+            print(f"  - 任务 {task_result['task_id']} ({task_result['name']}): {task_result['status']}")
+    except Exception as e:
+        print(f"❌ 重新执行子任务失败: {e}")
+
+
+def _build_context_options_from_args(a) -> Optional[Dict[str, Any]]:
+    """从命令行参数构建上下文选项"""
+    co: Dict[str, Any] = {}
+    if hasattr(a, 'include_deps') and a.include_deps is not None:
+        co["include_deps"] = bool(a.include_deps)
+    if hasattr(a, 'include_plan') and a.include_plan is not None:
+        co["include_plan"] = bool(a.include_plan)
+    if hasattr(a, 'tfidf_k') and a.tfidf_k is not None:
+        co["tfidf_k"] = int(a.tfidf_k)
+    if hasattr(a, 'tfidf_min_score') and a.tfidf_min_score is not None:
+        co["tfidf_min_score"] = float(a.tfidf_min_score)
+    if hasattr(a, 'tfidf_max_candidates') and a.tfidf_max_candidates is not None:
+        co["tfidf_max_candidates"] = int(a.tfidf_max_candidates)
+    if hasattr(a, 'max_chars') and a.max_chars is not None:
+        co["max_chars"] = int(a.max_chars)
+    if hasattr(a, 'per_section_max') and a.per_section_max is not None:
+        co["per_section_max"] = int(a.per_section_max)
+    if hasattr(a, 'strategy') and a.strategy:
+        co["strategy"] = str(a.strategy)
+    if hasattr(a, 'save_snapshot') and a.save_snapshot:
+        co["save_snapshot"] = True
+    if hasattr(a, 'label') and a.label:
+        co["label"] = str(a.label)
+    return co or None
+
+
+def _safe_input(prompt: str) -> str:
+    """安全获取用户输入"""
+    try:
+        return input(prompt)
+    except UnicodeDecodeError:
+        try:
+            sys.stdout.write(prompt)
+            sys.stdout.flush()
+            data = sys.stdin.buffer.readline()
+            try:
+                return data.decode("utf-8").rstrip("\r\n")
+            except Exception:
+                return data.decode("utf-8", errors="replace").rstrip("\r\n")
+        except Exception:
+            return ""
+
+
+def _interactive_select_tasks(repo, plan_title: str) -> List[int]:
+    """直接选择要重新执行的任务，跳过冗余菜单"""
+    
+    # 获取计划的所有任务
+    tasks = repo.list_plan_tasks(plan_title)
+    if not tasks:
+        print(f"未找到计划 '{plan_title}' 的任务")
+        return []
+    
+    # 显示任务列表（使用中文界面）
+    print(f"\n=== 计划 '{plan_title}' 的任务列表 ===")
+    print("ID\t状态\t\t名称")
+    print("-" * 60)
+    
+    for task in tasks:
+        status = task.get('status', 'pending')
+        task_id = task.get('id')
+        name = task.get('name', 'Unnamed Task')
+        
+        status_emoji = {
+            "pending": "⏳",
+            "running": "🔄", 
+            "completed": "✅",
+            "failed": "❌",
+            "skipped": "⏭️",
+            "done": "✅"
+        }.get(status, "❓")
+        
+        print(f"{task_id}\t{status_emoji} {status}\t{name}")
+    
+    print(f"\nFound {len(tasks)} tasks available for rerun")
+    
+    # 直接选择任务
+    while True:
+        task_input = _safe_input("Enter task numbers (comma-separated, e.g., 1,3,5) or 'done' to finish: ").strip()
+        if task_input.lower() == 'done':
+            return []
+        try:
+            task_ids = [int(x.strip()) for x in task_input.split(',')]
+            valid_ids = [t['id'] for t in tasks]
+            selected = [tid for tid in task_ids if tid in valid_ids]
+            if selected:
+                return selected
+            else:
+                print("No valid task IDs selected")
+        except ValueError:
+            print("Invalid input. Please enter numbers separated by commas.")
+
+
+def _manual_select_tasks(tasks) -> List[int]:
+    """Manual task selection"""
+    print("\n=== Manual Task Selection ===")
+    for i, task in enumerate(tasks, 1):
+        name = task.get('name', 'Unnamed Task')
+        task_id = task.get('id')
+        print(f"{i}. {name} (ID: {task_id})")
+    
+    while True:
+        selection = _safe_input("Enter task numbers (comma-separated, e.g., 1,3,5) or 'done' to finish: ").strip()
+        
+        if selection.lower() == 'done':
+            return []
+        
+        try:
+            indices = [int(x.strip()) - 1 for x in selection.split(',')]
+            selected_tasks = []
+            for idx in indices:
+                if 0 <= idx < len(tasks):
+                    selected_tasks.append(tasks[idx]['id'])
+                else:
+                    print(f"Invalid number: {idx + 1}")
+                    continue
+            
+            if selected_tasks:
+                confirm = _safe_input(f"Confirm rerun {len(selected_tasks)} tasks? [y/N]: ").strip().lower()
+                if confirm == 'y':
+                    return selected_tasks
+            
+        except ValueError:
+            print("Invalid format, please use comma-separated numbers")
+
+
+def _interactive_rerun_tasks(repo, plan_title: str, use_context: bool = False, context_options: Optional[Dict[str, Any]] = None):
+    """Interactive rerun of selected tasks"""
+    selected_task_ids = _interactive_select_tasks(repo, plan_title)
+    
+    if not selected_task_ids:
+        print("No tasks selected")
+        return
+    
+    print(f"\nPreparing to rerun {len(selected_task_ids)} tasks...")
+    
+    # Use API to rerun selected tasks
+    import requests
+    
+    payload = {
+        "task_ids": selected_task_ids,
+        "use_context": use_context
+    }
+    if context_options:
+        payload["context_options"] = context_options
+    
+    try:
+        response = requests.post(
+            "http://127.0.0.1:8000/tasks/rerun/selected",
+            json=payload,
+            timeout=600
+        )
+        response.raise_for_status()
+        result = response.json()
+        
+        print(f"✅ Task rerun completed")
+        print(f"Successful: {result.get('successful', 0)} tasks")
+        print(f"Failed: {result.get('failed', 0)} tasks")
+        
+        for task_result in result.get('results', []):
+            status_emoji = "✅" if task_result['status'] == 'done' else "❌"
+            print(f"  {status_emoji} Task {task_result['task_id']} ({task_result['name']}): {task_result['status']}")
+            
+    except Exception as e:
+        print(f"❌ Failed to rerun tasks: {e}")
+
+
+def _list_existing_plans():
+    """List all existing plans in the database"""
+    repo = SqliteTaskRepository()
+    plans = repo.list_plan_titles()
+    
+    if not plans:
+        print("No existing plans found in database")
+        return
+    
+    print("=== Existing Plans ===")
+    for i, plan in enumerate(plans, 1):
+        print(f"{i}. {plan}")
+    
+    print(f"\nFound {len(plans)} plans")
+
+
+def _load_and_rerun_plan(plan_title: str, args):
+    """Load existing plan from database and allow task rerun"""
+    repo = SqliteTaskRepository()
+    
+    # Get all plans and find best match
+    plans = repo.list_plan_titles()
+    if not plans:
+        print("No existing plans found in database")
+        return
+    
+    # Exact match first
+    if plan_title in plans:
+        matched_title = plan_title
+    else:
+        # Fuzzy match - find closest match
+        matched_title = None
+        for plan in plans:
+            if plan_title.lower() in plan.lower() or plan.lower() in plan_title.lower():
+                matched_title = plan
+                break
+        
+        if not matched_title:
+            print(f"Plan '{plan_title}' not found")
+            print("Available plans:")
+            _list_existing_plans()
+            return
+    
+    plan_title = matched_title
+    
+    # Get plan tasks
+    tasks = repo.list_plan_tasks(plan_title)
+    if not tasks:
+        print(f"No tasks found for plan '{plan_title}'")
+        return
+    
+    print(f"\n=== Loading Plan: {plan_title} ===")
+    print(f"Found {len(tasks)} tasks")
+    
+    # Show plan summary
+    print("\n=== Plan Tasks Summary ===")
+    print("ID\tStatus\t\tName")
+    print("-" * 50)
+    
+    for task in tasks:
+        status = task.get('status', 'pending')
+        task_id = task.get('id')
+        name = task.get('name', 'Unnamed')
+        
+        status_emoji = {
+            "pending": "⏳",
+            "running": "🔄", 
+            "completed": "✅",
+            "failed": "❌",
+            "skipped": "⏭️"
+        }.get(status, "❓")
+        
+        print(f"{task_id}\t{status_emoji} {status}\t{name}")
+    
+    # Always show interactive task selection for loaded plans
+    print(f"\nReady to select tasks for rerun from plan: {plan_title}")
+    selected_task_ids = _interactive_select_tasks(repo, plan_title)
+    if selected_task_ids:
+        context_options = _build_context_options_from_args(args)
+        _interactive_rerun_tasks(repo, plan_title, args.use_context, context_options)
 
 
 if __name__ == "__main__":
     # Ensure GLM_API_KEY is visible to this process if you want LLM planning/execution
     if not os.getenv("GLM_API_KEY"):
         print("[WARN] GLM_API_KEY is not set; propose/execute may fail.")
-    main()
+    
+    # Handle rerun parameters
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rerun-task", type=int)
+    parser.add_argument("--rerun-subtree", type=int)
+    parser.add_argument("--rerun-include-parent", action="store_true")
+    parser.add_argument("--rerun-interactive", action="store_true")
+    parser.add_argument("--load-plan", type=str)
+    parser.add_argument("--list-plans", action="store_true")
+    parser.add_argument("--use-context", action="store_true")
+    parser.add_argument("--include-deps", action="store_true")
+    parser.add_argument("--include-plan", action="store_true")
+    parser.add_argument("--tfidf-k", type=int)
+    parser.add_argument("--max-chars", type=int)
+    parser.add_argument("--title", type=str, help="Plan title for interactive rerun")
+    
+    # Parse known arguments
+    known_args, unknown = parser.parse_known_args()
+    
+    if known_args.rerun_task:
+        context_options = _build_context_options_from_args(known_args)
+        rerun_single_task(known_args.rerun_task, known_args.use_context, context_options)
+    elif known_args.rerun_subtree:
+        context_options = _build_context_options_from_args(known_args)
+        rerun_subtree(known_args.rerun_subtree, known_args.use_context, known_args.rerun_include_parent, context_options)
+    elif known_args.rerun_interactive:
+        init_db()
+        repo = SqliteTaskRepository()
+        
+        title = known_args.title
+        if not title:
+            title = _safe_input("Enter plan title: ").strip()
+        
+        if title:
+            context_options = _build_context_options_from_args(known_args)
+            _interactive_rerun_tasks(repo, title, known_args.use_context, context_options)
+        else:
+            print("Plan title is required")
+    elif known_args.list_plans:
+        init_db()
+        _list_existing_plans()
+    elif known_args.load_plan:
+        init_db()
+        _load_and_rerun_plan(known_args.load_plan, known_args)
+    else:
+        # Re-parse full arguments
+        import sys
+        sys.argv = [sys.argv[0]] + unknown
+        main()

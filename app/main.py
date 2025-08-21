@@ -12,8 +12,8 @@ from .utils import plan_prefix, split_prefix
 from .services.context import gather_context
 from .services.context_budget import apply_budget
 from .services.index_root import generate_index
-from app.services.recursive_decomposition import (
-    decompose_task, recursive_decompose_plan, evaluate_task_complexity, should_decompose_task, determine_task_type
+from .services.planning import (
+    recursive_decompose_task, recursive_decompose_plan, evaluate_task_complexity, should_decompose_task, determine_task_type
 )
 from contextlib import asynccontextmanager
 
@@ -522,3 +522,167 @@ def move_task(task_id: int, payload: Dict[str, Any] = Body(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, "task_id": task_id, "new_parent_id": new_parent_id}
+
+
+@app.post("/tasks/{task_id}/rerun")
+def rerun_single_task(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
+    """
+    重新执行单个任务，重置状态为pending并清空输出
+    
+    Body参数（可选）：
+    - use_context: 是否使用上下文（默认false）
+    - context_options: 上下文配置选项
+    """
+    task = default_repo.get_task_info(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # 重置任务状态
+    default_repo.update_task_status(task_id, "pending")
+    
+    # 清空任务输出
+    default_repo.upsert_task_output(task_id, "")
+    
+    # 解析参数
+    use_context = _parse_bool((payload or {}).get("use_context"), default=False)
+    context_options = None
+    co = (payload or {}).get("context_options")
+    if isinstance(co, dict):
+        context_options = _sanitize_context_options(co)
+    
+    # 执行单个任务
+    status = execute_task(task, use_context=use_context, context_options=context_options)
+    default_repo.update_task_status(task_id, status)
+    
+    return {"task_id": task_id, "status": status, "rerun_type": "single"}
+
+
+@app.post("/tasks/{task_id}/rerun/subtree")
+def rerun_task_subtree(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
+    """
+    重新执行单个任务及其所有子任务
+    
+    Body参数（可选）：
+    - use_context: 是否使用上下文（默认false）
+    - context_options: 上下文配置选项
+    - include_parent: 是否包含父任务本身（默认true）
+    """
+    task = default_repo.get_task_info(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # 获取子树（包括父任务和所有子任务）
+    include_parent = _parse_bool((payload or {}).get("include_parent"), default=True)
+    if include_parent:
+        tasks_to_rerun = [task] + default_repo.get_descendants(task_id)
+    else:
+        tasks_to_rerun = default_repo.get_descendants(task_id)
+    
+    if not tasks_to_rerun:
+        return {"task_id": task_id, "rerun_tasks": [], "message": "No tasks to rerun"}
+    
+    # 解析参数
+    use_context = _parse_bool((payload or {}).get("use_context"), default=False)
+    context_options = None
+    co = (payload or {}).get("context_options")
+    if isinstance(co, dict):
+        context_options = _sanitize_context_options(co)
+    
+    # 按优先级排序执行
+    tasks_to_rerun.sort(key=lambda t: (t.get("priority", 100), t.get("id", 0)))
+    
+    results = []
+    for task_to_run in tasks_to_rerun:
+        # 重置任务状态
+        task_id_to_run = task_to_run["id"]
+        default_repo.update_task_status(task_id_to_run, "pending")
+        default_repo.upsert_task_output(task_id_to_run, "")
+        
+        # 执行任务
+        status = execute_task(task_to_run, use_context=use_context, context_options=context_options)
+        default_repo.update_task_status(task_id_to_run, status)
+        
+        results.append({"task_id": task_id_to_run, "name": task_to_run["name"], "status": status})
+    
+    return {
+        "parent_task_id": task_id,
+        "rerun_type": "subtree",
+        "total_tasks": len(results),
+        "results": results
+    }
+
+
+@app.post("/tasks/rerun/selected")
+def rerun_selected_tasks(payload: Dict[str, Any] = Body(...)):
+    """
+    重新执行选定的多个任务
+    
+    Body参数：
+    - task_ids: 要重新执行的任务ID列表
+    - use_context: 是否使用上下文（默认false）
+    - context_options: 上下文配置选项
+    """
+    task_ids = payload.get("task_ids", [])
+    if not task_ids or not isinstance(task_ids, list):
+        raise HTTPException(status_code=400, detail="task_ids must be a non-empty list")
+    
+    # 验证所有任务ID
+    tasks_to_rerun = []
+    for task_id in task_ids:
+        try:
+            task_id = int(task_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail=f"Invalid task_id: {task_id}")
+        
+        task = default_repo.get_task_info(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        
+        tasks_to_rerun.append(task)
+    
+    if not tasks_to_rerun:
+        raise HTTPException(status_code=400, detail="No valid tasks to rerun")
+    
+    # 解析参数
+    use_context = _parse_bool(payload.get("use_context"), default=False)
+    context_options = None
+    co = payload.get("context_options")
+    if isinstance(co, dict):
+        context_options = _sanitize_context_options(co)
+    
+    # 按优先级排序执行
+    tasks_to_rerun.sort(key=lambda t: (t.get("priority", 100), t.get("id", 0)))
+    
+    results = []
+    successful_count = 0
+    failed_count = 0
+    
+    for task_to_run in tasks_to_rerun:
+        task_id_to_run = task_to_run["id"]
+        
+        # 重置任务状态
+        default_repo.update_task_status(task_id_to_run, "pending")
+        default_repo.upsert_task_output(task_id_to_run, "")
+        
+        # 执行任务
+        status = execute_task(task_to_run, use_context=use_context, context_options=context_options)
+        default_repo.update_task_status(task_id_to_run, status)
+        
+        results.append({
+            "task_id": task_id_to_run,
+            "name": task_to_run["name"],
+            "status": status
+        })
+        
+        if status in ["completed", "done"]:
+            successful_count += 1
+        else:
+            failed_count += 1
+    
+    return {
+        "rerun_type": "selected",
+        "total_tasks": len(results),
+        "successful": successful_count,
+        "failed": failed_count,
+        "results": results
+    }
