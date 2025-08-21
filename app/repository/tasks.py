@@ -639,5 +639,108 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             )
             conn.commit()
 
+    # -------------------------------
+    # GLM Embeddings operations
+    # -------------------------------
+
+    def store_task_embedding(self, task_id: int, embedding_vector: str, model: str = "embedding-2") -> None:
+        """Store embedding vector for a task."""
+        with get_db() as conn:
+            conn.execute('''
+                INSERT OR REPLACE INTO task_embeddings 
+                (task_id, embedding_vector, embedding_model, updated_at) 
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (task_id, embedding_vector, model))
+            conn.commit()
+
+    def get_task_embedding(self, task_id: int) -> Optional[Dict[str, Any]]:
+        """Get embedding for a specific task."""
+        with get_db() as conn:
+            row = conn.execute('''
+                SELECT task_id, embedding_vector, embedding_model, created_at, updated_at
+                FROM task_embeddings 
+                WHERE task_id = ?
+            ''', (task_id,)).fetchone()
+            
+            if row:
+                return _row_to_dict(row)
+            return None
+
+    def get_tasks_with_embeddings(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get all tasks that have embeddings with their content."""
+        with get_db() as conn:
+            query = '''
+                SELECT 
+                    t.id, t.name, t.status, t.priority,
+                    toutput.content,
+                    te.embedding_vector, te.embedding_model, te.updated_at
+                FROM tasks t
+                LEFT JOIN task_outputs toutput ON t.id = toutput.task_id
+                INNER JOIN task_embeddings te ON t.id = te.task_id
+                ORDER BY te.updated_at DESC
+            '''
+            
+            if limit:
+                query += f' LIMIT {limit}'
+            
+            rows = conn.execute(query).fetchall()
+            return [_row_to_dict(row) for row in rows]
+
+    def get_tasks_without_embeddings(self, status: Optional[str] = "done") -> List[Dict[str, Any]]:
+        """Get tasks that don't have embeddings yet."""
+        with get_db() as conn:
+            where_clause = ""
+            params = []
+            
+            if status:
+                where_clause = "WHERE t.status = ?"
+                params.append(status)
+            
+            query = f'''
+                SELECT t.id, t.name, t.status, t.priority, to.content
+                FROM tasks t
+                LEFT JOIN task_outputs to ON t.id = to.task_id
+                LEFT JOIN task_embeddings te ON t.id = te.task_id
+                {where_clause}
+                AND te.task_id IS NULL
+                AND to.content IS NOT NULL
+                AND TRIM(to.content) != ""
+                ORDER BY t.id DESC
+            '''
+            
+            rows = conn.execute(query, params).fetchall()
+            return [_row_to_dict(row) for row in rows]
+
+    def delete_task_embedding(self, task_id: int) -> None:
+        """Delete embedding for a task."""
+        with get_db() as conn:
+            conn.execute("DELETE FROM task_embeddings WHERE task_id = ?", (task_id,))
+            conn.commit()
+
+    def count_tasks_with_embeddings(self) -> int:
+        """Count total number of tasks with embeddings."""
+        with get_db() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM task_embeddings").fetchone()
+            return row[0] if row else 0
+
+    def get_embedding_stats(self) -> Dict[str, Any]:
+        """Get statistics about embeddings."""
+        with get_db() as conn:
+            total_tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+            total_embeddings = conn.execute("SELECT COUNT(*) FROM task_embeddings").fetchone()[0]
+            
+            model_stats = conn.execute('''
+                SELECT embedding_model, COUNT(*) as count
+                FROM task_embeddings
+                GROUP BY embedding_model
+            ''').fetchall()
+            
+            return {
+                "total_tasks": total_tasks,
+                "total_embeddings": total_embeddings,
+                "coverage_percent": (total_embeddings / total_tasks * 100) if total_tasks > 0 else 0,
+                "model_distribution": {row[0]: row[1] for row in model_stats}
+            }
+
 
 default_repo = SqliteTaskRepository()
