@@ -38,7 +38,7 @@ def debug_bfs_ordering():
         all_pending = repo.list_pending_full()
         for task in all_pending:
             print(f"  ID={task['id']}, Name={task['name']}, Priority={task['priority']}, "
-                  f"Parent={task['parent_id']}, Path={task['path']}, Depth={task['depth']}")
+                f"Parent={task['parent_id']}, Path={task['path']}, Depth={task['depth']}")
 
         # Debug: examine BFS ordering
         print("\nBFS ordering:")
@@ -46,7 +46,7 @@ def debug_bfs_ordering():
         for i, task in enumerate(order):
             short_name = split_prefix(task.get("name", ""))[1]
             print(f"  {i}: {short_name} (ID={task['id']}, Priority={task['priority']}, "
-                  f"Path={task['path']}, Depth={task['depth']})")
+                f"Path={task['path']}, Depth={task['depth']})")
 
         # Debug: examine sorting keys
         print("\nSorting keys:")
