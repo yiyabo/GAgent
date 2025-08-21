@@ -1,9 +1,15 @@
 from typing import Optional, Dict, Any
+import asyncio
+import threading
+import logging
 from .llm import get_default_client
 from .interfaces import TaskRepository
 from .repository.tasks import default_repo
 from .services.context import gather_context
 from .services.context_budget import apply_budget
+from .services.embeddings import get_embeddings_service
+
+logger = logging.getLogger(__name__)
 
 
 def _get_task_id_and_name(task):
@@ -26,6 +32,42 @@ def _glm_chat(prompt: str) -> str:
     # Delegate to default LLM client (Phase 1 abstraction)
     client = get_default_client()
     return client.chat(prompt)
+
+
+def _generate_task_embedding_async(task_id: int, content: str, repo: TaskRepository):
+    """异步生成并存储任务的embedding"""
+    def _background_embedding():
+        try:
+            if not content or not content.strip():
+                logger.debug(f"任务 {task_id} 内容为空，跳过embedding生成")
+                return
+            
+            # 检查是否已有embedding
+            existing_embedding = repo.get_task_embedding(task_id)
+            if existing_embedding:
+                logger.debug(f"任务 {task_id} 已有embedding，跳过生成")
+                return
+            
+            embeddings_service = get_embeddings_service()
+            
+            # 生成embedding
+            logger.debug(f"为任务 {task_id} 生成embedding")
+            embedding = embeddings_service.get_single_embedding(content)
+            
+            if embedding:
+                # 存储embedding
+                embedding_json = embeddings_service.embedding_to_json(embedding)
+                repo.store_task_embedding(task_id, embedding_json)
+                logger.debug(f"成功为任务 {task_id} 存储embedding")
+            else:
+                logger.warning(f"为任务 {task_id} 生成embedding失败")
+                
+        except Exception as e:
+            logger.error(f"为任务 {task_id} 生成embedding时出错: {e}")
+    
+    # 在后台线程中执行，避免阻塞主流程
+    thread = threading.Thread(target=_background_embedding, daemon=True)
+    thread.start()
 
 
 def execute_task(
@@ -77,6 +119,11 @@ def execute_task(
                 except Exception:
                     manual = None
 
+            # 获取检索方法配置
+            retrieval_method = opts.get("retrieval_method", "hybrid")
+            if not isinstance(retrieval_method, str) or retrieval_method not in ["tfidf", "semantic", "hybrid"]:
+                retrieval_method = "hybrid"
+            
             bundle = gather_context(
                 task_id,
                 repo=repo,
@@ -87,6 +134,7 @@ def execute_task(
                 tfidf_k=tfidf_k,
                 tfidf_min_score=tfidf_min_score,
                 tfidf_max_candidates=tfidf_max_candidates,
+                retrieval_method=retrieval_method,
             )
             # Budget options
             max_chars = opts.get("max_chars")
@@ -145,6 +193,20 @@ def execute_task(
         content = _glm_chat(prompt)
         repo.upsert_task_output(task_id, content)
         print(f"Task {task_id} ({name}) done.")
+        
+        # 异步生成embedding（可选）
+        try:
+            generate_embeddings = True  # 默认启用
+            
+            # 检查context_options中是否有embedding配置
+            if context_options and isinstance(context_options, dict):
+                generate_embeddings = context_options.get("generate_embeddings", True)
+            
+            if generate_embeddings:
+                _generate_task_embedding_async(task_id, content, repo)
+        except Exception as embed_error:
+            logger.warning(f"触发embedding生成失败 (任务 {task_id}): {embed_error}")
+        
         return "done"
     except Exception as e:
         print(f"Task {task_id} ({name}) failed: {e}")

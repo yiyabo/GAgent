@@ -88,6 +88,14 @@ def _parse_schedule(val) -> str:
     return v if v in {"bfs", "dag", "postorder"} else "bfs"
 
 
+def _parse_retrieval_method(val) -> str:
+    """Parse retrieval method for context assembly: 'hybrid' (default), 'tfidf', or 'semantic'."""
+    if not isinstance(val, str):
+        return "hybrid"
+    v = val.strip().lower()
+    return v if v in {"tfidf", "semantic", "hybrid"} else "hybrid"
+
+
 def _sanitize_manual_list(vals) -> Optional[List[int]]:
     if not isinstance(vals, list):
         return None
@@ -115,6 +123,8 @@ def _sanitize_context_options(co: Dict[str, Any]) -> Dict[str, Any]:
         # TF-IDF thresholds (optional overrides of env defaults)
         "tfidf_min_score": _parse_opt_float(co.get("tfidf_min_score"), min_value=0.0, max_value=1_000_000.0),
         "tfidf_max_candidates": _parse_opt_int(co.get("tfidf_max_candidates"), min_value=0, max_value=50_000),
+        # GLM embeddings and retrieval method
+        "retrieval_method": _parse_retrieval_method(co.get("retrieval_method")),
         # hierarchy options (Phase 5)
         "include_ancestors": _parse_bool(co.get("include_ancestors"), default=False),
         "include_siblings": _parse_bool(co.get("include_siblings"), default=False),
@@ -442,6 +452,8 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
     # Optional TF-IDF thresholds
     tfidf_min_score = _parse_opt_float(payload.get("tfidf_min_score"), min_value=0.0, max_value=1_000_000.0)
     tfidf_max_candidates = _parse_opt_int(payload.get("tfidf_max_candidates"), min_value=0, max_value=50_000)
+    # GLM embeddings and retrieval method
+    retrieval_method = _parse_retrieval_method(payload.get("retrieval_method"))
     # Hierarchy options (Phase 5)
     include_ancestors = _parse_bool(payload.get("include_ancestors"), default=False)
     include_siblings = _parse_bool(payload.get("include_siblings"), default=False)
@@ -460,6 +472,7 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
         include_ancestors=include_ancestors,
         include_siblings=include_siblings,
         hierarchy_k=hierarchy_k,
+        retrieval_method=retrieval_method,
     )
     # Apply budget only when options are provided (backward compatible)
     if (max_chars is not None) or (per_section_max is not None):
