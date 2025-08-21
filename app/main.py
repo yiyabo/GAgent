@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI, HTTPException, Body
 from .models import TaskCreate
 from .database import init_db
-from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order
+from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order, postorder_schedule
 from .executor import execute_task
 from .llm import get_default_client
 from .services.planning import propose_plan_service, approve_plan_service
@@ -81,11 +81,11 @@ def _parse_strategy(val) -> str:
 
 
 def _parse_schedule(val) -> str:
-    """Parse scheduling strategy for /run: 'bfs' (default) or 'dag'."""
+    """Parse scheduling strategy for /run: 'bfs' (default), 'dag', or 'postorder'."""
     if not isinstance(val, str):
         return "bfs"
     v = val.strip().lower()
-    return v if v in {"bfs", "dag"} else "bfs"
+    return v if v in {"bfs", "dag", "postorder"} else "bfs"
 
 
 def _sanitize_manual_list(vals) -> Optional[List[int]]:
@@ -256,6 +256,8 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             if cycle:
                 raise HTTPException(status_code=400, detail={"error": "cycle_detected", **cycle})
             tasks_iter = ordered
+        elif schedule == "postorder":
+            tasks_iter = postorder_schedule()
         else:
             tasks_iter = bfs_schedule()
         for task in tasks_iter:
@@ -272,6 +274,8 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         if cycle:
             raise HTTPException(status_code=400, detail={"error": "cycle_detected", **cycle})
         tasks_iter = ordered
+    elif schedule == "postorder":
+        tasks_iter = postorder_schedule(title)
     else:
         tasks_iter = bfs_schedule(title)
 
