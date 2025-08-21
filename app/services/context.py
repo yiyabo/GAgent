@@ -1,9 +1,6 @@
 from typing import Any, Dict, List, Optional, Tuple
-import math
-import re
 import os
 import logging
-from functools import lru_cache
 
 from ..interfaces import TaskRepository
 from ..repository.tasks import default_repo
@@ -93,98 +90,7 @@ def _index_section() -> Dict[str, Any]:
     }
 
 
-# -----------------
-# TF-IDF utilities
-# -----------------
-
-_TOKEN_RE = re.compile(r"[\w]+", flags=re.UNICODE)
-
-# Minimal English stopwords (extend as needed). Chinese is not aggressively filtered.
-_STOPWORDS = {
-    "the","is","a","an","and","or","to","in","of","for","with","on","at","by","from","as","it","this","that",
-    "these","those","be","are","was","were","been","being","have","has","had","do","does","did","but","not","no",
-    "so","if","then","than","also","we","you","i","me","my","our","your","their","they","them","he","she","his",
-    "her","its","what","which","who","whom","whose","can","could","should","would","may","might","will","shall",
-    "about","into","over","after","before","again","further","here","there","when","where","why","how","all","any",
-    "both","each","few","more","most","other","some","such","only","own","same","too","very"
-}
-
-# Tunables via env (keep defaults backward compatible)
-TFIDF_MAX_CANDIDATES = int(os.environ.get("TFIDF_MAX_CANDIDATES", "500"))
-TFIDF_MIN_SCORE = float(os.environ.get("TFIDF_MIN_SCORE", "0"))
-
-
-def _is_cjk_char(ch: str) -> bool:
-    """Return True if the given character is a CJK/Han/Hangul/Kana character.
-    This is a minimal heuristic to keep single-character tokens for CJK languages.
-    """
-    try:
-        code = ord(ch)
-    except Exception:
-        return False
-    return (
-        0x3400 <= code <= 0x4DBF  # CJK Unified Ideographs Extension A
-        or 0x4E00 <= code <= 0x9FFF  # CJK Unified Ideographs
-        or 0xF900 <= code <= 0xFAFF  # CJK Compatibility Ideographs
-        or 0x3040 <= code <= 0x309F  # Hiragana
-        or 0x30A0 <= code <= 0x30FF  # Katakana
-        or 0xAC00 <= code <= 0xD7AF  # Hangul Syllables
-        or 0x1100 <= code <= 0x11FF  # Hangul Jamo
-        or 0x3130 <= code <= 0x318F  # Hangul Compatibility Jamo
-    )
-
-
-@lru_cache(maxsize=4096)
-def _tokenize(text: str) -> List[str]:
-    if not text:
-        return []
-    toks = [m.group(0).lower() for m in _TOKEN_RE.finditer(text)]
-    # Filter stopwords, numeric-only tokens, and single-char noise (keep single-char CJK)
-    out: List[str] = []
-    for t in toks:
-        if t in _STOPWORDS:
-            continue
-        if t.isdigit():
-            continue
-        if len(t) == 1:
-            if not _is_cjk_char(t[0]):
-                continue
-        out.append(t)
-    return out
-
-
-def _tfidf_scores(query_tokens: List[str], docs_tokens: List[List[str]]) -> List[float]:
-    # Document frequencies
-    N = len(docs_tokens)
-    df: Dict[str, int] = {}
-    for toks in docs_tokens:
-        seen = set(toks)
-        for t in seen:
-            df[t] = df.get(t, 0) + 1
-
-    # IDF with smoothing
-    idf: Dict[str, float] = {}
-    for t, c in df.items():
-        idf[t] = math.log(1.0 + (N / (1.0 + c)))
-
-    # Query term set
-    qset = set(query_tokens)
-
-    scores: List[float] = []
-    for toks in docs_tokens:
-        if not toks:
-            scores.append(0.0)
-            continue
-        # term frequencies normalized by doc length
-        tf: Dict[str, float] = {}
-        inv_len = 1.0 / float(len(toks))
-        for t in toks:
-            tf[t] = tf.get(t, 0.0) + inv_len
-        s = 0.0
-        for t in qset:
-            s += tf.get(t, 0.0) * idf.get(t, 0.0)
-        scores.append(s)
-    return scores
+# GLM semantic retrieval replaces TF-IDF utilities
 
 
 def _priority_key_local(s: Dict[str, Any]) -> Tuple[int, int]:
@@ -220,25 +126,29 @@ def gather_context(
     include_plan: bool = True,
     k: int = 5,
     manual: Optional[List[int]] = None,
-    tfidf_k: Optional[int] = None,
-    tfidf_min_score: Optional[float] = None,
-    tfidf_max_candidates: Optional[int] = None,
+    semantic_k: int = 5,
+    min_similarity: float = 0.1,
     include_ancestors: bool = False,
     include_siblings: bool = False,
     hierarchy_k: int = 3,
-    retrieval_method: str = "hybrid",
 ) -> Dict[str, Any]:
-    """Assemble a context bundle for a task.
+    """Assemble a context bundle for a task using GLM semantic search.
 
-    - include_deps: include upstream tasks connected via links (requires, refers)
-    - include_plan: include sibling tasks in the same plan prefix
-    - k: soft cap for number of items taken from each category
-    - manual: optional explicit task IDs to include
-    - include_ancestors: include parent/ancestor tasks in hierarchy
-    - include_siblings: include sibling tasks in hierarchy (same parent)
-    - hierarchy_k: soft cap for hierarchy-based items (ancestors + siblings)
+    Args:
+        task_id: Target task ID for context assembly
+        repo: Task repository instance
+        include_deps: Include upstream tasks connected via links (requires, refers)
+        include_plan: Include sibling tasks in the same plan prefix
+        k: Soft cap for number of items taken from each category
+        manual: Optional explicit task IDs to include
+        semantic_k: Number of semantically similar tasks to retrieve (default: 5)
+        min_similarity: Minimum similarity threshold for semantic retrieval (default: 0.1)
+        include_ancestors: Include parent/ancestor tasks in hierarchy
+        include_siblings: Include sibling tasks in hierarchy (same parent)
+        hierarchy_k: Soft cap for hierarchy-based items (ancestors + siblings)
 
-    Returns a structured dict with sections and a combined string.
+    Returns:
+        Dict containing task_id, sections list, and combined text string
     """
     sections: List[Dict[str, Any]] = []
     seen_ids = set()
@@ -340,8 +250,8 @@ def gather_context(
                     sections.append(sec)
                     seen_ids.add(sec["task_id"])
 
-    # 5) Advanced retrieval using GLM embeddings and hybrid search
-    if isinstance(tfidf_k, int) and tfidf_k > 0:
+    # 5) GLM semantic retrieval (always enabled with default parameters)
+    if semantic_k > 0:
         # Query text: prefer current task input prompt, else task name
         me = _get_task_by_id(task_id, repo)
         query_text = repo.get_task_input_prompt(task_id) if me else None
@@ -351,24 +261,21 @@ def gather_context(
 
         if _debug_on():
             _CTX_LOGGER.debug({
-                "event": "gather_context.retrieval_start",
+                "event": "gather_context.semantic_retrieval_start",
                 "task_id": task_id,
                 "query_text": query_text[:100],
-                "method": retrieval_method,
-                "tfidf_k": tfidf_k,
+                "semantic_k": semantic_k,
             })
 
         try:
-            # Use the new hybrid retrieval service
+            # Use GLM semantic retrieval service
             retrieval_service = get_retrieval_service()
             
-            # Perform retrieval
+            # Perform semantic retrieval
             retrieved_results = retrieval_service.search(
                 query=query_text,
-                k=tfidf_k,
-                method=retrieval_method,
-                min_score=tfidf_min_score,
-                max_candidates=tfidf_max_candidates
+                k=semantic_k,
+                min_similarity=min_similarity
             )
             
             # Convert results to sections
@@ -386,11 +293,7 @@ def gather_context(
                 if sec and sec.get("task_id") not in seen_ids:
                     # Add retrieval score metadata
                     sec["retrieval_score"] = result.get("similarity", 0.0)
-                    sec["retrieval_method"] = retrieval_method
-                    if "semantic_score" in result:
-                        sec["semantic_score"] = result["semantic_score"]
-                    if "keyword_score" in result:
-                        sec["keyword_score"] = result["keyword_score"]
+                    sec["retrieval_method"] = "semantic"
                     
                     sections.append(sec)
                     seen_ids.add(sec["task_id"])
@@ -398,59 +301,15 @@ def gather_context(
             
             if _debug_on():
                 _CTX_LOGGER.debug({
-                    "event": "gather_context.retrieval_done",
+                    "event": "gather_context.semantic_retrieval_done",
                     "task_id": task_id,
-                    "method": retrieval_method,
                     "retrieved": len(retrieved_results),
                     "added": added,
                     "top_score": retrieved_results[0].get("similarity", 0.0) if retrieved_results else 0.0,
                 })
                 
         except Exception as e:
-            # Fallback to original TF-IDF if new retrieval fails
-            _CTX_LOGGER.warning(f"Advanced retrieval failed, falling back to TF-IDF: {e}")
-            
-            # Original TF-IDF implementation as fallback
-            try:
-                all_tasks = repo.list_all_tasks()
-            except Exception:
-                all_tasks = []
-            candidates: List[Tuple[int, str]] = []
-            for t in all_tasks:
-                try:
-                    tid = t.get("id")  # type: ignore
-                except Exception:
-                    tid = None
-                if not isinstance(tid, int) or tid == task_id:
-                    continue
-                if tid in seen_ids:
-                    continue
-                content = repo.get_task_output_content(tid)
-                if content and isinstance(content, str) and content.strip():
-                    candidates.append((tid, content))
-
-            if candidates:
-                # Compute simple TF-IDF scores
-                tok_q = _tokenize(query_text)
-                if tok_q:
-                    doc_tokens: List[List[str]] = [_tokenize(text) for _, text in candidates]
-                    scores = _tfidf_scores(tok_q, doc_tokens)
-                    order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
-                    added = 0
-                    for idx in order:
-                        if added >= int(tfidf_k):
-                            break
-                        tid, _ = candidates[idx]
-                        t = _get_task_by_id(tid, repo)
-                        if not t:
-                            continue
-                        sec = _section_for_task(t, repo, kind="retrieved")
-                        if sec and sec.get("task_id") not in seen_ids:
-                            sec["retrieval_score"] = scores[idx]
-                            sec["retrieval_method"] = "tfidf_fallback"
-                            sections.append(sec)
-                            seen_ids.add(sec["task_id"])
-                            added += 1
+            _CTX_LOGGER.warning(f"GLM semantic retrieval failed: {e}")
 
     # 6) Normalize ordering by priority groups even if no budget is applied
     sections = sorted(sections, key=_priority_key_local)
