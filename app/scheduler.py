@@ -258,3 +258,92 @@ def requires_dag_schedule(title: Optional[str] = None):
     ordered, _ = requires_dag_order(title)
     for r in ordered:
         yield r
+
+def postorder_schedule(title: Optional[str] = None):
+    """Yield pending tasks in post-order traversal: children before parents.
+
+    Behavior:
+    - Loads all pending tasks with hierarchy info.
+    - If title is provided, scopes rows by plan prefix in-memory.
+    - Orders by post-order traversal: deeper tasks first, then by priority within same depth.
+    - For each task, includes its dependency information (children that should be completed first).
+    """
+    # Batch load all pending tasks with hierarchy info
+    rows = default_repo.list_pending_full()
+
+    # Optional scope by plan title
+    if title:
+        prefix = plan_prefix(title)
+        rows = [r for r in rows if (r.get("name") or "").startswith(prefix)]
+
+    # Ensure hierarchy fields present
+    _ensure_hierarchy(rows)
+
+    # Build parent-child relationships
+    children_map = {}  # parent_id -> [child_tasks]
+    id_to_row = {}
+    
+    for r in rows:
+        try:
+            task_id = int(r.get("id"))
+            id_to_row[task_id] = r
+            parent_id = r.get("parent_id")
+            if parent_id is not None:
+                parent_id = int(parent_id)
+                if parent_id not in children_map:
+                    children_map[parent_id] = []
+                children_map[parent_id].append(r)
+        except Exception:
+            continue
+
+    # Post-order traversal with dependency info
+    visited = set()
+    result = []
+
+    def _postorder_dfs(task_row):
+        task_id = int(task_row.get("id"))
+        if task_id in visited:
+            return
+        
+        visited.add(task_id)
+        
+        # First visit all children (deeper tasks)
+        child_tasks = children_map.get(task_id, [])
+        # Sort children by priority for stable ordering
+        child_tasks_sorted = sorted(child_tasks, key=lambda x: (
+            int(x.get("priority") or 100),
+            int(x.get("id"))
+        ))
+        
+        for child in child_tasks_sorted:
+            _postorder_dfs(child)
+        
+        # Add dependency info to task
+        task_with_deps = dict(task_row)
+        task_with_deps["dependencies"] = [int(child.get("id")) for child in child_tasks]
+        
+        # Then add current task
+        result.append(task_with_deps)
+
+    # Find root tasks (those without parents or with parents not in pending set)
+    root_tasks = []
+    pending_ids = {int(r.get("id")) for r in rows}
+    
+    for r in rows:
+        parent_id = r.get("parent_id")
+        if parent_id is None or int(parent_id) not in pending_ids:
+            root_tasks.append(r)
+    
+    # Sort root tasks by priority for stable ordering
+    root_tasks_sorted = sorted(root_tasks, key=lambda x: (
+        int(x.get("priority") or 100),
+        int(x.get("id"))
+    ))
+    
+    # Start DFS from each root
+    for root in root_tasks_sorted:
+        _postorder_dfs(root)
+    
+    # Yield results
+    for task in result:
+        yield task

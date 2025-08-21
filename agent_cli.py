@@ -139,7 +139,7 @@ def main():
     parser.add_argument("--strategy", choices=["truncate", "sentence"], help="Budgeting strategy")
     parser.add_argument("--save-snapshot", dest="save_snapshot", action="store_true", help="Save context snapshot per execution")
     parser.add_argument("--label", type=str, help="Snapshot label when saving context")
-    parser.add_argument("--schedule", choices=["bfs", "dag"], help="Scheduling strategy for execution (default: bfs)")
+    parser.add_argument("--schedule", choices=["bfs", "dag", "postorder"], help="Scheduling strategy for execution (default: bfs)")
     # Snapshot utilities
     parser.add_argument("--list-snapshots", action="store_true", help="List context snapshots for a task id")
     parser.add_argument("--export-snapshot", action="store_true", help="Export a context snapshot by task id and label")
