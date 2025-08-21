@@ -1,80 +1,57 @@
 #!/usr/bin/env python3
 """
-混合检索服务模块
+GLM语义检索服务模块
 
-结合传统TF-IDF关键词匹配和GLM语义向量检索，
-提供更准确和全面的任务上下文检索功能。
+使用GLM embeddings进行语义相似度检索，
+替代原有的TF-IDF关键词匹配。
 """
 
-import os
-import json
+from typing import List, Dict, Optional, Any
 import logging
-from typing import List, Dict, Optional, Any, Tuple
-from collections import Counter
-import re
-import math
 
-from .embeddings import get_embeddings_service
-from ..repository.tasks import default_repo
+from app.repository.tasks import default_repo
+from app.services.embeddings import get_embeddings_service
+from app.services.config import get_config
+from app.services.structure_prior import get_structure_prior_calculator
+from app.services.graph_attention import get_graph_attention_reranker
+from ..repository.tasks import SqliteTaskRepository
 
 logger = logging.getLogger(__name__)
 
 
-class HybridRetrievalService:
-    """混合检索服务类"""
+class SemanticRetrievalService:
+    """GLM语义检索服务类"""
     
     def __init__(self):
+        self.config = get_config()
         self.embeddings_service = get_embeddings_service()
+        self.structure_calculator = get_structure_prior_calculator()
+        self.graph_attention_reranker = get_graph_attention_reranker()
+        self.repo = SqliteTaskRepository()
+        self.min_similarity = self.config.min_similarity_threshold
+        self.debug = self.config.debug_mode
         
-        # 检索配置
-        self.keyword_weight = float(os.getenv('RETRIEVAL_KEYWORD_WEIGHT', '0.3'))
-        self.semantic_weight = float(os.getenv('RETRIEVAL_SEMANTIC_WEIGHT', '0.7'))
-        self.min_keyword_score = float(os.getenv('RETRIEVAL_MIN_KEYWORD_SCORE', '0.1'))
-        self.min_semantic_score = float(os.getenv('RETRIEVAL_MIN_SEMANTIC_SCORE', '0.2'))
-        
-        # TF-IDF参数
-        self.max_candidates = int(os.getenv('TFIDF_MAX_CANDIDATES', '500'))
-        self.min_tfidf_score = float(os.getenv('TFIDF_MIN_SCORE', '0.0'))
-        
-        # 启用调试日志
-        self.debug = os.getenv('RETRIEVAL_DEBUG', '0') == '1'
-        
-    def search(self, query: str, k: int = 5, method: str = "hybrid", 
-               min_score: Optional[float] = None, max_candidates: Optional[int] = None) -> List[Dict[str, Any]]:
+    def search(self, query: str, k: int = 5, min_similarity: Optional[float] = None) -> List[Dict[str, Any]]:
         """
-        统一检索接口
+        GLM语义检索接口
         
         Args:
             query: 查询文本
             k: 返回结果数量
-            method: 检索方法 ("tfidf", "semantic", "hybrid")
+            min_similarity: 最小相似度阈值
             
         Returns:
-            检索结果列表
+            检索结果列表，每个结果包含task_id, name, content, similarity等字段
         """
         if self.debug:
-            logger.debug(f"检索查询: '{query}', 方法: {method}, k: {k}")
+            logger.debug(f"GLM语义检索: '{query}', k: {k}")
         
-        if method == "tfidf":
-            return self.tfidf_search(query, k, min_score=min_score, max_candidates=max_candidates)
-        elif method == "semantic":
-            return self.semantic_search(query, k, min_score=min_score)
-        elif method == "hybrid":
-            return self.hybrid_search(query, k, min_score=min_score, max_candidates=max_candidates)
-        else:
-            logger.warning(f"未知检索方法: {method}, 使用hybrid")
-            return self.hybrid_search(query, k, min_score=min_score, max_candidates=max_candidates)
-    
-    def semantic_search(self, query: str, k: int = 5, min_score: Optional[float] = None) -> List[Dict[str, Any]]:
-        """
-        纯语义检索：基于GLM embeddings
-        """
         try:
             # 获取查询的embedding
             query_embedding = self.embeddings_service.get_single_embedding(query)
             if not query_embedding:
-                logger.warning("无法获取查询embedding，回退到TF-IDF")
-                return self.tfidf_search(query, k)
+                logger.warning("无法获取查询embedding")
+                return []
             
             # 获取所有有embedding的任务
             tasks_with_embeddings = default_repo.get_tasks_with_embeddings()
@@ -97,249 +74,200 @@ class HybridRetrievalService:
                         })
             
             # 计算语义相似度
-            min_similarity = min_score if min_score is not None else self.min_semantic_score
+            min_sim = min_similarity if min_similarity is not None else self.min_similarity
             results = self.embeddings_service.find_most_similar(
                 query_embedding, 
                 candidates, 
                 k=k, 
-                min_similarity=min_similarity
+                min_similarity=min_sim
             )
             
             if self.debug:
                 logger.debug(f"语义检索返回 {len(results)} 个结果")
             
             return results
-            
+        
         except Exception as e:
             logger.error(f"语义检索失败: {e}")
-            return self.tfidf_search(query, k, min_score=min_score)  # 回退到TF-IDF
-    
-    def tfidf_search(self, query: str, k: int = 5, min_score: Optional[float] = None, 
-                     max_candidates: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        传统TF-IDF关键词检索 (简化版本)
-        """
-        try:
-            # 获取所有任务（不限制状态，只要有输出内容）
-            all_tasks = default_repo.list_all_tasks()
-            if not all_tasks:
-                return []
-            
-            # 构建文档库
-            documents = []
-            task_map = {}
-            
-            for task in all_tasks:
-                content = default_repo.get_task_output_content(task['id'])
-                if content and content.strip():
-                    documents.append(content)
-                    task_map[len(documents) - 1] = task
-            
-            if not documents:
-                return []
-            
-            # 简单的TF-IDF计算
-            query_tokens = self._tokenize(query.lower())
-            doc_scores = []
-            
-            # 计算IDF
-            doc_freq = Counter()
-            tokenized_docs = [self._tokenize(doc.lower()) for doc in documents]
-            
-            for doc_tokens in tokenized_docs:
-                unique_tokens = set(doc_tokens)
-                for token in unique_tokens:
-                    doc_freq[token] += 1
-            
-            N = len(documents)
-            
-            # 为每个文档计算TF-IDF得分
-            for i, doc_tokens in enumerate(tokenized_docs):
-                score = 0.0
-                doc_token_freq = Counter(doc_tokens)
-                doc_len = len(doc_tokens)
-                
-                for token in query_tokens:
-                    if token in doc_token_freq:
-                        # TF: 词频 / 文档长度
-                        tf = doc_token_freq[token] / doc_len if doc_len > 0 else 0
-                        
-                        # IDF: log((N + 1) / (1 + df)) + 1 (prevents negative values)
-                        idf = math.log((N + 1) / (1 + doc_freq[token])) + 1 if doc_freq[token] > 0 else 1
-                        
-                        score += tf * idf
-                
-                min_tfidf_score = min_score if min_score is not None else self.min_tfidf_score
-                if score >= min_tfidf_score:
-                    task = task_map[i]
-                    doc_scores.append({
-                        'task_id': task['id'],
-                        'name': task['name'],
-                        'content': documents[i],
-                        'similarity': score,
-                        'tfidf_score': score
-                    })
-            
-            # 按得分排序并返回top-k
-            doc_scores.sort(key=lambda x: x['similarity'], reverse=True)
-            results = doc_scores[:k]
-            
-            if self.debug:
-                logger.debug(f"TF-IDF检索返回 {len(results)} 个结果")
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"TF-IDF检索失败: {e}")
             return []
     
-    def hybrid_search(self, query: str, k: int = 5, min_score: Optional[float] = None, 
-                      max_candidates: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        混合检索：结合关键词匹配和语义相似度
-        """
+    def search_with_structure_prior(self, query: str, query_task_id: Optional[int] = None,
+                                  k: int = 5, min_similarity: Optional[float] = None,
+                                  structure_alpha: float = 0.3) -> List[Dict[str, Any]]:
+        """Search with structure prior weights"""
+        semantic_results = self.search(query, k * 2, min_similarity)
+        
+        if not semantic_results or not query_task_id:
+            return semantic_results[:k]
+        
         try:
-            # 1. 获取更多候选项进行关键词预筛选
-            max_cand = max_candidates if max_candidates is not None else self.max_candidates
-            candidate_k = min(k * 3, max_cand)
-            
-            # 2. TF-IDF快速筛选候选项
-            tfidf_results = self.tfidf_search(query, candidate_k, min_score=min_score)
-            
-            if not tfidf_results:
-                # 如果TF-IDF没有结果，尝试纯语义检索
-                return self.semantic_search(query, k, min_score=min_score)
-            
-            # 3. 对候选项进行语义相似度计算
-            query_embedding = self.embeddings_service.get_single_embedding(query)
-            if not query_embedding:
-                # 如果无法获取embedding，返回TF-IDF结果
-                return tfidf_results[:k]
-            
-            # 4. 为每个候选项添加语义得分
-            enhanced_results = []
-            
-            for result in tfidf_results:
-                task_id = result['task_id']
-                
-                # 尝试获取已存储的embedding
-                stored_embedding = default_repo.get_task_embedding(task_id)
-                semantic_score = 0.0
-                
-                if stored_embedding and stored_embedding.get('embedding_vector'):
-                    embedding = self.embeddings_service.json_to_embedding(
-                        stored_embedding['embedding_vector']
-                    )
-                    if embedding:
-                        semantic_score = self.embeddings_service.compute_similarity(
-                            query_embedding, embedding
-                        )
-                else:
-                    # 如果没有存储的embedding，临时计算
-                    content = result.get('content', '')
-                    if content.strip():
-                        temp_embedding = self.embeddings_service.get_single_embedding(content)
-                        if temp_embedding:
-                            semantic_score = self.embeddings_service.compute_similarity(
-                                query_embedding, temp_embedding
-                            )
-                
-                # 5. 计算综合得分
-                keyword_score = result.get('tfidf_score', 0.0)
-                
-                # 归一化处理
-                normalized_keyword = min(keyword_score, 1.0)  # TF-IDF得分通常较小
-                normalized_semantic = max(0.0, semantic_score)  # 确保非负
-                
-                # 加权组合
-                final_score = (
-                    self.keyword_weight * normalized_keyword + 
-                    self.semantic_weight * normalized_semantic
-                )
-                
-                # 过滤得分过低的结果
-                if (normalized_keyword >= self.min_keyword_score or 
-                    normalized_semantic >= self.min_semantic_score):
-                    
-                    result_copy = result.copy()
-                    result_copy.update({
-                        'similarity': final_score,
-                        'semantic_score': semantic_score,
-                        'keyword_score': keyword_score,
-                        'final_score': final_score
-                    })
-                    enhanced_results.append(result_copy)
-            
-            # 6. 按综合得分排序
-            enhanced_results.sort(key=lambda x: x['final_score'], reverse=True)
-            final_results = enhanced_results[:k]
-            
-            if self.debug:
-                logger.debug(f"混合检索返回 {len(final_results)} 个结果")
-                for i, result in enumerate(final_results[:3]):  # 只显示前3个
-                    logger.debug(f"  {i+1}. {result['name']} - "
-                               f"综合: {result['final_score']:.3f}, "
-                               f"关键词: {result.get('keyword_score', 0):.3f}, "
-                               f"语义: {result.get('semantic_score', 0):.3f}")
-            
-            return final_results
+            enhanced_results = self._apply_structure_weights(
+                semantic_results, query_task_id, structure_alpha
+            )
+            self._log_structure_results(enhanced_results[:k], query_task_id)
+            return enhanced_results[:k]
             
         except Exception as e:
-            logger.error(f"混合检索失败: {e}")
-            # 回退到TF-IDF
-            return self.tfidf_search(query, k, min_score=min_score, max_candidates=max_candidates)
+            logger.warning(f"Structure prior calculation failed: {e}, falling back to semantic-only")
+            return semantic_results[:k]
     
-    def _tokenize(self, text: str) -> List[str]:
-        """
-        简单分词器：支持中英文
-        """
-        # 移除标点符号，保留中文字符、英文字母和数字
-        text = re.sub(r'[^\u4e00-\u9fff\w\s]', ' ', text)
+    def _apply_structure_weights(self, semantic_results: List[Dict[str, Any]], 
+                               query_task_id: int, structure_alpha: float) -> List[Dict[str, Any]]:
+        """Apply structure weights to semantic results"""
+        candidate_ids = [result['id'] for result in semantic_results]
         
-        # 分离中英文
-        tokens = []
+        structure_weights = self.structure_calculator.compute_structure_weights(
+            query_task_id, candidate_ids
+        )
         
-        # 英文分词 (按空格)
-        english_tokens = re.findall(r'[a-zA-Z0-9]+', text)
-        tokens.extend([t.lower() for t in english_tokens if len(t) > 1])
+        semantic_scores = {result['id']: result['similarity'] for result in semantic_results}
+        combined_scores = self.structure_calculator.apply_structure_weights(
+            semantic_scores, structure_weights, structure_alpha
+        )
         
-        # 中文分词 (简单按字符)
-        chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
+        enhanced_results = []
+        for result in semantic_results:
+            task_id = result['id']
+            enhanced_result = result.copy()
+            enhanced_result['combined_score'] = combined_scores.get(task_id, result['similarity'])
+            enhanced_result['structure_weight'] = structure_weights.get(task_id, 0.0)
+            enhanced_results.append(enhanced_result)
         
-        # 中文2-gram
-        for i in range(len(chinese_chars) - 1):
-            bigram = chinese_chars[i] + chinese_chars[i + 1]
-            tokens.append(bigram)
+        enhanced_results.sort(key=lambda x: x['combined_score'], reverse=True)
+        return enhanced_results
+    
+    def _log_structure_results(self, results: List[Dict[str, Any]], query_task_id: int) -> None:
+        """Log structure-enhanced results for debugging"""
+        if self.debug:
+            logger.debug(f"Structure-enhanced retrieval for query_task_id={query_task_id}:")
+            for i, result in enumerate(results):
+                logger.debug(f"  {i+1}. Task {result['id']}: semantic={result['similarity']:.3f}, "
+                           f"structure={result['structure_weight']:.3f}, combined={result['combined_score']:.3f}")
+    
+    def search_with_graph_attention(self, query: str, query_task_id: Optional[int] = None,
+                                  k: int = 5, min_similarity: Optional[float] = None,
+                                  structure_alpha: float = 0.3, attention_alpha: float = 0.4) -> List[Dict[str, Any]]:
+        """Search with graph attention mechanism"""
+        if not query_task_id:
+            return self.search(query, k, min_similarity)
         
-        # 中文单字符 (仅对于较短的文本)
-        if len(chinese_chars) <= 10:
-            tokens.extend(chinese_chars)
+        structure_results = self.search_with_structure_prior(
+            query, query_task_id, k * 2, min_similarity, structure_alpha
+        )
         
-        return [t for t in tokens if len(t) > 0]
+        if len(structure_results) <= 1:
+            return structure_results[:k]
+        
+        try:
+            embeddings = self._prepare_embeddings(query, query_task_id, structure_results)
+            attention_results = self.graph_attention_reranker.rerank_with_attention(
+                query_task_id, structure_results, embeddings, attention_alpha
+            )
+            
+            self._log_attention_results(attention_results[:k], query_task_id)
+            return attention_results[:k]
+            
+        except Exception as e:
+            logger.warning(f"Graph attention reranking failed: {e}, falling back to structure-only")
+            return structure_results[:k]
+    
+    def _prepare_embeddings(self, query: str, query_task_id: int, 
+                          structure_results: List[Dict[str, Any]]) -> Dict[int, List[float]]:
+        """Prepare embeddings mapping for graph attention"""
+        embeddings = {}
+        
+        query_embedding = self.embeddings_service.get_single_embedding(query)
+        if query_embedding:
+            embeddings[query_task_id] = query_embedding
+        
+        for result in structure_results:
+            task_id = result['id']
+            if 'embedding' in result:
+                embeddings[task_id] = result['embedding']
+            else:
+                embeddings[task_id] = self._get_task_embedding(task_id)
+        
+        return embeddings
+    
+    def _get_task_embedding(self, task_id: int) -> Optional[List[float]]:
+        """Get embedding for a specific task"""
+        try:
+            task_embedding = self.repo.get_task_embedding(task_id)
+            if task_embedding and task_embedding.get('embedding_vector'):
+                return self.embeddings_service.json_to_embedding(
+                    task_embedding['embedding_vector']
+                )
+        except Exception:
+            pass
+        return None
+    
+    def _log_attention_results(self, results: List[Dict[str, Any]], query_task_id: int) -> None:
+        """Log graph attention results for debugging"""
+        if self.debug:
+            logger.debug(f"Graph attention reranking for query_task_id={query_task_id}:")
+            for i, result in enumerate(results):
+                logger.debug(f"  {i+1}. Task {result['id']}: "
+                           f"semantic={result.get('similarity', 0):.3f}, "
+                           f"structure={result.get('structure_weight', 0):.3f}, "
+                           f"attention={result.get('attention_score', 0):.3f}, "
+                           f"final={result.get('combined_score', 0):.3f}")
     
     def get_retrieval_stats(self) -> Dict[str, Any]:
         """获取检索系统统计信息"""
-        embedding_stats = default_repo.get_embedding_stats()
+        embedding_stats = self.repo.get_embedding_stats()
         
         return {
-            "embedding_stats": embedding_stats,
-            "retrieval_config": {
-                "keyword_weight": self.keyword_weight,
-                "semantic_weight": self.semantic_weight,
-                "min_keyword_score": self.min_keyword_score,
-                "min_semantic_score": self.min_semantic_score,
-                "max_candidates": self.max_candidates
-            },
-            "embeddings_service": self.embeddings_service.get_service_info()
+            "service": "Semantic Retrieval",
+            "embeddings_service": self.embeddings_service.get_service_info(),
+            "min_similarity": self.min_similarity,
+            "debug_mode": self.debug,
+            "structure_prior_enabled": True,
+            "graph_attention_enabled": True
+        }
+    
+    def explain_structure_weights(self, query_task_id: int, candidate_task_ids: List[int]) -> Dict[str, Any]:
+        """
+        解释结构先验权重的计算过程
+        
+        Args:
+            query_task_id: 查询任务ID
+            candidate_task_ids: 候选任务ID列表
+            
+        Returns:
+            包含权重解释的详细信息
+        """
+        explanations = {}
+        
+        for candidate_id in candidate_task_ids:
+            try:
+                explanation = self.structure_calculator.get_structure_explanation(
+                    query_task_id, candidate_id
+                )
+                explanations[candidate_id] = explanation
+            except Exception as e:
+                logger.warning(f"Failed to explain structure weight for {candidate_id}: {e}")
+                explanations[candidate_id] = {'error': str(e)}
+        
+        return {
+            'query_task_id': query_task_id,
+            'explanations': explanations
         }
 
 
-# 全局单例
-_retrieval_service = None
+# 全局单例实例
+_semantic_retrieval_service = None
 
-def get_retrieval_service() -> HybridRetrievalService:
-    """获取混合检索服务单例"""
-    global _retrieval_service
-    if _retrieval_service is None:
-        _retrieval_service = HybridRetrievalService()
-    return _retrieval_service
+def get_semantic_retrieval_service() -> SemanticRetrievalService:
+    """获取语义检索服务单例"""
+    global _semantic_retrieval_service
+    if _semantic_retrieval_service is None:
+        _semantic_retrieval_service = SemanticRetrievalService()
+    return _semantic_retrieval_service
+
+def clear_retrieval_cache():
+    """清空检索相关缓存"""
+    global _semantic_retrieval_service
+    if _semantic_retrieval_service is not None:
+        _semantic_retrieval_service.structure_calculator.clear_cache()
+        _semantic_retrieval_service.graph_attention_reranker.clear_cache()
+        logger.info("Retrieval cache cleared")

@@ -133,9 +133,8 @@ def main():
     parser.add_argument("--include-plan", dest="include_plan", action="store_true", help="Include sibling/plan context (default True)")
     parser.add_argument("--exclude-plan", dest="include_plan", action="store_false", help="Exclude sibling/plan context")
     parser.set_defaults(include_plan=None)
-    parser.add_argument("--tfidf-k", dest="tfidf_k", type=int, help="Number of TF-IDF retrieved items")
-    parser.add_argument("--tfidf-min-score", dest="tfidf_min_score", type=float, help="Minimum TF-IDF score threshold (overrides env default)")
-    parser.add_argument("--tfidf-max-candidates", dest="tfidf_max_candidates", type=int, help="Max candidate outputs to score for TF-IDF (overrides env default)")
+    parser.add_argument("--semantic-k", dest="semantic_k", type=int, help="Number of semantically similar tasks to retrieve")
+    parser.add_argument("--min-similarity", dest="min_similarity", type=float, help="Minimum semantic similarity threshold (0.0-1.0)")
     parser.add_argument("--max-chars", dest="max_chars", type=int, help="Total character budget across sections")
     parser.add_argument("--per-section-max", dest="per_section_max", type=int, help="Max characters per section")
     parser.add_argument("--strategy", choices=["truncate", "sentence"], help="Budgeting strategy")
@@ -158,7 +157,7 @@ def main():
     # GLM Embeddings utilities
     parser.add_argument("--generate-embeddings", action="store_true", help="Generate embeddings for all completed tasks without embeddings")
     parser.add_argument("--embedding-stats", action="store_true", help="Show embedding coverage statistics")
-    parser.add_argument("--retrieval-method", choices=["tfidf", "semantic", "hybrid"], default="hybrid", help="Retrieval method for context assembly (default: hybrid)")
+    # GLM semantic retrieval is now the default and only method
     parser.add_argument("--rebuild-embeddings", action="store_true", help="Rebuild all embeddings (overwrites existing ones)")
     parser.add_argument("--embedding-batch-size", type=int, default=10, help="Batch size for embedding generation (default: 10)")
     args = parser.parse_args()
@@ -175,12 +174,10 @@ def main():
             co["include_deps"] = bool(a.include_deps)
         if a.include_plan is not None:
             co["include_plan"] = bool(a.include_plan)
-        if a.tfidf_k is not None:
-            co["tfidf_k"] = int(a.tfidf_k)
-        if a.tfidf_min_score is not None:
-            co["tfidf_min_score"] = float(a.tfidf_min_score)
-        if a.tfidf_max_candidates is not None:
-            co["tfidf_max_candidates"] = int(a.tfidf_max_candidates)
+        if a.semantic_k is not None:
+            co["semantic_k"] = int(a.semantic_k)
+        if a.min_similarity is not None:
+            co["min_similarity"] = float(a.min_similarity)
         if a.max_chars is not None:
             co["max_chars"] = int(a.max_chars)
         if a.per_section_max is not None:
@@ -191,9 +188,7 @@ def main():
             co["save_snapshot"] = True
         if a.label:
             co["label"] = str(a.label)
-        # GLM Embeddings配置
-        if hasattr(a, 'retrieval_method') and a.retrieval_method:
-            co["retrieval_method"] = str(a.retrieval_method)
+        # GLM semantic retrieval is the default method
         return co or None
 
     # 0a) Fast path: embedding utilities
