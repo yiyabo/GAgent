@@ -9,6 +9,8 @@ from app.database import init_db
 from app.main import propose_plan, approve_plan, run_tasks, get_plan_assembled
 from app.repository.tasks import SqliteTaskRepository
 from app.services.index_root import generate_index, write_index
+from app.services.embeddings import get_embeddings_service
+from app.services.retrieval import get_retrieval_service
 
 
 PLAN_MD = "plan.md"
@@ -153,6 +155,12 @@ def main():
     parser.add_argument("--get-subtree", action="store_true", help="Get subtree (including root) for --task-id")
     parser.add_argument("--move-task", action="store_true", help="Move task --task-id under --new-parent-id (omit or -1 for root)")
     parser.add_argument("--new-parent-id", dest="new_parent_id", type=int, help="New parent id for --move-task (omit or -1 for root)")
+    # GLM Embeddings utilities
+    parser.add_argument("--generate-embeddings", action="store_true", help="Generate embeddings for all completed tasks without embeddings")
+    parser.add_argument("--embedding-stats", action="store_true", help="Show embedding coverage statistics")
+    parser.add_argument("--retrieval-method", choices=["tfidf", "semantic", "hybrid"], default="hybrid", help="Retrieval method for context assembly (default: hybrid)")
+    parser.add_argument("--rebuild-embeddings", action="store_true", help="Rebuild all embeddings (overwrites existing ones)")
+    parser.add_argument("--embedding-batch-size", type=int, default=10, help="Batch size for embedding generation (default: 10)")
     args = parser.parse_args()
 
     print("=== GLM Agent ===")
@@ -183,9 +191,101 @@ def main():
             co["save_snapshot"] = True
         if a.label:
             co["label"] = str(a.label)
+        # GLM Embeddings配置
+        if hasattr(a, 'retrieval_method') and a.retrieval_method:
+            co["retrieval_method"] = str(a.retrieval_method)
         return co or None
 
-    # 0a) Fast path: snapshot utilities
+    # 0a) Fast path: embedding utilities
+    if args.generate_embeddings or args.embedding_stats or args.rebuild_embeddings:
+        init_db()
+        repo = SqliteTaskRepository()
+        embeddings_service = get_embeddings_service()
+        
+        if args.embedding_stats:
+            stats = repo.get_embedding_stats()
+            retrieval_stats = get_retrieval_service().get_retrieval_stats()
+            
+            print("📊 Embedding统计信息")
+            print("="*50)
+            print(f"总任务数: {stats['total_tasks']}")
+            print(f"有embedding的任务数: {stats['total_embeddings']}")
+            print(f"覆盖率: {stats['coverage_percent']:.1f}%")
+            
+            if stats['model_distribution']:
+                print(f"\n模型分布:")
+                for model, count in stats['model_distribution'].items():
+                    print(f"  {model}: {count}")
+            
+            print(f"\n检索配置:")
+            config = retrieval_stats['retrieval_config']
+            print(f"  关键词权重: {config['keyword_weight']}")
+            print(f"  语义权重: {config['semantic_weight']}")
+            print(f"  最小语义得分: {config['min_semantic_score']}")
+            
+            service_info = retrieval_stats['embeddings_service']
+            print(f"\nEmbedding服务:")
+            print(f"  模型: {service_info['model']}")
+            print(f"  维度: {service_info['dimension']}")
+            print(f"  Mock模式: {service_info['mock_mode']}")
+            return
+        
+        if args.generate_embeddings or args.rebuild_embeddings:
+            if args.rebuild_embeddings:
+                tasks = repo.list_tasks_by_status("done")
+                print(f"🔄 重新生成所有 {len(tasks)} 个已完成任务的embeddings...")
+            else:
+                tasks = repo.get_tasks_without_embeddings()
+                print(f"🚀 为 {len(tasks)} 个未生成embedding的任务生成embeddings...")
+            
+            if not tasks:
+                print("✅ 没有需要处理的任务")
+                return
+            
+            batch_size = args.embedding_batch_size
+            success_count = 0
+            error_count = 0
+            
+            for i in range(0, len(tasks), batch_size):
+                batch = tasks[i:i+batch_size]
+                print(f"\n处理批次 {i//batch_size + 1}/{(len(tasks)-1)//batch_size + 1} ({len(batch)} 个任务)")
+                
+                # 准备批次内容
+                batch_contents = []
+                batch_task_ids = []
+                
+                for task in batch:
+                    content = task.get('content', '')
+                    if content and content.strip():
+                        batch_contents.append(content)
+                        batch_task_ids.append(task['id'])
+                
+                if not batch_contents:
+                    continue
+                
+                try:
+                    # 批量生成embeddings
+                    embeddings = embeddings_service.get_embeddings(batch_contents)
+                    
+                    # 存储embeddings
+                    for task_id, embedding in zip(batch_task_ids, embeddings):
+                        if embedding:
+                            embedding_json = embeddings_service.embedding_to_json(embedding)
+                            repo.store_task_embedding(task_id, embedding_json)
+                            success_count += 1
+                            print(f"  ✅ 任务 {task_id}")
+                        else:
+                            error_count += 1
+                            print(f"  ❌ 任务 {task_id} - embedding生成失败")
+                            
+                except Exception as e:
+                    print(f"  ❌ 批次处理失败: {e}")
+                    error_count += len(batch_contents)
+            
+            print(f"\n🎉 完成! 成功: {success_count}, 失败: {error_count}")
+            return
+    
+    # 0b) Fast path: snapshot utilities
     if args.list_snapshots or args.export_snapshot:
         init_db()
         repo = SqliteTaskRepository()

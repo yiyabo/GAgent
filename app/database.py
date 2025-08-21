@@ -88,6 +88,20 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_links_from_id ON task_links(from_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_contexts_task_id ON task_contexts(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_contexts_created_at ON task_contexts(created_at)")
+        
+        # GLM Embeddings storage: task embeddings for semantic search
+        conn.execute('''CREATE TABLE IF NOT EXISTS task_embeddings (
+            task_id INTEGER PRIMARY KEY,
+            embedding_vector TEXT NOT NULL,
+            embedding_model TEXT DEFAULT 'embedding-2',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
+        )''')
+        
+        # Index for embeddings table
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_embeddings_model ON task_embeddings(embedding_model)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_embeddings_created_at ON task_embeddings(created_at)")
 
 @contextmanager
 def get_db():

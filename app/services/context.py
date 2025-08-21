@@ -9,6 +9,7 @@ from ..interfaces import TaskRepository
 from ..repository.tasks import default_repo
 from ..utils import split_prefix
 from .context_budget import PRIORITY_ORDER
+from .retrieval import get_retrieval_service
 
 # Debug logging (opt-in via env: CTX_DEBUG/CONTEXT_DEBUG)
 _CTX_LOGGER = logging.getLogger("app.context")
@@ -225,6 +226,7 @@ def gather_context(
     include_ancestors: bool = False,
     include_siblings: bool = False,
     hierarchy_k: int = 3,
+    retrieval_method: str = "hybrid",
 ) -> Dict[str, Any]:
     """Assemble a context bundle for a task.
 
@@ -338,7 +340,7 @@ def gather_context(
                     sections.append(sec)
                     seen_ids.add(sec["task_id"])
 
-    # 5) Optional TF-IDF retrieval from task_outputs across all tasks
+    # 5) Advanced retrieval using GLM embeddings and hybrid search
     if isinstance(tfidf_k, int) and tfidf_k > 0:
         # Query text: prefer current task input prompt, else task name
         me = _get_task_by_id(task_id, repo)
@@ -347,82 +349,108 @@ def gather_context(
             query_text = me.get("name", "")
         query_text = query_text or ""
 
-        # Build candidate docs from all tasks with outputs
-        try:
-            all_tasks = repo.list_all_tasks()
-        except Exception:
-            all_tasks = []
-        candidates: List[Tuple[int, str]] = []
-        for t in all_tasks:
-            try:
-                tid = t.get("id")  # type: ignore
-            except Exception:
-                tid = None
-            if not isinstance(tid, int) or tid == task_id:
-                continue
-            if tid in seen_ids:
-                continue
-            content = repo.get_task_output_content(tid)
-            if content and isinstance(content, str) and content.strip():
-                candidates.append((tid, content))
-
-        # Determine effective caps/thresholds (overrides if provided)
-        try:
-            eff_max_candidates = int(tfidf_max_candidates) if (tfidf_max_candidates is not None) else int(TFIDF_MAX_CANDIDATES)
-        except Exception:
-            eff_max_candidates = int(TFIDF_MAX_CANDIDATES)
-        try:
-            eff_min_score = float(tfidf_min_score) if (tfidf_min_score is not None) else float(TFIDF_MIN_SCORE)
-        except Exception:
-            eff_min_score = float(TFIDF_MIN_SCORE)
-
-        # Cap candidate size for performance (deterministic order from repo)
-        if eff_max_candidates <= 0:
-            candidates = []
-        elif len(candidates) > eff_max_candidates:
-            candidates = candidates[:eff_max_candidates]
-
         if _debug_on():
             _CTX_LOGGER.debug({
-                "event": "gather_context.tfidf_candidates",
+                "event": "gather_context.retrieval_start",
                 "task_id": task_id,
-                "candidates": len(candidates),
+                "query_text": query_text[:100],
+                "method": retrieval_method,
                 "tfidf_k": tfidf_k,
             })
 
-        if candidates:
-            # Compute simple TF-IDF scores
-            tok_q = _tokenize(query_text)
-            if tok_q:
-                # Pre-tokenize docs
-                doc_tokens: List[List[str]] = [_tokenize(text) for _, text in candidates]
-                scores = _tfidf_scores(tok_q, doc_tokens)
-                # Take top tfidf_k by score
-                order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
-                added = 0
-                for idx in order:
-                    if scores[idx] < eff_min_score:
-                        break
-                    tid, _ = candidates[idx]
-                    t = _get_task_by_id(tid, repo)
-                    if not t:
-                        continue
-                    sec = _section_for_task(t, repo, kind="retrieved")
-                    if sec and sec.get("task_id") not in seen_ids:
-                        sections.append(sec)
-                        seen_ids.add(sec["task_id"])
-                        added += 1
+        try:
+            # Use the new hybrid retrieval service
+            retrieval_service = get_retrieval_service()
+            
+            # Perform retrieval
+            retrieved_results = retrieval_service.search(
+                query=query_text,
+                k=tfidf_k,
+                method=retrieval_method,
+                min_score=tfidf_min_score,
+                max_candidates=tfidf_max_candidates
+            )
+            
+            # Convert results to sections
+            added = 0
+            for result in retrieved_results:
+                tid = result.get("task_id")
+                if not isinstance(tid, int) or tid == task_id or tid in seen_ids:
+                    continue
+                
+                t = _get_task_by_id(tid, repo)
+                if not t:
+                    continue
+                
+                sec = _section_for_task(t, repo, kind="retrieved")
+                if sec and sec.get("task_id") not in seen_ids:
+                    # Add retrieval score metadata
+                    sec["retrieval_score"] = result.get("similarity", 0.0)
+                    sec["retrieval_method"] = retrieval_method
+                    if "semantic_score" in result:
+                        sec["semantic_score"] = result["semantic_score"]
+                    if "keyword_score" in result:
+                        sec["keyword_score"] = result["keyword_score"]
+                    
+                    sections.append(sec)
+                    seen_ids.add(sec["task_id"])
+                    added += 1
+            
+            if _debug_on():
+                _CTX_LOGGER.debug({
+                    "event": "gather_context.retrieval_done",
+                    "task_id": task_id,
+                    "method": retrieval_method,
+                    "retrieved": len(retrieved_results),
+                    "added": added,
+                    "top_score": retrieved_results[0].get("similarity", 0.0) if retrieved_results else 0.0,
+                })
+                
+        except Exception as e:
+            # Fallback to original TF-IDF if new retrieval fails
+            _CTX_LOGGER.warning(f"Advanced retrieval failed, falling back to TF-IDF: {e}")
+            
+            # Original TF-IDF implementation as fallback
+            try:
+                all_tasks = repo.list_all_tasks()
+            except Exception:
+                all_tasks = []
+            candidates: List[Tuple[int, str]] = []
+            for t in all_tasks:
+                try:
+                    tid = t.get("id")  # type: ignore
+                except Exception:
+                    tid = None
+                if not isinstance(tid, int) or tid == task_id:
+                    continue
+                if tid in seen_ids:
+                    continue
+                content = repo.get_task_output_content(tid)
+                if content and isinstance(content, str) and content.strip():
+                    candidates.append((tid, content))
+
+            if candidates:
+                # Compute simple TF-IDF scores
+                tok_q = _tokenize(query_text)
+                if tok_q:
+                    doc_tokens: List[List[str]] = [_tokenize(text) for _, text in candidates]
+                    scores = _tfidf_scores(tok_q, doc_tokens)
+                    order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
+                    added = 0
+                    for idx in order:
                         if added >= int(tfidf_k):
                             break
-                if _debug_on():
-                    _CTX_LOGGER.debug({
-                        "event": "gather_context.tfidf_done",
-                        "task_id": task_id,
-                        "query_len": len(tok_q),
-                        "added": added,
-                        "top_score": (scores[order[0]] if order else 0.0),
-                        "min_score_threshold": eff_min_score,
-                    })
+                        tid, _ = candidates[idx]
+                        t = _get_task_by_id(tid, repo)
+                        if not t:
+                            continue
+                        sec = _section_for_task(t, repo, kind="retrieved")
+                        if sec and sec.get("task_id") not in seen_ids:
+                            sec["retrieval_score"] = scores[idx]
+                            sec["retrieval_method"] = "tfidf_fallback"
+                            sections.append(sec)
+                            seen_ids.add(sec["task_id"])
+                            added += 1
 
     # 6) Normalize ordering by priority groups even if no budget is applied
     sections = sorted(sections, key=_priority_key_local)
