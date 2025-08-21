@@ -88,12 +88,7 @@ def _parse_schedule(val) -> str:
     return v if v in {"bfs", "dag", "postorder"} else "bfs"
 
 
-def _parse_retrieval_method(val) -> str:
-    """Parse retrieval method for context assembly: 'hybrid' (default), 'tfidf', or 'semantic'."""
-    if not isinstance(val, str):
-        return "hybrid"
-    v = val.strip().lower()
-    return v if v in {"tfidf", "semantic", "hybrid"} else "hybrid"
+# GLM semantic retrieval is now the only method
 
 
 def _sanitize_manual_list(vals) -> Optional[List[int]]:
@@ -119,12 +114,9 @@ def _sanitize_context_options(co: Dict[str, Any]) -> Dict[str, Any]:
         "include_plan": _parse_bool(co.get("include_plan"), default=True),
         "k": _parse_int(co.get("k", 5), default=5, min_value=0, max_value=50),
         "manual": _sanitize_manual_list(co.get("manual")),
-        "tfidf_k": _parse_opt_int(co.get("tfidf_k"), min_value=0, max_value=50),
-        # TF-IDF thresholds (optional overrides of env defaults)
-        "tfidf_min_score": _parse_opt_float(co.get("tfidf_min_score"), min_value=0.0, max_value=1_000_000.0),
-        "tfidf_max_candidates": _parse_opt_int(co.get("tfidf_max_candidates"), min_value=0, max_value=50_000),
-        # GLM embeddings and retrieval method
-        "retrieval_method": _parse_retrieval_method(co.get("retrieval_method")),
+        # GLM semantic retrieval options (now default enabled)
+        "semantic_k": _parse_int(co.get("semantic_k", 5), default=5, min_value=0, max_value=50),
+        "min_similarity": _parse_opt_float(co.get("min_similarity", 0.1), min_value=0.0, max_value=1.0) or 0.1,
         # hierarchy options (Phase 5)
         "include_ancestors": _parse_bool(co.get("include_ancestors"), default=False),
         "include_siblings": _parse_bool(co.get("include_siblings"), default=False),
@@ -447,13 +439,9 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
     per_section_max = _parse_opt_int(payload.get("per_section_max"), min_value=1, max_value=50_000)
     # Optional summarization strategy: 'truncate' (default) or 'sentence'
     strategy = _parse_strategy(payload.get("strategy")) if (max_chars is not None or per_section_max is not None) else None
-    # Optional TF-IDF retrieved items count
-    tfidf_k = _parse_opt_int(payload.get("tfidf_k"), min_value=0, max_value=50)
-    # Optional TF-IDF thresholds
-    tfidf_min_score = _parse_opt_float(payload.get("tfidf_min_score"), min_value=0.0, max_value=1_000_000.0)
-    tfidf_max_candidates = _parse_opt_int(payload.get("tfidf_max_candidates"), min_value=0, max_value=50_000)
-    # GLM embeddings and retrieval method
-    retrieval_method = _parse_retrieval_method(payload.get("retrieval_method"))
+    # GLM semantic retrieval options
+    semantic_k = _parse_opt_int(payload.get("semantic_k"), min_value=0, max_value=50)
+    min_similarity = _parse_opt_float(payload.get("min_similarity"), min_value=0.0, max_value=1.0)
     # Hierarchy options (Phase 5)
     include_ancestors = _parse_bool(payload.get("include_ancestors"), default=False)
     include_siblings = _parse_bool(payload.get("include_siblings"), default=False)
@@ -466,13 +454,11 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
         include_plan=include_plan,
         k=k,
         manual=manual,
-        tfidf_k=tfidf_k,
-        tfidf_min_score=tfidf_min_score,
-        tfidf_max_candidates=tfidf_max_candidates,
+        semantic_k=semantic_k,
+        min_similarity=min_similarity,
         include_ancestors=include_ancestors,
         include_siblings=include_siblings,
         hierarchy_k=hierarchy_k,
-        retrieval_method=retrieval_method,
     )
     # Apply budget only when options are provided (backward compatible)
     if (max_chars is not None) or (per_section_max is not None):

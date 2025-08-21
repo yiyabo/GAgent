@@ -97,20 +97,15 @@ def execute_task(
                 k = int(opts.get("k", 5))
             except Exception:
                 k = 5
-            # Optional TF-IDF retrieval count
+            # GLM semantic retrieval options
             try:
-                tfidf_k = int(opts.get("tfidf_k")) if (opts.get("tfidf_k") is not None) else None
+                semantic_k = int(opts.get("semantic_k")) if (opts.get("semantic_k") is not None) else None
             except Exception:
-                tfidf_k = None
-            # Optional TF-IDF thresholds
+                semantic_k = None
             try:
-                tfidf_min_score = float(opts.get("tfidf_min_score")) if (opts.get("tfidf_min_score") is not None) else None
+                min_similarity = float(opts.get("min_similarity")) if (opts.get("min_similarity") is not None) else None
             except Exception:
-                tfidf_min_score = None
-            try:
-                tfidf_max_candidates = int(opts.get("tfidf_max_candidates")) if (opts.get("tfidf_max_candidates") is not None) else None
-            except Exception:
-                tfidf_max_candidates = None
+                min_similarity = None
             manual = None
             mids = opts.get("manual")
             if isinstance(mids, list):
@@ -118,11 +113,6 @@ def execute_task(
                     manual = [int(x) for x in mids]
                 except Exception:
                     manual = None
-
-            # 获取检索方法配置
-            retrieval_method = opts.get("retrieval_method", "hybrid")
-            if not isinstance(retrieval_method, str) or retrieval_method not in ["tfidf", "semantic", "hybrid"]:
-                retrieval_method = "hybrid"
             
             bundle = gather_context(
                 task_id,
@@ -131,10 +121,8 @@ def execute_task(
                 include_plan=include_plan,
                 k=k,
                 manual=manual,
-                tfidf_k=tfidf_k,
-                tfidf_min_score=tfidf_min_score,
-                tfidf_max_candidates=tfidf_max_candidates,
-                retrieval_method=retrieval_method,
+                semantic_k=semantic_k,
+                min_similarity=min_similarity,
             )
             # Budget options
             max_chars = opts.get("max_chars")
@@ -171,9 +159,8 @@ def execute_task(
                     "include_plan": include_plan,
                     "k": k,
                     "manual": manual,
-                    "tfidf_k": tfidf_k,
-                    "tfidf_min_score": (tfidf_min_score if 'tfidf_min_score' in locals() else None),
-                    "tfidf_max_candidates": (tfidf_max_candidates if 'tfidf_max_candidates' in locals() else None),
+                    "semantic_k": semantic_k,
+                    "min_similarity": min_similarity,
                     "max_chars": (max_chars_i if 'max_chars_i' in locals() else None),
                     "per_section_max": (per_section_max_i if 'per_section_max_i' in locals() else None),
                     "strategy": (strategy or "truncate") if strategy else None,

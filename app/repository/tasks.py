@@ -663,7 +663,13 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             ''', (task_id,)).fetchone()
             
             if row:
-                return _row_to_dict(row)
+                return {
+                    "task_id": row["task_id"],
+                    "embedding_vector": row["embedding_vector"],
+                    "embedding_model": row["embedding_model"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
             return None
 
     def get_tasks_with_embeddings(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -684,7 +690,35 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 query += f' LIMIT {limit}'
             
             rows = conn.execute(query).fetchall()
-            return [_row_to_dict(row) for row in rows]
+            
+            # Convert rows to dict with embedding fields
+            result = []
+            for row in rows:
+                try:
+                    task_dict = {
+                        "id": row[0],
+                        "name": row[1], 
+                        "status": row[2],
+                        "priority": row[3],
+                        "content": row[4],
+                        "embedding_vector": row[5],
+                        "embedding_model": row[6],
+                        "updated_at": row[7]
+                    }
+                except Exception:
+                    # Fallback for sqlite3.Row objects
+                    task_dict = {
+                        "id": row["id"],
+                        "name": row["name"],
+                        "status": row["status"], 
+                        "priority": row["priority"],
+                        "content": row["content"],
+                        "embedding_vector": row["embedding_vector"],
+                        "embedding_model": row["embedding_model"],
+                        "updated_at": row["updated_at"]
+                    }
+                result.append(task_dict)
+            return result
 
     def get_tasks_without_embeddings(self, status: Optional[str] = "done") -> List[Dict[str, Any]]:
         """Get tasks that don't have embeddings yet."""

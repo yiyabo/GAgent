@@ -1,52 +1,45 @@
 #!/usr/bin/env python3
 """
-GLM Embeddings服务模块
+GLM Embeddings服务模块（重构版）
 
-提供基于智谱GLM的embedding生成和语义相似度计算功能，
-用于替代传统的TF-IDF检索，实现更精准的语义检索。
+重构后的GLM Embeddings服务，采用组件化架构，遵循单一职责原则。
+主服务类负责协调各个专门的组件，提供统一的公共接口。
 """
 
-import os
-import json
-import time
-import requests
-import numpy as np
-from typing import List, Dict, Optional, Tuple
 import logging
+from typing import List, Dict, Optional, Any, Callable
+from concurrent.futures import Future
+
+from .config import get_config
+from .cache import get_embedding_cache
+from .glm_api_client import GLMApiClient
+from .embedding_batch_processor import EmbeddingBatchProcessor
+from .async_embedding_manager import AsyncEmbeddingManager
+from .similarity_calculator import SimilarityCalculator
 
 logger = logging.getLogger(__name__)
 
 
 class GLMEmbeddingsService:
-    """GLM Embeddings服务类"""
+    """GLM Embeddings服务类（重构版）- 主要负责协调各个组件"""
     
     def __init__(self):
-        self.api_key = os.getenv('GLM_API_KEY')
-        self.api_url = os.getenv('GLM_API_URL', 'https://open.bigmodel.cn/api/paas/v4/embeddings')
-        self.model = "embedding-2"  # GLM的embedding模型
-        self.dimension = 1024  # GLM embedding维度
-        self.max_batch_size = 25  # GLM API批量处理上限
-        self.max_retries = 3
-        self.retry_delay = 1.0
+        """初始化服务和各个组件"""
+        self.config = get_config()
+        self.cache = get_embedding_cache()
         
-        # Mock模式检查
-        self.mock_mode = self._parse_bool(os.getenv('LLM_MOCK', '0'))
+        # 初始化各个专门的组件
+        self.api_client = GLMApiClient(self.config)
+        self.batch_processor = EmbeddingBatchProcessor(self.config, self.api_client, self.cache)
+        self.async_manager = AsyncEmbeddingManager(self.batch_processor)
+        self.similarity_calculator = SimilarityCalculator()
         
-        if not self.mock_mode and not self.api_key:
-            logger.warning("GLM_API_KEY未设置，将使用Mock模式")
-            self.mock_mode = True
+        logger.info(f"GLM Embeddings service initialized with refactored architecture")
     
-    def _parse_bool(self, val) -> bool:
-        """解析布尔值"""
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, str):
-            return val.lower() in ('true', '1', 'yes', 'on')
-        return bool(val)
-    
+    # 核心embedding方法 - 委托给BatchProcessor
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """
-        获取文本列表的向量表示
+        获取文本列表的向量表示（支持缓存）
         
         Args:
             texts: 文本列表
@@ -54,230 +47,139 @@ class GLMEmbeddingsService:
         Returns:
             向量列表，每个向量是float列表
         """
-        if not texts:
-            return []
-            
-        if self.mock_mode:
-            return self._get_mock_embeddings(texts)
-        
-        # 分批处理大量文本
-        all_embeddings = []
-        for i in range(0, len(texts), self.max_batch_size):
-            batch = texts[i:i + self.max_batch_size]
-            batch_embeddings = self._get_embeddings_batch(batch)
-            all_embeddings.extend(batch_embeddings)
-        
-        return all_embeddings
-    
-    def _get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
-        """获取单批文本的embeddings"""
-        for attempt in range(self.max_retries):
-            try:
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                }
-                
-                payload = {
-                    "model": self.model,
-                    "input": texts
-                }
-                
-                logger.debug(f"请求GLM Embeddings API，文本数量: {len(texts)}")
-                
-                response = requests.post(
-                    self.api_url, 
-                    json=payload, 
-                    headers=headers,
-                    timeout=30
-                )
-                
-                response.raise_for_status()
-                data = response.json()
-                
-                if 'data' not in data:
-                    raise ValueError(f"API响应格式错误: {data}")
-                
-                embeddings = [item['embedding'] for item in data['data']]
-                
-                logger.debug(f"成功获取 {len(embeddings)} 个embeddings")
-                return embeddings
-                
-            except Exception as e:
-                logger.warning(f"获取embeddings失败 (尝试 {attempt + 1}/{self.max_retries}): {e}")
-                
-                if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay * (attempt + 1))
-                else:
-                    logger.error(f"获取embeddings最终失败，返回Mock数据")
-                    return self._get_mock_embeddings(texts)
-        
-        return []
-    
-    def _get_mock_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """生成Mock embeddings用于测试"""
-        np.random.seed(42)  # 确保可重复性
-        
-        embeddings = []
-        for text in texts:
-            # 基于文本内容生成确定性的向量
-            text_hash = hash(text) % (2**32)
-            np.random.seed(text_hash)
-            
-            # 生成标准化的随机向量
-            vector = np.random.normal(0, 1, self.dimension)
-            vector = vector / np.linalg.norm(vector)  # 单位向量
-            
-            embeddings.append(vector.tolist())
-        
-        logger.debug(f"生成 {len(embeddings)} 个Mock embeddings")
-        return embeddings
+        return self.batch_processor.process_texts_batch(texts)
     
     def get_single_embedding(self, text: str) -> List[float]:
-        """获取单个文本的embedding"""
+        """
+        获取单个文本的向量表示
+        
+        Args:
+            text: 单个文本
+            
+        Returns:
+            向量，float列表
+        """
         embeddings = self.get_embeddings([text])
         return embeddings[0] if embeddings else []
     
-    def compute_similarity(self, embedding1: List[float], embedding2: List[float]) -> float:
+    # 异步方法 - 委托给AsyncEmbeddingManager
+    def get_embeddings_async(self, texts: List[str], callback: Optional[Callable] = None) -> Future:
         """
-        计算两个向量的余弦相似度
+        异步获取embeddings
         
         Args:
-            embedding1: 第一个向量
-            embedding2: 第二个向量
+            texts: 文本列表
+            callback: 可选的回调函数，接收embeddings结果
             
         Returns:
-            余弦相似度值 (-1 到 1)
+            Future对象
         """
-        try:
-            vec1 = np.array(embedding1, dtype=np.float32)
-            vec2 = np.array(embedding2, dtype=np.float32)
+        return self.async_manager.get_embeddings_async(texts, callback)
+    
+    def get_single_embedding_async(self, text: str, callback: Optional[Callable] = None) -> Future:
+        """
+        异步获取单个embedding
+        
+        Args:
+            text: 单个文本
+            callback: 可选的回调函数
             
-            # 处理零向量情况
-            norm1 = np.linalg.norm(vec1)
-            norm2 = np.linalg.norm(vec2)
+        Returns:
+            Future对象
+        """
+        return self.async_manager.get_single_embedding_async(text, callback)
+    
+    def precompute_embeddings_async(self, texts: List[str], 
+                                  progress_callback: Optional[Callable] = None) -> Future:
+        """
+        异步预计算embeddings
+        
+        Args:
+            texts: 文本列表
+            progress_callback: 进度回调函数
             
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
+        Returns:
+            Future对象，结果包含统计信息
+        """
+        return self.async_manager.precompute_embeddings_async(texts, progress_callback)
+    
+    def wait_for_background_tasks(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """
+        等待所有后台任务完成
+        
+        Args:
+            timeout: 超时时间（秒）
             
-            similarity = np.dot(vec1, vec2) / (norm1 * norm2)
-            
-            # 确保结果在有效范围内
-            return float(np.clip(similarity, -1.0, 1.0))
-            
-        except Exception as e:
-            logger.error(f"计算相似度失败: {e}")
-            return 0.0
+        Returns:
+            任务完成状态
+        """
+        return self.async_manager.wait_for_background_tasks(timeout)
+    
+    def get_background_task_status(self) -> Dict[str, Any]:
+        """
+        获取后台任务状态
+        
+        Returns:
+            包含任务状态信息的字典
+        """
+        return self.async_manager.get_async_status()
+    
+    def cancel_background_tasks(self) -> int:
+        """
+        取消所有未完成的后台任务
+        
+        Returns:
+            成功取消的任务数量
+        """
+        return self.async_manager.cancel_background_tasks()
+    
+    # 相似度计算方法 - 委托给SimilarityCalculator
+    def compute_similarity(self, embedding1: List[float], embedding2: List[float]) -> float:
+        """计算两个向量的余弦相似度"""
+        return self.similarity_calculator.compute_similarity(embedding1, embedding2)
     
     def compute_similarities(self, query_embedding: List[float], 
-                           candidate_embeddings: List[List[float]]) -> List[float]:
-        """
-        批量计算查询向量与候选向量的相似度
-        
-        Args:
-            query_embedding: 查询向量
-            candidate_embeddings: 候选向量列表
-            
-        Returns:
-            相似度列表
-        """
-        try:
-            query_vec = np.array(query_embedding, dtype=np.float32)
-            candidate_vecs = np.array(candidate_embeddings, dtype=np.float32)
-            
-            # 批量计算余弦相似度
-            query_norm = np.linalg.norm(query_vec)
-            if query_norm == 0:
-                return [0.0] * len(candidate_embeddings)
-            
-            candidate_norms = np.linalg.norm(candidate_vecs, axis=1)
-            # 避免除零
-            candidate_norms[candidate_norms == 0] = 1.0
-            
-            similarities = np.dot(candidate_vecs, query_vec) / (candidate_norms * query_norm)
-            
-            # 确保结果在有效范围内
-            similarities = np.clip(similarities, -1.0, 1.0)
-            
-            return similarities.tolist()
-            
-        except Exception as e:
-            logger.error(f"批量计算相似度失败: {e}")
-            return [0.0] * len(candidate_embeddings)
+                           target_embeddings: List[List[float]]) -> List[float]:
+        """计算查询向量与多个目标向量的相似度"""
+        return self.similarity_calculator.compute_similarities(query_embedding, target_embeddings)
     
     def find_most_similar(self, query_embedding: List[float], 
-                         candidates: List[Dict], 
-                         k: int = 5, 
-                         min_similarity: float = 0.0) -> List[Dict]:
-        """
-        找到最相似的候选项
-        
-        Args:
-            query_embedding: 查询向量
-            candidates: 候选项列表，每个候选项包含'embedding'字段
-            k: 返回的最相似项数量
-            min_similarity: 最小相似度阈值
-            
-        Returns:
-            排序后的候选项列表，包含'similarity'字段
-        """
-        if not candidates:
-            return []
-        
-        # 提取embeddings
-        candidate_embeddings = []
-        valid_candidates = []
-        
-        for candidate in candidates:
-            embedding = candidate.get('embedding')
-            if embedding and len(embedding) > 0:
-                candidate_embeddings.append(embedding)
-                valid_candidates.append(candidate)
-        
-        if not candidate_embeddings:
-            return []
-        
-        # 计算相似度
-        similarities = self.compute_similarities(query_embedding, candidate_embeddings)
-        
-        # 添加相似度到候选项并过滤
-        results = []
-        for candidate, similarity in zip(valid_candidates, similarities):
-            if similarity >= min_similarity:
-                candidate_copy = candidate.copy()
-                candidate_copy['similarity'] = similarity
-                results.append(candidate_copy)
-        
-        # 按相似度排序并返回top-k
-        results.sort(key=lambda x: x['similarity'], reverse=True)
-        return results[:k]
+                         candidates: List[Dict[str, Any]], 
+                         top_k: int = 5) -> List[Dict[str, Any]]:
+        """查找最相似的候选项"""
+        return self.similarity_calculator.find_most_similar(query_embedding, candidates, top_k)
     
-    def embedding_to_json(self, embedding: List[float]) -> str:
-        """将embedding转换为JSON字符串用于存储"""
-        return json.dumps(embedding)
-    
-    def json_to_embedding(self, json_str: str) -> List[float]:
-        """从JSON字符串恢复embedding"""
-        try:
-            return json.loads(json_str)
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.error(f"解析embedding JSON失败: {e}")
-            return []
-    
-    def get_service_info(self) -> Dict:
+    # 服务信息和配置方法
+    def get_service_info(self) -> Dict[str, Any]:
         """获取服务信息"""
         return {
-            "service": "GLM Embeddings",
-            "model": self.model,
-            "dimension": self.dimension,
-            "mock_mode": self.mock_mode,
-            "api_url": self.api_url,
-            "max_batch_size": self.max_batch_size
+            "service_type": "GLMEmbeddingsService",
+            "version": "2.0.0-refactored",
+            "config": {
+                "model": self.config.embedding_model,
+                "dimension": self.config.embedding_dimension,
+                "mock_mode": self.config.mock_mode
+            },
+            "components": {
+                "api_client": self.api_client.get_client_info(),
+                "batch_processor": self.batch_processor.get_performance_stats(),
+                "async_manager": self.async_manager.get_async_status()
+            }
         }
+    
+    # 兼容性方法 - 保持向后兼容
+    def get_optimal_batch_size(self) -> int:
+        """获取最优批量大小"""
+        return self.batch_processor.get_optimal_batch_size()
+    
+    def test_connection(self) -> bool:
+        """测试API连接"""
+        return self.api_client.test_connection()
 
 
-# 全局单例实例
+# 单例模式获取服务实例
 _embeddings_service = None
+
 
 def get_embeddings_service() -> GLMEmbeddingsService:
     """获取GLM Embeddings服务单例"""
@@ -285,3 +187,11 @@ def get_embeddings_service() -> GLMEmbeddingsService:
     if _embeddings_service is None:
         _embeddings_service = GLMEmbeddingsService()
     return _embeddings_service
+
+
+def shutdown_embeddings_service():
+    """关闭embeddings服务"""
+    global _embeddings_service
+    if _embeddings_service is not None:
+        _embeddings_service.async_manager.shutdown()
+        _embeddings_service = None

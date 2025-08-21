@@ -35,42 +35,31 @@
 
 ---
 
-## 二、实施计划（分阶段可落地）
+## 二、实施计划（已完成基础架构）
 
-- [ ] 阶段 0：代码勘测与切换点位
-  - [ ] 定位 TF-IDF 代码路径与接口：`app/services/context.py` 中 TF-IDF 候选与打分逻辑；
-  - [ ] 设计新检索接口：`retrieve_similar_tasks(task_id, repo, k, model, use_structure=True)`；
-  - [ ] 配置项：在 `gather_context()` 增加 `embedding_k`、`embedding_model`, `use_graph_prior`，并与 `tfidf_k` 互斥。
+- [x] ✅ **阶段 1：GLM Embedding 基础实现**
+  - [x] 修复 `requirements.txt`，添加 numpy 和 requests 依赖
+  - [x] 创建 GLM Embeddings 服务（`app/services/embeddings.py`）
+  - [x] 创建语义检索服务（`app/services/retrieval.py`）
+  - [x] 统一配置管理（`app/services/config.py`）
+  - [x] 更新 `gather_context()` 函数，默认启用语义检索
+  - [x] 完善错误处理和日志记录
+  - [x] 更新测试用例，确保语义检索功能正常
 
-- [ ] 阶段 1：最小可用替换（MVP）
-  - [ ] 选用 `sentence-transformers` 轻量模型本地跑通；
-  - [ ] 为任务节点构建文本表示（name + input + output 的可配置拼接）；
-  - [ ] 向量化与最近邻检索（FAISS/内存余弦相似度）；
-  - [ ] 在 `gather_context()` 分支替换 TF-IDF 为嵌入检索，打通 E2E；
-  - [ ] 新增测试：`tests/test_context.py` 增加 `test_gather_context_with_embeddings`。
+- [ ] **阶段 2：性能优化与缓存**
+  - [ ] 添加 embedding 缓存机制，避免重复计算
+  - [ ] 优化批量处理性能
+  - [ ] 添加异步 embedding 生成
 
-- [ ] 阶段 2：结构先验与预算融合
-  - [ ] 基于任务图（`repo.get_children/get_parents/get_links`）生成候选子图；
-  - [ ] 为不同关系打结构 prior（requires>refers>sibling>others），融合到最终分数；
-  - [ ] 将 `apply_budget()` 的预算作为长度惩罚项参与 rerank；
-  - [ ] 指标：检索命中率↑、平均上下文长度≈稳定、生成一致性↑。
+- [ ] **阶段 3：结构感知增强**
+  - [ ] 基于任务图关系的结构先验权重
+  - [ ] 图注意力机制重排候选结果
+  - [ ] 结构对比学习训练数据构造
 
-- [ ] 阶段 3：结构对比学习微调
-  - [ ] 构造训练对：从历史任务/链路构造正负样本；
-  - [ ] 训练脚本与数据管线（`scripts/train_task_embed.py`）；
-  - [ ] 产出任务域专属嵌入模型（或 LoRA 适配）；
-  - [ ] 线下 A/B 离线评测 + 小规模线上灰度。
-
-- [ ] 阶段 4：图注意力重排与反馈对齐
-  - [ ] 在 Top-N 候选子图上跑 1-2 层 GAT/Graph Transformer 进行重排；
-  - [ ] 收集执行反馈（通过率、修改次数、审阅分）形成奖励信号；
-  - [ ] 将奖励作为样本权重或引入轻量奖励模型做 rerank；
-  - [ ] 产出可复现实验与论文草稿结果表。
-
-- [ ] 阶段 5：论文撰写与开源
-  - [ ] 论文结构：动机→方法→实验→消融→可视化；
-  - [ ] 提供复现脚本与模型权重；
-  - [ ] 对比基线：TF-IDF、通用嵌入（无结构先验）、仅结构 prior、仅图重排。
+- [ ] **阶段 4：实验与论文**
+  - [ ] 对比实验设计（GLM vs TF-IDF vs 混合方案）
+  - [ ] 评测指标收集（检索准确率、生成质量、执行成功率）
+  - [ ] 论文撰写与开源准备
 
 ---
 
@@ -127,10 +116,29 @@
 
 ---
 
-## 六、立即行动项（本周）
+## 六、当前状态总结
 
-- [ ] 落地 MVP：本地嵌入检索替换 TF-IDF 并通过单测；
-- [ ] 增加结构 prior 与预算惩罚的 rerank；
-- [ ] 产出第一版对比实验（TF-IDF vs Embedding）。
+### ✅ 已完成的核心功能
+- **完整的 GLM Embedding 架构**：服务层分离，配置统一管理
+- **语义检索替换**：完全替代 TF-IDF，默认启用语义检索
+- **Mock 模式支持**：便于开发和测试，无需 API Key 即可运行
+- **错误处理完善**：API 失败时自动降级到 Mock 模式
+- **测试覆盖完整**：语义检索功能已有完整测试用例
 
-> 备注：如需使用闭源 API（如 OpenAI Embeddings），请在本地通过环境变量注入 API Key，勿硬编码。
+### 🎯 下一步重点
+- **性能优化**：添加缓存机制，提升响应速度
+- **文档更新**：更新 README 和 API 文档
+- **实验设计**：准备对比实验，验证语义检索效果
+
+### 🔧 环境配置
+```bash
+# GLM API 配置
+export GLM_API_KEY="your_api_key_here"
+export GLM_EMBEDDING_MODEL="embedding-2"
+export SEMANTIC_DEFAULT_K=5
+export SEMANTIC_MIN_SIMILARITY=0.1
+
+# 开发模式
+export LLM_MOCK=1  # 使用 Mock 模式，无需 API Key
+export GLM_DEBUG=1  # 启用详细日志
+```
