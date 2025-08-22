@@ -6,6 +6,7 @@ from typing import List, Optional
 from .interfaces import CLIApplication, CLICommand
 from .parser import CLIParser
 from .commands import RerunCommands, PlanCommands
+from .commands.evaluation_commands import EvaluationCommands
 from .utils import FileUtils, IOUtils
 
 
@@ -27,6 +28,7 @@ class ModernCLIApp(CLIApplication):
         """Register all built-in commands."""
         self.register_command(RerunCommands())
         self.register_command(PlanCommands())
+        self.register_command(EvaluationCommands())
     
     def register_command(self, command: CLICommand) -> None:
         """Register a command with the application."""
