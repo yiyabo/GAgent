@@ -12,9 +12,10 @@ from .utils import plan_prefix, split_prefix
 from .services.context import gather_context
 from .services.context_budget import apply_budget
 from .services.index_root import generate_index
-from .services.planning import (
-    recursive_decompose_task, recursive_decompose_plan, evaluate_task_complexity, should_decompose_task, determine_task_type
-)
+# 递归分解功能暂时注释，等待实现
+# from .services.planning import (
+#     recursive_decompose_task, recursive_decompose_plan, evaluate_task_complexity, should_decompose_task, determine_task_type
+# )
 from contextlib import asynccontextmanager
 
 def _parse_bool(val, default: bool = False) -> bool:
@@ -318,35 +319,15 @@ def decompose_plan_endpoint(title: str, payload: Dict[str, Any] = Body(default={
     """
     max_depth = _parse_int(payload.get("max_depth", 3), default=3, min_value=1, max_value=5)
     
-    result = recursive_decompose_plan(title, repo=default_repo, max_depth=max_depth)
-    
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "Plan decomposition failed"))
-    
-    return result
+    # 递归分解功能暂未实现
+    raise HTTPException(status_code=501, detail="Recursive decomposition not yet implemented")
 
 
 @app.get("/tasks/{task_id}/complexity")
 def evaluate_task_complexity_endpoint(task_id: int):
     """Evaluate the complexity of a task for decomposition planning."""
-    task = default_repo.get_task_info(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    task_name = task.get("name", "")
-    task_prompt = default_repo.get_task_input_prompt(task_id) or ""
-    
-    complexity = evaluate_task_complexity(task_name, task_prompt)
-    task_type = determine_task_type(task)
-    should_decompose = should_decompose_task(task, default_repo)
-    
-    return {
-        "task_id": task_id,
-        "complexity": complexity,
-        "should_decompose": should_decompose,
-        "task_type": task_type.value,
-        "depth": task.get("depth", 0)
-    }
+    # 复杂度评估功能暂未实现
+    raise HTTPException(status_code=501, detail="Task complexity evaluation not yet implemented")
 
 
 # -------------------------------
