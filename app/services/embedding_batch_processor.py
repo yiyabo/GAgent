@@ -165,7 +165,7 @@ class EmbeddingBatchProcessor:
         """更新缓存"""
         if len(texts) == len(embeddings):
             for text, embedding in zip(texts, embeddings):
-                self.cache.set(text, embedding, self.api_client.model)
+                self.cache.put(text, embedding, self.api_client.model)
     
     def _merge_results(self, cached_results: List, cache_misses: List[int], 
                       new_embeddings: List[List[float]]) -> List[List[float]]:

@@ -202,17 +202,17 @@ class EmbeddingCache:
         del self._memory_cache[lru_key]
         logger.debug(f"Evicted from memory cache: {lru_key[:8]}...")
     
-    def get_batch(self, texts: List[str], model: str = None) -> Tuple[List[Optional[List[float]]], List[str]]:
-        """批量获取embeddings，返回(结果列表, 未命中的文本列表)"""
+    def get_batch(self, texts: List[str], model: str = None) -> Tuple[List[Optional[List[float]]], List[int]]:
+        """批量获取embeddings，返回(结果列表, 未命中文本的索引列表)"""
         model = model or self.config.embedding_model
         results = []
         cache_misses = []
         
-        for text in texts:
+        for i, text in enumerate(texts):
             embedding = self.get(text, model)
             results.append(embedding)
             if embedding is None:
-                cache_misses.append(text)
+                cache_misses.append(i)
         
         return results, cache_misses
     
