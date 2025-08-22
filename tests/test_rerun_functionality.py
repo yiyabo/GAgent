@@ -100,7 +100,8 @@ def test_api_endpoints():
     except Exception as e:
         print(f"❌ Subtree rerun error: {e}")
     
-    return task_ids
+    # Test passed - API endpoints work
+    assert len(task_ids) > 0
 
 
 def test_cli_rerun():
@@ -157,7 +158,8 @@ def test_task_listing():
     for task in all_tasks[-4:]:  # Show last 4 tasks
         print(f"ID: {task['id']}, Name: {task['name']}, Status: {task['status']}")
     
-    return task_ids
+    # Test passed - task listing works
+    assert len(task_ids) > 0
 
 
 def run_comprehensive_test():
