@@ -15,3 +15,6 @@ venv/
 .idea/
 .vscode/
 tasks.db
+CLAUDE.md
+plan.json
+plan.md

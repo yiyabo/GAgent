@@ -4,9 +4,9 @@ import tempfile
 
 from app.database import init_db
 from app.repository.tasks import SqliteTaskRepository
-from app.services.recursive_decomposition import (
+from app.services.planning import (
     evaluate_task_complexity, determine_task_type, should_decompose_task,
-    decompose_task, recursive_decompose_plan, TaskType
+    recursive_decompose_task, recursive_decompose_plan, TaskType
 )
 
 
@@ -202,7 +202,7 @@ def test_recursive_decompose_plan(tmp_path, monkeypatch):
     repo.upsert_task_input(root_task_id, "构建完整的Web系统")
     
     # Recursively decompose plan
-    result = recursive_decompose_plan("SYSTEM", repo, max_depth=2)
+    result = recursive_decompose_plan({"title": "SYSTEM"}, repo=repo)
     
     # Verify results
     assert result["success"] == True
