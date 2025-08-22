@@ -282,7 +282,7 @@ class AsyncEmbeddingManager:
             total_tasks = len(self._background_tasks)
             active_tasks = sum(1 for task in self._background_tasks if not task.done())
             completed_tasks = sum(1 for task in self._background_tasks if task.done() and not task.cancelled())
-            failed_tasks = sum(1 for task in self._background_tasks if task.done() and task.exception())
+            failed_tasks = sum(1 for task in self._background_tasks if task.done() and not task.cancelled() and task.exception())
             cancelled_tasks = sum(1 for task in self._background_tasks if task.cancelled())
         
         return {

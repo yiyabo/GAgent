@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-GLM语义检索服务模块
+GLM Semantic Retrieval Service Module
 
-使用GLM embeddings进行语义相似度检索，
-替代原有的TF-IDF关键词匹配。
+Uses GLM embeddings for semantic similarity retrieval,
+replacing the original TF-IDF keyword matching.
 """
 
 from typing import List, Dict, Optional, Any
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class SemanticRetrievalService:
-    """GLM语义检索服务类"""
+    """GLM semantic retrieval service class"""
     
     def __init__(self):
         self.config = get_config()
@@ -33,34 +33,34 @@ class SemanticRetrievalService:
         
     def search(self, query: str, k: int = 5, min_similarity: Optional[float] = None) -> List[Dict[str, Any]]:
         """
-        GLM语义检索接口
+        GLM semantic retrieval interface
         
         Args:
-            query: 查询文本
-            k: 返回结果数量
-            min_similarity: 最小相似度阈值
+            query: Query text
+            k: Number of results to return
+            min_similarity: Minimum similarity threshold
             
         Returns:
-            检索结果列表，每个结果包含task_id, name, content, similarity等字段
+            List of retrieval results, each result contains fields like task_id, name, content, similarity
         """
         if self.debug:
-            logger.debug(f"GLM语义检索: '{query}', k: {k}")
+            logger.debug(f"GLM semantic retrieval: '{query}', k: {k}")
         
         try:
-            # 获取查询的embedding
+            # Get query embedding
             query_embedding = self.embeddings_service.get_single_embedding(query)
             if not query_embedding:
-                logger.warning("无法获取查询embedding")
+                logger.warning("Cannot get query embedding")
                 return []
             
-            # 获取所有有embedding的任务
+            # Get all tasks with embeddings
             tasks_with_embeddings = default_repo.get_tasks_with_embeddings()
             
             if not tasks_with_embeddings:
-                logger.warning("没有找到有embedding的任务")
+                logger.warning("No tasks with embeddings found")
                 return []
             
-            # 准备候选项
+            # Prepare candidates
             candidates = []
             for task in tasks_with_embeddings:
                 if task.get('embedding_vector'):
@@ -73,7 +73,7 @@ class SemanticRetrievalService:
                             'embedding': embedding
                         })
             
-            # 计算语义相似度
+            # Calculate semantic similarity
             min_sim = min_similarity if min_similarity is not None else self.min_similarity
             results = self.embeddings_service.find_most_similar(
                 query_embedding, 
@@ -83,12 +83,12 @@ class SemanticRetrievalService:
             )
             
             if self.debug:
-                logger.debug(f"语义检索返回 {len(results)} 个结果")
+                logger.debug(f"Semantic retrieval returned {len(results)} results")
             
             return results
         
         except Exception as e:
-            logger.error(f"语义检索失败: {e}")
+            logger.error(f"Semantic retrieval failed: {e}")
             return []
     
     def search_with_structure_prior(self, query: str, query_task_id: Optional[int] = None,
@@ -213,7 +213,7 @@ class SemanticRetrievalService:
                            f"final={result.get('combined_score', 0):.3f}")
     
     def get_retrieval_stats(self) -> Dict[str, Any]:
-        """获取检索系统统计信息"""
+        """Get retrieval system statistics information"""
         embedding_stats = self.repo.get_embedding_stats()
         
         return {
@@ -227,14 +227,14 @@ class SemanticRetrievalService:
     
     def explain_structure_weights(self, query_task_id: int, candidate_task_ids: List[int]) -> Dict[str, Any]:
         """
-        解释结构先验权重的计算过程
+        Explain the computation process of structure prior weights
         
         Args:
-            query_task_id: 查询任务ID
-            candidate_task_ids: 候选任务ID列表
+            query_task_id: Query task ID
+            candidate_task_ids: List of candidate task IDs
             
         Returns:
-            包含权重解释的详细信息
+            Detailed information containing weight explanations
         """
         explanations = {}
         
@@ -254,23 +254,23 @@ class SemanticRetrievalService:
         }
 
 
-# 全局单例实例
+# Global singleton instance
 _semantic_retrieval_service = None
 
 def get_semantic_retrieval_service() -> SemanticRetrievalService:
-    """获取语义检索服务单例"""
+    """Get semantic retrieval service singleton"""
     global _semantic_retrieval_service
     if _semantic_retrieval_service is None:
         _semantic_retrieval_service = SemanticRetrievalService()
     return _semantic_retrieval_service
 
-# 兼容性别名
+# Compatibility alias
 def get_retrieval_service() -> SemanticRetrievalService:
-    """兼容性别名 - 获取语义检索服务单例"""
+    """Compatibility alias - get semantic retrieval service singleton"""
     return get_semantic_retrieval_service()
 
 def clear_retrieval_cache():
-    """清空检索相关缓存"""
+    """Clear retrieval-related cache"""
     global _semantic_retrieval_service
     if _semantic_retrieval_service is not None:
         _semantic_retrieval_service.structure_calculator.clear_cache()

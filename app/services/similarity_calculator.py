@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-相似度计算器模块
+Similarity Calculator Module
 
-专门负责向量相似度计算、最相似项查找和批量相似度比较。
-从GLMEmbeddingsService中拆分出来，遵循单一职责原则。
+Specialized in vector similarity computation, finding most similar items, and batch similarity comparison.
+Extracted from GLMEmbeddingsService to follow the single responsibility principle.
 """
 
 import logging
@@ -14,22 +14,22 @@ logger = logging.getLogger(__name__)
 
 
 class SimilarityCalculator:
-    """相似度计算器类，专门负责向量相似度计算"""
+    """Similarity calculator class specialized in vector similarity computation"""
     
     def __init__(self):
-        """初始化相似度计算器"""
+        """Initialize similarity calculator"""
         logger.info("Similarity calculator initialized")
     
     def compute_similarity(self, embedding1: List[float], embedding2: List[float]) -> float:
         """
-        计算两个向量的余弦相似度
+        Compute cosine similarity between two vectors
         
         Args:
-            embedding1: 第一个向量
-            embedding2: 第二个向量
+            embedding1: First vector
+            embedding2: Second vector
             
         Returns:
-            余弦相似度值 (-1 到 1)
+            Cosine similarity value (-1 to 1)
         """
         if not embedding1 or not embedding2:
             return 0.0
@@ -42,7 +42,7 @@ class SimilarityCalculator:
             vec1 = np.array(embedding1, dtype=np.float32)
             vec2 = np.array(embedding2, dtype=np.float32)
             
-            # 计算余弦相似度
+            # Compute cosine similarity
             dot_product = np.dot(vec1, vec2)
             norm1 = np.linalg.norm(vec1)
             norm2 = np.linalg.norm(vec2)
@@ -60,14 +60,14 @@ class SimilarityCalculator:
     def compute_similarities(self, query_embedding: List[float], 
                            target_embeddings: List[List[float]]) -> List[float]:
         """
-        计算查询向量与多个目标向量的相似度
+        Compute similarities between query vector and multiple target vectors
         
         Args:
-            query_embedding: 查询向量
-            target_embeddings: 目标向量列表
+            query_embedding: Query vector
+            target_embeddings: List of target vectors
             
         Returns:
-            相似度列表
+            List of similarities
         """
         if not query_embedding or not target_embeddings:
             return []
@@ -82,14 +82,14 @@ class SimilarityCalculator:
     def compute_similarities_batch(self, query_embedding: List[float], 
                                  target_embeddings: List[List[float]]) -> List[float]:
         """
-        批量计算相似度（优化版本）
+        Batch compute similarities (optimized version)
         
         Args:
-            query_embedding: 查询向量
-            target_embeddings: 目标向量列表
+            query_embedding: Query vector
+            target_embeddings: List of target vectors
             
         Returns:
-            相似度列表
+            List of similarities
         """
         if not query_embedding or not target_embeddings:
             return []
@@ -98,12 +98,12 @@ class SimilarityCalculator:
             query_vec = np.array(query_embedding, dtype=np.float32)
             target_matrix = np.array(target_embeddings, dtype=np.float32)
             
-            # 批量计算余弦相似度
+            # Batch compute cosine similarities
             dot_products = np.dot(target_matrix, query_vec)
             query_norm = np.linalg.norm(query_vec)
             target_norms = np.linalg.norm(target_matrix, axis=1)
             
-            # 避免除零
+            # Avoid division by zero
             valid_mask = (target_norms != 0) & (query_norm != 0)
             similarities = np.zeros(len(target_embeddings))
             
@@ -120,21 +120,21 @@ class SimilarityCalculator:
                          candidates: List[Dict[str, Any]], 
                          k: int = 5, min_similarity: float = 0.0) -> List[Dict[str, Any]]:
         """
-        查找最相似的候选项
+        Find most similar candidates
         
         Args:
-            query_embedding: 查询向量
-            candidates: 候选项列表，每个包含'embedding'字段
-            k: 返回前k个最相似的
-            min_similarity: 最小相似度阈值
+            query_embedding: Query vector
+            candidates: List of candidates, each containing 'embedding' field
+            k: Return top k most similar
+            min_similarity: Minimum similarity threshold
             
         Returns:
-            按相似度排序的候选项列表
+            List of candidates sorted by similarity
         """
         if not query_embedding or not candidates:
             return []
         
-        # 提取embeddings
+        # Extract embeddings
         candidate_embeddings = []
         valid_candidates = []
         
@@ -147,20 +147,20 @@ class SimilarityCalculator:
             logger.warning("No valid embeddings found in candidates")
             return []
         
-        # 计算相似度
+        # Compute similarities
         similarities = self.compute_similarities_batch(query_embedding, candidate_embeddings)
         
-        # 添加相似度到候选项
+        # Add similarity to candidates
         for i, candidate in enumerate(valid_candidates):
             candidate['similarity'] = similarities[i]
         
-        # 过滤低于阈值的候选项
+        # Filter candidates below threshold
         filtered_candidates = [c for c in valid_candidates if c['similarity'] >= min_similarity]
         
-        # 按相似度排序
+        # Sort by similarity
         sorted_candidates = sorted(filtered_candidates, key=lambda x: x['similarity'], reverse=True)
         
-        # 返回前k个
+        # Return top k
         result = sorted_candidates[:k]
         
         logger.debug(f"Found {len(result)} most similar items from {len(candidates)} candidates")
@@ -169,14 +169,14 @@ class SimilarityCalculator:
     def find_similar_pairs(self, embeddings: List[List[float]], 
                           threshold: float = 0.8) -> List[Tuple[int, int, float]]:
         """
-        查找相似度超过阈值的向量对
+        Find vector pairs with similarity above threshold
         
         Args:
-            embeddings: 向量列表
-            threshold: 相似度阈值
+            embeddings: List of vectors
+            threshold: Similarity threshold
             
         Returns:
-            相似向量对列表 (index1, index2, similarity)
+            List of similar vector pairs (index1, index2, similarity)
         """
         if not embeddings or len(embeddings) < 2:
             return []
@@ -186,12 +186,12 @@ class SimilarityCalculator:
         try:
             embedding_matrix = np.array(embeddings, dtype=np.float32)
             
-            # 计算所有向量对的相似度矩阵
+            # Compute similarity matrix for all vector pairs
             norms = np.linalg.norm(embedding_matrix, axis=1)
             normalized_embeddings = embedding_matrix / norms[:, np.newaxis]
             similarity_matrix = np.dot(normalized_embeddings, normalized_embeddings.T)
             
-            # 查找超过阈值的相似对
+            # Find similar pairs above threshold
             for i in range(len(embeddings)):
                 for j in range(i + 1, len(embeddings)):
                     similarity = similarity_matrix[i, j]
@@ -200,14 +200,14 @@ class SimilarityCalculator:
             
         except Exception as e:
             logger.error(f"Similar pairs computation failed: {e}")
-            # 回退到逐对计算
+            # Fallback to pairwise computation
             for i in range(len(embeddings)):
                 for j in range(i + 1, len(embeddings)):
                     similarity = self.compute_similarity(embeddings[i], embeddings[j])
                     if similarity >= threshold:
                         similar_pairs.append((i, j, similarity))
         
-        # 按相似度排序
+        # Sort by similarity
         similar_pairs.sort(key=lambda x: x[2], reverse=True)
         
         logger.debug(f"Found {len(similar_pairs)} similar pairs above threshold {threshold}")
@@ -215,13 +215,13 @@ class SimilarityCalculator:
     
     def compute_centroid(self, embeddings: List[List[float]]) -> List[float]:
         """
-        计算向量列表的质心
+        Compute centroid of vector list
         
         Args:
-            embeddings: 向量列表
+            embeddings: List of vectors
             
         Returns:
-            质心向量
+            Centroid vector
         """
         if not embeddings:
             return []
@@ -237,19 +237,19 @@ class SimilarityCalculator:
     
     def compute_diversity_score(self, embeddings: List[List[float]]) -> float:
         """
-        计算向量集合的多样性分数
+        Compute diversity score of vector set
         
         Args:
-            embeddings: 向量列表
+            embeddings: List of vectors
             
         Returns:
-            多样性分数 (0-1，越高越多样)
+            Diversity score (0-1, higher means more diverse)
         """
         if not embeddings or len(embeddings) < 2:
             return 0.0
         
         try:
-            # 计算所有向量对的平均相似度
+            # Compute average similarity of all vector pairs
             total_similarity = 0.0
             pair_count = 0
             
@@ -263,9 +263,9 @@ class SimilarityCalculator:
                 return 0.0
             
             avg_similarity = total_similarity / pair_count
-            diversity_score = 1.0 - avg_similarity  # 相似度越低，多样性越高
+            diversity_score = 1.0 - avg_similarity  # Lower similarity means higher diversity
             
-            return max(0.0, min(1.0, diversity_score))  # 限制在0-1范围内
+            return max(0.0, min(1.0, diversity_score))  # Clamp to 0-1 range
             
         except Exception as e:
             logger.error(f"Diversity score computation failed: {e}")

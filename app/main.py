@@ -12,7 +12,7 @@ from .utils import plan_prefix, split_prefix
 from .services.context import gather_context
 from .services.context_budget import apply_budget
 from .services.index_root import generate_index
-# 递归分解功能暂时注释，等待实现
+# Recursive decomposition feature temporarily commented out, awaiting implementation
 # from .services.planning import (
 #     recursive_decompose_task, recursive_decompose_plan, evaluate_task_complexity, should_decompose_task, determine_task_type
 # )
@@ -321,14 +321,14 @@ def decompose_plan_endpoint(title: str, payload: Dict[str, Any] = Body(default={
     """
     max_depth = _parse_int(payload.get("max_depth", 3), default=3, min_value=1, max_value=5)
     
-    # 递归分解功能暂未实现
+    # Recursive decomposition feature not yet implemented
     raise HTTPException(status_code=501, detail="Recursive decomposition not yet implemented")
 
 
 @app.get("/tasks/{task_id}/complexity")
 def evaluate_task_complexity_endpoint(task_id: int):
     """Evaluate the complexity of a task for decomposition planning."""
-    # 复杂度评估功能暂未实现
+    # Task complexity evaluation feature not yet implemented
     raise HTTPException(status_code=501, detail="Task complexity evaluation not yet implemented")
 
 
@@ -507,30 +507,30 @@ def move_task(task_id: int, payload: Dict[str, Any] = Body(...)):
 @app.post("/tasks/{task_id}/rerun")
 def rerun_single_task(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
     """
-    重新执行单个任务，重置状态为pending并清空输出
+    Re-execute a single task, reset status to pending and clear output
     
-    Body参数（可选）：
-    - use_context: 是否使用上下文（默认false）
-    - context_options: 上下文配置选项
+    Body parameters (optional):
+    - use_context: Whether to use context (default false)
+    - context_options: Context configuration options
     """
     task = default_repo.get_task_info(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # 重置任务状态
+    # Reset task status
     default_repo.update_task_status(task_id, "pending")
     
-    # 清空任务输出
+    # Clear task output
     default_repo.upsert_task_output(task_id, "")
     
-    # 解析参数
+    # Parse parameters
     use_context = _parse_bool((payload or {}).get("use_context"), default=False)
     context_options = None
     co = (payload or {}).get("context_options")
     if isinstance(co, dict):
         context_options = _sanitize_context_options(co)
     
-    # 执行单个任务
+    # Execute single task
     status = execute_task(task, use_context=use_context, context_options=context_options)
     default_repo.update_task_status(task_id, status)
     
@@ -540,18 +540,18 @@ def rerun_single_task(task_id: int, payload: Optional[Dict[str, Any]] = Body(Non
 @app.post("/tasks/{task_id}/rerun/subtree")
 def rerun_task_subtree(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
     """
-    重新执行单个任务及其所有子任务
+    Re-execute a single task and all its subtasks
     
-    Body参数（可选）：
-    - use_context: 是否使用上下文（默认false）
-    - context_options: 上下文配置选项
-    - include_parent: 是否包含父任务本身（默认true）
+    Body parameters (optional):
+    - use_context: Whether to use context (default false)
+    - context_options: Context configuration options
+    - include_parent: Whether to include parent task itself (default true)
     """
     task = default_repo.get_task_info(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # 获取子树（包括父任务和所有子任务）
+    # Get subtree (including parent task and all subtasks)
     include_parent = _parse_bool((payload or {}).get("include_parent"), default=True)
     if include_parent:
         tasks_to_rerun = [task] + default_repo.get_descendants(task_id)
@@ -561,24 +561,24 @@ def rerun_task_subtree(task_id: int, payload: Optional[Dict[str, Any]] = Body(No
     if not tasks_to_rerun:
         return {"task_id": task_id, "rerun_tasks": [], "message": "No tasks to rerun"}
     
-    # 解析参数
+    # Parse parameters
     use_context = _parse_bool((payload or {}).get("use_context"), default=False)
     context_options = None
     co = (payload or {}).get("context_options")
     if isinstance(co, dict):
         context_options = _sanitize_context_options(co)
     
-    # 按优先级排序执行
+    # Execute sorted by priority
     tasks_to_rerun.sort(key=lambda t: (t.get("priority", 100), t.get("id", 0)))
     
     results = []
     for task_to_run in tasks_to_rerun:
-        # 重置任务状态
+        # Reset task status
         task_id_to_run = task_to_run["id"]
         default_repo.update_task_status(task_id_to_run, "pending")
         default_repo.upsert_task_output(task_id_to_run, "")
         
-        # 执行任务
+        # Execute task
         status = execute_task(task_to_run, use_context=use_context, context_options=context_options)
         default_repo.update_task_status(task_id_to_run, status)
         
@@ -595,18 +595,18 @@ def rerun_task_subtree(task_id: int, payload: Optional[Dict[str, Any]] = Body(No
 @app.post("/tasks/rerun/selected")
 def rerun_selected_tasks(payload: Dict[str, Any] = Body(...)):
     """
-    重新执行选定的多个任务
+    Re-execute selected multiple tasks
     
-    Body参数：
-    - task_ids: 要重新执行的任务ID列表
-    - use_context: 是否使用上下文（默认false）
-    - context_options: 上下文配置选项
+    Body parameters:
+    - task_ids: List of task IDs to re-execute
+    - use_context: Whether to use context (default false)
+    - context_options: Context configuration options
     """
     task_ids = payload.get("task_ids", [])
     if not task_ids or not isinstance(task_ids, list):
         raise HTTPException(status_code=400, detail="task_ids must be a non-empty list")
     
-    # 验证所有任务ID
+    # Validate all task IDs
     tasks_to_rerun = []
     for task_id in task_ids:
         try:
@@ -623,14 +623,14 @@ def rerun_selected_tasks(payload: Dict[str, Any] = Body(...)):
     if not tasks_to_rerun:
         raise HTTPException(status_code=400, detail="No valid tasks to rerun")
     
-    # 解析参数
+    # Parse parameters
     use_context = _parse_bool(payload.get("use_context"), default=False)
     context_options = None
     co = payload.get("context_options")
     if isinstance(co, dict):
         context_options = _sanitize_context_options(co)
     
-    # 按优先级排序执行
+    # Execute sorted by priority
     tasks_to_rerun.sort(key=lambda t: (t.get("priority", 100), t.get("id", 0)))
     
     results = []
@@ -640,11 +640,11 @@ def rerun_selected_tasks(payload: Dict[str, Any] = Body(...)):
     for task_to_run in tasks_to_rerun:
         task_id_to_run = task_to_run["id"]
         
-        # 重置任务状态
+        # Reset task status
         default_repo.update_task_status(task_id_to_run, "pending")
         default_repo.upsert_task_output(task_id_to_run, "")
         
-        # 执行任务
+        # Execute task
         status = execute_task(task_to_run, use_context=use_context, context_options=context_options)
         default_repo.update_task_status(task_id_to_run, status)
         
