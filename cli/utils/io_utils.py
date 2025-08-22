@@ -28,10 +28,10 @@ class IOUtils:
         if not response:
             return default
         
-        return response.lower() in ['y', 'yes', '是', '是的']
+        return response.lower() in ['y', 'yes']
     
     @staticmethod
-    def select_from_list(items: List[str], prompt: str = "选择项目") -> Optional[int]:
+    def select_from_list(items: List[str], prompt: str = "Select item") -> Optional[int]:
         """Display a list and let user select an item by number."""
         if not items:
             print("❌ No items to select from.")
@@ -43,7 +43,7 @@ class IOUtils:
         
         while True:
             try:
-                choice = IOUtils.safe_input("请输入数字 (或按回车取消): ")
+                choice = IOUtils.safe_input("Enter number (or press Enter to cancel): ")
                 if not choice:
                     return None
                 
@@ -51,9 +51,9 @@ class IOUtils:
                 if 0 <= index < len(items):
                     return index
                 else:
-                    print(f"❌ 请输入 1 到 {len(items)} 之间的数字")
+                    print(f"❌ Please enter a number between 1 and {len(items)}")
             except ValueError:
-                print("❌ 请输入有效的数字")
+                print("❌ Please enter a valid number")
     
     @staticmethod
     def print_success(message: str) -> None:
@@ -88,4 +88,4 @@ class IOUtils:
             name = task.get('name', 'No name')
             status = task.get('status', 'unknown')
             priority = task.get('priority', 'N/A')
-            print(f"  [{task_id}] {name} (状态: {status}, 优先级: {priority})")
+            print(f"  [{task_id}] {name} (Status: {status}, Priority: {priority})")

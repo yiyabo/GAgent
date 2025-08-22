@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-图注意力机制重排模块
+Graph Attention Mechanism Reranking Module
 
-使用图注意力网络(GAT)对语义检索结果进行重排，
-通过分析任务图的结构信息和节点特征来优化排序。
+Uses Graph Attention Network (GAT) to rerank semantic retrieval results,
+optimizing ranking by analyzing structural information and node features of the task graph.
 """
 
 import logging
@@ -17,17 +17,17 @@ logger = logging.getLogger(__name__)
 
 
 class GraphAttentionReranker:
-    """图注意力重排器"""
+    """Graph attention reranker"""
     
     def __init__(self, repo: Optional[SqliteTaskRepository] = None):
         self.repo = repo or SqliteTaskRepository()
         
-        # 注意力机制参数
-        self.attention_dim = 64  # 注意力向量维度
-        self.num_heads = 4       # 多头注意力数量
-        self.dropout_rate = 0.1  # Dropout率
+        # Attention mechanism parameters
+        self.attention_dim = 64  # Attention vector dimension
+        self.num_heads = 4       # Number of multi-head attention
+        self.dropout_rate = 0.1  # Dropout rate
         
-        # 权重参数
+        # Weight parameters
         self.relation_weights = {
             'requires': 1.0,
             'refers': 0.6,
@@ -36,7 +36,7 @@ class GraphAttentionReranker:
             'child': 0.8
         }
         
-        # 缓存
+        # Cache
         self._attention_cache = {}
     
     def rerank_with_attention(self, query_task_id: int, 
@@ -44,31 +44,31 @@ class GraphAttentionReranker:
                             embeddings: Dict[int, List[float]],
                             alpha: float = 0.4) -> List[Dict[str, Any]]:
         """
-        使用图注意力机制重排候选结果
+        Rerank candidate results using graph attention mechanism
         
         Args:
-            query_task_id: 查询任务ID
-            candidates: 候选结果列表，包含similarity分数
-            embeddings: 任务ID到embedding的映射
-            alpha: 注意力权重的影响因子
+            query_task_id: Query task ID
+            candidates: List of candidate results, including similarity scores
+            embeddings: Mapping from task ID to embedding
+            alpha: Impact factor of attention weights
             
         Returns:
-            重排后的候选结果列表
+            Reranked list of candidate results
         """
         if not candidates or len(candidates) <= 1:
             return candidates
         
         try:
-            # 构建子图
+            # Build subgraph
             task_ids = [query_task_id] + [c['id'] for c in candidates]
             subgraph = self._build_attention_subgraph(task_ids, embeddings)
             
-            # 计算注意力分数
+            # Calculate attention scores
             attention_scores = self._compute_attention_scores(
                 query_task_id, subgraph
             )
             
-            # 应用注意力权重重排
+            # Apply attention weight reranking
             reranked_candidates = self._apply_attention_reranking(
                 candidates, attention_scores, alpha
             )
@@ -82,8 +82,8 @@ class GraphAttentionReranker:
     
     def _build_attention_subgraph(self, task_ids: List[int], 
                                 embeddings: Dict[int, List[float]]) -> Dict[str, Any]:
-        """构建用于注意力计算的子图"""
-        # 获取任务信息
+        """Build subgraph for attention computation"""
+        # Get task information
         tasks = {}
         for task_id in task_ids:
             try:
@@ -93,11 +93,11 @@ class GraphAttentionReranker:
             except Exception as e:
                 logger.warning(f"Failed to get task info for {task_id}: {e}")
         
-        # 构建邻接矩阵和边特征
+        # Build adjacency matrix and edge features
         adjacency = self._build_adjacency_matrix(task_ids, tasks)
         edge_features = self._extract_edge_features(task_ids, tasks)
         
-        # 构建节点特征矩阵
+        # Build node feature matrix
         node_features = self._build_node_features(task_ids, tasks, embeddings)
         
         return {
@@ -110,12 +110,12 @@ class GraphAttentionReranker:
     
     def _build_adjacency_matrix(self, task_ids: List[int], 
                                tasks: Dict[int, Dict]) -> np.ndarray:
-        """构建邻接矩阵"""
+        """Build adjacency matrix"""
         n = len(task_ids)
         adjacency = np.zeros((n, n), dtype=np.float32)
         id_to_idx = {task_id: i for i, task_id in enumerate(task_ids)}
         
-        # 添加依赖关系边
+        # Add dependency relationship edges
         for i, task_id in enumerate(task_ids):
             try:
                 dependencies = self.repo.list_dependencies(task_id)
@@ -126,11 +126,11 @@ class GraphAttentionReranker:
                         kind = dep['kind']
                         weight = self.relation_weights.get(kind, 0.5)
                         adjacency[i, j] = weight
-                        adjacency[j, i] = weight * 0.8  # 反向边权重稍低
+                        adjacency[j, i] = weight * 0.8  # Reverse edge weight slightly lower
             except Exception as e:
                 logger.warning(f"Failed to get dependencies for task {task_id}: {e}")
         
-        # 添加层次关系边
+        # Add hierarchical relationship edges
         for i, task_id in enumerate(task_ids):
             task = tasks.get(task_id, {})
             parent_id = task.get('parent_id')
@@ -140,7 +140,7 @@ class GraphAttentionReranker:
                 adjacency[i, j] = self.relation_weights['parent']
                 adjacency[j, i] = self.relation_weights['child']
         
-        # 添加兄弟关系边
+        # Add sibling relationship edges
         parent_groups = defaultdict(list)
         for task_id in task_ids:
             task = tasks.get(task_id, {})
@@ -160,7 +160,7 @@ class GraphAttentionReranker:
     
     def _extract_edge_features(self, task_ids: List[int], 
                              tasks: Dict[int, Dict]) -> Dict[Tuple[int, int], Dict]:
-        """提取边特征"""
+        """Extract edge features"""
         edge_features = {}
         id_to_idx = {task_id: i for i, task_id in enumerate(task_ids)}
         
@@ -184,10 +184,10 @@ class GraphAttentionReranker:
     def _build_node_features(self, task_ids: List[int], 
                            tasks: Dict[int, Dict],
                            embeddings: Dict[int, List[float]]) -> np.ndarray:
-        """构建节点特征矩阵"""
+        """Build node feature matrix"""
         n = len(task_ids)
         
-        # 获取embedding维度
+        # Get embedding dimension
         embedding_dim = 0
         for task_id in task_ids:
             if task_id in embeddings and embeddings[task_id]:
@@ -195,38 +195,38 @@ class GraphAttentionReranker:
                 break
         
         if embedding_dim == 0:
-            embedding_dim = 1024  # 默认维度
+            embedding_dim = 1024  # Default dimension
         
-        # 构建特征矩阵
-        feature_dim = embedding_dim + 5  # embedding + 5个结构特征
+        # Build feature matrix
+        feature_dim = embedding_dim + 5  # embedding + 5 structural features
         node_features = np.zeros((n, feature_dim), dtype=np.float32)
         
         for i, task_id in enumerate(task_ids):
-            # Embedding特征
+            # Embedding features
             if task_id in embeddings and embeddings[task_id]:
                 embedding = embeddings[task_id]
                 node_features[i, :len(embedding)] = embedding
             
-            # 结构特征
+            # Structural features
             task = tasks.get(task_id, {})
             
-            # 特征1: 优先级（归一化）
+            # Feature 1: Priority (normalized)
             priority = task.get('priority', 100)
             node_features[i, embedding_dim] = min(priority / 100.0, 1.0)
             
-            # 特征2: 深度（归一化）
+            # Feature 2: Depth (normalized)
             depth = task.get('depth', 0)
             node_features[i, embedding_dim + 1] = min(depth / 10.0, 1.0)
             
-            # 特征3: 状态编码
+            # Feature 3: Status encoding
             status = task.get('status', 'pending')
             status_encoding = {'pending': 0.0, 'in_progress': 0.5, 'done': 1.0}
             node_features[i, embedding_dim + 2] = status_encoding.get(status, 0.0)
             
-            # 特征4: 是否有父节点
+            # Feature 4: Has parent node
             node_features[i, embedding_dim + 3] = 1.0 if task.get('parent_id') else 0.0
             
-            # 特征5: 任务类型编码
+            # Feature 5: Task type encoding
             task_type = task.get('task_type', 'atomic')
             type_encoding = {'atomic': 0.0, 'composite': 1.0}
             node_features[i, embedding_dim + 4] = type_encoding.get(task_type, 0.0)
@@ -235,7 +235,7 @@ class GraphAttentionReranker:
     
     def _compute_attention_scores(self, query_task_id: int, 
                                 subgraph: Dict[str, Any]) -> Dict[int, float]:
-        """计算图注意力分数"""
+        """Compute graph attention scores"""
         task_ids = subgraph['task_ids']
         adjacency = subgraph['adjacency']
         node_features = subgraph['node_features']
@@ -246,22 +246,22 @@ class GraphAttentionReranker:
         query_idx = task_ids.index(query_task_id)
         n = len(task_ids)
         
-        # 简化的多头注意力机制
+        # Simplified multi-head attention mechanism
         attention_scores = {}
         
         for i, task_id in enumerate(task_ids):
             if i == query_idx:
-                attention_scores[task_id] = 1.0  # 查询节点自身
+                attention_scores[task_id] = 1.0  # Query node itself
                 continue
             
-            # 计算注意力权重
+            # Calculate attention weight
             attention_weight = self._compute_pairwise_attention(
                 query_idx, i, node_features, adjacency
             )
             
             attention_scores[task_id] = attention_weight
         
-        # 归一化注意力分数
+        # Normalize attention scores
         max_score = max(attention_scores.values()) if attention_scores else 1.0
         if max_score > 0:
             for task_id in attention_scores:
@@ -272,24 +272,24 @@ class GraphAttentionReranker:
     def _compute_pairwise_attention(self, query_idx: int, candidate_idx: int,
                                   node_features: np.ndarray, 
                                   adjacency: np.ndarray) -> float:
-        """计算两个节点之间的注意力权重"""
-        # 特征相似度
+        """Compute attention weight between two nodes"""
+        # Feature similarity
         query_features = node_features[query_idx]
         candidate_features = node_features[candidate_idx]
         
-        # 余弦相似度
+        # Cosine similarity
         feature_similarity = self._cosine_similarity(query_features, candidate_features)
         
-        # 结构连接强度
+        # Structural connection strength
         structural_weight = adjacency[query_idx, candidate_idx]
         
-        # 组合注意力权重
+        # Combine attention weight
         attention_weight = 0.7 * feature_similarity + 0.3 * structural_weight
         
         return max(0.0, attention_weight)
     
     def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
-        """计算余弦相似度"""
+        """Compute cosine similarity"""
         try:
             norm1 = np.linalg.norm(vec1)
             norm2 = np.linalg.norm(vec2)
@@ -305,7 +305,7 @@ class GraphAttentionReranker:
     def _apply_attention_reranking(self, candidates: List[Dict[str, Any]],
                                  attention_scores: Dict[int, float],
                                  alpha: float) -> List[Dict[str, Any]]:
-        """应用注意力权重重排候选结果"""
+        """Apply attention weight reranking to candidate results"""
         reranked_candidates = []
         
         for candidate in candidates:
@@ -313,7 +313,7 @@ class GraphAttentionReranker:
             original_score = candidate.get('similarity', 0.0)
             attention_score = attention_scores.get(task_id, 0.0)
             
-            # 组合原始分数和注意力分数
+            # Combine original score and attention score
             combined_score = (1 - alpha) * original_score + alpha * attention_score
             
             reranked_candidate = candidate.copy()
@@ -321,7 +321,7 @@ class GraphAttentionReranker:
             reranked_candidate['combined_score'] = combined_score
             reranked_candidates.append(reranked_candidate)
         
-        # 按组合分数排序
+        # Sort by combined score
         reranked_candidates.sort(key=lambda x: x['combined_score'], reverse=True)
         
         return reranked_candidates
@@ -329,7 +329,7 @@ class GraphAttentionReranker:
     def get_attention_explanation(self, query_task_id: int, 
                                 candidate_task_id: int,
                                 embeddings: Dict[int, List[float]]) -> Dict[str, Any]:
-        """获取注意力权重的解释"""
+        """Get explanation of attention weights"""
         try:
             task_ids = [query_task_id, candidate_task_id]
             subgraph = self._build_attention_subgraph(task_ids, embeddings)
@@ -340,7 +340,7 @@ class GraphAttentionReranker:
             node_features = subgraph['node_features']
             adjacency = subgraph['adjacency']
             
-            # 计算各个组件的贡献
+            # Calculate contribution of each component
             feature_similarity = self._cosine_similarity(
                 node_features[query_idx], node_features[candidate_idx]
             )
@@ -367,17 +367,17 @@ class GraphAttentionReranker:
             return {'error': str(e)}
     
     def clear_cache(self):
-        """清空缓存"""
+        """Clear cache"""
         self._attention_cache.clear()
         logger.debug("Graph attention cache cleared")
 
 
-# 全局实例
+# Global instance
 _graph_attention_reranker: Optional[GraphAttentionReranker] = None
 
 
 def get_graph_attention_reranker() -> GraphAttentionReranker:
-    """获取图注意力重排器单例"""
+    """Get graph attention reranker singleton"""
     global _graph_attention_reranker
     if _graph_attention_reranker is None:
         _graph_attention_reranker = GraphAttentionReranker()
