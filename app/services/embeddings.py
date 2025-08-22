@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-GLM Embeddings服务模块（重构版）
+GLM Embeddings Service Module (Refactored Version)
 
-重构后的GLM Embeddings服务，采用组件化架构，遵循单一职责原则。
-主服务类负责协调各个专门的组件，提供统一的公共接口。
+Refactored GLM Embeddings service with componentized architecture following 
+Single Responsibility Principle. The main service class coordinates various 
+specialized components and provides a unified public interface.
 """
 
 import logging
@@ -21,14 +22,14 @@ logger = logging.getLogger(__name__)
 
 
 class GLMEmbeddingsService:
-    """GLM Embeddings服务类（重构版）- 主要负责协调各个组件"""
+    """GLM Embeddings Service Class (Refactored) - Mainly responsible for coordinating components"""
     
     def __init__(self):
-        """初始化服务和各个组件"""
+        """Initialize service and components"""
         self.config = get_config()
         self.cache = get_embedding_cache()
         
-        # 初始化各个专门的组件
+        # Initialize specialized components
         self.api_client = GLMApiClient(self.config)
         self.batch_processor = EmbeddingBatchProcessor(self.config, self.api_client, self.cache)
         self.async_manager = AsyncEmbeddingManager(self.batch_processor)
@@ -36,122 +37,122 @@ class GLMEmbeddingsService:
         
         logger.info(f"GLM Embeddings service initialized with refactored architecture")
     
-    # 核心embedding方法 - 委托给BatchProcessor
+    # Core embedding methods - delegated to BatchProcessor
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """
-        获取文本列表的向量表示（支持缓存）
+        Get vector representations for text list (with cache support)
         
         Args:
-            texts: 文本列表
+            texts: List of texts
             
         Returns:
-            向量列表，每个向量是float列表
+            List of vectors, each vector is a float list
         """
         return self.batch_processor.process_texts_batch(texts)
     
     def get_single_embedding(self, text: str) -> List[float]:
         """
-        获取单个文本的向量表示
+        Get vector representation for single text
         
         Args:
-            text: 单个文本
+            text: Single text
             
         Returns:
-            向量，float列表
+            Vector as float list
         """
         embeddings = self.get_embeddings([text])
         return embeddings[0] if embeddings else []
     
-    # 异步方法 - 委托给AsyncEmbeddingManager
+    # Async methods - delegated to AsyncEmbeddingManager
     def get_embeddings_async(self, texts: List[str], callback: Optional[Callable] = None) -> Future:
         """
-        异步获取embeddings
+        Get embeddings asynchronously
         
         Args:
-            texts: 文本列表
-            callback: 可选的回调函数，接收embeddings结果
+            texts: List of texts
+            callback: Optional callback function to receive embeddings result
             
         Returns:
-            Future对象
+            Future object
         """
         return self.async_manager.get_embeddings_async(texts, callback)
     
     def get_single_embedding_async(self, text: str, callback: Optional[Callable] = None) -> Future:
         """
-        异步获取单个embedding
+        Get single embedding asynchronously
         
         Args:
-            text: 单个文本
-            callback: 可选的回调函数
+            text: Single text
+            callback: Optional callback function
             
         Returns:
-            Future对象
+            Future object
         """
         return self.async_manager.get_single_embedding_async(text, callback)
     
     def precompute_embeddings_async(self, texts: List[str], 
                                   progress_callback: Optional[Callable] = None) -> Future:
         """
-        异步预计算embeddings
+        Precompute embeddings asynchronously
         
         Args:
-            texts: 文本列表
-            progress_callback: 进度回调函数
+            texts: List of texts
+            progress_callback: Progress callback function
             
         Returns:
-            Future对象，结果包含统计信息
+            Future object, result contains statistics
         """
         return self.async_manager.precompute_embeddings_async(texts, progress_callback)
     
     def wait_for_background_tasks(self, timeout: Optional[float] = None) -> Dict[str, Any]:
         """
-        等待所有后台任务完成
+        Wait for all background tasks to complete
         
         Args:
-            timeout: 超时时间（秒）
+            timeout: Timeout in seconds
             
         Returns:
-            任务完成状态
+            Task completion status
         """
         return self.async_manager.wait_for_background_tasks(timeout)
     
     def get_background_task_status(self) -> Dict[str, Any]:
         """
-        获取后台任务状态
+        Get background task status
         
         Returns:
-            包含任务状态信息的字典
+            Dictionary containing task status information
         """
         return self.async_manager.get_async_status()
     
     def cancel_background_tasks(self) -> int:
         """
-        取消所有未完成的后台任务
+        Cancel all unfinished background tasks
         
         Returns:
-            成功取消的任务数量
+            Number of successfully cancelled tasks
         """
         return self.async_manager.cancel_background_tasks()
     
-    # 相似度计算方法 - 委托给SimilarityCalculator
+    # Similarity calculation methods - delegated to SimilarityCalculator
     def compute_similarity(self, embedding1: List[float], embedding2: List[float]) -> float:
-        """计算两个向量的余弦相似度"""
+        """Calculate cosine similarity between two vectors"""
         return self.similarity_calculator.compute_similarity(embedding1, embedding2)
     
     def compute_similarities(self, query_embedding: List[float], 
                            target_embeddings: List[List[float]]) -> List[float]:
-        """计算查询向量与多个目标向量的相似度"""
+        """Calculate similarities between query vector and multiple target vectors"""
         return self.similarity_calculator.compute_similarities(query_embedding, target_embeddings)
     
     def find_most_similar(self, query_embedding: List[float], 
                          candidates: List[Dict[str, Any]], 
                          k: int = 5, min_similarity: float = 0.0) -> List[Dict[str, Any]]:
-        """查找最相似的候选项"""
+        """Find most similar candidates"""
         return self.similarity_calculator.find_most_similar(query_embedding, candidates, k, min_similarity)
     
-    # 服务信息和配置方法
+    # Service information and configuration methods
     def get_service_info(self) -> Dict[str, Any]:
-        """获取服务信息"""
+        """Get service information"""
         return {
             "service_type": "GLMEmbeddingsService",
             "version": "2.0.0-refactored",
@@ -167,32 +168,32 @@ class GLMEmbeddingsService:
             }
         }
     
-    # 兼容性方法 - 保持向后兼容
+    # Compatibility methods - maintain backward compatibility
     def get_optimal_batch_size(self) -> int:
-        """获取最优批量大小"""
+        """Get optimal batch size"""
         return self.batch_processor.get_optimal_batch_size()
     
     def test_connection(self) -> bool:
-        """测试API连接"""
+        """Test API connection"""
         return self.api_client.test_connection()
     
     def embedding_to_json(self, embedding: List[float]) -> str:
-        """将embedding转换为JSON字符串用于存储"""
+        """Convert embedding to JSON string for storage"""
         import json
         return json.dumps(embedding)
     
     def json_to_embedding(self, json_str: str) -> List[float]:
-        """将JSON字符串转换回embedding"""
+        """Convert JSON string back to embedding"""
         import json
         return json.loads(json_str)
 
 
-# 单例模式获取服务实例
+# Singleton pattern for service instance
 _embeddings_service = None
 
 
 def get_embeddings_service() -> GLMEmbeddingsService:
-    """获取GLM Embeddings服务单例"""
+    """Get GLM Embeddings service singleton"""
     global _embeddings_service
     if _embeddings_service is None:
         _embeddings_service = GLMEmbeddingsService()
@@ -200,7 +201,7 @@ def get_embeddings_service() -> GLMEmbeddingsService:
 
 
 def shutdown_embeddings_service():
-    """关闭embeddings服务"""
+    """Shutdown embeddings service"""
     global _embeddings_service
     if _embeddings_service is not None:
         _embeddings_service.async_manager.shutdown()
