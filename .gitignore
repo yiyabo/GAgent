@@ -15,6 +15,7 @@ venv/
 .idea/
 .vscode/
 tasks.db
+embedding_cache.db
 CLAUDE.md
 plan.json
 plan.md

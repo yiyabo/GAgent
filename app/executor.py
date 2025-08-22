@@ -35,37 +35,37 @@ def _glm_chat(prompt: str) -> str:
 
 
 def _generate_task_embedding_async(task_id: int, content: str, repo: TaskRepository):
-    """异步生成并存储任务的embedding"""
+    """Asynchronously generate and store task embedding"""
     def _background_embedding():
         try:
             if not content or not content.strip():
-                logger.debug(f"任务 {task_id} 内容为空，跳过embedding生成")
+                logger.debug(f"Task {task_id} content is empty, skipping embedding generation")
                 return
             
-            # 检查是否已有embedding
+            # Check if embedding already exists
             existing_embedding = repo.get_task_embedding(task_id)
             if existing_embedding:
-                logger.debug(f"任务 {task_id} 已有embedding，跳过生成")
+                logger.debug(f"Task {task_id} already has embedding, skipping generation")
                 return
             
             embeddings_service = get_embeddings_service()
             
-            # 生成embedding
-            logger.debug(f"为任务 {task_id} 生成embedding")
+            # Generate embedding
+            logger.debug(f"Generating embedding for task {task_id}")
             embedding = embeddings_service.get_single_embedding(content)
             
             if embedding:
-                # 存储embedding
+                # Store embedding
                 embedding_json = embeddings_service.embedding_to_json(embedding)
                 repo.store_task_embedding(task_id, embedding_json)
-                logger.debug(f"成功为任务 {task_id} 存储embedding")
+                logger.debug(f"Successfully stored embedding for task {task_id}")
             else:
-                logger.warning(f"为任务 {task_id} 生成embedding失败")
+                logger.warning(f"Failed to generate embedding for task {task_id}")
                 
         except Exception as e:
-            logger.error(f"为任务 {task_id} 生成embedding时出错: {e}")
+            logger.error(f"Error generating embedding for task {task_id}: {e}")
     
-    # 在后台线程中执行，避免阻塞主流程
+    # Execute in background thread to avoid blocking main process
     thread = threading.Thread(target=_background_embedding, daemon=True)
     thread.start()
 
@@ -181,18 +181,18 @@ def execute_task(
         repo.upsert_task_output(task_id, content)
         print(f"Task {task_id} ({name}) done.")
         
-        # 异步生成embedding（可选）
+        # Asynchronously generate embedding (optional)
         try:
-            generate_embeddings = True  # 默认启用
+            generate_embeddings = True  # Default enabled
             
-            # 检查context_options中是否有embedding配置
+            # Check if there's embedding configuration in context_options
             if context_options and isinstance(context_options, dict):
                 generate_embeddings = context_options.get("generate_embeddings", True)
             
             if generate_embeddings:
                 _generate_task_embedding_async(task_id, content, repo)
         except Exception as embed_error:
-            logger.warning(f"触发embedding生成失败 (任务 {task_id}): {embed_error}")
+            logger.warning(f"Failed to trigger embedding generation (task {task_id}): {embed_error}")
         
         return "done"
     except Exception as e:
