@@ -118,14 +118,15 @@ class SimilarityCalculator:
     
     def find_most_similar(self, query_embedding: List[float], 
                          candidates: List[Dict[str, Any]], 
-                         top_k: int = 5) -> List[Dict[str, Any]]:
+                         k: int = 5, min_similarity: float = 0.0) -> List[Dict[str, Any]]:
         """
         查找最相似的候选项
         
         Args:
             query_embedding: 查询向量
             candidates: 候选项列表，每个包含'embedding'字段
-            top_k: 返回前k个最相似的
+            k: 返回前k个最相似的
+            min_similarity: 最小相似度阈值
             
         Returns:
             按相似度排序的候选项列表
@@ -153,11 +154,14 @@ class SimilarityCalculator:
         for i, candidate in enumerate(valid_candidates):
             candidate['similarity'] = similarities[i]
         
+        # 过滤低于阈值的候选项
+        filtered_candidates = [c for c in valid_candidates if c['similarity'] >= min_similarity]
+        
         # 按相似度排序
-        sorted_candidates = sorted(valid_candidates, key=lambda x: x['similarity'], reverse=True)
+        sorted_candidates = sorted(filtered_candidates, key=lambda x: x['similarity'], reverse=True)
         
         # 返回前k个
-        result = sorted_candidates[:top_k]
+        result = sorted_candidates[:k]
         
         logger.debug(f"Found {len(result)} most similar items from {len(candidates)} candidates")
         return result

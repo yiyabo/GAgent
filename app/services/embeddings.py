@@ -145,9 +145,9 @@ class GLMEmbeddingsService:
     
     def find_most_similar(self, query_embedding: List[float], 
                          candidates: List[Dict[str, Any]], 
-                         top_k: int = 5) -> List[Dict[str, Any]]:
+                         k: int = 5, min_similarity: float = 0.0) -> List[Dict[str, Any]]:
         """查找最相似的候选项"""
-        return self.similarity_calculator.find_most_similar(query_embedding, candidates, top_k)
+        return self.similarity_calculator.find_most_similar(query_embedding, candidates, k, min_similarity)
     
     # 服务信息和配置方法
     def get_service_info(self) -> Dict[str, Any]:
@@ -175,6 +175,16 @@ class GLMEmbeddingsService:
     def test_connection(self) -> bool:
         """测试API连接"""
         return self.api_client.test_connection()
+    
+    def embedding_to_json(self, embedding: List[float]) -> str:
+        """将embedding转换为JSON字符串用于存储"""
+        import json
+        return json.dumps(embedding)
+    
+    def json_to_embedding(self, json_str: str) -> List[float]:
+        """将JSON字符串转换回embedding"""
+        import json
+        return json.loads(json_str)
 
 
 # 单例模式获取服务实例

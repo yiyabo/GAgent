@@ -421,8 +421,8 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
     # Optional summarization strategy: 'truncate' (default) or 'sentence'
     strategy = _parse_strategy(payload.get("strategy")) if (max_chars is not None or per_section_max is not None) else None
     # GLM semantic retrieval options
-    semantic_k = _parse_opt_int(payload.get("semantic_k"), min_value=0, max_value=50)
-    min_similarity = _parse_opt_float(payload.get("min_similarity"), min_value=0.0, max_value=1.0)
+    semantic_k = _parse_int(payload.get("semantic_k", 5), default=5, min_value=0, max_value=50)
+    min_similarity = _parse_opt_float(payload.get("min_similarity"), min_value=0.0, max_value=1.0) or 0.1
     # Hierarchy options (Phase 5)
     include_ancestors = _parse_bool(payload.get("include_ancestors"), default=False)
     include_siblings = _parse_bool(payload.get("include_siblings"), default=False)
