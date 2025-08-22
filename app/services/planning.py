@@ -22,7 +22,7 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
     style = (payload or {}).get("style") or ""
     notes = (payload or {}).get("notes") or ""
 
-    # AI自动决定sections数量
+    # AI automatically determines the number of sections
     if sections is None:
         sections_instruction = "Determine the optimal number of tasks (typically 3-8) based on the complexity and scope of the goal."
     else:

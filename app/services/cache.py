@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Embedding缓存管理模块
+Embedding Cache Management Module
 
-提供高效的embedding缓存机制，避免重复计算相同文本的向量，
-支持内存缓存和持久化存储两种模式。
+Provides efficient embedding cache mechanism to avoid redundant computation of vectors for the same text,
+supports both in-memory cache and persistent storage modes.
 """
 
 import os
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CacheEntry:
-    """缓存条目数据类"""
+    """Cache entry data class"""
     text_hash: str
     embedding: List[float]
     model: str
@@ -32,17 +32,17 @@ class CacheEntry:
 
 
 class EmbeddingCache:
-    """Embedding缓存管理器"""
+    """Embedding cache manager"""
     
     def __init__(self, cache_size: int = 10000, enable_persistent: bool = True):
         self.config = get_config()
         self.cache_size = cache_size
         self.enable_persistent = enable_persistent
         
-        # 内存缓存：text_hash -> CacheEntry
+        # Memory cache: text_hash -> CacheEntry
         self._memory_cache: Dict[str, CacheEntry] = {}
         
-        # 持久化缓存数据库路径
+        # Persistent cache database path
         self.cache_db_path = os.path.join(
             os.path.dirname(os.getenv('DB_PATH', 'tasks.db')), 
             'embedding_cache.db'
@@ -54,7 +54,7 @@ class EmbeddingCache:
         logger.info(f"Embedding cache initialized: memory_size={cache_size}, persistent={enable_persistent}")
     
     def _init_persistent_cache(self):
-        """初始化持久化缓存数据库"""
+        """Initialize persistent cache database"""
         try:
             with sqlite3.connect(self.cache_db_path) as conn:
                 conn.execute('''
@@ -75,12 +75,12 @@ class EmbeddingCache:
             self.enable_persistent = False
     
     def _compute_text_hash(self, text: str, model: str) -> str:
-        """计算文本和模型的哈希值"""
+        """Compute hash value of text and model"""
         content = f"{model}:{text}"
         return hashlib.sha256(content.encode('utf-8')).hexdigest()
     
     def get(self, text: str, model: str = None) -> Optional[List[float]]:
-        """从缓存获取embedding"""
+        """Get embedding from cache"""
         if not text.strip():
             return None
         
@@ -88,7 +88,7 @@ class EmbeddingCache:
         text_hash = self._compute_text_hash(text, model)
         current_time = time.time()
         
-        # 1. 先查内存缓存
+        # 1. First check memory cache
         if text_hash in self._memory_cache:
             entry = self._memory_cache[text_hash]
             entry.access_count += 1
@@ -96,7 +96,7 @@ class EmbeddingCache:
             logger.debug(f"Cache hit (memory): {text_hash[:8]}...")
             return entry.embedding.copy()
         
-        # 2. 查持久化缓存
+        # 2. Check persistent cache
         if self.enable_persistent:
             try:
                 with sqlite3.connect(self.cache_db_path) as conn:
@@ -109,14 +109,14 @@ class EmbeddingCache:
                         embedding = json.loads(row[0])
                         access_count = row[1] + 1
                         
-                        # 更新访问统计
+                        # Update access statistics
                         conn.execute(
                             'UPDATE embedding_cache SET access_count = ?, last_accessed = ? WHERE text_hash = ?',
                             (access_count, current_time, text_hash)
                         )
                         conn.commit()
                         
-                        # 加载到内存缓存
+                        # Load to memory cache
                         self._add_to_memory_cache(CacheEntry(
                             text_hash=text_hash,
                             embedding=embedding,
@@ -135,7 +135,7 @@ class EmbeddingCache:
         return None
     
     def put(self, text: str, embedding: List[float], model: str = None) -> None:
-        """将embedding存入缓存"""
+        """Store embedding in cache"""
         if not text.strip() or not embedding:
             return
         
@@ -152,10 +152,10 @@ class EmbeddingCache:
             last_accessed=current_time
         )
         
-        # 存入内存缓存
+        # Store in memory cache
         self._add_to_memory_cache(entry)
         
-        # 存入持久化缓存
+        # Store in persistent cache
         if self.enable_persistent:
             try:
                 with sqlite3.connect(self.cache_db_path) as conn:
@@ -178,19 +178,19 @@ class EmbeddingCache:
         logger.debug(f"Cache stored: {text_hash[:8]}...")
     
     def _add_to_memory_cache(self, entry: CacheEntry) -> None:
-        """添加条目到内存缓存，处理容量限制"""
-        # 如果缓存已满，移除最少使用的条目
+        """Add entry to memory cache, handle capacity limits"""
+        # If cache is full, remove least used entries
         if len(self._memory_cache) >= self.cache_size:
             self._evict_lru()
         
         self._memory_cache[entry.text_hash] = entry
     
     def _evict_lru(self) -> None:
-        """移除最少使用的缓存条目"""
+        """Remove least recently used cache entry"""
         if not self._memory_cache:
             return
         
-        # 找到最少访问且最久未使用的条目
+        # Find least accessed and least recently used entry
         lru_key = min(
             self._memory_cache.keys(),
             key=lambda k: (
@@ -203,7 +203,7 @@ class EmbeddingCache:
         logger.debug(f"Evicted from memory cache: {lru_key[:8]}...")
     
     def get_batch(self, texts: List[str], model: str = None) -> Tuple[List[Optional[List[float]]], List[int]]:
-        """批量获取embeddings，返回(结果列表, 未命中文本的索引列表)"""
+        """Batch get embeddings, return (result list, indices of missed texts)"""
         model = model or self.config.embedding_model
         results = []
         cache_misses = []
@@ -217,7 +217,7 @@ class EmbeddingCache:
         return results, cache_misses
     
     def put_batch(self, texts: List[str], embeddings: List[List[float]], model: str = None) -> None:
-        """批量存储embeddings"""
+        """Batch store embeddings"""
         if len(texts) != len(embeddings):
             raise ValueError("texts and embeddings must have the same length")
         
@@ -225,12 +225,12 @@ class EmbeddingCache:
             self.put(text, embedding, model)
     
     def clear_memory(self) -> None:
-        """清空内存缓存"""
+        """Clear memory cache"""
         self._memory_cache.clear()
         logger.info("Memory cache cleared")
     
     def clear_persistent(self) -> None:
-        """清空持久化缓存"""
+        """Clear persistent cache"""
         if self.enable_persistent:
             try:
                 with sqlite3.connect(self.cache_db_path) as conn:
@@ -241,7 +241,7 @@ class EmbeddingCache:
                 logger.error(f"Failed to clear persistent cache: {e}")
     
     def get_stats(self) -> Dict[str, Any]:
-        """获取缓存统计信息"""
+        """Get cache statistics information"""
         stats = {
             "memory_cache_size": len(self._memory_cache),
             "memory_cache_limit": self.cache_size,
@@ -254,7 +254,7 @@ class EmbeddingCache:
                     row = conn.execute('SELECT COUNT(*) FROM embedding_cache').fetchone()
                     stats["persistent_cache_size"] = row[0] if row else 0
                     
-                    # 获取模型分布
+                    # Get model distribution
                     model_rows = conn.execute(
                         'SELECT model, COUNT(*) FROM embedding_cache GROUP BY model'
                     ).fetchall()
@@ -267,7 +267,7 @@ class EmbeddingCache:
         return stats
     
     def cleanup_old_entries(self, days: int = 30) -> int:
-        """清理旧的缓存条目"""
+        """Clean up old cache entries"""
         if not self.enable_persistent:
             return 0
         
@@ -289,12 +289,12 @@ class EmbeddingCache:
             return 0
 
 
-# 全局缓存实例
+# Global cache instance
 _embedding_cache: Optional[EmbeddingCache] = None
 
 
 def get_embedding_cache() -> EmbeddingCache:
-    """获取全局embedding缓存实例"""
+    """Get global embedding cache instance"""
     global _embedding_cache
     if _embedding_cache is None:
         cache_size = int(os.getenv('EMBEDDING_CACHE_SIZE', '10000'))
