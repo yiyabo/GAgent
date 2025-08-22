@@ -264,6 +264,11 @@ def get_semantic_retrieval_service() -> SemanticRetrievalService:
         _semantic_retrieval_service = SemanticRetrievalService()
     return _semantic_retrieval_service
 
+# 兼容性别名
+def get_retrieval_service() -> SemanticRetrievalService:
+    """兼容性别名 - 获取语义检索服务单例"""
+    return get_semantic_retrieval_service()
+
 def clear_retrieval_cache():
     """清空检索相关缓存"""
     global _semantic_retrieval_service
