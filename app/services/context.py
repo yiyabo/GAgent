@@ -9,6 +9,7 @@ from ..interfaces import TaskRepository
 from ..repository.tasks import default_repo
 from ..utils import split_prefix
 from .context_budget import PRIORITY_ORDER
+from .retrieval import get_semantic_retrieval_service as get_retrieval_service
 
 # Debug logging (opt-in via env: CTX_DEBUG/CONTEXT_DEBUG)
 _CTX_LOGGER = logging.getLogger("app.context")
