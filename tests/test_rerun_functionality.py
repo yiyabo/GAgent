@@ -113,8 +113,8 @@ def test_cli_rerun():
     try:
         # This would require manual interaction, so we'll test the command structure
         cmd = [
-            sys.executable, "agent_cli.py", 
-            "--rerun-interactive", 
+            sys.executable, "-m", "cli.main",
+            "--rerun-interactive",
             "--title", "Test Rerun Plan",
             "--use-context"
         ]
@@ -126,7 +126,7 @@ def test_cli_rerun():
     # Test 2: Single task rerun
     print("\n2. Testing single task CLI...")
     try:
-        cmd = [sys.executable, "agent_cli.py", "--rerun-task", "1", "--use-context"]
+        cmd = [sys.executable, "-m", "cli.main", "--rerun-task", "1", "--use-context"]
         print(f"Command: {' '.join(cmd)}")
     except Exception as e:
         print(f"❌ CLI single task error: {e}")
@@ -189,9 +189,9 @@ def run_comprehensive_test():
         print("\n🎉 Test completed successfully!")
         print(f"Created test tasks: {task_ids}")
         print("\nUsage examples:")
-        print(f"  python agent_cli.py --rerun-task {task_ids[0]}")
-        print(f"  python agent_cli.py --rerun-selected --task-ids {','.join(map(str, task_ids[:2]))}")
-        print("  python agent_cli.py --rerun-interactive --title 'Test Rerun Plan'")
+        print(f"  python -m cli.main --rerun-task {task_ids[0]}")
+        print(f"  python -m cli.main --rerun-selected --task-ids {','.join(map(str, task_ids[:2]))}")
+        print("  python -m cli.main --rerun-interactive --title 'Test Rerun Plan'")
         
         return True
         

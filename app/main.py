@@ -1,22 +1,25 @@
-from typing import Any, Dict, List, Optional
 import os
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional
+
 from fastapi import FastAPI, HTTPException, Body
-from .models import TaskCreate
+
 from .database import init_db
-from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order, postorder_schedule
 from .executor import execute_task
 from .llm import get_default_client
-from .services.planning import propose_plan_service, approve_plan_service
+from .models import TaskCreate
 from .repository.tasks import default_repo
-from .utils import plan_prefix, split_prefix
+from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order, postorder_schedule
 from .services.context import gather_context
 from .services.context_budget import apply_budget
 from .services.index_root import generate_index
+from .services.planning import propose_plan_service, approve_plan_service
+from .utils import plan_prefix, split_prefix
+
 # Recursive decomposition feature temporarily commented out, awaiting implementation
 # from .services.planning import (
 #     recursive_decompose_task, recursive_decompose_plan, evaluate_task_complexity, should_decompose_task, determine_task_type
 # )
-from contextlib import asynccontextmanager
 
 def _parse_bool(val, default: bool = False) -> bool:
     if isinstance(val, bool):
@@ -152,7 +155,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.post("/tasks")
 def create_task(task: TaskCreate):
-    task_id = default_repo.create_task(task.name, status='pending', priority=None, task_type=task.task_type)
+    task_id = default_repo.create_task(task.name, status="pending", priority=None, task_type=task.task_type)
     return {"id": task_id}
 
 @app.get("/tasks")
