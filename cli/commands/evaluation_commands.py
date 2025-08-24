@@ -4,14 +4,13 @@ CLI commands for evaluation system
 Provides command-line interface for content evaluation and quality management.
 """
 
-from typing import Optional, Dict, Any
-from argparse import Namespace
-import argparse
-import sys
 import os
+import sys
+from argparse import Namespace
+from typing import Any, Dict, Optional
 
 # Add app path for imports when running from tests
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from .base import MultiCommand
 from ..utils.io_utils import IOUtils
@@ -19,13 +18,27 @@ from ..utils.io_utils import IOUtils
 # Import app modules safely
 try:
     from ...app.repository.tasks import default_repo
-    from ...app.executor_enhanced import execute_task_with_evaluation
+    from ...app.executor_enhanced import (
+        execute_task_with_evaluation,
+        execute_task_with_llm_evaluation,
+        execute_task_with_adversarial_evaluation,
+        execute_task_with_multi_expert_evaluation
+    )
     from ...app.models import EvaluationConfig
+    from ...app.services.expert_evaluator import get_multi_expert_evaluator
+    from ...app.services.evaluation_supervisor import get_evaluation_supervisor, get_supervision_report
 except ImportError:
     # Fallback for when running from tests
     from app.repository.tasks import default_repo
-    from app.executor_enhanced import execute_task_with_evaluation
+    from app.executor_enhanced import (
+        execute_task_with_evaluation,
+        execute_task_with_llm_evaluation,
+        execute_task_with_adversarial_evaluation,
+        execute_task_with_multi_expert_evaluation
+    )
     from app.models import EvaluationConfig
+    from app.services.expert_evaluator import get_multi_expert_evaluator
+    from app.services.evaluation_supervisor import get_evaluation_supervisor, get_supervision_report
 
 
 class EvaluationCommands(MultiCommand):
@@ -44,23 +57,33 @@ class EvaluationCommands(MultiCommand):
         return {
             'eval_config': self.handle_config,
             'eval_execute': self.handle_execute,
+            'eval_llm': self.handle_llm_execute,
+            'eval_multi_expert': self.handle_multi_expert_execute,
+            'eval_adversarial': self.handle_adversarial_execute,
             'eval_history': self.handle_history,
             'eval_override': self.handle_override,
             'eval_stats': self.handle_stats,
             'eval_clear': self.handle_clear,
             'eval_batch': self.handle_batch,
+            'eval_supervision': self.handle_supervision,
+            'eval_supervision_config': self.handle_supervision_config,
         }
     
     def handle_default(self, args: Namespace) -> int:
         """Handle default evaluation behavior."""
         self.io.print_info("Available evaluation operations:")
-        self.io.print_info("  --eval-config <task-id>    Configure evaluation settings")
-        self.io.print_info("  --eval-execute <task-id>   Execute task with evaluation")
-        self.io.print_info("  --eval-history <task-id>   View evaluation history")
-        self.io.print_info("  --eval-override <task-id>  Override evaluation result")
-        self.io.print_info("  --eval-stats               Show system statistics")
-        self.io.print_info("  --eval-clear <task-id>     Clear evaluation history")
-        self.io.print_info("  --eval-batch               Run batch evaluation")
+        self.io.print_info("  --eval-config <task-id>       Configure evaluation settings")
+        self.io.print_info("  --eval-execute <task-id>      Execute task with basic evaluation")
+        self.io.print_info("  --eval-llm <task-id>          Execute task with LLM intelligent evaluation")
+        self.io.print_info("  --eval-multi-expert <task-id> Execute task with multi-expert evaluation")
+        self.io.print_info("  --eval-adversarial <task-id>  Execute task with adversarial evaluation")
+        self.io.print_info("  --eval-history <task-id>      View evaluation history")
+        self.io.print_info("  --eval-override <task-id>     Override evaluation result")
+        self.io.print_info("  --eval-stats                  Show system statistics")
+        self.io.print_info("  --eval-clear <task-id>        Clear evaluation history")
+        self.io.print_info("  --eval-batch                  Run batch evaluation")
+        self.io.print_info("  --eval-supervision            Show evaluation supervision report")
+        self.io.print_info("  --eval-supervision-config     Configure supervision thresholds")
         return 0
     
     def handle_config(self, args: Namespace) -> int:
@@ -645,6 +668,449 @@ class EvaluationCommands(MultiCommand):
                 self.io.print_info(f"  Needs revision: {eval_data['needs_revision']}")
                 if eval_data['suggestions']:
                     self.io.print_info(f"  Suggestions: {len(eval_data['suggestions'])} items")
+
+    def handle_llm_execute(self, args: Namespace) -> int:
+        """Execute task with LLM-based intelligent evaluation"""
+        try:
+            task_id = args.eval_llm
+            quality_threshold = getattr(args, 'threshold', 0.8)
+            max_iterations = getattr(args, 'max_iterations', 3)
+            use_context = getattr(args, 'use_context', False)
+            
+            self.io.print_info(f"🧠 Executing task {task_id} with LLM intelligent evaluation")
+            self.io.print_info(f"   Quality threshold: {quality_threshold}")
+            self.io.print_info(f"   Max iterations: {max_iterations}")
+            
+            # Get task
+            task = default_repo.get_task_info(task_id)
+            if not task:
+                self.io.print_error(f"Task {task_id} not found")
+                return 1
+            
+            # Execute with LLM evaluation
+            result = execute_task_with_llm_evaluation(
+                task=task,
+                repo=default_repo,
+                max_iterations=max_iterations,
+                quality_threshold=quality_threshold,
+                use_context=use_context
+            )
+            
+            self.io.print_success(f"✅ LLM evaluation completed!")
+            self.io.print_info(f"   Final status: {result.status}")
+            self.io.print_info(f"   Final score: {result.evaluation.overall_score:.3f}")
+            self.io.print_info(f"   Iterations: {result.iterations_completed}")
+            self.io.print_info(f"   Execution time: {result.execution_time:.2f}s")
+            
+            # Show evaluation details
+            eval_result = result.evaluation
+            self.io.print_info(f"   📊 Dimension scores:")
+            self.io.print_info(f"      相关性: {eval_result.dimensions.relevance:.3f}")
+            self.io.print_info(f"      完整性: {eval_result.dimensions.completeness:.3f}")
+            self.io.print_info(f"      准确性: {eval_result.dimensions.accuracy:.3f}")
+            self.io.print_info(f"      清晰度: {eval_result.dimensions.clarity:.3f}")
+            self.io.print_info(f"      连贯性: {eval_result.dimensions.coherence:.3f}")
+            self.io.print_info(f"      科学严谨性: {eval_result.dimensions.scientific_rigor:.3f}")
+            
+            if eval_result.suggestions:
+                self.io.print_info(f"   💡 Improvement suggestions:")
+                for i, suggestion in enumerate(eval_result.suggestions[:3], 1):
+                    self.io.print_info(f"      {i}. {suggestion}")
+            
+            return 0
+            
+        except Exception as e:
+            self.io.print_error(f"LLM evaluation execution failed: {e}")
+            return 1
+    
+    def handle_multi_expert_execute(self, args: Namespace) -> int:
+        """Execute task with multi-expert evaluation system"""
+        try:
+            task_id = args.eval_multi_expert
+            if not task_id:
+                self.io.print_error("Task ID is required for multi-expert evaluation")
+                return 1
+            
+            quality_threshold = getattr(args, 'threshold', 0.8)
+            max_iterations = getattr(args, 'max_iterations', 3)
+            use_context = getattr(args, 'use_context', False)
+            experts = getattr(args, 'experts', '').split(',') if hasattr(args, 'experts') and args.experts else None
+            
+            if experts:
+                experts = [e.strip() for e in experts if e.strip()]
+                self.io.print_info(f"🎭 Executing task {task_id} with selected experts: {', '.join(experts)}")
+            else:
+                self.io.print_info(f"🎭 Executing task {task_id} with all available experts")
+            
+            self.io.print_info(f"   Quality threshold: {quality_threshold}")
+            self.io.print_info(f"   Max iterations: {max_iterations}")
+            
+            # Get task
+            task = default_repo.get_task_info(task_id)
+            if not task:
+                self.io.print_error(f"Task {task_id} not found")
+                return 1
+            
+            # Execute with multi-expert evaluation
+            result = execute_task_with_multi_expert_evaluation(
+                task=task,
+                repo=default_repo,
+                max_iterations=max_iterations,
+                quality_threshold=quality_threshold,
+                selected_experts=experts,
+                use_context=use_context
+            )
+            
+            self.io.print_success(f"✅ Multi-expert evaluation completed!")
+            self.io.print_info(f"   Final status: {result.status}")
+            self.io.print_info(f"   Consensus score: {result.evaluation.overall_score:.3f}")
+            self.io.print_info(f"   Iterations: {result.iterations_completed}")
+            self.io.print_info(f"   Execution time: {result.execution_time:.2f}s")
+            
+            # Show expert details from metadata
+            metadata = result.metadata or {}
+            expert_evaluations = metadata.get('expert_evaluations', {})
+            disagreements = metadata.get('disagreements', [])
+            consensus_confidence = metadata.get('consensus_confidence', 0.0)
+            
+            if expert_evaluations:
+                self.io.print_info(f"\n   👥 Expert Scores:")
+                for expert_name, evaluation in expert_evaluations.items():
+                    expert_role = evaluation.get('expert_role', expert_name)
+                    overall_score = evaluation.get('overall_score', 0)
+                    confidence = evaluation.get('confidence_level', 0)
+                    self.io.print_info(f"      {expert_role}: {overall_score:.3f} (信心度: {confidence:.2f})")
+                
+                self.io.print_info(f"   🤝 Consensus confidence: {consensus_confidence:.3f}")
+            
+            if disagreements:
+                self.io.print_info(f"\n   🔥 Expert disagreements: {len(disagreements)} areas")
+                for disagreement in disagreements[:3]:  # Show top 3
+                    field = disagreement['field']
+                    level = disagreement['disagreement_level']
+                    self.io.print_info(f"      {field}: disagreement level {level:.2f}")
+            
+            return 0 if result.status in ["done", "needs_review"] else 1
+            
+        except Exception as e:
+            self.io.print_error(f"Multi-expert evaluation execution failed: {e}")
+            return 1
+    
+    def handle_adversarial_execute(self, args: Namespace) -> int:
+        """Execute task with adversarial evaluation (Generator vs Critic)"""
+        try:
+            task_id = args.eval_adversarial
+            if not task_id:
+                self.io.print_error("Task ID is required for adversarial evaluation")
+                return 1
+            
+            max_rounds = getattr(args, 'max_rounds', 3)
+            improvement_threshold = getattr(args, 'improvement_threshold', 0.1)
+            use_context = getattr(args, 'use_context', False)
+            
+            self.io.print_info(f"⚔️  Executing task {task_id} with adversarial evaluation")
+            self.io.print_info(f"   Max rounds: {max_rounds}")
+            self.io.print_info(f"   Improvement threshold: {improvement_threshold}")
+            
+            # Get task
+            task = default_repo.get_task_info(task_id)
+            if not task:
+                self.io.print_error(f"Task {task_id} not found")
+                return 1
+            
+            # Execute with adversarial evaluation
+            result = execute_task_with_adversarial_evaluation(
+                task=task,
+                repo=default_repo,
+                max_rounds=max_rounds,
+                improvement_threshold=improvement_threshold,
+                use_context=use_context
+            )
+            
+            self.io.print_success(f"✅ Adversarial evaluation completed!")
+            self.io.print_info(f"   Final status: {result.status}")
+            self.io.print_info(f"   Robustness score: {result.evaluation.overall_score:.3f}")
+            self.io.print_info(f"   Rounds completed: {result.iterations_completed}")
+            self.io.print_info(f"   Execution time: {result.execution_time:.2f}s")
+            
+            # Show adversarial details from metadata
+            metadata = result.metadata or {}
+            adversarial_effectiveness = metadata.get('adversarial_effectiveness', 0.0)
+            robustness_score = metadata.get('robustness_score', 0.0)
+            
+            self.io.print_info(f"\n   ⚔️  Adversarial Analysis:")
+            self.io.print_info(f"      Adversarial effectiveness: {adversarial_effectiveness:.3f}")
+            self.io.print_info(f"      Final robustness: {robustness_score:.3f}")
+            
+            # Show evaluation suggestions
+            if result.evaluation and result.evaluation.suggestions:
+                self.io.print_info(f"\n   💡 Adversarial Insights:")
+                for i, suggestion in enumerate(result.evaluation.suggestions[:3], 1):
+                    self.io.print_info(f"      {i}. {suggestion}")
+            
+            return 0 if result.status in ["done", "needs_review"] else 1
+            
+        except Exception as e:
+            self.io.print_error(f"Adversarial evaluation execution failed: {e}")
+            return 1
+    
+    def handle_multi_expert_analysis(self, args: Namespace) -> int:
+        """Evaluate content with multiple expert perspectives"""
+        try:
+            task_id = args.eval_multi_expert
+            experts = getattr(args, 'experts', '').split(',') if hasattr(args, 'experts') and args.experts else None
+            
+            if experts:
+                experts = [e.strip() for e in experts if e.strip()]
+                self.io.print_info(f"🎭 Selected experts: {', '.join(experts)}")
+            else:
+                self.io.print_info(f"🎭 Using all available experts")
+            
+            # Get task content
+            task = default_repo.get_task_info(task_id)
+            if not task:
+                self.io.print_error(f"Task {task_id} not found")
+                return 1
+            
+            # Get task content from task_outputs
+            task_content = default_repo.get_task_output_content(task_id)
+            if not task_content:
+                self.io.print_error(f"Task {task_id} has no content to evaluate")
+                return 1
+            
+            # Multi-expert evaluation
+            evaluator = get_multi_expert_evaluator()
+            task_context = {
+                "name": task.get('name', f'Task {task_id}'),
+                "task_type": "content_evaluation"
+            }
+            
+            result = evaluator.evaluate_with_multiple_experts(
+                content=task_content,
+                task_context=task_context,
+                selected_experts=experts,
+                iteration=1
+            )
+            
+            # Display results
+            expert_evaluations = result.get("expert_evaluations", {})
+            consensus = result.get("consensus", {})
+            disagreements = result.get("disagreements", [])
+            
+            self.io.print_success(f"✅ Multi-expert evaluation completed!")
+            self.io.print_info(f"   Participating experts: {len(expert_evaluations)}")
+            
+            # Individual expert scores
+            self.io.print_info(f"\n   👥 Individual Expert Scores:")
+            for expert_name, evaluation in expert_evaluations.items():
+                expert_role = evaluation.get('expert_role', expert_name)
+                overall_score = evaluation.get('overall_score', 0)
+                confidence = evaluation.get('confidence_level', 0)
+                self.io.print_info(f"      {expert_role}: {overall_score:.3f} (信心度: {confidence:.2f})")
+            
+            # Consensus results
+            self.io.print_info(f"\n   🤝 Expert Consensus:")
+            self.io.print_info(f"      Overall Score: {consensus.get('overall_score', 0):.3f}")
+            self.io.print_info(f"      Consensus Confidence: {consensus.get('consensus_confidence', 0):.3f}")
+            
+            # Show disagreements
+            if disagreements:
+                self.io.print_info(f"\n   🔥 Expert Disagreements:")
+                for disagreement in disagreements:
+                    field = disagreement['field']
+                    level = disagreement['disagreement_level']
+                    lowest = disagreement['lowest_scorer']
+                    highest = disagreement['highest_scorer']
+                    self.io.print_info(f"      {field}: {lowest} vs {highest} (分歧度: {level:.2f})")
+            else:
+                self.io.print_info(f"\n   ✅ No significant disagreements among experts")
+            
+            # Aggregate suggestions
+            all_suggestions = consensus.get('specific_suggestions', [])
+            if all_suggestions:
+                self.io.print_info(f"\n   💡 Expert Recommendations:")
+                for i, suggestion in enumerate(all_suggestions[:5], 1):
+                    self.io.print_info(f"      {i}. {suggestion}")
+            
+            return 0
+            
+        except Exception as e:
+            self.io.print_error(f"Multi-expert evaluation failed: {e}")
+            return 1
+    
+    def handle_supervision(self, args: Namespace) -> int:
+        """Handle evaluation supervision report"""
+        try:
+            detailed = getattr(args, 'detailed', False)
+            
+            self.io.print_info("🔍 Generating evaluation supervision report...")
+            
+            # Get supervision report
+            supervision_report = get_supervision_report()
+            
+            # Display system health
+            system_health = supervision_report.get("system_health", {})
+            overall_score = system_health.get("overall_score", 0.0)
+            status = system_health.get("status", "unknown")
+            
+            status_color = "success" if status == "healthy" else "warning" if status == "degraded" else "error"
+            
+            self.io.print_info("\n=== 评估系统监督报告 ===")
+            getattr(self.io, f"print_{status_color}")(f"系统健康状态: {status.upper()}")
+            self.io.print_info(f"整体健康评分: {overall_score:.3f}")
+            self.io.print_info(f"报告时间: {supervision_report.get('timestamp', 'N/A')}")
+            
+            # Current metrics
+            current_metrics = supervision_report.get("current_metrics", {})
+            if current_metrics:
+                self.io.print_info("\n📊 当前质量指标:")
+                for metric_name, metric_data in current_metrics.items():
+                    value = metric_data.get("value", 0.0)
+                    status = metric_data.get("status", "unknown")
+                    threshold = metric_data.get("threshold", 0.0)
+                    
+                    metric_color = "success" if status == "good" else "warning" if status == "warning" else "error"
+                    self.io.print_info(f"  {metric_name}: {value:.3f} (阈值: {threshold:.3f})", end="")
+                    getattr(self.io, f"print_{metric_color}")(f" [{status}]")
+            
+            # Performance summary
+            performance_summary = supervision_report.get("performance_summary", {})
+            if performance_summary:
+                self.io.print_info("\n⚡ 性能摘要:")
+                avg_time = performance_summary.get("avg_evaluation_time", 0.0)
+                max_time = performance_summary.get("max_evaluation_time", 0.0)
+                success_rate = performance_summary.get("success_rate", 0.0)
+                cache_hit_rate = performance_summary.get("avg_cache_hit_rate", 0.0)
+                
+                self.io.print_info(f"  平均评估时间: {avg_time:.2f}s")
+                self.io.print_info(f"  最大评估时间: {max_time:.2f}s")
+                self.io.print_info(f"  成功率: {success_rate:.1%}")
+                self.io.print_info(f"  缓存命中率: {cache_hit_rate:.1%}")
+            
+            # Quality trends
+            if detailed:
+                quality_trends = supervision_report.get("quality_trends", {})
+                if quality_trends:
+                    self.io.print_info("\n📈 质量趋势:")
+                    for metric_name, trend_data in quality_trends.items():
+                        trend = trend_data.get("trend", "stable")
+                        recent_avg = trend_data.get("recent_avg", 0.0)
+                        historical_avg = trend_data.get("historical_avg", 0.0)
+                        
+                        trend_symbol = "📈" if trend == "improving" else "📉" if trend == "declining" else "➡️"
+                        self.io.print_info(f"  {metric_name}: {trend_symbol} {trend} (当前: {recent_avg:.3f}, 历史: {historical_avg:.3f})")
+            
+            # Recent alerts
+            alert_summary = supervision_report.get("alert_summary", {})
+            total_alerts = alert_summary.get("total", 0)
+            critical_alerts = alert_summary.get("critical", 0)
+            high_alerts = alert_summary.get("high", 0)
+            
+            if total_alerts > 0:
+                self.io.print_warning(f"\n🚨 最近24小时警报: {total_alerts} 个")
+                if critical_alerts > 0:
+                    self.io.print_error(f"  严重警报: {critical_alerts}")
+                if high_alerts > 0:
+                    self.io.print_warning(f"  高级警报: {high_alerts}")
+                
+                # Show recent alerts if detailed
+                if detailed:
+                    recent_alerts = supervision_report.get("recent_alerts", [])
+                    if recent_alerts:
+                        self.io.print_info("\n最近警报详情:")
+                        for alert in recent_alerts[:5]:  # Show top 5
+                            alert_type = alert.get("alert_type", "unknown")
+                            severity = alert.get("severity", "unknown")
+                            message = alert.get("message", "")
+                            timestamp = alert.get("timestamp", "")
+                            
+                            severity_color = "error" if severity == "critical" else "warning" if severity in ["high", "medium"] else "info"
+                            getattr(self.io, f"print_{severity_color}")(f"  [{severity.upper()}] {alert_type}: {message}")
+                            self.io.print_info(f"    时间: {timestamp}")
+            else:
+                self.io.print_success("\n✅ 最近24小时无警报")
+            
+            # Calibration history
+            calibration_history = supervision_report.get("calibration_history", [])
+            if calibration_history and detailed:
+                self.io.print_info(f"\n🔧 最近自动校准: {len(calibration_history)} 次")
+                for calibration in calibration_history[-3:]:  # Show last 3
+                    action = calibration.get("action", "unknown")
+                    metric = calibration.get("metric", "unknown")
+                    reason = calibration.get("reason", "unknown")
+                    timestamp = calibration.get("timestamp", "")
+                    self.io.print_info(f"  {action} ({metric}): {reason} - {timestamp}")
+            
+            return 0
+            
+        except Exception as e:
+            self.io.print_error(f"Failed to get supervision report: {e}")
+            return 1
+    
+    def handle_supervision_config(self, args: Namespace) -> int:
+        """Handle supervision configuration"""
+        try:
+            # Parse threshold updates
+            thresholds = {}
+            
+            # Check for common threshold arguments
+            if hasattr(args, 'min_accuracy') and args.min_accuracy is not None:
+                thresholds['min_accuracy'] = float(args.min_accuracy)
+            if hasattr(args, 'min_consistency') and args.min_consistency is not None:
+                thresholds['min_consistency'] = float(args.min_consistency)
+            if hasattr(args, 'max_bias_risk') and args.max_bias_risk is not None:
+                thresholds['max_bias_risk'] = float(args.max_bias_risk)
+            if hasattr(args, 'min_cache_hit_rate') and args.min_cache_hit_rate is not None:
+                thresholds['min_cache_hit_rate'] = float(args.min_cache_hit_rate)
+            if hasattr(args, 'max_error_rate') and args.max_error_rate is not None:
+                thresholds['max_error_rate'] = float(args.max_error_rate)
+            if hasattr(args, 'max_evaluation_time') and args.max_evaluation_time is not None:
+                thresholds['max_evaluation_time'] = float(args.max_evaluation_time)
+            if hasattr(args, 'min_confidence') and args.min_confidence is not None:
+                thresholds['min_confidence'] = float(args.min_confidence)
+            
+            if not thresholds:
+                # Show current configuration
+                supervision_report = get_supervision_report()
+                supervision_config = supervision_report.get("supervision_config", {})
+                current_thresholds = supervision_config.get("thresholds", {})
+                auto_calibration = supervision_config.get("auto_calibration_enabled", False)
+                
+                self.io.print_info("=== 当前监督系统配置 ===")
+                self.io.print_info(f"自动校准: {'启用' if auto_calibration else '禁用'}")
+                self.io.print_info("\n监督阈值:")
+                for threshold_name, value in current_thresholds.items():
+                    self.io.print_info(f"  {threshold_name}: {value}")
+                
+                self.io.print_info("\n可配置的阈值:")
+                self.io.print_info("  --min-accuracy <value>        最小准确率阈值 (0.0-1.0)")
+                self.io.print_info("  --min-consistency <value>     最小一致性阈值 (0.0-1.0)")
+                self.io.print_info("  --max-bias-risk <value>       最大偏见风险阈值 (0.0-1.0)")
+                self.io.print_info("  --min-cache-hit-rate <value>  最小缓存命中率阈值 (0.0-1.0)")
+                self.io.print_info("  --max-error-rate <value>      最大错误率阈值 (0.0-1.0)")
+                self.io.print_info("  --max-evaluation-time <value> 最大评估时间阈值 (秒)")
+                self.io.print_info("  --min-confidence <value>      最小置信度阈值 (0.0-1.0)")
+                
+                return 0
+            
+            # Update thresholds
+            supervisor = get_evaluation_supervisor()
+            success = supervisor.update_thresholds(thresholds)
+            
+            if success:
+                self.io.print_success("监督系统阈值更新成功!")
+                self.io.print_info("更新的阈值:")
+                for threshold_name, value in thresholds.items():
+                    self.io.print_info(f"  {threshold_name}: {value}")
+            else:
+                self.io.print_error("监督系统阈值更新失败")
+                return 1
+            
+            return 0
+            
+        except Exception as e:
+            self.io.print_error(f"Failed to configure supervision: {e}")
+            return 1
 
 
 def register_evaluation_commands():
