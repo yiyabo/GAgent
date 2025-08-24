@@ -3,11 +3,12 @@ import sys
 
 
 def _run_cli_with_args(args):
-    import agent_cli
+    # agent_cli has been removed, use cli.main directly
     old_argv = sys.argv[:]
     try:
-        sys.argv = ["agent_cli.py"] + list(args)
-        agent_cli.main()
+        sys.argv = ["cli.main"] + list(args)
+        from cli.main import main
+        main()
     finally:
         sys.argv = old_argv
 

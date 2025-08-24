@@ -86,10 +86,10 @@ def test_cli_command_structure():
     print("\n=== Testing CLI Command Structure ===")
     
     commands = [
-        "python agent_cli.py --rerun-task 1",
-        "python agent_cli.py --rerun-task 1 --use-context",
-        "python agent_cli.py --rerun-interactive --title 'Test Plan'",
-        "python agent_cli.py --rerun-subtree 1 --rerun-include-parent",
+        "python -m cli.main --rerun-task 1",
+        "python -m cli.main --rerun-task 1 --use-context",
+        "python -m cli.main --rerun-interactive --title 'Test Plan'",
+        "python -m cli.main --rerun-subtree 1 --rerun-include-parent",
     ]
     
     for cmd in commands:
@@ -105,7 +105,7 @@ def test_context_options():
     
     # Import the context options builder
     try:
-        from agent_cli import _build_context_options_from_args
+        from cli.main import ModernCLIApp
         
         class MockArgs:
             def __init__(self):
@@ -145,7 +145,7 @@ def run_simple_test():
         print("\nNext steps:")
         print("1. Start server: conda run -n LLM python -m uvicorn app.main:app --reload")
         print("2. Run full test: python tests/test_rerun_functionality.py")
-        print("3. Test CLI: python agent_cli.py --rerun-interactive --title 'Test Rerun Functionality'")
+        print("3. Test CLI: python -m cli.main --rerun-interactive --title 'Test Rerun Functionality'")
         
         return True
         

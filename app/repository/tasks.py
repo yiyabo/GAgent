@@ -776,5 +776,238 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 "model_distribution": {row[0]: row[1] for row in model_stats}
             }
 
+    # -------------------------------
+    # Evaluation System operations
+    # -------------------------------
+
+    def store_evaluation_history(
+        self,
+        task_id: int,
+        iteration: int,
+        content: str,
+        overall_score: float,
+        dimension_scores: Dict[str, float],
+        suggestions: List[str],
+        needs_revision: bool,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """Store evaluation history for a task iteration."""
+        with get_db() as conn:
+            cursor = conn.execute('''
+                INSERT INTO evaluation_history 
+                (task_id, iteration, content, overall_score, dimension_scores, suggestions, needs_revision, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                task_id,
+                iteration,
+                content,
+                overall_score,
+                json.dumps(dimension_scores),
+                json.dumps(suggestions),
+                needs_revision,
+                json.dumps(metadata) if metadata else None
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_evaluation_history(self, task_id: int) -> List[Dict[str, Any]]:
+        """Get evaluation history for a task."""
+        with get_db() as conn:
+            rows = conn.execute('''
+                SELECT id, task_id, iteration, content, overall_score, dimension_scores, 
+                       suggestions, needs_revision, timestamp, metadata
+                FROM evaluation_history
+                WHERE task_id = ?
+                ORDER BY iteration ASC
+            ''', (task_id,)).fetchall()
+            
+            result = []
+            for row in rows:
+                try:
+                    # Handle both tuple and Row objects
+                    row_dict = {
+                        "id": row[0],
+                        "task_id": row[1],
+                        "iteration": row[2],
+                        "content": row[3],
+                        "overall_score": row[4],
+                        "dimension_scores": json.loads(row[5]) if row[5] else {},
+                        "suggestions": json.loads(row[6]) if row[6] else [],
+                        "needs_revision": bool(row[7]),
+                        "timestamp": row[8],
+                        "metadata": json.loads(row[9]) if row[9] else None
+                    }
+                except Exception:
+                    # Fallback for sqlite3.Row objects
+                    row_dict = {
+                        "id": row["id"],
+                        "task_id": row["task_id"],
+                        "iteration": row["iteration"],
+                        "content": row["content"],
+                        "overall_score": row["overall_score"],
+                        "dimension_scores": json.loads(row["dimension_scores"]) if row["dimension_scores"] else {},
+                        "suggestions": json.loads(row["suggestions"]) if row["suggestions"] else [],
+                        "needs_revision": bool(row["needs_revision"]),
+                        "timestamp": row["timestamp"],
+                        "metadata": json.loads(row["metadata"]) if row["metadata"] else None
+                    }
+                result.append(row_dict)
+            return result
+
+    def get_latest_evaluation(self, task_id: int) -> Optional[Dict[str, Any]]:
+        """Get the latest evaluation for a task."""
+        with get_db() as conn:
+            row = conn.execute('''
+                SELECT id, task_id, iteration, content, overall_score, dimension_scores, 
+                       suggestions, needs_revision, timestamp, metadata
+                FROM evaluation_history
+                WHERE task_id = ?
+                ORDER BY iteration DESC
+                LIMIT 1
+            ''', (task_id,)).fetchone()
+            
+            if not row:
+                return None
+            
+            try:
+                return {
+                    "id": row[0],
+                    "task_id": row[1],
+                    "iteration": row[2],
+                    "content": row[3],
+                    "overall_score": row[4],
+                    "dimension_scores": json.loads(row[5]) if row[5] else {},
+                    "suggestions": json.loads(row[6]) if row[6] else [],
+                    "needs_revision": bool(row[7]),
+                    "timestamp": row[8],
+                    "metadata": json.loads(row[9]) if row[9] else None
+                }
+            except Exception:
+                # Fallback for sqlite3.Row objects
+                return {
+                    "id": row["id"],
+                    "task_id": row["task_id"],
+                    "iteration": row["iteration"],
+                    "content": row["content"],
+                    "overall_score": row["overall_score"],
+                    "dimension_scores": json.loads(row["dimension_scores"]) if row["dimension_scores"] else {},
+                    "suggestions": json.loads(row["suggestions"]) if row["suggestions"] else [],
+                    "needs_revision": bool(row["needs_revision"]),
+                    "timestamp": row["timestamp"],
+                    "metadata": json.loads(row["metadata"]) if row["metadata"] else None
+                }
+
+    def store_evaluation_config(
+        self,
+        task_id: int,
+        quality_threshold: float = 0.8,
+        max_iterations: int = 3,
+        evaluation_dimensions: Optional[List[str]] = None,
+        domain_specific: bool = False,
+        strict_mode: bool = False,
+        custom_weights: Optional[Dict[str, float]] = None
+    ) -> None:
+        """Store evaluation configuration for a task."""
+        with get_db() as conn:
+            conn.execute('''
+                INSERT OR REPLACE INTO evaluation_configs
+                (task_id, quality_threshold, max_iterations, evaluation_dimensions, 
+                 domain_specific, strict_mode, custom_weights, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (
+                task_id,
+                quality_threshold,
+                max_iterations,
+                json.dumps(evaluation_dimensions) if evaluation_dimensions else None,
+                domain_specific,
+                strict_mode,
+                json.dumps(custom_weights) if custom_weights else None
+            ))
+            conn.commit()
+
+    def get_evaluation_config(self, task_id: int) -> Optional[Dict[str, Any]]:
+        """Get evaluation configuration for a task."""
+        with get_db() as conn:
+            row = conn.execute('''
+                SELECT task_id, quality_threshold, max_iterations, evaluation_dimensions,
+                       domain_specific, strict_mode, custom_weights, created_at, updated_at
+                FROM evaluation_configs
+                WHERE task_id = ?
+            ''', (task_id,)).fetchone()
+            
+            if not row:
+                return None
+            
+            try:
+                return {
+                    "task_id": row[0],
+                    "quality_threshold": row[1],
+                    "max_iterations": row[2],
+                    "evaluation_dimensions": json.loads(row[3]) if row[3] else None,
+                    "domain_specific": bool(row[4]),
+                    "strict_mode": bool(row[5]),
+                    "custom_weights": json.loads(row[6]) if row[6] else None,
+                    "created_at": row[7],
+                    "updated_at": row[8]
+                }
+            except Exception:
+                # Fallback for sqlite3.Row objects
+                return {
+                    "task_id": row["task_id"],
+                    "quality_threshold": row["quality_threshold"],
+                    "max_iterations": row["max_iterations"],
+                    "evaluation_dimensions": json.loads(row["evaluation_dimensions"]) if row["evaluation_dimensions"] else None,
+                    "domain_specific": bool(row["domain_specific"]),
+                    "strict_mode": bool(row["strict_mode"]),
+                    "custom_weights": json.loads(row["custom_weights"]) if row["custom_weights"] else None,
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"]
+                }
+
+    def delete_evaluation_history(self, task_id: int) -> None:
+        """Delete all evaluation history for a task."""
+        with get_db() as conn:
+            conn.execute("DELETE FROM evaluation_history WHERE task_id = ?", (task_id,))
+            conn.commit()
+
+    def get_evaluation_stats(self) -> Dict[str, Any]:
+        """Get overall evaluation statistics."""
+        with get_db() as conn:
+            total_evaluations = conn.execute("SELECT COUNT(*) FROM evaluation_history").fetchone()[0]
+            
+            avg_score = conn.execute('''
+                SELECT AVG(overall_score) FROM evaluation_history
+            ''').fetchone()[0] or 0.0
+            
+            iteration_stats = conn.execute('''
+                SELECT AVG(iteration) as avg_iterations, MAX(iteration) as max_iterations
+                FROM (
+                    SELECT task_id, MAX(iteration) as iteration
+                    FROM evaluation_history
+                    GROUP BY task_id
+                )
+            ''').fetchone()
+            
+            quality_distribution = conn.execute('''
+                SELECT 
+                    CASE 
+                        WHEN overall_score >= 0.9 THEN 'excellent'
+                        WHEN overall_score >= 0.8 THEN 'good'
+                        WHEN overall_score >= 0.7 THEN 'acceptable'
+                        ELSE 'needs_improvement'
+                    END as quality_tier,
+                    COUNT(*) as count
+                FROM evaluation_history
+                GROUP BY quality_tier
+            ''').fetchall()
+            
+            return {
+                "total_evaluations": total_evaluations,
+                "average_score": round(avg_score, 3),
+                "average_iterations": round(iteration_stats[0] or 0, 2),
+                "max_iterations_used": iteration_stats[1] or 0,
+                "quality_distribution": {row[0]: row[1] for row in quality_distribution}
+            }
+
 
 default_repo = SqliteTaskRepository()
