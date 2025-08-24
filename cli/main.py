@@ -7,6 +7,7 @@ from .interfaces import CLIApplication, CLICommand
 from .parser import CLIParser
 from .commands import RerunCommands, PlanCommands
 from .commands.evaluation_commands import EvaluationCommands
+from .commands.database_commands import DatabaseCommands
 from .utils import FileUtils, IOUtils
 
 
@@ -29,6 +30,7 @@ class ModernCLIApp(CLIApplication):
         self.register_command(RerunCommands())
         self.register_command(PlanCommands())
         self.register_command(EvaluationCommands())
+        self.register_command(DatabaseCommands())
     
     def register_command(self, command: CLICommand) -> None:
         """Register a command with the application."""
@@ -47,7 +49,19 @@ class ModernCLIApp(CLIApplication):
     
     def _execute_commands(self, args) -> int:
         """Execute commands based on parsed arguments."""
-        # Check for rerun commands first (highest priority)
+        # Check for database commands first
+        if self._has_database_args(args):
+            db_cmd = self._get_command_by_name("database")
+            if db_cmd:
+                return db_cmd.execute(args)
+        
+        # Check for evaluation commands
+        if self._has_evaluation_args(args):
+            eval_cmd = self._get_command_by_name("evaluation")
+            if eval_cmd:
+                return eval_cmd.execute(args)
+        
+        # Check for rerun commands (high priority)
         if self._has_rerun_args(args):
             rerun_cmd = self._get_command_by_name("rerun")
             if rerun_cmd:
@@ -79,6 +93,23 @@ class ModernCLIApp(CLIApplication):
             'list_plans', 'load_plan', 'execute_only', 'plan_only'
         ]
         return any(hasattr(args, attr) and getattr(args, attr) for attr in plan_attrs)
+    
+    def _has_evaluation_args(self, args) -> bool:
+        """Check if any evaluation-related arguments are present."""
+        eval_attrs = [
+            'eval_config', 'eval_execute', 'eval_llm', 'eval_multi_expert',
+            'eval_adversarial', 'eval_history', 'eval_override', 'eval_stats',
+            'eval_clear', 'eval_batch', 'eval_supervision', 'eval_supervision_config'
+        ]
+        return any(hasattr(args, attr) and getattr(args, attr) for attr in eval_attrs)
+    
+    def _has_database_args(self, args) -> bool:
+        """Check if any database-related arguments are present."""
+        db_attrs = [
+            'db_info', 'cache_stats', 'clear_cache', 'db_optimize',
+            'db_backup', 'db_analyze', 'db_reset'
+        ]
+        return any(hasattr(args, attr) and getattr(args, attr) for attr in db_attrs)
     
     def _get_command_by_name(self, name: str) -> Optional[CLICommand]:
         """Get a command by its name."""

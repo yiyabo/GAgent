@@ -152,16 +152,21 @@ class PlanCommands(MultiCommand):
             # Execute the plan
             schedule = getattr(args, 'schedule', 'bfs')
             
-            result = run_tasks(
-                title=title,
-                schedule=schedule,
-                use_context=args.use_context if hasattr(args, 'use_context') else False,
-                context_options=context_options
-            )
+            # Prepare payload for API call
+            payload = {
+                "title": title,
+                "schedule": schedule,
+                "use_context": args.use_context if hasattr(args, 'use_context') else False
+            }
+            if context_options:
+                payload["context_options"] = context_options
             
-            if result.get('success', False):
-                completed_tasks = result.get('completed_tasks', 0)
-                total_tasks = result.get('total_tasks', 0)
+            result = run_tasks(payload)
+            
+            # run_tasks returns a list of task results, not a dict with success/error
+            if isinstance(result, list):
+                completed_tasks = sum(1 for r in result if r.get('status') in ['completed', 'done'])
+                total_tasks = len(result)
                 
                 self.io.print_success(f"Plan execution completed: {completed_tasks}/{total_tasks} tasks")
                 
@@ -172,7 +177,8 @@ class PlanCommands(MultiCommand):
                 
                 return 0
             else:
-                error = result.get('error', 'Unknown error')
+                # Handle error case (if result is a dict with error info)
+                error = result.get('error', 'Unknown error') if isinstance(result, dict) else str(result)
                 self.io.print_error(f"Plan execution failed: {error}")
                 return 1
                 
@@ -295,7 +301,8 @@ class PlanCommands(MultiCommand):
             if not self.handle_api_error(result, "Plan generation"):
                 return None
             
-            plan = result.get('plan')
+            # The propose_plan function returns the plan directly, not wrapped in a 'plan' field
+            plan = result if isinstance(result, dict) and 'title' in result else result.get('plan')
             if not plan or not PlanUtils.validate_plan(plan):
                 self.io.print_error("Generated plan is invalid")
                 return None
@@ -313,11 +320,17 @@ class PlanCommands(MultiCommand):
         """Save assembled plan output to file."""
         try:
             result = get_plan_assembled(title)
-            if not result.get('success', False):
+            
+            # get_plan_assembled returns a dict with 'title', 'sections', and 'combined' fields
+            if not isinstance(result, dict) or 'combined' not in result:
                 self.io.print_error("Failed to get assembled output")
                 return False
             
-            content = result.get('assembled', '')
+            content = result.get('combined', '')
+            if not content:
+                self.io.print_error("No content found in assembled output")
+                return False
+                
             if FileUtils.write_file_safe(output_path, content):
                 self.io.print_success(f"Assembled output saved to {output_path}")
                 return True

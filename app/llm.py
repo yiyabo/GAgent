@@ -50,9 +50,9 @@ class LLMClient(LLMProvider):
     def chat(self, prompt: str) -> str:
         if self.mock:
             # Return deterministic, parseable content in mock mode
-            if "JSON object" in prompt or "\"tasks\"" in prompt or "tasks" in prompt:
+            if "JSON object" in prompt or "\"tasks\"" in prompt or "tasks" in prompt or "Break down" in prompt:
                 return (
-                    '{"title":"Mock Plan","tasks":[{"name":"Mock A","prompt":"Do A"},{"name":"Mock B","prompt":"Do B"}]}'
+                    '{"title":"AI医疗应用报告","tasks":[{"name":"引言和背景","prompt":"撰写人工智能在医疗领域应用报告的引言部分，介绍AI技术在医疗行业的发展历程和重要性。"},{"name":"核心技术概述","prompt":"详细介绍医疗AI的核心技术，包括机器学习、深度学习、自然语言处理等关键技术。"},{"name":"临床应用案例","prompt":"分析具体的医疗AI应用案例，如医学影像诊断、药物发现、个性化治疗等。"},{"name":"挑战与限制","prompt":"讨论当前医疗AI面临的技术挑战、伦理问题和监管限制。"},{"name":"未来发展趋势","prompt":"展望医疗AI的发展前景，分析新兴技术和应用方向。"}]}'
                 )
             return "This is a mock completion."
 

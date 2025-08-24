@@ -287,6 +287,213 @@ class CLIParser:
             default=10,
             help='Batch size for embedding generation (default: 10)'
         )
+        
+        # Evaluation system arguments
+        eval_group = self.parser.add_argument_group('Evaluation System')
+        eval_group.add_argument(
+            '--eval-config',
+            type=int,
+            help='Configure evaluation settings for a task'
+        )
+        eval_group.add_argument(
+            '--eval-execute',
+            type=int,
+            help='Execute task with basic evaluation'
+        )
+        eval_group.add_argument(
+            '--eval-llm',
+            type=int,
+            help='Execute task with LLM intelligent evaluation'
+        )
+        eval_group.add_argument(
+            '--eval-multi-expert',
+            type=int,
+            help='Execute task with multi-expert evaluation'
+        )
+        eval_group.add_argument(
+            '--eval-adversarial',
+            type=int,
+            help='Execute task with adversarial evaluation'
+        )
+        eval_group.add_argument(
+            '--eval-history',
+            type=int,
+            help='View evaluation history for a task'
+        )
+        eval_group.add_argument(
+            '--eval-override',
+            type=int,
+            help='Override evaluation result for a task'
+        )
+        eval_group.add_argument(
+            '--eval-stats',
+            action='store_true',
+            help='Show evaluation system statistics'
+        )
+        eval_group.add_argument(
+            '--eval-clear',
+            type=int,
+            help='Clear evaluation history for a task'
+        )
+        eval_group.add_argument(
+            '--eval-batch',
+            action='store_true',
+            help='Run batch evaluation'
+        )
+        eval_group.add_argument(
+            '--eval-supervision',
+            action='store_true',
+            help='Show evaluation supervision report'
+        )
+        eval_group.add_argument(
+            '--eval-supervision-config',
+            action='store_true',
+            help='Configure supervision thresholds'
+        )
+        
+        # Evaluation configuration arguments
+        eval_config_group = self.parser.add_argument_group('Evaluation Configuration')
+        eval_config_group.add_argument(
+            '--threshold',
+            type=float,
+            default=0.8,
+            help='Quality threshold for evaluation (default: 0.8)'
+        )
+        eval_config_group.add_argument(
+            '--max-iterations',
+            type=int,
+            default=3,
+            help='Maximum iterations for evaluation (default: 3)'
+        )
+        eval_config_group.add_argument(
+            '--max-rounds',
+            type=int,
+            default=3,
+            help='Maximum rounds for adversarial evaluation (default: 3)'
+        )
+        eval_config_group.add_argument(
+            '--improvement-threshold',
+            type=float,
+            default=0.1,
+            help='Improvement threshold for adversarial evaluation (default: 0.1)'
+        )
+        eval_config_group.add_argument(
+            '--experts',
+            type=str,
+            help='Comma-separated list of experts for multi-expert evaluation'
+        )
+        eval_config_group.add_argument(
+            '--verbose',
+            action='store_true',
+            help='Enable verbose evaluation output'
+        )
+        eval_config_group.add_argument(
+            '--detailed',
+            action='store_true',
+            help='Show detailed evaluation information'
+        )
+        eval_config_group.add_argument(
+            '--strict',
+            action='store_true',
+            help='Enable strict evaluation mode'
+        )
+        eval_config_group.add_argument(
+            '--domain-specific',
+            action='store_true',
+            help='Enable domain-specific evaluation'
+        )
+        
+        # Supervision configuration arguments
+        supervision_group = self.parser.add_argument_group('Supervision Configuration')
+        supervision_group.add_argument(
+            '--min-accuracy',
+            type=float,
+            help='Minimum accuracy threshold for supervision'
+        )
+        supervision_group.add_argument(
+            '--min-consistency',
+            type=float,
+            help='Minimum consistency threshold for supervision'
+        )
+        supervision_group.add_argument(
+            '--max-bias-risk',
+            type=float,
+            help='Maximum bias risk threshold for supervision'
+        )
+        supervision_group.add_argument(
+            '--min-cache-hit-rate',
+            type=float,
+            help='Minimum cache hit rate threshold for supervision'
+        )
+        supervision_group.add_argument(
+            '--max-error-rate',
+            type=float,
+            help='Maximum error rate threshold for supervision'
+        )
+        supervision_group.add_argument(
+            '--max-evaluation-time',
+            type=float,
+            help='Maximum evaluation time threshold for supervision'
+        )
+        supervision_group.add_argument(
+            '--min-confidence',
+            type=float,
+            help='Minimum confidence threshold for supervision'
+        )
+        
+        # Database and cache management arguments
+        db_group = self.parser.add_argument_group('Database and Cache Management')
+        db_group.add_argument(
+            '--db-info',
+            action='store_true',
+            help='Show database information and statistics'
+        )
+        db_group.add_argument(
+            '--cache-stats',
+            action='store_true',
+            help='Show cache statistics and performance metrics'
+        )
+        db_group.add_argument(
+            '--clear-cache',
+            action='store_true',
+            help='Clear cache data'
+        )
+        db_group.add_argument(
+            '--cache-type',
+            choices=['all', 'evaluation', 'embedding'],
+            default='all',
+            help='Type of cache to clear (default: all)'
+        )
+        db_group.add_argument(
+            '--cache-method',
+            type=str,
+            help='Clear cache for specific evaluation method'
+        )
+        db_group.add_argument(
+            '--db-optimize',
+            action='store_true',
+            help='Optimize database performance'
+        )
+        db_group.add_argument(
+            '--db-backup',
+            action='store_true',
+            help='Backup main database'
+        )
+        db_group.add_argument(
+            '--backup-path',
+            type=str,
+            help='Custom backup file path'
+        )
+        db_group.add_argument(
+            '--db-analyze',
+            action='store_true',
+            help='Analyze database performance and provide recommendations'
+        )
+        db_group.add_argument(
+            '--db-reset',
+            action='store_true',
+            help='Reset database (clear all data) - DESTRUCTIVE OPERATION'
+        )
     
     def parse_args(self, args: Optional[List[str]] = None) -> argparse.Namespace:
         """Parse command line arguments."""

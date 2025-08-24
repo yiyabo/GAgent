@@ -45,14 +45,17 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
     client = client or get_default_client()
     try:
         content = client.chat(prompt)
+        print(f"DEBUG: LLM response content: {content}")  # 调试输出
         obj = parse_json_obj(content) or {}
+        print(f"DEBUG: Parsed JSON object: {obj}")  # 调试输出
         if isinstance(obj, list):
             plan = {"title": title, "tasks": obj}
         elif isinstance(obj, dict):
             plan = {"title": obj.get("title") or title, "tasks": obj.get("tasks") or []}
         else:
             plan = {"title": title, "tasks": []}
-    except Exception:
+    except Exception as e:
+        print(f"DEBUG: Exception in plan generation: {e}")  # 调试输出
         plan = {"title": title, "tasks": []}
 
     # Normalize tasks and compute priorities
