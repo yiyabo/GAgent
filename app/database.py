@@ -103,6 +103,40 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_embeddings_model ON task_embeddings(embedding_model)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_embeddings_created_at ON task_embeddings(created_at)")
 
+        # Evaluation System Tables
+        conn.execute('''CREATE TABLE IF NOT EXISTS evaluation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            iteration INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            overall_score REAL NOT NULL,
+            dimension_scores TEXT NOT NULL,
+            suggestions TEXT,
+            needs_revision BOOLEAN NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            metadata TEXT,
+            FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
+        )''')
+        
+        conn.execute('''CREATE TABLE IF NOT EXISTS evaluation_configs (
+            task_id INTEGER PRIMARY KEY,
+            quality_threshold REAL DEFAULT 0.8,
+            max_iterations INTEGER DEFAULT 3,
+            evaluation_dimensions TEXT,
+            domain_specific BOOLEAN DEFAULT FALSE,
+            strict_mode BOOLEAN DEFAULT FALSE,
+            custom_weights TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
+        )''')
+        
+        # Indexes for evaluation tables
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_history_task_id ON evaluation_history(task_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_history_iteration ON evaluation_history(task_id, iteration)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_history_timestamp ON evaluation_history(timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_configs_task_id ON evaluation_configs(task_id)")
+
 @contextmanager
 def get_db():
     conn = sqlite3.connect(DB_PATH)

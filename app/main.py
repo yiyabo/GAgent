@@ -1,22 +1,25 @@
-from typing import Any, Dict, List, Optional
 import os
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional
+
 from fastapi import FastAPI, HTTPException, Body
-from .models import TaskCreate
+
 from .database import init_db
-from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order, postorder_schedule
 from .executor import execute_task
 from .llm import get_default_client
-from .services.planning import propose_plan_service, approve_plan_service
+from .models import TaskCreate
 from .repository.tasks import default_repo
-from .utils import plan_prefix, split_prefix
+from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order, postorder_schedule
 from .services.context import gather_context
 from .services.context_budget import apply_budget
 from .services.index_root import generate_index
+from .services.planning import propose_plan_service, approve_plan_service
+from .utils import plan_prefix, split_prefix
+
 # Recursive decomposition feature temporarily commented out, awaiting implementation
 # from .services.planning import (
 #     recursive_decompose_task, recursive_decompose_plan, evaluate_task_complexity, should_decompose_task, determine_task_type
 # )
-from contextlib import asynccontextmanager
 
 def _parse_bool(val, default: bool = False) -> bool:
     if isinstance(val, bool):
@@ -152,7 +155,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.post("/tasks")
 def create_task(task: TaskCreate):
-    task_id = default_repo.create_task(task.name, status='pending', priority=None, task_type=task.task_type)
+    task_id = default_repo.create_task(task.name, status="pending", priority=None, task_type=task.task_type)
     return {"id": task_id}
 
 @app.get("/tasks")
@@ -236,6 +239,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     """
     Execute tasks. If body contains {"title": "..."}, only run tasks for that plan (by name prefix).
     Otherwise, run all pending tasks (original behavior).
+    Supports evaluation mode with enable_evaluation parameter.
     """
     title = None
     if isinstance(payload, dict):
@@ -250,6 +254,16 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     co = (payload or {}).get("context_options")
     if isinstance(co, dict):
         context_options = _sanitize_context_options(co)
+    
+    # New: Evaluation mode support
+    enable_evaluation = _parse_bool((payload or {}).get("enable_evaluation"), default=False)
+    evaluation_config = None
+    if enable_evaluation:
+        eval_opts = (payload or {}).get("evaluation_options", {})
+        evaluation_config = {
+            "max_iterations": _parse_int(eval_opts.get("max_iterations", 3), default=3, min_value=1, max_value=10),
+            "quality_threshold": _parse_opt_float(eval_opts.get("quality_threshold"), 0.0, 1.0) or 0.8
+        }
 
     results = []
     if not title:
@@ -264,10 +278,34 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         else:
             tasks_iter = bfs_schedule()
         for task in tasks_iter:
-            status = execute_task(task, use_context=use_context, context_options=context_options)
-            task_id = task["id"] if isinstance(task, dict) else task[0]
-            default_repo.update_task_status(task_id, status)
-            results.append({"id": task_id, "status": status})
+            if enable_evaluation:
+                # Use enhanced executor with evaluation
+                from .executor_enhanced import execute_task_with_evaluation
+                result = execute_task_with_evaluation(
+                    task=task,
+                    repo=default_repo,
+                    max_iterations=evaluation_config["max_iterations"],
+                    quality_threshold=evaluation_config["quality_threshold"],
+                    use_context=use_context,
+                    context_options=context_options
+                )
+                task_id = result.task_id
+                status = result.status
+                default_repo.update_task_status(task_id, status)
+                results.append({
+                    "id": task_id, 
+                    "status": status,
+                    "evaluation": {
+                        "score": result.evaluation.overall_score if result.evaluation else None,
+                        "iterations": result.iterations
+                    } if enable_evaluation else None
+                })
+            else:
+                # Use original executor
+                status = execute_task(task, use_context=use_context, context_options=context_options)
+                task_id = task["id"] if isinstance(task, dict) else task[0]
+                default_repo.update_task_status(task_id, status)
+                results.append({"id": task_id, "status": status})
         return results
 
     # Filtered by plan title (prefix)
@@ -283,10 +321,34 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         tasks_iter = bfs_schedule(title)
 
     for task in tasks_iter:
-        status = execute_task(task, use_context=use_context, context_options=context_options)
-        task_id = task["id"] if isinstance(task, dict) else task[0]
-        default_repo.update_task_status(task_id, status)
-        results.append({"id": task_id, "status": status})
+        if enable_evaluation:
+            # Use enhanced executor with evaluation
+            from .executor_enhanced import execute_task_with_evaluation
+            result = execute_task_with_evaluation(
+                task=task,
+                repo=default_repo,
+                max_iterations=evaluation_config["max_iterations"],
+                quality_threshold=evaluation_config["quality_threshold"],
+                use_context=use_context,
+                context_options=context_options
+            )
+            task_id = result.task_id
+            status = result.status
+            default_repo.update_task_status(task_id, status)
+            results.append({
+                "id": task_id, 
+                "status": status,
+                "evaluation": {
+                    "score": result.evaluation.overall_score if result.evaluation else None,
+                    "iterations": result.iterations
+                } if enable_evaluation else None
+            })
+        else:
+            # Use original executor
+            status = execute_task(task, use_context=use_context, context_options=context_options)
+            task_id = task["id"] if isinstance(task, dict) else task[0]
+            default_repo.update_task_status(task_id, status)
+            results.append({"id": task_id, "status": status})
     return results
 
 # -------------------------------
@@ -666,3 +728,242 @@ def rerun_selected_tasks(payload: Dict[str, Any] = Body(...)):
         "failed": failed_count,
         "results": results
     }
+
+
+# -------------------------------
+# Evaluation System Endpoints
+# -------------------------------
+
+@app.post("/tasks/{task_id}/evaluation/config")
+def set_evaluation_config(task_id: int, config: Dict[str, Any] = Body(...)):
+    """Set evaluation configuration for a task"""
+    try:
+        quality_threshold = _parse_opt_float(config.get("quality_threshold"), 0.0, 1.0) or 0.8
+        max_iterations = _parse_int(config.get("max_iterations", 3), default=3, min_value=1, max_value=10)
+        evaluation_dimensions = config.get("evaluation_dimensions")
+        domain_specific = _parse_bool(config.get("domain_specific"), default=False)
+        strict_mode = _parse_bool(config.get("strict_mode"), default=False)
+        custom_weights = config.get("custom_weights")
+        
+        # Validate custom weights if provided
+        if custom_weights and not isinstance(custom_weights, dict):
+            raise HTTPException(status_code=400, detail="custom_weights must be a dictionary")
+        
+        # Validate evaluation dimensions if provided
+        if evaluation_dimensions and not isinstance(evaluation_dimensions, list):
+            raise HTTPException(status_code=400, detail="evaluation_dimensions must be a list")
+        
+        default_repo.store_evaluation_config(
+            task_id=task_id,
+            quality_threshold=quality_threshold,
+            max_iterations=max_iterations,
+            evaluation_dimensions=evaluation_dimensions,
+            domain_specific=domain_specific,
+            strict_mode=strict_mode,
+            custom_weights=custom_weights
+        )
+        
+        return {
+            "task_id": task_id,
+            "config": {
+                "quality_threshold": quality_threshold,
+                "max_iterations": max_iterations,
+                "evaluation_dimensions": evaluation_dimensions,
+                "domain_specific": domain_specific,
+                "strict_mode": strict_mode,
+                "custom_weights": custom_weights
+            }
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/tasks/{task_id}/evaluation/config")
+def get_evaluation_config(task_id: int):
+    """Get evaluation configuration for a task"""
+    config = default_repo.get_evaluation_config(task_id)
+    if not config:
+        # Return default configuration
+        return {
+            "task_id": task_id,
+            "config": {
+                "quality_threshold": 0.8,
+                "max_iterations": 3,
+                "evaluation_dimensions": ["relevance", "completeness", "accuracy", "clarity", "coherence"],
+                "domain_specific": False,
+                "strict_mode": False,
+                "custom_weights": None
+            },
+            "is_default": True
+        }
+    
+    return {
+        "task_id": task_id,
+        "config": config,
+        "is_default": False
+    }
+
+
+@app.get("/tasks/{task_id}/evaluation/history")
+def get_evaluation_history(task_id: int):
+    """Get evaluation history for a task"""
+    history = default_repo.get_evaluation_history(task_id)
+    
+    if not history:
+        return {
+            "task_id": task_id,
+            "history": [],
+            "total_iterations": 0
+        }
+    
+    return {
+        "task_id": task_id,
+        "history": history,
+        "total_iterations": len(history),
+        "latest_score": history[-1]["overall_score"] if history else None,
+        "best_score": max(h["overall_score"] for h in history) if history else None
+    }
+
+
+@app.get("/tasks/{task_id}/evaluation/latest")
+def get_latest_evaluation(task_id: int):
+    """Get the latest evaluation for a task"""
+    evaluation = default_repo.get_latest_evaluation(task_id)
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No evaluation found for this task")
+    
+    return {
+        "task_id": task_id,
+        "evaluation": evaluation
+    }
+
+
+@app.post("/tasks/{task_id}/evaluation/override")
+def override_evaluation(task_id: int, payload: Dict[str, Any] = Body(...)):
+    """Override evaluation result with human feedback"""
+    try:
+        human_score = _parse_opt_float(payload.get("human_score"), 0.0, 1.0)
+        human_feedback = payload.get("human_feedback", "")
+        override_reason = payload.get("override_reason", "")
+        
+        if human_score is None:
+            raise HTTPException(status_code=400, detail="human_score is required")
+        
+        # Get latest evaluation
+        latest_eval = default_repo.get_latest_evaluation(task_id)
+        if not latest_eval:
+            raise HTTPException(status_code=404, detail="No evaluation found to override")
+        
+        # Store override as new evaluation entry
+        iteration = latest_eval["iteration"] + 1
+        metadata = {
+            "override": True,
+            "original_score": latest_eval["overall_score"],
+            "human_feedback": human_feedback,
+            "override_reason": override_reason,
+            "override_timestamp": datetime.now().isoformat()
+        }
+        
+        default_repo.store_evaluation_history(
+            task_id=task_id,
+            iteration=iteration,
+            content=latest_eval["content"],
+            overall_score=human_score,
+            dimension_scores=latest_eval["dimension_scores"],
+            suggestions=[human_feedback] if human_feedback else [],
+            needs_revision=human_score < 0.8,
+            metadata=metadata
+        )
+        
+        return {
+            "task_id": task_id,
+            "override_applied": True,
+            "new_score": human_score,
+            "previous_score": latest_eval["overall_score"],
+            "iteration": iteration
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/tasks/{task_id}/execute/with-evaluation")
+def execute_task_with_evaluation_api(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
+    """Execute task with evaluation-driven iterative improvement"""
+    try:
+        # Get task info
+        task = default_repo.get_task_info(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        # Parse parameters
+        payload = payload or {}
+        max_iterations = _parse_int(payload.get("max_iterations", 3), default=3, min_value=1, max_value=10)
+        quality_threshold = _parse_opt_float(payload.get("quality_threshold"), 0.0, 1.0) or 0.8
+        use_context = _parse_bool(payload.get("use_context"), default=False)
+        
+        # Context options
+        context_options = None
+        co = payload.get("context_options")
+        if isinstance(co, dict):
+            context_options = _sanitize_context_options(co)
+        
+        # Import enhanced executor
+        from .executor_enhanced import execute_task_with_evaluation
+        
+        # Execute with evaluation
+        result = execute_task_with_evaluation(
+            task=task,
+            repo=default_repo,
+            max_iterations=max_iterations,
+            quality_threshold=quality_threshold,
+            use_context=use_context,
+            context_options=context_options
+        )
+        
+        # Update task status
+        default_repo.update_task_status(task_id, result.status)
+        
+        return {
+            "task_id": result.task_id,
+            "status": result.status,
+            "iterations": result.iterations,
+            "execution_time": result.execution_time,
+            "final_score": result.evaluation.overall_score if result.evaluation else None,
+            "evaluation": {
+                "overall_score": result.evaluation.overall_score,
+                "dimensions": result.evaluation.dimensions.model_dump(),
+                "suggestions": result.evaluation.suggestions,
+                "needs_revision": result.evaluation.needs_revision
+            } if result.evaluation else None
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Execution failed: {str(e)}")
+
+
+@app.get("/evaluation/stats")
+def get_evaluation_stats():
+    """Get overall evaluation system statistics"""
+    try:
+        stats = default_repo.get_evaluation_stats()
+        return {
+            "evaluation_stats": stats,
+            "system_info": {
+                "evaluation_enabled": True,
+                "default_quality_threshold": 0.8,
+                "default_max_iterations": 3
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+
+
+@app.delete("/tasks/{task_id}/evaluation/history")
+def clear_evaluation_history(task_id: int):
+    """Clear all evaluation history for a task"""
+    try:
+        default_repo.delete_evaluation_history(task_id)
+        return {"task_id": task_id, "history_cleared": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear history: {str(e)}")
