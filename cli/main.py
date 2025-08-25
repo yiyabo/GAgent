@@ -8,6 +8,7 @@ from .parser_v2 import ModularCLIParser
 from .commands import RerunCommands, PlanCommands
 from .commands.evaluation_commands import EvaluationCommands
 from .commands.database_commands import DatabaseCommands
+from .commands.memory_commands import MemoryCommands
 from .utils import FileUtils, IOUtils
 
 
@@ -31,6 +32,7 @@ class ModernCLIApp(CLIApplication):
         self.register_command(PlanCommands())
         self.register_command(EvaluationCommands())
         self.register_command(DatabaseCommands())
+        self.register_command(MemoryCommands())
     
     def register_command(self, command: CLICommand) -> None:
         """Register a command with the application."""
@@ -66,6 +68,11 @@ class ModernCLIApp(CLIApplication):
             db_cmd = self._get_command_by_name("database")
             if db_cmd:
                 return db_cmd.execute(args)
+        
+        elif operation_type == "memory":
+            memory_cmd = self._get_command_by_name("memory")
+            if memory_cmd:
+                return memory_cmd.execute(args)
         
         elif operation_type == "evaluation":
             eval_cmd = self._get_command_by_name("evaluation")
