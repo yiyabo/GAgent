@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..llm import get_default_client
+from .base_evaluator import LLMBasedEvaluator
 from ..models import EvaluationResult, EvaluationDimensions, EvaluationConfig
 
 logger = logging.getLogger(__name__)
@@ -69,13 +69,15 @@ class ExpertRole:
 """
 
 
-class MultiExpertEvaluator:
+class MultiExpertEvaluator(LLMBasedEvaluator):
     """Multi-expert evaluation system with specialized roles"""
     
     def __init__(self, config: Optional[EvaluationConfig] = None):
-        self.config = config or EvaluationConfig()
-        self.llm_client = get_default_client()
+        super().__init__(config)
         self.experts = self._initialize_experts()
+    
+    def get_evaluation_method_name(self) -> str:
+        return "multi_expert_llm"
     
     def _initialize_experts(self) -> Dict[str, ExpertRole]:
         """Initialize expert roles for bacteriophage research"""
