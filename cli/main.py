@@ -4,7 +4,7 @@ import sys
 from typing import List, Optional
 
 from .interfaces import CLIApplication, CLICommand
-from .parser import CLIParser
+from .parser_v2 import ModularCLIParser
 from .commands import RerunCommands, PlanCommands
 from .commands.evaluation_commands import EvaluationCommands
 from .commands.database_commands import DatabaseCommands
@@ -12,10 +12,10 @@ from .utils import FileUtils, IOUtils
 
 
 class ModernCLIApp(CLIApplication):
-    """Modern CLI application with modular command structure."""
+    """Modern CLI application with refactored modular parameter handling."""
     
     def __init__(self):
-        self.parser = CLIParser()
+        self.parser = ModularCLIParser()
         self.commands: List[CLICommand] = []
         self.io = IOUtils()
         
@@ -37,79 +37,61 @@ class ModernCLIApp(CLIApplication):
         self.commands.append(command)
     
     def run(self, args: Optional[List[str]] = None) -> int:
-        """Run the CLI application."""
+        """Run the CLI application with refactored parameter handling."""
         try:
+            # Parse arguments using modular parser
             parsed_args = self.parser.parse_args(args)
-            return self._execute_commands(parsed_args)
+            
+            # Extract and validate parameters
+            all_params, validation_error = self.parser.extract_and_validate_params(parsed_args)
+            if validation_error:
+                self.io.print_error(f"Parameter validation failed: {validation_error}")
+                return 1
+            
+            # Determine operation type using modular approach
+            operation_type = self.parser.determine_operation_type(parsed_args)
+            
+            return self._execute_operation(parsed_args, all_params, operation_type)
+            
         except SystemExit as e:
             return e.code or 0
         except Exception as e:
             self.io.print_error(f"Application error: {e}")
             return 1
     
-    def _execute_commands(self, args) -> int:
-        """Execute commands based on parsed arguments."""
-        # Check for database commands first
-        if self._has_database_args(args):
+    def _execute_operation(self, args, all_params: dict, operation_type: str) -> int:
+        """Execute operation based on determined type (simplified using modular approach)."""
+        # Route to appropriate command based on operation type
+        if operation_type == "database":
             db_cmd = self._get_command_by_name("database")
             if db_cmd:
                 return db_cmd.execute(args)
         
-        # Check for evaluation commands
-        if self._has_evaluation_args(args):
+        elif operation_type == "evaluation":
             eval_cmd = self._get_command_by_name("evaluation")
             if eval_cmd:
                 return eval_cmd.execute(args)
         
-        # Check for rerun commands (high priority)
-        if self._has_rerun_args(args):
+        elif operation_type == "rerun":
             rerun_cmd = self._get_command_by_name("rerun")
             if rerun_cmd:
                 return rerun_cmd.execute(args)
         
-        # Check for plan management commands
-        if self._has_plan_args(args):
+        elif operation_type == "plan":
             plan_cmd = self._get_command_by_name("plan")
             if plan_cmd:
                 return plan_cmd.execute(args)
         
-        # Check for goal (default plan creation workflow)
-        if hasattr(args, 'goal') and args.goal:
-            plan_cmd = self._get_command_by_name("plan")
-            if plan_cmd:
-                return plan_cmd.execute(args)
+        elif operation_type == "utility":
+            return self._handle_utility_operations(args)
         
-        # Handle other utility operations
-        return self._handle_utility_operations(args)
+        elif operation_type == "help":
+            return self._show_help_guidance()
+        
+        # Fallback
+        self.io.print_error(f"Unknown operation type: {operation_type}")
+        return 1
     
-    def _has_rerun_args(self, args) -> bool:
-        """Check if any rerun-related arguments are present."""
-        rerun_attrs = ['rerun_task', 'rerun_subtree', 'rerun_interactive']
-        return any(hasattr(args, attr) and getattr(args, attr) for attr in rerun_attrs)
-    
-    def _has_plan_args(self, args) -> bool:
-        """Check if any plan-related arguments are present."""
-        plan_attrs = [
-            'list_plans', 'load_plan', 'execute_only', 'plan_only'
-        ]
-        return any(hasattr(args, attr) and getattr(args, attr) for attr in plan_attrs)
-    
-    def _has_evaluation_args(self, args) -> bool:
-        """Check if any evaluation-related arguments are present."""
-        eval_attrs = [
-            'eval_config', 'eval_execute', 'eval_llm', 'eval_multi_expert',
-            'eval_adversarial', 'eval_history', 'eval_override', 'eval_stats',
-            'eval_clear', 'eval_batch', 'eval_supervision', 'eval_supervision_config'
-        ]
-        return any(hasattr(args, attr) and getattr(args, attr) for attr in eval_attrs)
-    
-    def _has_database_args(self, args) -> bool:
-        """Check if any database-related arguments are present."""
-        db_attrs = [
-            'db_info', 'cache_stats', 'clear_cache', 'db_optimize',
-            'db_backup', 'db_analyze', 'db_reset'
-        ]
-        return any(hasattr(args, attr) and getattr(args, attr) for attr in db_attrs)
     
     def _get_command_by_name(self, name: str) -> Optional[CLICommand]:
         """Get a command by its name."""
