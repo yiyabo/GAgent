@@ -16,6 +16,9 @@ from .services.index_root import generate_index
 from .services.planning import propose_plan_service, approve_plan_service
 from .utils import plan_prefix, split_prefix
 
+# Memory system integration
+from .api.memory_api import memory_router
+
 # Recursive decomposition feature temporarily commented out, awaiting implementation
 # from .services.planning import (
 #     recursive_decompose_task, recursive_decompose_plan, evaluate_task_complexity, should_decompose_task, determine_task_type
@@ -147,6 +150,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Include memory API router
+app.include_router(memory_router)
 
 # -------------------------------
 # Generic plan helpers
