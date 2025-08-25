@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..llm import get_default_client
+from .base_evaluator import LLMBasedEvaluator
 from ..models import EvaluationResult, EvaluationDimensions, EvaluationConfig
 
 logger = logging.getLogger(__name__)
@@ -282,14 +282,16 @@ class ContentCritic:
         return criticisms
 
 
-class AdversarialEvaluator:
+class AdversarialEvaluator(LLMBasedEvaluator):
     """Main adversarial evaluation system combining generator and critic"""
     
     def __init__(self, config: Optional[EvaluationConfig] = None):
-        self.config = config or EvaluationConfig()
-        self.llm_client = get_default_client()
+        super().__init__(config)
         self.generator = ContentGenerator(self.llm_client)
         self.critic = ContentCritic(self.llm_client)
+    
+    def get_evaluation_method_name(self) -> str:
+        return "adversarial"
     
     def adversarial_evaluate(
         self, 

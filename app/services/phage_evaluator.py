@@ -5,24 +5,20 @@ Specialized evaluator for bacteriophage research content with domain expertise
 in phage biology, therapy applications, and clinical considerations.
 """
 
-import json
 import logging
-import re
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
-from ..llm import get_default_client
+from .base_evaluator import LLMBasedEvaluator
 from ..models import EvaluationResult, EvaluationDimensions, EvaluationConfig
 
 logger = logging.getLogger(__name__)
 
 
-class PhageEvaluator:
+class PhageEvaluator(LLMBasedEvaluator):
     """Domain-specific evaluator for bacteriophage research content"""
     
     def __init__(self, config: Optional[EvaluationConfig] = None):
-        self.config = config or EvaluationConfig()
-        self.llm_client = get_default_client()
+        super().__init__(config)
         
         # Phage-specific terminology and concepts
         self.phage_terminology = {
@@ -58,9 +54,12 @@ class PhageEvaluator:
             "innovation_potential": "创新潜力 - 技术突破和应用前景"
         }
     
+    def get_evaluation_method_name(self) -> str:
+        return "phage_domain_specific"
+    
     def evaluate_phage_content(
-        self, 
-        content: str, 
+        self,
+        content: str,
         task_context: Dict[str, Any],
         iteration: int = 0
     ) -> EvaluationResult:
@@ -76,67 +75,51 @@ class PhageEvaluator:
             EvaluationResult with phage-specific evaluation
         """
         try:
-            if not content or not content.strip():
-                return self._create_empty_phage_result(iteration)
+            if not self.validate_content(content):
+                return self.create_empty_content_result(iteration)
             
-            # Domain-specific terminology analysis
+            # Domain-specific analysis
             terminology_analysis = self._analyze_phage_terminology(content)
-            
-            # Scientific accuracy assessment
             accuracy_assessment = self._assess_scientific_accuracy(content, task_context)
-            
-            # Clinical relevance evaluation
             clinical_evaluation = self._evaluate_clinical_relevance(content, task_context)
-            
-            # Safety and regulatory assessment
             safety_assessment = self._assess_safety_and_regulatory(content, task_context)
-            
-            # LLM-based phage expert evaluation
             llm_phage_evaluation = self._llm_phage_evaluate(content, task_context)
             
             # Calculate phage-specific dimensions
             phage_dimensions = self._calculate_phage_dimensions(
-                terminology_analysis,
-                accuracy_assessment,
-                clinical_evaluation,
-                safety_assessment,
-                llm_phage_evaluation
+                terminology_analysis, accuracy_assessment, clinical_evaluation,
+                safety_assessment, llm_phage_evaluation
             )
             
-            # Generate phage-specific suggestions
+            # Generate suggestions
             phage_suggestions = self._generate_phage_suggestions(
-                content,
-                terminology_analysis,
-                accuracy_assessment,
-                clinical_evaluation,
-                safety_assessment,
-                llm_phage_evaluation
+                content, terminology_analysis, accuracy_assessment,
+                clinical_evaluation, safety_assessment, llm_phage_evaluation
             )
             
             overall_score = self._calculate_phage_overall_score(phage_dimensions)
-            needs_revision = overall_score < self.config.quality_threshold
             
-            return EvaluationResult(
+            # Additional metadata
+            additional_metadata = {
+                "terminology_coverage": terminology_analysis["coverage_score"],
+                "scientific_accuracy": accuracy_assessment["accuracy_score"],
+                "clinical_relevance": clinical_evaluation["relevance_score"],
+                "safety_score": safety_assessment["safety_score"],
+                "phage_expertise_level": llm_phage_evaluation.get("expertise_level", "intermediate"),
+                "domain_focus": "bacteriophage_research"
+            }
+            
+            return self.create_evaluation_result(
                 overall_score=overall_score,
                 dimensions=phage_dimensions,
                 suggestions=phage_suggestions,
-                needs_revision=needs_revision,
                 iteration=iteration,
-                timestamp=datetime.now(),
-                metadata={
-                    "evaluation_method": "phage_domain_specific",
-                    "terminology_coverage": terminology_analysis["coverage_score"],
-                    "scientific_accuracy": accuracy_assessment["accuracy_score"],
-                    "clinical_relevance": clinical_evaluation["relevance_score"],
-                    "safety_score": safety_assessment["safety_score"],
-                    "phage_expertise_level": llm_phage_evaluation.get("expertise_level", "intermediate"),
-                    "domain_focus": "bacteriophage_research"
-                }
+                additional_metadata=additional_metadata
             )
             
         except Exception as e:
             logger.error(f"Phage evaluation failed: {e}")
-            return self._create_error_phage_result(iteration, str(e))
+            return self.create_error_result(iteration, str(e))
     
     def _analyze_phage_terminology(self, content: str) -> Dict[str, Any]:
         """Analyze usage of phage-specific terminology"""
@@ -344,29 +327,20 @@ class PhageEvaluator:
     def _llm_phage_evaluate(self, content: str, task_context: Dict[str, Any]) -> Dict[str, Any]:
         """Use LLM for phage domain expert evaluation"""
         
-        task_name = task_context.get("name", "")
+        evaluation_aspects = [
+            "**科学准确性**: 噬菌体生物学概念和机制是否准确？",
+            "**临床相关性**: 内容对噬菌体治疗应用的相关程度？",
+            "**技术可行性**: 提到的技术方法是否在当前条件下可行？",
+            "**安全考量**: 是否充分考虑了生物安全和临床安全？",
+            "**创新潜力**: 内容是否体现了该领域的创新性和前沿性？",
+            "**专业深度**: 内容的专业水平和技术深度如何？"
+        ]
         
-        phage_expert_prompt = f"""
-作为噬菌体研究领域的资深专家，请对以下内容进行专业评估。
-
-任务背景："{task_name}"
-
-需要评估的内容：
-```
-{content[:800]}
-```
-
-请从噬菌体专家的角度评估以下方面：
-
-1. **科学准确性**: 噬菌体生物学概念和机制是否准确？
-2. **临床相关性**: 内容对噬菌体治疗应用的相关程度？
-3. **技术可行性**: 提到的技术方法是否在当前条件下可行？
-4. **安全考量**: 是否充分考虑了生物安全和临床安全？
-5. **创新潜力**: 内容是否体现了该领域的创新性和前沿性？
-6. **专业深度**: 内容的专业水平和技术深度如何？
+        specific_instructions = """
+作为噬菌体研究领域的资深专家，请从专业角度评估内容。
 
 请以JSON格式返回评估结果：
-{{
+{
     "scientific_accuracy": 0.8,
     "clinical_relevance": 0.7,
     "technical_feasibility": 0.9,
@@ -380,31 +354,17 @@ class PhageEvaluator:
     "improvement_suggestions": ["建议1", "建议2", "建议3"],
     "phage_specific_insights": ["专业洞察1", "专业洞察2"],
     "confidence_level": 0.9
-}}
+}
 """
         
-        try:
-            response = self.llm_client.chat([
-                {"role": "user", "content": phage_expert_prompt}
-            ])
-            
-            result_text = response.get("content", "").strip()
-            
-            # Parse JSON response
-            json_start = result_text.find('{')
-            json_end = result_text.rfind('}') + 1
-            
-            if json_start >= 0 and json_end > json_start:
-                json_text = result_text[json_start:json_end]
-                llm_result = json.loads(json_text)
-                return llm_result
-            else:
-                logger.warning("Could not parse LLM phage evaluation JSON")
-                return self._fallback_phage_llm_evaluation()
-                
-        except Exception as e:
-            logger.error(f"LLM phage evaluation failed: {e}")
-            return self._fallback_phage_llm_evaluation()
+        phage_expert_prompt = self.build_evaluation_prompt_template(
+            content, task_context, evaluation_aspects, specific_instructions, 800
+        )
+        
+        required_fields = ["scientific_accuracy", "clinical_relevance", "technical_feasibility"]
+        result = self.call_llm_with_json_parsing(phage_expert_prompt, required_fields)
+        
+        return result if result else self._fallback_phage_llm_evaluation()
     
     def _fallback_phage_llm_evaluation(self) -> Dict[str, Any]:
         """Fallback evaluation when LLM is unavailable"""
@@ -540,40 +500,7 @@ class PhageEvaluator:
             "scientific_rigor": 0.15  # Safety and rigor are crucial
         }
         
-        weighted_score = (
-            dimensions.relevance * phage_weights["relevance"] +
-            dimensions.completeness * phage_weights["completeness"] +
-            dimensions.accuracy * phage_weights["accuracy"] +
-            dimensions.clarity * phage_weights["clarity"] +
-            dimensions.coherence * phage_weights["coherence"] +
-            dimensions.scientific_rigor * phage_weights["scientific_rigor"]
-        )
-        
-        return min(1.0, max(0.0, weighted_score))
-    
-    def _create_empty_phage_result(self, iteration: int) -> EvaluationResult:
-        """Create result for empty content"""
-        return EvaluationResult(
-            overall_score=0.0,
-            dimensions=EvaluationDimensions(),
-            suggestions=["内容为空，请提供噬菌体相关的实质性内容"],
-            needs_revision=True,
-            iteration=iteration,
-            timestamp=datetime.now(),
-            metadata={"evaluation_method": "phage_domain_specific", "error": "empty_content"}
-        )
-    
-    def _create_error_phage_result(self, iteration: int, error_msg: str) -> EvaluationResult:
-        """Create result for evaluation errors"""
-        return EvaluationResult(
-            overall_score=0.0,
-            dimensions=EvaluationDimensions(),
-            suggestions=[f"噬菌体专业评估出错: {error_msg}"],
-            needs_revision=True,
-            iteration=iteration,
-            timestamp=datetime.now(),
-            metadata={"evaluation_method": "phage_domain_specific", "error": error_msg}
-        )
+        return self.calculate_weighted_score(dimensions, phage_weights)
 
 
 def get_phage_evaluator(config: Optional[EvaluationConfig] = None) -> PhageEvaluator:
