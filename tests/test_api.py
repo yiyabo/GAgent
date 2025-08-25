@@ -115,7 +115,13 @@ def test_services_approve_plan_service_with_fake_repo():
 
 
 def test_api_end_to_end_with_mock_llm_and_sqlite(tmp_path, monkeypatch):
-    os.environ["LLM_MOCK"] = "1"
+    # Set mock mode in environment
+    monkeypatch.setenv("LLM_MOCK", "1")
+    
+    # Force reload of config to pick up mock mode
+    from app.services.config import reload_config
+    reload_config()
+    
     from app.main import app
     # Patch DB path to isolate test
     test_db = tmp_path / "test.db"
