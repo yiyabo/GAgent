@@ -1,10 +1,16 @@
 import sqlite3
 from contextlib import contextmanager
+from .database_pool import initialize_connection_pool, get_db
 
 DB_PATH = 'tasks.db'
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
+    """Initialize database schema using connection pool."""
+    # Initialize connection pool first
+    initialize_connection_pool(db_path=DB_PATH)
+    
+    # Use pooled connection for schema initialization
+    with get_db() as conn:
         conn.execute('''CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
@@ -137,11 +143,4 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_history_timestamp ON evaluation_history(timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_configs_task_id ON evaluation_configs(task_id)")
 
-@contextmanager
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
+# get_db function now provided by database_pool module
