@@ -54,7 +54,7 @@ class CLIErrorHandler:
     提供友好的错误消息和合适的退出码
     """
     
-    def __init__(self, verbose: bool = False, chinese: bool = True):
+    def __init__(self, verbose: bool = False, chinese: bool = False):
         self.verbose = verbose
         self.language = Language.ZH_CN if chinese else Language.EN_US
         self.logger = logging.getLogger(__name__)
@@ -319,7 +319,7 @@ class CLIErrorContext:
             
             # 添加操作上下文信息
             if self.handler.language == Language.ZH_CN:
-                contextual_message = f"执行操作 '{self.operation_name}' 时发生错误:\n{error_info.message}"
+                contextual_message = f"Error occurred while executing operation '{self.operation_name}':\n{error_info.message}"
             else:
                 contextual_message = f"Error occurred while executing operation '{self.operation_name}':\n{error_info.message}"
             

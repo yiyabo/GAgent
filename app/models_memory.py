@@ -60,7 +60,7 @@ class MemoryNote(BaseModel):
     @field_validator('content')
     def content_must_not_be_empty(cls, v):
         if not v or not v.strip():
-            raise ValueError('记忆内容不能为空')
+            raise ValueError('Memory content cannot be empty')
         return v.strip()
 
 
@@ -79,7 +79,7 @@ class SaveMemoryRequest(BaseModel):
     @field_validator('content')
     def content_must_not_be_empty(cls, v):
         if not v or not v.strip():
-            raise ValueError('记忆内容不能为空')
+            raise ValueError('Memory content cannot be empty')
         return v.strip()
 
 
