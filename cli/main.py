@@ -54,15 +54,15 @@ class ModernCLIApp(CLIApplication):
             # Extract and validate parameters
             all_params, validation_error = self.parser.extract_and_validate_params(parsed_args)
             if validation_error:
-                # 使用友好的错误处理
+                # Use friendly error handling
                 validation_err = ValidationError(
-                    message="命令行参数验证失败",
+                    message="Command line parameter validation failed",
                     error_code=ErrorCode.SCHEMA_VALIDATION_FAILED,
                     context={"validation_details": validation_error},
                     suggestions=[
-                        "检查命令行参数格式",
-                        "使用 --help 查看参数说明",
-                        "确认所有必填参数都已提供"
+                        "Check command line parameter format",
+                        "Use --help to view parameter description",
+                        "Ensure all required parameters are provided"
                     ]
                 )
                 error_info = self.error_handler.handle_error(validation_err)
@@ -118,15 +118,15 @@ class ModernCLIApp(CLIApplication):
         elif operation_type == "help":
             return self._show_help_guidance()
         
-        # Fallback - 使用友好错误处理
+        # Fallback - Use friendly error handling
         raise BusinessError(
-            message=f"未知的操作类型: {operation_type}",
+            message=f"Unknown operation type: {operation_type}",
             error_code=ErrorCode.BUSINESS_RULE_VIOLATION,
             context={"operation_type": operation_type},
             suggestions=[
-                "检查命令语法是否正确",
-                "使用 --help 查看可用的命令选项",
-                "确认操作名称拼写正确"
+                "Check if command syntax is correct",
+                "Use --help to view available command options",
+                "Ensure operation name is spelled correctly"
             ]
         )
     

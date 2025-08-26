@@ -117,30 +117,30 @@ class ErrorResponseFormatter:
         
         # 基础错误信息
         lines = [
-            f"{icon} 错误 [{error.error_code}]: {error.message}",
-            f"   类别: {error.category.value}",
-            f"   严重程度: {error.severity.value}",
-            f"   错误ID: {error.error_id}"
+            f"{icon} Error [{error.error_code}]: {error.message}",
+            f"   Category: {error.category.value}",
+            f"   Severity: {error.severity.value}",
+            f"   Error ID: {error.error_id}"
         ]
         
         # 上下文信息
         if error.context:
-            lines.append("   上下文信息:")
+            lines.append("Context:")
             for key, value in error.context.items():
                 lines.append(f"     - {key}: {value}")
         
         # 建议信息
         if error.suggestions:
-            lines.append("   建议:")
+            lines.append("Suggestions:")
             for suggestion in error.suggestions:
                 lines.append(f"     • {suggestion}")
         
         # 详细模式显示额外信息
         if verbose:
-            lines.append(f"   时间: {error.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+            lines.append(f"Time: {error.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
             
             if error.cause:
-                lines.append(f"   根本原因: {type(error.cause).__name__}: {error.cause}")
+                lines.append(f"Root cause: {type(error.cause).__name__}: {error.cause}")
         
         return "\n".join(lines)
     
@@ -225,7 +225,7 @@ class ErrorHandler:
         elif format_type == OutputFormat.LOG:
             return self.formatter.format_for_log(error)
         else:
-            raise ValueError(f"不支持的输出格式: {format_type}")
+            raise ValueError(f"Unsupported output format: {format_type}")
     
     def handle_validation_errors(
         self, 
@@ -244,7 +244,7 @@ class ErrorHandler:
         """
         if not validation_errors:
             return self.handle_exception(
-                ValidationError("未知验证错误")
+                ValidationError("Unknown validation error")
             )
         
         # 创建综合验证错误
@@ -253,21 +253,21 @@ class ErrorHandler:
         
         for i, error_data in enumerate(validation_errors):
             field_name = error_data.get('field_name', f'field_{i}')
-            message = error_data.get('message', '验证失败')
+            message = error_data.get('message', 'Validation failed')
             error_messages.append(f"{field_name}: {message}")
             
             if 'context' in error_data:
                 all_context[field_name] = error_data['context']
         
-        combined_message = f"数据验证失败 ({len(validation_errors)} 个错误): " + "; ".join(error_messages)
+        combined_message = f"Data validation failed ({len(validation_errors)} errors): " + "; ".join(error_messages)
         
         validation_error = ValidationError(
             message=combined_message,
             context=all_context,
             suggestions=[
-                "检查所有标记的字段",
-                "确保数据格式符合要求",
-                "参考API文档进行数据校正"
+                "Check all marked fields",
+                "Ensure data format meets requirements",
+                "Refer to API documentation for data correction"
             ]
         )
         

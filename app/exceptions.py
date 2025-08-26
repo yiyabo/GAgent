@@ -448,7 +448,7 @@ def create_validation_error(
 ) -> ValidationError:
     """创建字段验证错误的便捷函数"""
     return ValidationError(
-        message=f"字段 '{field_name}' 验证失败: {message}",
+        message=f"Field '{field_name}' validation failed: {message}",
         field_name=field_name,
         field_value=field_value,
         error_code=ErrorCode.INVALID_FIELD_FORMAT

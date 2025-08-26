@@ -175,7 +175,7 @@ async def base_error_handler(request: Request, exc: BaseError):
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """处理FastAPI参数验证错误"""
     validation_error = ValidationError(
-        message="请求参数验证失败",
+        message="Request parameter validation failed",
         error_code=ErrorCode.SCHEMA_VALIDATION_FAILED,
         context={
             "errors": exc.errors(),
@@ -198,19 +198,19 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """处理HTTP异常"""
     if exc.status_code == 404:
         error = BusinessError(
-            message="请求的资源不存在",
+            message="Requested resource not found",
             error_code=ErrorCode.TASK_NOT_FOUND,
             context={"path": str(request.url), "method": request.method}
         )
     elif exc.status_code == 405:
         error = ValidationError(
-            message="HTTP方法不被允许",
+            message="HTTP method not allowed",
             error_code=ErrorCode.INVALID_FIELD_FORMAT,
             context={"method": request.method, "path": str(request.url)}
         )
     else:
         error = SystemError(
-            message=exc.detail if exc.detail else f"HTTP错误 {exc.status_code}",
+            message=exc.detail if exc.detail else f"HTTP error {exc.status_code}",
             error_code=ErrorCode.INTERNAL_SERVER_ERROR,
             context={"status_code": exc.status_code}
         )
@@ -225,7 +225,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 async def general_exception_handler(request: Request, exc: Exception):
     """处理未捕获的通用异常"""
     system_error = SystemError(
-        message="服务器内部错误",
+        message="Internal server error",
         error_code=ErrorCode.INTERNAL_SERVER_ERROR,
         cause=exc,
         context={
@@ -291,7 +291,7 @@ def propose_plan(payload: Dict[str, Any]):
         return propose_plan_service(payload)
     except ValueError as e:
         raise ValidationError(
-            message=f"计划提案验证失败: {str(e)}",
+            message=f"Plan proposal validation failed: {str(e)}",
             error_code=ErrorCode.GOAL_VALIDATION_FAILED,
             cause=e
         )
@@ -303,7 +303,7 @@ def approve_plan(plan: Dict[str, Any]):
         return approve_plan_service(plan)
     except ValueError as e:
         raise BusinessError(
-            message=f"计划批准失败: {str(e)}",
+            message=f"Plan approval failed: {str(e)}",
             error_code=ErrorCode.BUSINESS_RULE_VIOLATION,
             cause=e
         )
@@ -400,7 +400,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             ordered, cycle = requires_dag_order(None)
             if cycle:
                 raise BusinessError(
-                    message="检测到任务依赖环",
+                    message="Task dependency cycle detected",
                     error_code=ErrorCode.INVALID_TASK_STATE,
                     context={"cycle_info": cycle}
                 )

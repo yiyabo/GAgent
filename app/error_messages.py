@@ -26,7 +26,7 @@ class ErrorMessageRegistry:
     
     def __init__(self):
         self._messages = {}
-        self._default_language = Language.ZH_CN
+        self._default_language = Language.EN_US
         self._init_messages()
     
     def _init_messages(self):

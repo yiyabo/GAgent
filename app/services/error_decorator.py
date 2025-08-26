@@ -36,7 +36,7 @@ def service_error_handler(
                 return await func(*args, **kwargs)
             except BaseError:
                 if reraise_custom_errors:
-                    raise  # 重新抛出自定义异常
+                    raise  # Re-raise custom exceptions
             except Exception as e:
                 if log_errors:
                     logger = logging.getLogger(func.__module__)
@@ -57,7 +57,7 @@ def service_error_handler(
                 return func(*args, **kwargs)
             except BaseError:
                 if reraise_custom_errors:
-                    raise  # 重新抛出自定义异常
+                    raise  # Re-raise custom exceptions
             except Exception as e:
                 if log_errors:
                     logger = logging.getLogger(func.__module__)
@@ -136,7 +136,7 @@ def _convert_exception(
     # 数据库相关异常
     if _is_database_exception(original_exception):
         return DatabaseError(
-            message=f"数据库操作失败: {exception_message}",
+            message=f"Database operation failed: {exception_message}",
             operation=function_name,
             error_code=ErrorCode.QUERY_EXECUTION_FAILED,
             cause=original_exception
@@ -145,7 +145,7 @@ def _convert_exception(
     # 网络相关异常
     if _is_network_exception(original_exception):
         return NetworkError(
-            message=f"网络请求失败: {exception_message}",
+            message=f"Network request failed: {exception_message}",
             error_code=ErrorCode.CONNECTION_FAILED,
             cause=original_exception
         )
@@ -153,7 +153,7 @@ def _convert_exception(
     # 外部服务相关异常
     if _is_external_service_exception(original_exception):
         return ExternalServiceError(
-            message=f"外部服务调用失败: {exception_message}",
+            message=f"External service call failed: {exception_message}",
             service_name=_extract_service_name(original_exception),
             error_code=ErrorCode.LLM_SERVICE_ERROR,
             cause=original_exception
@@ -162,14 +162,14 @@ def _convert_exception(
     # 业务逻辑异常
     if _is_business_exception(original_exception):
         return BusinessError(
-            message=f"业务操作失败: {exception_message}",
+            message=f"Business operation failed: {exception_message}",
             error_code=ErrorCode.BUSINESS_RULE_VIOLATION,
             cause=original_exception
         )
     
     # 默认系统异常
     return default_error_type(
-        message=f"{function_name}执行失败: {exception_message}",
+        message=f"{function_name} execution failed: {exception_message}",
         error_code=default_error_code,
         cause=original_exception
     )
