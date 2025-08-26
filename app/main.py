@@ -2,13 +2,23 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .database import init_db
 from .executor import execute_task
 from .llm import get_default_client
 from .models import TaskCreate
 from .repository.tasks import default_repo
+from .exceptions import (
+    BaseError, ValidationError, BusinessError, SystemError, DatabaseError,
+    NetworkError, AuthenticationError, AuthorizationError, ExternalServiceError,
+    ErrorCode
+)
+from .error_handlers import handle_api_error, ErrorResponseFormatter
+from .error_messages import get_error_message
 from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order, postorder_schedule
 from .services.context import gather_context
 from .services.context_budget import apply_budget
@@ -151,6 +161,110 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# 注册统一异常处理器
+@app.exception_handler(BaseError)
+async def base_error_handler(request: Request, exc: BaseError):
+    """统一处理自定义业务异常"""
+    error_response = handle_api_error(exc, include_debug=False)
+    return JSONResponse(
+        status_code=_map_error_to_http_status(exc),
+        content=error_response
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """处理FastAPI参数验证错误"""
+    validation_error = ValidationError(
+        message="请求参数验证失败",
+        error_code=ErrorCode.SCHEMA_VALIDATION_FAILED,
+        context={
+            "errors": exc.errors(),
+            "body": str(exc.body) if exc.body else None
+        },
+        suggestions=[
+            "检查请求参数格式",
+            "确保必填字段完整",
+            "参考API文档修正参数"
+        ]
+    )
+    error_response = handle_api_error(validation_error, include_debug=False)
+    return JSONResponse(
+        status_code=422,
+        content=error_response
+    )
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """处理HTTP异常"""
+    if exc.status_code == 404:
+        error = BusinessError(
+            message="请求的资源不存在",
+            error_code=ErrorCode.TASK_NOT_FOUND,
+            context={"path": str(request.url), "method": request.method}
+        )
+    elif exc.status_code == 405:
+        error = ValidationError(
+            message="HTTP方法不被允许",
+            error_code=ErrorCode.INVALID_FIELD_FORMAT,
+            context={"method": request.method, "path": str(request.url)}
+        )
+    else:
+        error = SystemError(
+            message=exc.detail if exc.detail else f"HTTP错误 {exc.status_code}",
+            error_code=ErrorCode.INTERNAL_SERVER_ERROR,
+            context={"status_code": exc.status_code}
+        )
+    
+    error_response = handle_api_error(error, include_debug=False)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_response
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """处理未捕获的通用异常"""
+    system_error = SystemError(
+        message="服务器内部错误",
+        error_code=ErrorCode.INTERNAL_SERVER_ERROR,
+        cause=exc,
+        context={
+            "path": str(request.url),
+            "method": request.method,
+            "exception_type": type(exc).__name__
+        },
+        suggestions=[
+            "稍后重试",
+            "如问题持续存在，请联系技术支持"
+        ]
+    )
+    error_response = handle_api_error(system_error, include_debug=True)  # 开发环境显示调试信息
+    return JSONResponse(
+        status_code=500,
+        content=error_response
+    )
+
+def _map_error_to_http_status(error: BaseError) -> int:
+    """将自定义错误映射到HTTP状态码"""
+    from .exceptions import ErrorCategory
+    
+    if error.category == ErrorCategory.VALIDATION:
+        return 400
+    elif error.category == ErrorCategory.AUTHENTICATION:
+        return 401
+    elif error.category == ErrorCategory.AUTHORIZATION:
+        return 403
+    elif error.category == ErrorCategory.BUSINESS and error.error_code == ErrorCode.TASK_NOT_FOUND:
+        return 404
+    elif error.category == ErrorCategory.NETWORK:
+        return 502
+    elif error.category == ErrorCategory.EXTERNAL_SERVICE:
+        return 503
+    elif error.category in [ErrorCategory.SYSTEM, ErrorCategory.DATABASE]:
+        return 500
+    else:
+        return 400  # 默认客户端错误
+
 # Include memory API router
 app.include_router(memory_router)
 
@@ -176,7 +290,11 @@ def propose_plan(payload: Dict[str, Any]):
     try:
         return propose_plan_service(payload)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise ValidationError(
+            message=f"计划提案验证失败: {str(e)}",
+            error_code=ErrorCode.GOAL_VALIDATION_FAILED,
+            cause=e
+        )
 
 
 @app.post("/plans/approve")
@@ -184,7 +302,11 @@ def approve_plan(plan: Dict[str, Any]):
     try:
         return approve_plan_service(plan)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise BusinessError(
+            message=f"计划批准失败: {str(e)}",
+            error_code=ErrorCode.BUSINESS_RULE_VIOLATION,
+            cause=e
+        )
 
 
 @app.get("/plans")
@@ -277,7 +399,11 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         if schedule == "dag":
             ordered, cycle = requires_dag_order(None)
             if cycle:
-                raise HTTPException(status_code=400, detail={"error": "cycle_detected", **cycle})
+                raise BusinessError(
+                    message="检测到任务依赖环",
+                    error_code=ErrorCode.INVALID_TASK_STATE,
+                    context={"cycle_info": cycle}
+                )
             tasks_iter = ordered
         elif schedule == "postorder":
             tasks_iter = postorder_schedule()
@@ -319,7 +445,11 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     if schedule == "dag":
         ordered, cycle = requires_dag_order(title)
         if cycle:
-            raise HTTPException(status_code=400, detail={"error": "cycle_detected", **cycle})
+            raise BusinessError(
+                message="检测到任务依赖环",
+                error_code=ErrorCode.INVALID_TASK_STATE,
+                context={"cycle_info": cycle}
+            )
         tasks_iter = ordered
     elif schedule == "postorder":
         tasks_iter = postorder_schedule(title)
