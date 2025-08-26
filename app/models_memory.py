@@ -6,7 +6,7 @@ Integrated memory models that extend the existing system with Memory-MCP capabil
 
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from enum import Enum
 
 
@@ -97,10 +97,7 @@ class SaveMemoryResponse(BaseModel):
     context: str = Field(default="General", description="自动生成的上下文")
     tags: List[str] = Field(default_factory=list, description="自动生成的标签")
     
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+    model_config = ConfigDict()
 
 
 class QueryMemoryRequest(BaseModel):
@@ -127,10 +124,7 @@ class MemoryItem(BaseModel):
     tags: List[str] = Field(default_factory=list, description="标签")
     importance: ImportanceLevel = Field(..., description="重要性级别")
     
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+    model_config = ConfigDict()
 
 
 class QueryMemoryResponse(BaseModel):

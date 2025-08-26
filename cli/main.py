@@ -10,6 +10,12 @@ from .commands.evaluation_commands import EvaluationCommands
 from .commands.database_commands import DatabaseCommands
 from .commands.memory_commands import MemoryCommands
 from .utils import FileUtils, IOUtils
+try:
+    from .error_handler import CLIErrorHandler, handle_cli_exception, CLIErrorContext
+    from ..app.exceptions import ValidationError, BusinessError, ErrorCode
+except ImportError:
+    from cli.error_handler import CLIErrorHandler, handle_cli_exception, CLIErrorContext
+    from app.exceptions import ValidationError, BusinessError, ErrorCode
 
 
 class ModernCLIApp(CLIApplication):
@@ -19,6 +25,7 @@ class ModernCLIApp(CLIApplication):
         self.parser = ModularCLIParser()
         self.commands: List[CLICommand] = []
         self.io = IOUtils()
+        self.error_handler = CLIErrorHandler(verbose=False, chinese=True)
         
         # Initialize UTF-8 encoding
         FileUtils.ensure_utf8_encoding()
@@ -47,19 +54,35 @@ class ModernCLIApp(CLIApplication):
             # Extract and validate parameters
             all_params, validation_error = self.parser.extract_and_validate_params(parsed_args)
             if validation_error:
-                self.io.print_error(f"Parameter validation failed: {validation_error}")
-                return 1
+                # 使用友好的错误处理
+                validation_err = ValidationError(
+                    message="命令行参数验证失败",
+                    error_code=ErrorCode.SCHEMA_VALIDATION_FAILED,
+                    context={"validation_details": validation_error},
+                    suggestions=[
+                        "检查命令行参数格式",
+                        "使用 --help 查看参数说明",
+                        "确认所有必填参数都已提供"
+                    ]
+                )
+                error_info = self.error_handler.handle_error(validation_err)
+                self.error_handler.print_error(error_info)
+                return error_info.exit_code
             
             # Determine operation type using modular approach
             operation_type = self.parser.determine_operation_type(parsed_args)
             
-            return self._execute_operation(parsed_args, all_params, operation_type)
+            return self._execute_operation_with_error_handling(parsed_args, all_params, operation_type)
             
         except SystemExit as e:
             return e.code or 0
         except Exception as e:
-            self.io.print_error(f"Application error: {e}")
-            return 1
+            return handle_cli_exception(e, verbose=True)
+    
+    def _execute_operation_with_error_handling(self, args, all_params: dict, operation_type: str) -> int:
+        """Execute operation with comprehensive error handling."""
+        with CLIErrorContext(f"{operation_type} operation", verbose=True, chinese=True):
+            return self._execute_operation(args, all_params, operation_type)
     
     def _execute_operation(self, args, all_params: dict, operation_type: str) -> int:
         """Execute operation based on determined type (simplified using modular approach)."""
@@ -95,9 +118,17 @@ class ModernCLIApp(CLIApplication):
         elif operation_type == "help":
             return self._show_help_guidance()
         
-        # Fallback
-        self.io.print_error(f"Unknown operation type: {operation_type}")
-        return 1
+        # Fallback - 使用友好错误处理
+        raise BusinessError(
+            message=f"未知的操作类型: {operation_type}",
+            error_code=ErrorCode.BUSINESS_RULE_VIOLATION,
+            context={"operation_type": operation_type},
+            suggestions=[
+                "检查命令语法是否正确",
+                "使用 --help 查看可用的命令选项",
+                "确认操作名称拼写正确"
+            ]
+        )
     
     
     def _get_command_by_name(self, name: str) -> Optional[CLICommand]:
