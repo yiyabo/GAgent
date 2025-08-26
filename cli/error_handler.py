@@ -12,14 +12,14 @@ from dataclasses import dataclass
 from enum import Enum
 
 try:
-    from ..app.exceptions import BaseError, ErrorSeverity, ErrorCategory
-    from ..app.error_handlers import handle_cli_error
-    from ..app.error_messages import get_error_message, Language
+    from ..app.errors import BaseError, ErrorSeverity, ErrorCategory
+    from ..app.errors import handle_cli_error
+    from ..app.errors import get_error_message, Language
 except ImportError:
     # 当作为独立模块导入时的回退方案
-    from app.exceptions import BaseError, ErrorSeverity, ErrorCategory
-    from app.error_handlers import handle_cli_error
-    from app.error_messages import get_error_message, Language
+    from app.errors import BaseError, ErrorSeverity, ErrorCategory
+    from app.errors import handle_cli_error
+    from app.errors import get_error_message, Language
 
 
 class ExitCode(Enum):

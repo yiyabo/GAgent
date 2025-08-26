@@ -23,7 +23,7 @@ from app.database import init_db
 from app.repository.tasks import SqliteTaskRepository
 from app.scheduler import requires_dag_order, requires_dag_schedule
 from app.services.planning import propose_plan_service, approve_plan_service
-from app.executor import execute_task
+from app.execution.executors import execute_task
 
 
 class LLMDAGValidator:
