@@ -47,12 +47,7 @@ class BaseTaskExecutor:
     def execute_llm_chat(self, prompt: str) -> str:
         """Execute LLM chat with error handling."""
         try:
-            return self.client.chat.completions.create(
-                model="glm-4-plus",
-                messages=[{"role": "user", "content": prompt}],
-                stream=False,
-                temperature=0.7
-            ).choices[0].message.content.strip()
+            return self.client.chat(prompt)
         except Exception as e:
             logger.error(f"LLM chat failed: {e}")
             raise
