@@ -165,7 +165,7 @@ def database_operation_error(
     context: Optional[Dict[str, Any]] = None
 ) -> DatabaseError:
     """创建数据库操作错误的便捷函数"""
-    from .exceptions import DatabaseError
+    from .messages import get_error_message
     
     return DatabaseError(
         message=f"数据库{operation}操作失败",

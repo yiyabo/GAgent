@@ -8,17 +8,17 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .database import init_db
-from .executor import execute_task
+from .execution.executors import execute_task
 from .llm import get_default_client
 from .models import TaskCreate
 from .repository.tasks import default_repo
-from .exceptions import (
+from .errors import (
     BaseError, ValidationError, BusinessError, SystemError, DatabaseError,
     NetworkError, AuthenticationError, AuthorizationError, ExternalServiceError,
     ErrorCode
 )
-from .error_handlers import handle_api_error, ErrorResponseFormatter
-from .error_messages import get_error_message
+from .errors import handle_api_error, ErrorResponseFormatter
+from .errors import get_error_message
 from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order, postorder_schedule
 from .services.context import gather_context
 from .services.context_budget import apply_budget
@@ -246,7 +246,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 def _map_error_to_http_status(error: BaseError) -> int:
     """将自定义错误映射到HTTP状态码"""
-    from .exceptions import ErrorCategory
+    from .errors.exceptions import ErrorCategory
     
     if error.category == ErrorCategory.VALIDATION:
         return 400
@@ -412,7 +412,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         for task in tasks_iter:
             if enable_evaluation:
                 # Use enhanced executor with evaluation
-                from .executor_enhanced import execute_task_with_evaluation
+                from .execution.executors.enhanced import execute_task_with_evaluation
                 result = execute_task_with_evaluation(
                     task=task,
                     repo=default_repo,
@@ -459,7 +459,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     for task in tasks_iter:
         if enable_evaluation:
             # Use enhanced executor with evaluation
-            from .executor_enhanced import execute_task_with_evaluation
+            from .execution.executors.enhanced import execute_task_with_evaluation
             result = execute_task_with_evaluation(
                 task=task,
                 repo=default_repo,
@@ -1045,7 +1045,7 @@ def execute_task_with_evaluation_api(task_id: int, payload: Optional[Dict[str, A
             context_options = _sanitize_context_options(co)
         
         # Import enhanced executor
-        from .executor_enhanced import execute_task_with_evaluation
+        from .execution.executors.enhanced import execute_task_with_evaluation
         
         # Execute with evaluation
         result = execute_task_with_evaluation(

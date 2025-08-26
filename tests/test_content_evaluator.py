@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from app.models import EvaluationConfig, EvaluationDimensions, EvaluationResult
 from app.services.content_evaluator import ContentEvaluator, get_evaluator
-from app.executor_enhanced import execute_task_with_evaluation
+from app.execution.executors.enhanced import execute_task_with_evaluation
 from app.execution.prompt_builder import PromptBuilder
 
 

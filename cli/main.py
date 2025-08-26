@@ -12,10 +12,10 @@ from .commands.memory_commands import MemoryCommands
 from .utils import FileUtils, IOUtils
 try:
     from .error_handler import CLIErrorHandler, handle_cli_exception, CLIErrorContext
-    from ..app.exceptions import ValidationError, BusinessError, ErrorCode
+    from ..app.errors import ValidationError, BusinessError, ErrorCode
 except ImportError:
     from cli.error_handler import CLIErrorHandler, handle_cli_exception, CLIErrorContext
-    from app.exceptions import ValidationError, BusinessError, ErrorCode
+    from app.errors import ValidationError, BusinessError, ErrorCode
 
 
 class ModernCLIApp(CLIApplication):
@@ -25,7 +25,7 @@ class ModernCLIApp(CLIApplication):
         self.parser = ModularCLIParser()
         self.commands: List[CLICommand] = []
         self.io = IOUtils()
-        self.error_handler = CLIErrorHandler(verbose=False, chinese=True)
+        self.error_handler = CLIErrorHandler(verbose=False, chinese=False)
         
         # Initialize UTF-8 encoding
         FileUtils.ensure_utf8_encoding()

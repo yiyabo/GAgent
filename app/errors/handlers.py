@@ -15,7 +15,7 @@ from .exceptions import (
     BaseError, BusinessError, ValidationError, SystemError, 
     NetworkError, DatabaseError, AuthenticationError, 
     AuthorizationError, ExternalServiceError,
-    ErrorSeverity, ErrorCategory
+    ErrorCode, ErrorSeverity, ErrorCategory
 )
 
 
