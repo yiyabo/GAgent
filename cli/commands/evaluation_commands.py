@@ -18,7 +18,7 @@ from ..utils.io_utils import IOUtils
 # Import app modules safely
 try:
     from ...app.repository.tasks import default_repo
-    from ...app.executor_enhanced import (
+    from ...app.execution.executors.enhanced import (
         execute_task_with_evaluation,
         execute_task_with_llm_evaluation,
         execute_task_with_adversarial_evaluation,
@@ -30,7 +30,7 @@ try:
 except ImportError:
     # Fallback for when running from tests
     from app.repository.tasks import default_repo
-    from app.executor_enhanced import (
+    from app.execution.executors.enhanced import (
         execute_task_with_evaluation,
         execute_task_with_llm_evaluation,
         execute_task_with_adversarial_evaluation,

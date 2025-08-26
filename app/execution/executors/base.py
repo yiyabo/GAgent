@@ -2,12 +2,12 @@ from typing import Optional, Dict, Any
 import asyncio
 import threading
 import logging
-from .llm import get_default_client
-from .interfaces import TaskRepository
-from .repository.tasks import default_repo
-from .services.context import gather_context
-from .services.context_budget import apply_budget
-from .services.embeddings import get_embeddings_service
+from ...llm import get_default_client
+from ...interfaces import TaskRepository
+from ...repository.tasks import default_repo
+from ...services.context import gather_context
+from ...services.context_budget import apply_budget
+from ...services.embeddings import get_embeddings_service
 
 logger = logging.getLogger(__name__)
 

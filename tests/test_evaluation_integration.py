@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import init_db
 from app.repository.tasks import default_repo
-from app.executor_enhanced import execute_task_with_evaluation
+from app.execution.executors.enhanced import execute_task_with_evaluation
 from app.models import EvaluationConfig
 
 

@@ -8,9 +8,10 @@
 import functools
 import logging
 from typing import Any, Callable, Optional, Type, Union
-from ..exceptions import (
-    BaseError, BusinessError, SystemError, DatabaseError, 
-    NetworkError, ExternalServiceError, ErrorCode
+from ..errors import (
+    BaseError, ValidationError, BusinessError, SystemError,
+    DatabaseError, NetworkError, ExternalServiceError,
+    ErrorCode, ErrorCategory
 )
 
 
