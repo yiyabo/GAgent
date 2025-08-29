@@ -158,6 +158,18 @@ CREATE TABLE evaluation_cache (
 CREATE INDEX idx_content_hash ON evaluation_cache(content_hash);
 CREATE INDEX idx_method_hash ON evaluation_cache(evaluation_method, content_hash);
 CREATE INDEX idx_last_accessed ON evaluation_cache(last_accessed);
+-- 核心业务相关索引（与 app/database.py 一致）
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_status_prio_id ON tasks(status, priority, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_priority_id ON tasks(priority, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent_id ON tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path);
+CREATE INDEX IF NOT EXISTS idx_tasks_depth ON tasks(depth);
+CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type);
+CREATE INDEX IF NOT EXISTS idx_task_links_to_kind ON task_links(to_id, kind);
+CREATE INDEX IF NOT EXISTS idx_task_links_from_kind ON task_links(from_id, kind);
+CREATE INDEX IF NOT EXISTS idx_task_contexts_task_id ON task_contexts(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_contexts_created_at ON task_contexts(created_at);
 ```
 
 ## 缓存系统架构

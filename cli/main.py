@@ -177,6 +177,10 @@ class ModernCLIApp(CLIApplication):
         if getattr(args, 'rebuild_embeddings', False):
             return self._handle_rebuild_embeddings(args)
         
+        # Benchmark operation
+        if getattr(args, 'benchmark', False):
+            return self._handle_benchmark(args)
+
         # No specific operation found - show help guidance
         return self._show_help_guidance()
     
@@ -458,6 +462,46 @@ class ModernCLIApp(CLIApplication):
             
         except Exception as e:
             self.io.print_error(f"Rebuild embeddings failed: {e}")
+            return 1
+
+    def _handle_benchmark(self, args) -> int:
+        """Handle --benchmark operation: run multi-config report generation & LLM scoring."""
+        try:
+            topic = getattr(args, 'benchmark_topic', None)
+            configs = getattr(args, 'benchmark_configs', None)
+            sections = getattr(args, 'benchmark_sections', 5)
+            output = getattr(args, 'benchmark_output', None)
+
+            if not topic:
+                self.io.print_error("--benchmark-topic is required")
+                return 1
+            if not configs or not isinstance(configs, list):
+                self.io.print_error("--benchmark-configs is required (one or more specs)")
+                return 1
+
+            # Lazy import to avoid heavy deps at startup
+            try:
+                from app.services.benchmark import run_benchmark
+            except Exception:
+                from ..app.services.benchmark import run_benchmark  # fallback when running as module
+
+            self.io.print_info("Running benchmark...")
+            out = run_benchmark(topic, configs, sections=sections)
+            summary = out.get('summary_md', '')
+
+            if output:
+                from .utils.file_utils import FileUtils
+                if FileUtils.write_file_safe(output, summary):
+                    self.io.print_success(f"Benchmark summary written to {output}")
+                    return 0
+                else:
+                    self.io.print_error("Failed to write output file")
+                    return 1
+            else:
+                print(summary)
+                return 0
+        except Exception as e:
+            self.io.print_error(f"Benchmark failed: {e}")
             return 1
     
     def _show_help_guidance(self) -> int:

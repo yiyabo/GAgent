@@ -98,7 +98,7 @@ LLM智能评估器使用大语言模型进行深度语义理解，提供6个维�
 #### 使用示例
 
 ```python
-from app.executor_enhanced import execute_task_with_llm_evaluation
+from app.execution.executors.enhanced import execute_task_with_llm_evaluation
 from app.models import EvaluationConfig
 
 # 配置评估参数
@@ -120,6 +120,41 @@ print(f"最终评分: {result.evaluation.overall_score:.3f}")
 print(f"执行状态: {result.status}")
 print(f"迭代次数: {result.iterations_completed}")
 ```
+
+## 上下文策略与预算控制
+
+评估与执行时可通过上下文和预算参数精细控制提示词上下文，兼顾质量与成本：
+
+- 上下文收集：
+  - **include_deps**: 是否包含依赖任务输出（默认 true）
+  - **include_plan**: 是否包含同计划兄弟任务（默认 true）
+  - **include_ancestors / include_siblings**: 是否包含祖先/同级（默认 false）
+  - **semantic_k / min_similarity**: GLM 语义检索数量与相似度阈值（默认 5 / 0.1）
+  - **hierarchy_k**: 层次检索数量（默认 3）
+
+- 预算裁剪：
+  - **max_chars**: 合并上下文的总字符预算（None 表示不裁剪）
+  - **per_section_max**: 每个片段的最大字符数（None 表示不限制）
+  - **strategy**: `truncate` 或 `sentence`（在有预算参数时生效）
+
+请求示例（REST /tasks/{id}/context/preview）：
+
+```json
+{
+  "include_deps": true,
+  "include_plan": true,
+  "semantic_k": 5,
+  "min_similarity": 0.15,
+  "include_ancestors": false,
+  "include_siblings": false,
+  "hierarchy_k": 3,
+  "max_chars": 6000,
+  "per_section_max": 1200,
+  "strategy": "truncate"
+}
+```
+
+严格评估建议：将 `quality_threshold` ≥ 0.92，`max_iterations` 设为 3-5，维度权重侧重 **accuracy** 与 **scientific_rigor**，可有效拉开不同配置的评分差异。
 
 ### 多专家评估系统
 

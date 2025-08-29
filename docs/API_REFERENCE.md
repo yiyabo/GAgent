@@ -99,16 +99,17 @@ def execute_task_with_adversarial_evaluation(
 
 ### EvaluationConfig
 
-评估配置类。
+评估配置类（Pydantic）。
 
 ```python
-@dataclass
-class EvaluationConfig:
+class EvaluationConfig(BaseModel):
     quality_threshold: float = 0.8
     max_iterations: int = 3
-    strict_mode: bool = False
-    evaluation_dimensions: Optional[List[str]] = None
+    evaluation_dimensions: List[str] = [
+        "relevance", "completeness", "accuracy", "clarity", "coherence"
+    ]
     domain_specific: bool = False
+    strict_mode: bool = False
     custom_weights: Optional[Dict[str, float]] = None
 ```
 
@@ -130,18 +131,16 @@ class EvaluationConfig:
 
 ### TaskExecutionResult
 
-任务执行结果类。
+任务执行结果类（Pydantic）。
 
 ```python
-@dataclass
-class TaskExecutionResult:
+class TaskExecutionResult(BaseModel):
     task_id: int
     status: str
-    content: Optional[str]
-    evaluation: Optional[EvaluationResult]
-    iterations: int
-    execution_time: float
-    metadata: Optional[Dict[str, Any]] = None
+    content: Optional[str] = None
+    evaluation: Optional[EvaluationResult] = None
+    iterations: int = 1
+    execution_time: Optional[float] = None
 ```
 
 **字段说明:**
@@ -155,17 +154,16 @@ class TaskExecutionResult:
 
 ### EvaluationResult
 
-评估结果类。
+评估结果类（Pydantic）。
 
 ```python
-@dataclass
-class EvaluationResult:
+class EvaluationResult(BaseModel):
     overall_score: float
     dimensions: EvaluationDimensions
-    suggestions: List[str]
-    needs_revision: bool
-    iteration: int
-    timestamp: datetime
+    suggestions: List[str] = []
+    needs_revision: bool = False
+    iteration: int = 0
+    timestamp: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
 ```
 
@@ -197,6 +195,42 @@ result = evaluator.evaluate_content_intelligent(
     task_context={"name": "任务名称", "task_type": "content_generation"},
     iteration=1
 )
+```
+
+## Benchmark 基准评测接口
+
+### REST API
+
+```http
+POST /benchmark
+Content-Type: application/json
+
+{
+  "topic": "抗菌素耐药",
+  "configs": [
+    "base,use_context=False",
+    "ctx,use_context=True,max_chars=3000,semantic_k=5"
+  ],
+  "sections": 5
+}
+```
+
+返回：
+- `summary_md`: 汇总 Markdown 表
+- `metrics`: 每个配置的均值、维度均值、失败数、计数等
+- `files`: 每个配置生成的 MD 文件路径（若设置 outdir）
+- `csv_path`: 统一 CSV 路径（若设置 csv_path）
+
+### CLI
+
+```bash
+python -m cli.main --benchmark \
+  --benchmark-topic "抗菌素耐药" \
+  --benchmark-configs "base,use_context=False" "ctx,use_context=True,max_chars=3000,semantic_k=5" \
+  --benchmark-sections 5 \
+  --benchmark-outdir results/抗菌素耐药 \
+  --benchmark-csv results/抗菌素耐药/summary.csv \
+  --benchmark-output results/抗菌素耐药/overview.md
 ```
 
 ### MultiExpertEvaluator
