@@ -64,6 +64,33 @@ python examples/evaluation_examples.py --example multi-expert
 python examples/evaluation_examples.py --example adversarial
 ```
 
+## 基准评测（Benchmark）
+
+```bash
+# 运行多配置基准评测（CLI）
+conda run -n LLM python -m cli.main --benchmark \
+  --benchmark-topic "抗菌素耐药" \
+  --benchmark-configs "base,use_context=False" "ctx,use_context=True,max_chars=3000,semantic_k=5" \
+  --benchmark-sections 5 \
+  --benchmark-outdir results/抗菌素耐药 \
+  --benchmark-csv results/抗菌素耐药/summary.csv \
+  --benchmark-output results/抗菌素耐药/overview.md
+
+# 通过 REST API 触发
+curl -X POST http://127.0.0.1:8000/benchmark \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "抗菌素耐药",
+    "configs": ["base,use_context=False", "ctx,use_context=True,max_chars=3000,semantic_k=5"],
+    "sections": 5
+  }'
+```
+
+说明：
+- **--benchmark-outdir**: 每个配置生成的 Markdown 报告输出目录
+- **--benchmark-csv**: 汇总各配置的维度均值/平均分/耗时等为统一 CSV
+- **--benchmark-output**: 基准评测总览 Markdown（表格汇总）
+
 ## 常用参数
 
 | 参数 | 说明 | 默认值 | 推荐值 |

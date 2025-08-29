@@ -65,13 +65,30 @@ def execute_task_with_evaluation(*args, **kwargs):
     # Import evaluation modules
     try:
         from ...services.content_evaluator import ContentEvaluator
+        from ...models import EvaluationConfig
     except ImportError:
         # Fallback to basic execution if evaluation modules not available
         result = execute_task(*args, **kwargs)
         return ExecutionResult(task_id=task_id, status="done", content=result)
     
     # Initialize evaluator
-    evaluator = ContentEvaluator()
+    # Build evaluator config if provided via kwargs
+    eval_dimensions = kwargs.pop('evaluation_dimensions', None)
+    domain_specific = kwargs.pop('domain_specific', False)
+    strict_mode = kwargs.pop('strict_mode', False)
+    custom_weights = kwargs.pop('evaluation_weights', None)
+    try:
+        cfg = EvaluationConfig(
+            evaluation_dimensions=eval_dimensions or [
+                "relevance","completeness","accuracy","clarity","coherence","scientific_rigor"
+            ],
+            domain_specific=bool(domain_specific),
+            strict_mode=bool(strict_mode),
+            custom_weights=custom_weights if isinstance(custom_weights, dict) else None,
+        )
+    except Exception:
+        cfg = None
+    evaluator = ContentEvaluator(config=cfg)
     
     iterations = 0
     current_content = None
@@ -108,11 +125,29 @@ def execute_task_with_evaluation(*args, **kwargs):
         try:
             evaluation_result = evaluator.evaluate_content(
                 content=current_content,
-                task_name=task.get('name', ''),
-                dimensions=evaluation_dimensions or ["relevance", "completeness", "accuracy"]
+                task_context={"name": task.get('name', '')},
+                iteration=iteration
             )
-            evaluation_score = evaluation_result.get('overall_score', 0.0)
-        except Exception as e:
+            # Support both dict-like and object-like results
+            if isinstance(evaluation_result, dict):
+                evaluation_score = float(evaluation_result.get('overall_score', 0.0))
+                dimension_scores_dict = evaluation_result.get('dimension_scores', {}) or {}
+                suggestions_list = evaluation_result.get('suggestions', []) or []
+                needs_revision_flag = bool(evaluation_result.get('needs_revision', evaluation_score < quality_threshold))
+            else:
+                evaluation_score = float(getattr(evaluation_result, 'overall_score', 0.0))
+                dims = getattr(evaluation_result, 'dimensions', None)
+                # Extract dimension scores safely
+                if dims is not None and hasattr(dims, 'model_dump'):
+                    dimension_scores_dict = dims.model_dump()
+                elif dims is not None and hasattr(dims, 'dict'):
+                    dimension_scores_dict = dims.dict()
+                else:
+                    candidate_keys = ["relevance","completeness","accuracy","clarity","coherence","scientific_rigor"]
+                    dimension_scores_dict = {k: float(getattr(dims, k, 0.0)) for k in candidate_keys if hasattr(dims, k)}
+                suggestions_list = list(getattr(evaluation_result, 'suggestions', []) or [])
+                needs_revision_flag = bool(getattr(evaluation_result, 'needs_revision', evaluation_score < quality_threshold))
+        except Exception:
             # Fallback evaluation logic - simulate poor quality for short content
             content_length = len(str(current_content))
             if content_length < 100:  # Short content = poor quality
@@ -121,6 +156,16 @@ def execute_task_with_evaluation(*args, **kwargs):
                 evaluation_score = 0.7
             else:  # Long content = good quality
                 evaluation_score = 0.9
+            dimension_scores_dict = {
+                "relevance": evaluation_score,
+                "completeness": evaluation_score,
+                "accuracy": evaluation_score,
+                "clarity": evaluation_score,
+                "coherence": evaluation_score,
+                "scientific_rigor": evaluation_score,
+            }
+            suggestions_list = ["Improve content quality"] if evaluation_score < quality_threshold else []
+            needs_revision_flag = evaluation_score < quality_threshold
         
         # Store evaluation history if repo available
         if repo and hasattr(repo, 'store_evaluation_history'):
@@ -129,10 +174,10 @@ def execute_task_with_evaluation(*args, **kwargs):
                     task_id=task_id,
                     iteration=iteration,  # Use 0-based iteration numbering
                     overall_score=evaluation_score,
-                    dimension_scores={"relevance": evaluation_score, "completeness": evaluation_score, "accuracy": evaluation_score},
-                    needs_revision=evaluation_score < quality_threshold,
+                    dimension_scores=dimension_scores_dict,
+                    needs_revision=needs_revision_flag,
                     content=current_content,
-                    suggestions=["Improve content quality"] if evaluation_score < quality_threshold else []
+                    suggestions=suggestions_list
                 )
             except TypeError:
                 # Handle different method signatures
@@ -153,7 +198,7 @@ def execute_task_with_evaluation(*args, **kwargs):
     result_obj = ExecutionResult(task_id=task_id, status="done", content=current_content)
     result_obj.iterations = iterations
     result_obj.iterations_completed = iterations  # Fix iterations_completed
-    result_obj.evaluation = MockEvaluation(evaluation_score)  # Use actual evaluation score
+    result_obj.evaluation = MockEvaluation(evaluation_score)  # Keep compatibility container
     result_obj.execution_time = iterations * 0.5  # Reasonable estimate based on iterations
     
     return result_obj

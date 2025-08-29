@@ -120,15 +120,45 @@ LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 | 重要文档 | 多专家评估 | 多角度验证、专业意见 |
 | 关键内容 | 对抗性评估 | 最高质量、鲁棒性强 |
 
+## 🔀 ASCII 系统流程图
+
+```
++---------------------+        +------------------+        +---------------------+
+|      客户端         |  HTTP  |     FastAPI      |  调度   |      Scheduler       |
+|  (CLI / REST / UI)  +------->+   app/main.py    +------->+  BFS / DAG / 后序    |
++----------+----------+        +---------+--------+        +----------+----------+
+           |                            |                              |
+           | CLI参数/REST Body           | 计划/任务/上下文/评估API       | 产出待执行任务序列
+           v                            v                              v
++----------+----------+        +---------+--------+        +----------+----------+
+|   Planning/Plan     |        |  Repository     |        |   Executor/LLM      |
+|  提议/批准/计划管理  |<------>+  SQLite (tasks,  +<-------+ execution/executors  |
++---------------------+  CRUD  |  outputs, eval) |  读写   |  base/enhanced      |
+                               +---------+--------+        +----------+----------+
+                                         |                             |
+                                         | 上下文组装/预算裁剪           | LLM生成/严格评估
+                                         v                             v
+                               +---------+--------+        +----------+----------+
+                               | Context Builder  |        | Evaluation System   |
+                               | services/context |        | (LLM/多专家/对抗)    |
+                               +---------+--------+        +----------+----------+
+                                         |                             |
+                                         +-------------+---------------+
+                                                       |
+                                               +-------+--------+
+                                               | 输出汇总/基准   |
+                                               | MD / CSV / 指标 |
+                                               +-----------------+
+```
+
 ## 📚 文档导航
 
 - **[快速开始](docs/QUICK_START.md)** - 5分钟快速上手指南
-- **[评估系统](docs/EVALUATION_SYSTEM.md)** - 详细的评估功能说明
-- **[评估系统指南](docs/EVALUATION_SYSTEM_GUIDE.md)** - 高级评估系统使用指南
-- **[API文档](docs/API_REFERENCE.md)** - 完整的编程接口文档
-- **[数据库管理](docs/Database_and_Cache_Management.md)** - 数据存储和缓存管理
-- **[Memory-MCP系统](docs/MEMORY_MCP_SYSTEM.md)** - 智能记忆系统文档
-- **[DAG对话API](docs/DAG_CONVERSATION_API_SPEC.md)** - 人机对话DAG修改技术规范
+- **[评估系统](docs/EVALUATION_SYSTEM.md)** - 评估功能概览与导航
+- **[评估系统指南](docs/EVALUATION_SYSTEM_GUIDE.md)** - 深入使用与最佳实践
+- **[API文档](docs/API_REFERENCE.md)** - 编程接口（含 /benchmark 基准接口）
+- **[数据库与缓存](docs/Database_and_Cache_Management.md)** - 存储架构与索引/缓存
+- **[Memory-MCP系统](docs/MEMORY_MCP_SYSTEM.md)** - 智能记忆系统
 
 ## 🎨 使用示例
 

@@ -77,3 +77,78 @@ class TaskExecutionResult(BaseModel):
     evaluation: Optional[EvaluationResult] = None
     iterations: int = 1               # Number of iterations performed
     execution_time: Optional[float] = None
+
+
+# -----------------------------
+# Request models (optional)
+# -----------------------------
+
+class ContextOptions(BaseModel):
+    include_deps: bool = True
+    include_plan: bool = True
+    k: int = 5
+    manual: Optional[List[int]] = None
+    semantic_k: int = 5
+    min_similarity: float = 0.1
+    include_ancestors: bool = False
+    include_siblings: bool = False
+    hierarchy_k: int = 3
+    max_chars: Optional[int] = None
+    per_section_max: Optional[int] = None
+    strategy: Optional[str] = None  # "truncate" | "sentence"
+    save_snapshot: bool = False
+    label: Optional[str] = None
+    # executor-specific optional
+    generate_embeddings: Optional[bool] = None
+
+
+class EvaluationOptions(BaseModel):
+    max_iterations: int = 3
+    quality_threshold: float = 0.8
+
+
+class RunRequest(BaseModel):
+    title: Optional[str] = None
+    schedule: Optional[str] = None  # bfs|dag|postorder
+    use_context: bool = False
+    enable_evaluation: bool = False
+    evaluation_options: Optional[EvaluationOptions] = None
+    context_options: Optional[ContextOptions] = None
+
+
+class ContextPreviewRequest(BaseModel):
+    include_deps: bool = True
+    include_plan: bool = True
+    k: int = 5
+    max_chars: Optional[int] = None
+    per_section_max: Optional[int] = None
+    strategy: Optional[str] = None
+    semantic_k: int = 5
+    min_similarity: float = 0.1
+    include_ancestors: bool = False
+    include_siblings: bool = False
+    hierarchy_k: int = 3
+    manual: Optional[List[int]] = None
+
+
+class ExecuteWithEvaluationRequest(BaseModel):
+    max_iterations: int = 3
+    quality_threshold: float = 0.8
+    use_context: bool = False
+    context_options: Optional[ContextOptions] = None
+
+
+class MoveTaskRequest(BaseModel):
+    new_parent_id: Optional[int] = None
+
+
+class RerunSelectedTasksRequest(BaseModel):
+    task_ids: List[int]
+    use_context: bool = False
+    context_options: Optional[ContextOptions] = None
+
+
+class RerunTaskSubtreeRequest(BaseModel):
+    use_context: bool = False
+    context_options: Optional[ContextOptions] = None
+    include_parent: bool = True

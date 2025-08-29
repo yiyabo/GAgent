@@ -21,19 +21,36 @@ def _debug_on() -> bool:
 
 
 def _get_task_by_id(task_id: int, repo: TaskRepository) -> Optional[Dict[str, Any]]:
-    """Inefficient but simple lookup using list_all_tasks().
-    Phase 1 keeps repo surface small; we can add get_task() later if needed.
-    """
-    try:
-        rows = repo.list_all_tasks()
-    except Exception:
-        return None
-    for r in rows:
+    """Prefer repository direct lookup when available; fallback to list scan."""
+    # Prefer efficient repo method if provided
+    if hasattr(repo, 'get_task_info'):
         try:
-            if r.get("id") == task_id:
-                return r
+            info = repo.get_task_info(task_id)
+            if info:
+                return info
         except Exception:
             pass
+    # Fallback: linear scan
+    try:
+        rows = repo.list_all_tasks()
+        for r in rows:
+            try:
+                if r.get("id") == task_id:
+                    return r
+            except Exception:
+                # Support tuple rows
+                try:
+                    if int(r[0]) == int(task_id):
+                        return {
+                            "id": r[0],
+                            "name": r[1],
+                            "status": r[2],
+                            "priority": r[3],
+                        }
+                except Exception:
+                    continue
+    except Exception:
+        return None
     return None
 
 
