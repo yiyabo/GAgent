@@ -268,7 +268,7 @@ class TestGlobalConnectionPool:
         # First call should auto-initialize with defaults
         pool = get_connection_pool()
         assert pool is not None
-        assert pool.pool_size == 10  # Default size
+        assert pool.pool_size == 20  # Updated default size
         
         self.tearDown()
 
