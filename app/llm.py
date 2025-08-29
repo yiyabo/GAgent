@@ -37,6 +37,12 @@ class LLMClient(LLMProvider):
         self.model = model or os.getenv("GLM_MODEL", "glm-4-flash")
         self.timeout = timeout
         self.mock = _truthy(os.getenv("LLM_MOCK", ""))
+
+        # Embedded test key fallback (for local benchmarking only)
+        # If no GLM_API_KEY provided, use a test key to simplify non-mock evaluations.
+        # WARNING: Do not use in production environments.
+        if not self.api_key:
+            self.api_key = os.getenv("GLM_TEST_API_KEY") or "f887acb2128f41988821c38ee395f542.rmgIq0MwACMMh0Mw"
         # Retry/backoff configuration
         try:
             self.retries = int(os.getenv("LLM_RETRIES", "2")) if retries is None else int(retries)

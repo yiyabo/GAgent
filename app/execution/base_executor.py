@@ -45,11 +45,44 @@ class BaseTaskExecutor:
             return default_prompt
     
     def execute_llm_chat(self, prompt: str) -> str:
-        """Execute LLM chat with error handling."""
+        """Execute LLM chat with robust client-shape compatibility and error handling."""
         try:
-            return self.client.chat(prompt)
+            # Prefer modern API style: client.chat.completions.create(messages=[...])
+            chat_obj = getattr(self.client, "chat", None)
+            if chat_obj is not None:
+                completions_obj = getattr(chat_obj, "completions", None)
+                create_fn = getattr(completions_obj, "create", None) if completions_obj is not None else None
+                if callable(create_fn):
+                    resp = create_fn(messages=[{"role": "user", "content": prompt}])
+                    # Try to extract text content from response
+                    try:
+                        choice0 = resp.choices[0]
+                        message = getattr(choice0, "message", None)
+                        if message is not None and hasattr(message, "content"):
+                            return str(message.content)
+                    except Exception:
+                        pass
+                    if hasattr(resp, "content"):
+                        return str(resp.content)
+                    return str(resp)
+
+            # Legacy/simple API: client.chat(prompt) -> str or response-like
+            resp = self.client.chat(prompt)
+            if isinstance(resp, str):
+                return resp
+            # Response-like object
+            try:
+                choice0 = resp.choices[0]
+                message = getattr(choice0, "message", None)
+                if message is not None and hasattr(message, "content"):
+                    return str(message.content)
+            except Exception:
+                pass
+            if hasattr(resp, "content"):
+                return str(resp.content)
+            return str(resp)
         except Exception as e:
-            logger.error(f"LLM chat failed: {e}")
+            logger.error("LLM chat failed: %s", e)
             raise
     
     def generate_task_embedding_async(self, task_id: int, content: str):
@@ -78,7 +111,7 @@ class BaseTaskExecutor:
         start_time = time.time()
         task_id, name = self.get_task_id_and_name(task)
         
-        logger.info(f"Executing legacy task {task_id}: {name}")
+        logger.info("Executing legacy task %s: %s", task_id, name)
         
         # Build default prompt
         default_prompt = (
@@ -95,7 +128,12 @@ class BaseTaskExecutor:
             content = self.execute_llm_chat(prompt)
             
             # Store results
-            self.repo.store_task_output(task_id, content)
+            # Align with repository API naming: upsert_task_output
+            try:
+                self.repo.upsert_task_output(task_id, content)
+            except AttributeError:
+                # Backward compatibility if older repo exposes store_task_output
+                self.repo.store_task_output(task_id, content)  # type: ignore[attr-defined]
             self.repo.update_task_status(task_id, 'done')
             
             # Generate embedding asynchronously
@@ -112,7 +150,7 @@ class BaseTaskExecutor:
             )
             
         except Exception as e:
-            logger.error(f"Legacy task execution failed for {task_id}: {e}")
+            logger.error("Legacy task execution failed for %s: %s", task_id, e)
             self.repo.update_task_status(task_id, 'failed')
             
             return TaskExecutionResult(

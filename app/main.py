@@ -7,10 +7,19 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from datetime import datetime
 from .database import init_db
 from .execution.executors import execute_task
 from .llm import get_default_client
 from .models import TaskCreate
+from .models import (
+    RunRequest,
+    ContextPreviewRequest,
+    ExecuteWithEvaluationRequest,
+    MoveTaskRequest,
+    RerunSelectedTasksRequest,
+    RerunTaskSubtreeRequest,
+)
 from .repository.tasks import default_repo
 from .errors import (
     BaseError, ValidationError, BusinessError, SystemError, DatabaseError,
@@ -23,6 +32,7 @@ from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order, 
 from .services.context import gather_context
 from .services.context_budget import apply_budget
 from .services.index_root import generate_index
+from .services.benchmark import run_benchmark
 from .services.planning import propose_plan_service, approve_plan_service
 from .utils import plan_prefix, split_prefix
 
@@ -238,7 +248,10 @@ async def general_exception_handler(request: Request, exc: Exception):
             "如问题持续存在，请联系技术支持"
         ]
     )
-    error_response = handle_api_error(system_error, include_debug=True)  # 开发环境显示调试信息
+    # 根据环境变量控制是否返回调试信息（默认生产环境关闭）
+    debug_env = os.environ.get("API_DEBUG") or os.environ.get("APP_DEBUG") or os.environ.get("DEBUG")
+    include_debug = _parse_bool(debug_env, default=False)
+    error_response = handle_api_error(system_error, include_debug=include_debug)
     return JSONResponse(
         status_code=500,
         content=error_response
@@ -369,28 +382,33 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     Otherwise, run all pending tasks (original behavior).
     Supports evaluation mode with enable_evaluation parameter.
     """
-    title = None
-    if isinstance(payload, dict):
-        t = payload.get("title")
-        if isinstance(t, str) and t.strip():
-            title = t.strip()
-    use_context = _parse_bool((payload or {}).get("use_context"), default=False)
+    # Strongly-typed optional parsing (backward compatible)
+    try:
+        rr = RunRequest.model_validate(payload or {})
+    except Exception:
+        rr = RunRequest()
+    title = (rr.title or "").strip() or None
+    use_context = bool(rr.use_context)
     # Phase 3: scheduling strategy (bfs|dag)
-    schedule = _parse_schedule((payload or {}).get("schedule"))
+    schedule = _parse_schedule(rr.schedule)
     # Phase 2: optional context options forwarded to executor (sanitized)
     context_options = None
-    co = (payload or {}).get("context_options")
-    if isinstance(co, dict):
-        context_options = _sanitize_context_options(co)
+    if rr.context_options is not None:
+        try:
+            context_options = _sanitize_context_options(rr.context_options.model_dump())
+        except Exception:
+            context_options = None
     
     # New: Evaluation mode support
-    enable_evaluation = _parse_bool((payload or {}).get("enable_evaluation"), default=False)
+    enable_evaluation = bool(rr.enable_evaluation)
     evaluation_config = None
     if enable_evaluation:
-        eval_opts = (payload or {}).get("evaluation_options", {})
+        ev = rr.evaluation_options or ExecuteWithEvaluationRequest().model_dump()
+        if not isinstance(ev, dict):
+            ev = {}
         evaluation_config = {
-            "max_iterations": _parse_int(eval_opts.get("max_iterations", 3), default=3, min_value=1, max_value=10),
-            "quality_threshold": _parse_opt_float(eval_opts.get("quality_threshold"), 0.0, 1.0) or 0.8
+            "max_iterations": _parse_int((ev or {}).get("max_iterations", 3), default=3, min_value=1, max_value=10),
+            "quality_threshold": _parse_opt_float((ev or {}).get("quality_threshold"), 0.0, 1.0) or 0.8
         }
 
     results = []
@@ -499,15 +517,8 @@ def decompose_task_endpoint(task_id: int, payload: Dict[str, Any] = Body(default
     - max_subtasks: Maximum number of subtasks to create (default: 8)
     - force: Force decomposition even if task already has subtasks (default: false)
     """
-    max_subtasks = _parse_int(payload.get("max_subtasks", 8), default=8, min_value=2, max_value=20)
-    force = _parse_bool(payload.get("force"), default=False)
-    
-    result = decompose_task(task_id, repo=default_repo, max_subtasks=max_subtasks, force=force)
-    
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "Decomposition failed"))
-    
-    return result
+    # 功能尚未实现，返回 501 与清晰的说明
+    raise HTTPException(status_code=501, detail="Task decomposition not yet implemented")
 
 
 @app.post("/plans/{title}/decompose")
@@ -609,23 +620,27 @@ def get_links(task_id: int):
 
 @app.post("/tasks/{task_id}/context/preview")
 def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
-    payload = payload or {}
-    include_deps = _parse_bool(payload.get("include_deps"), default=True)
-    include_plan = _parse_bool(payload.get("include_plan"), default=True)
-    k = _parse_int(payload.get("k", 5), default=5, min_value=0, max_value=50)
+    # Typed parsing
+    try:
+        req = ContextPreviewRequest.model_validate(payload or {})
+    except Exception:
+        req = ContextPreviewRequest()
+    include_deps = bool(req.include_deps)
+    include_plan = bool(req.include_plan)
+    k = _parse_int(req.k, default=5, min_value=0, max_value=50)
     # Phase 2 options (optional): budgeting
-    max_chars = _parse_opt_int(payload.get("max_chars"), min_value=0, max_value=100_000)
-    per_section_max = _parse_opt_int(payload.get("per_section_max"), min_value=1, max_value=50_000)
+    max_chars = _parse_opt_int(req.max_chars, min_value=0, max_value=100_000)
+    per_section_max = _parse_opt_int(req.per_section_max, min_value=1, max_value=50_000)
     # Optional summarization strategy: 'truncate' (default) or 'sentence'
-    strategy = _parse_strategy(payload.get("strategy")) if (max_chars is not None or per_section_max is not None) else None
+    strategy = _parse_strategy(req.strategy) if (max_chars is not None or per_section_max is not None) else None
     # GLM semantic retrieval options
-    semantic_k = _parse_int(payload.get("semantic_k", 5), default=5, min_value=0, max_value=50)
-    min_similarity = _parse_opt_float(payload.get("min_similarity"), min_value=0.0, max_value=1.0) or 0.1
+    semantic_k = _parse_int(req.semantic_k, default=5, min_value=0, max_value=50)
+    min_similarity = _parse_opt_float(req.min_similarity, min_value=0.0, max_value=1.0) or 0.1
     # Hierarchy options (Phase 5)
-    include_ancestors = _parse_bool(payload.get("include_ancestors"), default=False)
-    include_siblings = _parse_bool(payload.get("include_siblings"), default=False)
-    hierarchy_k = _parse_int(payload.get("hierarchy_k", 3), default=3, min_value=0, max_value=20)
-    manual = _sanitize_manual_list(payload.get("manual"))
+    include_ancestors = bool(req.include_ancestors)
+    include_siblings = bool(req.include_siblings)
+    hierarchy_k = _parse_int(req.hierarchy_k, default=3, min_value=0, max_value=20)
+    manual = _sanitize_manual_list(req.manual)
     bundle = gather_context(
         task_id,
         repo=default_repo,
@@ -684,17 +699,12 @@ def get_task_subtree(task_id: int):
 
 @app.post("/tasks/{task_id}/move")
 def move_task(task_id: int, payload: Dict[str, Any] = Body(...)):
-    if not isinstance(payload, dict):
+    # Typed parsing
+    try:
+        req = MoveTaskRequest.model_validate(payload or {})
+    except Exception:
         raise HTTPException(status_code=400, detail="invalid payload")
-    new_parent_id_val = payload.get("new_parent_id")
-    new_parent_id: Optional[int]
-    if new_parent_id_val is None:
-        new_parent_id = None
-    else:
-        try:
-            new_parent_id = int(new_parent_id_val)
-        except Exception:
-            raise HTTPException(status_code=400, detail="new_parent_id must be integer or null")
+    new_parent_id = req.new_parent_id
     try:
         default_repo.update_task_parent(task_id, new_parent_id)
     except ValueError as e:
@@ -722,11 +732,15 @@ def rerun_single_task(task_id: int, payload: Optional[Dict[str, Any]] = Body(Non
     default_repo.upsert_task_output(task_id, "")
     
     # Parse parameters
-    use_context = _parse_bool((payload or {}).get("use_context"), default=False)
+    try:
+        # Reuse ExecuteWithEvaluationRequest for context options structure
+        req = ExecuteWithEvaluationRequest.model_validate(payload or {})
+    except Exception:
+        req = ExecuteWithEvaluationRequest()
+    use_context = bool(req.use_context)
     context_options = None
-    co = (payload or {}).get("context_options")
-    if isinstance(co, dict):
-        context_options = _sanitize_context_options(co)
+    if req.context_options is not None:
+        context_options = _sanitize_context_options(req.context_options.model_dump())
     
     # Execute single task
     status = execute_task(task, use_context=use_context, context_options=context_options)
@@ -750,7 +764,11 @@ def rerun_task_subtree(task_id: int, payload: Optional[Dict[str, Any]] = Body(No
         raise HTTPException(status_code=404, detail="Task not found")
     
     # Get subtree (including parent task and all subtasks)
-    include_parent = _parse_bool((payload or {}).get("include_parent"), default=True)
+    try:
+        req = RerunTaskSubtreeRequest.model_validate(payload or {})
+    except Exception:
+        req = RerunTaskSubtreeRequest()
+    include_parent = bool(req.include_parent)
     if include_parent:
         tasks_to_rerun = [task] + default_repo.get_descendants(task_id)
     else:
@@ -760,11 +778,10 @@ def rerun_task_subtree(task_id: int, payload: Optional[Dict[str, Any]] = Body(No
         return {"task_id": task_id, "rerun_tasks": [], "message": "No tasks to rerun"}
     
     # Parse parameters
-    use_context = _parse_bool((payload or {}).get("use_context"), default=False)
+    use_context = bool(req.use_context)
     context_options = None
-    co = (payload or {}).get("context_options")
-    if isinstance(co, dict):
-        context_options = _sanitize_context_options(co)
+    if req.context_options is not None:
+        context_options = _sanitize_context_options(req.context_options.model_dump())
     
     # Execute sorted by priority
     tasks_to_rerun.sort(key=lambda t: (t.get("priority", 100), t.get("id", 0)))
@@ -800,9 +817,11 @@ def rerun_selected_tasks(payload: Dict[str, Any] = Body(...)):
     - use_context: Whether to use context (default false)
     - context_options: Context configuration options
     """
-    task_ids = payload.get("task_ids", [])
-    if not task_ids or not isinstance(task_ids, list):
+    try:
+        req = RerunSelectedTasksRequest.model_validate(payload or {})
+    except Exception:
         raise HTTPException(status_code=400, detail="task_ids must be a non-empty list")
+    task_ids = req.task_ids
     
     # Validate all task IDs
     tasks_to_rerun = []
@@ -822,11 +841,10 @@ def rerun_selected_tasks(payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=400, detail="No valid tasks to rerun")
     
     # Parse parameters
-    use_context = _parse_bool(payload.get("use_context"), default=False)
+    use_context = bool(req.use_context)
     context_options = None
-    co = payload.get("context_options")
-    if isinstance(co, dict):
-        context_options = _sanitize_context_options(co)
+    if req.context_options is not None:
+        context_options = _sanitize_context_options(req.context_options.model_dump())
     
     # Execute sorted by priority
     tasks_to_rerun.sort(key=lambda t: (t.get("priority", 100), t.get("id", 0)))
@@ -1033,16 +1051,17 @@ def execute_task_with_evaluation_api(task_id: int, payload: Optional[Dict[str, A
             raise HTTPException(status_code=404, detail="Task not found")
         
         # Parse parameters
-        payload = payload or {}
-        max_iterations = _parse_int(payload.get("max_iterations", 3), default=3, min_value=1, max_value=10)
-        quality_threshold = _parse_opt_float(payload.get("quality_threshold"), 0.0, 1.0) or 0.8
-        use_context = _parse_bool(payload.get("use_context"), default=False)
-        
+        try:
+            req = ExecuteWithEvaluationRequest.model_validate(payload or {})
+        except Exception:
+            req = ExecuteWithEvaluationRequest()
+        max_iterations = _parse_int(req.max_iterations, default=3, min_value=1, max_value=10)
+        quality_threshold = _parse_opt_float(req.quality_threshold, 0.0, 1.0) or 0.8
+        use_context = bool(req.use_context)
         # Context options
         context_options = None
-        co = payload.get("context_options")
-        if isinstance(co, dict):
-            context_options = _sanitize_context_options(co)
+        if req.context_options is not None:
+            context_options = _sanitize_context_options(req.context_options.model_dump())
         
         # Import enhanced executor
         from .execution.executors.enhanced import execute_task_with_evaluation
@@ -1060,18 +1079,42 @@ def execute_task_with_evaluation_api(task_id: int, payload: Optional[Dict[str, A
         # Update task status
         default_repo.update_task_status(task_id, result.status)
         
+        # 兼容模拟评估对象（MockEvaluation/MockDimensions）
+        eval_payload = None
+        if result.evaluation:
+            dims = result.evaluation.dimensions
+            # 支持 pydantic/dataclass/mock 三种风格
+            if hasattr(dims, 'model_dump'):
+                dim_dict = dims.model_dump()
+            elif hasattr(dims, 'dict'):
+                dim_dict = dims.dict()
+            else:
+                # 反射读取常见字段
+                keys = [
+                    'relevance','completeness','accuracy','clarity','coherence','scientific_rigor'
+                ]
+                dim_dict = {k: getattr(dims, k, None) for k in keys if hasattr(dims, k)}
+
+            needs_revision = getattr(result.evaluation, 'needs_revision', None)
+            if needs_revision is None and hasattr(result, 'iterations'):
+                # 简单兜底：按分数与阈值推断（若阈值不可得，则按0.8）
+                score = getattr(result.evaluation, 'overall_score', 0.0)
+                needs_revision = bool(score < 0.8)
+
+            eval_payload = {
+                "overall_score": result.evaluation.overall_score,
+                "dimensions": dim_dict,
+                "suggestions": getattr(result.evaluation, 'suggestions', []),
+                "needs_revision": needs_revision
+            }
+
         return {
             "task_id": result.task_id,
             "status": result.status,
             "iterations": result.iterations,
             "execution_time": result.execution_time,
             "final_score": result.evaluation.overall_score if result.evaluation else None,
-            "evaluation": {
-                "overall_score": result.evaluation.overall_score,
-                "dimensions": result.evaluation.dimensions.model_dump(),
-                "suggestions": result.evaluation.suggestions,
-                "needs_revision": result.evaluation.needs_revision
-            } if result.evaluation else None
+            "evaluation": eval_payload
         }
         
     except Exception as e:
@@ -1103,3 +1146,38 @@ def clear_evaluation_history(task_id: int):
         return {"task_id": task_id, "history_cleared": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to clear history: {str(e)}")
+
+
+# -------------------------------
+# Benchmark Endpoint
+# -------------------------------
+
+@app.post("/benchmark")
+def benchmark_api(payload: Dict[str, Any] = Body(...)):
+    """Run benchmark: generate reports under different configs and evaluate.
+    Body:
+      - topic: str
+      - configs: List[str] like ["base,use_context=False","ctx,use_context=True,max_chars=3000"]
+      - sections: int (default 5)
+    """
+    try:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="invalid payload")
+        topic = payload.get("topic")
+        configs = payload.get("configs")
+        sections = payload.get("sections", 5)
+        if not isinstance(topic, str) or not topic.strip():
+            raise HTTPException(status_code=400, detail="topic is required")
+        if not isinstance(configs, list) or not configs:
+            raise HTTPException(status_code=400, detail="configs must be a non-empty list")
+        try:
+            sections = int(sections)
+        except Exception:
+            sections = 5
+
+        out = run_benchmark(topic.strip(), configs, sections=sections)
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Benchmark failed: {str(e)}")

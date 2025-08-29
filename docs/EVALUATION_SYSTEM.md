@@ -25,12 +25,12 @@
 ## 📚 文档导航
 
 ### 🏃‍♂️ 快速开始
-- **[快速开始指南](docs/QUICK_START.md)** - 5分钟快速上手
-- **[示例代码](examples/evaluation_examples.py)** - 完整的使用示例
+- **[快速开始指南](QUICK_START.md)** - 5分钟快速上手
+- **[示例代码](../examples/evaluation_examples.py)** - 完整的使用示例
 
 ### 📖 详细文档
-- **[完整使用指南](docs/EVALUATION_SYSTEM_GUIDE.md)** - 详细的功能说明和最佳实践
-- **[API参考文档](docs/API_REFERENCE.md)** - 完整的编程接口文档
+- **[完整使用指南](EVALUATION_SYSTEM_GUIDE.md)** - 详细的功能说明和最佳实践
+- **[API参考文档](API_REFERENCE.md)** - 完整的编程接口文档
 
 ## 🎯 快速开始
 
