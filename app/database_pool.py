@@ -29,8 +29,8 @@ class SQLiteConnectionPool:
     def __init__(
         self,
         db_path: str,
-        pool_size: int = 10,
-        max_overflow: int = 5,
+        pool_size: int = 20,  # Increased from 10 to 20 for better concurrency
+        max_overflow: int = 10,  # Increased from 5 to 10
         timeout: float = 30.0
     ):
         """
@@ -80,10 +80,13 @@ class SQLiteConnectionPool:
         conn.execute("PRAGMA journal_mode=WAL")
         # Enable foreign key constraints
         conn.execute("PRAGMA foreign_keys=ON")
-        # Optimize for performance
+        # Optimize for performance with enhanced settings
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA cache_size=10000")
+        conn.execute("PRAGMA cache_size=20000")  # Increased from 10000 to 20000
         conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA mmap_size=30000000000")  # Enable memory-mapped I/O for faster access
+        conn.execute("PRAGMA page_size=4096")  # Optimize page size
+        conn.execute("PRAGMA busy_timeout=5000")  # Wait up to 5 seconds when database is locked
         
         return conn
     
@@ -203,8 +206,8 @@ _pool_lock = threading.Lock()
 
 def initialize_connection_pool(
     db_path: str = 'tasks.db',
-    pool_size: int = 10,
-    max_overflow: int = 5,
+    pool_size: int = 20,  # Increased default pool size
+    max_overflow: int = 10,  # Increased default overflow
     timeout: float = 30.0
 ) -> SQLiteConnectionPool:
     """
