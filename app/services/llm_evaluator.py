@@ -9,12 +9,19 @@ from typing import Any, Dict, List, Optional
 
 from .base_evaluator import LLMBasedEvaluator
 from ..models import EvaluationResult, EvaluationDimensions, EvaluationConfig
+from ..prompts import prompt_manager
+from .llm_cache import get_llm_cache
 
 logger = logging.getLogger(__name__)
 
 
 class LLMEvaluator(LLMBasedEvaluator):
-    """LLM-powered content evaluator for intelligent assessment"""
+    """LLM-powered content evaluator with English prompts and caching"""
+    
+    def __init__(self, config: Optional[EvaluationConfig] = None, use_cache: bool = True):
+        """Initialize with caching support."""
+        super().__init__(config)
+        self.cache = get_llm_cache() if use_cache else None
     
     def get_evaluation_method_name(self) -> str:
         return "llm_intelligent"
@@ -75,34 +82,50 @@ class LLMEvaluator(LLMBasedEvaluator):
     ) -> EvaluationDimensions:
         """Use LLM to evaluate content across all dimensions"""
         
-        evaluation_aspects = [
-            "**相关性(relevance)**: 内容与任务的相关程度",
-            "**完整性(completeness)**: 内容的完整性和充实度",
-            "**准确性(accuracy)**: 内容的事实准确性和可信度",
-            "**清晰度(clarity)**: 表达的清晰度和可读性",
-            "**连贯性(coherence)**: 逻辑连贯性和结构合理性",
-            "**科学严谨性(scientific_rigor)**: 科学方法和术语的规范性"
-        ]
+        # Get English evaluation dimensions from prompt manager
+        dimensions_config = prompt_manager.get_category("evaluation")["dimensions"]
+        evaluation_aspects = []
         
-        specific_instructions = """
-请以JSON格式返回评估结果：
-{
+        for dim_key, dim_data in dimensions_config.items():
+            name = dim_data["name"]
+            desc = dim_data["description"]
+            evaluation_aspects.append(f"**{name} ({dim_key})**: {desc}")
+        
+        # Get English instructions from prompt manager
+        json_instruction = prompt_manager.get("evaluation.instructions.json_format")
+        explain_instruction = prompt_manager.get("evaluation.instructions.explain_scores")
+        
+        specific_instructions = f"""{json_instruction}
+{{
     "relevance": 0.8,
     "completeness": 0.7,
     "accuracy": 0.9,
     "clarity": 0.8,
     "coherence": 0.8,
     "scientific_rigor": 0.7,
-    "reasoning": "简要说明每个维度的评分理由"
-}
-"""
+    "reasoning": "{explain_instruction}"
+}}"""
         
         evaluation_prompt = self.build_evaluation_prompt_template(
             content, task_context, evaluation_aspects, specific_instructions, 1000
         )
         
-        required_fields = ["relevance", "completeness", "accuracy", "clarity", "coherence", "scientific_rigor"]
-        scores = self.call_llm_with_json_parsing(evaluation_prompt, required_fields)
+        # Use cached LLM call if available
+        cache_key = f"llm_eval_{hash(evaluation_prompt)}"
+        if self.cache:
+            cached_response = self.cache.get(cache_key, "llm_evaluation")
+            if cached_response:
+                logger.debug("Using cached LLM evaluation result")
+                scores = self._parse_cached_response(cached_response)
+            else:
+                required_fields = ["relevance", "completeness", "accuracy", "clarity", "coherence", "scientific_rigor"]
+                scores = self.call_llm_with_json_parsing(evaluation_prompt, required_fields)
+                if scores:
+                    # Cache the successful response
+                    self.cache.set(cache_key, scores, "llm_evaluation", ttl=3600)
+        else:
+            required_fields = ["relevance", "completeness", "accuracy", "clarity", "coherence", "scientific_rigor"]
+            scores = self.call_llm_with_json_parsing(evaluation_prompt, required_fields)
         
         if scores:
             return EvaluationDimensions(
@@ -129,21 +152,36 @@ class LLMEvaluator(LLMBasedEvaluator):
         low_scoring_dims = []
         threshold = 0.7
         
+        # Use English dimension names from prompt manager
+        dimensions_config = prompt_manager.get_category("evaluation")["dimensions"]
+        
         if dimensions.relevance < threshold:
-            low_scoring_dims.append(("相关性", dimensions.relevance))
+            low_scoring_dims.append((dimensions_config["relevance"]["name"], dimensions.relevance))
         if dimensions.completeness < threshold:
-            low_scoring_dims.append(("完整性", dimensions.completeness))
+            low_scoring_dims.append((dimensions_config["completeness"]["name"], dimensions.completeness))
         if dimensions.accuracy < threshold:
-            low_scoring_dims.append(("准确性", dimensions.accuracy))
+            low_scoring_dims.append((dimensions_config["accuracy"]["name"], dimensions.accuracy))
         if dimensions.clarity < threshold:
-            low_scoring_dims.append(("清晰度", dimensions.clarity))
+            low_scoring_dims.append((dimensions_config["clarity"]["name"], dimensions.clarity))
         if dimensions.coherence < threshold:
-            low_scoring_dims.append(("连贯性", dimensions.coherence))
+            low_scoring_dims.append((dimensions_config["coherence"]["name"], dimensions.coherence))
         if dimensions.scientific_rigor < threshold:
-            low_scoring_dims.append(("科学严谨性", dimensions.scientific_rigor))
+            low_scoring_dims.append((dimensions_config["scientific_rigor"]["name"], dimensions.scientific_rigor))
         
         # Use base class method for suggestion generation
         return self.generate_improvement_suggestions(content, low_scoring_dims, task_context, 5)
+    
+    def _parse_cached_response(self, cached_response: Any) -> Optional[Dict[str, Any]]:
+        """Parse cached LLM response."""
+        if isinstance(cached_response, dict):
+            return cached_response
+        try:
+            import json
+            if isinstance(cached_response, str):
+                return json.loads(cached_response)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse cached response, will regenerate")
+        return None
 
 
 def get_llm_evaluator(config: Optional[EvaluationConfig] = None) -> LLMEvaluator:

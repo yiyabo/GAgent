@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base_evaluator import LLMBasedEvaluator
 from ..models import EvaluationResult, EvaluationDimensions, EvaluationConfig
+from ..prompts import prompt_manager
+from .llm_cache import get_llm_cache
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +22,9 @@ logger = logging.getLogger(__name__)
 class ContentGenerator:
     """Generator component that creates and improves content"""
     
-    def __init__(self, llm_client):
+    def __init__(self, llm_client, use_cache: bool = True):
         self.llm_client = llm_client
+        self.cache = get_llm_cache() if use_cache else None
         self.generation_history = []
     
     def generate_initial_content(self, task_context: Dict[str, Any]) -> str:
@@ -30,19 +33,25 @@ class ContentGenerator:
         task_name = task_context.get("name", "")
         task_type = task_context.get("task_type", "content_generation")
         
-        generation_prompt = f"""
-作为内容生成专家，请为以下任务创建高质量的内容：
+        # Use English templates from prompt manager
+        intro = prompt_manager.get("adversarial.generator.intro")
+        task_label = prompt_manager.get("adversarial.generator.task_label")
+        task_type_label = prompt_manager.get("adversarial.generator.task_type_label")
+        requirements_label = prompt_manager.get("adversarial.generator.requirements_label")
+        requirements = prompt_manager.get_category("adversarial")["generator"]["requirements"]
+        generate_prompt_text = prompt_manager.get("adversarial.generator.generate_prompt")
+        
+        requirements_text = "\n".join(requirements)
+        
+        generation_prompt = f"""{intro}
 
-任务："{task_name}"
-任务类型：{task_type}
+{task_label} "{task_name}"
+{task_type_label} {task_type}
 
-要求：
-1. 内容要准确、完整、有条理
-2. 使用专业但易懂的语言
-3. 包含必要的细节和解释
-4. 长度适中（200-400词）
+{requirements_label}
+{requirements_text}
 
-请生成内容：
+{generate_prompt_text}
 """
         
         try:
@@ -61,7 +70,8 @@ class ContentGenerator:
             
         except Exception as e:
             logger.error(f"Initial content generation failed: {e}")
-            return f"生成内容时出现错误：{str(e)}"
+            error_msg = prompt_manager.get("adversarial.generator.error_message")
+            return f"{error_msg} {str(e)}"
     
     def improve_content(
         self, 
@@ -80,26 +90,33 @@ class ContentGenerator:
             for criticism in criticisms
         ])
         
-        improvement_prompt = f"""
-你是一位内容改进专家。请根据以下批评意见改进内容。
+        # Use English templates from prompt manager
+        intro = prompt_manager.get("adversarial.improver.intro")
+        original_task_label = prompt_manager.get("adversarial.improver.original_task")
+        original_content_label = prompt_manager.get("adversarial.improver.original_content")
+        criticism_label = prompt_manager.get("adversarial.improver.criticism")
+        improvement_instruction = prompt_manager.get("adversarial.improver.improvement_instruction")
+        requirements = prompt_manager.get_category("adversarial")["improver"]["requirements"]
+        improved_content_label = prompt_manager.get("adversarial.improver.improved_content")
+        
+        requirements_text = "\n".join(requirements)
+        
+        improvement_prompt = f"""{intro}
 
-原始任务："{task_context.get('name', '')}"
+{original_task_label} "{task_context.get('name', '')}"
 
-原始内容：
+{original_content_label}
 ```
 {original_content}
 ```
 
-批评者指出的问题：
+{criticism_label}
 {criticism_text}
 
-请根据这些批评意见，重新改写内容，确保：
-1. 解决所有提出的问题
-2. 保持内容的核心价值和准确性
-3. 提高内容的整体质量
-4. 保持适当的长度和结构
+{improvement_instruction}
+{requirements_text}
 
-改进后的内容：
+{improved_content_label}
 """
         
         try:
@@ -126,8 +143,9 @@ class ContentGenerator:
 class ContentCritic:
     """Critic component that finds flaws and provides feedback"""
     
-    def __init__(self, llm_client):
+    def __init__(self, llm_client, use_cache: bool = True):
         self.llm_client = llm_client
+        self.cache = get_llm_cache() if use_cache else None
         self.criticism_history = []
     
     def critique_content(
@@ -140,48 +158,51 @@ class ContentCritic:
         
         task_name = task_context.get("name", "")
         
-        critique_prompt = f"""
-你是一位极其严格的内容批评家。你的任务是找出内容中的所有问题和不足。
+        # Use English templates from prompt manager
+        intro = prompt_manager.get("adversarial.critic.intro")
+        task_bg = prompt_manager.get("adversarial.critic.task_background")
+        content_label = prompt_manager.get("adversarial.critic.content_to_critique")
+        critique_instruction = prompt_manager.get("adversarial.critic.critique_instruction")
+        critique_angles = prompt_manager.get_category("adversarial")["critic"]["critique_angles"]
+        output_requirements = prompt_manager.get_category("adversarial")["critic"]["output_requirements"]
+        output_format = prompt_manager.get_category("adversarial")["critic"]["output_format"]
+        
+        angles_text = "\n".join(critique_angles)
+        requirements_text = "\n".join(output_requirements)
+        
+        critique_prompt = f"""{intro}
 
-任务背景："{task_name}"
+{task_bg} "{task_name}"
 
-需要批评的内容：
+{content_label}
 ```
 {content}
 ```
 
-请从以下角度严格批评这个内容：
-1. **准确性问题**：事实错误、概念混乱、过时信息
-2. **完整性缺陷**：遗漏的重要信息、深度不足
-3. **逻辑问题**：论证不严密、前后矛盾
-4. **表达问题**：语言不清晰、专业性不足
-5. **结构问题**：组织混乱、重点不明
-6. **实用性问题**：缺乏实际应用价值
+{critique_instruction}
+{angles_text}
 
-对于找到的每个问题，请提供：
-- 具体的问题描述
-- 严重程度（高/中/低）
-- 具体的改进建议
+{requirements_text}
 
-请以JSON格式返回批评结果：
+Please return critique results in JSON format:
 {{
-    "overall_assessment": "总体评价",
+    "overall_assessment": "{output_format['overall_assessment']}",
     "major_flaws": [
         {{
-            "category": "问题类别",
-            "issue": "具体问题描述", 
-            "severity": "严重程度",
-            "suggestion": "改进建议",
-            "evidence": "问题证据"
+            "category": "{output_format['problem_category']}",
+            "issue": "{output_format['problem_description']}", 
+            "severity": "{output_format['severity']}",
+            "suggestion": "{output_format['improvement_suggestion']}",
+            "evidence": "{output_format['evidence']}"
         }}
     ],
     "minor_issues": [
         {{
-            "issue": "次要问题",
-            "suggestion": "改进建议"
+            "issue": "{output_format['minor_issues']}",
+            "suggestion": "Improvement suggestion"
         }}
     ],
-    "strengths": ["优点1", "优点2"],
+    "strengths": {output_format['strengths']},
     "critic_confidence": 0.9
 }}
 """
@@ -208,9 +229,9 @@ class ContentCritic:
                 for flaw in critique_data.get("major_flaws", []):
                     criticisms.append({
                         "type": "major",
-                        "category": flaw.get("category", "未分类"),
+                        "category": flaw.get("category", prompt_manager.get("adversarial.problem_categories.uncategorized")),
                         "issue": flaw.get("issue", ""),
-                        "severity": flaw.get("severity", "中"),
+                        "severity": flaw.get("severity", prompt_manager.get("adversarial.severity_levels.medium")),
                         "suggestion": flaw.get("suggestion", ""),
                         "evidence": flaw.get("evidence", "")
                     })
