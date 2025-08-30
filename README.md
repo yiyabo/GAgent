@@ -27,45 +27,58 @@
 
 ### 环境准备
 ```bash
+# 激活conda环境
+conda activate LLM
+
 # 安装依赖
 pip install -r requirements.txt
 
 # 设置环境变量
 export GLM_API_KEY=your_key_here
-# 或使用模拟模式进行开发
-# export LLM_MOCK=1
+# 或使用模拟模式进行开发和测试
+export LLM_MOCK=1
 ```
 
 ### 📚 生成学术论文（一键模式）
 ```bash
 # 生成因果推理综述论文
-python generate_paper.py --topic "因果推理方法综述"
+conda run -n LLM python generate_paper.py --topic "因果推理方法综述"
 
 # 生成机器学习论文
-python generate_paper.py --topic "深度学习在医学影像中的应用" --sections 8
+conda run -n LLM python generate_paper.py --topic "深度学习在医学影像中的应用" --sections 8
 
 # 自定义输出文件
-python generate_paper.py --topic "人工智能伦理研究" --output "AI伦理论文.md"
+conda run -n LLM python generate_paper.py --topic "人工智能伦理研究" --output "AI伦理论文.md"
+
+# 使用模拟模式（开发测试）
+LLM_MOCK=1 python generate_paper.py --topic "AI技术综述" --sections 5
 ```
 
 ### 🔧 使用高级评估系统
 ```bash
 # LLM智能评估（推荐）
-python -m cli.main --eval-llm 123 --threshold 0.8 --max-iterations 3
+LLM_MOCK=1 python -m cli.main --eval-llm 123 --threshold 0.8 --max-iterations 3
 
 # 多专家评估
-python -m cli.main --eval-multi-expert 123 --threshold 0.8
+LLM_MOCK=1 python -m cli.main --eval-multi-expert 123 --threshold 0.8
 
 # 对抗性评估（最高质量）
-python -m cli.main --eval-adversarial 123 --max-rounds 3
+LLM_MOCK=1 python -m cli.main --eval-adversarial 123
+
+# 查看评估统计
+LLM_MOCK=1 python -m cli.main --eval-stats --detailed
 
 # 系统监控
-python -m cli.main --eval-supervision --detailed
+LLM_MOCK=1 python -m cli.main --eval-supervision --detailed
 ```
 
 ### 🌐 启动API服务
 ```bash
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+# 生产模式
+conda run -n LLM python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+
+# 开发模式（使用模拟）
+LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ## 🏗️ 系统架构
@@ -107,14 +120,45 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 | 重要文档 | 多专家评估 | 多角度验证、专业意见 |
 | 关键内容 | 对抗性评估 | 最高质量、鲁棒性强 |
 
+## 🔀 ASCII 系统流程图
+
+```
++---------------------+        +------------------+        +---------------------+
+|      客户端         |  HTTP  |     FastAPI      |  调度   |      Scheduler       |
+|  (CLI / REST / UI)  +------->+   app/main.py    +------->+  BFS / DAG / 后序    |
++----------+----------+        +---------+--------+        +----------+----------+
+           |                            |                              |
+           | CLI参数/REST Body           | 计划/任务/上下文/评估API       | 产出待执行任务序列
+           v                            v                              v
++----------+----------+        +---------+--------+        +----------+----------+
+|   Planning/Plan     |        |  Repository     |        |   Executor/LLM      |
+|  提议/批准/计划管理  |<------>+  SQLite (tasks,  +<-------+ execution/executors  |
++---------------------+  CRUD  |  outputs, eval) |  读写   |  base/enhanced      |
+                               +---------+--------+        +----------+----------+
+                                         |                             |
+                                         | 上下文组装/预算裁剪           | LLM生成/严格评估
+                                         v                             v
+                               +---------+--------+        +----------+----------+
+                               | Context Builder  |        | Evaluation System   |
+                               | services/context |        | (LLM/多专家/对抗)    |
+                               +---------+--------+        +----------+----------+
+                                         |                             |
+                                         +-------------+---------------+
+                                                       |
+                                               +-------+--------+
+                                               | 输出汇总/基准   |
+                                               | MD / CSV / 指标 |
+                                               +-----------------+
+```
+
 ## 📚 文档导航
 
 - **[快速开始](docs/QUICK_START.md)** - 5分钟快速上手指南
-- **[评估系统](docs/EVALUATION_SYSTEM.md)** - 详细的评估功能说明
-- **[论文生成](docs/PAPER_GENERATION_GUIDE.md)** - 学术论文生成完整指南
-- **[系统架构](docs/SYSTEM_ARCHITECTURE.md)** - 架构设计和开发路线图
-- **[API文档](docs/API_REFERENCE.md)** - 完整的编程接口文档
-- **[数据库管理](docs/Database_and_Cache_Management.md)** - 数据存储和缓存管理
+- **[评估系统](docs/EVALUATION_SYSTEM.md)** - 评估功能概览与导航
+- **[评估系统指南](docs/EVALUATION_SYSTEM_GUIDE.md)** - 深入使用与最佳实践
+- **[API文档](docs/API_REFERENCE.md)** - 编程接口（含 /benchmark 基准接口）
+- **[数据库与缓存](docs/Database_and_Cache_Management.md)** - 存储架构与索引/缓存
+- **[Memory-MCP系统](docs/MEMORY_MCP_SYSTEM.md)** - 智能记忆系统
 
 ## 🎨 使用示例
 
@@ -149,16 +193,16 @@ curl -X POST http://127.0.0.1:8000/run \
 ### 💡 CLI高级功能
 ```bash
 # 批量评估多个任务
-python -m cli.main --eval-batch --task-ids 101,102,103 --threshold 0.8
+LLM_MOCK=1 python -m cli.main --eval-batch --task-ids 101,102,103 --threshold 0.8
 
 # 配置评估系统
-python -m cli.main --eval-config 123 --threshold 0.85 --max-iterations 5
+LLM_MOCK=1 python -m cli.main --eval-config 123 --threshold 0.85 --max-iterations 5
 
 # 查看评估历史
-python -m cli.main --eval-history 123 --detailed
+LLM_MOCK=1 python -m cli.main --eval-history 123 --detailed
 
 # 监督系统配置
-python -m cli.main --eval-supervision-config --min-accuracy 0.8 --max-evaluation-time 30.0
+LLM_MOCK=1 python -m cli.main --eval-supervision-config --min-accuracy 0.8 --max-evaluation-time 30.0
 ```
 
 ## 📈 性能指标
@@ -172,12 +216,12 @@ python -m cli.main --eval-supervision-config --min-accuracy 0.8 --max-evaluation
 
 ```bash
 # 运行所有评估示例
-python examples/evaluation_examples.py --example all
+LLM_MOCK=1 python examples/evaluation_examples.py --example all
 
 # 运行特定示例
-python examples/evaluation_examples.py --example llm
-python examples/evaluation_examples.py --example multi-expert
-python examples/evaluation_examples.py --example adversarial
+LLM_MOCK=1 python examples/evaluation_examples.py --example llm
+LLM_MOCK=1 python examples/evaluation_examples.py --example multi-expert
+LLM_MOCK=1 python examples/evaluation_examples.py --example adversarial
 ```
 
 ## 🚨 故障排除
@@ -185,19 +229,19 @@ python examples/evaluation_examples.py --example adversarial
 ### 评估速度慢？
 ```bash
 # 检查缓存状态
-python -c "from app.services.evaluation_cache import get_evaluation_cache; print(get_evaluation_cache().get_cache_stats())"
+LLM_MOCK=1 python -c "from app.services.evaluation_cache import get_evaluation_cache; print(get_evaluation_cache().get_cache_stats())"
 
 # 优化缓存
-python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
+LLM_MOCK=1 python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
 ```
 
 ### 评估质量不稳定？
 ```bash
 # 查看监督报告
-python -m cli.main --eval-supervision --detailed
+LLM_MOCK=1 python -m cli.main --eval-supervision --detailed
 
 # 检查系统统计
-python -m cli.main --eval-stats --detailed
+LLM_MOCK=1 python -m cli.main --eval-stats --detailed
 ```
 
 ## 🛠️ 技术栈
@@ -233,14 +277,17 @@ python -m cli.main --eval-stats --detailed
 git clone <repository-url>
 cd agent
 
+# 激活conda环境
+conda activate LLM
+
 # 安装依赖
 pip install -r requirements.txt
 
-# 运行测试
-python -m pytest tests/
+# 运行测试（使用模拟模式）
+LLM_MOCK=1 python -m pytest tests/ -q
 
 # 运行示例验证
-python examples/evaluation_examples.py --example all
+LLM_MOCK=1 python examples/evaluation_examples.py --example all
 ```
 
 ### 代码规范
@@ -261,4 +308,4 @@ python examples/evaluation_examples.py --example all
 
 **🚀 AI-Driven智能任务编排系统 v2.0** - 让AI任务编排更智能、更准确、更可靠
 
-*最后更新时间: 2024年*
+*最后更新时间: 2025年8月*

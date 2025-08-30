@@ -2,12 +2,12 @@ from typing import Optional, Dict, Any
 import asyncio
 import threading
 import logging
-from .llm import get_default_client
-from .interfaces import TaskRepository
-from .repository.tasks import default_repo
-from .services.context import gather_context
-from .services.context_budget import apply_budget
-from .services.embeddings import get_embeddings_service
+from ...llm import get_default_client
+from ...interfaces import TaskRepository
+from ...repository.tasks import default_repo
+from ...services.context import gather_context
+from ...services.context_budget import apply_budget
+from ...services.embeddings import get_embeddings_service
 
 logger = logging.getLogger(__name__)
 
@@ -124,10 +124,18 @@ def execute_task(
                 semantic_k=semantic_k,
                 min_similarity=min_similarity,
             )
-            # Budget options
+            # Budget options (apply defaults if none provided)
             max_chars = opts.get("max_chars")
             per_section_max = opts.get("per_section_max")
             strategy = opts.get("strategy") if isinstance(opts.get("strategy"), str) else None
+            def _int_env(name: str, default_val: int) -> int:
+                try:
+                    import os as _os
+                    v = _os.environ.get(name)
+                    return int(v) if v is not None and str(v).strip() != "" else int(default_val)
+                except Exception:
+                    return int(default_val)
+            # Determine effective caps
             if (max_chars is not None) or (per_section_max is not None):
                 try:
                     max_chars_i = int(max_chars) if max_chars is not None else None
@@ -142,6 +150,17 @@ def execute_task(
                     max_chars=max_chars_i,
                     per_section_max=per_section_max_i,
                     strategy=strategy or "truncate",
+                )
+            else:
+                # Apply safe defaults when use_context=true but no budget provided
+                default_total = _int_env("CONTEXT_DEFAULT_MAX_CHARS", 6000)
+                default_per_sec = _int_env("CONTEXT_DEFAULT_PER_SECTION", 1200)
+                default_strategy = (strategy or ("sentence" if default_total or default_per_sec else "truncate"))
+                bundle = apply_budget(
+                    bundle,
+                    max_chars=default_total,
+                    per_section_max=default_per_sec,
+                    strategy=default_strategy,
                 )
 
             ctx = bundle.get("combined") if isinstance(bundle, dict) else None
@@ -179,7 +198,7 @@ def execute_task(
     try:
         content = _glm_chat(prompt)
         repo.upsert_task_output(task_id, content)
-        print(f"Task {task_id} ({name}) done.")
+        logger.info(f"Task {task_id} ({name}) done.")
         
         # Asynchronously generate embedding (optional)
         try:
@@ -196,5 +215,5 @@ def execute_task(
         
         return "done"
     except Exception as e:
-        print(f"Task {task_id} ({name}) failed: {e}")
+        logger.error(f"Task {task_id} ({name}) failed: {e}")
         return "failed"

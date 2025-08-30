@@ -18,8 +18,15 @@ def test_evaluation_database():
     init_db()
     print("✓ Database initialized with evaluation tables")
     
+    # First create a test task (required for foreign key constraint)
+    task_id = default_repo.create_task(
+        name="Test evaluation task",
+        status="pending",
+        task_type="atomic"
+    )
+    print(f"✓ Created test task {task_id}")
+    
     # Test storing evaluation config
-    task_id = 999  # Use a test task ID
     default_repo.store_evaluation_config(
         task_id=task_id,
         quality_threshold=0.85,
@@ -102,7 +109,12 @@ def test_evaluation_database():
     default_repo.delete_evaluation_history(task_id)
     history_after_cleanup = default_repo.get_evaluation_history(task_id)
     assert len(history_after_cleanup) == 0
-    print("✓ Cleanup successful")
+    print("✓ Evaluation history cleanup successful")
+    
+    # Also clean up the test task
+    # Note: Due to foreign key constraints, evaluation data should be automatically deleted
+    # when the parent task is deleted, but we already deleted it manually above
+    print("✓ All cleanup successful")
     
     print("All database tests passed! ✅")
 

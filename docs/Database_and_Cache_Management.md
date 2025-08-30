@@ -158,6 +158,18 @@ CREATE TABLE evaluation_cache (
 CREATE INDEX idx_content_hash ON evaluation_cache(content_hash);
 CREATE INDEX idx_method_hash ON evaluation_cache(evaluation_method, content_hash);
 CREATE INDEX idx_last_accessed ON evaluation_cache(last_accessed);
+-- 核心业务相关索引（与 app/database.py 一致）
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_status_prio_id ON tasks(status, priority, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_priority_id ON tasks(priority, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent_id ON tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path);
+CREATE INDEX IF NOT EXISTS idx_tasks_depth ON tasks(depth);
+CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type);
+CREATE INDEX IF NOT EXISTS idx_task_links_to_kind ON task_links(to_id, kind);
+CREATE INDEX IF NOT EXISTS idx_task_links_from_kind ON task_links(from_id, kind);
+CREATE INDEX IF NOT EXISTS idx_task_contexts_task_id ON task_contexts(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_contexts_created_at ON task_contexts(created_at);
 ```
 
 ## 缓存系统架构
@@ -307,9 +319,9 @@ python -m cli.main --eval-supervision --detailed
 
 ### 2. 维护操作
 
-```python
-# 数据库维护
-python -c "
+```bash
+# 数据库优化
+conda run -n LLM python -c "
 from app.services.evaluation_cache import get_evaluation_cache
 cache = get_evaluation_cache()
 result = cache.optimize_cache()
@@ -321,77 +333,46 @@ print(f'优化完成: {result}')
 
 - 定期备份主数据库文件
 - 缓存数据库可重建，无需备份
-- 重要配置和环境变量版本控制
 
 ## 故障排除
 
-### 1. 常见问题
-
-**数据库锁定**:
-```python
-# 检查是否有长时间运行的事务
-# 使用上下文管理器确保连接正确关闭
-```
+### 常见问题
 
 **缓存性能下降**:
-```python
+```bash
 # 检查缓存命中率
-stats = get_cache_stats()
-if stats['hit_rate'] < 0.3:
-    # 执行缓存优化
-    cache.optimize_cache()
+conda run -n LLM python -c "from app.services.evaluation_cache import get_cache_stats; print(get_cache_stats())"
+
+# 执行缓存优化
+conda run -n LLM python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
 ```
 
 **磁盘空间不足**:
-```python
+```bash
 # 清理旧缓存条目
-cache.cleanup_old_entries(days=7)
+conda run -n LLM python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().cleanup_old_entries(days=7)"
 ```
 
-### 2. 调试工具
+### 调试工具
 
 ```bash
 # 查看数据库结构
 sqlite3 tasks.db ".schema"
 
 # 检查缓存统计
-python -c "from app.services.evaluation_cache import get_cache_stats; print(get_cache_stats())"
+conda run -n LLM python -c "from app.services.evaluation_cache import get_cache_stats; print(get_cache_stats())"
 
 # 清理所有缓存
-python -c "from app.services.evaluation_cache import clear_evaluation_cache; clear_evaluation_cache()"
+conda run -n LLM python -c "from app.services.evaluation_cache import clear_evaluation_cache; clear_evaluation_cache()"
 ```
 
 ## 最佳实践
 
-### 1. 开发建议
-
 - 使用上下文管理器管理数据库连接
 - 批量操作优于单条操作
-- 合理设置缓存过期时间
 - 定期监控缓存性能
-
-### 2. 生产部署
-
 - 配置适当的缓存大小
-- 设置数据库备份策略
-- 监控磁盘空间使用
-- 定期执行缓存优化
-
-### 3. 性能调优
-
-- 根据使用模式调整缓存策略
-- 优化数据库查询和索引
-- 监控内存使用情况
-- 定期分析性能瓶颈
 
 ## 总结
 
-本项目的数据库和缓存系统提供了：
-
-1. **完整的数据持久化**: 主数据库存储所有核心数据
-2. **高效的缓存机制**: 多层缓存提高访问性能
-3. **智能的管理策略**: 自动清理、优化和监控
-4. **灵活的配置选项**: 环境变量和配置类支持
-5. **强大的监控工具**: 实时性能监控和故障排除
-
-这套架构确保了系统的高性能、可扩展性和可维护性。
+本项目的数据库和缓存系统提供了完整的数据持久化、高效的缓存机制和智能的管理策略，确保了系统的高性能、可扩展性和可维护性。

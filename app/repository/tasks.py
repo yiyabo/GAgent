@@ -4,6 +4,7 @@ import json
 from ..database import get_db
 from ..interfaces import TaskRepository
 from ..utils import plan_prefix, split_prefix
+from .optimized_queries import OptimizedTaskQueries
 
 
 # -------------------------------
@@ -494,47 +495,12 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         return [_row_to_full(r) for r in rows]
 
     def get_ancestors(self, task_id: int) -> List[Dict[str, Any]]:
-        with get_db() as conn:
-            row = conn.execute("SELECT path FROM tasks WHERE id=?", (task_id,)).fetchone()
-            if not row:
-                return []
-            try:
-                path = row[0]
-            except Exception:
-                path = row["path"]
-            if not path:
-                return []
-            # Parse ids from path like '/12/45/79'
-            parts = [p for p in (path.split('/') if path else []) if p]
-            if not parts:
-                return []
-            ancestor_ids = [int(p) for p in parts[:-1]]  # exclude self
-            if not ancestor_ids:
-                return []
-            placeholders = ",".join(["?"] * len(ancestor_ids))
-            rows = conn.execute(
-                f"SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id IN ({placeholders}) ORDER BY depth ASC",
-                ancestor_ids,
-            ).fetchall()
-        return [_row_to_full(r) for r in rows]
+        """Get ancestors using optimized query to avoid N+1 problem."""
+        return OptimizedTaskQueries.get_ancestors_optimized(task_id)
 
     def get_descendants(self, root_id: int) -> List[Dict[str, Any]]:
-        with get_db() as conn:
-            row = conn.execute("SELECT path FROM tasks WHERE id=?", (root_id,)).fetchone()
-            if not row:
-                return []
-            try:
-                root_path = row[0]
-            except Exception:
-                root_path = row["path"]
-            if not root_path:
-                root_path = f"/{root_id}"
-            like_prefix = root_path + "/%"
-            rows = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE path LIKE ? ORDER BY path ASC",
-                (like_prefix,),
-            ).fetchall()
-        return [_row_to_full(r) for r in rows]
+        """Get descendants using optimized query for better performance."""
+        return OptimizedTaskQueries.get_descendants_with_details(root_id)
 
     def get_subtree(self, root_id: int) -> List[Dict[str, Any]]:
         """Return root task followed by all descendants ordered by path."""

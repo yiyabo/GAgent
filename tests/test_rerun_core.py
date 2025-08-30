@@ -30,7 +30,7 @@ def task_repo(temp_db):
 @pytest.fixture
 def mock_execute_task():
     """模拟execute_task函数"""
-    with patch("app.executor.execute_task") as mock:
+    with patch("app.execution.executors.base.execute_task") as mock:
         mock.return_value = "completed"
         yield mock
 

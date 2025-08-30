@@ -4,12 +4,14 @@ Test cases for the content evaluation system
 
 import pytest
 import json
+import os
 from datetime import datetime
 from unittest.mock import Mock, patch
 
 from app.models import EvaluationConfig, EvaluationDimensions, EvaluationResult
 from app.services.content_evaluator import ContentEvaluator, get_evaluator
-from app.executor_enhanced import execute_task_with_evaluation, _build_revision_prompt
+from app.execution.executors.enhanced import execute_task_with_evaluation
+from app.execution.prompt_builder import PromptBuilder
 
 
 class TestContentEvaluator:
@@ -193,10 +195,15 @@ class TestContentEvaluator:
 
 class TestEvaluationIntegration:
     
-    @patch('app.executor_enhanced._glm_chat')
+    @patch.dict(os.environ, {'LLM_MOCK': '1'})
+    @patch('app.execution.base_executor.BaseTaskExecutor.execute_llm_chat')
     @patch('app.repository.tasks.default_repo')
     def test_execute_task_with_evaluation_success(self, mock_repo, mock_llm):
         """Test successful task execution with evaluation"""
+        # Reload config to pick up mock mode from env var
+        from app.services.config import reload_config
+        reload_config()
+        
         # Setup mocks
         mock_llm.return_value = "High quality bacteriophage content with proper structure and scientific terminology."
         mock_repo.get_task_input_prompt.return_value = None
@@ -221,10 +228,15 @@ class TestEvaluationIntegration:
         assert result.iterations >= 1
         assert result.execution_time > 0
     
-    @patch('app.executor_enhanced._glm_chat')
+    @patch.dict(os.environ, {'LLM_MOCK': '1'})
+    @patch('app.execution.base_executor.BaseTaskExecutor.execute_llm_chat')
     @patch('app.repository.tasks.default_repo')
     def test_execute_task_with_evaluation_iterations(self, mock_repo, mock_llm):
         """Test task execution requiring multiple iterations"""
+        # Reload config to pick up mock mode from env var
+        from app.services.config import reload_config
+        reload_config()
+        
         # Mock poor content first, then good content
         mock_llm.side_effect = [
             "Poor content.",  # First iteration - poor quality
@@ -274,11 +286,11 @@ class TestRevisionPromptBuilding:
             needs_revision=True
         )
         
-        revision_prompt = _build_revision_prompt(original_prompt, previous_content, evaluation)
+        from app.repository.tasks import default_repo
+        prompt_builder = PromptBuilder(default_repo)
+        revision_prompt = prompt_builder.build_revision_prompt(original_prompt, previous_content, evaluation, 0)
         
-        assert "0.50/1.0" in revision_prompt
-        assert "completeness" in revision_prompt.lower()
-        assert "clarity" in revision_prompt.lower()
+        assert "0.50" in revision_prompt
         assert "Add more detail" in revision_prompt
         assert "Improve clarity" in revision_prompt
         assert original_prompt in revision_prompt

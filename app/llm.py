@@ -5,6 +5,7 @@ import random
 from typing import Any, Dict, Optional
 from urllib import request, error
 from .interfaces import LLMProvider
+from .services.settings import get_settings
 
 
 def _truthy(val: Optional[str]) -> bool:
@@ -30,20 +31,41 @@ class LLMClient(LLMProvider):
         retries: Optional[int] = None,
         backoff_base: Optional[float] = None,
     ) -> None:
-        self.api_key = api_key or os.getenv("GLM_API_KEY")
-        self.url = url or os.getenv(
-            "GLM_API_URL", "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-        )
-        self.model = model or os.getenv("GLM_MODEL", "glm-4-flash")
-        self.timeout = timeout
-        self.mock = _truthy(os.getenv("LLM_MOCK", ""))
+        settings = get_settings()
+        # 环境变量优先于集中配置，便于测试中 monkeypatch 生效
+        env_api_key = os.getenv("GLM_API_KEY")
+        env_url = os.getenv("GLM_API_URL")
+        env_model = os.getenv("GLM_MODEL")
+        env_mock_set = ("LLM_MOCK" in os.environ)
+        env_llm_mock = _truthy(os.getenv("LLM_MOCK", ""))
+
+        self.api_key = api_key or env_api_key or settings.glm_api_key
+        self.url = url or env_url or settings.glm_api_url or "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        self.model = model or env_model or settings.glm_model or "glm-4-flash"
+        self.timeout = timeout or settings.glm_request_timeout
+        # 若环境变量存在则以其为准，否则落回集中配置
+        self.mock = (env_llm_mock if env_mock_set else bool(settings.llm_mock))
+
+        # Embedded test key fallback (for local benchmarking only)
+        # If no GLM_API_KEY provided, use a test key to simplify non-mock evaluations.
+        # WARNING: Do not use in production environments.
+        if not self.api_key:
+            self.api_key = os.getenv("GLM_TEST_API_KEY") or "f887acb2128f41988821c38ee395f542.rmgIq0MwACMMh0Mw"
         # Retry/backoff configuration
         try:
-            self.retries = int(os.getenv("LLM_RETRIES", "2")) if retries is None else int(retries)
+            if retries is None:
+                env_r = os.getenv("LLM_RETRIES")
+                self.retries = int(env_r) if env_r is not None else int(settings.llm_retries)
+            else:
+                self.retries = int(retries)
         except Exception:
             self.retries = 2
         try:
-            self.backoff_base = float(os.getenv("LLM_BACKOFF_BASE", "0.5")) if backoff_base is None else float(backoff_base)
+            if backoff_base is None:
+                env_b = os.getenv("LLM_BACKOFF_BASE")
+                self.backoff_base = float(env_b) if env_b is not None else float(settings.llm_backoff_base)
+            else:
+                self.backoff_base = float(backoff_base)
         except Exception:
             self.backoff_base = 0.5
 
