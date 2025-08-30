@@ -32,6 +32,8 @@ from .scheduler import bfs_schedule, requires_dag_schedule, requires_dag_order, 
 from .services.context import gather_context
 from .services.context_budget import apply_budget
 from .services.index_root import generate_index
+from .services.logging_config import setup_logging
+from .services.settings import get_settings
 from .services.benchmark import run_benchmark
 from .services.planning import propose_plan_service, approve_plan_service
 from .utils import plan_prefix, split_prefix
@@ -165,6 +167,9 @@ def _sanitize_context_options(co: Dict[str, Any]) -> Dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 初始化结构化日志与全局配置
+    setup_logging()
+    _ = get_settings()  # 触发加载，便于在日志中看到配置是否生效
     init_db()
     yield
 
