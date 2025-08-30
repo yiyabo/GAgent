@@ -13,7 +13,7 @@ from typing import List, Dict
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from app.repository.tasks import default_repo
-from app.executor_enhanced import execute_task_with_llm_evaluation
+from app.execution.executors.enhanced import execute_task_with_llm_evaluation
 
 
 def create_paper_sections(topic: str, num_sections: int = 5) -> List[int]:
@@ -113,14 +113,14 @@ def generate_paper_content(task_ids: List[int], use_evaluation: bool = True) -> 
                 
                 print(f"   ✅ 生成完成 - 状态: {result.status}")
                 print(f"   📊 质量评分: {result.evaluation.overall_score:.3f}")
-                print(f"   🔄 迭代次数: {result.iterations_completed}")
+                print(f"   🔄 迭代次数: {result.iterations}")
                 
                 results[task['name']] = result.content
                 
             else:
                 # 基础生成（备用方案）
-                from app.executor_enhanced import execute_task
-                status = execute_task(task, default_repo, enable_evaluation=False)
+                from app.execution.executors.base import execute_task
+                status = execute_task(task, repo=default_repo, use_context=False)
                 
                 if status == "done":
                     content = default_repo.get_task_output_content(task_id)

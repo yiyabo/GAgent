@@ -1,10 +1,16 @@
 import sqlite3
 from contextlib import contextmanager
+from .database_pool import initialize_connection_pool, get_db
 
 DB_PATH = 'tasks.db'
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
+    """Initialize database schema using connection pool."""
+    # Initialize connection pool first
+    initialize_connection_pool(db_path=DB_PATH)
+    
+    # Use pooled connection for schema initialization
+    with get_db() as conn:
         conn.execute('''CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
@@ -77,6 +83,9 @@ def init_db():
 
         # Useful indexes
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_name ON tasks(name)")
+        # Status filters are heavily used by schedulers and queries
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_prio_id ON tasks(status, priority, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_priority_id ON tasks(priority, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent_id ON tasks(parent_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path)")
@@ -86,6 +95,9 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_outputs_task_id ON task_outputs(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_links_to_id ON task_links(to_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_links_from_id ON task_links(from_id)")
+        # Composite indexes to accelerate lookups by (to_id, kind) and (from_id, kind)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_links_to_kind ON task_links(to_id, kind)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_links_from_kind ON task_links(from_id, kind)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_contexts_task_id ON task_contexts(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_contexts_created_at ON task_contexts(created_at)")
         
@@ -137,11 +149,4 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_history_timestamp ON evaluation_history(timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_configs_task_id ON evaluation_configs(task_id)")
 
-@contextmanager
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
+# get_db function now provided by database_pool module

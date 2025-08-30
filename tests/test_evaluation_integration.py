@@ -4,17 +4,23 @@ Integration test for the complete evaluation system
 
 import sys
 import os
+from unittest.mock import patch
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import init_db
 from app.repository.tasks import default_repo
-from app.executor_enhanced import execute_task_with_evaluation
+from app.execution.executors.enhanced import execute_task_with_evaluation
 from app.models import EvaluationConfig
 
 
+@patch.dict(os.environ, {'LLM_MOCK': '1'})
 def test_complete_evaluation_system():
     """Test the complete evaluation system integration"""
     print("Testing complete evaluation system...")
+    
+    # Reload config to pick up mock mode from env var
+    from app.services.config import reload_config
+    reload_config()
     
     # Initialize database
     init_db()
@@ -58,10 +64,30 @@ def test_complete_evaluation_system():
             # First iteration - poor content
             return "Bacteriophages are viruses that kill bacteria. They might be useful for medicine."
     
-    # Mock the LLM client
-    import app.executor_enhanced
-    original_glm_chat = app.executor_enhanced._glm_chat
-    app.executor_enhanced._glm_chat = mock_llm_chat
+    # Mock the LLM client at the base executor level
+    from app.execution.base_executor import BaseTaskExecutor
+    
+    # Create a mock client
+    from unittest.mock import Mock
+    mock_client = Mock()
+    mock_response = Mock()
+    mock_choice = Mock()
+    mock_message = Mock()
+    
+    def mock_create(**kwargs):
+        mock_message.content = mock_llm_chat(kwargs.get('messages', [{}])[0].get('content', ''))
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+        return mock_response
+    
+    mock_client.chat.completions.create = mock_create
+    
+    # Patch the client creation in BaseTaskExecutor
+    original_init = BaseTaskExecutor.__init__
+    def patched_init(self, repo=None):
+        original_init(self, repo)
+        self.client = mock_client
+    BaseTaskExecutor.__init__ = patched_init
     
     try:
         # Get task info
@@ -91,7 +117,7 @@ def test_complete_evaluation_system():
         # Test latest evaluation retrieval
         latest = default_repo.get_latest_evaluation(task_id)
         assert latest is not None
-        assert latest["iteration"] == result.iterations
+        assert latest["iteration"] == result.iterations - 1  # iteration是从0开始，而result.iterations是总数
         print("✓ Latest evaluation retrieval works")
         
         # Test evaluation config retrieval
@@ -125,8 +151,8 @@ def test_complete_evaluation_system():
         print("\n🎉 Complete evaluation system test passed!")
         
     finally:
-        # Restore original LLM function
-        app.executor_enhanced._glm_chat = original_glm_chat
+        # Restore original BaseTaskExecutor.__init__
+        BaseTaskExecutor.__init__ = original_init
 
 
 def test_evaluation_edge_cases():

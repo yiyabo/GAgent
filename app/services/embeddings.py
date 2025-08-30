@@ -188,21 +188,36 @@ class GLMEmbeddingsService:
         return json.loads(json_str)
 
 
-# Singleton pattern for service instance
-_embeddings_service = None
+# 导入线程安全版本
+from .thread_safe_embeddings import (
+    get_thread_safe_embeddings_service,
+    shutdown_thread_safe_embeddings_service
+)
 
-
-def get_embeddings_service() -> GLMEmbeddingsService:
-    """Get GLM Embeddings service singleton"""
-    global _embeddings_service
-    if _embeddings_service is None:
-        _embeddings_service = GLMEmbeddingsService()
-    return _embeddings_service
+# 保持向后兼容性
+def get_embeddings_service():
+    """获取嵌入向量服务（线程安全版本）"""
+    return get_thread_safe_embeddings_service()
 
 
 def shutdown_embeddings_service():
-    """Shutdown embeddings service"""
-    global _embeddings_service
-    if _embeddings_service is not None:
-        _embeddings_service.async_manager.shutdown()
-        _embeddings_service = None
+    """关闭嵌入向量服务（线程安全版本）"""
+    shutdown_thread_safe_embeddings_service()
+
+
+# Singleton pattern for service instance (保留用于兼容性，但标记为已弃用)
+_embeddings_service = None
+
+
+class GLMEmbeddingsServiceLegacy(GLMEmbeddingsService):
+    """遗留的GLM嵌入向量服务类（已弃用，建议使用线程安全版本）"""
+    
+    def __init__(self):
+        import warnings
+        warnings.warn(
+            "GLMEmbeddingsService is deprecated and not thread-safe. "
+            "Use get_thread_safe_embeddings_service() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        super().__init__()

@@ -113,4 +113,8 @@ def test_run_api_dag_cycle_returns_400(tmp_path, monkeypatch):
         r = client.post("/run", json={"title": plan["title"], "schedule": "dag"})
         assert r.status_code == 400
         data = r.json()
-        assert data.get("detail", {}).get("error") == "cycle_detected"
+        # 检查新的统一错误响应格式
+        assert data.get("success") == False
+        assert data.get("error", {}).get("error_code") == 1003  # INVALID_TASK_STATE
+        assert data.get("error", {}).get("category") == "business"
+        assert "环" in data.get("error", {}).get("message", "") or "cycle" in data.get("error", {}).get("message", "").lower()

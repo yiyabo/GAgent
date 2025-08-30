@@ -11,18 +11,17 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from statistics import mean, stdev
 
-from ..llm import get_default_client
+from .base_evaluator import LLMBasedEvaluator
 from ..models import EvaluationResult, EvaluationDimensions, EvaluationConfig
 
 logger = logging.getLogger(__name__)
 
 
-class MetaEvaluator:
+class MetaEvaluator(LLMBasedEvaluator):
     """Meta-cognitive evaluator that evaluates evaluation quality"""
     
     def __init__(self, config: Optional[EvaluationConfig] = None):
-        self.config = config or EvaluationConfig()
-        self.llm_client = get_default_client()
+        super().__init__(config)
         
         # Meta-evaluation criteria
         self.meta_criteria = {
@@ -33,6 +32,9 @@ class MetaEvaluator:
             "discriminability": "评估系统区分不同质量内容的能力",
             "reliability": "评估结果的可靠性和可重复性"
         }
+    
+    def get_evaluation_method_name(self) -> str:
+        return "meta_cognitive"
     
     def meta_evaluate(
         self, 
@@ -261,8 +263,8 @@ class MetaEvaluator:
         return mean(correlations) if correlations else 0.0
     
     def _llm_meta_evaluate(
-        self, 
-        evaluation_history: List[Dict[str, Any]], 
+        self,
+        evaluation_history: List[Dict[str, Any]],
         content: str,
         task_context: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -270,28 +272,20 @@ class MetaEvaluator:
         
         # Prepare evaluation summary for LLM
         eval_summary = self._prepare_evaluation_summary(evaluation_history)
-        task_name = task_context.get("name", "Unknown Task")
         
-        meta_prompt = f"""
+        evaluation_aspects = [
+            "**评估准确性**: 评估结果是否准确反映内容质量？",
+            "**评估全面性**: 评估维度是否全面覆盖内容质量要素？",
+            "**评估一致性**: 多次评估结果是否保持一致？",
+            "**评估客观性**: 评估过程是否客观，避免主观偏见？",
+            "**评估实用性**: 评估建议是否具有实际指导价值？"
+        ]
+        
+        specific_instructions = f"""
 作为评估质量专家，请对以下评估过程进行元认知分析。
-
-任务背景："{task_name}"
-
-内容片段：
-```
-{content[:500]}
-```
 
 评估历史摘要：
 {eval_summary}
-
-请从以下角度分析评估质量：
-
-1. **评估准确性**: 评估结果是否准确反映内容质量？
-2. **评估全面性**: 评估维度是否全面覆盖内容质量要素？
-3. **评估一致性**: 多次评估结果是否保持一致？
-4. **评估客观性**: 评估过程是否客观，避免主观偏见？
-5. **评估实用性**: 评估建议是否具有实际指导价值？
 
 请以JSON格式返回分析结果：
 {{
@@ -308,28 +302,14 @@ class MetaEvaluator:
 }}
 """
         
-        try:
-            response = self.llm_client.chat([
-                {"role": "user", "content": meta_prompt}
-            ])
-            
-            result_text = response.get("content", "").strip()
-            
-            # Parse JSON response
-            json_start = result_text.find('{')
-            json_end = result_text.rfind('}') + 1
-            
-            if json_start >= 0 and json_end > json_start:
-                json_text = result_text[json_start:json_end]
-                llm_result = json.loads(json_text)
-                return llm_result
-            else:
-                logger.warning("Could not parse LLM meta-evaluation JSON")
-                return self._fallback_llm_meta_evaluation()
-                
-        except Exception as e:
-            logger.error(f"LLM meta-evaluation failed: {e}")
-            return self._fallback_llm_meta_evaluation()
+        meta_prompt = self.build_evaluation_prompt_template(
+            content, task_context, evaluation_aspects, specific_instructions, 500
+        )
+        
+        required_fields = ["accuracy_assessment", "consistency_assessment", "overall_meta_score"]
+        result = self.call_llm_with_json_parsing(meta_prompt, required_fields)
+        
+        return result if result else self._fallback_llm_meta_evaluation()
     
     def _prepare_evaluation_summary(self, evaluation_history: List[Dict[str, Any]]) -> str:
         """Prepare a summary of evaluation history for LLM"""

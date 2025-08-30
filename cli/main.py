@@ -4,20 +4,28 @@ import sys
 from typing import List, Optional
 
 from .interfaces import CLIApplication, CLICommand
-from .parser import CLIParser
+from .parser_v2 import ModularCLIParser
 from .commands import RerunCommands, PlanCommands
 from .commands.evaluation_commands import EvaluationCommands
 from .commands.database_commands import DatabaseCommands
+from .commands.memory_commands import MemoryCommands
 from .utils import FileUtils, IOUtils
+try:
+    from .error_handler import CLIErrorHandler, handle_cli_exception, CLIErrorContext
+    from ..app.errors import ValidationError, BusinessError, ErrorCode
+except ImportError:
+    from cli.error_handler import CLIErrorHandler, handle_cli_exception, CLIErrorContext
+    from app.errors import ValidationError, BusinessError, ErrorCode
 
 
 class ModernCLIApp(CLIApplication):
-    """Modern CLI application with modular command structure."""
+    """Modern CLI application with refactored modular parameter handling."""
     
     def __init__(self):
-        self.parser = CLIParser()
+        self.parser = ModularCLIParser()
         self.commands: List[CLICommand] = []
         self.io = IOUtils()
+        self.error_handler = CLIErrorHandler(verbose=False, chinese=False)
         
         # Initialize UTF-8 encoding
         FileUtils.ensure_utf8_encoding()
@@ -31,85 +39,97 @@ class ModernCLIApp(CLIApplication):
         self.register_command(PlanCommands())
         self.register_command(EvaluationCommands())
         self.register_command(DatabaseCommands())
+        self.register_command(MemoryCommands())
     
     def register_command(self, command: CLICommand) -> None:
         """Register a command with the application."""
         self.commands.append(command)
     
     def run(self, args: Optional[List[str]] = None) -> int:
-        """Run the CLI application."""
+        """Run the CLI application with refactored parameter handling."""
         try:
+            # Parse arguments using modular parser
             parsed_args = self.parser.parse_args(args)
-            return self._execute_commands(parsed_args)
+            
+            # Extract and validate parameters
+            all_params, validation_error = self.parser.extract_and_validate_params(parsed_args)
+            if validation_error:
+                # Use friendly error handling
+                validation_err = ValidationError(
+                    message="Command line parameter validation failed",
+                    error_code=ErrorCode.SCHEMA_VALIDATION_FAILED,
+                    context={"validation_details": validation_error},
+                    suggestions=[
+                        "Check command line parameter format",
+                        "Use --help to view parameter description",
+                        "Ensure all required parameters are provided"
+                    ]
+                )
+                error_info = self.error_handler.handle_error(validation_err)
+                self.error_handler.print_error(error_info)
+                return error_info.exit_code
+            
+            # Determine operation type using modular approach
+            operation_type = self.parser.determine_operation_type(parsed_args)
+            
+            return self._execute_operation_with_error_handling(parsed_args, all_params, operation_type)
+            
         except SystemExit as e:
             return e.code or 0
         except Exception as e:
-            self.io.print_error(f"Application error: {e}")
-            return 1
+            return handle_cli_exception(e, verbose=True)
     
-    def _execute_commands(self, args) -> int:
-        """Execute commands based on parsed arguments."""
-        # Check for database commands first
-        if self._has_database_args(args):
+    def _execute_operation_with_error_handling(self, args, all_params: dict, operation_type: str) -> int:
+        """Execute operation with comprehensive error handling."""
+        with CLIErrorContext(f"{operation_type} operation", verbose=True, chinese=True):
+            return self._execute_operation(args, all_params, operation_type)
+    
+    def _execute_operation(self, args, all_params: dict, operation_type: str) -> int:
+        """Execute operation based on determined type (simplified using modular approach)."""
+        # Route to appropriate command based on operation type
+        if operation_type == "database":
             db_cmd = self._get_command_by_name("database")
             if db_cmd:
                 return db_cmd.execute(args)
         
-        # Check for evaluation commands
-        if self._has_evaluation_args(args):
+        elif operation_type == "memory":
+            memory_cmd = self._get_command_by_name("memory")
+            if memory_cmd:
+                return memory_cmd.execute(args)
+        
+        elif operation_type == "evaluation":
             eval_cmd = self._get_command_by_name("evaluation")
             if eval_cmd:
                 return eval_cmd.execute(args)
         
-        # Check for rerun commands (high priority)
-        if self._has_rerun_args(args):
+        elif operation_type == "rerun":
             rerun_cmd = self._get_command_by_name("rerun")
             if rerun_cmd:
                 return rerun_cmd.execute(args)
         
-        # Check for plan management commands
-        if self._has_plan_args(args):
+        elif operation_type == "plan":
             plan_cmd = self._get_command_by_name("plan")
             if plan_cmd:
                 return plan_cmd.execute(args)
         
-        # Check for goal (default plan creation workflow)
-        if hasattr(args, 'goal') and args.goal:
-            plan_cmd = self._get_command_by_name("plan")
-            if plan_cmd:
-                return plan_cmd.execute(args)
+        elif operation_type == "utility":
+            return self._handle_utility_operations(args)
         
-        # Handle other utility operations
-        return self._handle_utility_operations(args)
+        elif operation_type == "help":
+            return self._show_help_guidance()
+        
+        # Fallback - Use friendly error handling
+        raise BusinessError(
+            message=f"Unknown operation type: {operation_type}",
+            error_code=ErrorCode.BUSINESS_RULE_VIOLATION,
+            context={"operation_type": operation_type},
+            suggestions=[
+                "Check if command syntax is correct",
+                "Use --help to view available command options",
+                "Ensure operation name is spelled correctly"
+            ]
+        )
     
-    def _has_rerun_args(self, args) -> bool:
-        """Check if any rerun-related arguments are present."""
-        rerun_attrs = ['rerun_task', 'rerun_subtree', 'rerun_interactive']
-        return any(hasattr(args, attr) and getattr(args, attr) for attr in rerun_attrs)
-    
-    def _has_plan_args(self, args) -> bool:
-        """Check if any plan-related arguments are present."""
-        plan_attrs = [
-            'list_plans', 'load_plan', 'execute_only', 'plan_only'
-        ]
-        return any(hasattr(args, attr) and getattr(args, attr) for attr in plan_attrs)
-    
-    def _has_evaluation_args(self, args) -> bool:
-        """Check if any evaluation-related arguments are present."""
-        eval_attrs = [
-            'eval_config', 'eval_execute', 'eval_llm', 'eval_multi_expert',
-            'eval_adversarial', 'eval_history', 'eval_override', 'eval_stats',
-            'eval_clear', 'eval_batch', 'eval_supervision', 'eval_supervision_config'
-        ]
-        return any(hasattr(args, attr) and getattr(args, attr) for attr in eval_attrs)
-    
-    def _has_database_args(self, args) -> bool:
-        """Check if any database-related arguments are present."""
-        db_attrs = [
-            'db_info', 'cache_stats', 'clear_cache', 'db_optimize',
-            'db_backup', 'db_analyze', 'db_reset'
-        ]
-        return any(hasattr(args, attr) and getattr(args, attr) for attr in db_attrs)
     
     def _get_command_by_name(self, name: str) -> Optional[CLICommand]:
         """Get a command by its name."""
@@ -157,6 +177,10 @@ class ModernCLIApp(CLIApplication):
         if getattr(args, 'rebuild_embeddings', False):
             return self._handle_rebuild_embeddings(args)
         
+        # Benchmark operation
+        if getattr(args, 'benchmark', False):
+            return self._handle_benchmark(args)
+
         # No specific operation found - show help guidance
         return self._show_help_guidance()
     
@@ -438,6 +462,46 @@ class ModernCLIApp(CLIApplication):
             
         except Exception as e:
             self.io.print_error(f"Rebuild embeddings failed: {e}")
+            return 1
+
+    def _handle_benchmark(self, args) -> int:
+        """Handle --benchmark operation: run multi-config report generation & LLM scoring."""
+        try:
+            topic = getattr(args, 'benchmark_topic', None)
+            configs = getattr(args, 'benchmark_configs', None)
+            sections = getattr(args, 'benchmark_sections', 5)
+            output = getattr(args, 'benchmark_output', None)
+
+            if not topic:
+                self.io.print_error("--benchmark-topic is required")
+                return 1
+            if not configs or not isinstance(configs, list):
+                self.io.print_error("--benchmark-configs is required (one or more specs)")
+                return 1
+
+            # Lazy import to avoid heavy deps at startup
+            try:
+                from app.services.benchmark import run_benchmark
+            except Exception:
+                from ..app.services.benchmark import run_benchmark  # fallback when running as module
+
+            self.io.print_info("Running benchmark...")
+            out = run_benchmark(topic, configs, sections=sections)
+            summary = out.get('summary_md', '')
+
+            if output:
+                from .utils.file_utils import FileUtils
+                if FileUtils.write_file_safe(output, summary):
+                    self.io.print_success(f"Benchmark summary written to {output}")
+                    return 0
+                else:
+                    self.io.print_error("Failed to write output file")
+                    return 1
+            else:
+                print(summary)
+                return 0
+        except Exception as e:
+            self.io.print_error(f"Benchmark failed: {e}")
             return 1
     
     def _show_help_guidance(self) -> int:

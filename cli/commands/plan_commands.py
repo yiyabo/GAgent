@@ -5,7 +5,7 @@ from argparse import ArgumentParser, Namespace
 from typing import Any, Dict, List, Optional
 
 from .base import MultiCommand
-from ..parser import DefaultContextOptionsBuilder
+from ..parser_v2 import LegacyCompatibilityWrapper
 from ..utils import IOUtils, FileUtils, PlanUtils
 
 # Import app modules
@@ -145,8 +145,8 @@ class PlanCommands(MultiCommand):
         self.io.print_section(f"Executing Plan: {title}")
         
         try:
-            # Build context options
-            context_builder = DefaultContextOptionsBuilder()
+            # Build context options using compatibility wrapper
+            context_builder = LegacyCompatibilityWrapper()
             context_options = context_builder.build_from_args(args)
             
             # Execute the plan
