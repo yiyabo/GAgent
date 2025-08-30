@@ -63,6 +63,10 @@ class FileUtils:
     def write_file_safe(file_path: str, content: str) -> bool:
         """Safely write content to a file with UTF-8 encoding."""
         try:
+            # Ensure parent directory exists
+            parent = os.path.dirname(file_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
             return True

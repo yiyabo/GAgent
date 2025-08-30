@@ -153,3 +153,15 @@ class GLMApiClient:
             "max_retries": self.max_retries,
             "request_timeout": self.request_timeout
         }
+    
+    def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """
+        Alias for get_embeddings_from_api to maintain compatibility
+        
+        Args:
+            texts: List of texts to get embeddings for
+            
+        Returns:
+            List of embeddings
+        """
+        return self.get_embeddings_from_api(texts)

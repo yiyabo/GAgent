@@ -9,8 +9,10 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..llm import get_default_client
+from .base_evaluator import LLMBasedEvaluator
 from ..models import EvaluationResult, EvaluationDimensions, EvaluationConfig
+from ..prompts import prompt_manager
+from .llm_cache import get_llm_cache
 
 logger = logging.getLogger(__name__)
 
@@ -18,40 +20,46 @@ logger = logging.getLogger(__name__)
 class ExpertRole:
     """Represents a single expert role with specialized evaluation criteria"""
     
-    def __init__(self, name: str, description: str, focus_areas: List[str], weight: float = 1.0):
+    def __init__(self, name: str, description: str, focus_areas: List[str], weight: float = 1.0, keywords: List[str] = None):
         self.name = name
         self.description = description
         self.focus_areas = focus_areas
         self.weight = weight
+        self.keywords = keywords or []
     
     def get_evaluation_prompt(self, content: str, task_context: Dict[str, Any]) -> str:
-        """Generate role-specific evaluation prompt"""
+        """Generate role-specific evaluation prompt using English templates"""
         
         task_name = task_context.get("name", "")
-        focus_text = "、".join(self.focus_areas)
+        focus_text = ", ".join(self.focus_areas)
         
-        return f"""
-你现在是{self.description}。请从你的专业角度评估以下内容。
+        # Use English templates from prompt manager
+        intro = prompt_manager.get("expert_evaluation.intro", role_description=self.description)
+        task_bg = prompt_manager.get("expert_evaluation.task_background")
+        content_label = prompt_manager.get("expert_evaluation.content_to_evaluate")
+        focus_stmt = prompt_manager.get("expert_evaluation.focus_statement", role_name=self.name)
+        eval_instr = prompt_manager.get("expert_evaluation.evaluation_instruction")
+        
+        # Get dimension descriptions
+        dimensions = prompt_manager.get_category("expert_evaluation")["dimensions"]
+        dimension_list = "\n".join([f"{i+1}. {dim}" for i, dim in enumerate(dimensions.values())])
+        
+        return f"""{intro}
 
-任务背景："{task_name}"
+{task_bg} "{task_name}"
 
-需要评估的内容：
+{content_label}
 ```
-{content[:800]}  # 限制长度
+{content[:800]}
 ```
 
-作为{self.name}，你主要关注：{focus_text}
+{focus_stmt} {focus_text}
 
-请从以下维度进行专业评估，每个维度给出0-1之间的分数：
+{eval_instr}
 
-1. **相关性**: 内容与任务的专业相关程度
-2. **完整性**: 从你的专业角度看内容是否完整
-3. **准确性**: 专业事实和概念的准确性
-4. **实用性**: 内容的实际应用价值
-5. **创新性**: 是否包含新颖的见解或方法
-6. **风险评估**: 潜在的问题和风险
+{dimension_list}
 
-请以JSON格式返回：
+Please return in JSON format:
 {{
     "expert_role": "{self.name}",
     "relevance": 0.8,
@@ -61,63 +69,76 @@ class ExpertRole:
     "innovation": 0.6,
     "risk_assessment": 0.8,
     "overall_score": 0.77,
-    "key_strengths": ["优势1", "优势2"],
-    "major_concerns": ["问题1", "问题2"],
-    "specific_suggestions": ["建议1", "建议2", "建议3"],
+    "key_strengths": ["Strength 1", "Strength 2"],
+    "major_concerns": ["Issue 1", "Issue 2"],
+    "specific_suggestions": ["Suggestion 1", "Suggestion 2", "Suggestion 3"],
     "confidence_level": 0.9
 }}
 """
 
 
-class MultiExpertEvaluator:
+class MultiExpertEvaluator(LLMBasedEvaluator):
     """Multi-expert evaluation system with specialized roles"""
     
-    def __init__(self, config: Optional[EvaluationConfig] = None):
-        self.config = config or EvaluationConfig()
-        self.llm_client = get_default_client()
+    def __init__(self, config: Optional[EvaluationConfig] = None, use_cache: bool = True):
+        super().__init__(config)
+        self.cache = get_llm_cache() if use_cache else None
         self.experts = self._initialize_experts()
     
+    def get_evaluation_method_name(self) -> str:
+        return "multi_expert_llm"
+    
     def _initialize_experts(self) -> Dict[str, ExpertRole]:
-        """Initialize expert roles for bacteriophage research"""
+        """Initialize expert roles using English configuration"""
         
-        experts = {
-            "theoretical_biologist": ExpertRole(
-                name="理论生物学家",
-                description="资深的理论生物学专家，专注于噬菌体生物学机制和理论基础",
-                focus_areas=["生物学机制", "理论基础", "科学原理", "分子机制"],
-                weight=1.0
-            ),
-            
-            "clinical_physician": ExpertRole(
-                name="临床医师",
-                description="具有丰富临床经验的感染科医师，关注噬菌体治疗的临床应用",
-                focus_areas=["临床安全性", "治疗效果", "患者安全", "临床可行性"],
-                weight=1.2  # 临床安全性权重更高
-            ),
-            
-            "regulatory_expert": ExpertRole(
-                name="药监局审批专家",
-                description="药物监管机构的审批专家，专注于法规合规性和质量控制",
-                focus_areas=["法规合规", "质量控制", "安全标准", "审批要求"],
-                weight=1.1
-            ),
-            
-            "research_scientist": ExpertRole(
-                name="科研工作者",
-                description="噬菌体研究领域的资深科学家，关注研究方法和实验设计",
-                focus_areas=["实验设计", "研究方法", "数据分析", "研究严谨性"],
-                weight=0.9
-            ),
-            
-            "biotech_entrepreneur": ExpertRole(
-                name="生物技术企业家",
-                description="生物技术公司的创始人/CEO，关注商业化潜力和市场前景",
-                focus_areas=["商业化可行性", "市场前景", "技术壁垒", "投资回报"],
-                weight=0.8  # 商业角度权重稍低
-            )
+        # Load expert roles from English prompts
+        expert_roles_config = prompt_manager.get_category("expert_roles")
+        
+        experts = {}
+        weights = {
+            "theoretical_biologist": 1.0,
+            "clinical_physician": 1.2,  # Higher weight for clinical safety
+            "regulatory_expert": 1.1,
+            "researcher": 0.9,
+            "entrepreneur": 0.8  # Lower weight for business perspective
         }
         
+        for expert_key, expert_data in expert_roles_config.items():
+            experts[expert_key] = ExpertRole(
+                name=expert_data["name"],
+                description=expert_data["description"],
+                focus_areas=expert_data["focus_areas"],
+                weight=weights.get(expert_key, 1.0),
+                keywords=expert_data["keywords"]
+            )
+        
         return experts
+    
+    def _parse_expert_response(self, response_text: str) -> Optional[Dict[str, Any]]:
+        """Parse expert evaluation response from LLM"""
+        try:
+            # Parse JSON response
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            
+            if json_start >= 0 and json_end > json_start:
+                json_text = response_text[json_start:json_end]
+                evaluation_data = json.loads(json_text)
+                
+                # Validate required fields
+                required_fields = ["relevance", "completeness", "accuracy", "overall_score"]
+                if all(field in evaluation_data for field in required_fields):
+                    return evaluation_data
+                else:
+                    logger.warning(f"Expert evaluation missing required fields: {required_fields}")
+                    return None
+            else:
+                logger.warning(f"Could not parse expert evaluation JSON from: {response_text[:200]}")
+                return None
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing error in expert evaluation: {e}")
+            return None
     
     def evaluate_with_multiple_experts(
         self, 
@@ -255,40 +276,31 @@ class MultiExpertEvaluator:
         # Basic scoring based on expert focus
         base_score = 0.6  # Conservative baseline
         
-        # Expert-specific adjustments
-        if expert_role.name == "理论生物学家":
-            # Look for scientific terminology
-            science_terms = ["噬菌体", "细菌", "病毒", "机制", "分子", "生物学"]
-            science_score = sum(1 for term in science_terms if term in content_lower) / len(science_terms)
-            base_score = max(base_score, 0.5 + science_score * 0.3)
-            
-        elif expert_role.name == "临床医师":
-            # Look for clinical terminology
-            clinical_terms = ["临床", "患者", "治疗", "安全", "副作用", "疗效"]
-            clinical_score = sum(1 for term in clinical_terms if term in content_lower) / len(clinical_terms)
-            base_score = max(base_score, 0.5 + clinical_score * 0.4)
-            
-        elif expert_role.name == "药监局审批专家":
-            # Look for regulatory terminology
-            regulatory_terms = ["安全", "标准", "质量", "审批", "监管", "合规"]
-            reg_score = sum(1 for term in regulatory_terms if term in content_lower) / len(regulatory_terms)
-            base_score = max(base_score, 0.4 + reg_score * 0.4)
-            
-        elif expert_role.name == "科研工作者":
-            # Look for research terminology
-            research_terms = ["研究", "实验", "数据", "分析", "试验", "方法"]
-            research_score = sum(1 for term in research_terms if term in content_lower) / len(research_terms)
-            base_score = max(base_score, 0.5 + research_score * 0.3)
-            
-        elif expert_role.name == "生物技术企业家":
-            # Look for business terminology
-            business_terms = ["市场", "商业", "投资", "成本", "前景", "应用"]
-            business_score = sum(1 for term in business_terms if term in content_lower) / len(business_terms)
-            base_score = max(base_score, 0.3 + business_score * 0.4)
+        # Expert-specific adjustments using English keywords
+        expert_keywords = getattr(expert_role, 'keywords', [])
+        if expert_keywords:
+            keyword_score = sum(1 for keyword in expert_keywords if keyword.lower() in content_lower) / len(expert_keywords)
+            base_score = max(base_score, 0.5 + keyword_score * 0.3)
         
         # Length adjustment
         length_factor = min(word_count / 100, 1.0)  # Optimal around 100 words
         adjusted_score = base_score * (0.7 + 0.3 * length_factor)
+        
+        # Get fallback messages from prompt manager
+        try:
+            fallback_msg = prompt_manager.get("expert_evaluation.fallback_messages.content_relevant", expert_name=expert_role.name)
+        except:
+            fallback_msg = f"Content relevant to {expert_role.name}'s focus areas"
+        
+        try:
+            llm_unavailable_msg = prompt_manager.get("expert_evaluation.fallback_messages.llm_unavailable")
+        except:
+            llm_unavailable_msg = "LLM evaluation unavailable, using basic evaluation"
+            
+        try:
+            improvement_msg = prompt_manager.get("expert_evaluation.fallback_messages.improvement_suggestion", expert_name=expert_role.name)
+        except:
+            improvement_msg = f"Recommend further refinement from {expert_role.name} perspective"
         
         return {
             "expert_role": expert_role.name,
@@ -299,9 +311,9 @@ class MultiExpertEvaluator:
             "innovation": max(base_score - 0.2, 0.1),
             "risk_assessment": 0.7,  # Conservative risk assessment
             "overall_score": adjusted_score,
-            "key_strengths": [f"内容与{expert_role.name}关注领域相关"],
-            "major_concerns": ["LLM评估不可用，使用基础评估"],
-            "specific_suggestions": [f"建议从{expert_role.name}角度进一步完善内容"],
+            "key_strengths": [fallback_msg],
+            "major_concerns": [llm_unavailable_msg],
+            "specific_suggestions": [improvement_msg],
             "confidence_level": 0.5,  # Low confidence for fallback
             "evaluation_method": "fallback"
         }

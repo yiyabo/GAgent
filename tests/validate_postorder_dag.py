@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from app.database import init_db
 from app.repository.tasks import SqliteTaskRepository
 from app.scheduler import postorder_schedule, bfs_schedule, requires_dag_schedule
-from app.executor import execute_task
+from app.execution.executors import execute_task
 
 
 class TaskDAGValidator:
