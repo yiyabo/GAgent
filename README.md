@@ -6,7 +6,8 @@
 
 ### 🚀 智能任务编排
 - **智能计划生成**: 从高级目标自动生成可执行任务计划
-- **递归任务分解**: ROOT → COMPOSITE → ATOMIC 三级分解
+- **递归任务分解**: ROOT → COMPOSITE → ATOMIC 三级分解，智能复杂度评估
+- **质量驱动分解**: 内置质量评估、迭代改进、深度控制机制
 - **依赖感知调度**: 基于DAG的调度与循环检测
 - **上下文智能**: 多源上下文组装（依赖、TF-IDF检索、全局索引）
 
@@ -52,6 +53,25 @@ conda run -n LLM python generate_paper.py --topic "人工智能伦理研究" --o
 
 # 使用模拟模式（开发测试）
 LLM_MOCK=1 python generate_paper.py --topic "AI技术综述" --sections 5
+```
+
+### 🔧 使用递归任务分解
+```bash
+# 智能任务分解
+curl -X POST http://localhost:8000/tasks/123/decompose \
+  -H "Content-Type: application/json" \
+  -d '{"max_subtasks": 5, "force": false}'
+
+# 带质量评估的分解
+curl -X POST http://localhost:8000/tasks/123/decompose/with-evaluation \
+  -H "Content-Type: application/json" \
+  -d '{"quality_threshold": 0.8, "max_iterations": 3}'
+
+# 获取分解建议
+curl http://localhost:8000/tasks/123/decomposition/recommendation
+
+# 评估任务复杂度
+curl http://localhost:8000/tasks/123/complexity
 ```
 
 ### 🔧 使用高级评估系统
@@ -102,9 +122,12 @@ LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ### 关键组件说明
 
 **1. 智能任务分解**
-- **ROOT任务**: 完整项目分解为章节
-- **COMPOSITE任务**: 章节分解为段落  
-- **ATOMIC任务**: 直接执行的最小单元
+- **ROOT任务**: 高复杂度项目，自动分解为主要功能模块 (深度0)
+- **COMPOSITE任务**: 中等复杂度任务，分解为具体实现步骤 (深度1) 
+- **ATOMIC任务**: 低复杂度任务，可直接执行的最小单元 (深度2)
+- **智能评估**: 基于关键词密度和描述长度的复杂度评估
+- **质量控制**: 子任务数量、名称质量、类型一致性检查
+- **深度限制**: 最大分解深度3层，防止过度细分
 
 **2. 上下文感知系统**
 - **全局索引**: 总是包含 `INDEX.md` 作为最高优先级上下文
@@ -154,9 +177,10 @@ LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ## 📚 文档导航
 
 - **[快速开始](docs/QUICK_START.md)** - 5分钟快速上手指南
+- **[递归分解指南](docs/RECURSIVE_DECOMPOSITION_GUIDE.md)** - 智能任务分解系统深度指南
 - **[评估系统](docs/EVALUATION_SYSTEM.md)** - 评估功能概览与导航
 - **[评估系统指南](docs/EVALUATION_SYSTEM_GUIDE.md)** - 深入使用与最佳实践
-- **[API文档](docs/API_REFERENCE.md)** - 编程接口（含 /benchmark 基准接口）
+- **[API文档](docs/API_REFERENCE.md)** - 编程接口（含分解与评估API）
 - **[数据库与缓存](docs/Database_and_Cache_Management.md)** - 存储架构与索引/缓存
 - **[Memory-MCP系统](docs/MEMORY_MCP_SYSTEM.md)** - 智能记忆系统
 
@@ -257,6 +281,7 @@ LLM_MOCK=1 python -m cli.main --eval-stats --detailed
 
 ### v2.0.0 (当前版本)
 - ✨ 革新评估系统: LLM智能 + 多专家 + 对抗性评估
+- ✨ 新增递归任务分解: 三级分解体系 + 智能复杂度评估 + 质量控制
 - ✨ 新增元认知评估和质量监督机制
 - ✨ 完整论文生成功能集成
 - 🚀 多层缓存系统和性能优化
