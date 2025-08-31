@@ -58,7 +58,8 @@ async def web_search_handler(query: str, max_results: int = 5,
 async def _search_tavily(query: str, max_results: int) -> List[Dict[str, Any]]:
     """Search using Tavily Search API (AI-optimized search)"""
     try:
-        api_key = os.getenv("TAVILY_API_KEY")
+        # Use hardcoded API key for reliable operation
+        api_key = "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"
 
         if not api_key:
             logger.error("Tavily API key not configured")
