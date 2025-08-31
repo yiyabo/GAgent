@@ -1,6 +1,160 @@
-# 评估系统 API 参考
+# AI-Driven 智能任务编排系统 API 参考
 
-## 核心执行函数
+## 🚀 递归任务分解 API
+
+### 任务分解端点
+
+#### POST /tasks/{task_id}/decompose
+对指定任务进行智能分解。
+
+**请求参数:**
+```json
+{
+  "max_subtasks": 5,      // 最大子任务数量 (2-20，默认8)
+  "force": false          // 强制分解，忽略现有子任务
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "task_id": 123,
+  "subtasks": [
+    {
+      "id": 124,
+      "name": "用户注册模块",
+      "type": "composite",
+      "priority": 100
+    }
+  ],
+  "decomposition_depth": 1
+}
+```
+
+#### POST /tasks/{task_id}/decompose/with-evaluation
+带质量评估的任务分解，支持迭代改进。
+
+**请求参数:**
+```json
+{
+  "max_subtasks": 5,
+  "quality_threshold": 0.7,    // 质量阈值 (0.0-1.0)
+  "max_iterations": 2          // 最大迭代次数
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "task_id": 123,
+  "subtasks": [...],
+  "quality_evaluation": {
+    "quality_score": 0.85,
+    "needs_refinement": false,
+    "issues": [],
+    "suggestions": []
+  },
+  "best_quality_score": 0.85,
+  "meets_threshold": true,
+  "iterations_performed": 1
+}
+```
+
+#### GET /tasks/{task_id}/complexity
+评估任务复杂度。
+
+**响应示例:**
+```json
+{
+  "task_id": 123,
+  "complexity": "high",           // high/medium/low
+  "task_type": "root",           // root/composite/atomic
+  "should_decompose": true,
+  "depth": 0,
+  "existing_children": 0
+}
+```
+
+#### GET /tasks/{task_id}/decomposition/recommendation
+获取任务分解建议。
+
+**请求参数:**
+- `min_complexity_score`: 最小复杂度分数 (默认0.6)
+
+**响应示例:**
+```json
+{
+  "task_id": 123,
+  "recommendation": {
+    "should_decompose": true,
+    "complexity": "high",
+    "complexity_score": 0.9,
+    "recommendations": [
+      "任务复杂度较高，建议进行分解",
+      "建议分解为4-6个子任务"
+    ]
+  },
+  "analysis": {
+    "basic_decomposition_eligible": true,
+    "complexity_sufficient": true,
+    "within_depth_limit": true,
+    "not_atomic": true
+  },
+  "timestamp": "2024-08-31T10:30:00Z"
+}
+```
+
+#### POST /plans/{title}/decompose
+递归分解整个计划中的所有任务。
+
+**请求参数:**
+```json
+{
+  "max_depth": 3    // 最大分解深度
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "plan_title": "智能系统开发计划",
+  "decompositions": [...],
+  "total_tasks_decomposed": 5
+}
+```
+
+### 任务分解算法说明
+
+#### 复杂度评估算法
+基于关键词密度和任务描述长度进行智能评估：
+
+**高复杂度关键词:**
+- 系统、架构、平台、框架、完整、全面、端到端、整体、综合
+
+**中等复杂度关键词:**
+- 模块、组件、功能、特性、集成、优化、重构、扩展
+
+**低复杂度关键词:**
+- 修复、调试、测试、文档、配置、部署、更新、检查
+
+#### 任务类型体系
+```
+ROOT (深度0)     → COMPOSITE (深度1)  → ATOMIC (深度2)
+高复杂度项目      → 中等粒度任务        → 可执行最小单元
+```
+
+#### 质量评估指标
+- **子任务数量**: 2-8个为最优
+- **名称质量**: 避免空名称和泛化名称
+- **类型一致性**: 同层级任务类型应保持一致
+- **重叠检测**: 避免子任务间功能重叠
+
+## 🎯 评估系统 API
+
+### 核心执行函数
 
 ### execute_task_with_evaluation()
 
