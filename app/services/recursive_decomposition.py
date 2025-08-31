@@ -1,4 +1,11 @@
-from typing import Any, Dict, List, Optional, Tuple
+"""
+递归任务分解模块
+
+基于任务复杂度智能分解任务为子任务的核心逻辑。
+支持 ROOT → COMPOSITE → ATOMIC 三级分解架构。
+"""
+
+from typing import Any, Dict, List, Optional
 import os
 import logging
 from enum import Enum
@@ -118,7 +125,7 @@ def determine_task_type(task: Dict[str, Any], complexity: str = None) -> TaskTyp
         return TaskType.ATOMIC
 
 
-def should_decompose_task(task: Dict[str, Any], repo: TaskRepository = default_repo) -> bool:
+def should_decompose_task(task: Dict[str, Any], repo: TaskRepository = None) -> bool:
     """判断任务是否需要分解
     
     Args:
@@ -128,6 +135,9 @@ def should_decompose_task(task: Dict[str, Any], repo: TaskRepository = default_r
     Returns:
         True 如果需要分解
     """
+    if repo is None:
+        repo = default_repo
+        
     task_id = task.get("id")
     depth = task.get("depth", 0)
     task_type = determine_task_type(task)
@@ -160,7 +170,7 @@ def should_decompose_task(task: Dict[str, Any], repo: TaskRepository = default_r
 
 def decompose_task(
     task_id: int,
-    repo: TaskRepository = default_repo,
+    repo: TaskRepository = None,
     max_subtasks: int = MAX_ATOMIC_TASKS,
     force: bool = False
 ) -> Dict[str, Any]:
@@ -175,6 +185,9 @@ def decompose_task(
     Returns:
         分解结果字典
     """
+    if repo is None:
+        repo = default_repo
+        
     task = repo.get_task_info(task_id)
     if not task:
         return {"success": False, "error": "Task not found"}
@@ -209,7 +222,7 @@ def decompose_task(
         }
         plan_result = propose_plan_service(plan_payload)
         
-        # 检查规划服务结果（规划服务返回格式不包含success字段）
+        # 检查规划服务结果
         if not isinstance(plan_result, dict) or not plan_result.get("tasks"):
             return {"success": False, "error": "Failed to generate subtasks"}
         
@@ -253,10 +266,9 @@ def decompose_task(
                 "priority": subtask_priority
             })
         
-        # 更新父任务类型
+        # 更新父任务类型（如果需要）
         if task.get("task_type") == "atomic":
-            # 更新为复合任务类型（需要实现 update_task_type 方法）
-            pass
+            repo.update_task_type(task_id, task_type.value)
         
         if _debug_on():
             _DECOMP_LOGGER.debug({
@@ -338,7 +350,7 @@ def _build_decomposition_prompt(
 
 def recursive_decompose_plan(
     plan_title: str,
-    repo: TaskRepository = default_repo,
+    repo: TaskRepository = None,
     max_depth: int = MAX_DECOMPOSITION_DEPTH
 ) -> Dict[str, Any]:
     """递归分解整个计划
@@ -351,6 +363,9 @@ def recursive_decompose_plan(
     Returns:
         分解结果字典
     """
+    if repo is None:
+        repo = default_repo
+        
     try:
         # 获取计划中的所有任务
         plan_tasks = repo.list_plan_tasks(plan_title)
