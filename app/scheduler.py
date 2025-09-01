@@ -10,7 +10,6 @@ from .repository.tasks import default_repo
 def _ensure_hierarchy(rows: List[Dict[str, Any]]) -> None:
     """Ensure each row has parent_id, path, depth."""
     for r in rows:
-        # Only fill missing fields to avoid overwriting existing ones
         tid = int(r.get("id", 0))
         info = default_repo.get_task_info(tid)
         if info:
@@ -55,7 +54,6 @@ def bfs_schedule(plan_id: int, pending_only: bool = True) -> List[Dict[str, Any]
 
     _ensure_hierarchy(tasks)
 
-    # 构建根任务优先级映射
     root_priorities = {}
     for t in tasks:
         if int(t.get("depth") or 0) == 0:
@@ -73,22 +71,24 @@ def bfs_schedule(plan_id: int, pending_only: bool = True) -> List[Dict[str, Any]
     return sorted(tasks, key=_enhanced_bfs_key)
 
 
-def postorder_schedule(plan_id: int) -> List[Dict[str, Any]]:
-    """Yield pending tasks for a specific plan ID in post-order traversal."""
+def postorder_schedule(plan_id: int, pending_only: bool = True) -> List[Dict[str, Any]]:
+    """Yield tasks for a specific plan ID in post-order traversal."""
     if not plan_id:
         return []
 
     from .repository.tasks import default_repo
 
     all_plan_tasks = default_repo.get_plan_tasks(plan_id)
-    tasks = [t for t in all_plan_tasks if t.get("status") == "pending"]
+    if pending_only:
+        tasks = [t for t in all_plan_tasks if t.get("status") == "pending"]
+    else:
+        tasks = all_plan_tasks
 
     if not tasks:
         return []
 
     _ensure_hierarchy(tasks)
 
-    # 构建父-子关系映射
     children_map = {}
     for t in tasks:
         try:
@@ -99,7 +99,6 @@ def postorder_schedule(plan_id: int) -> List[Dict[str, Any]]:
         except Exception:
             continue
 
-    # 后序遍历
     visited = set()
     result = []
 
@@ -107,20 +106,15 @@ def postorder_schedule(plan_id: int) -> List[Dict[str, Any]]:
         task_id = int(task.get("id"))
         if task_id in visited:
             return
-
         visited.add(task_id)
-
         children = children_map.get(task_id, [])
         children_sorted = sorted(
             children, key=lambda x: (int(x.get("priority") or 100), int(x.get("id")))
         )
-
         for child in children_sorted:
             _postorder_dfs(child)
-
         result.append(task)
 
-    # 找根任务开始遍历
     root_tasks = []
     task_ids = {int(t["id"]) for t in tasks}
 
@@ -140,7 +134,7 @@ def postorder_schedule(plan_id: int) -> List[Dict[str, Any]]:
 
 
 def requires_dag_order(
-    plan_id: int,
+    plan_id: int, pending_only: bool = True
 ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Build DAG for plan tasks using 'requires' links and check for cycles."""
     if not plan_id:
@@ -149,7 +143,10 @@ def requires_dag_order(
     from .repository.tasks import default_repo
 
     all_plan_tasks = default_repo.get_plan_tasks(plan_id)
-    nodes = [t for t in all_plan_tasks if t.get("status") == "pending"]
+    if pending_only:
+        nodes = [t for t in all_plan_tasks if t.get("status") == "pending"]
+    else:
+        nodes = all_plan_tasks
 
     if not nodes:
         return [], None
@@ -157,7 +154,6 @@ def requires_dag_order(
     id_to_row = {r["id"]: r for r in nodes}
     scoped_ids = set(id_to_row.keys())
 
-    # 获取 requires 依赖
     links = default_repo.list_links(kind="requires")
     edges = [
         (int(link["from_id"]), int(link["to_id"]))
@@ -166,14 +162,12 @@ def requires_dag_order(
         and int(link["to_id"]) in scoped_ids
     ]
 
-    # 构建图
     indeg = {nid: 0 for nid in scoped_ids}
     adj = {nid: [] for nid in scoped_ids}
     for f, t in edges:
         indeg[t] += 1
         adj[f].append(t)
 
-    # 使用优先级堆进行拓扑排序
     heap = []
     for nid in scoped_ids:
         if indeg[nid] == 0:
@@ -206,7 +200,6 @@ def requires_dag_order(
     if len(ordered) == len(scoped_ids):
         return ordered, None
 
-    # 循环检测
     residual = {nid for nid in scoped_ids if nid not in {t["id"] for t in ordered}}
     cyc_edges = [
         {"from": f, "to": t} for (f, t) in edges if f in residual and t in residual

@@ -8,7 +8,7 @@
           :to="`/plan/${planId}/edit`" 
           class="btn btn-secondary"
         >
-          Back to Edit
+          Back
         </router-link>
       </div>
     </div>

@@ -42,13 +42,16 @@ export const usePlansStore = defineStore('plans', {
   actions: {
     // Load all plans
     async loadPlans() {
-      this.plansLoading = true
+      // Only show the full-page loader on the initial load
+      if (this.plans.length === 0) {
+        this.plansLoading = true
+      }
       try {
         this.plans = await plansApi.getPlans()
       } catch (error) {
         this.error = error.message
       } finally {
-        this.plansLoading = false
+        this.plansLoading = false // Always turn off loading state
       }
     },
 

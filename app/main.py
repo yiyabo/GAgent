@@ -389,7 +389,7 @@ def regenerate_task_context_api(task_id: int):
     }
 
 @app.post("/plans/propose")
-async def propose_plan(payload: Dict[str, Any]):
+def propose_plan(payload: Dict[str, Any]):
     try:
         return propose_plan_service(payload)
     except ValueError as e:
