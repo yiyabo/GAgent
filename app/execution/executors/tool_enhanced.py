@@ -474,3 +474,117 @@ def execute_task_enhanced(task, repo=None, use_context=True, context_options=Non
         logger.error(f"Enhanced execution failed, falling back to base execution: {e}")
         # Fallback to base execution
         return base_execute_task(task, repo, use_context, context_options)
+
+
+# New: combined path — tool-enhanced context + evaluation-driven execution
+async def execute_task_with_tools_and_evaluation(
+    task,
+    repo: Optional[TaskRepository] = None,
+    evaluation_mode: str = "llm",           # 'llm' | 'multi_expert' | 'adversarial'
+    max_iterations: int = 3,
+    quality_threshold: float = 0.8,
+    use_context: bool = True,
+    context_options: Optional[Dict[str, Any]] = None,
+):
+    """
+    Execute with tool-enhanced context, then run evaluation-driven generation.
+
+    Steps:
+      1) Analyze tool needs and run info-gathering tools
+      2) Enhance context options with tool outputs
+      3) Run evaluation loop (LLM/multi-expert/adversarial)
+      4) Execute post-generation output tools (e.g., write file)
+    """
+    repo = repo or default_repo
+
+    # Initialize router and prepare tool-enhanced context
+    executor = ToolEnhancedExecutor(repo)
+    await executor.initialize()
+
+    # Get task basic info
+    task_id = task.get("id") if isinstance(task, dict) else task[0]
+    task_name = task.get("name") if isinstance(task, dict) else task[1]
+
+    # Build task prompt
+    task_prompt = repo.get_task_input_prompt(task_id)
+    if not task_prompt:
+        task_prompt = f"Complete the task: {task_name}"
+
+    # Phase 1: Analyze and route
+    try:
+        needs_tools, tool_analysis = await executor._analyze_tool_requirements(task_prompt, task)
+    except Exception:
+        needs_tools, tool_analysis = (False, {})
+
+    info_gathering_tools = []
+    output_tools = []
+    routing_result = {"tool_calls": []}
+
+    if needs_tools and executor.tool_router:
+        routing_context = await executor._build_routing_context(task, context_options)
+        try:
+            routing_result = await executor.tool_router.route_request(task_prompt, routing_context)
+        except Exception as e:
+            logger.warning(f"Tool routing failed, continue without tools: {e}")
+            routing_result = {"tool_calls": []}
+
+        for call in routing_result.get("tool_calls", []):
+            if call.get('tool_name') in ['web_search', 'database_query']:
+                info_gathering_tools.append(call)
+            elif call.get('tool_name') == 'file_operations':
+                output_tools.append(call)
+
+    # Phase 2: Execute info-gathering tools
+    tool_outputs = []
+    if info_gathering_tools:
+        tool_outputs = await executor._execute_tool_calls(info_gathering_tools, task)
+
+    # Phase 3: Enhance context with tool results
+    enhanced_context_options = await executor._enhance_context_with_tools(
+        context_options, tool_outputs, tool_analysis
+    )
+
+    # Phase 4: Evaluation-driven generation
+    from .enhanced import (
+        execute_task_with_evaluation as _exec_eval,
+        execute_task_with_multi_expert_evaluation as _exec_multi,
+        execute_task_with_adversarial_evaluation as _exec_adv,
+    )
+
+    mode = (evaluation_mode or "llm").strip().lower()
+    if mode == "multi_expert":
+        result = _exec_multi(
+            task=task,
+            repo=repo,
+            max_iterations=max_iterations,
+            quality_threshold=quality_threshold,
+            use_context=use_context,
+            context_options=enhanced_context_options,
+        )
+    elif mode == "adversarial":
+        result = _exec_adv(
+            task=task,
+            repo=repo,
+            max_iterations=max_iterations,
+            quality_threshold=quality_threshold,
+            use_context=use_context,
+            context_options=enhanced_context_options,
+        )
+    else:  # default LLM evaluation
+        result = _exec_eval(
+            task=task,
+            repo=repo,
+            max_iterations=max_iterations,
+            quality_threshold=quality_threshold,
+            use_context=use_context,
+            context_options=enhanced_context_options,
+        )
+
+    # Phase 5: Post-generation output tools
+    if output_tools and getattr(result, 'status', None) in ("done", "completed"):
+        try:
+            await executor._execute_post_generation_tools(output_tools, task, task_id)
+        except Exception as e:
+            logger.warning(f"Post-generation tools failed: {e}")
+
+    return result

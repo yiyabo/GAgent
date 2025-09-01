@@ -420,6 +420,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     
     # New: Evaluation mode support
     enable_evaluation = bool(rr.enable_evaluation)
+    evaluation_mode = (rr.evaluation_mode or "llm").strip().lower() if enable_evaluation else None
     evaluation_config = None
     if enable_evaluation:
         ev = rr.evaluation_options or ExecuteWithEvaluationRequest().model_dump()
@@ -429,6 +430,29 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             "max_iterations": _parse_int((ev or {}).get("max_iterations", 3), default=3, min_value=1, max_value=10),
             "quality_threshold": _parse_opt_float((ev or {}).get("quality_threshold"), 0.0, 1.0) or 0.8
         }
+
+    # New: Tool-enhanced flag
+    use_tools = bool(getattr(rr, 'use_tools', False))
+
+    # New: Auto-decompose (plan-level) before execution if title provided
+    auto_decompose = bool(getattr(rr, 'auto_decompose', False))
+    decompose_max_depth = None
+    try:
+        if getattr(rr, 'decompose_max_depth', None) is not None:
+            decompose_max_depth = _parse_int(rr.decompose_max_depth, default=3, min_value=1, max_value=5)
+    except Exception:
+        decompose_max_depth = None
+
+    if auto_decompose and title:
+        try:
+            # Prefer postorder for hierarchical execution when auto-decomposing
+            if rr.schedule is None:
+                schedule = "postorder"
+            result = recursive_decompose_plan(title, repo=default_repo, max_depth=decompose_max_depth or 3)
+            if not isinstance(result, dict) or (not result.get("success", False)):
+                logging.getLogger("app.main").warning(f"Auto-decompose failed or no-op for plan '{title}': {result}")
+        except Exception as e:
+            logging.getLogger("app.main").warning(f"Auto-decompose error for plan '{title}': {e}")
 
     results = []
     if not title:
@@ -448,16 +472,36 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             tasks_iter = bfs_schedule()
         for task in tasks_iter:
             if enable_evaluation:
-                # Use enhanced executor with evaluation
-                from .execution.executors.enhanced import execute_task_with_evaluation
-                result = execute_task_with_evaluation(
-                    task=task,
-                    repo=default_repo,
-                    max_iterations=evaluation_config["max_iterations"],
-                    quality_threshold=evaluation_config["quality_threshold"],
-                    use_context=use_context,
-                    context_options=context_options
-                )
+                # Use enhanced executor with evaluation (optionally tool-enhanced)
+                if use_tools:
+                    # Combined tool + evaluation path (async wrapper)
+                    import asyncio
+                    from .execution.executors.tool_enhanced import execute_task_with_tools_and_evaluation
+                    result = asyncio.run(execute_task_with_tools_and_evaluation(
+                        task=task,
+                        repo=default_repo,
+                        evaluation_mode=evaluation_mode or "llm",
+                        max_iterations=evaluation_config["max_iterations"],
+                        quality_threshold=evaluation_config["quality_threshold"],
+                        use_context=use_context,
+                        context_options=context_options
+                    ))
+                else:
+                    # Select evaluation mode
+                    if evaluation_mode == "multi_expert":
+                        from .execution.executors.enhanced import execute_task_with_multi_expert_evaluation as _exec
+                    elif evaluation_mode == "adversarial":
+                        from .execution.executors.enhanced import execute_task_with_adversarial_evaluation as _exec
+                    else:
+                        from .execution.executors.enhanced import execute_task_with_evaluation as _exec
+                    result = _exec(
+                        task=task,
+                        repo=default_repo,
+                        max_iterations=evaluation_config["max_iterations"],
+                        quality_threshold=evaluation_config["quality_threshold"],
+                        use_context=use_context,
+                        context_options=context_options
+                    )
                 task_id = result.task_id
                 status = result.status
                 default_repo.update_task_status(task_id, status)
@@ -470,8 +514,12 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                     } if enable_evaluation else None
                 })
             else:
-                # Use original executor
-                status = execute_task(task, use_context=use_context, context_options=context_options)
+                # Use original executor (optionally tool-enhanced)
+                if use_tools:
+                    from .execution.executors.tool_enhanced import execute_task_enhanced
+                    status = execute_task_enhanced(task, repo=default_repo, use_context=use_context, context_options=context_options)
+                else:
+                    status = execute_task(task, use_context=use_context, context_options=context_options)
                 task_id = task["id"] if isinstance(task, dict) else task[0]
                 default_repo.update_task_status(task_id, status)
                 results.append({"id": task_id, "status": status})
@@ -495,16 +543,34 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
 
     for task in tasks_iter:
         if enable_evaluation:
-            # Use enhanced executor with evaluation
-            from .execution.executors.enhanced import execute_task_with_evaluation
-            result = execute_task_with_evaluation(
-                task=task,
-                repo=default_repo,
-                max_iterations=evaluation_config["max_iterations"],
-                quality_threshold=evaluation_config["quality_threshold"],
-                use_context=use_context,
-                context_options=context_options
-            )
+            # Use enhanced executor with evaluation (optionally tool-enhanced)
+            if use_tools:
+                import asyncio
+                from .execution.executors.tool_enhanced import execute_task_with_tools_and_evaluation
+                result = asyncio.run(execute_task_with_tools_and_evaluation(
+                    task=task,
+                    repo=default_repo,
+                    evaluation_mode=evaluation_mode or "llm",
+                    max_iterations=evaluation_config["max_iterations"],
+                    quality_threshold=evaluation_config["quality_threshold"],
+                    use_context=use_context,
+                    context_options=context_options
+                ))
+            else:
+                if evaluation_mode == "multi_expert":
+                    from .execution.executors.enhanced import execute_task_with_multi_expert_evaluation as _exec
+                elif evaluation_mode == "adversarial":
+                    from .execution.executors.enhanced import execute_task_with_adversarial_evaluation as _exec
+                else:
+                    from .execution.executors.enhanced import execute_task_with_evaluation as _exec
+                result = _exec(
+                    task=task,
+                    repo=default_repo,
+                    max_iterations=evaluation_config["max_iterations"],
+                    quality_threshold=evaluation_config["quality_threshold"],
+                    use_context=use_context,
+                    context_options=context_options
+                )
             task_id = result.task_id
             status = result.status
             default_repo.update_task_status(task_id, status)
@@ -517,8 +583,12 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                 } if enable_evaluation else None
             })
         else:
-            # Use original executor
-            status = execute_task(task, use_context=use_context, context_options=context_options)
+            # Use original executor (optionally tool-enhanced)
+            if use_tools:
+                from .execution.executors.tool_enhanced import execute_task_enhanced
+                status = execute_task_enhanced(task, repo=default_repo, use_context=use_context, context_options=context_options)
+            else:
+                status = execute_task(task, use_context=use_context, context_options=context_options)
             task_id = task["id"] if isinstance(task, dict) else task[0]
             default_repo.update_task_status(task_id, status)
             results.append({"id": task_id, "status": status})

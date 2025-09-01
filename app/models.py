@@ -112,6 +112,11 @@ class RunRequest(BaseModel):
     schedule: Optional[str] = None  # bfs|dag|postorder
     use_context: bool = False
     enable_evaluation: bool = False
+    # New flags for orchestration
+    use_tools: Optional[bool] = False              # Enable tool-enhanced execution
+    auto_decompose: Optional[bool] = False         # Auto run plan decomposition before executing (requires title)
+    evaluation_mode: Optional[str] = None          # 'llm' | 'multi_expert' | 'adversarial'
+    decompose_max_depth: Optional[int] = None      # Optional depth when auto_decompose
     evaluation_options: Optional[EvaluationOptions] = None
     context_options: Optional[ContextOptions] = None
 
