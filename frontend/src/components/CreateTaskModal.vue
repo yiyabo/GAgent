@@ -1,3 +1,4 @@
+
 <template>
   <div v-if="show" class="modal-overlay" @click="close">
     <div class="modal-content" @click.stop>
@@ -61,7 +62,7 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue';
-import { tasksApi } from '../services/api';
+import { usePlansStore } from '../stores/plans';
 
 const props = defineProps({
   show: {
@@ -78,7 +79,8 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(['close', 'task-created']);
+const emit = defineEmits(['close']);
+const plansStore = usePlansStore();
 
 const newTask = ref({});
 const newContext = ref({ label: '', content: '' });
@@ -125,16 +127,8 @@ const submit = async () => {
     return;
   }
   try {
-    const createdTask = await tasksApi.createTask(
-      newTask.value.name.trim(),
-      newTask.value.taskType,
-      newTask.value.parentId,
-      props.planId,
-      newTask.value.prompt.trim(),
-      newTask.value.contexts
-    );
-    alert(`任务创建成功！ID: ${createdTask.id}`);
-    emit('task-created');
+    await plansStore.createTask(props.planId, newTask.value);
+    alert(`任务创建成功！`);
     close();
   } catch (error) {
     console.error('任务创建失败:', error);
@@ -145,7 +139,6 @@ const submit = async () => {
 </script>
 
 <style scoped>
-/* ... styles ... */
 .modal-overlay {
   position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;}
 .modal-content { background: white; border-radius: 0.75rem; max-width: 700px; width: 100%; max-height: 85vh; overflow-y: auto;}

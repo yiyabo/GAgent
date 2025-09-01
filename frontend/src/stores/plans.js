@@ -104,6 +104,26 @@ export const usePlansStore = defineStore('plans', {
       }
     },
 
+    async createTask(planId, taskData) {
+      this.planDetailsLoading = true; // Set loading state
+      try {
+        await tasksApi.createTask(
+          taskData.name,
+          taskData.taskType,
+          taskData.parentId,
+          planId,
+          taskData.prompt,
+          taskData.contexts
+        );
+        // After creating, reload the tasks for the current plan to show the new task
+        await this.loadPlanDetails(planId);
+      } catch (error) {
+        this.error = error.message;
+        this.planDetailsLoading = false; // Ensure loading is unset on error
+        throw error; // Re-throw for the component to handle if needed
+      }
+    },
+
     // Update task information
     async updateTask(taskId, updates) {
       try {
