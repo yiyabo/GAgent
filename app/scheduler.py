@@ -1,82 +1,25 @@
-from typing import Any, Dict, List, Optional, Set, Tuple
 import heapq
+from typing import Any, Dict, List, Optional, Tuple
 
 from .repository.tasks import default_repo
-from .utils import plan_prefix, split_prefix
 
-def bfs_schedule(title: Optional[str] = None):
-    """Yield pending tasks in a hierarchy-aware, stable order using a single batch query.
-
-    Behavior:
-    - Loads all pending tasks once via list_pending_full() to include hierarchy fields.
-    - If title is provided, scopes rows by plan prefix in-memory (no extra DB lookups).
-    - Orders by (priority ASC, root_id ASC, depth ASC, path ASC, id ASC), approximating a
-      breadth-first traversal grouped by subtree with stable tiebreakers.
-    """
-    # Batch load all pending tasks with hierarchy info
-    rows = default_repo.list_pending_full()
-
-    # Optional scope by plan title
-    if title:
-        prefix = plan_prefix(title)
-        rows = [r for r in rows if (r.get("name") or "").startswith(prefix)]
-
-    # Ensure hierarchy fields present (no-op for list_pending_full, but safe fallback)
-    _ensure_hierarchy(rows)
-
-    # Stable, hierarchy-aware ordering optimized for BFS
-    # First, build a map of root priorities for proper subtree ordering
-    root_priorities = {}
-    for r in rows:
-        if int(r.get("depth") or 0) == 0:
-            root_priorities[int(r.get("id"))] = int(r.get("priority") or 100)
-    
-    def _enhanced_bfs_key(row: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
-        pr, rid = _priority_key(row)
-        path = row.get("path") or f"/{rid}"
-        depth = int(row.get("depth") or 0)
-        root_id = _root_id_from_path(path, rid)
-        
-        # Use actual root priority for consistent subtree grouping
-        root_priority = root_priorities.get(root_id, root_id)
-        
-        return (root_priority, depth, pr, path, rid)
-    
-    rows_sorted = sorted(rows, key=_enhanced_bfs_key)
-    for r in rows_sorted:
-        yield r
+# === PLAN-ID BASED SCHEDULING FUNCTIONS (NO TITLE DEPENDENCY) ===
 
 
-def _priority_key(row: Dict[str, Any]) -> Tuple[int, int]:
-    """Return stable priority key (priority ASC, id ASC)."""
-    pr = row.get("priority")
-    pr_val = int(pr) if isinstance(pr, int) else 100
-    rid = int(row.get("id"))
-    return (pr_val, rid)
-
-
+# Required helper functions
 def _ensure_hierarchy(rows: List[Dict[str, Any]]) -> None:
-    """Ensure each row has parent_id, path, depth. Mutates rows in-place.
-
-    Fallbacks: if missing, fetch via repo.get_task_info(id). If still missing,
-    synthesize defaults path=f"/{id}", depth=0.
-    """
+    """Ensure each row has parent_id, path, depth."""
     for r in rows:
-        if (r.get("path") is not None) and (r.get("depth") is not None):
-            continue
-        try:
-            tid = int(r.get("id"))
-        except Exception:
-            continue
+        # Only fill missing fields to avoid overwriting existing ones
+        tid = int(r.get("id", 0))
         info = default_repo.get_task_info(tid)
         if info:
-            # only fill missing to avoid overwriting existing fields
-            for k in ("parent_id", "path", "depth"):
-                if r.get(k) is None and (info.get(k) is not None):
-                    r[k] = info.get(k)
-        # final fallbacks
-        r.setdefault("path", f"/{tid}")
-        r.setdefault("depth", 0)
+            r.setdefault("parent_id", info.get("parent_id"))
+            r.setdefault("path", info.get("path", f"/{tid}"))
+            r.setdefault("depth", info.get("depth", 0))
+        else:
+            r.setdefault("path", f"/{tid}")
+            r.setdefault("depth", 0)
 
 
 def _root_id_from_path(path: Optional[str], self_id: Optional[int]) -> int:
@@ -94,256 +37,184 @@ def _root_id_from_path(path: Optional[str], self_id: Optional[int]) -> int:
         return 0
 
 
-def _dag_heap_key(row: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
-    """Stable key for DAG scheduler that is hierarchy-aware.
+def bfs_schedule(plan_id: int, pending_only: bool = True) -> List[Dict[str, Any]]:
+    """Yield tasks for a specific plan ID in breadth-first order."""
+    if not plan_id:
+        return []
 
-    Order by:
-      1) priority ASC (missing -> 100)
-      2) root_id ASC (group by subtree)
-      3) depth ASC (parents before deeper nodes when available)
-      4) path ASC (stable within subtree)
-      5) id ASC (final tiebreaker)
-    """
-    pr, rid = _priority_key(row)
-    path = row.get("path") or f"/{rid}"
-    depth = int(row.get("depth") or 0)
-    root = _root_id_from_path(path, rid)
-    return (pr, root, depth, path, rid)
+    from .repository.tasks import default_repo
 
-
-def _bfs_heap_key(row: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
-    """Stable key for BFS scheduler optimized for breadth-first hierarchy traversal.
-
-    Order by:
-      1) root priority ASC (priority of root task in the subtree)
-      2) depth ASC (parents before children)
-      3) priority ASC within same depth level
-      4) path ASC (stable ordering)
-      5) id ASC (final tiebreaker)
-    
-    This ensures proper hierarchy: root tasks ordered by their priority,
-    then within each subtree, parents come before children.
-    """
-    pr, rid = _priority_key(row)
-    path = row.get("path") or f"/{rid}"
-    depth = int(row.get("depth") or 0)
-    root_id = _root_id_from_path(path, rid)
-    
-    # For root priority, we need to find the root task's priority
-    # For now, use the task's own priority if it's a root, otherwise use a default
-    if depth == 0:
-        root_priority = pr
+    all_plan_tasks = default_repo.get_plan_tasks(plan_id)
+    if pending_only:
+        tasks = [t for t in all_plan_tasks if t.get("status") == "pending"]
     else:
-        # For child tasks, we'd ideally look up the root's priority
-        # but for simplicity, use the root_id as a proxy for consistent grouping
-        root_priority = root_id
-    
-    return (root_priority, depth, pr, path, rid)
+        tasks = all_plan_tasks
+
+    if not tasks:
+        return []
+
+    _ensure_hierarchy(tasks)
+
+    # 构建根任务优先级映射
+    root_priorities = {}
+    for t in tasks:
+        if int(t.get("depth") or 0) == 0:
+            root_priorities[int(t.get("id"))] = int(t.get("priority") or 100)
+
+    def _enhanced_bfs_key(task: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
+        pr = int(task.get("priority") or 100)
+        tid = int(task.get("id"))
+        path = task.get("path") or f"/{tid}"
+        depth = int(task.get("depth") or 0)
+        root_id = _root_id_from_path(path, tid)
+        root_priority = root_priorities.get(root_id, root_id)
+        return (root_priority, depth, pr, path, tid)
+
+    return sorted(tasks, key=_enhanced_bfs_key)
 
 
-def requires_dag_order(title: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """
-    Build a dependency-aware execution order using 'requires' links.
+def postorder_schedule(plan_id: int) -> List[Dict[str, Any]]:
+    """Yield pending tasks for a specific plan ID in post-order traversal."""
+    if not plan_id:
+        return []
 
-    - Scope:
-      * If title is None: consider all pending tasks globally.
-      * Else: consider only pending tasks whose name starts with plan prefix for 'title'.
-    - Edges:
-      * Include only 'requires' edges where both endpoints are in the scoped pending set
-        (external or non-pending dependencies are treated as already satisfied).
-    - Ordering:
-      * Kahn's algorithm with a min-heap keyed by (priority ASC, id ASC) for stability.
-    - Cycle detection:
-      * If residual nodes remain, return cycle info with node ids and intra-scope edges.
+    from .repository.tasks import default_repo
 
-    Returns: (order_rows, cycle_info)
-    - order_rows: list of task rows (dicts) in stable topological order
-    - cycle_info: optional dict with {nodes: [...], edges: [{from, to}, ...], names: {id: name}, message}
-    """
-    # 1) Nodes (scoped pending)
-    if title is None:
-        nodes = default_repo.list_tasks_by_status('pending')
-    else:
-        prefix = plan_prefix(title)
-        nodes = default_repo.list_tasks_by_prefix(prefix, pending_only=True, ordered=False)
+    all_plan_tasks = default_repo.get_plan_tasks(plan_id)
+    tasks = [t for t in all_plan_tasks if t.get("status") == "pending"]
 
-    id_to_row: Dict[int, Dict[str, Any]] = {}
-    for r in nodes:
+    if not tasks:
+        return []
+
+    _ensure_hierarchy(tasks)
+
+    # 构建父-子关系映射
+    children_map = {}
+    for t in tasks:
         try:
-            rid = int(r.get("id"))
+            parent_id = t.get("parent_id")
+            if parent_id is not None:
+                parent_id = int(parent_id)
+                children_map.setdefault(parent_id, []).append(t)
         except Exception:
             continue
-        id_to_row[rid] = r
-    scoped_ids: Set[int] = set(id_to_row.keys())
 
-    # Early exit: no nodes
-    if not scoped_ids:
+    # 后序遍历
+    visited = set()
+    result = []
+
+    def _postorder_dfs(task):
+        task_id = int(task.get("id"))
+        if task_id in visited:
+            return
+
+        visited.add(task_id)
+
+        children = children_map.get(task_id, [])
+        children_sorted = sorted(
+            children, key=lambda x: (int(x.get("priority") or 100), int(x.get("id")))
+        )
+
+        for child in children_sorted:
+            _postorder_dfs(child)
+
+        result.append(task)
+
+    # 找根任务开始遍历
+    root_tasks = []
+    task_ids = {int(t["id"]) for t in tasks}
+
+    for t in tasks:
+        parent_id = t.get("parent_id")
+        if parent_id is None or int(parent_id) not in task_ids:
+            root_tasks.append(t)
+
+    root_tasks_sorted = sorted(
+        root_tasks, key=lambda x: (int(x.get("priority") or 100), int(x.get("id")))
+    )
+
+    for root in root_tasks_sorted:
+        _postorder_dfs(root)
+
+    return result
+
+
+def requires_dag_order(
+    plan_id: int,
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Build DAG for plan tasks using 'requires' links and check for cycles."""
+    if not plan_id:
         return [], None
 
-    # 2) Edges within scope (requires only)
-    links = default_repo.list_links(kind='requires')
-    edges: List[Tuple[int, int]] = []  # (from_id -> to_id)
-    for l in links:
-        try:
-            f = int(l.get("from_id"))
-            t = int(l.get("to_id"))
-        except Exception:
-            continue
-        if (f in scoped_ids) and (t in scoped_ids):
-            edges.append((f, t))
+    from .repository.tasks import default_repo
 
-    # 3) Build indegree and adjacency
-    indeg: Dict[int, int] = {nid: 0 for nid in scoped_ids}
-    adj: Dict[int, List[int]] = {nid: [] for nid in scoped_ids}
+    all_plan_tasks = default_repo.get_plan_tasks(plan_id)
+    nodes = [t for t in all_plan_tasks if t.get("status") == "pending"]
+
+    if not nodes:
+        return [], None
+
+    id_to_row = {r["id"]: r for r in nodes}
+    scoped_ids = set(id_to_row.keys())
+
+    # 获取 requires 依赖
+    links = default_repo.list_links(kind="requires")
+    edges = [
+        (int(link["from_id"]), int(link["to_id"]))
+        for link in links
+        if int(link["from_id"]) in scoped_ids
+        and int(link["to_id"]) in scoped_ids
+    ]
+
+    # 构建图
+    indeg = {nid: 0 for nid in scoped_ids}
+    adj = {nid: [] for nid in scoped_ids}
     for f, t in edges:
         indeg[t] += 1
         adj[f].append(t)
 
-    # 4) Initialize heap with indegree==0 nodes (stable, hierarchy-aware)
-    heap: List[Tuple[int, int, int, str, int]] = []  # key from _dag_heap_key + id
-    # enrich rows with hierarchy fields for grouping
-    _ensure_hierarchy(list(id_to_row.values()))
+    # 使用优先级堆进行拓扑排序
+    heap = []
     for nid in scoped_ids:
         if indeg[nid] == 0:
-            k = _dag_heap_key(id_to_row[nid])
-            # append id to ensure tuple has unique last element for heap stability
-            heap.append((*k, nid))
-    heapq.heapify(heap)
+            task = id_to_row[nid]
+            key = (
+                int(task.get("priority") or 100),
+                int(task.get("depth") or 0),
+                task.get("path", f"/{nid}"),
+                nid,
+            )
+            heapq.heappush(heap, key)
 
-    ordered_ids: List[int] = []
-    visited: Set[int] = set()
+    ordered = []
 
     while heap:
-        # pop based on hierarchy-aware key
         *_, nid = heapq.heappop(heap)
-        if nid in visited:
-            continue
-        visited.add(nid)
-        ordered_ids.append(nid)
+        ordered.append(id_to_row[nid])
         for m in adj.get(nid, []):
             indeg[m] -= 1
             if indeg[m] == 0:
-                k = _dag_heap_key(id_to_row[m])
-                heapq.heappush(heap, (*k, m))
+                task = id_to_row[m]
+                key = (
+                    int(task.get("priority") or 100),
+                    int(task.get("depth") or 0),
+                    task.get("path", f"/{m}"),
+                    m,
+                )
+                heapq.heappush(heap, key)
 
-    # 5) Collect result and cycle info
-    order_rows = [id_to_row[i] for i in ordered_ids]
-    if len(ordered_ids) == len(scoped_ids):
-        return order_rows, None
+    if len(ordered) == len(scoped_ids):
+        return ordered, None
 
-    # Residual nodes indicate a cycle
-    residual: Set[int] = {nid for nid in scoped_ids if nid not in visited}
+    # 循环检测
+    residual = {nid for nid in scoped_ids if nid not in {t["id"] for t in ordered}}
     cyc_edges = [
-        {"from": f, "to": t}
-        for (f, t) in edges
-        if (f in residual) and (t in residual)
+        {"from": f, "to": t} for (f, t) in edges if f in residual and t in residual
     ]
-    # Use short names (without [title] prefix) for readability in cycle info
-    names = {}
-    for rid in residual:
-        full = id_to_row[rid].get("name")
-        _, short = split_prefix(full or "")
-        names[rid] = short
+
     cycle_info = {
         "nodes": sorted(list(residual)),
         "edges": cyc_edges,
-        "names": names,
-        "message": "Cycle detected in requires DAG within the selected scope.",
+        "message": f"Cycle detected among {len(residual)} tasks in plan {plan_id}",
     }
-    return order_rows, cycle_info
-
-
-def requires_dag_schedule(title: Optional[str] = None):
-    """Yield tasks in dependency-aware order; ignores cycle leftovers (reported via requires_dag_order)."""
-    ordered, _ = requires_dag_order(title)
-    for r in ordered:
-        yield r
-
-def postorder_schedule(title: Optional[str] = None):
-    """Yield pending tasks in post-order traversal: children before parents.
-
-    Behavior:
-    - Loads all pending tasks with hierarchy info.
-    - If title is provided, scopes rows by plan prefix in-memory.
-    - Orders by post-order traversal: deeper tasks first, then by priority within same depth.
-    - For each task, includes its dependency information (children that should be completed first).
-    """
-    # Batch load all pending tasks with hierarchy info
-    rows = default_repo.list_pending_full()
-
-    # Optional scope by plan title
-    if title:
-        prefix = plan_prefix(title)
-        rows = [r for r in rows if (r.get("name") or "").startswith(prefix)]
-
-    # Ensure hierarchy fields present
-    _ensure_hierarchy(rows)
-
-    # Build parent-child relationships
-    children_map = {}  # parent_id -> [child_tasks]
-    id_to_row = {}
-    
-    for r in rows:
-        try:
-            task_id = int(r.get("id"))
-            id_to_row[task_id] = r
-            parent_id = r.get("parent_id")
-            if parent_id is not None:
-                parent_id = int(parent_id)
-                if parent_id not in children_map:
-                    children_map[parent_id] = []
-                children_map[parent_id].append(r)
-        except Exception:
-            continue
-
-    # Post-order traversal with dependency info
-    visited = set()
-    result = []
-
-    def _postorder_dfs(task_row):
-        task_id = int(task_row.get("id"))
-        if task_id in visited:
-            return
-        
-        visited.add(task_id)
-        
-        # First visit all children (deeper tasks)
-        child_tasks = children_map.get(task_id, [])
-        # Sort children by priority for stable ordering
-        child_tasks_sorted = sorted(child_tasks, key=lambda x: (
-            int(x.get("priority") or 100),
-            int(x.get("id"))
-        ))
-        
-        for child in child_tasks_sorted:
-            _postorder_dfs(child)
-        
-        # Add dependency info to task
-        task_with_deps = dict(task_row)
-        task_with_deps["dependencies"] = [int(child.get("id")) for child in child_tasks]
-        
-        # Then add current task
-        result.append(task_with_deps)
-
-    # Find root tasks (those without parents or with parents not in pending set)
-    root_tasks = []
-    pending_ids = {int(r.get("id")) for r in rows}
-    
-    for r in rows:
-        parent_id = r.get("parent_id")
-        if parent_id is None or int(parent_id) not in pending_ids:
-            root_tasks.append(r)
-    
-    # Sort root tasks by priority for stable ordering
-    root_tasks_sorted = sorted(root_tasks, key=lambda x: (
-        int(x.get("priority") or 100),
-        int(x.get("id"))
-    ))
-    
-    # Start DFS from each root
-    for root in root_tasks_sorted:
-        _postorder_dfs(root)
-    
-    # Yield results
-    for task in result:
-        yield task
+    return ordered, cycle_info

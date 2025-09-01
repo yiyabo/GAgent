@@ -43,7 +43,7 @@ class GLMConfig:
         return cls(
             # API配置
             api_key=os.getenv('GLM_API_KEY'),
-            api_url=os.getenv('GLM_API_URL', 'https://open.bigmodel.cn/api/paas/v4/embeddings'),
+            api_url=os.getenv('GLM_EMBEDDING_API_URL', 'https://open.bigmodel.cn/api/paas/v4/embeddings'),
             
             # Embedding配置
             embedding_model=os.getenv('GLM_EMBEDDING_MODEL', 'embedding-2'),

@@ -1,10 +1,8 @@
-from typing import Any, Dict, List, Optional
 import json
+from typing import Any, Dict, List, Optional
 
 from ..database import get_db
 from ..interfaces import TaskRepository
-from ..utils import plan_prefix, split_prefix
-
 
 # -------------------------------
 # Concrete repository implementation
@@ -15,7 +13,14 @@ class _SqliteTaskRepositoryBase(TaskRepository):
     """SQLite-backed implementation of TaskRepository using context-managed connections."""
 
     # --- mutations ---
-    def create_task(self, name: str, status: str = "pending", priority: Optional[int] = None, parent_id: Optional[int] = None, task_type: str = "atomic") -> int:
+    def create_task(
+        self,
+        name: str,
+        status: str = "pending",
+        priority: Optional[int] = None,
+        parent_id: Optional[int] = None,
+        task_type: str = "atomic",
+    ) -> int:
         """Create a task. Optionally set parent_id to place it in the hierarchy.
 
         Backward compatible signature extension: existing callers need not pass parent_id.
@@ -76,6 +81,49 @@ class _SqliteTaskRepositoryBase(TaskRepository):
             )
             conn.commit()
 
+    def get_task_input(self, task_id: int) -> Optional[str]:
+        """Get task input prompt."""
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT prompt FROM task_inputs WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+            return row[0] if row else None
+
+    def delete_task(self, task_id: int) -> bool:
+        """Delete a task and all its descendants and associated data."""
+        with get_db() as conn:
+            # Get the task and all its descendants
+            tasks_to_delete = self.get_subtree(task_id)
+            if not tasks_to_delete:
+                return False
+
+            task_ids_to_delete = [task['id'] for task in tasks_to_delete]
+            placeholders = ",".join("?" * len(task_ids_to_delete))
+
+            # Perform deletions in a single transaction
+            cursor = conn.cursor()
+            
+            # Tables to delete from
+            tables_to_clean = [
+                "task_inputs", "task_outputs", "task_contexts", 
+                "task_embeddings", "evaluation_history", "evaluation_configs",
+                "plan_tasks"
+            ]
+
+            for table in tables_to_clean:
+                cursor.execute(f"DELETE FROM {table} WHERE task_id IN ({placeholders})", task_ids_to_delete)
+
+            # Delete from task_links (as from_id or to_id)
+            cursor.execute(f"DELETE FROM task_links WHERE from_id IN ({placeholders})", task_ids_to_delete)
+            cursor.execute(f"DELETE FROM task_links WHERE to_id IN ({placeholders})", task_ids_to_delete)
+
+            # Finally, delete the tasks themselves
+            cursor.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", task_ids_to_delete)
+            
+            conn.commit()
+            return cursor.rowcount > 0
+
     def upsert_task_output(self, task_id: int, content: str) -> None:
         with get_db() as conn:
             conn.execute(
@@ -89,10 +137,57 @@ class _SqliteTaskRepositoryBase(TaskRepository):
             conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
             conn.commit()
 
+    def update_task(
+        self,
+        task_id: int,
+        name: Optional[str] = None,
+        status: Optional[str] = None,
+        priority: Optional[int] = None,
+        task_type: Optional[str] = None,
+    ) -> bool:
+        """Update task fields. Returns True if task was found and updated."""
+        with get_db() as conn:
+            # Build dynamic update query
+            fields = []
+            values = []
+
+            if name is not None:
+                fields.append("name=?")
+                values.append(name)
+            if status is not None:
+                fields.append("status=?")
+                values.append(status)
+            if priority is not None:
+                fields.append("priority=?")
+                values.append(priority)
+            if task_type is not None:
+                fields.append("task_type=?")
+                values.append(task_type)
+
+            if not fields:
+                return False
+
+            values.append(task_id)
+            query = f"UPDATE tasks SET {', '.join(fields)} WHERE id=?"
+
+            cursor = conn.execute(query, values)
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_task(self, task_id: int) -> Optional[Dict[str, Any]]:
+        """Get task by ID."""
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            return _row_to_full(row) if row else None
+
 
 # -------------------------------
 # Task queries
 # -------------------------------
+
 
 def _row_to_dict(row) -> Dict[str, Any]:
     return {
@@ -117,14 +212,14 @@ def _row_to_full(row) -> Dict[str, Any]:
     }
 
 
-    
 class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     # queries continued
     def list_all_tasks(self) -> List[Dict[str, Any]]:
         with get_db() as conn:
-            rows = conn.execute("SELECT id, name, status, priority FROM tasks").fetchall()
+            rows = conn.execute(
+                "SELECT id, name, status, priority FROM tasks"
+            ).fetchall()
         return [_row_to_dict(r) for r in rows]
-
 
     def list_tasks_by_status(self, status: str) -> List[Dict[str, Any]]:
         with get_db() as conn:
@@ -134,10 +229,9 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
-
     def list_pending_full(self) -> List[Dict[str, Any]]:
         """Return all pending tasks with hierarchy fields in one query.
-        
+
         This batch method reduces database round-trips for schedulers.
         Returns tasks with: id, name, status, priority, parent_id, path, depth, task_type
         """
@@ -147,18 +241,11 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             ).fetchall()
         return [_row_to_full(r) for r in rows]
 
-
-    def list_tasks_by_prefix(self, prefix: str, pending_only: bool = False, ordered: bool = True) -> List[Dict[str, Any]]:
-        where = "name LIKE ?"
-        params = [prefix + "%"]
-        if pending_only:
-            where += " AND status='pending'"
-        order = "ORDER BY priority ASC, id ASC" if ordered else ""
-        sql = f"SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE {where} {order}"
-        with get_db() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [_row_to_full(r) for r in rows]
-
+    def list_tasks_by_prefix(
+        self, prefix: str, pending_only: bool = False, ordered: bool = True
+    ) -> List[Dict[str, Any]]:
+        # Prefix system removed - return empty list for backward compatibility
+        return []
 
     def get_task_input_prompt(self, task_id: int) -> Optional[str]:
         with get_db() as conn:
@@ -173,7 +260,6 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         except Exception:
             return row[0]
 
-
     def get_task_output_content(self, task_id: int) -> Optional[str]:
         with get_db() as conn:
             row = conn.execute(
@@ -187,7 +273,6 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         except Exception:
             return row[0]
 
-
     def list_plan_titles(self) -> List[str]:
         with get_db() as conn:
             rows = conn.execute("SELECT name FROM tasks").fetchall()
@@ -197,41 +282,20 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 nm = r["name"]
             except Exception:
                 nm = r[0]
-            t, _ = split_prefix(nm)
+            # Prefix system removed - just use the name as is
+            t = nm
             if t:
                 titles.add(t)
         return sorted(titles)
 
-
     def list_plan_tasks(self, title: str) -> List[Dict[str, Any]]:
-        prefix = plan_prefix(title)
-        return self.list_tasks_by_prefix(prefix, pending_only=False, ordered=True)
-
+        # Prefix system removed - use plan system instead
+        return []
 
     def list_plan_outputs(self, title: str) -> List[Dict[str, Any]]:
         """Return sections with name (short), full name, and content for a plan."""
-        prefix = plan_prefix(title)
-        with get_db() as conn:
-            rows = conn.execute(
-                """
-                SELECT t.name, o.content
-                FROM tasks t
-                JOIN task_outputs o ON o.task_id = t.id
-                WHERE t.name LIKE ?
-                ORDER BY t.priority ASC, t.id ASC
-                """,
-                (prefix + "%",),
-            ).fetchall()
-        out: List[Dict[str, Any]] = []
-        for r in rows:
-            try:
-                name = r["name"]
-                content = r["content"]
-            except Exception:
-                name, content = r[0], r[1]
-            _, short = split_prefix(name)
-            out.append({"name": name, "short_name": short, "content": content})
-        return out
+        # Prefix system removed - use plan system instead
+        return []
 
     # -------------------------------
     # Links (graph) - Phase 1
@@ -380,7 +444,9 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             )
             conn.commit()
 
-    def get_task_context(self, task_id: int, label: Optional[str] = "latest") -> Optional[Dict[str, Any]]:
+    def get_task_context(
+        self, task_id: int, label: Optional[str] = "latest"
+    ) -> Optional[Dict[str, Any]]:
         with get_db() as conn:
             self._ensure_task_contexts_table(conn)
             row = None
@@ -389,49 +455,43 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "SELECT task_id, label, combined, sections, meta, created_at FROM task_contexts WHERE task_id=? AND label=?",
                     (task_id, label),
                 ).fetchone()
+                # If a specific label was requested and not found, return immediately.
+                if not row:
+                    return None
+
+            # Fallback to the latest if no label was specified and nothing was found yet.
             if not row:
                 row = conn.execute(
                     "SELECT task_id, label, combined, sections, meta, created_at FROM task_contexts WHERE task_id=? ORDER BY datetime(created_at) DESC LIMIT 1",
                     (task_id,),
                 ).fetchone()
+
         if not row:
             return None
+
         try:
-            tid = row[0]
-            lbl = row[1]
-            combined = row[2]
-            sections = row[3]
-            meta = row[4]
-            created_at = row[5]
-        except Exception:
-            tid = row["task_id"]
-            lbl = row["label"]
-            combined = row["combined"]
-            sections = row["sections"]
-            meta = row["meta"]
-            created_at = row["created_at"]
-        try:
-            sections_obj = json.loads(sections) if isinstance(sections, str) else sections
+            sections_obj = json.loads(row["sections"]) if isinstance(row["sections"], str) else row["sections"]
         except Exception:
             sections_obj = []
         try:
-            meta_obj = json.loads(meta) if isinstance(meta, str) else meta
+            meta_obj = json.loads(row["meta"]) if isinstance(row["meta"], str) else row["meta"]
         except Exception:
             meta_obj = {}
+
         return {
-            "task_id": tid,
-            "label": lbl,
-            "combined": combined,
+            "task_id": row["task_id"],
+            "label": row["label"],
+            "combined": row["combined"],
             "sections": sections_obj,
             "meta": meta_obj,
-            "created_at": created_at,
+            "created_at": row["created_at"],
         }
 
     def list_task_contexts(self, task_id: int) -> List[Dict[str, Any]]:
         with get_db() as conn:
             self._ensure_task_contexts_table(conn)
             rows = conn.execute(
-                "SELECT label, created_at, meta FROM task_contexts WHERE task_id=? ORDER BY datetime(created_at) DESC",
+                "SELECT label, created_at, meta, combined, sections FROM task_contexts WHERE task_id=? ORDER BY datetime(created_at) DESC",
                 (task_id,),
             ).fetchall()
         out: List[Dict[str, Any]] = []
@@ -440,15 +500,29 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 lbl = r[0]
                 created_at = r[1]
                 meta = r[2]
+                combined = r[3]
+                sections = r[4]
             except Exception:
                 lbl = r["label"]
                 created_at = r["created_at"]
                 meta = r["meta"]
+                combined = r["combined"]
+                sections = r["sections"]
             try:
                 meta_obj = json.loads(meta) if isinstance(meta, str) else meta
             except Exception:
                 meta_obj = {}
-            out.append({"label": lbl, "created_at": created_at, "meta": meta_obj})
+            try:
+                sections_obj = json.loads(sections) if isinstance(sections, str) else sections
+            except Exception:
+                sections_obj = []
+            out.append({
+                "label": lbl, 
+                "created_at": created_at, 
+                "meta": meta_obj,
+                "combined": combined,
+                "sections": sections_obj
+            })
         return out
 
     # -------------------------------
@@ -467,7 +541,9 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
 
     def get_parent(self, task_id: int) -> Optional[Dict[str, Any]]:
         with get_db() as conn:
-            row = conn.execute("SELECT parent_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+            row = conn.execute(
+                "SELECT parent_id FROM tasks WHERE id=?", (task_id,)
+            ).fetchone()
             if not row:
                 return None
             try:
@@ -495,7 +571,9 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
 
     def get_ancestors(self, task_id: int) -> List[Dict[str, Any]]:
         with get_db() as conn:
-            row = conn.execute("SELECT path FROM tasks WHERE id=?", (task_id,)).fetchone()
+            row = conn.execute(
+                "SELECT path FROM tasks WHERE id=?", (task_id,)
+            ).fetchone()
             if not row:
                 return []
             try:
@@ -505,7 +583,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             if not path:
                 return []
             # Parse ids from path like '/12/45/79'
-            parts = [p for p in (path.split('/') if path else []) if p]
+            parts = [p for p in (path.split("/") if path else []) if p]
             if not parts:
                 return []
             ancestor_ids = [int(p) for p in parts[:-1]]  # exclude self
@@ -520,7 +598,9 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
 
     def get_descendants(self, root_id: int) -> List[Dict[str, Any]]:
         with get_db() as conn:
-            row = conn.execute("SELECT path FROM tasks WHERE id=?", (root_id,)).fetchone()
+            row = conn.execute(
+                "SELECT path FROM tasks WHERE id=?", (root_id,)
+            ).fetchone()
             if not row:
                 return []
             try:
@@ -565,7 +645,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             except Exception:
                 old_parent_id = row["parent_id"]
                 old_path = row["path"]
-                old_depth = (row["depth"] or 0)
+                old_depth = row["depth"] or 0
 
             if new_parent_id == old_parent_id:
                 return
@@ -592,11 +672,13 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 p_path = p_path or f"/{new_parent_id}"
 
                 # Prevent cycles: cannot move under own subtree
-                if old_path and (p_path == old_path or p_path.startswith(old_path + "/")):
+                if old_path and (
+                    p_path == old_path or p_path.startswith(old_path + "/")
+                ):
                     raise ValueError("Cannot move a task under its own subtree")
 
                 new_parent_path = p_path
-                new_parent_depth = (p_depth or 0)
+                new_parent_depth = p_depth or 0
                 new_root_path = f"{new_parent_path}/{task_id}"
                 new_depth = new_parent_depth + 1
 
@@ -605,7 +687,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 "UPDATE tasks SET parent_id=?, path=?, depth=? WHERE id=?",
                 (new_parent_id, new_root_path, new_depth, task_id),
             )
-        
+
             # Update all descendants' paths and depths
             if old_path:
                 # Find all descendants that need path/depth updates
@@ -613,21 +695,21 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "SELECT id, path FROM tasks WHERE path LIKE ? AND id != ?",
                     (old_path + "/%", task_id),
                 ).fetchall()
-                
+
                 for desc_row in descendants:
                     desc_id = desc_row[0]
                     desc_old_path = desc_row[1]
-                    
+
                     # Calculate new path by replacing the old prefix
                     if desc_old_path and desc_old_path.startswith(old_path + "/"):
-                        desc_new_path = new_root_path + desc_old_path[len(old_path):]
+                        desc_new_path = new_root_path + desc_old_path[len(old_path) :]
                         desc_new_depth = desc_new_path.count("/") - 1
-                        
+
                         conn.execute(
                             "UPDATE tasks SET path=?, depth=? WHERE id=?",
                             (desc_new_path, desc_new_depth, desc_id),
                         )
-        
+
             conn.commit()
 
     def update_task_type(self, task_id: int, task_type: str) -> None:
@@ -643,25 +725,33 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     # GLM Embeddings operations
     # -------------------------------
 
-    def store_task_embedding(self, task_id: int, embedding_vector: str, model: str = "embedding-2") -> None:
+    def store_task_embedding(
+        self, task_id: int, embedding_vector: str, model: str = "embedding-2"
+    ) -> None:
         """Store embedding vector for a task."""
         with get_db() as conn:
-            conn.execute('''
+            conn.execute(
+                """
                 INSERT OR REPLACE INTO task_embeddings 
                 (task_id, embedding_vector, embedding_model, updated_at) 
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (task_id, embedding_vector, model))
+            """,
+                (task_id, embedding_vector, model),
+            )
             conn.commit()
 
     def get_task_embedding(self, task_id: int) -> Optional[Dict[str, Any]]:
         """Get embedding for a specific task."""
         with get_db() as conn:
-            row = conn.execute('''
+            row = conn.execute(
+                """
                 SELECT task_id, embedding_vector, embedding_model, created_at, updated_at
                 FROM task_embeddings 
                 WHERE task_id = ?
-            ''', (task_id,)).fetchone()
-            
+            """,
+                (task_id,),
+            ).fetchone()
+
             if row:
                 return {
                     "task_id": row["task_id"],
@@ -672,10 +762,12 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 }
             return None
 
-    def get_tasks_with_embeddings(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_tasks_with_embeddings(
+        self, limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
         """Get all tasks that have embeddings with their content."""
         with get_db() as conn:
-            query = '''
+            query = """
                 SELECT 
                     t.id, t.name, t.status, t.priority,
                     toutput.content,
@@ -684,53 +776,55 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 LEFT JOIN task_outputs toutput ON t.id = toutput.task_id
                 INNER JOIN task_embeddings te ON t.id = te.task_id
                 ORDER BY te.updated_at DESC
-            '''
-            
+            """
+
             if limit:
-                query += f' LIMIT {limit}'
-            
+                query += f" LIMIT {limit}"
+
             rows = conn.execute(query).fetchall()
-            
+
             # Convert rows to dict with embedding fields
             result = []
             for row in rows:
                 try:
                     task_dict = {
                         "id": row[0],
-                        "name": row[1], 
+                        "name": row[1],
                         "status": row[2],
                         "priority": row[3],
                         "content": row[4],
                         "embedding_vector": row[5],
                         "embedding_model": row[6],
-                        "updated_at": row[7]
+                        "updated_at": row[7],
                     }
                 except Exception:
                     # Fallback for sqlite3.Row objects
                     task_dict = {
                         "id": row["id"],
                         "name": row["name"],
-                        "status": row["status"], 
+                        "status": row["status"],
                         "priority": row["priority"],
                         "content": row["content"],
                         "embedding_vector": row["embedding_vector"],
                         "embedding_model": row["embedding_model"],
-                        "updated_at": row["updated_at"]
+                        "updated_at": row["updated_at"],
                     }
                 result.append(task_dict)
             return result
 
-    def get_tasks_without_embeddings(self, status: Optional[str] = "done") -> List[Dict[str, Any]]:
+    def get_tasks_without_embeddings(
+        self, status: Optional[str] = "done"
+    ) -> List[Dict[str, Any]]:
         """Get tasks that don't have embeddings yet."""
         with get_db() as conn:
             where_clause = ""
             params = []
-            
+
             if status:
                 where_clause = "WHERE t.status = ?"
                 params.append(status)
-            
-            query = f'''
+
+            query = f"""
                 SELECT t.id, t.name, t.status, t.priority, to.content
                 FROM tasks t
                 LEFT JOIN task_outputs to ON t.id = to.task_id
@@ -740,8 +834,8 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 AND to.content IS NOT NULL
                 AND TRIM(to.content) != ""
                 ORDER BY t.id DESC
-            '''
-            
+            """
+
             rows = conn.execute(query, params).fetchall()
             return [_row_to_dict(row) for row in rows]
 
@@ -761,19 +855,23 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         """Get statistics about embeddings."""
         with get_db() as conn:
             total_tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-            total_embeddings = conn.execute("SELECT COUNT(*) FROM task_embeddings").fetchone()[0]
-            
-            model_stats = conn.execute('''
+            total_embeddings = conn.execute(
+                "SELECT COUNT(*) FROM task_embeddings"
+            ).fetchone()[0]
+
+            model_stats = conn.execute("""
                 SELECT embedding_model, COUNT(*) as count
                 FROM task_embeddings
                 GROUP BY embedding_model
-            ''').fetchall()
-            
+            """).fetchall()
+
             return {
                 "total_tasks": total_tasks,
                 "total_embeddings": total_embeddings,
-                "coverage_percent": (total_embeddings / total_tasks * 100) if total_tasks > 0 else 0,
-                "model_distribution": {row[0]: row[1] for row in model_stats}
+                "coverage_percent": (total_embeddings / total_tasks * 100)
+                if total_tasks > 0
+                else 0,
+                "model_distribution": {row[0]: row[1] for row in model_stats},
             }
 
     # -------------------------------
@@ -789,38 +887,44 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         dimension_scores: Dict[str, float],
         suggestions: List[str],
         needs_revision: bool,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Store evaluation history for a task iteration."""
         with get_db() as conn:
-            cursor = conn.execute('''
+            cursor = conn.execute(
+                """
                 INSERT INTO evaluation_history 
                 (task_id, iteration, content, overall_score, dimension_scores, suggestions, needs_revision, metadata)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                task_id,
-                iteration,
-                content,
-                overall_score,
-                json.dumps(dimension_scores),
-                json.dumps(suggestions),
-                needs_revision,
-                json.dumps(metadata) if metadata else None
-            ))
+            """,
+                (
+                    task_id,
+                    iteration,
+                    content,
+                    overall_score,
+                    json.dumps(dimension_scores),
+                    json.dumps(suggestions),
+                    needs_revision,
+                    json.dumps(metadata) if metadata else None,
+                ),
+            )
             conn.commit()
             return cursor.lastrowid
 
     def get_evaluation_history(self, task_id: int) -> List[Dict[str, Any]]:
         """Get evaluation history for a task."""
         with get_db() as conn:
-            rows = conn.execute('''
+            rows = conn.execute(
+                """
                 SELECT id, task_id, iteration, content, overall_score, dimension_scores, 
                        suggestions, needs_revision, timestamp, metadata
                 FROM evaluation_history
                 WHERE task_id = ?
                 ORDER BY iteration ASC
-            ''', (task_id,)).fetchall()
-            
+            """,
+                (task_id,),
+            ).fetchall()
+
             result = []
             for row in rows:
                 try:
@@ -835,7 +939,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                         "suggestions": json.loads(row[6]) if row[6] else [],
                         "needs_revision": bool(row[7]),
                         "timestamp": row[8],
-                        "metadata": json.loads(row[9]) if row[9] else None
+                        "metadata": json.loads(row[9]) if row[9] else None,
                     }
                 except Exception:
                     # Fallback for sqlite3.Row objects
@@ -845,11 +949,17 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                         "iteration": row["iteration"],
                         "content": row["content"],
                         "overall_score": row["overall_score"],
-                        "dimension_scores": json.loads(row["dimension_scores"]) if row["dimension_scores"] else {},
-                        "suggestions": json.loads(row["suggestions"]) if row["suggestions"] else [],
+                        "dimension_scores": json.loads(row["dimension_scores"])
+                        if row["dimension_scores"]
+                        else {},
+                        "suggestions": json.loads(row["suggestions"])
+                        if row["suggestions"]
+                        else [],
                         "needs_revision": bool(row["needs_revision"]),
                         "timestamp": row["timestamp"],
-                        "metadata": json.loads(row["metadata"]) if row["metadata"] else None
+                        "metadata": json.loads(row["metadata"])
+                        if row["metadata"]
+                        else None,
                     }
                 result.append(row_dict)
             return result
@@ -857,18 +967,21 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     def get_latest_evaluation(self, task_id: int) -> Optional[Dict[str, Any]]:
         """Get the latest evaluation for a task."""
         with get_db() as conn:
-            row = conn.execute('''
+            row = conn.execute(
+                """
                 SELECT id, task_id, iteration, content, overall_score, dimension_scores, 
                        suggestions, needs_revision, timestamp, metadata
                 FROM evaluation_history
                 WHERE task_id = ?
                 ORDER BY iteration DESC
                 LIMIT 1
-            ''', (task_id,)).fetchone()
-            
+            """,
+                (task_id,),
+            ).fetchone()
+
             if not row:
                 return None
-            
+
             try:
                 return {
                     "id": row[0],
@@ -880,7 +993,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "suggestions": json.loads(row[6]) if row[6] else [],
                     "needs_revision": bool(row[7]),
                     "timestamp": row[8],
-                    "metadata": json.loads(row[9]) if row[9] else None
+                    "metadata": json.loads(row[9]) if row[9] else None,
                 }
             except Exception:
                 # Fallback for sqlite3.Row objects
@@ -890,11 +1003,17 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "iteration": row["iteration"],
                     "content": row["content"],
                     "overall_score": row["overall_score"],
-                    "dimension_scores": json.loads(row["dimension_scores"]) if row["dimension_scores"] else {},
-                    "suggestions": json.loads(row["suggestions"]) if row["suggestions"] else [],
+                    "dimension_scores": json.loads(row["dimension_scores"])
+                    if row["dimension_scores"]
+                    else {},
+                    "suggestions": json.loads(row["suggestions"])
+                    if row["suggestions"]
+                    else [],
                     "needs_revision": bool(row["needs_revision"]),
                     "timestamp": row["timestamp"],
-                    "metadata": json.loads(row["metadata"]) if row["metadata"] else None
+                    "metadata": json.loads(row["metadata"])
+                    if row["metadata"]
+                    else None,
                 }
 
     def store_evaluation_config(
@@ -905,39 +1024,47 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         evaluation_dimensions: Optional[List[str]] = None,
         domain_specific: bool = False,
         strict_mode: bool = False,
-        custom_weights: Optional[Dict[str, float]] = None
+        custom_weights: Optional[Dict[str, float]] = None,
     ) -> None:
         """Store evaluation configuration for a task."""
         with get_db() as conn:
-            conn.execute('''
+            conn.execute(
+                """
                 INSERT OR REPLACE INTO evaluation_configs
                 (task_id, quality_threshold, max_iterations, evaluation_dimensions, 
                  domain_specific, strict_mode, custom_weights, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (
-                task_id,
-                quality_threshold,
-                max_iterations,
-                json.dumps(evaluation_dimensions) if evaluation_dimensions else None,
-                domain_specific,
-                strict_mode,
-                json.dumps(custom_weights) if custom_weights else None
-            ))
+            """,
+                (
+                    task_id,
+                    quality_threshold,
+                    max_iterations,
+                    json.dumps(evaluation_dimensions)
+                    if evaluation_dimensions
+                    else None,
+                    domain_specific,
+                    strict_mode,
+                    json.dumps(custom_weights) if custom_weights else None,
+                ),
+            )
             conn.commit()
 
     def get_evaluation_config(self, task_id: int) -> Optional[Dict[str, Any]]:
         """Get evaluation configuration for a task."""
         with get_db() as conn:
-            row = conn.execute('''
+            row = conn.execute(
+                """
                 SELECT task_id, quality_threshold, max_iterations, evaluation_dimensions,
                        domain_specific, strict_mode, custom_weights, created_at, updated_at
                 FROM evaluation_configs
                 WHERE task_id = ?
-            ''', (task_id,)).fetchone()
-            
+            """,
+                (task_id,),
+            ).fetchone()
+
             if not row:
                 return None
-            
+
             try:
                 return {
                     "task_id": row[0],
@@ -948,7 +1075,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "strict_mode": bool(row[5]),
                     "custom_weights": json.loads(row[6]) if row[6] else None,
                     "created_at": row[7],
-                    "updated_at": row[8]
+                    "updated_at": row[8],
                 }
             except Exception:
                 # Fallback for sqlite3.Row objects
@@ -956,12 +1083,16 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "task_id": row["task_id"],
                     "quality_threshold": row["quality_threshold"],
                     "max_iterations": row["max_iterations"],
-                    "evaluation_dimensions": json.loads(row["evaluation_dimensions"]) if row["evaluation_dimensions"] else None,
+                    "evaluation_dimensions": json.loads(row["evaluation_dimensions"])
+                    if row["evaluation_dimensions"]
+                    else None,
                     "domain_specific": bool(row["domain_specific"]),
                     "strict_mode": bool(row["strict_mode"]),
-                    "custom_weights": json.loads(row["custom_weights"]) if row["custom_weights"] else None,
+                    "custom_weights": json.loads(row["custom_weights"])
+                    if row["custom_weights"]
+                    else None,
                     "created_at": row["created_at"],
-                    "updated_at": row["updated_at"]
+                    "updated_at": row["updated_at"],
                 }
 
     def delete_evaluation_history(self, task_id: int) -> None:
@@ -973,22 +1104,27 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     def get_evaluation_stats(self) -> Dict[str, Any]:
         """Get overall evaluation statistics."""
         with get_db() as conn:
-            total_evaluations = conn.execute("SELECT COUNT(*) FROM evaluation_history").fetchone()[0]
-            
-            avg_score = conn.execute('''
+            total_evaluations = conn.execute(
+                "SELECT COUNT(*) FROM evaluation_history"
+            ).fetchone()[0]
+
+            avg_score = (
+                conn.execute("""
                 SELECT AVG(overall_score) FROM evaluation_history
-            ''').fetchone()[0] or 0.0
-            
-            iteration_stats = conn.execute('''
+            """).fetchone()[0]
+                or 0.0
+            )
+
+            iteration_stats = conn.execute("""
                 SELECT AVG(iteration) as avg_iterations, MAX(iteration) as max_iterations
                 FROM (
                     SELECT task_id, MAX(iteration) as iteration
                     FROM evaluation_history
                     GROUP BY task_id
                 )
-            ''').fetchone()
-            
-            quality_distribution = conn.execute('''
+            """).fetchone()
+
+            quality_distribution = conn.execute("""
                 SELECT 
                     CASE 
                         WHEN overall_score >= 0.9 THEN 'excellent'
@@ -999,15 +1135,322 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     COUNT(*) as count
                 FROM evaluation_history
                 GROUP BY quality_tier
-            ''').fetchall()
-            
+            """).fetchall()
+
             return {
                 "total_evaluations": total_evaluations,
                 "average_score": round(avg_score, 3),
                 "average_iterations": round(iteration_stats[0] or 0, 2),
                 "max_iterations_used": iteration_stats[1] or 0,
-                "quality_distribution": {row[0]: row[1] for row in quality_distribution}
+                "quality_distribution": {
+                    row[0]: row[1] for row in quality_distribution
+                },
             }
+
+    # -----------------------------
+    # Plan Management System
+    # -----------------------------
+
+    def _ensure_plans_table(self, conn) -> None:
+        """确保plan相关表存在"""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL UNIQUE,
+                description TEXT,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                config_json TEXT
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plan_tasks (
+                plan_id INTEGER NOT NULL,
+                task_id INTEGER NOT NULL,
+                task_category TEXT DEFAULT 'general',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (plan_id, task_id),
+                FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE,
+                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+            )
+        """)
+
+    def create_plan(
+        self,
+        title: str,
+        description: Optional[str] = None,
+        config_json: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """创建新的研究计划"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+            cursor = conn.execute(
+                """
+                INSERT INTO plans (title, description, config_json)
+                VALUES (?, ?, ?)
+            """,
+                (title, description, json.dumps(config_json) if config_json else None),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def link_task_to_plan(
+        self, plan_id: int, task_id: int, task_category: str = "general"
+    ) -> bool:
+        """将任务与计划关联"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO plan_tasks (plan_id, task_id, task_category)
+                    VALUES (?, ?, ?)
+                """,
+                    (plan_id, task_id, task_category),
+                )
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def get_plan(self, plan_id: int) -> Optional[Dict[str, Any]]:
+        """获取计划详情"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+            row = conn.execute(
+                """
+                SELECT id, title, description, status, created_at, updated_at, config_json
+                FROM plans WHERE id = ?
+            """,
+                (plan_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_plan_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+        """根据标题获取计划"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+            row = conn.execute(
+                """
+                SELECT id, title, description, status, created_at, updated_at, config_json
+                FROM plans WHERE title = ?
+            """,
+                (title,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_plans(self) -> List[Dict[str, Any]]:
+        """列出所有计划"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+            rows = conn.execute("""
+                SELECT id, title, description, status, created_at, updated_at, config_json
+                FROM plans ORDER BY created_at DESC
+            """).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_plan_tasks(
+        self, plan_id: int, task_category: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """获取特定计划的所有任务"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+            if task_category:
+                query = """
+                    SELECT t.id, t.name, t.status, t.priority, t.task_type, 
+                           t.parent_id, t.path, t.depth, pt.task_category
+                    FROM plans p
+                    JOIN plan_tasks pt ON p.id = pt.plan_id
+                    JOIN tasks t ON pt.task_id = t.id
+                    WHERE p.id = ? AND pt.task_category = ?
+                    ORDER BY t.id
+                """
+                params = (plan_id, task_category)
+            else:
+                query = """
+                    SELECT t.id, t.name, t.status, t.priority, t.task_type, 
+                           t.parent_id, t.path, t.depth, pt.task_category
+                    FROM plans p
+                    JOIN plan_tasks pt ON p.id = pt.plan_id
+                    JOIN tasks t ON pt.task_id = t.id
+                    WHERE p.id = ?
+                    ORDER BY t.id
+                """
+                params = (plan_id,)
+
+            rows = conn.execute(query, params).fetchall()
+            def _row_to_plan_task(row) -> Dict[str, Any]:
+                return {
+                    "id": row[0],
+                    "name": row[1],
+                    "status": row[2],
+                    "priority": row[3],
+                    "task_type": row[4],
+                    "parent_id": row[5],
+                    "path": row[6],
+                    "depth": row[7],
+                }
+            return [_row_to_plan_task(row) for row in rows]
+
+    def get_plan_with_tasks(self, plan_id: int) -> Optional[Dict[str, Any]]:
+        """获取完整计划包含所有任务"""
+        plan = self.get_plan(plan_id)
+        if not plan:
+            return None
+
+        tasks = self.get_plan_tasks(plan_id)
+        return {"plan": plan, "tasks": tasks}
+
+    def get_plan_summary(self, plan_id: int) -> Optional[Dict[str, Any]]:
+        """获取计划汇总信息"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+
+            # 基础计划信息
+            plan = self.get_plan(plan_id)
+            if not plan:
+                return None
+
+            # 任务统计
+            cursor = conn.execute(
+                """
+                SELECT 
+                    COUNT(*) as total_tasks,
+                    COUNT(CASE WHEN t.status = 'done' THEN 1 END) as completed_tasks,
+                    COUNT(CASE WHEN t.status = 'pending' THEN 1 END) as pending_tasks,
+                    COUNT(CASE WHEN t.status = 'failed' THEN 1 END) as failed_tasks
+                FROM plan_tasks pt
+                JOIN tasks t ON pt.task_id = t.id
+                WHERE pt.plan_id = ?
+            """,
+                (plan_id,),
+            )
+
+            stats = cursor.fetchone()
+            if stats:
+                total = stats[0] or 0
+                completed = stats[1] or 0
+                progress = completed / total if total > 0 else 0.0
+
+                return {
+                    **plan,
+                    "task_count": total,
+                    "completed_count": completed,
+                    "pending_count": stats[2] or 0,
+                    "failed_count": stats[3] or 0,
+                    "progress": progress,
+                }
+
+            return {**plan, "task_count": 0, "completed_count": 0, "progress": 0.0}
+
+    def delete_plan(self, plan_id: int) -> bool:
+        """删除计划（级联删除关联的tasks和关联数据）"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+
+            # 1. Get all task_ids for this plan
+            task_rows = conn.execute(
+                """
+                SELECT task_id FROM plan_tasks WHERE plan_id = ?
+            """,
+                (plan_id,),
+            ).fetchall()
+            task_ids = [row[0] for row in task_rows]
+
+            # 2. Delete associated plan_tasks records
+            conn.execute("DELETE FROM plan_tasks WHERE plan_id = ?", (plan_id,))
+
+            # 3. Delete evaluation history for related tasks
+            for task_id in task_ids:
+                conn.execute(
+                    "DELETE FROM evaluation_history WHERE task_id = ?", (task_id,)
+                )
+
+            # 4. Delete evaluation configs for related tasks
+            for task_id in task_ids:
+                conn.execute(
+                    "DELETE FROM evaluation_configs WHERE task_id = ?", (task_id,)
+                )
+
+            # 5. Delete tasks related to this plan
+            for task_id in task_ids:
+                # Delete task context snapshots
+                conn.execute("DELETE FROM task_contexts WHERE task_id = ?", (task_id,))
+                # Delete task embeddings
+                conn.execute(
+                    "DELETE FROM task_embeddings WHERE task_id = ?", (task_id,)
+                )
+                # Delete task links
+                conn.execute(
+                    "DELETE FROM task_links WHERE from_id = ? OR to_id = ?",
+                    (task_id, task_id),
+                )
+                # Delete task inputs and outputs
+                conn.execute("DELETE FROM task_inputs WHERE task_id = ?", (task_id,))
+                conn.execute("DELETE FROM task_outputs WHERE task_id = ?", (task_id,))
+                # Finally delete the task itself
+                conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+            # 6. Delete the plan itself
+            cursor = conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def unlink_task_from_plan(self, plan_id: int, task_id: int) -> bool:
+        """从计划中移除任务"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+            cursor = conn.execute(
+                """
+                DELETE FROM plan_tasks WHERE plan_id = ? AND task_id = ?
+            """,
+                (plan_id, task_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_plan_statistics(self) -> Dict[str, Any]:
+        """获取系统级计划统计"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+
+            plans_total = conn.execute("SELECT COUNT(*) FROM plans").fetchone()[0]
+
+            if plans_total == 0:
+                return {
+                    "total_plans": 0,
+                    "active_plans": 0,
+                    "total_tasks_in_plans": 0,
+                    "plans_with_tasks": 0,
+                }
+
+            plans_with_tasks = conn.execute("""
+                SELECT COUNT(DISTINCT plan_id) FROM plan_tasks
+            """).fetchone()[0]
+
+            total_tasks = conn.execute("""
+                SELECT COUNT(*) FROM plan_tasks
+            """).fetchone()[0]
+
+            return {
+                "total_plans": plans_total,
+                "active_plans": conn.execute(
+                    "SELECT COUNT(*) FROM plans WHERE status = ?", ("active",)
+                ).fetchone()[0],
+                "completed_plans": conn.execute(
+                    "SELECT COUNT(*) FROM plans WHERE status = ?", ("completed",)
+                ).fetchone()[0],
+                "total_tasks_in_plans": total_tasks,
+                "plans_with_tasks": plans_with_tasks,
+            }
+
+    # Legacy support for prefix-based plans
+    def migrate_from_prefix_system(self) -> int:
+        """从前缀系统迁移到Plan系统 - 前缀系统已删除，返回0"""
+        # Prefix system removed - no migration needed
+        return 0
 
 
 default_repo = SqliteTaskRepository()

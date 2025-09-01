@@ -27,10 +27,12 @@ class ModernCLIApp(CLIApplication):
     
     def _register_builtin_commands(self):
         """Register all built-in commands."""
+        from .commands.task_commands import TaskCommands
         self.register_command(RerunCommands())
         self.register_command(PlanCommands())
         self.register_command(EvaluationCommands())
         self.register_command(DatabaseCommands())
+        self.register_command(TaskCommands())
     
     def register_command(self, command: CLICommand) -> None:
         """Register a command with the application."""

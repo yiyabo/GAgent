@@ -2,9 +2,23 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
+class ContextCreate(BaseModel):
+    label: str
+    content: str
+
 class TaskCreate(BaseModel):
     name: str
     task_type: Optional[str] = "atomic"
+    parent_id: Optional[int] = None
+    plan_id: Optional[int] = None
+    prompt: Optional[str] = None
+    contexts: Optional[List[ContextCreate]] = None
+
+class TaskUpdate(BaseModel):
+    name: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[int] = None
+    task_type: Optional[str] = None
 
 class Task(BaseModel):
     id: int
@@ -77,3 +91,59 @@ class TaskExecutionResult(BaseModel):
     evaluation: Optional[EvaluationResult] = None
     iterations: int = 1               # Number of iterations performed
     execution_time: Optional[float] = None
+
+
+# Plan Management System Models
+class Plan(BaseModel):
+    """研究计划/项目的完整定义"""
+    id: int
+    title: str
+    description: Optional[str] = None
+    status: str = 'active'           # active/completed/archived
+    created_at: datetime
+    updated_at: datetime
+    config_json: Optional[Dict[str, Any]] = None
+    task_count: int = 0               # 关联的任务数量
+    progress: float = 0.0             # 完成进度 0-1
+    
+    
+class PlanTask(BaseModel):
+    """任务与计划的精确关联"""
+    plan_id: int
+    task_id: int
+    task_category: str = 'general'    # root/chapter/section/atomic
+    created_at: datetime
+    
+    
+class PlanCreate(BaseModel):
+    """创建新计划的请求模型"""
+    title: str
+    description: Optional[str] = None
+    config_json: Optional[Dict[str, Any]] = None
+
+
+class PlanUpdate(BaseModel):
+    """更新计划的请求模型"""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    config_json: Optional[Dict[str, Any]] = None
+
+
+class PlanSummary(BaseModel):
+    """计划汇总信息"""
+    id: int
+    title: str
+    description: Optional[str] = None
+    task_count: int
+    completed_count: int
+    status: str
+    progress: float
+    created_at: datetime
+
+
+class PlanWithTasks(BaseModel):
+    """完整计划包含所有关联任务"""
+    plan: Plan
+    tasks: List[PlanTask]
+    task_details: Optional[List[Dict[str, Any]]] = None

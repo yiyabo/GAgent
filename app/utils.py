@@ -3,22 +3,6 @@ import re
 from typing import Any, Optional, Tuple, Union, List, Dict
 
 
-def plan_prefix(title: str) -> str:
-    """Return the standard plan title prefix for task names, e.g. "[Title] "."""
-    return f"[{title}] "
-
-
-def split_prefix(name: str):
-    """Split a task name into (title, short_name) by extracting the leading [title] prefix.
-
-    Returns (None, name) if no prefix exists.
-    """
-    m = re.match(r"^\[(.*?)\]\s+(.*)$", name)
-    if m:
-        return m.group(1), m.group(2)
-    return None, name
-
-
 def parse_json_obj(text: str):
     """Try to parse a JSON object or array from arbitrary LLM output.
 

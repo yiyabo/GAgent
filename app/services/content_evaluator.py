@@ -429,3 +429,44 @@ class ContentEvaluator:
 def get_evaluator(config: Optional[EvaluationConfig] = None) -> ContentEvaluator:
     """Factory function to get content evaluator instance"""
     return ContentEvaluator(config)
+
+
+def _build_revision_prompt(original_prompt: str, previous_content: str, evaluation) -> str:
+    """
+    Build revision prompt for iterative improvement.
+    
+    Args:
+        original_prompt: The original task prompt
+        previous_content: The content from previous iteration
+        evaluation: Evaluation result object
+        
+    Returns:
+        Formatted revision prompt string
+    """
+    # Extract evaluation details
+    score = getattr(evaluation, 'overall_score', 0.0)
+    suggestions = getattr(evaluation, 'suggestions', [])
+    dimensions = getattr(evaluation, 'dimensions', None)
+    
+    # Build dimension feedback
+    dimension_feedback = []
+    if dimensions:
+        for dim_name in ['completeness', 'clarity', 'relevance', 'accuracy']:
+            if hasattr(dimensions, dim_name):
+                dim_score = getattr(dimensions, dim_name)
+                if dim_score < 0.7:  # Flag poor dimensions
+                    dimension_feedback.append(f"{dim_name}={dim_score:.2f}")
+    
+    revision_prompt = f"""Original task: {original_prompt}
+
+Previous attempt: {previous_content}
+
+Evaluation score: {score:.2f}/1.0
+Issues found: {', '.join(dimension_feedback) if dimension_feedback else 'general quality'}
+
+Suggestions for improvement:
+{chr(10).join('- ' + s for s in suggestions)}
+
+Please provide an improved version that addresses these issues."""
+    
+    return revision_prompt

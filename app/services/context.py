@@ -4,7 +4,6 @@ import logging
 
 from ..interfaces import TaskRepository
 from ..repository.tasks import default_repo
-from ..utils import split_prefix
 from .context_budget import PRIORITY_ORDER
 from .retrieval import get_retrieval_service
 
@@ -52,11 +51,10 @@ def _section_for_task(task: Dict[str, Any], repo: TaskRepository, kind: str) -> 
     if content is None:
         return None
 
-    title, short = split_prefix(name)
+    # Prefix system removed - just use the name as is
     return {
         "task_id": tid,
         "name": name,
-        "short_name": short,
         "kind": kind,
         "content": content,
     }
@@ -177,23 +175,10 @@ def gather_context(
     if include_plan:
         me = _get_task_by_id(task_id, repo)
         if me and isinstance(me, dict):
-            _, short = split_prefix(me.get("name", ""))
-            title, _ = split_prefix(me.get("name", ""))
-            if title:
-                try:
-                    siblings = repo.list_plan_tasks(title)
-                except Exception:
-                    siblings = []
-                for s in siblings:
-                    sid = s.get("id") if isinstance(s, dict) else None
-                    if sid is None or sid == task_id:
-                        continue
-                    sec = _section_for_task(s, repo, kind="sibling")
-                    if sec and sec.get("task_id") not in seen_ids:
-                        sections.append(sec)
-                        seen_ids.add(sec["task_id"])
-                        if len([x for x in sections if x.get("kind") == "sibling"]) >= k:
-                            break
+            # Prefix system removed - skip plan-based sibling collection
+            # Just use the name as is instead of extracting title
+            siblings = []
+            # No siblings to process since prefix system is removed
 
     # 3) Hierarchy-based context (ancestors and siblings)
     if include_ancestors or include_siblings:

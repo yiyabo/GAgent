@@ -13,7 +13,7 @@ from typing import Dict, Any, List
 # 添加项目路径
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from app.executor_enhanced import (
+from app.executor import (
     execute_task_with_evaluation,
     execute_task_with_llm_evaluation,
     execute_task_with_multi_expert_evaluation,

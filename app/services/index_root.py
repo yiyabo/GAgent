@@ -7,7 +7,6 @@ from datetime import datetime
 
 from ..interfaces import TaskRepository
 from ..repository.tasks import default_repo
-from ..utils import split_prefix
 from .context_budget import PRIORITY_ORDER
 
 
@@ -58,11 +57,10 @@ def _plan_tasks(repo: TaskRepository, title: str) -> List[Dict[str, Any]]:
         prio = r.get("priority") if isinstance(r, dict) else None
         if tid is None or name is None:
             continue
-        _, short = split_prefix(name)
+        # Prefix system removed - just use name as is
         out.append({
             "id": int(tid),
             "name": name,
-            "short": short,
             "status": status or "pending",
             "priority": prio,
         })

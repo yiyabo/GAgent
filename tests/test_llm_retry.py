@@ -1,6 +1,5 @@
 import io
 import json
-import os
 
 import pytest
 
@@ -33,7 +32,13 @@ def test_llm_retry_success_after_transient_500(monkeypatch):
         if calls["n"] == 1:
             from urllib.error import HTTPError
 
-            raise HTTPError("http://x", 502, "Bad Gateway", hdrs=None, fp=io.BytesIO(b"server error"))
+            raise HTTPError(
+                "http://x",
+                502,
+                "Bad Gateway",
+                hdrs=None,
+                fp=io.BytesIO(b"server error"),
+            )
         return _FakeResp({"choices": [{"message": {"content": "OK"}}]})
 
     # Speed up backoff
@@ -56,7 +61,9 @@ def test_llm_no_retry_on_4xx(monkeypatch):
         calls["n"] += 1
         from urllib.error import HTTPError
 
-        raise HTTPError("http://x", 400, "Bad Request", hdrs=None, fp=io.BytesIO(b"bad"))
+        raise HTTPError(
+            "http://x", 400, "Bad Request", hdrs=None, fp=io.BytesIO(b"bad")
+        )
 
     monkeypatch.setattr("app.llm.request.urlopen", fake_urlopen)
 

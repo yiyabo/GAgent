@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.database import init_db
 from app.repository.tasks import SqliteTaskRepository
-from app.scheduler import requires_dag_order, requires_dag_schedule
+from app.scheduler import requires_dag_order
 
 
 class DAGCycleTester:

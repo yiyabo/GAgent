@@ -55,6 +55,10 @@ class GLMApiClient:
         if self.mock_mode:
             return self._create_mock_embeddings(texts)
         
+        # Check for empty strings to prevent GLM API "输入不能为空" error
+        if any(not text or not text.strip() for text in texts):
+            raise ValueError("Empty or whitespace-only strings found in input texts. GLM API requires non-empty input.")
+        
         for attempt in range(self.max_retries):
             try:
                 embeddings = self._make_api_request(texts)

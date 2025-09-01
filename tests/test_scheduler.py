@@ -1,116 +1,140 @@
 import os
-from typing import List, Dict, Any
+from typing import Any, Dict, List
+
+import pytest
+from fastapi.testclient import TestClient
 
 from app.database import init_db
+from app.main import app  # Import app for the test client
 from app.repository.tasks import SqliteTaskRepository
 from app.scheduler import requires_dag_order
-from app.utils import split_prefix
-from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    """Provides a clean, isolated database repository for each test."""
+    db_path = tmp_path / "test_scheduler.db"
+    monkeypatch.setattr("app.database.DB_PATH", str(db_path))
+    init_db()
+    return SqliteTaskRepository()
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """Provides a FastAPI TestClient with a clean, isolated database."""
+    db_path = tmp_path / f"test_api_{os.urandom(4).hex()}.db"
+    monkeypatch.setattr("app.database.DB_PATH", str(db_path))
+    monkeypatch.setenv("LLM_MOCK", "1")
+    init_db()
+    with TestClient(app) as c:
+        yield c
 
 
 def _short_names(rows: List[Dict[str, Any]]) -> List[str]:
-    return [split_prefix(r.get("name", ""))[1] for r in rows]
+    """Helper to get task names from a list of task dicts."""
+    return [r.get("name", "") for r in rows]
 
 
-def test_requires_dag_order_basic(tmp_path, monkeypatch):
-    test_db = tmp_path / "dag_basic.db"
-    monkeypatch.setattr("app.database.DB_PATH", str(test_db), raising=False)
+def test_requires_dag_order_basic(repo):
+    """Test basic DAG topological sort."""
+    plan_id = repo.create_plan("DAG Plan")
 
-    init_db()
-    repo = SqliteTaskRepository()
-
-    # Plan: [DAG] B(1) & A(5) -> C(10) -> D(10)
-    a = repo.create_task("[DAG] A", status="pending", priority=5)
-    b = repo.create_task("[DAG] B", status="pending", priority=1)
-    c = repo.create_task("[DAG] C", status="pending", priority=10)
-    d = repo.create_task("[DAG] D", status="pending", priority=10)
+    a = repo.create_task("A", status="pending", priority=5)
+    repo.link_task_to_plan(plan_id, a)
+    b = repo.create_task("B", status="pending", priority=1)
+    repo.link_task_to_plan(plan_id, b)
+    c = repo.create_task("C", status="pending", priority=10)
+    repo.link_task_to_plan(plan_id, c)
+    d = repo.create_task("D", status="pending", priority=10)
+    repo.link_task_to_plan(plan_id, d)
 
     repo.create_link(a, c, "requires")
     repo.create_link(b, c, "requires")
     repo.create_link(c, d, "requires")
 
-    order, cycle = requires_dag_order("DAG")
+    order, cycle = requires_dag_order(plan_id)
     assert cycle is None
     assert _short_names(order) == ["B", "A", "C", "D"]
 
 
-def test_requires_dag_cycle_detection_scoped(tmp_path, monkeypatch):
-    test_db = tmp_path / "dag_cycle.db"
-    monkeypatch.setattr("app.database.DB_PATH", str(test_db), raising=False)
+def test_requires_dag_cycle_detection_scoped(repo):
+    """Test cycle detection within a plan."""
+    plan_id = repo.create_plan("Cycle Plan")
 
-    init_db()
-    repo = SqliteTaskRepository()
-
-    # [CYC] A -> B -> C -> A (cycle)
-    a = repo.create_task("[CYC] A", status="pending", priority=1)
-    b = repo.create_task("[CYC] B", status="pending", priority=2)
-    c = repo.create_task("[CYC] C", status="pending", priority=3)
+    a = repo.create_task("A", status="pending", priority=1)
+    repo.link_task_to_plan(plan_id, a)
+    b = repo.create_task("B", status="pending", priority=2)
+    repo.link_task_to_plan(plan_id, b)
+    c = repo.create_task("C", status="pending", priority=3)
+    repo.link_task_to_plan(plan_id, c)
 
     repo.create_link(a, b, "requires")
     repo.create_link(b, c, "requires")
     repo.create_link(c, a, "requires")
 
-    order, cycle = requires_dag_order("CYC")
+    order, cycle = requires_dag_order(plan_id)
     assert cycle is not None
-    names = set((cycle.get("names") or {}).values())
-    assert names == {"A", "B", "C"}
-    assert len(order) < 3
+    assert set(cycle.get("nodes", [])) == {a, b, c}
+    assert len(order) == 0
 
 
-def test_requires_dag_scoped_ignores_external_edges(tmp_path, monkeypatch):
-    test_db = tmp_path / "dag_scope.db"
-    monkeypatch.setattr("app.database.DB_PATH", str(test_db), raising=False)
+def test_requires_dag_scoped_ignores_external_edges(repo):
+    """Test that DAG is scoped to a single plan and ignores links from other plans."""
+    plan_x_id = repo.create_plan("Plan X")
+    plan_y_id = repo.create_plan("Plan Y")
 
-    init_db()
-    repo = SqliteTaskRepository()
-
-    # [X] A -> B ; external [Y] C -> [X] B (ignored when scoping to X)
-    a = repo.create_task("[X] A", status="pending", priority=1)
-    b = repo.create_task("[X] B", status="pending", priority=2)
-    c = repo.create_task("[Y] C", status="pending", priority=1)
-
+    a = repo.create_task("A", status="pending", priority=1)
+    repo.link_task_to_plan(plan_x_id, a)
+    b = repo.create_task("B", status="pending", priority=2)
+    repo.link_task_to_plan(plan_x_id, b)
     repo.create_link(a, b, "requires")
-    repo.create_link(c, b, "requires")  # cross-plan; should be ignored for X scope
 
-    order, cycle = requires_dag_order("X")
+    c = repo.create_task("C", status="pending", priority=1)
+    repo.link_task_to_plan(plan_y_id, c)
+    # This link should be ignored when scheduling Plan X
+    repo.create_link(c, b, "requires")
+
+    order, cycle = requires_dag_order(plan_x_id)
     assert cycle is None
     assert _short_names(order) == ["A", "B"]
 
 
-def test_run_api_dag_cycle_returns_400(tmp_path, monkeypatch):
-    os.environ["LLM_MOCK"] = "1"
-    test_db = tmp_path / "dag_api.db"
-    monkeypatch.setattr("app.database.DB_PATH", str(test_db), raising=False)
+# Un-skipped and fixed test
+def test_run_api_dag_cycle_returns_400(client):
+    """Test that the /run API endpoint returns a 400 error for a DAG cycle."""
+    # 1. Create a plan
+    r_plan = client.post("/plans/propose", json={"goal": "Test Plan for Cycle"})
+    assert r_plan.status_code == 200
+    plan_id = r_plan.json()["plan_id"]
 
-    from app.main import app
+    # 2. Create tasks and link them to the plan
+    task_a_payload = {"name": "A", "plan_id": plan_id, "task_type": "atomic"}
+    r_task_a = client.post("/tasks", json=task_a_payload)
+    assert r_task_a.status_code == 200
+    task_a_id = r_task_a.json()["id"]
 
-    with TestClient(app) as client:
-        # Approve small plan
-        plan = {
-            "title": "DAPI",
-            "tasks": [
-                {"name": "A", "prompt": "Do A"},
-                {"name": "B", "prompt": "Do B"},
-            ],
-        }
-        r = client.post("/plans/approve", json=plan)
-        assert r.status_code == 200
+    task_b_payload = {"name": "B", "plan_id": plan_id, "task_type": "atomic"}
+    r_task_b = client.post("/tasks", json=task_b_payload)
+    assert r_task_b.status_code == 200
+    task_b_id = r_task_b.json()["id"]
 
-        # Get task IDs
-        r = client.get(f"/plans/{plan['title']}/tasks")
-        assert r.status_code == 200
-        tasks = r.json()
-        ta = next(t for t in tasks if t["short_name"] == "A")
-        tb = next(t for t in tasks if t["short_name"] == "B")
+    # 3. Create a dependency cycle
+    r_link1 = client.post(
+        "/context/links",
+        json={"from_id": task_a_id, "to_id": task_b_id, "kind": "requires"},
+    )
+    assert r_link1.status_code == 200
+    r_link2 = client.post(
+        "/context/links",
+        json={"from_id": task_b_id, "to_id": task_a_id, "kind": "requires"},
+    )
+    assert r_link2.status_code == 200
 
-        # Create cycle: A<->B
-        r = client.post("/context/links", json={"from_id": ta["id"], "to_id": tb["id"], "kind": "requires"})
-        assert r.status_code == 200 and r.json().get("ok")
-        r = client.post("/context/links", json={"from_id": tb["id"], "to_id": ta["id"], "kind": "requires"})
-        assert r.status_code == 200 and r.json().get("ok")
-
-        # Run with DAG schedule should 400
-        r = client.post("/run", json={"title": plan["title"], "schedule": "dag"})
-        assert r.status_code == 400
-        data = r.json()
-        assert data.get("detail", {}).get("error") == "cycle_detected"
+    # 4. Run the plan with 'dag' schedule and expect a 400 error
+    r_run = client.post("/run", json={"plan_id": plan_id, "schedule": "dag"})
+    assert r_run.status_code == 400
+    data = r_run.json()
+    assert "Cycle detected" in data["detail"]["message"]
+    assert sorted(data["detail"]["nodes"]) == sorted([task_a_id, task_b_id])
+    assert "Cycle detected" in data["detail"]["message"]
+    assert sorted(data["detail"]["nodes"]) == sorted([task_a_id, task_b_id])

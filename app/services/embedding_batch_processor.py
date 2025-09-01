@@ -96,10 +96,39 @@ class EmbeddingBatchProcessor:
     
     def _compute_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         """Compute embeddings batch processing"""
-        if len(texts) <= self.dynamic_batch_size:
-            return self._get_embeddings_single_batch(texts)
+        # Filter out empty texts before API call
+        non_empty_texts = [text for text in texts if text and text.strip()]
+        
+        if not non_empty_texts:
+            logger.warning(f"All {len(texts)} texts are empty, skipping embedding generation")
+            return [[]] * len(texts)  # Return empty embeddings for each text
+        
+        if len(non_empty_texts) != len(texts):
+            logger.debug(f"Filtered {len(texts) - len(non_empty_texts)} empty texts from batch")
+        
+        if len(non_empty_texts) <= self.dynamic_batch_size:
+            embeddings = self._get_embeddings_single_batch(non_empty_texts)
+            # Map back to original indices
+            return self._map_embeddings_to_original(texts, non_empty_texts, embeddings)
         else:
             return self._compute_embeddings_concurrent(texts)
+    
+    def _map_embeddings_to_original(self, original_texts: List[str], non_empty_texts: List[str], embeddings: List[List[float]]) -> List[List[float]]:
+        """Map embeddings back to original text indices"""
+        result = []
+        non_empty_index = 0
+        
+        for text in original_texts:
+            if text and text.strip():
+                if non_empty_index < len(embeddings):
+                    result.append(embeddings[non_empty_index])
+                    non_empty_index += 1
+                else:
+                    result.append([])  # Empty embedding for missing data
+            else:
+                result.append([])  # Empty embedding for empty text
+        
+        return result
     
     def _get_embeddings_single_batch(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for single batch"""
@@ -124,9 +153,19 @@ class EmbeddingBatchProcessor:
             raise e
     
     def _compute_embeddings_concurrent(self, texts: List[str]) -> List[List[float]]:
-        """Concurrent computation of embeddings"""
-        batches = self._split_into_batches(texts)
-        logger.debug(f"Split {len(texts)} texts into {len(batches)} batches")
+        """Concurrent computation of embeddings with empty text filtering"""
+        # Filter out empty texts before processing
+        non_empty_texts = [text for text in texts if text and text.strip()]
+        
+        if not non_empty_texts:
+            logger.warning(f"All {len(texts)} texts are empty, skipping embedding generation")
+            return [[]] * len(texts)
+        
+        if len(non_empty_texts) != len(texts):
+            logger.debug(f"Filtered {len(texts) - len(non_empty_texts)} empty texts from concurrent batch")
+        
+        batches = self._split_into_batches(non_empty_texts)
+        logger.debug(f"Split {len(non_empty_texts)} non-empty texts into {len(batches)} batches")
         
         results = [None] * len(batches)
         
@@ -151,7 +190,8 @@ class EmbeddingBatchProcessor:
             if batch_result:
                 all_embeddings.extend(batch_result)
         
-        return all_embeddings
+        # Map back to original indices
+        return self._map_embeddings_to_original(texts, non_empty_texts, all_embeddings)
     
     def _split_into_batches(self, texts: List[str]) -> List[List[str]]:
         """Split text list into batches"""

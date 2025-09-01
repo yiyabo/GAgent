@@ -1,76 +1,64 @@
 import os
-from typing import Dict, Any
 
+import pytest
 from fastapi.testclient import TestClient
 
-
-def test_api_snapshots_list_get_via_run(tmp_path, monkeypatch):
-    os.environ["LLM_MOCK"] = "1"
-    test_db = tmp_path / "snap.db"
-    monkeypatch.setattr("app.database.DB_PATH", str(test_db), raising=False)
-
-    from app.main import app
-
-    with TestClient(app) as client:
-        # Approve a simple plan
-        plan = {
-            "title": "SN",
-            "tasks": [
-                {"name": "A", "prompt": "Do A"},
-                {"name": "B", "prompt": "Do B"},
-            ],
-        }
-        r = client.post("/plans/approve", json=plan)
-        assert r.status_code == 200
-
-        # Run with context and save snapshot under label L1
-        payload_run = {
-            "title": plan["title"],
-            "use_context": True,
-            "context_options": {"save_snapshot": True, "label": "L1"},
-        }
-        r = client.post("/run", json=payload_run)
-        assert r.status_code == 200
-
-        # Get task IDs
-        r = client.get(f"/plans/{plan['title']}/tasks")
-        assert r.status_code == 200
-        tasks = r.json()
-        a: Dict[str, Any] = next(t for t in tasks if t["short_name"] == "A")
-
-        # List snapshots for task A
-        r = client.get(f"/tasks/{a['id']}/context/snapshots")
-        assert r.status_code == 200
-        listing = r.json()
-        assert listing["task_id"] == a["id"]
-        labels = [s.get("label") for s in listing.get("snapshots", [])]
-        assert "L1" in labels
-
-        # Get snapshot by label
-        r = client.get(f"/tasks/{a['id']}/context/snapshots/L1")
-        assert r.status_code == 200
-        snap = r.json()
-        assert snap.get("label") == "L1"
-        assert isinstance(snap.get("combined", ""), str)
-        assert isinstance(snap.get("sections", []), list)
+from app.database import init_db
+from app.main import app
 
 
-def test_api_snapshot_get_404(tmp_path, monkeypatch):
-    os.environ["LLM_MOCK"] = "1"
-    test_db = tmp_path / "snap2.db"
-    monkeypatch.setattr("app.database.DB_PATH", str(test_db), raising=False)
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    db_path = tmp_path / f"test_{os.urandom(4).hex()}.db"
+    monkeypatch.setattr("app.database.DB_PATH", str(db_path))
+    monkeypatch.setenv("LLM_MOCK", "1")
+    init_db()
+    with TestClient(app) as c:
+        yield c
 
-    from app.main import app
 
-    with TestClient(app) as client:
-        plan = {"title": "S2", "tasks": [{"name": "A", "prompt": "x"}]}
-        r = client.post("/plans/approve", json=plan)
-        assert r.status_code == 200
+def test_api_snapshot_lifecycle(client):
+    # 1. Create a task
+    r = client.post("/tasks", json={"name": "A", "task_type": "atomic"})
+    assert r.status_code == 200
+    task_id = r.json()["id"]
 
-        r = client.get(f"/plans/{plan['title']}/tasks")
-        assert r.status_code == 200
-        tasks = r.json()
-        a = next(t for t in tasks if t["short_name"] == "A")
+    # 2. Verify non-existent snapshot returns 404
+    r_get_none = client.get(f"/tasks/{task_id}/context/snapshots/L2")
+    assert r_get_none.status_code == 404
 
-        r = client.get(f"/tasks/{a['id']}/context/snapshots/NOPE")
-        assert r.status_code == 404
+    # 3. Create snapshot using POST
+    r_post = client.post(
+        f"/tasks/{task_id}/context/snapshots", json={"label": "L2", "content": "hello"}
+    )
+    assert r_post.status_code == 200
+    assert r_post.json().get("context_created") is True
+
+    # 4. Verify creation with GET
+    r_get = client.get(f"/tasks/{task_id}/context/snapshots/L2")
+    assert r_get.status_code == 200
+    assert r_get.json().get("combined") == "hello"
+    assert r_get.json().get("label") == "L2"
+
+    # 5. Update the snapshot using PUT
+    r_put = client.put(
+        f"/tasks/{task_id}/context/snapshots/L2",
+        json={"content": "world", "meta": {"source": "update"}},
+    )
+    assert r_put.status_code == 200
+    assert r_put.json().get("context_updated") is True
+
+    # 6. Verify update with GET
+    r_get_updated = client.get(f"/tasks/{task_id}/context/snapshots/L2")
+    assert r_get_updated.status_code == 200
+    assert r_get_updated.json().get("combined") == "world"
+    assert r_get_updated.json().get("meta") == {"source": "update"}
+
+    # 7. Delete the snapshot
+    r_del = client.delete(f"/tasks/{task_id}/context/snapshots/L2")
+    assert r_del.status_code == 200
+    assert r_del.json().get("context_deleted") is True
+
+    # 8. Verify deletion returns 404
+    r_get_after_del = client.get(f"/tasks/{task_id}/context/snapshots/L2")
+    assert r_get_after_del.status_code == 404

@@ -1,9 +1,10 @@
-import os
 import json
-import time
+import os
 import random
+import time
 from typing import Any, Dict, Optional
-from urllib import request, error
+from urllib import error, request
+
 from .interfaces import LLMProvider
 
 
@@ -26,34 +27,43 @@ class LLMClient(LLMProvider):
         api_key: Optional[str] = None,
         url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: int = 60,
+        timeout: int = 300,
         retries: Optional[int] = None,
         backoff_base: Optional[float] = None,
     ) -> None:
         self.api_key = api_key or os.getenv("GLM_API_KEY")
         self.url = url or os.getenv(
-            "GLM_API_URL", "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+            "GLM_CHAT_API_URL", "https://open.bigmodel.cn/api/paas/v4/chat/completions"
         )
         self.model = model or os.getenv("GLM_MODEL", "glm-4-flash")
         self.timeout = timeout
         self.mock = _truthy(os.getenv("LLM_MOCK", ""))
         # Retry/backoff configuration
         try:
-            self.retries = int(os.getenv("LLM_RETRIES", "2")) if retries is None else int(retries)
+            self.retries = (
+                int(os.getenv("LLM_RETRIES", "2")) if retries is None else int(retries)
+            )
         except Exception:
             self.retries = 2
         try:
-            self.backoff_base = float(os.getenv("LLM_BACKOFF_BASE", "0.5")) if backoff_base is None else float(backoff_base)
+            self.backoff_base = (
+                float(os.getenv("LLM_BACKOFF_BASE", "0.5"))
+                if backoff_base is None
+                else float(backoff_base)
+            )
         except Exception:
             self.backoff_base = 0.5
 
     def chat(self, prompt: str) -> str:
         if self.mock:
             # Return deterministic, parseable content in mock mode
-            if "JSON object" in prompt or "\"tasks\"" in prompt or "tasks" in prompt or "Break down" in prompt:
-                return (
-                    '{"title":"AI医疗应用报告","tasks":[{"name":"引言和背景","prompt":"撰写人工智能在医疗领域应用报告的引言部分，介绍AI技术在医疗行业的发展历程和重要性。"},{"name":"核心技术概述","prompt":"详细介绍医疗AI的核心技术，包括机器学习、深度学习、自然语言处理等关键技术。"},{"name":"临床应用案例","prompt":"分析具体的医疗AI应用案例，如医学影像诊断、药物发现、个性化治疗等。"},{"name":"挑战与限制","prompt":"讨论当前医疗AI面临的技术挑战、伦理问题和监管限制。"},{"name":"未来发展趋势","prompt":"展望医疗AI的发展前景，分析新兴技术和应用方向。"}]}'
-                )
+            if (
+                "JSON object" in prompt
+                or '"tasks"' in prompt
+                or "tasks" in prompt
+                or "Break down" in prompt
+            ):
+                return '{"title":"AI医疗应用报告","tasks":[{"name":"引言和背景","prompt":"撰写人工智能在医疗领域应用报告的引言部分，介绍AI技术在医疗行业的发展历程和重要性。"},{"name":"核心技术概述","prompt":"详细介绍医疗AI的核心技术，包括机器学习、深度学习、自然语言处理等关键技术。"},{"name":"临床应用案例","prompt":"分析具体的医疗AI应用案例，如医学影像诊断、药物发现、个性化治疗等。"},{"name":"挑战与限制","prompt":"讨论当前医疗AI面临的技术挑战、伦理问题和监管限制。"},{"name":"未来发展趋势","prompt":"展望医疗AI的发展前景，分析新兴技术和应用方向。"}]}'
             return "This is a mock completion."
 
         if not self.api_key:
@@ -82,9 +92,17 @@ class LLMClient(LLMProvider):
             except error.HTTPError as e:
                 # Retry only for 5xx; surface 4xx immediately
                 code = getattr(e, "code", None)
-                if isinstance(code, int) and 500 <= code < 600 and attempt < self.retries:
+                if (
+                    isinstance(code, int)
+                    and 500 <= code < 600
+                    and attempt < self.retries
+                ):
                     # backoff retry
-                    delay = max(0.0, self.backoff_base * (2 ** attempt) + random.uniform(0, self.backoff_base / 4.0))
+                    delay = max(
+                        0.0,
+                        self.backoff_base * (2**attempt)
+                        + random.uniform(0, self.backoff_base / 4.0),
+                    )
                     time.sleep(delay)
                     last_err = e
                     continue
@@ -96,7 +114,11 @@ class LLMClient(LLMProvider):
             except Exception as e:
                 # Treat as transient (network) and retry
                 if attempt < self.retries:
-                    delay = max(0.0, self.backoff_base * (2 ** attempt) + random.uniform(0, self.backoff_base / 4.0))
+                    delay = max(
+                        0.0,
+                        self.backoff_base * (2**attempt)
+                        + random.uniform(0, self.backoff_base / 4.0),
+                    )
                     time.sleep(delay)
                     last_err = e
                     continue
@@ -127,4 +149,5 @@ def get_default_client() -> LLMClient:
     global _default_client
     if _default_client is None:
         _default_client = LLMClient()
+    return _default_client
     return _default_client

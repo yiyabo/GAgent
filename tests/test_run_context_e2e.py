@@ -26,13 +26,17 @@ def test_run_with_context_options_and_snapshot(tmp_path, monkeypatch):
         }
         r = client.post("/plans/approve", json=plan)
         assert r.status_code == 200
+        plan_result = r.json()
+        plan_id = plan_result["plan_id"]
 
         # Get task ids
-        r = client.get(f"/plans/{plan['title']}/tasks")
+        r = client.get(f"/plans/{plan_id}/tasks")
         assert r.status_code == 200
         tasks = r.json()
-        a: Dict[str, Any] = next(t for t in tasks if t["short_name"] == "A")
-        b: Dict[str, Any] = next(t for t in tasks if t["short_name"] == "B")
+        a: Dict[str, Any] = next((t for t in tasks if "A" in t["name"]), None)
+        b: Dict[str, Any] = next((t for t in tasks if "B" in t["name"]), None)
+        assert a is not None, "Task 'A' not found"
+        assert b is not None, "Task 'B' not found"
 
         # Seed output for B and mark it done so /run only executes A
         repo = SqliteTaskRepository()
@@ -49,7 +53,7 @@ def test_run_with_context_options_and_snapshot(tmp_path, monkeypatch):
 
         # Run only this plan with context options and save snapshot
         payload = {
-            "title": plan["title"],
+            "plan_id": plan_id,
             "use_context": True,
             "context_options": {
                 "include_deps": False,

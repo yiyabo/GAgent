@@ -16,6 +16,12 @@ venv/
 .vscode/
 tasks.db
 embedding_cache.db
+evaluation_cache.db
 CLAUDE.md
+GEMINI.md
 plan.json
 plan.md
+frontend/node_modules
+.kiro/*
+.Claude/*
+firebase-debug.log
