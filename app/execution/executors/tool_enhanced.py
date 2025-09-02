@@ -74,6 +74,11 @@ class ToolEnhancedExecutor:
                 
                 # Phase 2: Intelligent tool routing
                 routing_context = await self._build_routing_context(task, context_options)
+                logger.info(
+                    "Tool routing start: task_id=%s, context_enabled=%s",
+                    task_id,
+                    routing_context.get("context_enabled")
+                )
                 routing_result = await self.tool_router.route_request(task_prompt, routing_context)
                 
                 # Phase 3: Execute INFORMATION GATHERING tools only (not output tools)
@@ -90,6 +95,7 @@ class ToolEnhancedExecutor:
                 tool_outputs = []
                 if info_gathering_tools:
                     tool_outputs = await self._execute_tool_calls(info_gathering_tools, task)
+                    logger.info("Tool info calls executed: %d", len(tool_outputs))
                 
                 # Phase 4: Enhance context with tool results
                 enhanced_context_options = await self._enhance_context_with_tools(
