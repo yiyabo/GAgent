@@ -1,6 +1,8 @@
 import json
 import re
 from typing import Any, Optional, Tuple, Union, List, Dict
+import threading
+import asyncio
 
 
 def plan_prefix(title: str) -> str:
@@ -44,3 +46,43 @@ def parse_json_obj(text: str):
     except Exception:
         pass
     return None
+
+
+# -------------------------------
+# Async helpers (safe blocking run)
+# -------------------------------
+
+def run_async(coro):
+    """Safely run an async coroutine from sync code.
+
+    Behavior:
+    - If there's no running loop in this thread: run directly (run_until_complete / asyncio.run)
+    - If a loop is running (e.g., called from within an async context):
+      execute the coroutine in a separate thread with its own event loop.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            result_box: Dict[str, Any] = {}
+            error_box: Dict[str, BaseException] = {}
+
+            def _runner():
+                try:
+                    result_box["value"] = asyncio.run(coro)
+                except BaseException as e:  # noqa: BLE001
+                    error_box["error"] = e
+
+            t = threading.Thread(target=_runner, daemon=True)
+            t.start()
+            t.join()
+            if "error" in error_box:
+                raise error_box["error"]
+            return result_box.get("value")
+        else:
+            try:
+                return loop.run_until_complete(coro)
+            except RuntimeError:
+                return asyncio.run(coro)
+    except RuntimeError:
+        # No current event loop
+        return asyncio.run(coro)
