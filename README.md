@@ -1,30 +1,31 @@
-# 🧠 AI-Driven智能任务编排系统
+# 🧠 AI‑Driven 智能任务编排系统
 
-一个生产级的AI任务编排系统，将目标转化为可执行计划，具备智能上下文感知、依赖管理、预算控制和高级评估功能。
+将“自然语言目标”转为“可执行计划并产出高质量结果”的一体化系统。具备分解→调度→上下文→执行→评估→装配的全链路能力，支持工具增强与多评估模式。
 
 ## ✨ 核心特性
 
-### 🚀 智能任务编排
-- **智能计划生成**: 从高级目标自动生成可执行任务计划
-- **递归任务分解**: ROOT → COMPOSITE → ATOMIC 三级分解，智能复杂度评估
-- **质量驱动分解**: 内置质量评估、迭代改进、深度控制机制
-- **依赖感知调度**: 基于DAG的调度与循环检测
-- **上下文智能**: 多源上下文组装（依赖、TF-IDF检索、全局索引）
+### 🚀 智能编排
+- **计划生成**：从高层目标自动产出任务树
+- **递归分解**：Root → Composite → Atomic 三级分解，复杂度评估与深度控制
+- **依赖感知**：DAG/BFS/后序调度，循环检测与稳定顺序
+- **上下文智能**：全局索引 + 依赖/同计划/层级 + 语义检索，预算裁剪
 
-### 🎯 高级评估系统
-- **LLM智能评估**: 深度语义理解的6维度质量评估
-- **多专家评估**: 5位专业角色的协作评估系统
-- **对抗性评估**: 生成器vs批评者的对抗改进机制
-- **元认知评估**: 评估质量的自我反思和偏见检测
-- **质量监督**: 自动监控、缓存优化、实时警报
+### 🎯 质量评估
+- **LLM 评估**：6 维质量评分与建议，支持迭代改进
+- **多专家评估**：多角色协作打分与共识
+- **对抗评估**：生成器/批评者博弈提升鲁棒性
+- **评估留痕**：历史/配置/统计齐全
 
-### ⚡ 性能与可靠性
-- **多层缓存**: 内存 + SQLite持久化缓存
-- **预算管理**: Token/字符限制与智能内容摘要
-- **可重现执行**: 上下文快照和确定性排序
-- **生产就绪**: FastAPI后端、完整测试、模拟模式
+### 🧰 工具增强（Tool Box）
+- 智能路由是否使用外部工具
+- 信息工具丰富上下文（如搜索/数据库），产出工具落地（如写文件）
 
-## 🎯 快速开始
+### ⚡ 可靠性
+- 多层缓存与 SQLite 存储
+- 上下文快照与可重现执行
+- 完整测试与可选 Mock 模式（开发场景）
+
+## 🚀 快速开始
 
 ### 环境准备
 ```bash
@@ -36,69 +37,49 @@ pip install -r requirements.txt
 
 # 设置环境变量
 export GLM_API_KEY=your_key_here
-# 或使用模拟模式进行开发和测试
-export LLM_MOCK=1
+# 可选：开发/离线使用模拟模式
+# export LLM_MOCK=1
 ```
 
-### 📚 生成学术论文（一键模式）
+### 启动 API 服务
 ```bash
-# 生成因果推理综述论文
-conda run -n LLM python generate_paper.py --topic "因果推理方法综述"
+# 生产（需配置真实 API Key）
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
-# 生成机器学习论文
-conda run -n LLM python generate_paper.py --topic "深度学习在医学影像中的应用" --sections 8
-
-# 自定义输出文件
-conda run -n LLM python generate_paper.py --topic "人工智能伦理研究" --output "AI伦理论文.md"
-
-# 使用模拟模式（开发测试）
-LLM_MOCK=1 python generate_paper.py --topic "AI技术综述" --sections 5
+# 开发（可用 Mock）
+# LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-### 🔧 使用递归任务分解
+### 🔧 分解与执行（推荐后序调度）
 ```bash
-# 智能任务分解
+# 单任务分解（标准/工具感知/带评估）
 curl -X POST http://localhost:8000/tasks/123/decompose \
   -H "Content-Type: application/json" \
-  -d '{"max_subtasks": 5, "force": false}'
+  -d '{"max_subtasks": 5, "force": false, "tool_aware": true}'
 
-# 带质量评估的分解
-curl -X POST http://localhost:8000/tasks/123/decompose/with-evaluation \
-  -H "Content-Type: application/json" \
-  -d '{"quality_threshold": 0.8, "max_iterations": 3}'
+# 计划级递归分解
+curl -X POST http://localhost:8000/plans/MyReport/decompose -H "Content-Type: application/json" -d '{"max_depth": 3}'
 
-# 获取分解建议
-curl http://localhost:8000/tasks/123/decomposition/recommendation
-
-# 评估任务复杂度
-curl http://localhost:8000/tasks/123/complexity
+# 执行（自动分解 + 工具增强 + 评估）
+curl -X POST http://localhost:8000/run -H "Content-Type: application/json" -d '{
+  "title": "MyReport",
+  "schedule": "postorder",
+  "use_context": true,
+  "auto_decompose": true,
+  "decompose_max_depth": 3,
+  "use_tools": true,
+  "enable_evaluation": true,
+  "evaluation_mode": "llm",
+  "evaluation_options": {"max_iterations": 3, "quality_threshold": 0.8},
+  "context_options": {"max_chars": 8000, "strategy": "sentence"}
+}'
 ```
 
-### 🔧 使用高级评估系统
+### 🔍 仅评估模式（三种）
 ```bash
-# LLM智能评估（推荐）
-LLM_MOCK=1 python -m cli.main --eval-llm 123 --threshold 0.8 --max-iterations 3
-
-# 多专家评估
-LLM_MOCK=1 python -m cli.main --eval-multi-expert 123 --threshold 0.8
-
-# 对抗性评估（最高质量）
-LLM_MOCK=1 python -m cli.main --eval-adversarial 123
-
-# 查看评估统计
-LLM_MOCK=1 python -m cli.main --eval-stats --detailed
-
-# 系统监控
-LLM_MOCK=1 python -m cli.main --eval-supervision --detailed
-```
-
-### 🌐 启动API服务
-```bash
-# 生产模式
-conda run -n LLM python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-
-# 开发模式（使用模拟）
-LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+# LLM：evaluation_mode=llm
+# 多专家：evaluation_mode=multi_expert
+# 对抗：evaluation_mode=adversarial
 ```
 
 ## 🏗️ 系统架构
@@ -119,7 +100,7 @@ LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 └── 监督系统 (evaluation_supervisor.py)
 ```
 
-### 关键组件说明
+### 关键组件
 
 **1. 智能任务分解**
 - **ROOT任务**: 高复杂度项目，自动分解为主要功能模块 (深度0)
@@ -133,7 +114,7 @@ LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 - **全局索引**: 总是包含 `INDEX.md` 作为最高优先级上下文
 - **依赖关系**: 收集 `requires` 和 `refers` 链接的任务
 - **计划兄弟**: 来自同一计划的相关任务
-- **TF-IDF检索**: 跨现有任务输出的语义搜索
+- **语义检索**: 基于嵌入/相似度的跨任务检索
 
 **3. 评估模式选择**
 | 内容类型 | 推荐模式 | 特点 |
@@ -143,46 +124,49 @@ LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 | 重要文档 | 多专家评估 | 多角度验证、专业意见 |
 | 关键内容 | 对抗性评估 | 最高质量、鲁棒性强 |
 
+**4. 工具增强（Tool Box）**
+- 智能分析是否需要工具；按需调用“信息工具”丰富上下文，再执行生成；最后调用“产出工具”保存/落地。
+- 也可通过 `/tasks/{id}/execute/tool-enhanced` 对单任务增强执行。
+
 ## 🔀 ASCII 系统流程图
 
 ```
 +---------------------+        +------------------+        +---------------------+
-|      客户端         |  HTTP  |     FastAPI      |  调度   |      Scheduler       |
-|  (CLI / REST / UI)  +------->+   app/main.py    +------->+  BFS / DAG / 后序    |
+|      客户端         |  HTTP  |     FastAPI      |  调度  |      Scheduler     |
+|  (CLI / REST / UI)  +------->+   app/main.py    +------->+  BFS / DAG / 后序   |
 +----------+----------+        +---------+--------+        +----------+----------+
            |                            |                              |
-           | CLI参数/REST Body           | 计划/任务/上下文/评估API       | 产出待执行任务序列
+           | CLI参数/REST Body          |   计划/任务/上下文/评估API   | 产出待执行任务序列
            v                            v                              v
 +----------+----------+        +---------+--------+        +----------+----------+
-|   Planning/Plan     |        |  Repository     |        |   Executor/LLM      |
-|  提议/批准/计划管理  |<------>+  SQLite (tasks,  +<-------+ execution/executors  |
-+---------------------+  CRUD  |  outputs, eval) |  读写   |  base/enhanced      |
+|   Planning/Plan     |        |    Repository    |        |   Executor/LLM      |
+|  提议/批准/计划管理 |<------>+  SQLite (tasks,  +<-------+ execution/executors |
++---------------------+  CRUD  |  outputs, eval)  |  读写  |  base/enhanced      |
                                +---------+--------+        +----------+----------+
                                          |                             |
                                          | 上下文组装/预算裁剪           | LLM生成/严格评估
                                          v                             v
                                +---------+--------+        +----------+----------+
                                | Context Builder  |        | Evaluation System   |
-                               | services/context |        | (LLM/多专家/对抗)    |
+                               | services/context |        | (LLM/多专家/对抗)   |
                                +---------+--------+        +----------+----------+
                                          |                             |
                                          +-------------+---------------+
                                                        |
-                                               +-------+--------+
-                                               | 输出汇总/基准   |
+                                               +-------+---------+
+                                               |  输出汇总/基准  |
                                                | MD / CSV / 指标 |
                                                +-----------------+
 ```
 
 ## 📚 文档导航
 
-- **[快速开始](docs/QUICK_START.md)** - 5分钟快速上手指南
-- **[递归分解指南](docs/RECURSIVE_DECOMPOSITION_GUIDE.md)** - 智能任务分解系统深度指南
-- **[评估系统](docs/EVALUATION_SYSTEM.md)** - 评估功能概览与导航
-- **[评估系统指南](docs/EVALUATION_SYSTEM_GUIDE.md)** - 深入使用与最佳实践
-- **[API文档](docs/API_REFERENCE.md)** - 编程接口（含分解与评估API）
-- **[数据库与缓存](docs/Database_and_Cache_Management.md)** - 存储架构与索引/缓存
-- **[Memory-MCP系统](docs/MEMORY_MCP_SYSTEM.md)** - 智能记忆系统
+- 快速开始：`docs/QUICK_START.md`
+- 递归分解：`docs/RECURSIVE_DECOMPOSITION_GUIDE.md`
+- 评估系统：`docs/EVALUATION_SYSTEM.md` / `docs/EVALUATION_SYSTEM_GUIDE.md`
+- API 参考：`docs/API_REFERENCE.md`
+- 存储与缓存：`docs/Database_and_Cache_Management.md`
+- Memory‑MCP：`docs/MEMORY_MCP_SYSTEM.md`
 
 ## 🎨 使用示例
 
@@ -214,21 +198,6 @@ curl -X POST http://127.0.0.1:8000/run \
   }'
 ```
 
-### 💡 CLI高级功能
-```bash
-# 批量评估多个任务
-LLM_MOCK=1 python -m cli.main --eval-batch --task-ids 101,102,103 --threshold 0.8
-
-# 配置评估系统
-LLM_MOCK=1 python -m cli.main --eval-config 123 --threshold 0.85 --max-iterations 5
-
-# 查看评估历史
-LLM_MOCK=1 python -m cli.main --eval-history 123 --detailed
-
-# 监督系统配置
-LLM_MOCK=1 python -m cli.main --eval-supervision-config --min-accuracy 0.8 --max-evaluation-time 30.0
-```
-
 ## 📈 性能指标
 
 - **评估准确性**: > 85% (LLM评估 vs 人工评估一致性)
@@ -238,15 +207,8 @@ LLM_MOCK=1 python -m cli.main --eval-supervision-config --min-accuracy 0.8 --max
 
 ## 🔧 运行示例
 
-```bash
-# 运行所有评估示例
-LLM_MOCK=1 python examples/evaluation_examples.py --example all
-
-# 运行特定示例
-LLM_MOCK=1 python examples/evaluation_examples.py --example llm
-LLM_MOCK=1 python examples/evaluation_examples.py --example multi-expert
-LLM_MOCK=1 python examples/evaluation_examples.py --example adversarial
-```
+- 可通过 `/plans/propose` → `/plans/approve` → `/run` 完成端到端演示
+- 若仓库未包含示例脚本或 examples 目录，参考上文 cURL 命令即可
 
 ## 🚨 故障排除
 
@@ -268,6 +230,12 @@ LLM_MOCK=1 python -m cli.main --eval-supervision --detailed
 LLM_MOCK=1 python -m cli.main --eval-stats --detailed
 ```
 
+### 数据库损坏（database disk image is malformed）？
+```bash
+rm -f tasks.db tasks.db-shm tasks.db-wal
+python -c "from app.database import init_db; init_db(); print('DB initialized')"
+```
+
 ## 🛠️ 技术栈
 
 - **Python 3.8+** - 核心编程语言
@@ -277,20 +245,10 @@ LLM_MOCK=1 python -m cli.main --eval-stats --detailed
 - **TF-IDF** - 语义相似度检索
 - **多线程** - 并发任务处理
 
-## 📋 版本历史
+## 📋 版本摘要（最近）
 
-### v2.0.0 (当前版本)
-- ✨ 革新评估系统: LLM智能 + 多专家 + 对抗性评估
-- ✨ 新增递归任务分解: 三级分解体系 + 智能复杂度评估 + 质量控制
-- ✨ 新增元认知评估和质量监督机制
-- ✨ 完整论文生成功能集成
-- 🚀 多层缓存系统和性能优化
-- 📚 完整文档和示例代码
-
-### v1.x.x
-- ✅ 基础任务编排和上下文感知
-- ✅ 依赖管理和调度系统
-- ✅ RESTful API和CLI接口
+- /run 新增编排开关：`auto_decompose`、`use_tools`、`evaluation_mode`、`decompose_max_depth`
+- 工具 + 评估合流：先信息工具增强上下文，再迭代评估生成，最后产出工具
 
 ## 🤝 贡献指南
 
@@ -327,10 +285,10 @@ LLM_MOCK=1 python examples/evaluation_examples.py --example all
 
 ## 📄 许可证
 
-本项目采用 MIT 许可证。详见 [LICENSE](LICENSE) 文件。
+本项目采用 MIT 许可证。详见 `LICENSE` 文件。
 
 ---
 
 **🚀 AI-Driven智能任务编排系统 v2.0** - 让AI任务编排更智能、更准确、更可靠
 
-*最后更新时间: 2025年8月*
+*最后更新时间: 2025年*
