@@ -37,7 +37,7 @@ from .services.logging_config import setup_logging
 from .services.settings import get_settings
 from .services.benchmark import run_benchmark
 from .services.planning import propose_plan_service, approve_plan_service
-from .utils import plan_prefix, split_prefix
+from .utils import plan_prefix, split_prefix, run_async
 
 # Memory system integration
 from .api.memory_api import memory_router
@@ -176,6 +176,19 @@ async def lifespan(app: FastAPI):
     setup_logging()
     _ = get_settings()  # 触发加载，便于在日志中看到配置是否生效
     init_db()
+    # DB 轻量完整性检查（仅记录日志，不中断服务）
+    try:
+        from .database_pool import get_db as _get_db
+        with _get_db() as _conn:
+            row = _conn.execute("PRAGMA integrity_check").fetchone()
+            msg = None
+            try:
+                msg = row[0]
+            except Exception:
+                msg = str(row)
+            logging.getLogger("app.main").info(f"DB integrity_check: {msg}")
+    except Exception as _e:
+        logging.getLogger("app.main").warning(f"DB integrity check skipped: {_e}")
     
     # Initialize Tool Box for enhanced agent capabilities
     try:
@@ -421,6 +434,10 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     # New: Evaluation mode support
     enable_evaluation = bool(rr.enable_evaluation)
     evaluation_mode = (rr.evaluation_mode or "llm").strip().lower() if enable_evaluation else None
+    # Validate evaluation mode
+    if evaluation_mode not in {None, "llm", "multi_expert", "adversarial"}:
+        logging.getLogger("app.main").warning(f"Unknown evaluation_mode '{evaluation_mode}', fallback to 'llm'")
+        evaluation_mode = "llm"
     evaluation_config = None
     if enable_evaluation:
         ev = rr.evaluation_options or ExecuteWithEvaluationRequest().model_dump()
@@ -443,6 +460,8 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     except Exception:
         decompose_max_depth = None
 
+    if auto_decompose and not title:
+        logging.getLogger("app.main").warning("auto_decompose requested but no title provided; skipping auto decomposition")
     if auto_decompose and title:
         try:
             # Prefer postorder for hierarchical execution when auto-decomposing
@@ -475,9 +494,8 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                 # Use enhanced executor with evaluation (optionally tool-enhanced)
                 if use_tools:
                     # Combined tool + evaluation path (async wrapper)
-                    import asyncio
                     from .execution.executors.tool_enhanced import execute_task_with_tools_and_evaluation
-                    result = asyncio.run(execute_task_with_tools_and_evaluation(
+                    result = run_async(execute_task_with_tools_and_evaluation(
                         task=task,
                         repo=default_repo,
                         evaluation_mode=evaluation_mode or "llm",
@@ -508,6 +526,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                 results.append({
                     "id": task_id, 
                     "status": status,
+                    "evaluation_mode": (evaluation_mode or "none") if enable_evaluation else "none",
                     "evaluation": {
                         "score": result.evaluation.overall_score if result.evaluation else None,
                         "iterations": result.iterations
@@ -545,9 +564,8 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         if enable_evaluation:
             # Use enhanced executor with evaluation (optionally tool-enhanced)
             if use_tools:
-                import asyncio
                 from .execution.executors.tool_enhanced import execute_task_with_tools_and_evaluation
-                result = asyncio.run(execute_task_with_tools_and_evaluation(
+                result = run_async(execute_task_with_tools_and_evaluation(
                     task=task,
                     repo=default_repo,
                     evaluation_mode=evaluation_mode or "llm",
@@ -577,6 +595,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             results.append({
                 "id": task_id, 
                 "status": status,
+                "evaluation_mode": (evaluation_mode or "none") if enable_evaluation else "none",
                 "evaluation": {
                     "score": result.evaluation.overall_score if result.evaluation else None,
                     "iterations": result.iterations

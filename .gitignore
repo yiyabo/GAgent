@@ -19,3 +19,8 @@ embedding_cache.db
 CLAUDE.md
 plan.json
 plan.md
+tasks.db-shm
+.gitignore
+tasks.db-wal
+llm_cache.db
+test_report_structure.docx
