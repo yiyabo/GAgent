@@ -1,9 +1,10 @@
-from typing import Optional, Dict, Any
 import asyncio
-import threading
 import logging
-from ...llm import get_default_client
+import threading
+from typing import Any, Dict, Optional
+
 from ...interfaces import TaskRepository
+from ...llm import get_default_client
 from ...repository.tasks import default_repo
 from ...services.context import gather_context
 from ...services.context_budget import apply_budget
@@ -36,24 +37,25 @@ def _glm_chat(prompt: str) -> str:
 
 def _generate_task_embedding_async(task_id: int, content: str, repo: TaskRepository):
     """Asynchronously generate and store task embedding"""
+
     def _background_embedding():
         try:
             if not content or not content.strip():
                 logger.debug(f"Task {task_id} content is empty, skipping embedding generation")
                 return
-            
+
             # Check if embedding already exists
             existing_embedding = repo.get_task_embedding(task_id)
             if existing_embedding:
                 logger.debug(f"Task {task_id} already has embedding, skipping generation")
                 return
-            
+
             embeddings_service = get_embeddings_service()
-            
+
             # Generate embedding
             logger.debug(f"Generating embedding for task {task_id}")
             embedding = embeddings_service.get_single_embedding(content)
-            
+
             if embedding:
                 # Store embedding
                 embedding_json = embeddings_service.embedding_to_json(embedding)
@@ -61,10 +63,10 @@ def _generate_task_embedding_async(task_id: int, content: str, repo: TaskReposit
                 logger.debug(f"Successfully stored embedding for task {task_id}")
             else:
                 logger.warning(f"Failed to generate embedding for task {task_id}")
-                
+
         except Exception as e:
             logger.error(f"Error generating embedding for task {task_id}: {e}")
-    
+
     # Execute in background thread to avoid blocking main process
     thread = threading.Thread(target=_background_embedding, daemon=True)
     thread.start()
@@ -113,7 +115,7 @@ def execute_task(
                     manual = [int(x) for x in mids]
                 except Exception:
                     manual = None
-            
+
             bundle = gather_context(
                 task_id,
                 repo=repo,
@@ -128,13 +130,16 @@ def execute_task(
             max_chars = opts.get("max_chars")
             per_section_max = opts.get("per_section_max")
             strategy = opts.get("strategy") if isinstance(opts.get("strategy"), str) else None
+
             def _int_env(name: str, default_val: int) -> int:
                 try:
                     import os as _os
+
                     v = _os.environ.get(name)
                     return int(v) if v is not None and str(v).strip() != "" else int(default_val)
                 except Exception:
                     return int(default_val)
+
             # Determine effective caps
             if (max_chars is not None) or (per_section_max is not None):
                 try:
@@ -155,7 +160,7 @@ def execute_task(
                 # Apply safe defaults when use_context=true but no budget provided
                 default_total = _int_env("CONTEXT_DEFAULT_MAX_CHARS", 6000)
                 default_per_sec = _int_env("CONTEXT_DEFAULT_PER_SECTION", 1200)
-                default_strategy = (strategy or ("sentence" if default_total or default_per_sec else "truncate"))
+                default_strategy = strategy or ("sentence" if default_total or default_per_sec else "truncate")
                 bundle = apply_budget(
                     bundle,
                     max_chars=default_total,
@@ -173,22 +178,27 @@ def execute_task(
         try:
             if isinstance(bundle, dict) and bool(opts.get("save_snapshot", False)):
                 label = opts.get("label") or "latest"
-                meta = {"source": "executor", "options": {
-                    "include_deps": include_deps,
-                    "include_plan": include_plan,
-                    "k": k,
-                    "manual": manual,
-                    "semantic_k": semantic_k,
-                    "min_similarity": min_similarity,
-                    "max_chars": (max_chars_i if 'max_chars_i' in locals() else None),
-                    "per_section_max": (per_section_max_i if 'per_section_max_i' in locals() else None),
-                    "strategy": (strategy or "truncate") if strategy else None,
-                }}
+                meta = {
+                    "source": "executor",
+                    "options": {
+                        "include_deps": include_deps,
+                        "include_plan": include_plan,
+                        "k": k,
+                        "manual": manual,
+                        "semantic_k": semantic_k,
+                        "min_similarity": min_similarity,
+                        "max_chars": (max_chars_i if "max_chars_i" in locals() else None),
+                        "per_section_max": (per_section_max_i if "per_section_max_i" in locals() else None),
+                        "strategy": (strategy or "truncate") if strategy else None,
+                    },
+                }
                 # Attach budget info if present
                 if "budget_info" in bundle:
                     meta["budget_info"] = bundle["budget_info"]
                 try:
-                    repo.upsert_task_context(task_id, bundle.get("combined", ""), bundle.get("sections", []), meta, label=label)
+                    repo.upsert_task_context(
+                        task_id, bundle.get("combined", ""), bundle.get("sections", []), meta, label=label
+                    )
                 except Exception:
                     # Repository may not implement snapshots; ignore silently
                     pass
@@ -199,20 +209,20 @@ def execute_task(
         content = _glm_chat(prompt)
         repo.upsert_task_output(task_id, content)
         logger.info(f"Task {task_id} ({name}) done.")
-        
+
         # Asynchronously generate embedding (optional)
         try:
             generate_embeddings = True  # Default enabled
-            
+
             # Check if there's embedding configuration in context_options
             if context_options and isinstance(context_options, dict):
                 generate_embeddings = context_options.get("generate_embeddings", True)
-            
+
             if generate_embeddings:
                 _generate_task_embedding_async(task_id, content, repo)
         except Exception as embed_error:
             logger.warning(f"Failed to trigger embedding generation (task {task_id}): {embed_error}")
-        
+
         return "done"
     except Exception as e:
         logger.error(f"Task {task_id} ({name}) failed: {e}")

@@ -1,6 +1,6 @@
-from typing import Any, Dict, List, Optional, Tuple
-import os
 import logging
+import os
+from typing import Any, Dict, List, Optional, Tuple
 
 # Priority order for budgeting. We keep deterministic ordering.
 # Phase 4: add 'index' with highest priority, before dependencies.
@@ -129,14 +129,16 @@ def apply_budget(
     sections = sorted(sections, key=_priority_key)
 
     if _debug_on():
-        _BUD_LOGGER.debug({
-            "event": "apply_budget.start",
-            "task_id": bundle.get("task_id"),
-            "sections": len(sections),
-            "max_chars": max_chars,
-            "per_section_max": per_section_max,
-            "strategy": (strategy or "truncate").lower(),
-        })
+        _BUD_LOGGER.debug(
+            {
+                "event": "apply_budget.start",
+                "task_id": bundle.get("task_id"),
+                "sections": len(sections),
+                "max_chars": max_chars,
+                "per_section_max": per_section_max,
+                "strategy": (strategy or "truncate").lower(),
+            }
+        )
 
     remaining = int(max_chars) if max_chars is not None else None
     per_cap = int(per_section_max) if per_section_max is not None else None
@@ -193,14 +195,16 @@ def apply_budget(
         else:
             reason = "none"
 
-        meta.update({
-            "allowed": allow,
-            "allowed_by_per_section": allowed_by_per,
-            "allowed_by_total": allowed_by_total,
-            "truncated_reason": reason,
-            "group": group,
-            "index": idx,
-        })
+        meta.update(
+            {
+                "allowed": allow,
+                "allowed_by_per_section": allowed_by_per,
+                "allowed_by_total": allowed_by_total,
+                "truncated_reason": reason,
+                "group": group,
+                "index": idx,
+            }
+        )
 
         s2 = dict(s)
         s2["content"] = truncated
@@ -229,11 +233,13 @@ def apply_budget(
     }
 
     if _debug_on():
-        _BUD_LOGGER.debug({
-            "event": "apply_budget.done",
-            "task_id": bundle.get("task_id"),
-            "sections": len(new_sections),
-            "total_original_chars": out["budget_info"]["total_original_chars"],
-            "total_new_chars": out["budget_info"]["total_new_chars"],
-        })
+        _BUD_LOGGER.debug(
+            {
+                "event": "apply_budget.done",
+                "task_id": bundle.get("task_id"),
+                "sections": len(new_sections),
+                "total_original_chars": out["budget_info"]["total_original_chars"],
+                "total_new_chars": out["budget_info"]["total_new_chars"],
+            }
+        )
     return out

@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Set
-import os
 import json
+import os
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..interfaces import TaskRepository
 from ..repository.tasks import default_repo
 from ..utils import split_prefix
 from .context_budget import PRIORITY_ORDER
 
-
 # -------------------------------
 # Helpers
 # -------------------------------
+
 
 def _resolve_index_path() -> str:
     return os.environ.get("GLOBAL_INDEX_PATH", "INDEX.md")
@@ -59,13 +59,15 @@ def _plan_tasks(repo: TaskRepository, title: str) -> List[Dict[str, Any]]:
         if tid is None or name is None:
             continue
         _, short = split_prefix(name)
-        out.append({
-            "id": int(tid),
-            "name": name,
-            "short": short,
-            "status": status or "pending",
-            "priority": prio,
-        })
+        out.append(
+            {
+                "id": int(tid),
+                "name": name,
+                "short": short,
+                "status": status or "pending",
+                "priority": prio,
+            }
+        )
     return out
 
 
@@ -198,20 +200,22 @@ def generate_index(
         cyc = _find_cycle(adj)
         bottlenecks = _bottlenecks(adj, id_set) if edges else []
 
-        plans.append({
-            "title": title,
-            "owner": "—",  # placeholder (can be extended via env or metadata later)
-            "stage": stage,
-            "done": done,
-            "total": total,
-            "last_updated": last_updated,
-            "tasks": tasks,
-            "brief": brief,
-            "edges": edges,
-            "has_cycle": bool(cyc),
-            "sample_cycle": cyc or [],
-            "bottlenecks": bottlenecks,
-        })
+        plans.append(
+            {
+                "title": title,
+                "owner": "—",  # placeholder (can be extended via env or metadata later)
+                "stage": stage,
+                "done": done,
+                "total": total,
+                "last_updated": last_updated,
+                "tasks": tasks,
+                "brief": brief,
+                "edges": edges,
+                "has_cycle": bool(cyc),
+                "sample_cycle": cyc or [],
+                "bottlenecks": bottlenecks,
+            }
+        )
 
     # Read history lines (existing)
     history_path = f"{resolved_path}.history.jsonl"
@@ -220,7 +224,7 @@ def generate_index(
         with open(history_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
         # take last N (newest at end)
-        for line in lines[-int(history_n):][::-1]:  # reverse to show newest first
+        for line in lines[-int(history_n) :][::-1]:  # reverse to show newest first
             try:
                 obj = json.loads(line)
                 if isinstance(obj, dict):
@@ -249,9 +253,7 @@ def generate_index(
     lines.append("| Plan | Owner | Stage | Done/Total | Last Updated |")
     lines.append("| --- | --- | --- | ---:| --- |")
     for p in plans:
-        lines.append(
-            f"| {p['title']} | {p['owner']} | {p['stage']} | {p['done']}/{p['total']} | {p['last_updated']} |"
-        )
+        lines.append(f"| {p['title']} | {p['owner']} | {p['stage']} | {p['done']}/{p['total']} | {p['last_updated']} |")
     if not plans:
         lines.append("(no plans)")
     lines.append("")

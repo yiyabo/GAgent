@@ -1,11 +1,10 @@
-from typing import Any, Dict, List, Optional
 import json
+from typing import Any, Dict, List, Optional
 
 from ..database import get_db
 from ..interfaces import TaskRepository
 from ..utils import plan_prefix, split_prefix
 from .optimized_queries import OptimizedTaskQueries
-
 
 # -------------------------------
 # Concrete repository implementation
@@ -16,7 +15,14 @@ class _SqliteTaskRepositoryBase(TaskRepository):
     """SQLite-backed implementation of TaskRepository using context-managed connections."""
 
     # --- mutations ---
-    def create_task(self, name: str, status: str = "pending", priority: Optional[int] = None, parent_id: Optional[int] = None, task_type: str = "atomic") -> int:
+    def create_task(
+        self,
+        name: str,
+        status: str = "pending",
+        priority: Optional[int] = None,
+        parent_id: Optional[int] = None,
+        task_type: str = "atomic",
+    ) -> int:
         """Create a task. Optionally set parent_id to place it in the hierarchy.
 
         Backward compatible signature extension: existing callers need not pass parent_id.
@@ -95,6 +101,7 @@ class _SqliteTaskRepositoryBase(TaskRepository):
 # Task queries
 # -------------------------------
 
+
 def _row_to_dict(row) -> Dict[str, Any]:
     return {
         "id": row[0],
@@ -118,14 +125,12 @@ def _row_to_full(row) -> Dict[str, Any]:
     }
 
 
-    
 class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     # queries continued
     def list_all_tasks(self) -> List[Dict[str, Any]]:
         with get_db() as conn:
             rows = conn.execute("SELECT id, name, status, priority FROM tasks").fetchall()
         return [_row_to_dict(r) for r in rows]
-
 
     def list_tasks_by_status(self, status: str) -> List[Dict[str, Any]]:
         with get_db() as conn:
@@ -135,10 +140,9 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
-
     def list_pending_full(self) -> List[Dict[str, Any]]:
         """Return all pending tasks with hierarchy fields in one query.
-        
+
         This batch method reduces database round-trips for schedulers.
         Returns tasks with: id, name, status, priority, parent_id, path, depth, task_type
         """
@@ -148,8 +152,9 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             ).fetchall()
         return [_row_to_full(r) for r in rows]
 
-
-    def list_tasks_by_prefix(self, prefix: str, pending_only: bool = False, ordered: bool = True) -> List[Dict[str, Any]]:
+    def list_tasks_by_prefix(
+        self, prefix: str, pending_only: bool = False, ordered: bool = True
+    ) -> List[Dict[str, Any]]:
         where = "name LIKE ?"
         params = [prefix + "%"]
         if pending_only:
@@ -159,7 +164,6 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         with get_db() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_full(r) for r in rows]
-
 
     def get_task_input_prompt(self, task_id: int) -> Optional[str]:
         with get_db() as conn:
@@ -174,7 +178,6 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         except Exception:
             return row[0]
 
-
     def get_task_output_content(self, task_id: int) -> Optional[str]:
         with get_db() as conn:
             row = conn.execute(
@@ -187,7 +190,6 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             return row["content"]
         except Exception:
             return row[0]
-
 
     def list_plan_titles(self) -> List[str]:
         with get_db() as conn:
@@ -203,16 +205,20 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 titles.add(t)
         return sorted(titles)
 
-
     def list_plan_tasks(self, title: str) -> List[Dict[str, Any]]:
         prefix = plan_prefix(title)
         return self.list_tasks_by_prefix(prefix, pending_only=False, ordered=True)
 
-
     def list_plan_outputs(self, title: str) -> List[Dict[str, Any]]:
         """Return sections with name (short), full name, and content for a plan."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         prefix = plan_prefix(title)
+        logger.info(f"组装查询: title='{title}', prefix='{prefix}'")
+        
         with get_db() as conn:
+            # 首先尝试精确匹配
             rows = conn.execute(
                 """
                 SELECT t.name, o.content
@@ -223,6 +229,42 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 """,
                 (prefix + "%",),
             ).fetchall()
+            
+            # 如果精确匹配失败，尝试多种模糊匹配策略
+            if not rows:
+                # 策略1：标题关键词匹配
+                fuzzy_pattern = f"%{title}%"
+                rows = conn.execute(
+                    """
+                    SELECT t.name, o.content
+                    FROM tasks t
+                    JOIN task_outputs o ON o.task_id = t.id
+                    WHERE t.name LIKE ?
+                    ORDER BY t.priority ASC, t.id ASC
+                    """,
+                    (fuzzy_pattern,),
+                ).fetchall()
+                
+                # 策略2：如果仍然没有结果，尝试分词匹配
+                if not rows and title:
+                    # 提取标题中的关键词进行匹配
+                    keywords = [word for word in title.split() if len(word) > 1]
+                    if keywords:
+                        # 尝试用第一个关键词匹配
+                        main_keyword = keywords[0]
+                        keyword_pattern = f"%{main_keyword}%"
+                        rows = conn.execute(
+                            """
+                            SELECT t.name, o.content
+                            FROM tasks t
+                            JOIN task_outputs o ON o.task_id = t.id
+                            WHERE t.name LIKE ?
+                            ORDER BY t.priority ASC, t.id ASC
+                            """,
+                            (keyword_pattern,),
+                        ).fetchall()
+        
+        logger.info(f"组装结果: 找到 {len(rows)} 个任务")
         out: List[Dict[str, Any]] = []
         for r in rows:
             try:
@@ -293,17 +335,21 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         out: List[Dict[str, Any]] = []
         for r in rows:
             try:
-                out.append({
-                    "from_id": r["from_id"],
-                    "to_id": r["to_id"],
-                    "kind": r["kind"],
-                })
+                out.append(
+                    {
+                        "from_id": r["from_id"],
+                        "to_id": r["to_id"],
+                        "kind": r["kind"],
+                    }
+                )
             except Exception:
-                out.append({
-                    "from_id": r[0],
-                    "to_id": r[1],
-                    "kind": r[2],
-                })
+                out.append(
+                    {
+                        "from_id": r[0],
+                        "to_id": r[1],
+                        "kind": r[2],
+                    }
+                )
         return out
 
     def list_dependencies(self, task_id: int) -> List[Dict[str, Any]]:
@@ -531,7 +577,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             except Exception:
                 old_parent_id = row["parent_id"]
                 old_path = row["path"]
-                old_depth = (row["depth"] or 0)
+                old_depth = row["depth"] or 0
 
             if new_parent_id == old_parent_id:
                 return
@@ -562,7 +608,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     raise ValueError("Cannot move a task under its own subtree")
 
                 new_parent_path = p_path
-                new_parent_depth = (p_depth or 0)
+                new_parent_depth = p_depth or 0
                 new_root_path = f"{new_parent_path}/{task_id}"
                 new_depth = new_parent_depth + 1
 
@@ -571,7 +617,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 "UPDATE tasks SET parent_id=?, path=?, depth=? WHERE id=?",
                 (new_parent_id, new_root_path, new_depth, task_id),
             )
-        
+
             # Update all descendants' paths and depths
             if old_path:
                 # Find all descendants that need path/depth updates
@@ -579,21 +625,21 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "SELECT id, path FROM tasks WHERE path LIKE ? AND id != ?",
                     (old_path + "/%", task_id),
                 ).fetchall()
-                
+
                 for desc_row in descendants:
                     desc_id = desc_row[0]
                     desc_old_path = desc_row[1]
-                    
+
                     # Calculate new path by replacing the old prefix
                     if desc_old_path and desc_old_path.startswith(old_path + "/"):
-                        desc_new_path = new_root_path + desc_old_path[len(old_path):]
+                        desc_new_path = new_root_path + desc_old_path[len(old_path) :]
                         desc_new_depth = desc_new_path.count("/") - 1
-                        
+
                         conn.execute(
                             "UPDATE tasks SET path=?, depth=? WHERE id=?",
                             (desc_new_path, desc_new_depth, desc_id),
                         )
-        
+
             conn.commit()
 
     def update_task_type(self, task_id: int, task_type: str) -> None:
@@ -612,22 +658,28 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     def store_task_embedding(self, task_id: int, embedding_vector: str, model: str = "embedding-2") -> None:
         """Store embedding vector for a task."""
         with get_db() as conn:
-            conn.execute('''
+            conn.execute(
+                """
                 INSERT OR REPLACE INTO task_embeddings 
                 (task_id, embedding_vector, embedding_model, updated_at) 
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (task_id, embedding_vector, model))
+            """,
+                (task_id, embedding_vector, model),
+            )
             conn.commit()
 
     def get_task_embedding(self, task_id: int) -> Optional[Dict[str, Any]]:
         """Get embedding for a specific task."""
         with get_db() as conn:
-            row = conn.execute('''
+            row = conn.execute(
+                """
                 SELECT task_id, embedding_vector, embedding_model, created_at, updated_at
                 FROM task_embeddings 
                 WHERE task_id = ?
-            ''', (task_id,)).fetchone()
-            
+            """,
+                (task_id,),
+            ).fetchone()
+
             if row:
                 return {
                     "task_id": row["task_id"],
@@ -641,7 +693,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     def get_tasks_with_embeddings(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get all tasks that have embeddings with their content."""
         with get_db() as conn:
-            query = '''
+            query = """
                 SELECT 
                     t.id, t.name, t.status, t.priority,
                     toutput.content,
@@ -650,38 +702,38 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 LEFT JOIN task_outputs toutput ON t.id = toutput.task_id
                 INNER JOIN task_embeddings te ON t.id = te.task_id
                 ORDER BY te.updated_at DESC
-            '''
-            
+            """
+
             if limit:
-                query += f' LIMIT {limit}'
-            
+                query += f" LIMIT {limit}"
+
             rows = conn.execute(query).fetchall()
-            
+
             # Convert rows to dict with embedding fields
             result = []
             for row in rows:
                 try:
                     task_dict = {
                         "id": row[0],
-                        "name": row[1], 
+                        "name": row[1],
                         "status": row[2],
                         "priority": row[3],
                         "content": row[4],
                         "embedding_vector": row[5],
                         "embedding_model": row[6],
-                        "updated_at": row[7]
+                        "updated_at": row[7],
                     }
                 except Exception:
                     # Fallback for sqlite3.Row objects
                     task_dict = {
                         "id": row["id"],
                         "name": row["name"],
-                        "status": row["status"], 
+                        "status": row["status"],
                         "priority": row["priority"],
                         "content": row["content"],
                         "embedding_vector": row["embedding_vector"],
                         "embedding_model": row["embedding_model"],
-                        "updated_at": row["updated_at"]
+                        "updated_at": row["updated_at"],
                     }
                 result.append(task_dict)
             return result
@@ -691,12 +743,12 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         with get_db() as conn:
             where_clause = ""
             params = []
-            
+
             if status:
                 where_clause = "WHERE t.status = ?"
                 params.append(status)
-            
-            query = f'''
+
+            query = f"""
                 SELECT t.id, t.name, t.status, t.priority, to.content
                 FROM tasks t
                 LEFT JOIN task_outputs to ON t.id = to.task_id
@@ -706,8 +758,8 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 AND to.content IS NOT NULL
                 AND TRIM(to.content) != ""
                 ORDER BY t.id DESC
-            '''
-            
+            """
+
             rows = conn.execute(query, params).fetchall()
             return [_row_to_dict(row) for row in rows]
 
@@ -728,18 +780,20 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         with get_db() as conn:
             total_tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
             total_embeddings = conn.execute("SELECT COUNT(*) FROM task_embeddings").fetchone()[0]
-            
-            model_stats = conn.execute('''
+
+            model_stats = conn.execute(
+                """
                 SELECT embedding_model, COUNT(*) as count
                 FROM task_embeddings
                 GROUP BY embedding_model
-            ''').fetchall()
-            
+            """
+            ).fetchall()
+
             return {
                 "total_tasks": total_tasks,
                 "total_embeddings": total_embeddings,
                 "coverage_percent": (total_embeddings / total_tasks * 100) if total_tasks > 0 else 0,
-                "model_distribution": {row[0]: row[1] for row in model_stats}
+                "model_distribution": {row[0]: row[1] for row in model_stats},
             }
 
     # -------------------------------
@@ -755,38 +809,44 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         dimension_scores: Dict[str, float],
         suggestions: List[str],
         needs_revision: bool,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Store evaluation history for a task iteration."""
         with get_db() as conn:
-            cursor = conn.execute('''
+            cursor = conn.execute(
+                """
                 INSERT INTO evaluation_history 
                 (task_id, iteration, content, overall_score, dimension_scores, suggestions, needs_revision, metadata)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                task_id,
-                iteration,
-                content,
-                overall_score,
-                json.dumps(dimension_scores),
-                json.dumps(suggestions),
-                needs_revision,
-                json.dumps(metadata) if metadata else None
-            ))
+            """,
+                (
+                    task_id,
+                    iteration,
+                    content,
+                    overall_score,
+                    json.dumps(dimension_scores),
+                    json.dumps(suggestions),
+                    needs_revision,
+                    json.dumps(metadata) if metadata else None,
+                ),
+            )
             conn.commit()
             return cursor.lastrowid
 
     def get_evaluation_history(self, task_id: int) -> List[Dict[str, Any]]:
         """Get evaluation history for a task."""
         with get_db() as conn:
-            rows = conn.execute('''
+            rows = conn.execute(
+                """
                 SELECT id, task_id, iteration, content, overall_score, dimension_scores, 
                        suggestions, needs_revision, timestamp, metadata
                 FROM evaluation_history
                 WHERE task_id = ?
                 ORDER BY iteration ASC
-            ''', (task_id,)).fetchall()
-            
+            """,
+                (task_id,),
+            ).fetchall()
+
             result = []
             for row in rows:
                 try:
@@ -801,7 +861,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                         "suggestions": json.loads(row[6]) if row[6] else [],
                         "needs_revision": bool(row[7]),
                         "timestamp": row[8],
-                        "metadata": json.loads(row[9]) if row[9] else None
+                        "metadata": json.loads(row[9]) if row[9] else None,
                     }
                 except Exception:
                     # Fallback for sqlite3.Row objects
@@ -815,7 +875,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                         "suggestions": json.loads(row["suggestions"]) if row["suggestions"] else [],
                         "needs_revision": bool(row["needs_revision"]),
                         "timestamp": row["timestamp"],
-                        "metadata": json.loads(row["metadata"]) if row["metadata"] else None
+                        "metadata": json.loads(row["metadata"]) if row["metadata"] else None,
                     }
                 result.append(row_dict)
             return result
@@ -823,18 +883,21 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     def get_latest_evaluation(self, task_id: int) -> Optional[Dict[str, Any]]:
         """Get the latest evaluation for a task."""
         with get_db() as conn:
-            row = conn.execute('''
+            row = conn.execute(
+                """
                 SELECT id, task_id, iteration, content, overall_score, dimension_scores, 
                        suggestions, needs_revision, timestamp, metadata
                 FROM evaluation_history
                 WHERE task_id = ?
                 ORDER BY iteration DESC
                 LIMIT 1
-            ''', (task_id,)).fetchone()
-            
+            """,
+                (task_id,),
+            ).fetchone()
+
             if not row:
                 return None
-            
+
             try:
                 return {
                     "id": row[0],
@@ -846,7 +909,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "suggestions": json.loads(row[6]) if row[6] else [],
                     "needs_revision": bool(row[7]),
                     "timestamp": row[8],
-                    "metadata": json.loads(row[9]) if row[9] else None
+                    "metadata": json.loads(row[9]) if row[9] else None,
                 }
             except Exception:
                 # Fallback for sqlite3.Row objects
@@ -860,7 +923,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "suggestions": json.loads(row["suggestions"]) if row["suggestions"] else [],
                     "needs_revision": bool(row["needs_revision"]),
                     "timestamp": row["timestamp"],
-                    "metadata": json.loads(row["metadata"]) if row["metadata"] else None
+                    "metadata": json.loads(row["metadata"]) if row["metadata"] else None,
                 }
 
     def store_evaluation_config(
@@ -871,39 +934,45 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         evaluation_dimensions: Optional[List[str]] = None,
         domain_specific: bool = False,
         strict_mode: bool = False,
-        custom_weights: Optional[Dict[str, float]] = None
+        custom_weights: Optional[Dict[str, float]] = None,
     ) -> None:
         """Store evaluation configuration for a task."""
         with get_db() as conn:
-            conn.execute('''
+            conn.execute(
+                """
                 INSERT OR REPLACE INTO evaluation_configs
                 (task_id, quality_threshold, max_iterations, evaluation_dimensions, 
                  domain_specific, strict_mode, custom_weights, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (
-                task_id,
-                quality_threshold,
-                max_iterations,
-                json.dumps(evaluation_dimensions) if evaluation_dimensions else None,
-                domain_specific,
-                strict_mode,
-                json.dumps(custom_weights) if custom_weights else None
-            ))
+            """,
+                (
+                    task_id,
+                    quality_threshold,
+                    max_iterations,
+                    json.dumps(evaluation_dimensions) if evaluation_dimensions else None,
+                    domain_specific,
+                    strict_mode,
+                    json.dumps(custom_weights) if custom_weights else None,
+                ),
+            )
             conn.commit()
 
     def get_evaluation_config(self, task_id: int) -> Optional[Dict[str, Any]]:
         """Get evaluation configuration for a task."""
         with get_db() as conn:
-            row = conn.execute('''
+            row = conn.execute(
+                """
                 SELECT task_id, quality_threshold, max_iterations, evaluation_dimensions,
                        domain_specific, strict_mode, custom_weights, created_at, updated_at
                 FROM evaluation_configs
                 WHERE task_id = ?
-            ''', (task_id,)).fetchone()
-            
+            """,
+                (task_id,),
+            ).fetchone()
+
             if not row:
                 return None
-            
+
             try:
                 return {
                     "task_id": row[0],
@@ -914,7 +983,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "strict_mode": bool(row[5]),
                     "custom_weights": json.loads(row[6]) if row[6] else None,
                     "created_at": row[7],
-                    "updated_at": row[8]
+                    "updated_at": row[8],
                 }
             except Exception:
                 # Fallback for sqlite3.Row objects
@@ -922,12 +991,14 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "task_id": row["task_id"],
                     "quality_threshold": row["quality_threshold"],
                     "max_iterations": row["max_iterations"],
-                    "evaluation_dimensions": json.loads(row["evaluation_dimensions"]) if row["evaluation_dimensions"] else None,
+                    "evaluation_dimensions": (
+                        json.loads(row["evaluation_dimensions"]) if row["evaluation_dimensions"] else None
+                    ),
                     "domain_specific": bool(row["domain_specific"]),
                     "strict_mode": bool(row["strict_mode"]),
                     "custom_weights": json.loads(row["custom_weights"]) if row["custom_weights"] else None,
                     "created_at": row["created_at"],
-                    "updated_at": row["updated_at"]
+                    "updated_at": row["updated_at"],
                 }
 
     def delete_evaluation_history(self, task_id: int) -> None:
@@ -940,21 +1011,29 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         """Get overall evaluation statistics."""
         with get_db() as conn:
             total_evaluations = conn.execute("SELECT COUNT(*) FROM evaluation_history").fetchone()[0]
-            
-            avg_score = conn.execute('''
+
+            avg_score = (
+                conn.execute(
+                    """
                 SELECT AVG(overall_score) FROM evaluation_history
-            ''').fetchone()[0] or 0.0
-            
-            iteration_stats = conn.execute('''
+            """
+                ).fetchone()[0]
+                or 0.0
+            )
+
+            iteration_stats = conn.execute(
+                """
                 SELECT AVG(iteration) as avg_iterations, MAX(iteration) as max_iterations
                 FROM (
                     SELECT task_id, MAX(iteration) as iteration
                     FROM evaluation_history
                     GROUP BY task_id
                 )
-            ''').fetchone()
-            
-            quality_distribution = conn.execute('''
+            """
+            ).fetchone()
+
+            quality_distribution = conn.execute(
+                """
                 SELECT 
                     CASE 
                         WHEN overall_score >= 0.9 THEN 'excellent'
@@ -965,14 +1044,15 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     COUNT(*) as count
                 FROM evaluation_history
                 GROUP BY quality_tier
-            ''').fetchall()
-            
+            """
+            ).fetchall()
+
             return {
                 "total_evaluations": total_evaluations,
                 "average_score": round(avg_score, 3),
                 "average_iterations": round(iteration_stats[0] or 0, 2),
                 "max_iterations_used": iteration_stats[1] or 0,
-                "quality_distribution": {row[0]: row[1] for row in quality_distribution}
+                "quality_distribution": {row[0]: row[1] for row in quality_distribution},
             }
 
 

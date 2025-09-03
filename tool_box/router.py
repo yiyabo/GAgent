@@ -6,14 +6,14 @@ and automatically select the most appropriate tools.
 """
 
 import asyncio
-import logging
-import re
-import os
 import json
+import logging
+import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from .tools import get_tool_registry
 from .integration import get_llm_integration
+from .tools import get_tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ class SmartToolRouter:
     async def initialize(self) -> None:
         """Initialize the router"""
         from .integration import get_llm_integration
+
         self.llm_integration = await get_llm_integration()
 
     async def _call_glm_api(self, prompt: str) -> str:
@@ -37,21 +38,13 @@ class SmartToolRouter:
             import aiohttp
 
             url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {self.glm_api_key}",
-                "Content-Type": "application/json"
-            }
+            headers = {"Authorization": f"Bearer {self.glm_api_key}", "Content-Type": "application/json"}
 
             payload = {
                 "model": "glm-4",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,  # 降低随机性，提高确定性
-                "max_tokens": 1000
+                "max_tokens": 1000,
             }
 
             timeout = aiohttp.ClientTimeout(total=30)
@@ -68,8 +61,7 @@ class SmartToolRouter:
             logger.error(f"GLM API call failed: {e}")
             return ""
 
-    async def route_request(self, user_request: str,
-                           context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def route_request(self, user_request: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Route user request using pure LLM intelligence
 
@@ -84,10 +76,10 @@ class SmartToolRouter:
             await self.initialize()
 
         logger.info("Using pure LLM routing for maximum intelligence")
-        
+
         # Use enhanced LLM analysis for everything
         routing_result = await self._enhanced_llm_routing(user_request, context)
-        
+
         if not routing_result or routing_result.get("confidence", 0.0) < 0.3:
             logger.error("LLM routing failed")
             raise ValueError("Unable to analyze request - insufficient confidence")
@@ -99,24 +91,23 @@ class SmartToolRouter:
             "confidence": routing_result.get("confidence", 0.0),
             "routing_method": "pure_llm",
             "execution_plan": routing_result.get("execution_plan", ""),
-            "estimated_time": routing_result.get("estimated_time", "unknown")
+            "estimated_time": routing_result.get("estimated_time", "unknown"),
         }
 
-    async def _enhanced_llm_routing(self, request: str,
-                                   context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _enhanced_llm_routing(self, request: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Enhanced LLM-based routing with complete tool call generation"""
         try:
             # Get available tools with detailed information
             tools = self.tool_registry.list_tools()
             tool_details = []
-            
+
             for tool in tools:
                 tool_info = {
                     "name": tool.name,
                     "description": tool.description,
                     "category": tool.category,
                     "parameters": tool.parameters_schema,
-                    "examples": tool.examples
+                    "examples": tool.examples,
                 }
                 tool_details.append(tool_info)
 
@@ -178,20 +169,20 @@ class SmartToolRouter:
                 cleaned_response = cleaned_response.strip()
 
                 analysis = json.loads(cleaned_response)
-                
+
                 # Validate and normalize confidence
                 analysis["confidence"] = min(max(analysis.get("confidence", 0.0), 0.0), 1.0)
-                
+
                 # Ensure tool_calls exist and are valid
                 if "tool_calls" not in analysis:
                     analysis["tool_calls"] = []
-                
+
                 # Sort tool calls by execution order if specified
                 if analysis["tool_calls"]:
                     analysis["tool_calls"].sort(key=lambda x: x.get("execution_order", 999))
-                
+
                 return analysis
-                
+
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse LLM response: {e}")
                 logger.error(f"Original LLM response: {llm_response}")
@@ -200,7 +191,6 @@ class SmartToolRouter:
         except Exception as e:
             logger.error(f"Enhanced LLM routing failed: {e}")
             return {"confidence": 0.0, "error": str(e)}
-
 
 
 # Global router instance
@@ -218,4 +208,3 @@ async def route_user_request(request: str, context: Optional[Dict[str, Any]] = N
     """Convenience function to route user requests"""
     router = await get_smart_router()
     return await router.route_request(request, context)
-

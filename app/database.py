@@ -1,40 +1,46 @@
 import sqlite3
 from contextlib import contextmanager
-from .database_pool import initialize_connection_pool, get_db
 
-DB_PATH = 'tasks.db'
+from .database_pool import get_db, initialize_connection_pool
+from .config.database_config import get_main_database_path
+
 
 def init_db():
     """Initialize database schema using connection pool."""
-    # Initialize connection pool first
-    initialize_connection_pool(db_path=DB_PATH)
+    # Get configured database path
+    db_path = get_main_database_path()
     
+    # Initialize connection pool first
+    initialize_connection_pool(db_path=db_path)
+
     # Use pooled connection for schema initialization
     with get_db() as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS tasks (
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
             status TEXT,
             priority INTEGER DEFAULT 100
-        )''')
+        )"""
+        )
         # Backfill priority column for existing databases created before this change
         try:
-            conn.execute('ALTER TABLE tasks ADD COLUMN priority INTEGER DEFAULT 100')
+            conn.execute("ALTER TABLE tasks ADD COLUMN priority INTEGER DEFAULT 100")
         except Exception:
             # Ignore if the column already exists or ALTER is not applicable
             pass
         # Hierarchy columns (Option B): parent_id, path, depth
         try:
-            conn.execute('ALTER TABLE tasks ADD COLUMN parent_id INTEGER')
+            conn.execute("ALTER TABLE tasks ADD COLUMN parent_id INTEGER")
         except Exception:
             # Column may already exist
             pass
         try:
-            conn.execute('ALTER TABLE tasks ADD COLUMN path TEXT')
+            conn.execute("ALTER TABLE tasks ADD COLUMN path TEXT")
         except Exception:
             pass
         try:
-            conn.execute('ALTER TABLE tasks ADD COLUMN depth INTEGER DEFAULT 0')
+            conn.execute("ALTER TABLE tasks ADD COLUMN depth INTEGER DEFAULT 0")
         except Exception:
             pass
         # Phase 6: Task type for recursive decomposition (root/composite/atomic)
@@ -43,25 +49,32 @@ def init_db():
         except Exception:
             pass
         # Stores the prompt/input for each task
-        conn.execute('''CREATE TABLE IF NOT EXISTS task_inputs (
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS task_inputs (
             task_id INTEGER UNIQUE,
             prompt TEXT
-        )''')
+        )"""
+        )
         # Stores the generated content/output for each task
-        conn.execute('''CREATE TABLE IF NOT EXISTS task_outputs (
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS task_outputs (
             task_id INTEGER UNIQUE,
             content TEXT
-        )''')
+        )"""
+        )
 
         # Phase 1/2/3: Graph links and context snapshots tables (ensure existence for indexes)
-        conn.execute('''CREATE TABLE IF NOT EXISTS task_links (
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS task_links (
             from_id INTEGER,
             to_id INTEGER,
             kind TEXT,
             PRIMARY KEY (from_id, to_id, kind)
-        )''')
+        )"""
+        )
 
-        conn.execute('''CREATE TABLE IF NOT EXISTS task_contexts (
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS task_contexts (
             task_id INTEGER,
             label TEXT,
             combined TEXT,
@@ -69,7 +82,8 @@ def init_db():
             meta TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (task_id, label)
-        )''')
+        )"""
+        )
 
         # Backfill hierarchy values for existing rows
         try:
@@ -100,23 +114,26 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_links_from_kind ON task_links(from_id, kind)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_contexts_task_id ON task_contexts(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_contexts_created_at ON task_contexts(created_at)")
-        
+
         # GLM Embeddings storage: task embeddings for semantic search
-        conn.execute('''CREATE TABLE IF NOT EXISTS task_embeddings (
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS task_embeddings (
             task_id INTEGER PRIMARY KEY,
             embedding_vector TEXT NOT NULL,
             embedding_model TEXT DEFAULT 'embedding-2',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
-        )''')
-        
+        )"""
+        )
+
         # Index for embeddings table
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_embeddings_model ON task_embeddings(embedding_model)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_embeddings_created_at ON task_embeddings(created_at)")
 
         # Evaluation System Tables
-        conn.execute('''CREATE TABLE IF NOT EXISTS evaluation_history (
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS evaluation_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id INTEGER NOT NULL,
             iteration INTEGER NOT NULL,
@@ -128,9 +145,11 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             metadata TEXT,
             FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
-        )''')
-        
-        conn.execute('''CREATE TABLE IF NOT EXISTS evaluation_configs (
+        )"""
+        )
+
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS evaluation_configs (
             task_id INTEGER PRIMARY KEY,
             quality_threshold REAL DEFAULT 0.8,
             max_iterations INTEGER DEFAULT 3,
@@ -141,12 +160,16 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
-        )''')
-        
+        )"""
+        )
+
         # Indexes for evaluation tables
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_history_task_id ON evaluation_history(task_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_history_iteration ON evaluation_history(task_id, iteration)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evaluation_history_iteration ON evaluation_history(task_id, iteration)"
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_history_timestamp ON evaluation_history(timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_configs_task_id ON evaluation_configs(task_id)")
+
 
 # get_db function now provided by database_pool module

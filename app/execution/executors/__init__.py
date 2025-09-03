@@ -12,8 +12,4 @@ from .tool_enhanced import execute_task_enhanced
 # Use tool-enhanced execution by default for intelligent agent capabilities
 execute_task = execute_task_enhanced
 
-__all__ = [
-    'execute_task',
-    'base_execute_task',
-    'execute_task_enhanced'
-]
+__all__ = ["execute_task", "base_execute_task", "execute_task_enhanced"]

@@ -10,9 +10,9 @@ import hashlib
 import json
 import logging
 import time
-from typing import Any, Dict, Optional
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CacheEntry:
     """Cache entry with metadata"""
+
     key: str
     value: Any
     timestamp: float
@@ -44,16 +45,16 @@ class ToolCache:
         key_data = {
             "tool": tool_name,
             "params": self._normalize_parameters(parameters),
-            "version": "v2"  # Version for cache key format
+            "version": "v2",  # Version for cache key format
         }
 
         # Sort parameters for consistency and handle nested structures
         sorted_params = json.dumps(key_data, sort_keys=True, default=str, ensure_ascii=False)
-        
+
         # Use SHA-256 with tool name prefix to avoid collisions
-        hash_input = f"{tool_name}:{sorted_params}".encode('utf-8')
+        hash_input = f"{tool_name}:{sorted_params}".encode("utf-8")
         hash_hex = hashlib.sha256(hash_input).hexdigest()
-        
+
         # Add tool name prefix for easier debugging and collision avoidance
         return f"{tool_name}_{hash_hex[:16]}"
 
@@ -61,7 +62,7 @@ class ToolCache:
         """Normalize parameters to ensure consistent cache keys"""
         if not isinstance(params, dict):
             return {"value": params}
-        
+
         normalized = {}
         for key, value in params.items():
             if isinstance(value, dict):
@@ -69,12 +70,14 @@ class ToolCache:
             elif isinstance(value, list):
                 # Sort lists if they contain comparable items
                 try:
-                    normalized[key] = sorted(value) if value and all(isinstance(x, (str, int, float)) for x in value) else value
+                    normalized[key] = (
+                        sorted(value) if value and all(isinstance(x, (str, int, float)) for x in value) else value
+                    )
                 except TypeError:
                     normalized[key] = value
             else:
                 normalized[key] = value
-        
+
         return normalized
 
     async def get(self, tool_name: str, parameters: Dict[str, Any]) -> Optional[Any]:
@@ -99,9 +102,14 @@ class ToolCache:
             logger.debug(f"Cache hit for tool {tool_name}")
             return entry.value
 
-    async def set(self, tool_name: str, parameters: Dict[str, Any],
-                 value: Any, ttl: Optional[int] = None,
-                 metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def set(
+        self,
+        tool_name: str,
+        parameters: Dict[str, Any],
+        value: Any,
+        ttl: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Cache result for tool call"""
         async with self._lock:
             cache_key = self._generate_cache_key(tool_name, parameters)
@@ -113,7 +121,7 @@ class ToolCache:
                 ttl=ttl or self.default_ttl,
                 access_count=1,
                 last_accessed=time.time(),
-                metadata=metadata
+                metadata=metadata,
             )
 
             # Check if we need to evict entries
@@ -123,8 +131,7 @@ class ToolCache:
             self.cache[cache_key] = entry
             logger.debug(f"Cached result for tool {tool_name}")
 
-    async def invalidate(self, tool_name: Optional[str] = None,
-                        parameters: Optional[Dict[str, Any]] = None) -> int:
+    async def invalidate(self, tool_name: Optional[str] = None, parameters: Optional[Dict[str, Any]] = None) -> int:
         """Invalidate cache entries"""
         async with self._lock:
             if tool_name and parameters:
@@ -139,7 +146,7 @@ class ToolCache:
                 # Invalidate all entries for a tool (improved with prefix matching)
                 keys_to_delete = []
                 tool_prefix = f"{tool_name}_"
-                
+
                 for key, entry in self.cache.items():
                     # Use prefix matching for more accurate tool-specific invalidation
                     if key.startswith(tool_prefix):
@@ -162,10 +169,7 @@ class ToolCache:
             return
 
         # Sort by last accessed time (oldest first)
-        sorted_entries = sorted(
-            self.cache.items(),
-            key=lambda x: x[1].last_accessed
-        )
+        sorted_entries = sorted(self.cache.items(), key=lambda x: x[1].last_accessed)
 
         # Remove oldest entries until we're under the limit
         entries_to_remove = len(self.cache) - self.max_size + 1
@@ -201,7 +205,7 @@ class ToolCache:
                 "average_accesses_per_entry": avg_accesses,
                 "hit_rate": hit_rate,
                 "max_size": self.max_size,
-                "default_ttl": self.default_ttl
+                "default_ttl": self.default_ttl,
             }
 
     async def cleanup_expired(self) -> int:
@@ -224,8 +228,7 @@ class ToolCache:
 class PersistentToolCache(ToolCache):
     """Persistent cache that saves to disk"""
 
-    def __init__(self, cache_file: str = "tool_cache.json",
-                 max_size: int = 1000, default_ttl: int = 3600):
+    def __init__(self, cache_file: str = "tool_cache.json", max_size: int = 1000, default_ttl: int = 3600):
         super().__init__(max_size, default_ttl)
         self.cache_file = Path(cache_file)
         self._load_cache()
@@ -236,18 +239,18 @@ class PersistentToolCache(ToolCache):
             return
 
         try:
-            with open(self.cache_file, 'r', encoding='utf-8') as f:
+            with open(self.cache_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
             for key, entry_data in data.items():
                 entry = CacheEntry(
                     key=key,
-                    value=entry_data['value'],
-                    timestamp=entry_data['timestamp'],
-                    ttl=entry_data.get('ttl'),
-                    access_count=entry_data.get('access_count', 0),
-                    last_accessed=entry_data.get('last_accessed', entry_data['timestamp']),
-                    metadata=entry_data.get('metadata')
+                    value=entry_data["value"],
+                    timestamp=entry_data["timestamp"],
+                    ttl=entry_data.get("ttl"),
+                    access_count=entry_data.get("access_count", 0),
+                    last_accessed=entry_data.get("last_accessed", entry_data["timestamp"]),
+                    metadata=entry_data.get("metadata"),
                 )
                 self.cache[key] = entry
 
@@ -262,29 +265,33 @@ class PersistentToolCache(ToolCache):
             data = {}
             for key, entry in self.cache.items():
                 data[key] = {
-                    'value': entry.value,
-                    'timestamp': entry.timestamp,
-                    'ttl': entry.ttl,
-                    'access_count': entry.access_count,
-                    'last_accessed': entry.last_accessed,
-                    'metadata': entry.metadata
+                    "value": entry.value,
+                    "timestamp": entry.timestamp,
+                    "ttl": entry.ttl,
+                    "access_count": entry.access_count,
+                    "last_accessed": entry.last_accessed,
+                    "metadata": entry.metadata,
                 }
 
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
+            with open(self.cache_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
 
         except Exception as e:
             logger.error(f"Failed to save cache to {self.cache_file}: {e}")
 
-    async def set(self, tool_name: str, parameters: Dict[str, Any],
-                 value: Any, ttl: Optional[int] = None,
-                 metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def set(
+        self,
+        tool_name: str,
+        parameters: Dict[str, Any],
+        value: Any,
+        ttl: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Cache result and save to disk"""
         await super().set(tool_name, parameters, value, ttl, metadata)
         self._save_cache()
 
-    async def invalidate(self, tool_name: Optional[str] = None,
-                        parameters: Optional[Dict[str, Any]] = None) -> int:
+    async def invalidate(self, tool_name: Optional[str] = None, parameters: Optional[Dict[str, Any]] = None) -> int:
         """Invalidate cache entries and save changes"""
         count = await super().invalidate(tool_name, parameters)
         self._save_cache()
@@ -322,8 +329,8 @@ async def get_cache_stats() -> Dict[str, Any]:
         "persistent_cache": persistent_stats,
         "combined": {
             "total_entries": memory_stats["total_entries"] + persistent_stats["total_entries"],
-            "total_accesses": memory_stats["total_accesses"] + persistent_stats["total_accesses"]
-        }
+            "total_accesses": memory_stats["total_accesses"] + persistent_stats["total_accesses"],
+        },
     }
 
 
@@ -335,6 +342,5 @@ async def cleanup_all_caches() -> Dict[str, int]:
     return {
         "memory_cache": memory_cleaned,
         "persistent_cache": persistent_cleaned,
-        "total_cleaned": memory_cleaned + persistent_cleaned
+        "total_cleaned": memory_cleaned + persistent_cleaned,
     }
-
