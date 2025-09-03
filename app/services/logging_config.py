@@ -21,7 +21,28 @@ class JsonFormatter(logging.Formatter):
         }
         # 附加 extra 字段（如有）
         for key, value in getattr(record, "__dict__", {}).items():
-            if key in {"args", "msg", "levelno", "levelname", "name", "pathname", "filename", "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName", "created", "msecs", "relativeCreated", "thread", "threadName", "processName", "process"}:
+            if key in {
+                "args",
+                "msg",
+                "levelno",
+                "levelname",
+                "name",
+                "pathname",
+                "filename",
+                "module",
+                "exc_info",
+                "exc_text",
+                "stack_info",
+                "lineno",
+                "funcName",
+                "created",
+                "msecs",
+                "relativeCreated",
+                "thread",
+                "threadName",
+                "processName",
+                "process",
+            }:
                 continue
             if key.startswith("_"):
                 continue
@@ -50,11 +71,7 @@ def setup_logging() -> None:
     if fmt_name == "json":
         handler.setFormatter(JsonFormatter())
     else:
-        formatter = logging.Formatter(
-            fmt="%(levelname)s %(name)s: %(message)s"
-        )
+        formatter = logging.Formatter(fmt="%(levelname)s %(name)s: %(message)s")
         handler.setFormatter(formatter)
 
     root.addHandler(handler)
-
-

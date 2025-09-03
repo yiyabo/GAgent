@@ -32,3 +32,4 @@ statistics.db-wal
 statistics.db-shm
 run.json
 results/
+logs/

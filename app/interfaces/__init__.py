@@ -3,6 +3,7 @@
 - LLMProvider: abstraction for LLM clients (chat, ping, config)
 - TaskRepository: abstraction for task persistence and queries
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -33,7 +34,14 @@ class TaskRepository(ABC):
 
     # --- mutations ---
     @abstractmethod
-    def create_task(self, name: str, status: str = "pending", priority: Optional[int] = None, parent_id: Optional[int] = None, task_type: str = "atomic") -> int:
+    def create_task(
+        self,
+        name: str,
+        status: str = "pending",
+        priority: Optional[int] = None,
+        parent_id: Optional[int] = None,
+        task_type: str = "atomic",
+    ) -> int:
         raise NotImplementedError
 
     @abstractmethod
@@ -58,7 +66,9 @@ class TaskRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list_tasks_by_prefix(self, prefix: str, pending_only: bool = False, ordered: bool = True) -> List[Dict[str, Any]]:
+    def list_tasks_by_prefix(
+        self, prefix: str, pending_only: bool = False, ordered: bool = True
+    ) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
     @abstractmethod
@@ -155,15 +165,15 @@ class TaskRepository(ABC):
 
     def update_task_parent(self, task_id: int, new_parent_id: Optional[int]) -> None:
         """Move a task to a different parent (or to root level if new_parent_id is None).
-        
+
         This should update the task's parent_id, path, and depth fields consistently.
         Implementations should handle path/depth recalculation for the moved subtree.
         """
         raise NotImplementedError
-    
+
     def update_task_type(self, task_id: int, task_type: str) -> None:
         """Update the task type (root/composite/atomic).
-        
+
         This is used by the recursive decomposition service to mark tasks
         that have been decomposed into subtasks.
         """

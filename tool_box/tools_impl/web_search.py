@@ -5,17 +5,17 @@ This module provides web search functionality for AI agents.
 """
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
+
 import aiohttp
-import json
 
 logger = logging.getLogger(__name__)
 
 
-async def web_search_handler(query: str, max_results: int = 5,
-                            search_engine: str = "searxng") -> Dict[str, Any]:
+async def web_search_handler(query: str, max_results: int = 5, search_engine: str = "searxng") -> Dict[str, Any]:
     """
     Web search tool handler
 
@@ -34,25 +34,11 @@ async def web_search_handler(query: str, max_results: int = 5,
             # Default to Tavily (AI-optimized)
             results = await _search_tavily(query, max_results)
 
-        return {
-            "query": query,
-            "results": results,
-            "total_results": len(results),
-            "search_engine": search_engine
-        }
+        return {"query": query, "results": results, "total_results": len(results), "search_engine": search_engine}
 
     except Exception as e:
         logger.error(f"Web search failed: {e}")
-        return {
-            "query": query,
-            "error": str(e),
-            "results": [],
-            "total_results": 0
-        }
-
-
-
-
+        return {"query": query, "error": str(e), "results": [], "total_results": 0}
 
 
 async def _search_tavily(query: str, max_results: int) -> List[Dict[str, Any]]:
@@ -67,16 +53,13 @@ async def _search_tavily(query: str, max_results: int) -> List[Dict[str, Any]]:
             return []
 
         url = "https://api.tavily.com/search"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         payload = {
             "query": query,
             "max_results": min(max_results, 10),  # Tavily recommends max 10
             "include_answer": True,
             "include_images": False,
-            "include_raw_content": False
+            "include_raw_content": False,
         }
 
         timeout = aiohttp.ClientTimeout(total=15)
@@ -90,21 +73,29 @@ async def _search_tavily(query: str, max_results: int) -> List[Dict[str, Any]]:
 
                     # Add AI-generated answer if available
                     if data.get("answer"):
-                        results.append({
-                            "title": "AI Answer",
-                            "url": f"https://tavily.com/search?q={query.replace(' ', '+')}",
-                            "snippet": data["answer"],
-                            "source": "Tavily AI"
-                        })
+                        results.append(
+                            {
+                                "title": "AI Answer",
+                                "url": f"https://tavily.com/search?q={query.replace(' ', '+')}",
+                                "snippet": data["answer"],
+                                "source": "Tavily AI",
+                            }
+                        )
 
                     # Add search results
                     for item in data.get("results", [])[:max_results]:
-                        results.append({
-                            "title": item.get("title", "No Title"),
-                            "url": item.get("url", ""),
-                            "snippet": item.get("content", "")[:200] + "..." if len(item.get("content", "")) > 200 else item.get("content", ""),
-                            "source": item.get("url", "").split("/")[2] if item.get("url") else "Tavily"
-                        })
+                        results.append(
+                            {
+                                "title": item.get("title", "No Title"),
+                                "url": item.get("url", ""),
+                                "snippet": (
+                                    item.get("content", "")[:200] + "..."
+                                    if len(item.get("content", "")) > 200
+                                    else item.get("content", "")
+                                ),
+                                "source": item.get("url", "").split("/")[2] if item.get("url") else "Tavily",
+                            }
+                        )
 
                     if results:
                         logger.info("Successfully searched using Tavily Search API")
@@ -127,12 +118,6 @@ async def _search_tavily(query: str, max_results: int) -> List[Dict[str, Any]]:
     return []
 
 
-
-
-
-
-
-
 # Tool definition for web search
 web_search_tool = {
     "name": "web_search",
@@ -141,31 +126,19 @@ web_search_tool = {
     "parameters_schema": {
         "type": "object",
         "properties": {
-            "query": {
-                "type": "string",
-                "description": "搜索查询字符串"
-            },
+            "query": {"type": "string", "description": "搜索查询字符串"},
             "max_results": {
                 "type": "integer",
                 "description": "最大返回结果数量",
                 "default": 5,
                 "minimum": 1,
-                "maximum": 20
+                "maximum": 20,
             },
-            "search_engine": {
-                "type": "string",
-                "description": "搜索引擎选择",
-                "enum": ["tavily"],
-                "default": "tavily"
-            }
+            "search_engine": {"type": "string", "description": "搜索引擎选择", "enum": ["tavily"], "default": "tavily"},
         },
-        "required": ["query"]
+        "required": ["query"],
     },
     "handler": web_search_handler,
     "tags": ["search", "web", "information", "retrieval"],
-    "examples": [
-        "搜索最新的AI新闻",
-        "查找Python教程",
-        "查询天气信息"
-    ]
+    "examples": ["搜索最新的AI新闻", "查找Python教程", "查询天气信息"],
 }

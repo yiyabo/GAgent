@@ -9,9 +9,9 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from .tools import register_tool, get_tool_registry
-from .tools_impl import web_search_tool, file_operations_tool, database_query_tool
 from .client import MCPToolBoxClient
+from .tools import get_tool_registry, register_tool
+from .tools_impl import database_query_tool, file_operations_tool, web_search_tool
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class ToolBoxIntegration:
             parameters_schema=web_search_tool["parameters_schema"],
             handler=web_search_tool["handler"],
             tags=web_search_tool.get("tags", []),
-            examples=web_search_tool.get("examples", [])
+            examples=web_search_tool.get("examples", []),
         )
 
         # Register file operations tool
@@ -58,7 +58,7 @@ class ToolBoxIntegration:
             parameters_schema=file_operations_tool["parameters_schema"],
             handler=file_operations_tool["handler"],
             tags=file_operations_tool.get("tags", []),
-            examples=file_operations_tool.get("examples", [])
+            examples=file_operations_tool.get("examples", []),
         )
 
         # Register database query tool
@@ -69,7 +69,7 @@ class ToolBoxIntegration:
             parameters_schema=database_query_tool["parameters_schema"],
             handler=database_query_tool["handler"],
             tags=database_query_tool.get("tags", []),
-            examples=database_query_tool.get("examples", [])
+            examples=database_query_tool.get("examples", []),
         )
 
         logger.info("Built-in tools registered")
@@ -92,7 +92,7 @@ class ToolBoxIntegration:
                 "category": tool.category,
                 "parameters": tool.parameters_schema,
                 "tags": tool.tags,
-                "examples": tool.examples
+                "examples": tool.examples,
             }
             for tool in tools
         ]
@@ -113,12 +113,7 @@ class ToolBoxIntegration:
         tools = registry.search_tools(query)
 
         return [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "category": tool.category,
-                "tags": tool.tags
-            }
+            {"name": tool.name, "description": tool.description, "category": tool.category, "tags": tool.tags}
             for tool in tools
         ]
 
@@ -127,14 +122,7 @@ class ToolBoxIntegration:
         registry = get_tool_registry()
         tools = registry.list_tools(category)
 
-        return [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "tags": tool.tags
-            }
-            for tool in tools
-        ]
+        return [{"name": tool.name, "description": tool.description, "tags": tool.tags} for tool in tools]
 
 
 # Global integration instance
@@ -195,7 +183,7 @@ class ToolBoxLLMIntegration:
         tool_descriptions = []
         for tool in tools:
             desc = f"- {tool['name']}: {tool['description']}"
-            if tool['examples']:
+            if tool["examples"]:
                 desc += f" (示例: {', '.join(tool['examples'][:2])})"
             tool_descriptions.append(desc)
 
@@ -220,10 +208,11 @@ TOOL_CALL: {{"tool": "tool_name", "parameters": {{"param1": "value1"}}}}
             try:
                 # Extract tool call
                 tool_call_start = response.find("TOOL_CALL:")
-                tool_call_json = response[tool_call_start + 10:].strip()
+                tool_call_json = response[tool_call_start + 10 :].strip()
 
                 # Parse tool call
                 import json
+
                 tool_call = json.loads(tool_call_json)
 
                 tool_name = tool_call.get("tool")
@@ -232,22 +221,12 @@ TOOL_CALL: {{"tool": "tool_name", "parameters": {{"param1": "value1"}}}}
                 # Execute tool
                 result = await execute_tool(tool_name, **parameters)
 
-                return {
-                    "type": "tool_result",
-                    "tool_name": tool_name,
-                    "result": result
-                }
+                return {"type": "tool_result", "tool_name": tool_name, "result": result}
 
             except Exception as e:
-                return {
-                    "type": "error",
-                    "error": f"Failed to process tool call: {e}"
-                }
+                return {"type": "error", "error": f"Failed to process tool call: {e}"}
 
-        return {
-            "type": "text_response",
-            "content": response
-        }
+        return {"type": "text_response", "content": response}
 
 
 # Global LLM integration instance
@@ -259,4 +238,3 @@ async def get_llm_integration() -> ToolBoxLLMIntegration:
     if not _llm_integration.toolbox:
         await _llm_integration.initialize()
     return _llm_integration
-

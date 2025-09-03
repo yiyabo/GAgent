@@ -1,8 +1,8 @@
+import asyncio
 import json
 import re
-from typing import Any, Optional, Tuple, Union, List, Dict
 import threading
-import asyncio
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 
 def plan_prefix(title: str) -> str:
@@ -52,6 +52,7 @@ def parse_json_obj(text: str):
 # Async helpers (safe blocking run)
 # -------------------------------
 
+
 def run_async(coro):
     """Safely run an async coroutine from sync code.
 
@@ -61,7 +62,7 @@ def run_async(coro):
       execute the coroutine in a separate thread with its own event loop.
     """
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         if loop.is_running():
             result_box: Dict[str, Any] = {}
             error_box: Dict[str, BaseException] = {}
