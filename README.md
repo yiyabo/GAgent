@@ -132,7 +132,7 @@ curl -X POST http://localhost:8000/run -H "Content-Type: application/json" -d '{
 
 ```
 +---------------------+        +------------------+        +---------------------+
-|      客户端         |  HTTP  |     FastAPI      |  调度  |      Scheduler     |
+|      客户端         |  HTTP  |     FastAPI      |  调度  |      Scheduler      |
 |  (CLI / REST / UI)  +------->+   app/main.py    +------->+  BFS / DAG / 后序   |
 +----------+----------+        +---------+--------+        +----------+----------+
            |                            |                              |
@@ -144,7 +144,7 @@ curl -X POST http://localhost:8000/run -H "Content-Type: application/json" -d '{
 +---------------------+  CRUD  |  outputs, eval)  |  读写  |  base/enhanced      |
                                +---------+--------+        +----------+----------+
                                          |                             |
-                                         | 上下文组装/预算裁剪           | LLM生成/严格评估
+                                         | 上下文组装/预算裁剪         | LLM生成/严格评估
                                          v                             v
                                +---------+--------+        +----------+----------+
                                | Context Builder  |        | Evaluation System   |

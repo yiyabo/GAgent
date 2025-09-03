@@ -24,3 +24,11 @@ tasks.db-shm
 tasks.db-wal
 llm_cache.db
 test_report_structure.docx
+approve.out
+statistics.db
+.gitignore
+statistics.db-wal
+.gitignore
+statistics.db-shm
+run.json
+results/

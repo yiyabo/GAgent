@@ -117,6 +117,8 @@ class RunRequest(BaseModel):
     auto_decompose: Optional[bool] = False         # Auto run plan decomposition before executing (requires title)
     evaluation_mode: Optional[str] = None          # 'llm' | 'multi_expert' | 'adversarial'
     decompose_max_depth: Optional[int] = None      # Optional depth when auto_decompose
+    include_summary: Optional[bool] = False        # Return summary object instead of raw list when true
+    auto_assemble: Optional[bool] = False          # If true and title provided, include assembled sections/combined in response
     evaluation_options: Optional[EvaluationOptions] = None
     context_options: Optional[ContextOptions] = None
 

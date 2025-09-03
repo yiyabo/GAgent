@@ -6,6 +6,8 @@ with the existing task execution system for superior performance.
 """
 
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import asyncio
 
@@ -23,6 +25,12 @@ class ToolEnhancedExecutor:
         self.repo = repo or default_repo
         self.tool_router = None
         self._initialized = False
+        # Workspace base directory for file operations (relative paths)
+        self.base_dir = os.environ.get("TOOL_WORKSPACE_DIR", "workspace")
+        try:
+            Path(self.base_dir).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
     
     async def initialize(self):
         """Initialize the tool-enhanced executor"""
@@ -86,10 +94,17 @@ class ToolEnhancedExecutor:
                 output_tools = []
                 
                 for call in routing_result.get('tool_calls', []):
-                    if call['tool_name'] in ['web_search', 'database_query']:
+                    tool = call.get('tool_name')
+                    params = call.get('parameters', {}) or {}
+                    if tool in ['web_search', 'database_query']:
                         info_gathering_tools.append(call)
-                    elif call['tool_name'] == 'file_operations':
-                        output_tools.append(call)  # Execute after content generation
+                    elif tool == 'file_operations':
+                        op = str(params.get('operation', '')).lower()
+                        # Read-only ops as information gathering; mutating ops as post-generation
+                        if op in {"read", "list", "exists", "info"}:
+                            info_gathering_tools.append(call)
+                        else:
+                            output_tools.append(call)
                 
                 # Execute information gathering tools first
                 tool_outputs = []
@@ -203,12 +218,31 @@ class ToolEnhancedExecutor:
         for call in tool_calls:
             try:
                 logger.info(f"Executing tool {call['tool_name']} for task {task_id}")
+                # Normalize file paths for file_operations into workspace dir
+                params = dict(call.get('parameters', {}) or {})
+                if call.get('tool_name') == 'file_operations':
+                    op = str(params.get('operation', '')).lower()
+                    # Path normalization for relative paths
+                    def _norm_path(p: Optional[str]) -> Optional[str]:
+                        if not p:
+                            return None
+                        try:
+                            return p if os.path.isabs(p) else str(Path(self.base_dir, p))
+                        except Exception:
+                            return p
+                    if 'path' in params:
+                        params['path'] = _norm_path(params.get('path')) or str(Path(self.base_dir))
+                    if 'destination' in params and params.get('destination'):
+                        params['destination'] = _norm_path(params.get('destination'))
+                    # For list op with empty path, default to workspace dir
+                    if op == 'list' and not params.get('path'):
+                        params['path'] = str(Path(self.base_dir))
                 
-                result = await execute_tool(call['tool_name'], **call['parameters'])
+                result = await execute_tool(call['tool_name'], **params)
                 
                 tool_outputs.append({
                     'tool_name': call['tool_name'],
-                    'parameters': call['parameters'],
+                    'parameters': params,
                     'result': result,
                     'reasoning': call.get('reasoning', ''),
                     'execution_order': call.get('execution_order', 999),
@@ -525,6 +559,7 @@ async def execute_task_with_tools_and_evaluation(
     info_gathering_tools = []
     output_tools = []
     routing_result = {"tool_calls": []}
+    routing_failed = False
 
     if needs_tools and executor.tool_router:
         routing_context = await executor._build_routing_context(task, context_options)
@@ -533,6 +568,7 @@ async def execute_task_with_tools_and_evaluation(
         except Exception as e:
             logger.warning(f"Tool routing failed, continue without tools: {e}")
             routing_result = {"tool_calls": []}
+            routing_failed = True
 
         for call in routing_result.get("tool_calls", []):
             if call.get('tool_name') in ['web_search', 'database_query']:
@@ -592,5 +628,18 @@ async def execute_task_with_tools_and_evaluation(
             await executor._execute_post_generation_tools(output_tools, task, task_id)
         except Exception as e:
             logger.warning(f"Post-generation tools failed: {e}")
-
+    # Attach tool usage metadata for summary
+    try:
+        result.metadata = (result.metadata or {})
+        result.metadata.update({
+            'tool_enhanced': True,
+            'tool_routing_failed': routing_failed,
+            'tool_calls': {
+                'info_planned': len(info_gathering_tools),
+                'output_planned': len(output_tools),
+                'workspace': executor.base_dir,
+            }
+        })
+    except Exception:
+        pass
     return result
