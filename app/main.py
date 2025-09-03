@@ -474,6 +474,45 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             logging.getLogger("app.main").warning(f"Auto-decompose error for plan '{title}': {e}")
 
     results = []
+    # For optional run summary
+    summary = {
+        "total": 0,
+        "completed": 0,
+        "failed": 0,
+        "avg_iterations": 0.0,
+        "avg_score": 0.0,
+        "tools": {"planned_info": 0, "planned_output": 0, "routing_failed": 0}
+    }
+    def _accumulate(result_obj, status_val):
+        try:
+            summary["total"] += 1
+            if status_val in ("done", "completed"):
+                summary["completed"] += 1
+            else:
+                summary["failed"] += 1
+            # iterations/score when available
+            it = getattr(result_obj, 'iterations', None)
+            sc = None
+            ev = getattr(result_obj, 'evaluation', None)
+            if ev is not None:
+                try:
+                    sc = float(ev.overall_score)
+                except Exception:
+                    sc = None
+            if it is not None:
+                summary["avg_iterations"] += float(it)
+            if sc is not None:
+                summary["avg_score"] += float(sc)
+            # tool metadata
+            md = getattr(result_obj, 'metadata', None)
+            if isinstance(md, dict):
+                tc = md.get('tool_calls') or {}
+                summary["tools"]["planned_info"] += int(tc.get('info_planned') or 0)
+                summary["tools"]["planned_output"] += int(tc.get('output_planned') or 0)
+                if md.get('tool_routing_failed'):
+                    summary["tools"]["routing_failed"] += 1
+        except Exception:
+            pass
     if not title:
         # Original behavior: run all pending tasks using scheduler
         if schedule == "dag":
@@ -523,6 +562,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                 task_id = result.task_id
                 status = result.status
                 default_repo.update_task_status(task_id, status)
+                _accumulate(result, status)
                 results.append({
                     "id": task_id, 
                     "status": status,
@@ -541,6 +581,11 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                     status = execute_task(task, use_context=use_context, context_options=context_options)
                 task_id = task["id"] if isinstance(task, dict) else task[0]
                 default_repo.update_task_status(task_id, status)
+                summary["total"] += 1
+                if status in ("done", "completed"):
+                    summary["completed"] += 1
+                else:
+                    summary["failed"] += 1
                 results.append({"id": task_id, "status": status})
         return results
 
@@ -592,6 +637,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             task_id = result.task_id
             status = result.status
             default_repo.update_task_status(task_id, status)
+            _accumulate(result, status)
             results.append({
                 "id": task_id, 
                 "status": status,
@@ -610,7 +656,36 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                 status = execute_task(task, use_context=use_context, context_options=context_options)
             task_id = task["id"] if isinstance(task, dict) else task[0]
             default_repo.update_task_status(task_id, status)
+            summary["total"] += 1
+            if status in ("done", "completed"):
+                summary["completed"] += 1
+            else:
+                summary["failed"] += 1
             results.append({"id": task_id, "status": status})
+    # Finalize summary averages if requested
+    include_summary = bool(getattr(rr, 'include_summary', False))
+    auto_assemble = bool(getattr(rr, 'auto_assemble', False))
+    if include_summary or auto_assemble:
+        try:
+            if summary["completed"] > 0:
+                summary["avg_iterations"] = round(summary["avg_iterations"] / summary["completed"], 2)
+                # Average score across tasks where score available (approx by completed)
+                summary["avg_score"] = round(summary["avg_score"] / summary["completed"], 3)
+            else:
+                summary["avg_iterations"] = 0.0
+                summary["avg_score"] = 0.0
+        except Exception:
+            pass
+        out = {"results": results, "summary": summary}
+        if auto_assemble and title:
+            try:
+                items = default_repo.list_plan_outputs(title)
+                sections = [{"name": it["short_name"], "content": it["content"]} for it in items]
+                combined = "\n\n".join([f"{s['name']}\n\n{s['content']}" for s in sections])
+                out["assembled"] = {"title": title, "sections": sections, "combined": combined}
+            except Exception:
+                out["assembled"] = {"title": title, "sections": [], "combined": ""}
+        return out
     return results
 
 # -------------------------------
