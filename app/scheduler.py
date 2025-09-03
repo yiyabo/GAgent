@@ -1,8 +1,9 @@
-from typing import Any, Dict, List, Optional, Set, Tuple
 import heapq
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .repository.tasks import default_repo
 from .utils import plan_prefix, split_prefix
+
 
 def bfs_schedule(title: Optional[str] = None):
     """Yield pending tasks in a hierarchy-aware, stable order using a single batch query.
@@ -30,18 +31,18 @@ def bfs_schedule(title: Optional[str] = None):
     for r in rows:
         if int(r.get("depth") or 0) == 0:
             root_priorities[int(r.get("id"))] = int(r.get("priority") or 100)
-    
+
     def _enhanced_bfs_key(row: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
         pr, rid = _priority_key(row)
         path = row.get("path") or f"/{rid}"
         depth = int(row.get("depth") or 0)
         root_id = _root_id_from_path(path, rid)
-        
+
         # Use actual root priority for consistent subtree grouping
         root_priority = root_priorities.get(root_id, root_id)
-        
+
         return (root_priority, depth, pr, path, rid)
-    
+
     rows_sorted = sorted(rows, key=_enhanced_bfs_key)
     for r in rows_sorted:
         yield r
@@ -120,7 +121,7 @@ def _bfs_heap_key(row: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
       3) priority ASC within same depth level
       4) path ASC (stable ordering)
       5) id ASC (final tiebreaker)
-    
+
     This ensures proper hierarchy: root tasks ordered by their priority,
     then within each subtree, parents come before children.
     """
@@ -128,7 +129,7 @@ def _bfs_heap_key(row: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
     path = row.get("path") or f"/{rid}"
     depth = int(row.get("depth") or 0)
     root_id = _root_id_from_path(path, rid)
-    
+
     # For root priority, we need to find the root task's priority
     # For now, use the task's own priority if it's a root, otherwise use a default
     if depth == 0:
@@ -137,7 +138,7 @@ def _bfs_heap_key(row: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
         # For child tasks, we'd ideally look up the root's priority
         # but for simplicity, use the root_id as a proxy for consistent grouping
         root_priority = root_id
-    
+
     return (root_priority, depth, pr, path, rid)
 
 
@@ -162,7 +163,7 @@ def requires_dag_order(title: Optional[str] = None) -> Tuple[List[Dict[str, Any]
     """
     # 1) Nodes (scoped pending)
     if title is None:
-        nodes = default_repo.list_tasks_by_status('pending')
+        nodes = default_repo.list_tasks_by_status("pending")
     else:
         prefix = plan_prefix(title)
         nodes = default_repo.list_tasks_by_prefix(prefix, pending_only=True, ordered=False)
@@ -181,7 +182,7 @@ def requires_dag_order(title: Optional[str] = None) -> Tuple[List[Dict[str, Any]
         return [], None
 
     # 2) Edges within scope (requires only)
-    links = default_repo.list_links(kind='requires')
+    links = default_repo.list_links(kind="requires")
     edges: List[Tuple[int, int]] = []  # (from_id -> to_id)
     for l in links:
         try:
@@ -233,11 +234,7 @@ def requires_dag_order(title: Optional[str] = None) -> Tuple[List[Dict[str, Any]
 
     # Residual nodes indicate a cycle
     residual: Set[int] = {nid for nid in scoped_ids if nid not in visited}
-    cyc_edges = [
-        {"from": f, "to": t}
-        for (f, t) in edges
-        if (f in residual) and (t in residual)
-    ]
+    cyc_edges = [{"from": f, "to": t} for (f, t) in edges if (f in residual) and (t in residual)]
     # Use short names (without [title] prefix) for readability in cycle info
     names = {}
     for rid in residual:
@@ -258,6 +255,7 @@ def requires_dag_schedule(title: Optional[str] = None):
     ordered, _ = requires_dag_order(title)
     for r in ordered:
         yield r
+
 
 def postorder_schedule(title: Optional[str] = None):
     """Yield pending tasks in post-order traversal: children before parents.
@@ -282,7 +280,7 @@ def postorder_schedule(title: Optional[str] = None):
     # Build parent-child relationships
     children_map = {}  # parent_id -> [child_tasks]
     id_to_row = {}
-    
+
     for r in rows:
         try:
             task_id = int(r.get("id"))
@@ -304,46 +302,40 @@ def postorder_schedule(title: Optional[str] = None):
         task_id = int(task_row.get("id"))
         if task_id in visited:
             return
-        
+
         visited.add(task_id)
-        
+
         # First visit all children (deeper tasks)
         child_tasks = children_map.get(task_id, [])
         # Sort children by priority for stable ordering
-        child_tasks_sorted = sorted(child_tasks, key=lambda x: (
-            int(x.get("priority") or 100),
-            int(x.get("id"))
-        ))
-        
+        child_tasks_sorted = sorted(child_tasks, key=lambda x: (int(x.get("priority") or 100), int(x.get("id"))))
+
         for child in child_tasks_sorted:
             _postorder_dfs(child)
-        
+
         # Add dependency info to task
         task_with_deps = dict(task_row)
         task_with_deps["dependencies"] = [int(child.get("id")) for child in child_tasks]
-        
+
         # Then add current task
         result.append(task_with_deps)
 
     # Find root tasks (those without parents or with parents not in pending set)
     root_tasks = []
     pending_ids = {int(r.get("id")) for r in rows}
-    
+
     for r in rows:
         parent_id = r.get("parent_id")
         if parent_id is None or int(parent_id) not in pending_ids:
             root_tasks.append(r)
-    
+
     # Sort root tasks by priority for stable ordering
-    root_tasks_sorted = sorted(root_tasks, key=lambda x: (
-        int(x.get("priority") or 100),
-        int(x.get("id"))
-    ))
-    
+    root_tasks_sorted = sorted(root_tasks, key=lambda x: (int(x.get("priority") or 100), int(x.get("id"))))
+
     # Start DFS from each root
     for root in root_tasks_sorted:
         _postorder_dfs(root)
-    
+
     # Yield results
     for task in result:
         yield task

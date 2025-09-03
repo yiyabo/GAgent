@@ -6,8 +6,8 @@ and discovering available tools in the MCP server.
 """
 
 import logging
-from typing import Any, Dict, List, Callable, Optional
 from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ToolDefinition:
     """Tool definition with metadata"""
+
     name: str
     description: str
     category: str
@@ -89,9 +90,11 @@ class ToolRegistry:
         results = []
 
         for tool in self.tools.values():
-            if (query_lower in tool.name.lower() or
-                query_lower in tool.description.lower() or
-                any(query_lower in tag.lower() for tag in tool.tags)):
+            if (
+                query_lower in tool.name.lower()
+                or query_lower in tool.description.lower()
+                or any(query_lower in tag.lower() for tag in tool.tags)
+            ):
                 results.append(tool)
 
         return results
@@ -118,7 +121,7 @@ class ToolRegistry:
             "author": tool.author,
             "tags": tool.tags,
             "examples": tool.examples,
-            "parameters_schema": tool.parameters_schema
+            "parameters_schema": tool.parameters_schema,
         }
 
 
@@ -131,11 +134,17 @@ def get_tool_registry() -> ToolRegistry:
     return _tool_registry
 
 
-def register_tool(name: str, description: str, category: str,
-                 parameters_schema: Dict[str, Any], handler: Callable,
-                 version: str = "1.0.0", author: str = "ToolBox",
-                 tags: Optional[List[str]] = None,
-                 examples: Optional[List[str]] = None) -> None:
+def register_tool(
+    name: str,
+    description: str,
+    category: str,
+    parameters_schema: Dict[str, Any],
+    handler: Callable,
+    version: str = "1.0.0",
+    author: str = "ToolBox",
+    tags: Optional[List[str]] = None,
+    examples: Optional[List[str]] = None,
+) -> None:
     """Convenience function to register a tool"""
     tool_def = ToolDefinition(
         name=name,
@@ -146,7 +155,7 @@ def register_tool(name: str, description: str, category: str,
         version=version,
         author=author,
         tags=tags or [],
-        examples=examples or []
+        examples=examples or [],
     )
 
     _tool_registry.register_tool(tool_def)

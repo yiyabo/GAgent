@@ -1,10 +1,9 @@
 from typing import Any, Dict, List, Optional
 
-from ..llm import get_default_client
 from ..interfaces import LLMProvider, TaskRepository
+from ..llm import get_default_client
 from ..repository.tasks import default_repo
 from ..utils import parse_json_obj, plan_prefix
-
 
 # parse_json_obj is centralized in app/utils.py
 
@@ -25,15 +24,17 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
 
     # AI automatically determines the number of sections
     if sections is None:
-        sections_instruction = "Determine the optimal number of tasks (typically 3-8) based on the complexity and scope of the goal."
+        sections_instruction = (
+            "Determine the optimal number of tasks (typically 3-8) based on the complexity and scope of the goal."
+        )
     else:
         sections_instruction = f"Preferred number of tasks: {sections} (4-8 typical)."
 
     prompt = (
         "You are an expert project planner. Break down the user's goal into a small set of actionable tasks.\n"
         "Return ONLY a JSON object with this schema: {\n"
-        "  \"title\": string,\n"
-        "  \"tasks\": [ { \"name\": string, \"prompt\": string } ]\n"
+        '  "title": string,\n'
+        '  "tasks": [ { "name": string, "prompt": string } ]\n'
         "}\n"
         f"Goal: {goal}\n"
         f"{sections_instruction}\n"
@@ -81,11 +82,13 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
         prompt_t = t.get("prompt") if isinstance(t, dict) else None
         if not isinstance(prompt_t, str) or not prompt_t.strip():
             prompt_t = default_prompt
-        norm_tasks.append({
-            "name": name,
-            "prompt": prompt_t,
-            "priority": (idx + 1) * 10,
-        })
+        norm_tasks.append(
+            {
+                "name": name,
+                "prompt": prompt_t,
+                "priority": (idx + 1) * 10,
+            }
+        )
 
     return {"title": plan.get("title") or title, "tasks": norm_tasks}
 
@@ -129,7 +132,10 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
         existing_by_short: Dict[str, Any] = {}
         for r in existing_rows:
             full_name = r.get("name") if isinstance(r, dict) else r[1]
-            from ..utils import split_prefix as _split_prefix  # local import to avoid cycles
+            from ..utils import (
+                split_prefix as _split_prefix,  # local import to avoid cycles
+            )
+
             _, short = _split_prefix(full_name or "")
             existing_by_short[short] = r
     except Exception:

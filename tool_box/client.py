@@ -10,8 +10,8 @@ import json
 import logging
 import subprocess
 import sys
-from typing import Any, Dict, List, Optional, Union
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +23,9 @@ class MCPToolBoxClient:
         self.servers: Dict[str, Dict[str, Any]] = {}
         self.processes: Dict[str, subprocess.Popen] = {}
 
-    def register_server(self, name: str, command: Union[str, List[str]],
-                        cwd: Optional[str] = None) -> None:
+    def register_server(self, name: str, command: Union[str, List[str]], cwd: Optional[str] = None) -> None:
         """Register an MCP server"""
-        self.servers[name] = {
-            "command": command,
-            "cwd": cwd or str(Path.cwd()),
-            "status": "stopped"
-        }
+        self.servers[name] = {"command": command, "cwd": cwd or str(Path.cwd()), "status": "stopped"}
         logger.info(f"Registered MCP server: {name}")
 
     async def start_server(self, name: str) -> bool:
@@ -55,7 +50,7 @@ class MCPToolBoxClient:
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True
+                    text=True,
                 )
             else:
                 process = subprocess.Popen(
@@ -64,7 +59,7 @@ class MCPToolBoxClient:
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True
+                    text=True,
                 )
 
             self.processes[name] = process
@@ -114,21 +109,14 @@ class MCPToolBoxClient:
             process = self.processes[server_name]
 
             # Send list tools request
-            request = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/list",
-                "params": {}
-            }
+            request = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
 
             # Write request to stdin
             process.stdin.write(json.dumps(request) + "\n")
             process.stdin.flush()
 
             # Read response from stdout
-            response_line = await asyncio.get_event_loop().run_in_executor(
-                None, process.stdout.readline
-            )
+            response_line = await asyncio.get_event_loop().run_in_executor(None, process.stdout.readline)
 
             if response_line:
                 response = json.loads(response_line.strip())
@@ -140,8 +128,7 @@ class MCPToolBoxClient:
 
         return []
 
-    async def call_tool(self, server_name: str, tool_name: str,
-                       arguments: Optional[Dict[str, Any]] = None) -> Any:
+    async def call_tool(self, server_name: str, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
         """Call a tool on a server"""
         if server_name not in self.processes:
             logger.error(f"Server {server_name} not running")
@@ -155,10 +142,7 @@ class MCPToolBoxClient:
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": arguments or {}
-                }
+                "params": {"name": tool_name, "arguments": arguments or {}},
             }
 
             # Write request to stdin
@@ -166,9 +150,7 @@ class MCPToolBoxClient:
             process.stdin.flush()
 
             # Read response from stdout
-            response_line = await asyncio.get_event_loop().run_in_executor(
-                None, process.stdout.readline
-            )
+            response_line = await asyncio.get_event_loop().run_in_executor(None, process.stdout.readline)
 
             if response_line:
                 response = json.loads(response_line.strip())
@@ -193,21 +175,14 @@ class MCPToolBoxClient:
             process = self.processes[server_name]
 
             # Send list resources request
-            request = {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "resources/list",
-                "params": {}
-            }
+            request = {"jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {}}
 
             # Write request to stdin
             process.stdin.write(json.dumps(request) + "\n")
             process.stdin.flush()
 
             # Read response from stdout
-            response_line = await asyncio.get_event_loop().run_in_executor(
-                None, process.stdout.readline
-            )
+            response_line = await asyncio.get_event_loop().run_in_executor(None, process.stdout.readline)
 
             if response_line:
                 response = json.loads(response_line.strip())
@@ -229,23 +204,14 @@ class MCPToolBoxClient:
             process = self.processes[server_name]
 
             # Send read resource request
-            request = {
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "resources/read",
-                "params": {
-                    "uri": uri
-                }
-            }
+            request = {"jsonrpc": "2.0", "id": 4, "method": "resources/read", "params": {"uri": uri}}
 
             # Write request to stdin
             process.stdin.write(json.dumps(request) + "\n")
             process.stdin.flush()
 
             # Read response from stdout
-            response_line = await asyncio.get_event_loop().run_in_executor(
-                None, process.stdout.readline
-            )
+            response_line = await asyncio.get_event_loop().run_in_executor(None, process.stdout.readline)
 
             if response_line:
                 response = json.loads(response_line.strip())

@@ -1,6 +1,6 @@
-from typing import Any, Dict, List, Optional, Tuple
-import os
 import logging
+import os
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..interfaces import TaskRepository
 from ..repository.tasks import default_repo
@@ -23,7 +23,7 @@ def _debug_on() -> bool:
 def _get_task_by_id(task_id: int, repo: TaskRepository) -> Optional[Dict[str, Any]]:
     """Prefer repository direct lookup when available; fallback to list scan."""
     # Prefer efficient repo method if provided
-    if hasattr(repo, 'get_task_info'):
+    if hasattr(repo, "get_task_info"):
         try:
             info = repo.get_task_info(task_id)
             if info:
@@ -82,6 +82,7 @@ def _section_for_task(task: Dict[str, Any], repo: TaskRepository, kind: str) -> 
 # -----------------
 # Global index helpers (Phase 4)
 # -----------------
+
 
 def _read_index_content() -> str:
     """Read global INDEX.md (or path from GLOBAL_INDEX_PATH). On failure, return empty string.
@@ -216,12 +217,12 @@ def gather_context(
     if include_ancestors or include_siblings:
         try:
             # Get current task info to access hierarchy methods
-            current_task = repo.get_task_info(task_id) if hasattr(repo, 'get_task_info') else None
-            
+            current_task = repo.get_task_info(task_id) if hasattr(repo, "get_task_info") else None
+
             # Add ancestors (parent chain)
             if include_ancestors and current_task:
                 try:
-                    ancestors = repo.get_ancestors(task_id) if hasattr(repo, 'get_ancestors') else []
+                    ancestors = repo.get_ancestors(task_id) if hasattr(repo, "get_ancestors") else []
                     for anc in ancestors[:hierarchy_k]:
                         aid = anc.get("id")
                         if aid and aid not in seen_ids:
@@ -231,13 +232,13 @@ def gather_context(
                                 seen_ids.add(aid)
                 except Exception:
                     pass
-            
+
             # Add hierarchy siblings (same parent, different from plan siblings)
             if include_siblings and current_task:
                 try:
                     parent_id = current_task.get("parent_id")
                     if parent_id:
-                        h_siblings = repo.get_children(parent_id) if hasattr(repo, 'get_children') else []
+                        h_siblings = repo.get_children(parent_id) if hasattr(repo, "get_children") else []
                         added_h_siblings = 0
                         for sib in h_siblings:
                             sid = sib.get("id")
@@ -277,54 +278,54 @@ def gather_context(
         query_text = query_text or ""
 
         if _debug_on():
-            _CTX_LOGGER.debug({
-                "event": "gather_context.semantic_retrieval_start",
-                "task_id": task_id,
-                "query_text": query_text[:100],
-                "semantic_k": semantic_k,
-            })
+            _CTX_LOGGER.debug(
+                {
+                    "event": "gather_context.semantic_retrieval_start",
+                    "task_id": task_id,
+                    "query_text": query_text[:100],
+                    "semantic_k": semantic_k,
+                }
+            )
 
         try:
             # Use GLM semantic retrieval service
             retrieval_service = get_retrieval_service()
-            
+
             # Perform semantic retrieval
-            retrieved_results = retrieval_service.search(
-                query=query_text,
-                k=semantic_k,
-                min_similarity=min_similarity
-            )
-            
+            retrieved_results = retrieval_service.search(query=query_text, k=semantic_k, min_similarity=min_similarity)
+
             # Convert results to sections
             added = 0
             for result in retrieved_results:
                 tid = result.get("task_id")
                 if not isinstance(tid, int) or tid == task_id or tid in seen_ids:
                     continue
-                
+
                 t = _get_task_by_id(tid, repo)
                 if not t:
                     continue
-                
+
                 sec = _section_for_task(t, repo, kind="retrieved")
                 if sec and sec.get("task_id") not in seen_ids:
                     # Add retrieval score metadata
                     sec["retrieval_score"] = result.get("similarity", 0.0)
                     sec["retrieval_method"] = "semantic"
-                    
+
                     sections.append(sec)
                     seen_ids.add(sec["task_id"])
                     added += 1
-            
+
             if _debug_on():
-                _CTX_LOGGER.debug({
-                    "event": "gather_context.semantic_retrieval_done",
-                    "task_id": task_id,
-                    "retrieved": len(retrieved_results),
-                    "added": added,
-                    "top_score": retrieved_results[0].get("similarity", 0.0) if retrieved_results else 0.0,
-                })
-                
+                _CTX_LOGGER.debug(
+                    {
+                        "event": "gather_context.semantic_retrieval_done",
+                        "task_id": task_id,
+                        "retrieved": len(retrieved_results),
+                        "added": added,
+                        "top_score": retrieved_results[0].get("similarity", 0.0) if retrieved_results else 0.0,
+                    }
+                )
+
         except Exception as e:
             _CTX_LOGGER.warning(f"GLM semantic retrieval failed: {e}")
 
@@ -336,12 +337,14 @@ def gather_context(
         for s in sections:
             knd = s.get("kind") or "?"
             kind_counts[knd] = kind_counts.get(knd, 0) + 1
-        _CTX_LOGGER.debug({
-            "event": "gather_context.done",
-            "task_id": task_id,
-            "sections": len(sections),
-            "kinds": kind_counts,
-        })
+        _CTX_LOGGER.debug(
+            {
+                "event": "gather_context.done",
+                "task_id": task_id,
+                "sections": len(sections),
+                "kinds": kind_counts,
+            }
+        )
 
     # Build combined text (simple concatenation with headers)
     combined_parts: List[str] = []

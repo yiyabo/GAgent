@@ -5,32 +5,34 @@ evaluate them using the built-in LLM evaluation, returning metrics and
 markdown summary.
 """
 
-from typing import Dict, List, Tuple, Any, Optional
-import os
 import csv
+import os
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..repository.tasks import default_repo
 from ..database import init_db
 from ..execution.executors.enhanced import execute_task_with_llm_evaluation
+from ..repository.tasks import default_repo
 
 
 def _parse_config_string(cfg: str) -> Tuple[str, Dict[str, str]]:
-    parts = [p.strip() for p in str(cfg).split(',') if p and p.strip()]
+    parts = [p.strip() for p in str(cfg).split(",") if p and p.strip()]
     if not parts:
         return ("default", {})
     name = parts[0]
     kv: Dict[str, str] = {}
     for p in parts[1:]:
-        if '=' in p:
-            k, v = p.split('=', 1)
+        if "=" in p:
+            k, v = p.split("=", 1)
             kv[k.strip()] = v.strip()
     return name, kv
 
 
-def _to_bool(val: Any, default: bool=False) -> bool:
+def _to_bool(val: Any, default: bool = False) -> bool:
     s = str(val).strip().lower()
-    if s in {"true","1","yes","on"}: return True
-    if s in {"false","0","no","off"}: return False
+    if s in {"true", "1", "yes", "on"}:
+        return True
+    if s in {"false", "0", "no", "off"}:
+        return False
     return default
 
 
@@ -48,14 +50,13 @@ def _create_report_tasks(topic: str, sections: int) -> List[int]:
         f"[{topic}] 关键发现",
         f"[{topic}] 风险与局限",
         f"[{topic}] 建议与展望",
-    ][:max(1, sections)]
+    ][: max(1, sections)]
 
     ids: List[int] = []
     for idx, title in enumerate(titles, 1):
-        tid = default_repo.create_task(name=title, status="pending", priority=idx*10, task_type="atomic")
+        tid = default_repo.create_task(name=title, status="pending", priority=idx * 10, task_type="atomic")
         prompt = (
-            f"请撰写主题《{topic}》的分析报告章节：{title}.\n"
-            "要求：客观、结构清晰、含数据/指标/案例，500-800字。"
+            f"请撰写主题《{topic}》的分析报告章节：{title}.\n" "要求：客观、结构清晰、含数据/指标/案例，500-800字。"
         )
         default_repo.upsert_task_input(tid, prompt)
         ids.append(tid)
@@ -63,7 +64,7 @@ def _create_report_tasks(topic: str, sections: int) -> List[int]:
 
 
 def _accumulate_dimensions(dim_sums: Dict[str, float], dims: Any) -> None:
-    for key in ["relevance","completeness","accuracy","clarity","coherence","scientific_rigor"]:
+    for key in ["relevance", "completeness", "accuracy", "clarity", "coherence", "scientific_rigor"]:
         val = getattr(dims, key, None)
         if isinstance(val, (int, float)):
             dim_sums[key] = dim_sums.get(key, 0.0) + float(val)
@@ -71,7 +72,7 @@ def _accumulate_dimensions(dim_sums: Dict[str, float], dims: Any) -> None:
 
 def _avg_dimensions(dim_sums: Dict[str, float], count: int) -> Dict[str, float]:
     if count <= 0:
-        return {k: 0.0 for k in ["relevance","completeness","accuracy","clarity","coherence","scientific_rigor"]}
+        return {k: 0.0 for k in ["relevance", "completeness", "accuracy", "clarity", "coherence", "scientific_rigor"]}
     return {k: round(v / count, 3) for k, v in dim_sums.items()}
 
 
@@ -102,41 +103,41 @@ def run_benchmark(
             pass
 
     for name, kv in configs:
-        use_context = _to_bool(kv.get('use_context', 'false'), default=False)
-        max_iters = _to_int(kv.get('max_iterations', '3'), 3)
+        use_context = _to_bool(kv.get("use_context", "false"), default=False)
+        max_iters = _to_int(kv.get("max_iterations", "3"), 3)
         try:
-            quality_threshold = float(kv.get('quality_threshold', '0.8'))
+            quality_threshold = float(kv.get("quality_threshold", "0.8"))
         except Exception:
             quality_threshold = 0.8
 
         ctx_opts = None
         if use_context:
             ctx_opts = {}
-            if 'max_chars' in kv:
-                ctx_opts['max_chars'] = _to_int(kv['max_chars'], 6000)
-            if 'per_section_max' in kv:
-                ctx_opts['per_section_max'] = _to_int(kv['per_section_max'], 1200)
-            if 'strategy' in kv:
-                ctx_opts['strategy'] = kv['strategy']
+            if "max_chars" in kv:
+                ctx_opts["max_chars"] = _to_int(kv["max_chars"], 6000)
+            if "per_section_max" in kv:
+                ctx_opts["per_section_max"] = _to_int(kv["per_section_max"], 1200)
+            if "strategy" in kv:
+                ctx_opts["strategy"] = kv["strategy"]
             # Extended context toggles
-            if 'include_deps' in kv:
-                ctx_opts['include_deps'] = _to_bool(kv['include_deps'], True)
-            if 'include_plan' in kv:
-                ctx_opts['include_plan'] = _to_bool(kv['include_plan'], True)
-            if 'include_ancestors' in kv:
-                ctx_opts['include_ancestors'] = _to_bool(kv['include_ancestors'], False)
-            if 'include_siblings' in kv:
-                ctx_opts['include_siblings'] = _to_bool(kv['include_siblings'], False)
-            if 'semantic_k' in kv:
+            if "include_deps" in kv:
+                ctx_opts["include_deps"] = _to_bool(kv["include_deps"], True)
+            if "include_plan" in kv:
+                ctx_opts["include_plan"] = _to_bool(kv["include_plan"], True)
+            if "include_ancestors" in kv:
+                ctx_opts["include_ancestors"] = _to_bool(kv["include_ancestors"], False)
+            if "include_siblings" in kv:
+                ctx_opts["include_siblings"] = _to_bool(kv["include_siblings"], False)
+            if "semantic_k" in kv:
                 try:
-                    ctx_opts['semantic_k'] = int(kv['semantic_k'])
+                    ctx_opts["semantic_k"] = int(kv["semantic_k"])
                 except Exception:
-                    ctx_opts['semantic_k'] = 5
-            if 'min_similarity' in kv:
+                    ctx_opts["semantic_k"] = 5
+            if "min_similarity" in kv:
                 try:
-                    ctx_opts['min_similarity'] = float(kv['min_similarity'])
+                    ctx_opts["min_similarity"] = float(kv["min_similarity"])
                 except Exception:
-                    ctx_opts['min_similarity'] = 0.1
+                    ctx_opts["min_similarity"] = 0.1
 
         total_score = 0.0
         total_iters = 0
@@ -160,7 +161,7 @@ def run_benchmark(
                     max_iterations=max_iters,
                     quality_threshold=quality_threshold,
                     use_context=use_context,
-                    context_options=ctx_opts
+                    context_options=ctx_opts,
                 )
                 if result.evaluation:
                     total_score += float(result.evaluation.overall_score)
@@ -172,7 +173,7 @@ def run_benchmark(
                 count += 1
                 # Capture content for export
                 try:
-                    sec_title = str(task.get('name', f'Section {tid}'))
+                    sec_title = str(task.get("name", f"Section {tid}"))
                     sec_content = str(result.content or "")
                     collected_sections.append((sec_title, sec_content))
                 except Exception:
@@ -187,14 +188,18 @@ def run_benchmark(
 
         # Write per-config markdown file if requested
         if outdir and collected_sections:
-            safe_name = "".join(c for c in name if c.isalnum() or c in ('-','_')).strip() or name
+            safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_")).strip() or name
             md_path = os.path.join(outdir, f"{safe_name}.md")
             try:
-                with open(md_path, 'w', encoding='utf-8') as f:
+                with open(md_path, "w", encoding="utf-8") as f:
                     f.write(f"# {topic}（{name}）\n\n")
                     for sec_title, sec_content in collected_sections:
                         # 去掉主题前缀的展示更友好
-                        display_title = sec_title.split('] ', 1)[-1] if sec_title.startswith('[') and '] ' in sec_title else sec_title
+                        display_title = (
+                            sec_title.split("] ", 1)[-1]
+                            if sec_title.startswith("[") and "] " in sec_title
+                            else sec_title
+                        )
                         f.write(f"## {display_title}\n\n{sec_content}\n\n")
                 files[name] = md_path
             except Exception:
@@ -208,14 +213,16 @@ def run_benchmark(
             "failures": failures,
             "count": count,
             "dimensions_avg": dim_avgs,
-            "file_path": files.get(name)
+            "file_path": files.get(name),
         }
 
     # Render summary markdown
     lines: List[str] = []
     lines.append(f"# LLM 配置基准报告: {topic}")
     lines.append("")
-    lines.append("| 配置 | 平均分 | 平均迭代 | 平均耗时(s) | 成功数 | 失败数 | relevance | completeness | accuracy | clarity | coherence | scientific_rigor |")
+    lines.append(
+        "| 配置 | 平均分 | 平均迭代 | 平均耗时(s) | 成功数 | 失败数 | relevance | completeness | accuracy | clarity | coherence | scientific_rigor |"
+    )
     lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for name, _ in configs:
         m = results.get(name, {})
@@ -227,7 +234,9 @@ def run_benchmark(
             f"{dims.get('clarity',0):.3f} | {dims.get('coherence',0):.3f} | {dims.get('scientific_rigor',0):.3f} |"
         )
     lines.append("")
-    lines.append("> 评分维度来自系统内置 LLM 评估器（相关性/完整性/准确性/清晰度/连贯性/科学严谨性），overall_score 为加权结果。")
+    lines.append(
+        "> 评分维度来自系统内置 LLM 评估器（相关性/完整性/准确性/清晰度/连贯性/科学严谨性），overall_score 为加权结果。"
+    )
 
     # Optional CSV export (per-config rows)
     if csv_path:
@@ -235,31 +244,45 @@ def run_benchmark(
             parent = os.path.dirname(csv_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            with open(csv_path, 'w', encoding='utf-8', newline='') as csvfile:
+            with open(csv_path, "w", encoding="utf-8", newline="") as csvfile:
                 fieldnames = [
-                    'config_name','params','file_path','avg_score','avg_iters','avg_time','count','failures',
-                    'relevance','completeness','accuracy','clarity','coherence','scientific_rigor'
+                    "config_name",
+                    "params",
+                    "file_path",
+                    "avg_score",
+                    "avg_iters",
+                    "avg_time",
+                    "count",
+                    "failures",
+                    "relevance",
+                    "completeness",
+                    "accuracy",
+                    "clarity",
+                    "coherence",
+                    "scientific_rigor",
                 ]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
                 for name, m in results.items():
-                    dims = m.get('dimensions_avg', {})
-                    writer.writerow({
-                        'config_name': name,
-                        'params': str(m.get('params', {})),
-                        'file_path': m.get('file_path') or '',
-                        'avg_score': m.get('avg_score', 0.0),
-                        'avg_iters': m.get('avg_iters', 0.0),
-                        'avg_time': m.get('avg_time', 0.0),
-                        'count': m.get('count', 0),
-                        'failures': m.get('failures', 0),
-                        'relevance': dims.get('relevance', 0.0),
-                        'completeness': dims.get('completeness', 0.0),
-                        'accuracy': dims.get('accuracy', 0.0),
-                        'clarity': dims.get('clarity', 0.0),
-                        'coherence': dims.get('coherence', 0.0),
-                        'scientific_rigor': dims.get('scientific_rigor', 0.0),
-                    })
+                    dims = m.get("dimensions_avg", {})
+                    writer.writerow(
+                        {
+                            "config_name": name,
+                            "params": str(m.get("params", {})),
+                            "file_path": m.get("file_path") or "",
+                            "avg_score": m.get("avg_score", 0.0),
+                            "avg_iters": m.get("avg_iters", 0.0),
+                            "avg_time": m.get("avg_time", 0.0),
+                            "count": m.get("count", 0),
+                            "failures": m.get("failures", 0),
+                            "relevance": dims.get("relevance", 0.0),
+                            "completeness": dims.get("completeness", 0.0),
+                            "accuracy": dims.get("accuracy", 0.0),
+                            "clarity": dims.get("clarity", 0.0),
+                            "coherence": dims.get("coherence", 0.0),
+                            "scientific_rigor": dims.get("scientific_rigor", 0.0),
+                        }
+                    )
         except Exception:
             pass
 
@@ -271,5 +294,3 @@ def run_benchmark(
         "files": files,
         "csv_path": csv_path,
     }
-
-
