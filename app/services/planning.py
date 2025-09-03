@@ -17,7 +17,8 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
     goal = (payload or {}).get("goal") or (payload or {}).get("instruction") or ""
     if not isinstance(goal, str) or not goal.strip():
         raise ValueError("Missing 'goal' in request body")
-    title = (payload or {}).get("title") or goal.strip()[:60]
+    provided_title = ((payload or {}).get("title") or "").strip()
+    title = provided_title or goal.strip()[:60]
     sections = (payload or {}).get("sections")
     style = (payload or {}).get("style") or ""
     notes = (payload or {}).get("notes") or ""
@@ -51,7 +52,10 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
         if isinstance(obj, list):
             plan = {"title": title, "tasks": obj}
         elif isinstance(obj, dict):
-            plan = {"title": obj.get("title") or title, "tasks": obj.get("tasks") or []}
+            # Canonicalization: if caller provided a title, prefer it over LLM title to avoid plan fragmentation
+            llm_title = (obj.get("title") or "").strip()
+            final_title = title if provided_title else (llm_title or title)
+            plan = {"title": final_title, "tasks": obj.get("tasks") or []}
         else:
             plan = {"title": title, "tasks": []}
     except Exception as e:
@@ -102,6 +106,7 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
 
     prefix = plan_prefix(title)
     created: List[Dict[str, Any]] = []
+    updated: List[Dict[str, Any]] = []
     repo = repo or default_repo
 
     # Optional hierarchical mode (default False for backward compatibility)
@@ -118,6 +123,18 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
         root_id = repo.create_task(root_name, status="pending", priority=root_priority)
         repo.upsert_task_input(root_id, f"Root task node for plan '{title}'.")
 
+    # Build existing index to avoid duplicate creation under the same plan
+    try:
+        existing_rows = repo.list_plan_tasks(title)
+        existing_by_short: Dict[str, Any] = {}
+        for r in existing_rows:
+            full_name = r.get("name") if isinstance(r, dict) else r[1]
+            from ..utils import split_prefix as _split_prefix  # local import to avoid cycles
+            _, short = _split_prefix(full_name or "")
+            existing_by_short[short] = r
+    except Exception:
+        existing_by_short = {}
+
     for idx, t in enumerate(tasks):
         name = (t.get("name") or "").strip() if isinstance(t, dict) else str(t)
         if not name:
@@ -132,15 +149,35 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
         if priority is None:
             priority = (len(created) + 1) * 10
 
-        # Only pass parent_id when hierarchical mode is enabled to preserve backward compatibility
-        if hierarchical and root_id is not None:
-            task_id = repo.create_task(prefix + name, status="pending", priority=priority, parent_id=root_id)
+        # Dedupe: if a task with the same short name already exists under this plan, update its prompt and priority
+        if name in existing_by_short:
+            try:
+                r = existing_by_short[name]
+                task_id = r.get("id") if isinstance(r, dict) else r[0]
+                repo.upsert_task_input(task_id, prompt_t)
+                # Do not change existing name; optionally update priority
+                repo.update_task_status(task_id, r.get("status") or "pending")
+                updated.append({"id": task_id, "name": name, "priority": priority})
+            except Exception:
+                # Fallback to creation if update path fails
+                if hierarchical and root_id is not None:
+                    task_id = repo.create_task(prefix + name, status="pending", priority=priority, parent_id=root_id)
+                else:
+                    task_id = repo.create_task(prefix + name, status="pending", priority=priority)
+                repo.upsert_task_input(task_id, prompt_t)
+                created.append({"id": task_id, "name": name, "priority": priority})
         else:
-            task_id = repo.create_task(prefix + name, status="pending", priority=priority)
-        repo.upsert_task_input(task_id, prompt_t)
-        created.append({"id": task_id, "name": name, "priority": priority})
+            # Only pass parent_id when hierarchical mode is enabled to preserve backward compatibility
+            if hierarchical and root_id is not None:
+                task_id = repo.create_task(prefix + name, status="pending", priority=priority, parent_id=root_id)
+            else:
+                task_id = repo.create_task(prefix + name, status="pending", priority=priority)
+            repo.upsert_task_input(task_id, prompt_t)
+            created.append({"id": task_id, "name": name, "priority": priority})
 
     out = {"plan": {"title": title}, "created": created}
+    if updated:
+        out["updated"] = updated
     if hierarchical and root_id is not None:
         out["root_id"] = root_id
     return out
