@@ -100,14 +100,12 @@ def execute_task_with_evaluation(*args, **kwargs):
     current_content = None
     evaluation_score = 0.0
 
-    # Import BaseTaskExecutor for direct LLM calls
-    try:
-        from ..base_executor import BaseTaskExecutor
-    except ImportError:
-        from ...execution.base_executor import BaseTaskExecutor
-
-    # Initialize executor for LLM calls
-    executor = BaseTaskExecutor(repo)
+    # Import LLM service for direct LLM calls
+    from ...services.llm_service import get_llm_service, TaskPromptBuilder
+    
+    # Initialize LLM service
+    llm_service = get_llm_service()
+    prompt_builder = TaskPromptBuilder()
 
     # Iterative evaluation loop
     for iteration in range(max_iterations):
@@ -116,13 +114,20 @@ def execute_task_with_evaluation(*args, **kwargs):
         # Execute task to get content - call LLM directly for each iteration
         try:
             if iteration == 0:
-                # First iteration - call LLM with task prompt
-                task_prompt = f"Write about {task.get('name', 'the topic')}. Provide a comprehensive response."
-                current_content = executor.execute_llm_chat(task_prompt)
+                # First iteration - use prompt builder and LLM service
+                task_prompt = prompt_builder.build_initial_prompt(
+                    task_name=task.get('name', 'the topic'),
+                    length="comprehensive response"
+                )
+                current_content = llm_service.chat(task_prompt)
             else:
-                # Subsequent iterations - call LLM with revision prompt
-                revision_prompt = f"Please improve the following content about {task.get('name', 'the topic')}:\n\n{current_content}\n\nMake it more comprehensive and detailed."
-                current_content = executor.execute_llm_chat(revision_prompt)
+                # Subsequent iterations - use prompt builder for revision
+                revision_prompt = prompt_builder.build_revision_prompt(
+                    task_name=task.get('name', 'the topic'),
+                    current_content=current_content,
+                    feedback=["Make it more comprehensive and detailed"]
+                )
+                current_content = llm_service.chat(revision_prompt)
         except Exception:
             # Fallback to basic execution
             current_content = execute_task(*args, **kwargs)
