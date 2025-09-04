@@ -1,5 +1,4 @@
 import sqlite3
-from contextlib import contextmanager
 
 from .database_pool import get_db, initialize_connection_pool
 from .config.database_config import get_main_database_path
@@ -19,47 +18,39 @@ def init_db():
             """CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
-            status TEXT,
-            priority INTEGER DEFAULT 100
+            status TEXT
         )"""
         )
-        # Backfill priority column for existing databases created before this change
-        try:
-            conn.execute("ALTER TABLE tasks ADD COLUMN priority INTEGER DEFAULT 100")
-        except Exception:
-            # Ignore if the column already exists or ALTER is not applicable
-            pass
-        # Hierarchy columns (Option B): parent_id, path, depth
-        try:
-            conn.execute("ALTER TABLE tasks ADD COLUMN parent_id INTEGER")
-        except Exception:
-            # Column may already exist
-            pass
-        try:
-            conn.execute("ALTER TABLE tasks ADD COLUMN path TEXT")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE tasks ADD COLUMN depth INTEGER DEFAULT 0")
-        except Exception:
-            pass
-        # Phase 6: Task type for recursive decomposition (root/composite/atomic)
-        try:
-            conn.execute('ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT "atomic"')
-        except Exception:
-            pass
+        # Add columns for both new and existing databases
+        # Use specific exception handling for better error management
+        columns_to_add = [
+            ("priority", "INTEGER DEFAULT 100"),
+            ("parent_id", "INTEGER"),
+            ("path", "TEXT"),
+            ("depth", "INTEGER DEFAULT 0"),
+            ("task_type", 'TEXT DEFAULT "atomic"')
+        ]
+        
+        for column_name, column_def in columns_to_add:
+            try:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {column_name} {column_def}")
+            except sqlite3.OperationalError:
+                # Column already exists, skip
+                pass
         # Stores the prompt/input for each task
         conn.execute(
             """CREATE TABLE IF NOT EXISTS task_inputs (
             task_id INTEGER UNIQUE,
-            prompt TEXT
+            prompt TEXT,
+            FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
         )"""
         )
         # Stores the generated content/output for each task
         conn.execute(
             """CREATE TABLE IF NOT EXISTS task_outputs (
             task_id INTEGER UNIQUE,
-            content TEXT
+            content TEXT,
+            FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
         )"""
         )
 
@@ -85,14 +76,16 @@ def init_db():
         )"""
         )
 
-        # Backfill hierarchy values for existing rows
+        # Backfill hierarchy values for existing rows (after all columns are added)
         try:
             conn.execute("UPDATE tasks SET path = '/' || id WHERE path IS NULL")
-        except Exception:
+        except sqlite3.OperationalError:
+            # Path column may not exist yet
             pass
         try:
             conn.execute("UPDATE tasks SET depth = 0 WHERE depth IS NULL")
-        except Exception:
+        except sqlite3.OperationalError:
+            # Depth column may not exist yet
             pass
 
         # Useful indexes
@@ -120,7 +113,7 @@ def init_db():
             """CREATE TABLE IF NOT EXISTS task_embeddings (
             task_id INTEGER PRIMARY KEY,
             embedding_vector TEXT NOT NULL,
-            embedding_model TEXT DEFAULT 'embedding-2',
+            embedding_model TEXT DEFAULT 'embedding-3',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE

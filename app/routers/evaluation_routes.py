@@ -234,7 +234,8 @@ def execute_task_with_evaluation_api(task_id: int, payload: Optional[Dict[str, A
         raise HTTPException(status_code=500, detail=f"Execution failed: {str(e)}") from e
 
 
-@router.get("/stats")
+@router.get("/evaluation/stats")
+@router.get("/stats")  # 保留向后兼容性
 def get_evaluation_stats():
     """Get overall evaluation system statistics"""
     try:
