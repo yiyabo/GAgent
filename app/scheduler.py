@@ -5,6 +5,14 @@ from .repository.tasks import default_repo
 from .utils import plan_prefix, split_prefix
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Safely convert value to int with fallback."""
+    try:
+        return int(value) if value is not None else default
+    except (ValueError, TypeError):
+        return default
+
+
 def bfs_schedule(title: Optional[str] = None):
     """Yield pending tasks in a hierarchy-aware, stable order using a single batch query.
 
@@ -12,7 +20,7 @@ def bfs_schedule(title: Optional[str] = None):
     - Loads all pending tasks once via list_pending_full() to include hierarchy fields.
     - If title is provided, scopes rows by plan prefix in-memory (no extra DB lookups).
     - Orders by (priority ASC, root_id ASC, depth ASC, path ASC, id ASC), approximating a
-      breadth-first traversal grouped by subtree with stable tiebreakers.
+    breadth-first traversal grouped by subtree with stable tiebreakers.
     """
     # Batch load all pending tasks with hierarchy info
     rows = default_repo.list_pending_full()
@@ -29,13 +37,13 @@ def bfs_schedule(title: Optional[str] = None):
     # First, build a map of root priorities for proper subtree ordering
     root_priorities = {}
     for r in rows:
-        if int(r.get("depth") or 0) == 0:
-            root_priorities[int(r.get("id"))] = int(r.get("priority") or 100)
+        if _safe_int(r.get("depth")) == 0:
+            root_priorities[_safe_int(r.get("id"))] = _safe_int(r.get("priority"), 100)
 
     def _enhanced_bfs_key(row: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
         pr, rid = _priority_key(row)
         path = row.get("path") or f"/{rid}"
-        depth = int(row.get("depth") or 0)
+        depth = _safe_int(row.get("depth"))
         root_id = _root_id_from_path(path, rid)
 
         # Use actual root priority for consistent subtree grouping
@@ -50,9 +58,8 @@ def bfs_schedule(title: Optional[str] = None):
 
 def _priority_key(row: Dict[str, Any]) -> Tuple[int, int]:
     """Return stable priority key (priority ASC, id ASC)."""
-    pr = row.get("priority")
-    pr_val = int(pr) if isinstance(pr, int) else 100
-    rid = int(row.get("id"))
+    pr_val = _safe_int(row.get("priority"), 100)
+    rid = _safe_int(row.get("id"))
     return (pr_val, rid)
 
 
@@ -65,9 +72,8 @@ def _ensure_hierarchy(rows: List[Dict[str, Any]]) -> None:
     for r in rows:
         if (r.get("path") is not None) and (r.get("depth") is not None):
             continue
-        try:
-            tid = int(r.get("id"))
-        except Exception:
+        tid = _safe_int(r.get("id"))
+        if tid == 0:  # Invalid ID
             continue
         info = default_repo.get_task_info(tid)
         if info:
@@ -89,57 +95,26 @@ def _root_id_from_path(path: Optional[str], self_id: Optional[int]) -> int:
                 return int(parts[0])
             except Exception:
                 pass
-    try:
-        return int(self_id) if self_id is not None else 0
-    except Exception:
-        return 0
+    return _safe_int(self_id)
 
 
 def _dag_heap_key(row: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
     """Stable key for DAG scheduler that is hierarchy-aware.
 
     Order by:
-      1) priority ASC (missing -> 100)
-      2) root_id ASC (group by subtree)
-      3) depth ASC (parents before deeper nodes when available)
-      4) path ASC (stable within subtree)
-      5) id ASC (final tiebreaker)
+    1) priority ASC (missing -> 100)
+    2) root_id ASC (group by subtree)
+    3) depth ASC (parents before deeper nodes when available)
+    4) path ASC (stable within subtree)
+    5) id ASC (final tiebreaker)
     """
     pr, rid = _priority_key(row)
     path = row.get("path") or f"/{rid}"
-    depth = int(row.get("depth") or 0)
+    depth = _safe_int(row.get("depth"))
     root = _root_id_from_path(path, rid)
     return (pr, root, depth, path, rid)
 
 
-def _bfs_heap_key(row: Dict[str, Any]) -> Tuple[int, int, int, str, int]:
-    """Stable key for BFS scheduler optimized for breadth-first hierarchy traversal.
-
-    Order by:
-      1) root priority ASC (priority of root task in the subtree)
-      2) depth ASC (parents before children)
-      3) priority ASC within same depth level
-      4) path ASC (stable ordering)
-      5) id ASC (final tiebreaker)
-
-    This ensures proper hierarchy: root tasks ordered by their priority,
-    then within each subtree, parents come before children.
-    """
-    pr, rid = _priority_key(row)
-    path = row.get("path") or f"/{rid}"
-    depth = int(row.get("depth") or 0)
-    root_id = _root_id_from_path(path, rid)
-
-    # For root priority, we need to find the root task's priority
-    # For now, use the task's own priority if it's a root, otherwise use a default
-    if depth == 0:
-        root_priority = pr
-    else:
-        # For child tasks, we'd ideally look up the root's priority
-        # but for simplicity, use the root_id as a proxy for consistent grouping
-        root_priority = root_id
-
-    return (root_priority, depth, pr, path, rid)
 
 
 def requires_dag_order(title: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
@@ -170,9 +145,8 @@ def requires_dag_order(title: Optional[str] = None) -> Tuple[List[Dict[str, Any]
 
     id_to_row: Dict[int, Dict[str, Any]] = {}
     for r in nodes:
-        try:
-            rid = int(r.get("id"))
-        except Exception:
+        rid = _safe_int(r.get("id"))
+        if rid == 0:  # Invalid ID
             continue
         id_to_row[rid] = r
     scoped_ids: Set[int] = set(id_to_row.keys())
@@ -185,10 +159,9 @@ def requires_dag_order(title: Optional[str] = None) -> Tuple[List[Dict[str, Any]
     links = default_repo.list_links(kind="requires")
     edges: List[Tuple[int, int]] = []  # (from_id -> to_id)
     for l in links:
-        try:
-            f = int(l.get("from_id"))
-            t = int(l.get("to_id"))
-        except Exception:
+        f = _safe_int(l.get("from_id"))
+        t = _safe_int(l.get("to_id"))
+        if f == 0 or t == 0:  # Invalid IDs
             continue
         if (f in scoped_ids) and (t in scoped_ids):
             edges.append((f, t))
@@ -282,25 +255,23 @@ def postorder_schedule(title: Optional[str] = None):
     id_to_row = {}
 
     for r in rows:
-        try:
-            task_id = int(r.get("id"))
-            id_to_row[task_id] = r
-            parent_id = r.get("parent_id")
-            if parent_id is not None:
-                parent_id = int(parent_id)
-                if parent_id not in children_map:
-                    children_map[parent_id] = []
-                children_map[parent_id].append(r)
-        except Exception:
+        task_id = _safe_int(r.get("id"))
+        if task_id == 0:  # Invalid ID
             continue
+        id_to_row[task_id] = r
+        parent_id = _safe_int(r.get("parent_id"))
+        if parent_id != 0:
+            if parent_id not in children_map:
+                children_map[parent_id] = []
+            children_map[parent_id].append(r)
 
     # Post-order traversal with dependency info
     visited = set()
     result = []
 
     def _postorder_dfs(task_row):
-        task_id = int(task_row.get("id"))
-        if task_id in visited:
+        task_id = _safe_int(task_row.get("id"))
+        if task_id == 0 or task_id in visited:
             return
 
         visited.add(task_id)
@@ -308,29 +279,29 @@ def postorder_schedule(title: Optional[str] = None):
         # First visit all children (deeper tasks)
         child_tasks = children_map.get(task_id, [])
         # Sort children by priority for stable ordering
-        child_tasks_sorted = sorted(child_tasks, key=lambda x: (int(x.get("priority") or 100), int(x.get("id"))))
+        child_tasks_sorted = sorted(child_tasks, key=lambda x: (_safe_int(x.get("priority"), 100), _safe_int(x.get("id"))))
 
         for child in child_tasks_sorted:
             _postorder_dfs(child)
 
         # Add dependency info to task
         task_with_deps = dict(task_row)
-        task_with_deps["dependencies"] = [int(child.get("id")) for child in child_tasks]
+        task_with_deps["dependencies"] = [_safe_int(child.get("id")) for child in child_tasks if _safe_int(child.get("id")) != 0]
 
         # Then add current task
         result.append(task_with_deps)
 
     # Find root tasks (those without parents or with parents not in pending set)
     root_tasks = []
-    pending_ids = {int(r.get("id")) for r in rows}
+    pending_ids = {_safe_int(r.get("id")) for r in rows if _safe_int(r.get("id")) != 0}
 
     for r in rows:
-        parent_id = r.get("parent_id")
-        if parent_id is None or int(parent_id) not in pending_ids:
+        parent_id = _safe_int(r.get("parent_id"))
+        if parent_id == 0 or parent_id not in pending_ids:
             root_tasks.append(r)
 
     # Sort root tasks by priority for stable ordering
-    root_tasks_sorted = sorted(root_tasks, key=lambda x: (int(x.get("priority") or 100), int(x.get("id"))))
+    root_tasks_sorted = sorted(root_tasks, key=lambda x: (_safe_int(x.get("priority"), 100), _safe_int(x.get("id"))))
 
     # Start DFS from each root
     for root in root_tasks_sorted:

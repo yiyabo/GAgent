@@ -400,13 +400,13 @@ class ErrorMessageRegistry:
         lang = language or self._default_language
 
         if error_code not in self._messages:
+            # Always use English for consistent output
+            language = Language.EN_US
             # 返回默认错误消息
             return {
-                "message": "未知错误" if lang == Language.ZH_CN else "Unknown error",
-                "description": (
-                    f"错误码 {error_code} 未定义" if lang == Language.ZH_CN else f"Error code {error_code} not defined"
-                ),
-                "suggestions": ["联系技术支持" if lang == Language.ZH_CN else "Contact technical support"],
+                "message": "Unknown error",
+                "description": f"Error code {error_code} not defined",
+                "suggestions": ["Contact technical support"],
             }
 
         error_data = self._messages[error_code]

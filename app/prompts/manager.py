@@ -35,13 +35,12 @@ class PromptManager:
 
         self._prompts_cache["en_US"] = en_US.PROMPTS_EN_US
 
-        # Optional: Keep Chinese for backward compatibility
-        try:
-            from . import zh_CN
-
-            self._prompts_cache["zh_CN"] = zh_CN.PROMPTS_ZH_CN
-        except ImportError:
-            pass  # Chinese prompts not available
+        # Disabled Chinese prompts for consistent English-only output
+        # try:
+        #     from . import zh_CN
+        #     self._prompts_cache["zh_CN"] = zh_CN.PROMPTS_ZH_CN
+        # except ImportError:
+        #     pass  # Chinese prompts not available
 
     def get(self, key: str, lang: Optional[str] = None, **kwargs) -> str:
         """

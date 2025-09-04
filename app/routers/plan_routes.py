@@ -80,7 +80,7 @@ def get_plan_tasks(title: str):
 
     Returns:
         list: List of task dictionaries with id, name, short_name, status,
-              priority, task_type, depth, and parent_id
+            priority, task_type, depth, and parent_id
     """
     rows = default_repo.list_plan_tasks(title)
     out: List[Dict[str, Any]] = []

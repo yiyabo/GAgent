@@ -839,7 +839,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             rows = conn.execute(
                 """
                 SELECT id, task_id, iteration, content, overall_score, dimension_scores, 
-                       suggestions, needs_revision, timestamp, metadata
+                    suggestions, needs_revision, timestamp, metadata
                 FROM evaluation_history
                 WHERE task_id = ?
                 ORDER BY iteration ASC
@@ -886,7 +886,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             row = conn.execute(
                 """
                 SELECT id, task_id, iteration, content, overall_score, dimension_scores, 
-                       suggestions, needs_revision, timestamp, metadata
+                    suggestions, needs_revision, timestamp, metadata
                 FROM evaluation_history
                 WHERE task_id = ?
                 ORDER BY iteration DESC
@@ -942,7 +942,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 """
                 INSERT OR REPLACE INTO evaluation_configs
                 (task_id, quality_threshold, max_iterations, evaluation_dimensions, 
-                 domain_specific, strict_mode, custom_weights, updated_at)
+                domain_specific, strict_mode, custom_weights, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
                 (
@@ -963,7 +963,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             row = conn.execute(
                 """
                 SELECT task_id, quality_threshold, max_iterations, evaluation_dimensions,
-                       domain_specific, strict_mode, custom_weights, created_at, updated_at
+                    domain_specific, strict_mode, custom_weights, created_at, updated_at
                 FROM evaluation_configs
                 WHERE task_id = ?
             """,

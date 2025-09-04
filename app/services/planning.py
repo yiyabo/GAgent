@@ -2,8 +2,9 @@ from typing import Any, Dict, List, Optional
 
 from ..interfaces import LLMProvider, TaskRepository
 from ..llm import get_default_client
+from ..prompts import prompt_manager
 from ..repository.tasks import default_repo
-from ..utils import parse_json_obj, plan_prefix
+from ..utils import parse_json_obj, plan_prefix, split_prefix
 
 # parse_json_obj is centralized in app/utils.py
 
@@ -30,17 +31,18 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
     else:
         sections_instruction = f"Preferred number of tasks: {sections} (4-8 typical)."
 
+    # Use centralized English prompt template - escape braces for JSON schema
     prompt = (
         "You are an expert project planner. Break down the user's goal into a small set of actionable tasks.\n"
-        "Return ONLY a JSON object with this schema: {\n"
+        "Return ONLY a JSON object with this schema: {{\n"
         '  "title": string,\n'
-        '  "tasks": [ { "name": string, "prompt": string } ]\n'
-        "}\n"
+        '  "tasks": [ {{ "name": string, "prompt": string }} ]\n'
+        "}}\n"
         f"Goal: {goal}\n"
         f"{sections_instruction}\n"
         f"Style (optional): {style}\n"
         f"Notes (optional): {notes}\n"
-        "Rules: Do not include markdown code fences. Keep concise prompts for each task."
+        "Rules: Do not include markdown code fences. Keep concise prompts for each task. Use English only."
     )
 
     plan: Dict[str, Any]
@@ -77,7 +79,7 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
             f"Fulfill this part of the overall goal.\n"
             f"Overall goal: {goal}\n"
             f"Task: {name}.\n"
-            f"Write ~200 words with clear, actionable content."
+            f"Write ~200 words with clear, actionable content in English."
         )
         prompt_t = t.get("prompt") if isinstance(t, dict) else None
         if not isinstance(prompt_t, str) or not prompt_t.strip():
@@ -132,11 +134,8 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
         existing_by_short: Dict[str, Any] = {}
         for r in existing_rows:
             full_name = r.get("name") if isinstance(r, dict) else r[1]
-            from ..utils import (
-                split_prefix as _split_prefix,  # local import to avoid cycles
-            )
-
-            _, short = _split_prefix(full_name or "")
+            # Use split_prefix directly since it's already imported at module level
+            _, short = split_prefix(full_name or "")
             existing_by_short[short] = r
     except Exception:
         existing_by_short = {}
@@ -147,7 +146,7 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
             continue
         prompt_t = t.get("prompt") if isinstance(t, dict) else None
         if not isinstance(prompt_t, str) or not prompt_t.strip():
-            prompt_t = f"Write a focused section for: {name}"
+            prompt_t = f"Write a focused section for: {name}. Use English only."
         try:
             priority = int(t.get("priority")) if isinstance(t, dict) and t.get("priority") is not None else None
         except Exception:
