@@ -11,10 +11,10 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from ..interfaces import TaskRepository
-from ..llm import get_default_client
 from ..models import TaskExecutionResult
 from ..repository.tasks import default_repo
 from ..services.embeddings import get_embeddings_service
+from ..services.llm_service import get_llm_service, TaskPromptBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,9 @@ class BaseTaskExecutor:
 
     def __init__(self, repo: Optional[TaskRepository] = None):
         self.repo = repo or default_repo
-        self.client = get_default_client()
+        self.llm_service = get_llm_service()
         self.embeddings_service = get_embeddings_service()
+        self.prompt_builder = TaskPromptBuilder()
 
     def get_task_id_and_name(self, task) -> tuple[int, str]:
         """Extract task ID and name from task object."""
@@ -45,45 +46,8 @@ class BaseTaskExecutor:
             return default_prompt
 
     def execute_llm_chat(self, prompt: str) -> str:
-        """Execute LLM chat with robust client-shape compatibility and error handling."""
-        try:
-            # Prefer modern API style: client.chat.completions.create(messages=[...])
-            chat_obj = getattr(self.client, "chat", None)
-            if chat_obj is not None:
-                completions_obj = getattr(chat_obj, "completions", None)
-                create_fn = getattr(completions_obj, "create", None) if completions_obj is not None else None
-                if callable(create_fn):
-                    resp = create_fn(messages=[{"role": "user", "content": prompt}])
-                    # Try to extract text content from response
-                    try:
-                        choice0 = resp.choices[0]
-                        message = getattr(choice0, "message", None)
-                        if message is not None and hasattr(message, "content"):
-                            return str(message.content)
-                    except Exception:
-                        pass
-                    if hasattr(resp, "content"):
-                        return str(resp.content)
-                    return str(resp)
-
-            # Legacy/simple API: client.chat(prompt) -> str or response-like
-            resp = self.client.chat(prompt)
-            if isinstance(resp, str):
-                return resp
-            # Response-like object
-            try:
-                choice0 = resp.choices[0]
-                message = getattr(choice0, "message", None)
-                if message is not None and hasattr(message, "content"):
-                    return str(message.content)
-            except Exception:
-                pass
-            if hasattr(resp, "content"):
-                return str(resp.content)
-            return str(resp)
-        except Exception as e:
-            logger.error("LLM chat failed: %s", e)
-            raise
+        """Execute LLM chat using unified LLM service."""
+        return self.llm_service.chat(prompt)
 
     def generate_task_embedding_async(self, task_id: int, content: str):
         """Generate embeddings for task content asynchronously."""
