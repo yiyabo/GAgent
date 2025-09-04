@@ -45,12 +45,12 @@ class GLMConfig:
             api_key=os.getenv("GLM_API_KEY"),
             api_url=os.getenv("GLM_API_URL", "https://open.bigmodel.cn/api/paas/v4/embeddings"),
             # Embedding配置
-            embedding_model=os.getenv("GLM_EMBEDDING_MODEL", "embedding-2"),
-            embedding_dimension=int(os.getenv("GLM_EMBEDDING_DIM", "1024")),
+            embedding_model=os.getenv("GLM_EMBEDDING_MODEL", "embedding-3"),
+            embedding_dimension=int(os.getenv("GLM_EMBEDDING_DIM", "1536")),
             max_batch_size=int(os.getenv("GLM_BATCH_SIZE", "25")),
             # 检索配置
             default_semantic_k=int(os.getenv("SEMANTIC_DEFAULT_K", "5")),
-            min_similarity_threshold=float(os.getenv("SEMANTIC_MIN_SIMILARITY", "0.1")),
+            min_similarity_threshold=float(os.getenv("SEMANTIC_MIN_SIMILARITY", "0.3")),
             # 性能配置
             max_retries=int(os.getenv("GLM_MAX_RETRIES", "3")),
             retry_delay=float(os.getenv("GLM_RETRY_DELAY", "1.0")),
