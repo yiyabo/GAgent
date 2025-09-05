@@ -7,6 +7,9 @@
         <router-link :to="`/plan/${planId}/execute`" class="btn btn-primary">
           ▶️ Execute Plan
         </router-link>
+        <router-link :to="`/plan/${planId}/chat`" class="btn btn-info">
+          💬 Chat
+        </router-link>
         <button @click="loadPlan" class="btn btn-outline">🔄 Refresh</button>
         <button @click="showDeleteConfirm = true" class="btn btn-danger">🗑️ Delete Plan</button>
       </div>
@@ -182,6 +185,15 @@ onMounted(() => {
 
 .btn-primary:hover {
   background: #2563eb;
+}
+
+.btn-info {
+  background-color: #0ea5e9;
+  color: white;
+}
+
+.btn-info:hover {
+  background-color: #0284c7;
 }
 
 .btn-success {

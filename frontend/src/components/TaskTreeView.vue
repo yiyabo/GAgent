@@ -1,6 +1,6 @@
 <template>
   <div class="tree-container">
-    <div class="tree-root">
+    <div class="">
       <div class="root-node plan-title">
         <div class="root-header">
           <h3><slot name="header">Task Tree</slot></h3>
@@ -42,15 +42,18 @@
               }"
               :style="{ paddingLeft: `${task.displayLevel * 1.5 + 0.5}rem` }"
             >
-              <div class="task-row" @click="toggleTaskExpansion(task)">
+              <div class="task-row">
                 <button 
                   v-if="hasChildren(task.id)"
                   class="expand-btn"
                   :class="{ 'expanded': isExpanded(task.id) }"
+                  @click="toggleExpansion(task.id)"
+                  :title="`展开/收起 (${tasks.filter(t => t.parent_id === task.id).length} 个子任务)`"
                 >
                   <span class="expand-icon">▶</span>
                 </button>
-                <span v-else class="expand-spacer"></span>
+                <span v-else class="expand-spacer" :title="'无子任务'"></span>
+                
                 
                 <div class="task-icon">
                   <span v-if="task.task_type === 'root'">📁</span>
@@ -58,8 +61,8 @@
                   <span v-else>📄</span>
                 </div>
                 
-                <div class="task-info">
-                  <div class="task-name">{{ task.shortName }}</div>
+                <div class="task-info" @click="selectTaskOnly(task)">
+                  <div class="task-name">{{ task.shortName || task.name }}</div>
                   <div class="task-meta">
                     <span class="task-status" :class="`status-${task.status}`">
                       {{ task.status }}
@@ -71,7 +74,7 @@
                 
                 <button 
                   class="detail-btn"
-                  @click.stop="$emit('task-selected', task)"
+                  @click="selectTaskOnly(task)"
                   title="查看详情"
                 >
                   <span>👁️</span>
@@ -121,17 +124,17 @@ const updateVisibleTasks = () => {
   visibleTasks.value = visible;
 };
 
-const toggleTaskExpansion = (task) => {
-  if (!hasChildren(task.id)) {
-    emit('task-selected', task);
-    return;
-  }
-  if (expandedTasks.value.has(task.id)) {
-    expandedTasks.value.delete(task.id);
+const toggleExpansion = (taskId) => {
+  if (expandedTasks.value.has(taskId)) {
+    expandedTasks.value.delete(taskId);
   } else {
-    expandedTasks.value.add(task.id);
+    expandedTasks.value.add(taskId);
   }
   updateVisibleTasks();
+};
+
+const selectTaskOnly = (task) => {
+  emit('task-selected', task);
 };
 
 const isExpanded = (taskId) => {
@@ -158,7 +161,7 @@ watch(() => props.tasks, (newTasks, oldTasks) => {
 .tree-container {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
 }
-.tree-root {
+. {
   background: white;
   border-radius: 0.75rem;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
@@ -321,6 +324,13 @@ watch(() => props.tasks, (newTasks, oldTasks) => {
 .task-info {
   flex: 1;
   min-width: 0;
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 0.25rem;
+  transition: background-color 0.2s ease;
+}
+.task-info:hover {
+  background-color: rgba(59, 130, 246, 0.05);
 }
 .task-name {
   font-weight: 600;
@@ -433,6 +443,7 @@ watch(() => props.tasks, (newTasks, oldTasks) => {
     transform: translateX(0);
   }
 }
+
 @media (max-width: 768px) {
   .task-row {
     padding: 0.75rem 0.25rem;

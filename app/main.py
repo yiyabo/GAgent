@@ -1,15 +1,16 @@
-import os
 import json
 import logging
 from contextlib import asynccontextmanager
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import Body, FastAPI, HTTPException
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import get_db, init_db
@@ -18,9 +19,12 @@ from .llm import get_default_client
 from .models import TaskCreate, TaskUpdate
 from .repository.tasks import default_repo
 from .scheduler import bfs_schedule, postorder_schedule, requires_dag_order
-from .services.context import gather_context
-from .services.context_budget import apply_budget
-from .services.planning import approve_plan_service, propose_plan_service, generate_task_context
+from .services.planning import (
+    approve_plan_service,
+    generate_task_context,
+    propose_plan_service,
+)
+from .routers import chat as chat_router
 
 
 def _parse_bool(val, default: bool = False) -> bool:
@@ -116,24 +120,40 @@ def _sanitize_context_options(co: Dict[str, Any]) -> Dict[str, Any]:
         "include_plan": _parse_bool(co.get("include_plan"), default=True),
         "k": _parse_int(co.get("k", 5), default=5, min_value=0, max_value=50),
         "manual": _sanitize_manual_list(co.get("manual")),
-        "semantic_k": _parse_int(co.get("semantic_k", 5), default=5, min_value=0, max_value=50),
-        "min_similarity": _parse_opt_float(co.get("min_similarity", 0.1), min_value=0.0, max_value=1.0) or 0.1,
+        "semantic_k": _parse_int(
+            co.get("semantic_k", 5), default=5, min_value=0, max_value=50
+        ),
+        "min_similarity": _parse_opt_float(
+            co.get("min_similarity", 0.1), min_value=0.0, max_value=1.0
+        )
+        or 0.1,
         "include_ancestors": _parse_bool(co.get("include_ancestors"), default=False),
         "include_siblings": _parse_bool(co.get("include_siblings"), default=False),
-        "hierarchy_k": _parse_int(co.get("hierarchy_k", 3), default=3, min_value=0, max_value=20),
-        "max_chars": _parse_opt_int(co.get("max_chars"), min_value=0, max_value=100_000),
-        "per_section_max": _parse_opt_int(co.get("per_section_max"), min_value=1, max_value=50_000),
+        "hierarchy_k": _parse_int(
+            co.get("hierarchy_k", 3), default=3, min_value=0, max_value=20
+        ),
+        "max_chars": _parse_opt_int(
+            co.get("max_chars"), min_value=0, max_value=100_000
+        ),
+        "per_section_max": _parse_opt_int(
+            co.get("per_section_max"), min_value=1, max_value=50_000
+        ),
         "strategy": _parse_strategy(co.get("strategy")),
         "save_snapshot": _parse_bool(co.get("save_snapshot"), default=False),
         "label": (str(co.get("label")).strip()[:64] if co.get("label") else None),
     }
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     yield
 
+
 app = FastAPI(lifespan=lifespan)
+
+# Include routers
+app.include_router(chat_router.router)
 
 try:
     app.add_middleware(
@@ -146,17 +166,43 @@ try:
 except Exception:
     pass
 
+
+from .services.conversational_agent import ConversationalAgent
+
+class AgentCommand(BaseModel):
+    plan_id: int
+    command: str
+
+@app.post("/agent/command")
+def agent_command(payload: AgentCommand):
+    """
+    Receives a natural language command for the conversational agent.
+    """
+    if not payload.command or not payload.command.strip():
+        raise HTTPException(status_code=400, detail="Command cannot be empty.")
+    if payload.plan_id is None:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+
+    try:
+        agent = ConversationalAgent(plan_id=payload.plan_id)
+        result = agent.process_command(payload.command)
+        return result
+    except Exception as e:
+        logging.error(f"Error processing agent command: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process command: {e}")
+
+
 @app.post("/tasks")
 def create_task(task: TaskCreate):
     if not task.name or not task.name.strip():
         raise HTTPException(status_code=400, detail="Task name cannot be empty.")
-    
+
     task_id = default_repo.create_task(
         name=task.name,
         status="pending",
-        priority=None, # Default priority is handled by the repository
+        priority=None,  # Default priority is handled by the repository
         task_type=task.task_type,
-        parent_id=task.parent_id
+        parent_id=task.parent_id,
     )
 
     # If a prompt is provided, add it to the task_inputs table
@@ -166,13 +212,18 @@ def create_task(task: TaskCreate):
     # If contexts are provided, add them
     if task.contexts:
         for context in task.contexts:
-            if context.label and context.label.strip() and context.content and context.content.strip():
+            if (
+                context.label
+                and context.label.strip()
+                and context.content
+                and context.content.strip()
+            ):
                 default_repo.upsert_task_context(
                     task_id=task_id,
                     label=context.label,
                     combined=context.content,
                     sections=[],
-                    meta={'source': 'creation'}
+                    meta={"source": "creation"},
                 )
 
     # If a plan_id is provided, link the new task to the plan
@@ -181,24 +232,31 @@ def create_task(task: TaskCreate):
             default_repo.link_task_to_plan(task.plan_id, task_id)
         except Exception as e:
             raise HTTPException(
-                status_code=400, 
-                detail=f"Task created with ID {task_id}, but failed to link to plan {task.plan_id}: {e}"
+                status_code=400,
+                detail=f"Task created with ID {task_id}, but failed to link to plan {task.plan_id}: {e}",
             )
 
     return {"id": task_id}
+
 
 @app.get("/tasks")
 def list_tasks():
     return default_repo.list_all_tasks()
 
+
 @app.put("/tasks/{task_id}")
 def update_task(task_id: int, task_update: TaskUpdate):
     updated = default_repo.update_task(
-        task_id=task_id, name=task_update.name, status=task_update.status, priority=task_update.priority, task_type=task_update.task_type
+        task_id=task_id,
+        name=task_update.name,
+        status=task_update.status,
+        priority=task_update.priority,
+        task_type=task_update.task_type,
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"id": task_id, "updated": True}
+
 
 @app.delete("/tasks/{task_id}")
 def delete_task(task_id: int):
@@ -206,6 +264,7 @@ def delete_task(task_id: int):
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"id": task_id, "deleted": True}
+
 
 @app.get("/tasks/{task_id}")
 def get_task(task_id: int):
@@ -269,11 +328,18 @@ def update_task_output(task_id: int, payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=404, detail="Task not found")
     default_repo.upsert_task_output(task_id, content)
     saved_content = default_repo.get_task_output_content(task_id)
-    return {"id": task_id, "output_updated": True, "saved_content": saved_content, "content_matches": content == saved_content}
+    return {
+        "id": task_id,
+        "output_updated": True,
+        "saved_content": saved_content,
+        "content_matches": content == saved_content,
+    }
 
 
 @app.put("/tasks/{task_id}/context/snapshots/{label}")
-def update_task_context_snapshot(task_id: int, label: str, payload: Dict[str, Any] = Body(...)):
+def update_task_context_snapshot(
+    task_id: int, label: str, payload: Dict[str, Any] = Body(...)
+):
     """Update task context snapshot content, sections, or meta."""
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid payload format")
@@ -289,7 +355,10 @@ def update_task_context_snapshot(task_id: int, label: str, payload: Dict[str, An
             raise HTTPException(status_code=400, detail="meta must be a dictionary")
         fields_to_update["meta"] = json.dumps(payload["meta"])
     if not fields_to_update:
-        raise HTTPException(status_code=400, detail="No fields to update provided. Use 'content', 'sections', or 'meta'.")
+        raise HTTPException(
+            status_code=400,
+            detail="No fields to update provided. Use 'content', 'sections', or 'meta'.",
+        )
     set_clauses = [f"{key} = ?" for key in fields_to_update.keys()]
     params = list(fields_to_update.values()) + [task_id, label]
     with get_db() as conn:
@@ -299,14 +368,21 @@ def update_task_context_snapshot(task_id: int, label: str, payload: Dict[str, An
         )
         conn.commit()
         if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail=f"Context snapshot with label '{label}' not found for task {task_id}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Context snapshot with label '{label}' not found for task {task_id}",
+            )
     return {"task_id": task_id, "label": label, "context_updated": True}
 
 
 @app.post("/tasks/{task_id}/context/snapshots")
 def create_task_context_snapshot(task_id: int, payload: Dict[str, Any] = Body(...)):
     """Create a new task context snapshot."""
-    if not isinstance(payload, dict) or "label" not in payload or "content" not in payload:
+    if (
+        not isinstance(payload, dict)
+        or "label" not in payload
+        or "content" not in payload
+    ):
         raise HTTPException(status_code=400, detail="label and content fields required")
     label = str(payload["label"]).strip()
     if not label:
@@ -358,13 +434,13 @@ def regenerate_task_context_api(task_id: int):
         raise HTTPException(status_code=404, detail="Task not found")
 
     prompt = default_repo.get_task_input(task_id)
-    
+
     task_data_for_generation = {
         "name": task.get("name"),
         "prompt": prompt or "",
         "task_type": task.get("task_type", "composite"),
         "layer": task.get("depth", 0),
-        "parent_id": task.get("parent_id")
+        "parent_id": task.get("parent_id"),
     }
 
     llm_client = get_default_client()
@@ -374,19 +450,22 @@ def regenerate_task_context_api(task_id: int):
             repo=default_repo,
             client=llm_client,
             task_id=task_id,
-            task_data=task_data_for_generation
+            task_data=task_data_for_generation,
         )
     except Exception as e:
         logging.error(f"Failed to regenerate context for task {task_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to regenerate context: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to regenerate context: {e}"
+        )
 
-    new_context = default_repo.get_task_context(task_id, label='ai-initial')
+    new_context = default_repo.get_task_context(task_id, label="ai-initial")
 
     return {
         "success": True,
         "message": "Context regenerated successfully.",
-        "context": new_context
+        "context": new_context,
     }
+
 
 @app.post("/plans/propose")
 def propose_plan(payload: Dict[str, Any]):
@@ -395,6 +474,7 @@ def propose_plan(payload: Dict[str, Any]):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.post("/plans/approve")
 def approve_plan(plan: Dict[str, Any]):
     try:
@@ -402,14 +482,24 @@ def approve_plan(plan: Dict[str, Any]):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.get("/plans")
 def list_plans():
     return {"plans": default_repo.list_plans()}
+
 
 @app.get("/plans/{plan_id}/tasks")
 def get_plan_tasks(plan_id: int):
     rows = default_repo.get_plan_tasks(plan_id)
     return rows
+
+
+@app.get("/plans/{plan_id}/chathistory")
+def get_chat_history(plan_id: int):
+    """Retrieves the chat history for a specific plan."""
+    history = default_repo.get_chat_history(plan_id)
+    return {"history": history}
+
 
 
 @app.delete("/plans/{plan_id}")
@@ -418,10 +508,13 @@ def delete_plan(plan_id: int):
     try:
         deleted = default_repo.delete_plan(plan_id)
         if not deleted:
-            raise HTTPException(status_code=404, detail="Plan not found or already deleted")
+            raise HTTPException(
+                status_code=404, detail="Plan not found or already deleted"
+            )
         return {"plan_id": plan_id, "deleted": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete plan: {str(e)}")
+
 
 @app.post("/run")
 def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
@@ -430,7 +523,9 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     schedule = _parse_schedule((payload or {}).get("schedule", "postorder"))
     rerun_all = _parse_bool((payload or {}).get("rerun_all"), default=False)
     context_options = _sanitize_context_options((payload or {}).get("context_options"))
-    enable_evaluation = _parse_bool((payload or {}).get("enable_evaluation"), default=False)
+    enable_evaluation = _parse_bool(
+        (payload or {}).get("enable_evaluation"), default=False
+    )
     evaluation_config = (payload or {}).get("evaluation_options")
 
     results = []
@@ -439,16 +534,29 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         for plan in plans:
             results.extend(
                 _execute_plan_tasks(
-                    plan["id"], schedule, use_context, context_options, enable_evaluation, evaluation_config, rerun_all
+                    plan["id"],
+                    schedule,
+                    use_context,
+                    context_options,
+                    enable_evaluation,
+                    evaluation_config,
+                    rerun_all,
                 )
             )
     else:
         results.extend(
             _execute_plan_tasks(
-                plan_id, schedule, use_context, context_options, enable_evaluation, evaluation_config, rerun_all
+                plan_id,
+                schedule,
+                use_context,
+                context_options,
+                enable_evaluation,
+                evaluation_config,
+                rerun_all,
             )
         )
     return results
+
 
 def _execute_plan_tasks(
     plan_id: int,
@@ -477,12 +585,19 @@ def _execute_plan_tasks(
             default_repo.upsert_task_output(task_id, "")
             if enable_evaluation:
                 from .executor import execute_task_with_evaluation
+
                 result = execute_task_with_evaluation(
-                    task=task, repo=default_repo, use_context=use_context, context_options=context_options, **(evaluation_config or {})
+                    task=task,
+                    repo=default_repo,
+                    use_context=use_context,
+                    context_options=context_options,
+                    **(evaluation_config or {}),
                 )
                 status = result.status
             else:
-                status = execute_task(task, use_context=use_context, context_options=context_options)
+                status = execute_task(
+                    task, use_context=use_context, context_options=context_options
+                )
             default_repo.update_task_status(task_id, status)
             results.append({"id": task_id, "status": status})
     except HTTPException:
@@ -568,5 +683,3 @@ def rerun_single_task(task_id: int, payload: Optional[Dict[str, Any]] = Body(Non
         default_repo.update_task_status(task_id, status)
 
         return {"task_id": task_id, "status": status, "rerun_type": "single"}
-
-# ... (the rest of the endpoints) ...

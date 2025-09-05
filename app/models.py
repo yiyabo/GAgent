@@ -147,3 +147,34 @@ class PlanWithTasks(BaseModel):
     plan: Plan
     tasks: List[PlanTask]
     task_details: Optional[List[Dict[str, Any]]] = None
+
+
+# Chat System Models
+class Message(BaseModel):
+    id: int
+    conversation_id: int
+    sender: str
+    text: str
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class Conversation(BaseModel):
+    id: int
+    plan_id: int
+    title: str
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class ConversationWithMessages(Conversation):
+    messages: List[Message] = []
+
+class ConversationCreate(BaseModel):
+    title: str
+
+class MessageCreate(BaseModel):
+    text: str
+    sender: str = 'user'

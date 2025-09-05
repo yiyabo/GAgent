@@ -166,37 +166,37 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_history_timestamp ON evaluation_history(timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluation_configs_task_id ON evaluation_configs(task_id)")
 
-        # Plan Management System Tables
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS plans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL UNIQUE,
-                description TEXT,
-                status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                config_json TEXT
-            )
-        ''')
+        # Chat history table (Old schema, still used by some legacy endpoints)
+        conn.execute('''CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_id INTEGER NOT NULL,
+            sender TEXT NOT NULL, -- 'user' or 'agent'
+            message TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+        )''')
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_plan_id ON chat_messages(plan_id)")
 
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS plan_tasks (
-                plan_id INTEGER NOT NULL,
-                task_id INTEGER NOT NULL,
-                task_category TEXT DEFAULT 'general',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (plan_id, task_id),
-                FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE,
-                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-            )
-        ''')
+        # New Chat System Tables (supporting multiple conversations per plan)
+        conn.execute('''CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+        )''')
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_plan_id ON conversations(plan_id)")
 
-        # Indexes for plan system
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_plans_title ON plans(title)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id ON plan_tasks(plan_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_plan_tasks_task_id ON plan_tasks(task_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_plan_tasks_category ON plan_tasks(task_category)")
+        conn.execute('''CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            sender TEXT NOT NULL, -- 'user' or 'agent'
+            text TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        )''')
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id)")
+
 
 @contextmanager
 def get_db():

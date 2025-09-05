@@ -6,6 +6,7 @@ export const usePlansStore = defineStore('plans', {
     plans: [],
     currentPlan: null,
     currentPlanTasks: [],
+    currentChatHistory: [],
     // Granular loading states
     plansLoading: false,
     planDetailsLoading: false,
@@ -58,6 +59,7 @@ export const usePlansStore = defineStore('plans', {
     // Load specific plan details
     async loadPlanDetails(planId) {
       this.planDetailsLoading = true
+      this.currentChatHistory = []; // Clear previous history
       try {
         // Ensure plans are loaded first
         if (this.plans.length === 0) {
@@ -65,7 +67,12 @@ export const usePlansStore = defineStore('plans', {
         }
         this.currentPlan = this.plans.find(p => p.id === planId) || null;
 
-        const tasks = await plansApi.getPlanTasks(planId) // Corrected API call
+        // Fetch tasks and chat history in parallel
+        const [tasks, history] = await Promise.all([
+          plansApi.getPlanTasks(planId),
+          this.loadChatHistory(planId)
+        ]);
+
         this.currentPlanTasks = tasks || []
         this.error = null
         return this.currentPlanTasks
@@ -74,6 +81,21 @@ export const usePlansStore = defineStore('plans', {
         this.currentPlanTasks = []
       } finally {
         this.planDetailsLoading = false
+      }
+    },
+
+    async loadChatHistory(planId) {
+      try {
+        const history = await plansApi.getChatHistory(planId);
+        this.currentChatHistory = history.map(item => ({
+          sender: item.sender,
+          text: item.message
+        }));
+        return this.currentChatHistory;
+      } catch (error) {
+        this.error = error.message;
+        this.currentChatHistory = [];
+        return [];
       }
     },
 
@@ -254,6 +276,25 @@ export const usePlansStore = defineStore('plans', {
         return results
       } catch (error) {
         this.error = error.message
+      }
+    },
+
+    async executeAgentCommand(planId, command) {
+      // Add user message to history immediately for responsiveness
+      this.currentChatHistory.push({ sender: 'user', text: command });
+      this.planDetailsLoading = true;
+      try {
+        const response = await plansApi.executeAgentCommand(planId, command);
+        // Add agent response to history
+        this.currentChatHistory.push({ sender: 'agent', text: response.response });
+        return response;
+      } catch (error) {
+        const errorMessage = `Error: ${error.message}`;
+        this.currentChatHistory.push({ sender: 'agent', text: errorMessage });
+        this.error = error.message;
+        throw error; // Re-throw for the component to handle
+      } finally {
+        this.planDetailsLoading = false;
       }
     }
   }

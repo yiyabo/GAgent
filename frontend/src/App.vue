@@ -8,14 +8,42 @@
         <router-link to="/" class="nav-link">Home</router-link>
         <router-link to="/plans" class="nav-link">Plans</router-link>
         <router-link to="/plans/new" class="nav-link">Generate New</router-link>
+        <router-link v-if="chatLink" :to="chatLink" class="nav-link">Chat</router-link>
       </div>
     </nav>
 
-    <main class="main-content">
+    <main class="main-content" :class="{ 'full-width': isChatView }">
       <router-view />
     </main>
   </div>
 </template>
+
+<script setup>
+import { computed, onMounted } from 'vue';
+import { useRoute } from 'vue-router';
+import { usePlansStore } from '@/stores/plans';
+
+const plansStore = usePlansStore();
+const route = useRoute();
+
+const isChatView = computed(() => route.name === 'Chat');
+
+onMounted(() => {
+  // Load plans when the app mounts to ensure the link is available
+  if (plansStore.plans.length === 0) {
+    plansStore.loadPlans();
+  }
+});
+
+const chatLink = computed(() => {
+  if (plansStore.plans.length > 0) {
+    // Assuming the first plan is the most relevant one
+    const firstPlan = plansStore.plans[0];
+    return `/plan/${firstPlan.id}/chat`;
+  }
+  return null; // or a fallback route
+});
+</script>
 
 <style>
 * {
@@ -67,6 +95,12 @@ body {
   max-width: 1200px;
   margin: 0 auto;
   padding: 2rem;
+}
+
+.main-content.full-width {
+  max-width: none;
+  padding: 0;
+  margin: 0;
 }
 
 .btn {

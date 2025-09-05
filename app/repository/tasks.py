@@ -1186,15 +1186,30 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         """创建新的研究计划"""
         with get_db() as conn:
             self._ensure_plans_table(conn)
-            cursor = conn.execute(
-                """
-                INSERT INTO plans (title, description, config_json)
-                VALUES (?, ?, ?)
-            """,
-                (title, description, json.dumps(config_json) if config_json else None),
-            )
-            conn.commit()
-            return cursor.lastrowid
+            
+            # 检查标题是否已存在，如果存在则添加序号
+            original_title = title
+            counter = 1
+            while True:
+                try:
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO plans (title, description, config_json)
+                        VALUES (?, ?, ?)
+                    """,
+                        (title, description, json.dumps(config_json) if config_json else None),
+                    )
+                    conn.commit()
+                    return cursor.lastrowid
+                except Exception as e:
+                    if "UNIQUE constraint failed" in str(e):
+                        # 标题重复，添加序号
+                        counter += 1
+                        title = f"{original_title} ({counter})"
+                        continue
+                    else:
+                        # 其他错误，重新抛出
+                        raise e
 
     def link_task_to_plan(
         self, plan_id: int, task_id: int, task_category: str = "general"
@@ -1451,6 +1466,29 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         """从前缀系统迁移到Plan系统 - 前缀系统已删除，返回0"""
         # Prefix system removed - no migration needed
         return 0
+
+    # -----------------------------
+    # Chat History
+    # -----------------------------
+
+    def add_chat_message(self, plan_id: int, sender: str, message: str) -> int:
+        """Adds a new chat message to the history for a plan."""
+        with get_db() as conn:
+            cursor = conn.execute(
+                "INSERT INTO chat_messages (plan_id, sender, message) VALUES (?, ?, ?)",
+                (plan_id, sender, message),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_chat_history(self, plan_id: int) -> List[Dict[str, Any]]:
+        """Retrieves the chat history for a given plan."""
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT sender, message, timestamp FROM chat_messages WHERE plan_id = ? ORDER BY timestamp ASC",
+                (plan_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
 
 default_repo = SqliteTaskRepository()

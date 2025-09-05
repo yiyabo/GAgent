@@ -49,6 +49,11 @@ export const plansApi = {
     return response.data
   },
 
+  async getChatHistory(planId) {
+    const response = await api.get(`/plans/${planId}/chathistory`);
+    return response.data.history || [];
+  },
+
   async getPlanOutput(planId) {
     const response = await api.get(`/plans/by-id/${planId}/assembled`)
     return response.data
@@ -66,6 +71,14 @@ export const plansApi = {
   async deletePlan(planId) {
     const response = await api.delete(`/plans/${planId}`)
     return response.data
+  },
+
+  async executeAgentCommand(planId, command) {
+    const response = await api.post('/agent/command', {
+      plan_id: planId,
+      command: command,
+    });
+    return response.data;
   },
 }
 
@@ -245,6 +258,104 @@ export const evaluationApi = {
     return response.data
   }
 }
+
+export const chatApi = {
+  async getConversation(conversationId) {
+    const response = await api.get(`/chat/conversations/${conversationId}`);
+    return response.data;
+  },
+
+  async getPlanConversations(planId) {
+    const response = await api.get(`/chat/plans/${planId}/conversations`);
+    return response.data;
+  },
+  
+  async getConversationsForPlan(planId) {
+    const response = await api.get(`/chat/plans/${planId}/conversations`);
+    return response.data;
+  },
+
+  async createConversation(planId, data) {
+    const response = await api.post(`/chat/plans/${planId}/conversations`, data);
+    return response.data;
+  },
+
+  async sendMessage(conversationId, message) {
+    const response = await api.post(`/chat/conversations/${conversationId}/messages`, { 
+      text: message,
+      sender: 'user'
+    });
+    return response.data;
+  },
+
+  async sendMessageStream(conversationId, message, onChunk, onComplete, onError) {
+    // Use fetch with ReadableStream for POST request
+    const response = await fetch(`http://127.0.0.1:8000/chat/conversations/${conversationId}/messages/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ sender: 'user', text: message })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    const processLine = (line) => {
+      if (line.startsWith('data: ')) {
+        const jsonStr = line.slice(6);
+        if (jsonStr.trim()) {
+          try {
+            const data = JSON.parse(jsonStr);
+            
+            if (data.type === 'chunk') {
+              onChunk?.(data.content, data.accumulated);
+            } else if (data.type === 'complete') {
+              onComplete?.(data.full_text, data.message_id);
+            } else if (data.type === 'error') {
+              onError?.(data.message);
+            }
+          } catch (e) {
+            console.error('Failed to parse SSE data:', e);
+          }
+        }
+      }
+    };
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        
+        // Process all complete lines
+        buffer = lines.pop() || '';
+        
+        for (const line of lines) {
+          processLine(line);
+        }
+      }
+      
+      // Process any remaining buffer
+      if (buffer) {
+        processLine(buffer);
+      }
+    } catch (error) {
+      console.error('Stream reading error:', error);
+      onError?.(error.message);
+    } finally {
+      reader.releaseLock();
+    }
+  }
+};
 
 // Health Check
 export const healthApi = {

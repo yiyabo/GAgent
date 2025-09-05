@@ -434,6 +434,45 @@ Return JSON ONLY (no comments):
         return {"success": False, "error": str(e)}
 
 
+def propose_plan_service(
+    payload: Dict[str, Any], client: Optional[LLMProvider] = None
+) -> Dict[str, Any]:
+    """
+    基于 BFS_planner 生成完整任务树，并将其持久化。
+    现在任务创建是在BFS_planner中完成的，这里只需要调用并返回结果。
+    """
+    goal = (payload or {}).get("goal") or (payload or {}).get("instruction") or ""
+    if not isinstance(goal, str) or not goal.strip():
+        raise ValueError("Missing 'goal' in request body")
+
+    client = client or get_default_client()
+    repo = default_repo
+
+    # 调用更新后的 BFS_planner，它会直接创建计划和所有任务
+    result = BFS_planner(goal, repo=repo, client=client)
+
+    if not result.get("success"):
+        return {"title": goal.strip()[:60], "tasks": [], "error": result.get("error")}
+
+    print(
+        f"[propose_plan_service] Successfully created plan with {result['total_tasks']} tasks"
+    )
+
+    return {
+        "success": True,
+        "plan_id": result["plan_id"],
+        "title": result["title"],
+        "goal": goal,
+        "total_tasks": result["total_tasks"],
+        "max_layer": result.get("max_layer", 0),
+        "tree": result["tree"],
+        "flat_tree": result["flat_tree"],
+        "layer_distribution": result.get("layer_distribution", {}),
+        "type_distribution": result.get("type_distribution", {}),
+        "stopped_reason": result.get("stopped_reason", "completed"),
+    }
+
+
 def generate_task_context(
     repo: TaskRepository,
     client: LLMProvider,
@@ -585,45 +624,6 @@ Return JSON ONLY:
         except Exception:
             # 最后兜底：避免任何异常导致流程崩溃
             pass
-
-
-def propose_plan_service(
-    payload: Dict[str, Any], client: Optional[LLMProvider] = None
-) -> Dict[str, Any]:
-    """
-    基于 BFS_planner 生成完整任务树，并将其持久化。
-    现在任务创建是在BFS_planner中完成的，这里只需要调用并返回结果。
-    """
-    goal = (payload or {}).get("goal") or (payload or {}).get("instruction") or ""
-    if not isinstance(goal, str) or not goal.strip():
-        raise ValueError("Missing 'goal' in request body")
-
-    client = client or get_default_client()
-    repo = default_repo
-
-    # 调用更新后的 BFS_planner，它会直接创建计划和所有任务
-    result = BFS_planner(goal, repo=repo, client=client)
-
-    if not result.get("success"):
-        return {"title": goal.strip()[:60], "tasks": [], "error": result.get("error")}
-
-    print(
-        f"[propose_plan_service] Successfully created plan with {result['total_tasks']} tasks"
-    )
-
-    return {
-        "success": True,
-        "plan_id": result["plan_id"],
-        "title": result["title"],
-        "goal": goal,
-        "total_tasks": result["total_tasks"],
-        "max_layer": result.get("max_layer", 0),
-        "tree": result["tree"],
-        "flat_tree": result["flat_tree"],
-        "layer_distribution": result.get("layer_distribution", {}),
-        "type_distribution": result.get("type_distribution", {}),
-        "stopped_reason": result.get("stopped_reason", "completed"),
-    }
 
 
 def approve_plan_service(

@@ -5,6 +5,8 @@ import GeneratePlanView from '../views/GeneratePlanView.vue'
 import PlanDetailView from '../views/PlanDetailView.vue'
 import PlanExecutionView from '../views/PlanExecutionView.vue'
 import TaskDetailView from '../views/TaskDetailView.vue'
+import ChatView from '../views/ChatView.vue' // Import ChatView
+import TestView from '../views/TestView.vue' // Import TestView
 
 const router = createRouter({
   history: createWebHistory(),
@@ -45,6 +47,22 @@ const router = createRouter({
       name: 'TaskDetail',
       component: TaskDetailView,
       props: true
+    },
+    {
+      path: '/plan/:id/chat',
+      name: 'Chat',
+      component: ChatView,
+      props: true
+    },
+    {
+      path: '/chat',
+      name: 'ChatMain',
+      component: ChatView
+    },
+    {
+      path: '/test',
+      name: 'Test',
+      component: TestView
     },
     {
       path: '/:pathMatch(.*)*',

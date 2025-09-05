@@ -2,7 +2,7 @@ import json
 import os
 import random
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Generator, Optional
 from urllib import error, request
 
 from .interfaces import LLMProvider
@@ -123,6 +123,104 @@ class LLMClient(LLMProvider):
                     last_err = e
                     continue
                 raise RuntimeError(f"LLM request failed: {e}")
+
+    def chat_stream(self, prompt: str) -> Generator[str, None, None]:
+        """流式生成聊天响应"""
+        if self.mock:
+            # Mock模式下模拟流式输出
+            mock_response = "这是 一个 模拟的 流式 响应。 我将 逐步 生成 内容 来 演示 流式输出 的 效果。"
+            words = mock_response.split()
+            for word in words:
+                yield word + " "
+                time.sleep(0.05)  # 模拟生成延迟
+            return
+
+        if not self.api_key:
+            raise RuntimeError("GLM_API_KEY is not set in environment")
+
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+            "max_tokens": 4096,
+            "temperature": 0.7,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = request.Request(self.url, data=data, headers=headers, method="POST")
+
+        last_err: Optional[Exception] = None
+        for attempt in range(self.retries + 1):
+            try:
+                with request.urlopen(req, timeout=self.timeout) as resp:
+                    # 处理Server-Sent Events流
+                    buffer = ""
+                    while True:
+                        chunk = resp.read(1024).decode("utf-8")
+                        if not chunk:
+                            break
+
+                        buffer += chunk
+                        lines = buffer.split("\n")
+                        buffer = lines.pop()  # 保留最后不完整的行
+
+                        for line in lines:
+                            line = line.strip()
+                            if line.startswith("data: "):
+                                data_content = line[6:]  # 移除 'data: ' 前缀
+                                if data_content == "[DONE]":
+                                    return
+                                try:
+                                    chunk_data = json.loads(data_content)
+                                    if (
+                                        "choices" in chunk_data
+                                        and chunk_data["choices"]
+                                    ):
+                                        delta = chunk_data["choices"][0].get(
+                                            "delta", {}
+                                        )
+                                        content = delta.get("content", "")
+                                        if content:
+                                            yield content
+                                except json.JSONDecodeError:
+                                    continue
+                return
+
+            except error.HTTPError as e:
+                # Retry logic similar to chat()
+                code = getattr(e, "code", None)
+                if (
+                    isinstance(code, int)
+                    and 500 <= code < 600
+                    and attempt < self.retries
+                ):
+                    delay = max(
+                        0.0,
+                        self.backoff_base * (2**attempt)
+                        + random.uniform(0, self.backoff_base / 4.0),
+                    )
+                    time.sleep(delay)
+                    last_err = e
+                    continue
+                try:
+                    msg = e.read().decode("utf-8")
+                except Exception:
+                    msg = str(e)
+                raise RuntimeError(f"LLM HTTPError: {e.code} {msg}")
+            except Exception as e:
+                if attempt < self.retries:
+                    delay = max(
+                        0.0,
+                        self.backoff_base * (2**attempt)
+                        + random.uniform(0, self.backoff_base / 4.0),
+                    )
+                    time.sleep(delay)
+                    last_err = e
+                    continue
+                raise RuntimeError(f"LLM streaming request failed: {e}")
 
     def ping(self) -> bool:
         if self.mock:

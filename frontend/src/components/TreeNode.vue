@@ -69,10 +69,10 @@ const getPriorityColor = (priority) => {
 .task-item-content {
   display: flex;
   align-items: center;
-  padding: 0.75rem 1rem;
+  padding: 1.25rem 1.5rem;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
-  border-radius: 0.5rem;
+  border-radius: 0.75rem;
   cursor: pointer;
   transition: all 0.2s ease;
   margin-left: 1rem;
