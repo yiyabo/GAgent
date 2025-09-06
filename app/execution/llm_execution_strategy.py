@@ -11,11 +11,11 @@ from typing import Any, Dict, Optional
 
 from ..interfaces import TaskRepository
 from ..models import EvaluationConfig, TaskExecutionResult
-from ..services.evaluation_supervisor import (
+from ..services.evaluation.evaluation_supervisor import (
     get_evaluation_supervisor,
     monitor_evaluation,
 )
-from ..services.llm_evaluator import get_llm_evaluator
+from ..services.evaluation.llm_evaluator import get_llm_evaluator
 from .base_executor import BaseTaskExecutor
 from .prompt_builder import PromptBuilder
 

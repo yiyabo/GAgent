@@ -15,7 +15,7 @@ from app.models_memory import (
 )
 
 # Import memory services
-from app.services.memory_service import get_memory_service
+from app.services.memory.memory_service import get_memory_service
 
 from ..utils import IOUtils
 from .base import MultiCommand
