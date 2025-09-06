@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from urllib import error, request
 
 from .interfaces import LLMProvider
-from .services.settings import get_settings
+from .services.foundation.settings import get_settings
 
 
 def _truthy(val: Optional[str]) -> bool:

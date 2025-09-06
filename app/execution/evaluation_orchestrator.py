@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 from ..interfaces import TaskRepository
 from ..models import EvaluationConfig, EvaluationResult, TaskExecutionResult
-from ..services.content_evaluator import get_evaluator
+from ..services.evaluation.content_evaluator import get_evaluator
 from .base_executor import BaseTaskExecutor
 from .prompt_builder import PromptBuilder
 

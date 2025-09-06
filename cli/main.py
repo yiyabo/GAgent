@@ -481,7 +481,7 @@ class ModernCLIApp(CLIApplication):
 
             # Lazy import to avoid heavy deps at startup
             try:
-                from app.services.benchmark import run_benchmark
+                from app.services.evaluation.benchmark import run_benchmark
             except Exception:
                 from ..app.services.benchmark import (
                     run_benchmark,  # fallback when running as module

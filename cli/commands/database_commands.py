@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from app.database import DB_PATH, get_db
-from app.services.cache import get_embedding_cache
-from app.services.evaluation_cache import get_cache_stats, get_evaluation_cache
+from app.services.embeddings.cache import get_embedding_cache
+from app.services.evaluation.evaluation_cache import get_cache_stats, get_evaluation_cache
 
 from ..interfaces import CLICommand
 
