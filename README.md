@@ -212,11 +212,13 @@ app/services/
 ## 📚 文档导航
 
 - 快速开始：`docs/QUICK_START.md`
+- 架构说明：`docs/ARCHITECTURE.md`
 - 递归分解：`docs/RECURSIVE_DECOMPOSITION_GUIDE.md`
 - 评估系统：`docs/EVALUATION_SYSTEM.md` / `docs/EVALUATION_SYSTEM_GUIDE.md`
 - API 参考：`docs/API_REFERENCE.md`
 - 存储与缓存：`docs/Database_and_Cache_Management.md`
 - Memory‑MCP：`docs/MEMORY_MCP_SYSTEM.md`
+- 路线图：`docs/ROADMAP.md`
 
 ## 🎨 使用示例
 

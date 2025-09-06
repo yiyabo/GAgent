@@ -157,10 +157,10 @@ curl -X POST http://127.0.0.1:8000/benchmark \
 ### 评估速度慢？
 ```bash
 # 检查缓存状态
-python -c "from app.services.evaluation_cache import get_evaluation_cache; print(get_evaluation_cache().get_cache_stats())"
+python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; print(get_evaluation_cache().get_cache_stats())"
 
 # 优化缓存
-python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
+python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
 ```
 
 ### 评估质量不稳定？
@@ -175,10 +175,10 @@ python -m cli.main --eval-stats --detailed
 ### 系统错误？
 ```bash
 # 重置监督状态
-python -c "from app.services.evaluation_supervisor import get_evaluation_supervisor; get_evaluation_supervisor().reset_supervision_state()"
+python -c "from app.services.evaluation.evaluation_supervisor import get_evaluation_supervisor; get_evaluation_supervisor().reset_supervision_state()"
 
 # 清理缓存
-python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().clear_cache()"
+python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; get_evaluation_cache().clear_cache()"
 ```
 
 ## 下一步
