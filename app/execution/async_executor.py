@@ -15,8 +15,8 @@ from ..interfaces import TaskRepository
 from ..models import TaskExecutionResult, EvaluationResult, EvaluationDimensions
 from ..repository.tasks import default_repo
 from ..services.embeddings import get_embeddings_service
-from ..services.llm_service import get_llm_service, TaskPromptBuilder, AsyncLLMContext
-from ..services.content_evaluator import ContentEvaluator
+from ..services.llm.llm_service import get_llm_service, TaskPromptBuilder, AsyncLLMContext
+from ..services.evaluation.content_evaluator import ContentEvaluator
 
 logger = logging.getLogger(__name__)
 

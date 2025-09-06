@@ -7,7 +7,7 @@
 from fastapi import APIRouter, HTTPException, Body
 from typing import Any, Dict
 
-from ..services.benchmark import run_benchmark
+from ..services.evaluation.benchmark import run_benchmark
 from ..utils.route_helpers import parse_int
 
 router = APIRouter(prefix="/benchmark", tags=["benchmark"])

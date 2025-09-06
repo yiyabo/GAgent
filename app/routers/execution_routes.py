@@ -28,7 +28,7 @@ from ..models import (
 )
 from ..repository.tasks import default_repo
 from ..scheduler import bfs_schedule, postorder_schedule, requires_dag_order
-from ..services.recursive_decomposition import recursive_decompose_plan
+from ..services.planning.recursive_decomposition import recursive_decompose_plan
 from ..utils import run_async
 from ..utils.route_helpers import (
     parse_bool, parse_int, parse_opt_float, parse_schedule, sanitize_context_options

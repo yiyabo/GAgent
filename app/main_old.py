@@ -56,18 +56,18 @@ from .models import (
 )
 from .repository.tasks import default_repo
 from .scheduler import bfs_schedule, postorder_schedule, requires_dag_order
-from .services.benchmark import run_benchmark
-from .services.context import gather_context
-from .services.context_budget import apply_budget
-from .services.decomposition_with_evaluation import (
+from .services.evaluation.benchmark import run_benchmark
+from .services.context.context import gather_context
+from .services.context.context_budget import apply_budget
+from .services.planning.decomposition_with_evaluation import (
     decompose_task_with_evaluation,
     should_decompose_with_quality_check,
 )
-from .services.logging_config import setup_logging
-from .services.planning import approve_plan_service, propose_plan_service
+from .services.foundation.logging_config import setup_logging
+from .services.planning.planning import approve_plan_service, propose_plan_service
 
 # Recursive decomposition feature
-from .services.recursive_decomposition import (
+from .services.planning.recursive_decomposition import (
     MAX_DECOMPOSITION_DEPTH,
     decompose_task,
     determine_task_type,
@@ -75,8 +75,8 @@ from .services.recursive_decomposition import (
     recursive_decompose_plan,
     should_decompose_task,
 )
-from .services.settings import get_settings
-from .services.tool_aware_decomposition import (
+from .services.foundation.settings import get_settings
+from .services.planning.tool_aware_decomposition import (
     analyze_task_tool_requirements,
     decompose_task_with_tool_awareness,
 )

@@ -25,7 +25,7 @@ try:
     )
     from ...app.models import EvaluationConfig
     from ...app.repository.tasks import default_repo
-    from ...app.services.evaluation_supervisor import (
+    from ...app.services.evaluation.evaluation_supervisor import (
         get_evaluation_supervisor,
         get_supervision_report,
     )
@@ -40,11 +40,11 @@ except ImportError:
     )
     from app.models import EvaluationConfig
     from app.repository.tasks import default_repo
-    from app.services.evaluation_supervisor import (
+    from app.services.evaluation.evaluation_supervisor import (
         get_evaluation_supervisor,
         get_supervision_report,
     )
-    from app.services.expert_evaluator import get_multi_expert_evaluator
+    from app.services.evaluation.expert_evaluator import get_multi_expert_evaluator
 
 
 class EvaluationCommands(MultiCommand):
