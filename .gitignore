@@ -34,3 +34,5 @@ run.json
 results/
 logs/
 data/
+# External tools (local only)
+gemini-cli
