@@ -13,7 +13,7 @@ from tool_box import route_user_request
 
 from ..execution.executors.tool_enhanced import execute_task_with_tools
 from ..repository.tasks import default_repo
-from ..services.tool_aware_decomposition import analyze_task_tool_requirements
+from ..services.planning.tool_aware_decomposition import analyze_task_tool_requirements
 from ..utils.route_helpers import parse_bool, sanitize_context_options
 
 router = APIRouter(tags=["tools"])

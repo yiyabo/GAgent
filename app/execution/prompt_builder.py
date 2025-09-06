@@ -9,8 +9,8 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..models import EvaluationResult
-from ..services.context import gather_context
-from ..services.context_budget import apply_budget
+from ..services.context.context import gather_context
+from ..services.context.context_budget import apply_budget
 
 logger = logging.getLogger(__name__)
 

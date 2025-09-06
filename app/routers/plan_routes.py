@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from ..errors import ValidationError, BusinessError, ErrorCode
 from ..repository.tasks import default_repo
-from ..services.planning import propose_plan_service, approve_plan_service
+from ..services.planning.planning import propose_plan_service, approve_plan_service
 from ..utils import split_prefix
 
 router = APIRouter(prefix="/plans", tags=["plans"])

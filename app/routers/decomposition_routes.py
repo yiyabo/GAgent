@@ -12,7 +12,7 @@ from typing import Any, Dict
 from ..errors import BusinessError, ErrorCode
 from ..errors.exceptions import SystemError as CustomSystemError
 from ..repository.tasks import default_repo
-from ..services.recursive_decomposition import (
+from ..services.planning.recursive_decomposition import (
     MAX_DECOMPOSITION_DEPTH,
     decompose_task,
     determine_task_type,
@@ -20,11 +20,11 @@ from ..services.recursive_decomposition import (
     recursive_decompose_plan,
     should_decompose_task,
 )
-from ..services.decomposition_with_evaluation import (
+from ..services.planning.decomposition_with_evaluation import (
     decompose_task_with_evaluation,
     should_decompose_with_quality_check,
 )
-from ..services.tool_aware_decomposition import decompose_task_with_tool_awareness
+from ..services.planning.tool_aware_decomposition import decompose_task_with_tool_awareness
 from ..utils.route_helpers import parse_bool, parse_int, parse_opt_float
 
 router = APIRouter(prefix="/tasks", tags=["decomposition"])
