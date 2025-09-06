@@ -33,3 +33,4 @@ statistics.db-shm
 run.json
 results/
 logs/
+data/
