@@ -20,8 +20,8 @@ from .errors import BaseError, BusinessError, ErrorCode, ValidationError, handle
 from .errors.exceptions import ErrorCategory
 from .errors.exceptions import SystemError as CustomSystemError
 from .llm import get_default_client
-from .services.logging_config import setup_logging
-from .services.settings import get_settings
+from .services.foundation.logging_config import setup_logging
+from .services.foundation.settings import get_settings
 from .utils.route_helpers import parse_bool
 
 # Import router function

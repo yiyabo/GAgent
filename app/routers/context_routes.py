@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Body
 from typing import Any, Dict, Optional
 
 from ..repository.tasks import default_repo
-from ..services.context import gather_context
-from ..services.context_budget import apply_budget
+from ..services.context.context import gather_context
+from ..services.context.context_budget import apply_budget
 from ..models import ContextPreviewRequest
 from ..utils.route_helpers import (
     parse_bool, parse_int, parse_opt_int, parse_opt_float, 

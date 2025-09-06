@@ -16,7 +16,7 @@ from ..models_memory import (
     SaveMemoryRequest,
     SaveMemoryResponse,
 )
-from ..services.memory_service import get_memory_service
+from ..services.memory.memory_service import get_memory_service
 
 logger = logging.getLogger(__name__)
 

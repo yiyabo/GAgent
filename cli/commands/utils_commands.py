@@ -4,9 +4,9 @@ from ..utils.io_utils import IOUtils
 from .base import MultiCommand
 
 try:
-    from ...app.services.benchmark import run_benchmark
+    from ...app.services.evaluation.benchmark import run_benchmark
 except ImportError:
-    from app.services.benchmark import run_benchmark
+    from app.services.evaluation.benchmark import run_benchmark
 
 
 class UtilsCommands(MultiCommand):
