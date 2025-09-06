@@ -46,7 +46,7 @@ class EmbeddingCache:
 
         # Persistent cache database path
         # 持久化缓存路径 - 使用规范的缓存目录
-        from ..config.database_config import get_cache_database_path
+        from ...config.database_config import get_cache_database_path
         self.cache_db_path = get_cache_database_path("embedding")
 
         if self.enable_persistent:
