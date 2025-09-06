@@ -327,7 +327,7 @@ def smart_query(search_text):
 ```bash
 # 定期清理临时记忆
 conda run -n LLM python -c "
-from app.services.memory_service import get_memory_service
+from app.services.memory.memory_service import get_memory_service
 import asyncio
 service = get_memory_service()
 # 清理7天前的临时记忆
@@ -336,7 +336,7 @@ asyncio.run(service.cleanup_temporary_memories(days=7))
 
 # 查看记忆统计
 conda run -n LLM python -c "
-from app.services.memory_service import get_memory_service
+from app.services.memory.memory_service import get_memory_service
 import asyncio
 service = get_memory_service()
 stats = asyncio.run(service.get_memory_stats())
@@ -384,7 +384,7 @@ def debug_memory_search(search_text):
 ```bash
 # 手动触发记忆进化
 conda run -n LLM python -c "
-from app.services.memory_service import get_memory_service
+from app.services.memory.memory_service import get_memory_service
 import asyncio
 service = get_memory_service()
 asyncio.run(service._evolve_memories())

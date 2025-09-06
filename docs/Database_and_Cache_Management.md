@@ -134,7 +134,7 @@ CREATE TABLE embedding_cache (
 
 ### 3. 评估缓存数据库 (`evaluation_cache.db`)
 
-**位置**: 项目根目录下的 `evaluation_cache.db`
+**位置（新）**: 由 DatabaseConfig 统一管理，默认位于 `data/databases/cache/evaluation_cache.db`
 
 **用途**: 缓存评估结果，提高评估性能
 
@@ -276,7 +276,7 @@ GLM_BATCH_SIZE=25
 ### 2. 配置类
 
 ```python
-from app.services.config import get_config
+from app.services.foundation.config import get_config
 
 config = get_config()
 # 自动从环境变量加载并验证配置
@@ -322,7 +322,7 @@ python -m cli.main --eval-supervision --detailed
 ```bash
 # 数据库优化
 conda run -n LLM python -c "
-from app.services.evaluation_cache import get_evaluation_cache
+from app.services.evaluation.evaluation_cache import get_evaluation_cache
 cache = get_evaluation_cache()
 result = cache.optimize_cache()
 print(f'优化完成: {result}')
@@ -341,16 +341,16 @@ print(f'优化完成: {result}')
 **缓存性能下降**:
 ```bash
 # 检查缓存命中率
-conda run -n LLM python -c "from app.services.evaluation_cache import get_cache_stats; print(get_cache_stats())"
+conda run -n LLM python -c "from app.services.evaluation.evaluation_cache import get_cache_stats; print(get_cache_stats())"
 
 # 执行缓存优化
-conda run -n LLM python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
+conda run -n LLM python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
 ```
 
 **磁盘空间不足**:
 ```bash
 # 清理旧缓存条目
-conda run -n LLM python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().cleanup_old_entries(days=7)"
+conda run -n LLM python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; get_evaluation_cache().cleanup_old_entries(days=7)"
 ```
 
 ### 调试工具
@@ -360,10 +360,10 @@ conda run -n LLM python -c "from app.services.evaluation_cache import get_evalua
 sqlite3 tasks.db ".schema"
 
 # 检查缓存统计
-conda run -n LLM python -c "from app.services.evaluation_cache import get_cache_stats; print(get_cache_stats())"
+conda run -n LLM python -c "from app.services.evaluation.evaluation_cache import get_cache_stats; print(get_cache_stats())"
 
 # 清理所有缓存
-conda run -n LLM python -c "from app.services.evaluation_cache import clear_evaluation_cache; clear_evaluation_cache()"
+conda run -n LLM python -c "from app.services.evaluation.evaluation_cache import clear_evaluation_cache; clear_evaluation_cache()"
 ```
 
 ## 最佳实践
