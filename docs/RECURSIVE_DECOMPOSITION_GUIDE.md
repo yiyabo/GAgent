@@ -101,7 +101,7 @@ curl -X GET http://localhost:8000/tasks/123/complexity
 ### 全局配置
 
 ```python
-# 递归分解配置常量 (app/services/recursive_decomposition.py)
+# 递归分解配置常量 (app/services/planning/recursive_decomposition.py)
 MAX_DECOMPOSITION_DEPTH = 3    # 最大分解深度
 MIN_ATOMIC_TASKS = 2           # 最小子任务数
 MAX_ATOMIC_TASKS = 8           # 最大子任务数
@@ -368,8 +368,7 @@ def custom_quality_evaluator(parent_task, subtasks):
 
 - [API参考文档](API_REFERENCE.md#递归任务分解-api)
 - [系统架构说明](README.md#系统架构)
-- [测试用例](../tests/test_recursive_decomposition.py)
-- [集成测试](../tests/test_recursive_decomposition_integration.py)
+> 说明：相关测试样例已重构为端到端流程测试，可通过 Quick Start 中的 REST/CLI 命令复现与验证。
 
 ---
 

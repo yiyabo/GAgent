@@ -26,61 +26,7 @@
 
 ## 快速开始
 
-### 1. 基础评估
-
-```bash
-# 执行基础评估
-python -m cli.main --eval-execute 123 --threshold 0.8 --max-iterations 3
-
-# 查看评估历史
-python -m cli.main --eval-history 123
-
-# 查看评估统计
-python -m cli.main --eval-stats --detailed
-```
-
-### 2. LLM智能评估
-
-```bash
-# 使用LLM智能评估执行任务
-python -m cli.main --eval-llm 123 --threshold 0.8 --max-iterations 3
-
-# 带上下文的LLM评估
-python -m cli.main --eval-llm 123 --use-context --threshold 0.85
-```
-
-### 3. 多专家评估
-
-```bash
-# 使用所有专家进行评估
-python -m cli.main --eval-multi-expert 123 --threshold 0.8
-
-# 选择特定专家
-python -m cli.main --eval-multi-expert 123 --experts "theoretical_biologist,clinical_physician" --threshold 0.8
-```
-
-### 4. 对抗性评估
-
-```bash
-# 对抗性评估（生成器vs批评者）
-python -m cli.main --eval-adversarial 123 --max-rounds 3 --improvement-threshold 0.1
-
-# 高强度对抗性评估
-python -m cli.main --eval-adversarial 123 --max-rounds 5 --improvement-threshold 0.05
-```
-
-### 5. 监督系统
-
-```bash
-# 查看系统监督报告
-python -m cli.main --eval-supervision --detailed
-
-# 配置监督阈值
-python -m cli.main --eval-supervision-config --min-accuracy 0.75 --max-evaluation-time 25.0
-
-# 查看当前监督配置
-python -m cli.main --eval-supervision-config
-```
+评估相关 CLI/REST 的常用命令与端到端示例已收敛到 `docs/QUICK_START.md`，本指南聚焦于配置、代码示例与最佳实践。
 
 ## 详细功能说明
 
@@ -169,7 +115,7 @@ print(f"迭代次数: {result.iterations_completed}")
 #### 专家评估流程
 
 ```python
-from app.services.expert_evaluator import get_multi_expert_evaluator
+from app.services.evaluation.expert_evaluator import get_multi_expert_evaluator
 
 evaluator = get_multi_expert_evaluator()
 
@@ -205,7 +151,7 @@ for disagreement in disagreements:
 #### 评估流程
 
 ```python
-from app.services.adversarial_evaluator import get_adversarial_evaluator
+from app.services.evaluation.adversarial_evaluator import get_adversarial_evaluator
 
 evaluator = get_adversarial_evaluator()
 
@@ -238,7 +184,7 @@ print(f"对抗性效果: {result['final_assessment']['adversarial_effectiveness'
 #### 使用示例
 
 ```python
-from app.services.meta_evaluator import get_meta_evaluator
+from app.services.evaluation.meta_evaluator import get_meta_evaluator
 
 meta_evaluator = get_meta_evaluator()
 
@@ -273,7 +219,7 @@ for bias_type, risk_level in bias_risks.items():
 #### 使用示例
 
 ```python
-from app.services.phage_evaluator import get_phage_evaluator
+from app.services.evaluation.phage_evaluator import get_phage_evaluator
 
 phage_evaluator = get_phage_evaluator()
 
@@ -296,7 +242,7 @@ print(f"安全性评估: {result['safety_assessment']:.3f}")
 #### 缓存配置
 
 ```python
-from app.services.evaluation_cache import get_evaluation_cache
+from app.services.evaluation.evaluation_cache import get_evaluation_cache
 
 cache = get_evaluation_cache()
 
@@ -317,7 +263,7 @@ cache.clear_cache()
 
 ```python
 # 查看性能统计
-from app.services.evaluation_cache import get_evaluation_cache
+from app.services.evaluation.evaluation_cache import get_evaluation_cache
 
 cache = get_evaluation_cache()
 performance_stats = cache.get_performance_stats()
@@ -341,7 +287,7 @@ print(f"缓存效率: {performance_stats['cache_efficiency']:.1%}")
 #### 监督配置
 
 ```python
-from app.services.evaluation_supervisor import get_evaluation_supervisor
+from app.services.evaluation.evaluation_supervisor import get_evaluation_supervisor
 
 supervisor = get_evaluation_supervisor()
 
@@ -415,10 +361,10 @@ python -m cli.main --eval-supervision
 python -m cli.main --eval-stats --detailed
 
 # 重置监督状态（如果需要）
-python -c "from app.services.evaluation_supervisor import get_evaluation_supervisor; get_evaluation_supervisor().reset_supervision_state()"
+python -c "from app.services.evaluation.evaluation_supervisor import get_evaluation_supervisor; get_evaluation_supervisor().reset_supervision_state()"
 
 # 清理缓存
-python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().clear_cache()"
+python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; get_evaluation_cache().clear_cache()"
 ```
 
 ## API参考

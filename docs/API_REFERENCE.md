@@ -341,7 +341,7 @@ class LLMEvaluator:
 
 **使用示例:**
 ```python
-from app.services.llm_evaluator import get_llm_evaluator
+from app.services.evaluation.llm_evaluator import get_llm_evaluator
 
 evaluator = get_llm_evaluator()
 result = evaluator.evaluate_content_intelligent(
@@ -497,7 +497,7 @@ class EvaluationCache:
 
 **使用示例:**
 ```python
-from app.services.evaluation_cache import get_evaluation_cache
+from app.services.evaluation.evaluation_cache import get_evaluation_cache
 
 cache = get_evaluation_cache()
 
@@ -536,7 +536,7 @@ class EvaluationSupervisor:
 
 **使用示例:**
 ```python
-from app.services.evaluation_supervisor import get_evaluation_supervisor
+from app.services.evaluation.evaluation_supervisor import get_evaluation_supervisor
 
 supervisor = get_evaluation_supervisor()
 
@@ -731,7 +731,7 @@ result = execute_task(task, enable_evaluation=True)  # 仍然有效
 ### 自定义评估器
 
 ```python
-from app.services.content_evaluator import ContentEvaluator
+from app.services.evaluation.content_evaluator import ContentEvaluator
 
 class CustomEvaluator(ContentEvaluator):
     def __init__(self, config: Optional[EvaluationConfig] = None):
