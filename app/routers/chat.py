@@ -13,18 +13,18 @@ router = APIRouter(
     tags=["Chat"],
 )
 
-@router.post("/plans/{plan_id}/conversations", response_model=models.Conversation)
-def create_new_conversation(plan_id: int, conversation_in: models.ConversationCreate):
-    """Create a new conversation for a plan."""
-    conversation = chat_repo.create_conversation(plan_id=plan_id, title=conversation_in.title)
+@router.post("/conversations", response_model=models.Conversation)
+def create_new_conversation(conversation_in: models.ConversationCreate):
+    """Create a new conversation."""
+    conversation = chat_repo.create_conversation(title=conversation_in.title)
     if not conversation:
         raise HTTPException(status_code=500, detail="Failed to create conversation.")
     return conversation
 
-@router.get("/plans/{plan_id}/conversations", response_model=List[models.Conversation])
-def get_plan_conversations(plan_id: int):
-    """Get all conversations for a specific plan."""
-    return chat_repo.get_conversations_for_plan(plan_id=plan_id)
+@router.get("/conversations", response_model=List[models.Conversation])
+def get_all_conversations():
+    """Get all conversations."""
+    return chat_repo.get_all_conversations()
 
 @router.get("/conversations/{conversation_id}", response_model=models.ConversationWithMessages)
 def get_conversation_details(conversation_id: int):
@@ -35,6 +35,25 @@ def get_conversation_details(conversation_id: int):
     
     messages = chat_repo.get_messages_for_conversation(conversation_id=conversation_id)
     return {**conversation, "messages": messages}
+
+@router.put("/conversations/{conversation_id}", response_model=models.Conversation)
+def update_conversation(conversation_id: int, conversation_update: models.ConversationCreate):
+    """Update a conversation's title."""
+    updated_conversation = chat_repo.update_conversation(
+        conversation_id=conversation_id, 
+        title=conversation_update.title
+    )
+    if not updated_conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return updated_conversation
+
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: int):
+    """Delete a conversation and all its messages."""
+    success = chat_repo.delete_conversation(conversation_id=conversation_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"message": "Conversation deleted successfully"}
 
 @router.post("/conversations/{conversation_id}/messages")
 def post_message(conversation_id: int, message_in: models.MessageCreate):
@@ -48,15 +67,17 @@ def post_message(conversation_id: int, message_in: models.MessageCreate):
     if not user_message:
         raise HTTPException(status_code=500, detail="Failed to save user message.")
 
-    # 2. Get the plan_id from conversation
+    # 2. Get the conversation
     conversation = chat_repo.get_conversation(conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     
-    # 3. Use enhanced ConversationalAgent to process command
+    # 3. Process message with simple chat agent (no plan dependency)
     try:
-        agent = ConversationalAgent(plan_id=conversation.get("plan_id"))
+        agent = ConversationalAgent(plan_id=None)  # Use None to indicate simple chat mode
+        print(f"🚀 Processing command: {message_in.text}")
         result = agent.process_command(message_in.text)
+        print(f"📋 Agent result: {result}")
         
         # 4. Save agent's response
         agent_message = chat_repo.create_message(
@@ -126,7 +147,7 @@ def post_message(conversation_id: int, message_in: models.MessageCreate):
                     thread.start()
         
         # 6. Return complete response with visualization
-        return {
+        response = {
             "message": agent_message,
             "visualization": result.get("visualization", {
                 "type": "none",
@@ -134,8 +155,13 @@ def post_message(conversation_id: int, message_in: models.MessageCreate):
                 "config": {}
             }),
             "intent": result.get("intent", "unknown"),
-            "success": result.get("success", True)
+            "success": result.get("success", True),
+            "action_result": result.get("action_result", {}),  # 添加缺失的 action_result 字段
+            "initial_response": result.get("initial_response", ""),
+            "execution_feedback": result.get("execution_feedback", "")
         }
+        print(f"📤 Returning response: {response}")
+        return response
         
     except Exception as e:
         # Error handling with visualization
@@ -158,7 +184,10 @@ def post_message(conversation_id: int, message_in: models.MessageCreate):
                 "config": {}
             },
             "intent": "unknown",
-            "success": False
+            "success": False,
+            "action_result": {"success": False, "message": str(e)},
+            "initial_response": error_message,
+            "execution_feedback": ""
         }
 
 @router.post("/conversations/{conversation_id}/messages/stream")
@@ -174,15 +203,15 @@ async def post_message_stream(conversation_id: int, message_in: models.MessageCr
     if not user_message:
         raise HTTPException(status_code=500, detail="Failed to save user message.")
     
-    # 2. Get the plan_id from conversation
+    # 2. Get the conversation
     conversation = chat_repo.get_conversation(conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
-            # Initialize agent
-            agent = ConversationalAgent(plan_id=conversation["plan_id"])
+            # Initialize agent without plan dependency
+            agent = ConversationalAgent(plan_id=None)
             
             # Send start event
             start_data = {
@@ -251,45 +280,88 @@ async def post_message_stream(conversation_id: int, message_in: models.MessageCr
                 yield f"data: {json.dumps(completion_data)}\n\n"
                 
             else:
-                # For complex commands (create plan, etc), use original logic with progress updates
+                # For complex commands, use two-phase response
                 progress_data = {
                     "type": "progress",
-                    "message": "Analyzing command and generating plan..."
+                    "message": "Processing your request..."
                 }
                 yield f"data: {json.dumps(progress_data)}\n\n"
                 
                 # Process command using the full agent
                 result = agent.process_command(message_in.text)
                 
-                # Send progress update
-                progress_data = {
-                    "type": "progress", 
-                    "message": "Plan generated, preparing response..."
-                }
-                yield f"data: {json.dumps(progress_data)}\n\n"
-                
-                # Send the complete response with visualization
-                response_text = result.get("response", "")
-                
-                # For complex commands, send response in larger chunks
-                words = response_text.split()
-                accumulated_text = ""
-                chunk_size = 3  # Send 3 words at a time
-                
-                for i in range(0, len(words), chunk_size):
-                    word_chunk = " ".join(words[i:i+chunk_size]) + " "
-                    accumulated_text += word_chunk
+                # First, send the initial response if available
+                initial_response = result.get("initial_response", "")
+                if initial_response:
+                    # Stream the initial response
+                    words = initial_response.split()
+                    accumulated_text = ""
+                    chunk_size = 3
                     
-                    # Send chunk as SSE event
-                    chunk_data = {
-                        "type": "chunk",
-                        "content": word_chunk,
-                        "accumulated": accumulated_text.strip()
-                    }
-                    yield f"data: {json.dumps(chunk_data)}\n\n"
+                    for i in range(0, len(words), chunk_size):
+                        word_chunk = " ".join(words[i:i+chunk_size]) + " "
+                        accumulated_text += word_chunk
+                        
+                        chunk_data = {
+                            "type": "chunk",
+                            "content": word_chunk,
+                            "accumulated": accumulated_text.strip(),
+                            "phase": "initial"
+                        }
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
+                        await asyncio.sleep(0.05)  # Slightly slower for readability
                     
-                    # Faster for complex responses
-                    await asyncio.sleep(0.01)
+                    # Brief pause before execution feedback
+                    await asyncio.sleep(0.5)
+                    
+                    # Send execution feedback if available
+                    execution_feedback = result.get("execution_feedback", "")
+                    if execution_feedback:
+                        # Send a separator
+                        separator_data = {
+                            "type": "chunk",
+                            "content": "\n\n",
+                            "accumulated": accumulated_text.strip() + "\n\n",
+                            "phase": "separator"
+                        }
+                        yield f"data: {json.dumps(separator_data)}\n\n"
+                        
+                        # Stream the execution feedback
+                        feedback_words = execution_feedback.split()
+                        for i in range(0, len(feedback_words), chunk_size):
+                            word_chunk = " ".join(feedback_words[i:i+chunk_size]) + " "
+                            accumulated_text += word_chunk
+                            
+                            chunk_data = {
+                                "type": "chunk", 
+                                "content": word_chunk,
+                                "accumulated": accumulated_text.strip(),
+                                "phase": "feedback"
+                            }
+                            yield f"data: {json.dumps(chunk_data)}\n\n"
+                            await asyncio.sleep(0.05)
+                    
+                    response_text = accumulated_text.strip()
+                else:
+                    # Fallback to original response streaming
+                    response_text = result.get("response", "")
+                    words = response_text.split()
+                    accumulated_text = ""
+                    chunk_size = 3
+                    
+                    for i in range(0, len(words), chunk_size):
+                        word_chunk = " ".join(words[i:i+chunk_size]) + " "
+                        accumulated_text += word_chunk
+                        
+                        chunk_data = {
+                            "type": "chunk",
+                            "content": word_chunk,
+                            "accumulated": accumulated_text.strip()
+                        }
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
+                        await asyncio.sleep(0.02)
+                    
+                    response_text = accumulated_text.strip()
                 
                 # Save complete message to database
                 agent_message = chat_repo.create_message(

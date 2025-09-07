@@ -265,18 +265,23 @@ export const chatApi = {
     return response.data;
   },
 
-  async getPlanConversations(planId) {
-    const response = await api.get(`/chat/plans/${planId}/conversations`);
-    return response.data;
-  },
-  
-  async getConversationsForPlan(planId) {
-    const response = await api.get(`/chat/plans/${planId}/conversations`);
+  async getAllConversations() {
+    const response = await api.get(`/chat/conversations`);
     return response.data;
   },
 
-  async createConversation(planId, data) {
-    const response = await api.post(`/chat/plans/${planId}/conversations`, data);
+  async createConversation(data) {
+    const response = await api.post(`/chat/conversations`, data);
+    return response.data;
+  },
+
+  async updateConversation(conversationId, data) {
+    const response = await api.put(`/chat/conversations/${conversationId}`, data);
+    return response.data;
+  },
+
+  async deleteConversation(conversationId) {
+    const response = await api.delete(`/chat/conversations/${conversationId}`);
     return response.data;
   },
 

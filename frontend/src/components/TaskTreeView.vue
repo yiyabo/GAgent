@@ -26,59 +26,61 @@
         <button @click="$emit('refresh')" class="btn-retry">重新加载</button>
       </div>
       
-      <div v-else class="tree-view">
-        <div class="tree-tasks">
-          <div class="custom-tree-view">
-            <div 
-              v-for="task in visibleTasks" 
-              :key="task.id"
-              class="tree-task-item"
-              :class="{
-                'is-root': task.parent_id === null || task.parent_id === 0,
-                'is-expanded': isExpanded(task.id),
-                'has-children': hasChildren(task.id),
-                [`status-${task.status}`]: true,
-                [`type-${task.task_type}`]: true
-              }"
-              :style="{ paddingLeft: `${task.displayLevel * 1.5 + 0.5}rem` }"
-            >
-              <div class="task-row">
-                <button 
-                  v-if="hasChildren(task.id)"
-                  class="expand-btn"
-                  :class="{ 'expanded': isExpanded(task.id) }"
-                  @click="toggleExpansion(task.id)"
-                  :title="`展开/收起 (${tasks.filter(t => t.parent_id === task.id).length} 个子任务)`"
-                >
-                  <span class="expand-icon">▶</span>
-                </button>
-                <span v-else class="expand-spacer" :title="'无子任务'"></span>
-                
-                
-                <div class="task-icon">
-                  <span v-if="task.task_type === 'root'">📁</span>
-                  <span v-else-if="task.task_type === 'composite'">📂</span>
-                  <span v-else>📄</span>
-                </div>
-                
-                <div class="task-info" @click="selectTaskOnly(task)">
-                  <div class="task-name">{{ task.shortName || task.name }}</div>
-                  <div class="task-meta">
-                    <span class="task-status" :class="`status-${task.status}`">
-                      {{ task.status }}
-                    </span>
-                    <span class="task-priority">P{{ task.priority }}</span>
-                    <span class="task-id">#{{ task.id }}</span>
+      <div v-else class="tree-scroll-container">
+        <div class="tree-view">
+          <div class="tree-tasks">
+            <div class="custom-tree-view">
+              <div 
+                v-for="task in visibleTasks" 
+                :key="task.id"
+                class="tree-task-item"
+                :class="{
+                  'is-root': task.parent_id === null || task.parent_id === 0,
+                  'is-expanded': isExpanded(task.id),
+                  'has-children': hasChildren(task.id),
+                  [`status-${task.status}`]: true,
+                  [`type-${task.task_type}`]: true
+                }"
+                :style="{ paddingLeft: `${task.displayLevel * 1.5 + 0.5}rem` }"
+              >
+                <div class="task-row">
+                  <button 
+                    v-if="hasChildren(task.id)"
+                    class="expand-btn"
+                    :class="{ 'expanded': isExpanded(task.id) }"
+                    @click.stop="toggleExpansion(task.id)"
+                    :title="`展开/收起 (${tasks.filter(t => t.parent_id === task.id).length} 个子任务)`"
+                  >
+                    <span class="expand-icon">▶</span>
+                  </button>
+                  <span v-else class="expand-spacer" :title="'无子任务'"></span>
+                  
+                  
+                  <div class="task-icon">
+                    <span v-if="task.task_type === 'root'">📁</span>
+                    <span v-else-if="task.task_type === 'composite'">📂</span>
+                    <span v-else>📄</span>
                   </div>
+                  
+                  <div class="task-info" @click="selectTaskOnly(task)">
+                    <div class="task-name">{{ task.shortName || task.name }}</div>
+                    <div class="task-meta">
+                      <span class="task-status" :class="`status-${task.status}`">
+                        {{ task.status }}
+                      </span>
+                      <span class="task-priority">P{{ task.priority }}</span>
+                      <span class="task-id">#{{ task.id }}</span>
+                    </div>
+                  </div>
+                  
+                  <button 
+                    class="detail-btn"
+                    @click="selectTaskOnly(task)"
+                    title="查看详情"
+                  >
+                    <span>👁️</span>
+                  </button>
                 </div>
-                
-                <button 
-                  class="detail-btn"
-                  @click="selectTaskOnly(task)"
-                  title="查看详情"
-                >
-                  <span>👁️</span>
-                </button>
               </div>
             </div>
           </div>
@@ -106,30 +108,52 @@ const expandedTasks = ref(new Set());
 const visibleTasks = ref([]);
 
 const hasChildren = (taskId) => {
-  return props.tasks.some(t => t.parent_id === taskId);
+  const childCount = props.tasks.filter(t => t.parent_id === taskId).length;
+  console.log(`🔍 hasChildren(${taskId}): ${childCount > 0} (${childCount} children found)`);
+  return childCount > 0;
 };
 
 const updateVisibleTasks = () => {
+  console.log('📋 updateVisibleTasks called');
+  console.log('📊 Current expanded tasks:', Array.from(expandedTasks.value));
+  console.log('📝 Total tasks:', props.tasks.length);
+  
   const visible = [];
   const processTask = (task, level = 0) => {
+    console.log(`  Processing task ${task.id} (${task.name}) at level ${level}`);
     visible.push({ ...task, displayLevel: level });
+    
     if (expandedTasks.value.has(task.id)) {
       const children = props.tasks.filter(t => t.parent_id === task.id);
+      console.log(`    Task ${task.id} is expanded, found ${children.length} children`);
       children.forEach(child => processTask(child, level + 1));
+    } else {
+      console.log(`    Task ${task.id} is not expanded (has children: ${hasChildren(task.id)})`);
     }
   };
 
   const rootTasks = props.tasks.filter(t => t.parent_id === null || t.parent_id === 0);
+  console.log('🌳 Root tasks found:', rootTasks.length);
+  
   rootTasks.forEach(task => processTask(task));
+  
+  console.log('👁️ Final visible tasks:', visible.length);
   visibleTasks.value = visible;
 };
 
 const toggleExpansion = (taskId) => {
+  console.log('🔄 toggleExpansion called for task:', taskId);
+  console.log('📊 Current expanded tasks before toggle:', Array.from(expandedTasks.value));
+  
   if (expandedTasks.value.has(taskId)) {
+    console.log('❌ Collapsing task:', taskId);
     expandedTasks.value.delete(taskId);
   } else {
+    console.log('✅ Expanding task:', taskId);
     expandedTasks.value.add(taskId);
   }
+  
+  console.log('📊 Expanded tasks after toggle:', Array.from(expandedTasks.value));
   updateVisibleTasks();
 };
 
@@ -142,15 +166,52 @@ const isExpanded = (taskId) => {
 };
 
 watch(() => props.tasks, (newTasks, oldTasks) => {
-  // When tasks are loaded for the first time, expand the root nodes by default.
-  if ((!oldTasks || oldTasks.length === 0) && newTasks.length > 0) {
+  console.log('🌳 TaskTreeView watch triggered:', {
+    newTasksLength: newTasks?.length || 0,
+    oldTasksLength: oldTasks?.length || 0,
+    expandedCount: expandedTasks.value.size
+  });
+  
+  // 检查是否应该初始化展开状态
+  const shouldExpandRoots = (
+    // 情况1: 真正的首次加载 (oldTasks为空或null, newTasks有内容)
+    ((!oldTasks || oldTasks.length === 0) && newTasks && newTasks.length > 0) ||
+    // 情况2: 之前没有展开任何任务，现在有任务数据了
+    (expandedTasks.value.size === 0 && newTasks && newTasks.length > 0)
+  );
+  
+  if (shouldExpandRoots) {
+    console.log('✅ Should expand root nodes - conditions met');
     const rootTasks = newTasks.filter(t => t.parent_id === null || t.parent_id === 0);
+    console.log('🔍 Found root tasks:', rootTasks.length);
+    
     rootTasks.forEach(task => {
-      if (hasChildren(task.id)) {
+      // 直接在这里检查子任务，而不是依赖hasChildren函数
+      const childrenCount = newTasks.filter(t => t.parent_id === task.id).length;
+      console.log(`🔍 Root task ${task.id} has ${childrenCount} children`);
+      
+      if (childrenCount > 0) {
+        console.log('🔄 Expanding root task:', task.id, task.name);
         expandedTasks.value.add(task.id);
       }
     });
+    
+    console.log('✅ After expansion, expanded tasks:', expandedTasks.value.size);
+  } else if (oldTasks && newTasks && oldTasks.length > 0 && newTasks.length > 0) {
+    console.log('🔄 Updating existing tasks, preserving expand state');
+    // 数据更新时，只保留仍然存在的展开任务
+    const newTaskIds = new Set(newTasks.map(t => t.id));
+    const validExpandedTasks = new Set();
+    
+    expandedTasks.value.forEach(taskId => {
+      if (newTaskIds.has(taskId)) {
+        validExpandedTasks.add(taskId);
+      }
+    });
+    
+    expandedTasks.value = validExpandedTasks;
   }
+  
   updateVisibleTasks();
 }, { deep: true, immediate: true });
 
@@ -211,9 +272,33 @@ watch(() => props.tasks, (newTasks, oldTasks) => {
 .btn-tree:hover {
   background: rgba(255, 255, 255, 0.3);
 }
-.tree-view {
+.tree-scroll-container {
+  max-height: calc(100vh - 220px); /* Adjust this value as needed */
+  overflow-y: auto;
   padding: 1rem;
 }
+
+.tree-scroll-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tree-scroll-container::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+.tree-scroll-container::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 3px;
+}
+
+.tree-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+.tree-view {
+  padding: 0;
+}
+
 .loading-card, .error-card, .empty-card {
   display: flex;
   flex-direction: column;
@@ -260,7 +345,7 @@ watch(() => props.tasks, (newTasks, oldTasks) => {
 .custom-tree-view {
   background: white;
   border-radius: 0.5rem;
-  overflow: hidden;
+  overflow: visible;
 }
 .tree-task-item {
   border-bottom: 1px solid #f1f5f9;

@@ -6,9 +6,9 @@
         <ConversationHistory 
           v-show="showHistory"
           :is-open="showHistory"
-          :plan-id="planId" 
           @select-conversation="handleSelectConversation" 
           @toggle-sidebar="toggleHistory"
+          @conversation-deleted="handleConversationDeleted"
         />
         
         <div class="chat-main" :class="{ 'full-width': !showHistory }">
@@ -24,8 +24,10 @@
             <el-button 
               size="small" 
               @click="createNewConversation"
+              :loading="isCreatingConversation"
+              type="primary"
             >
-              New Conversation
+              {{ isCreatingConversation ? 'Creating...' : 'New Conversation' }}
             </el-button>
           </div>
           
@@ -97,6 +99,7 @@ export default {
   setup() {
     const route = useRoute()
     const planId = ref(route.params.id || null)
+    console.log('🏁 ChatView initialized with planId from route:', planId.value)
     const selectedConversationId = ref(null)
     const showHistory = ref(false)
     const currentMessages = ref([])
@@ -104,11 +107,16 @@ export default {
     const chatInterface = ref(null)
     const selectedTaskForDetail = ref(null)
     const showTaskDetailModal = ref(false)
+    const isCreatingConversation = ref(false)
     
     // 可视化相关
     const visualizationType = ref('none')
     const visualizationData = ref({})
     const visualizationConfig = ref({})
+    
+    // 稳定的任务数据存储（类似 PlanDetailView）
+    const stableTasksData = ref([])
+    const lastTasksUpdateTime = ref(0)
     
     const toggleHistory = () => {
       showHistory.value = !showHistory.value
@@ -144,42 +152,45 @@ export default {
       }
     }
     
+    
     const createNewConversation = async () => {
+      console.log('🔵 createNewConversation called!')
+      if (isCreatingConversation.value) {
+        console.log('Already creating conversation, skipping...')
+        return
+      }
+      
+      isCreatingConversation.value = true
       try {
-        let currentPlanId = planId.value
+        console.log('Creating new conversation...')
         
-        // 如果没有计划ID，先获取或创建一个
-        if (!currentPlanId) {
-          const plansResponse = await api.get('/plans')
-          if (plansResponse.data.plans && plansResponse.data.plans.length > 0) {
-            currentPlanId = plansResponse.data.plans[0].id
-          } else {
-            // 创建默认计划
-            const planResponse = await api.post('/plans/propose', {
-              goal: '默认研究计划',
-              title: '默认计划'
-            })
-            currentPlanId = planResponse.data.id
-          }
-          planId.value = currentPlanId
-        }
-        
-        // 创建新会话
-        const response = await chatApi.createConversation(currentPlanId, {
-          title: `会话 ${new Date().toLocaleString()}`
+        // 创建新会话（不需要plan关联）
+        const response = await chatApi.createConversation({
+          title: `Conversation ${new Date().toLocaleString()}`
         })
+        console.log('Conversation created:', response)
         
         selectedConversationId.value = response.id
         currentMessages.value = []
         
-        // 重置可视化
-        visualizationType.value = 'none'
-        visualizationData.value = {}
+        // 显示帮助菜单
+        visualizationType.value = 'help_menu'
+        visualizationData.value = [
+          { command: "Create Plan", description: "Create a new research plan" },
+          { command: "Show Plans", description: "View all plan lists" },
+          { command: "Execute Plan", description: "Execute tasks in specified plan" },
+          { command: "Check Status", description: "View plan or task execution status" },
+          { command: "Help", description: "Display help information" }
+        ]
         visualizationConfig.value = {}
+        
+        ElMessage.success('New conversation created')
         
       } catch (error) {
         console.error('Failed to create conversation:', error)
-        ElMessage.error('创建会话失败')
+        ElMessage.error(`Failed to create conversation: ${error.message || error}`)
+      } finally {
+        isCreatingConversation.value = false
       }
     }
     
@@ -187,27 +198,63 @@ export default {
       if (!selectedConversationId.value) return
       
       try {
+        // 先添加用户消息到消息列表
+        const userMessage = {
+          sender: 'user',
+          text: messageText,
+          timestamp: new Date().toISOString()
+        }
+        currentMessages.value.push(userMessage)
+        
         // 发送消息并获取响应（包含可视化指令）
         const response = await chatApi.sendMessage(selectedConversationId.value, messageText)
         
-        // 更新消息列表
-        if (response.message) {
+        // 处理两阶段响应
+        if (response.initial_response) {
+          // 检查是否是casual chat
+          const isCasualChat = response.action_result?.is_casual_chat
+          
+          // 先显示即时响应
+          const initialMessage = {
+            sender: 'agent',
+            text: response.initial_response,
+            timestamp: new Date().toISOString(),
+            isInitial: true,
+            isCasualChat: isCasualChat  // 标记是否为casual chat
+          }
+          currentMessages.value.push(initialMessage)
+          
+          // 如果有工具执行反馈，稍后添加
+          if (response.execution_feedback) {
+            setTimeout(() => {
+              const feedbackMessage = {
+                sender: 'agent',
+                text: response.execution_feedback,
+                timestamp: new Date().toISOString(),
+                isFeedback: true
+              }
+              currentMessages.value.push(feedbackMessage)
+            }, 500) // 延迟500ms显示执行结果
+          }
+        } else if (response.message) {
+          // 兼容旧格式
           currentMessages.value.push(response.message)
         }
         
-        // 更新可视化
+        // 先处理动作结果（更新 planId）
+        handleActionResult(response)
+        
+        // 然后更新可视化（使用正确的 planId）
         if (response.visualization) {
           updateVisualization(response.visualization)
         }
-        
-        // 处理需要执行的动作
-        handleActionResult(response)
         
       } catch (error) {
         console.error('Failed to send message:', error)
         currentMessages.value.push({ 
           sender: 'agent', 
-          text: '抱歉，发送消息时出现错误。' 
+          text: 'Sorry, an error occurred while processing your message.',
+          timestamp: new Date().toISOString()
         })
       }
     }
@@ -216,6 +263,14 @@ export default {
       if (!selectedConversationId.value) return
       
       try {
+        // 先添加用户消息到消息列表
+        const userMessage = {
+          sender: 'user',
+          text: messageText,
+          timestamp: new Date().toISOString()
+        }
+        currentMessages.value.push(userMessage)
+        
         await chatApi.sendMessageStream(
           selectedConversationId.value,
           messageText,
@@ -224,12 +279,31 @@ export default {
           },
           (complete) => {
             callbacks.onComplete(complete)
-            // 流式响应完成后，也可能需要更新可视化
+            
+            // 流式响应完成后，更新可视化
             if (complete.visualization) {
               updateVisualization(complete.visualization)
             }
+            
+            // 将完整消息同步到currentMessages（ChatInterface已处理显示）
+            if (complete.full_text) {
+              const agentMessage = {
+                sender: 'agent',
+                text: complete.full_text,
+                timestamp: new Date().toISOString()
+              }
+              currentMessages.value.push(agentMessage)
+            }
           },
-          callbacks.onError
+          (error) => {
+            callbacks.onError(error)
+            // 添加错误消息
+            currentMessages.value.push({ 
+              sender: 'agent', 
+              text: 'Sorry, an error occurred while processing your message.',
+              timestamp: new Date().toISOString()
+            })
+          }
         )
       } catch (error) {
         console.error('Failed to send message:', error)
@@ -237,40 +311,103 @@ export default {
       }
     }
     
-    const updateVisualization = async (visualization) => {
-      visualizationType.value = visualization.type || 'none'
-      visualizationData.value = visualization.data || {}
-      visualizationConfig.value = visualization.config || {}
-      
-      // 如果是任务树视图，确保获取完整的任务数据
-      if ((visualization.type === 'task_tree' || visualization.type === 'task_list') && planId.value) {
-        // 如果已经有缓存的任务数据，直接使用
-        if (window.currentPlanTasks) {
-          visualizationData.value = window.currentPlanTasks
-        } else {
-          await loadPlanTasks()
-        }
+    const updateStableTasksData = (newTasks) => {
+      if (!newTasks || !Array.isArray(newTasks)) {
+        console.log('❌ Invalid newTasks data:', newTasks)
+        return
       }
-    }
-    
-    const loadPlanTasks = async () => {
-      if (!planId.value) return
       
-      try {
-        const response = await api.get(`/plans/${planId.value}/tasks`)
-        // 格式化任务数据，添加shortName字段
-        const formattedTasks = response.data.map(task => ({
+      const currentTime = Date.now()
+      const timeSinceLastUpdate = currentTime - lastTasksUpdateTime.value
+      
+      // 检查数据是否真的有变化（避免无用更新）
+      const dataChanged = 
+        stableTasksData.value.length !== newTasks.length ||
+        !stableTasksData.value.every((task, index) => task.id === newTasks[index]?.id)
+      
+      if (dataChanged || timeSinceLastUpdate > 1000) { // 至少1秒间隔或数据确实变化
+        console.log('📦 Updating stable tasks data:', newTasks.length, 'tasks', 'dataChanged:', dataChanged)
+        
+        // 格式化任务数据
+        const formattedTasks = newTasks.map(task => ({
           ...task,
           shortName: task.name.replace(`[计划]`, '').trim() || task.name,
         }))
         
-        // 只有在当前显示任务树时才更新数据，避免覆盖帮助菜单
-        if (visualizationType.value === 'task_tree' || visualizationType.value === 'task_list') {
-          visualizationData.value = formattedTasks
+        const isFirstLoad = stableTasksData.value.length === 0
+        console.log('🔍 Is first load?', isFirstLoad)
+        
+        // 保持引用稳定性：只有在数据结构真正变化时才创建新引用
+        if (isFirstLoad) {
+          // 首次加载 - 创建新引用
+          console.log('✨ First load: Creating new array reference')
+          stableTasksData.value = formattedTasks
+        } else {
+          // 更新现有数据，保持引用稳定性
+          console.log('🔄 Updating: Keeping array reference stable')
+          stableTasksData.value.splice(0, stableTasksData.value.length, ...formattedTasks)
+        }
+        lastTasksUpdateTime.value = currentTime
+        
+        // 更新缓存
+        window.currentPlanTasks = stableTasksData.value
+        window.currentPlanId = parseInt(planId.value)
+      } else {
+        console.log('📌 No significant change in tasks data, keeping stable reference')
+      }
+    }
+
+    const updateVisualization = async (visualization) => {
+      console.log('🎨 updateVisualization called with type:', visualization.type, 'planId:', planId.value)
+      visualizationType.value = visualization.type || 'none'
+      visualizationConfig.value = visualization.config || {}
+      
+      // 如果是任务树视图，处理任务数据
+      if ((visualization.type === 'task_tree' || visualization.type === 'task_list') && planId.value) {
+        console.log('📊 Task tree/list visualization detected, planId:', planId.value)
+        
+        // 首先检查后端是否已经提供了任务数据
+        const backendTasks = visualization.data
+        console.log('🔍 Backend provided tasks:', backendTasks?.length || 0, 'tasks')
+        
+        // 始终通过API获取最新的任务数据，确保数据格式一致
+        console.log('🔄 Always loading fresh data from API for consistency')
+        await loadPlanTasks()
+        
+        // 可选：如果后端数据可用，可以用作备用验证
+        if (backendTasks && Array.isArray(backendTasks) && backendTasks.length > 0) {
+          console.log('📋 Backend also provided tasks:', backendTasks.length, 'tasks (used for validation)')
         }
         
-        // 将任务数据存储到单独的变量中，以便后续使用
-        window.currentPlanTasks = formattedTasks
+        // 设置可视化数据为稳定的任务数据引用
+        visualizationData.value = stableTasksData.value
+        
+      } else {
+        console.log('⏩ Skipping task loading - not task tree/list or no planId')
+        // 对于非任务视图，设置默认数据
+        visualizationData.value = visualization.data || {}
+      }
+    }
+    
+    const loadPlanTasks = async () => {
+      console.log('🔍 loadPlanTasks called, planId:', planId.value)
+      if (!planId.value) {
+        console.log('❌ No planId, returning early')
+        return
+      }
+      
+      try {
+        console.log(`📡 Fetching tasks for plan ${planId.value}`)
+        const response = await api.get(`/plans/${planId.value}/tasks`)
+        console.log('📦 Raw tasks response:', response.data.length, 'tasks')
+        
+        // 使用稳定数据更新方法
+        updateStableTasksData(response.data)
+        
+        // 只有在当前显示任务树时才更新可视化数据
+        if (visualizationType.value === 'task_tree' || visualizationType.value === 'task_list') {
+          visualizationData.value = stableTasksData.value
+        }
         
         visualizationConfig.value = { ...visualizationConfig.value, loading: false }
       } catch (error) {
@@ -280,13 +417,24 @@ export default {
     }
 
     const handleVisualizationAction = (action) => {
+      console.log('🔄 handleVisualizationAction called with:', action)
+      console.log('🔍 Current planId.value:', planId.value)
+      
       // 处理不同类型的可视化动作
       if (action.type === 'select_task') {
         // 处理任务选择事件，显示任务详情
         showTaskDetail(action.task)
       } else if (action.type === 'refresh_tasks') {
         // 处理刷新任务事件
-        loadPlanTasks()
+        console.log('🔄 Refresh tasks requested, planId:', planId.value)
+        if (planId.value) {
+          console.log('✅ planId exists, calling loadPlanTasks...')
+          loadPlanTasks()
+        } else {
+          // 如果没有planId，提示用户先创建plan
+          console.log('❌ No planId, showing warning')
+          ElMessage.warning('请先创建一个计划，然后才能查看任务')
+        }
       } else if (chatInterface.value && action.command) {
         // 将其他动作转换为聊天命令
         chatInterface.value.sendMessage(action.command)
@@ -315,15 +463,94 @@ export default {
       closeTaskDetailModal()
     }
     
+    const handleConversationDeleted = () => {
+      // 处理会话删除后的清理
+      selectedConversationId.value = null
+      currentMessages.value = []
+      
+      // 重置可视化状态
+      visualizationType.value = 'help_menu'
+      visualizationData.value = [
+        { command: "Create Plan", description: "Create a new research plan" },
+        { command: "Show Plans", description: "View all plan lists" },
+        { command: "Execute Plan", description: "Execute tasks in specified plan" },
+        { command: "Check Status", description: "View plan or task execution status" },
+        { command: "Help", description: "Display help information" }
+      ]
+      visualizationConfig.value = {}
+      
+      console.log('All conversations deleted, showing welcome state')
+    }
+    
     const handleActionResult = (response) => {
+      console.log('🎯 handleActionResult called with response:', response)
+      console.log('🔍 Current planId.value before processing:', planId.value)
+      
       // 处理需要执行的后续动作
-      if (response && response.action_result && response.action_result.should_execute) {
-        if (response.intent === 'execute_plan') {
+      if (response && response.action_result) {
+        console.log('📋 action_result found:', response.action_result)
+        console.log('📋 action_result.plan_id:', response.action_result.plan_id)
+        console.log('📋 response.intent:', response.intent)
+        
+        // 通用的 plan_id 同步逻辑 - 只要 action_result 中有 plan_id 就更新
+        if (response.action_result.plan_id !== undefined && response.action_result.plan_id !== null) {
+          const newPlanId = parseInt(response.action_result.plan_id)
+          const currentPlanId = parseInt(planId.value)
+          console.log('🧐 Plan ID sync check - newPlanId:', newPlanId, 'currentPlanId:', currentPlanId)
+          if (!isNaN(newPlanId) && newPlanId !== currentPlanId) {
+            console.log('🔄 Plan ID change detected:', planId.value, '->', newPlanId)
+            planId.value = newPlanId
+            console.log('✅ Updated planId.value to:', planId.value)
+            // 清除任务缓存，强制重新加载
+            console.log('🗑️ Clearing task cache for plan ID change')
+            window.currentPlanTasks = null
+            window.currentPlanId = null
+          } else {
+            console.log('⏹️ Plan ID unchanged or invalid newPlanId')
+          }
+        } else {
+          console.log('❌ No plan_id found in action_result')
+        }
+        
+        // 处理plan创建结果，维护planID
+        if (response.intent === 'create_plan' && response.action_result.plan_id) {
+          console.log('✅ Plan created with ID:', planId.value)
+        }
+        
+        // 处理plan执行
+        if (response.action_result.should_execute && response.intent === 'execute_plan') {
           const execPlanId = response.action_result.plan_id
           if (execPlanId) {
+            console.log('✅ Switched to plan for execution:', planId.value)
             executePlan(execPlanId)
           }
         }
+        
+        // 处理显示特定plan的任务
+        if (response.intent === 'show_tasks') {
+          if (response.action_result.plan_id) {
+            console.log('✅ Switched to plan for showing tasks:', planId.value)
+          } else {
+            console.log('❌ show_tasks intent but no plan_id found in action_result')
+            console.log('❌ action_result:', response.action_result)
+          }
+        }
+        
+        // 处理查询状态 - 如果是查询特定plan的状态
+        if (response.intent === 'query_status' && response.action_result.plan_id) {
+          console.log('✅ Switched to plan for status query:', planId.value)
+        }
+        
+        // 处理plan列表显示
+        if (response.intent === 'list_plans' && response.action_result.plans) {
+          // 如果当前没有planId，设置第一个plan作为当前plan
+          if (!planId.value && response.action_result.plans.length > 0) {
+            planId.value = response.action_result.plans[0].id
+            console.log('Set current plan to first available:', planId.value)
+          }
+        }
+      } else {
+        console.log('❌ No action_result found in response')
       }
     }
     
@@ -385,10 +612,10 @@ export default {
     }
     
     onMounted(async () => {
-      // 初始化时尝试加载第一个会话
-      if (!selectedConversationId.value && planId.value) {
+      // 初始化时尝试加载第一个会话（不需要plan依赖）
+      if (!selectedConversationId.value) {
         try {
-          const conversations = await chatApi.getConversationsForPlan(planId.value)
+          const conversations = await chatApi.getAllConversations()
           if (conversations && conversations.length > 0) {
             handleSelectConversation(conversations[0].id)
           } else {
@@ -398,11 +625,6 @@ export default {
         } catch (error) {
           console.error('Failed to load initial conversation:', error)
         }
-      }
-      
-      // 如果有planId但没有任务数据，预加载任务数据
-      if (planId.value && (!visualizationData.value || Object.keys(visualizationData.value).length === 0)) {
-        await loadPlanTasks()
       }
     })
     
@@ -418,6 +640,7 @@ export default {
       visualizationConfig,
       selectedTaskForDetail,
       showTaskDetailModal,
+      isCreatingConversation,
       toggleHistory,
       handleSelectConversation,
       createNewConversation,
@@ -427,7 +650,8 @@ export default {
       handleVisualizationAction,
       closeTaskDetailModal,
       handleTaskRerun,
-      handleTaskDeleted
+      handleTaskDeleted,
+      handleConversationDeleted
     }
   }
 }
@@ -499,8 +723,26 @@ export default {
   flex: 1.2;
   min-width: 500px;
   height: 100%;
-  overflow: hidden;
+  overflow-y: auto;
   background: #f5f7fa;
+}
+
+.visualization-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.visualization-panel::-webkit-scrollbar-track {
+  background: #e4e7ed;
+  border-radius: 4px;
+}
+
+.visualization-panel::-webkit-scrollbar-thumb {
+  background: #909399;
+  border-radius: 4px;
+}
+
+.visualization-panel::-webkit-scrollbar-thumb:hover {
+  background: #606266;
 }
 
 /* 响应式布局 */

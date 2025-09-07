@@ -177,15 +177,42 @@ def init_db():
         )''')
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_plan_id ON chat_messages(plan_id)")
 
-        # New Chat System Tables (supporting multiple conversations per plan)
+        # New Chat System Tables (independent conversations, no plan dependency)
         conn.execute('''CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            plan_id INTEGER NOT NULL,
             title TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_plan_id ON conversations(plan_id)")
+        
+        # Remove plan_id constraint if it exists (for migration)
+        try:
+            # First, check if plan_id column exists and has data
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(conversations)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'plan_id' in columns:
+                # Backup existing data
+                cursor.execute("SELECT id, title, created_at FROM conversations")
+                existing_data = cursor.fetchall()
+                
+                # Drop and recreate table without plan_id
+                conn.execute("DROP TABLE IF EXISTS conversations")
+                conn.execute('''CREATE TABLE conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )''')
+                
+                # Restore data without plan_id
+                for row in existing_data:
+                    conn.execute(
+                        "INSERT INTO conversations (id, title, created_at) VALUES (?, ?, ?)",
+                        row
+                    )
+        except Exception as e:
+            # If migration fails, create fresh table
+            pass
 
         conn.execute('''CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

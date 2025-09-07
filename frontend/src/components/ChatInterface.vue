@@ -49,8 +49,6 @@ watch(() => props.initialMessages, (newVal) => {
 
 const sendMessage = () => {
   if (newMessage.value.trim() !== '' && !isStreaming.value) {
-    const userMessage = { sender: 'user', text: newMessage.value };
-    messages.value.push(userMessage);
     
     if (props.useStreaming) {
       // Create placeholder for streaming response

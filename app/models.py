@@ -162,7 +162,6 @@ class Message(BaseModel):
 
 class Conversation(BaseModel):
     id: int
-    plan_id: int
     title: str
     created_at: datetime
 
