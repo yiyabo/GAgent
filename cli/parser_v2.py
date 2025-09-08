@@ -150,6 +150,10 @@ class ModularCLIParser:
         if PlanParamsHandler.has_plan_operation(args):
             return "plan"
 
+        # Chat mode (checked after structured ops)
+        if hasattr(args, "chat") and getattr(args, "chat"):
+            return "chat"
+
         if UtilityParamsHandler.has_utility_operation(args):
             return "utility"
 
