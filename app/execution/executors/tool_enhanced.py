@@ -124,10 +124,19 @@ class ToolEnhancedExecutor:
                 if enhanced_context_options.get("tool_enhanced"):
                     logger.info(f"Tool context available: {len(enhanced_context_options.get('combined', ''))} chars")
 
-                status = base_execute_task(task, use_context=True, context_options=enhanced_context_options)
+                # Phase 5: Execute LLM with enhanced context using the evaluation-driven executor
+                # This ensures that the context gathered by tools is actually used for generation.
+                from .enhanced import execute_task_with_evaluation
+                result_obj = execute_task_with_evaluation(
+                    task,
+                    repo=self.repo,
+                    use_context=True,
+                    context_options=enhanced_context_options
+                )
+                status = result_obj.status
 
                 # Phase 6: Execute output tools AFTER content generation
-                if output_tools and status == "done":
+                if output_tools and status in ("done", "completed"):
                     await self._execute_post_generation_tools(output_tools, task, task_id)
 
                 # Phase 7: Record tool usage for learning

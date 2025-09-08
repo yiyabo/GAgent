@@ -166,3 +166,9 @@ class RerunTaskSubtreeRequest(BaseModel):
     use_context: bool = False
     context_options: Optional[ContextOptions] = None
     include_parent: bool = True
+
+
+class TaskUpdate(BaseModel):
+    name: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[int] = None

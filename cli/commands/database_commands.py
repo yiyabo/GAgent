@@ -11,7 +11,8 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from app.database import DB_PATH, get_db
+from app.database import get_db
+from app.config.database_config import get_main_database_path
 from app.services.embeddings.cache import get_embedding_cache
 from app.services.evaluation.evaluation_cache import get_cache_stats, get_evaluation_cache
 
@@ -48,9 +49,10 @@ class DatabaseCommands(CLICommand):
         info = {"databases": {}, "total_size_mb": 0}
 
         # 主数据库信息
-        if os.path.exists(DB_PATH):
-            size = os.path.getsize(DB_PATH) / (1024 * 1024)
-            info["databases"]["main"] = {"path": DB_PATH, "size_mb": round(size, 2), "exists": True}
+        main_db_path = get_main_database_path()
+        if os.path.exists(main_db_path):
+            size = os.path.getsize(main_db_path) / (1024 * 1024)
+            info["databases"]["main"] = {"path": main_db_path, "size_mb": round(size, 2), "exists": True}
             info["total_size_mb"] += size
 
             # 获取表统计信息
@@ -81,7 +83,7 @@ class DatabaseCommands(CLICommand):
             except Exception as e:
                 info["databases"]["main"]["error"] = str(e)
         else:
-            info["databases"]["main"] = {"path": DB_PATH, "exists": False}
+            info["databases"]["main"] = {"path": main_db_path, "exists": False}
 
         # 嵌入缓存数据库信息
         embedding_cache_path = self.embedding_cache.cache_db_path
@@ -205,12 +207,13 @@ class DatabaseCommands(CLICommand):
         result = {"backup_path": backup_path, "success": False, "error": None}
 
         try:
-            if not os.path.exists(DB_PATH):
-                result["error"] = f"Source database {DB_PATH} does not exist"
+            main_db_path = get_main_database_path()
+            if not os.path.exists(main_db_path):
+                result["error"] = f"Source database {main_db_path} does not exist"
                 return result
 
             # 使用SQLite的备份API
-            source = sqlite3.connect(DB_PATH)
+            source = sqlite3.connect(main_db_path)
             backup = sqlite3.connect(backup_path)
 
             source.backup(backup)

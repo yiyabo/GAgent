@@ -1,15 +1,18 @@
 """Plan management command implementations."""
 
 import json
+import os
+import urllib.parse
 from argparse import ArgumentParser, Namespace
 from typing import Any, Dict, List, Optional
 
-# Import app modules
+import requests
+
+# Import app modules (repository is used for local reads like list_plans)
 from app.database import init_db
-from app.main import approve_plan, get_plan_assembled, propose_plan, run_tasks
 from app.repository.tasks import SqliteTaskRepository
 
-from ..parser_v2 import LegacyCompatibilityWrapper
+from ..parser import DefaultContextOptionsBuilder
 from ..utils import FileUtils, IOUtils, PlanUtils
 from .base import MultiCommand
 
@@ -146,8 +149,8 @@ class PlanCommands(MultiCommand):
         self.io.print_section(f"Executing Plan: {title}")
 
         try:
-            # Build context options using compatibility wrapper
-            context_builder = LegacyCompatibilityWrapper()
+            # Build context options
+            context_builder = DefaultContextOptionsBuilder()
             context_options = context_builder.build_from_args(args)
 
             # Execute the plan
@@ -162,26 +165,23 @@ class PlanCommands(MultiCommand):
             if context_options:
                 payload["context_options"] = context_options
 
-            result = run_tasks(payload)
+            result = _api_post("/run", payload, timeout=1800)
 
-            # run_tasks returns a list of task results, not a dict with success/error
-            if isinstance(result, list):
-                completed_tasks = sum(1 for r in result if r.get("status") in ["completed", "done"])
-                total_tasks = len(result)
-
-                self.io.print_success(f"Plan execution completed: {completed_tasks}/{total_tasks} tasks")
-
-                # Optionally save assembled output
-                output_path = getattr(args, "output", "output.md")
-                if self.confirm_action(f"Save assembled output to {output_path}?"):
-                    self._save_assembled_output(title, output_path)
-
-                return 0
+            # Try to summarize
+            if isinstance(result, dict) and "summary" in result:
+                s = result["summary"]
+                self.io.print_success(
+                    f"Plan execution completed: {s.get('completed',0)}/{s.get('total',0)} tasks"
+                )
             else:
-                # Handle error case (if result is a dict with error info)
-                error = result.get("error", "Unknown error") if isinstance(result, dict) else str(result)
-                self.io.print_error(f"Plan execution failed: {error}")
-                return 1
+                self.io.print_success("Plan execution completed")
+
+            # Optionally save assembled output
+            output_path = getattr(args, "output", "output.md")
+            if self.confirm_action(f"Save assembled output to {output_path}?"):
+                self._save_assembled_output(title, output_path)
+
+            return 0
 
         except Exception as e:
             self.io.print_error(f"Execution failed: {e}")
@@ -245,10 +245,8 @@ class PlanCommands(MultiCommand):
                         else:
                             self.io.print_warning("Using original plan (edited version invalid)")
 
-            # 4. Approve plan (persist to database)
-            approve_result = approve_plan(plan_result)
-            if not self.handle_api_error(approve_result, "Plan approval"):
-                return 1
+            # 4. Approve plan (persist to database) via REST
+            _api_post("/plans/approve", plan_result, timeout=120)
 
             title = plan_result.get("title", "Untitled")
             self.io.print_success(f"Plan approved and saved to database: {title}")
@@ -305,20 +303,16 @@ class PlanCommands(MultiCommand):
         self.io.print_info(f"Generating plan for goal: {args.goal}")
 
         try:
-            result = propose_plan(payload)
+            result = _api_post("/plans/propose", payload, timeout=300)
 
-            if not self.handle_api_error(result, "Plan generation"):
-                return None
-
-            # The propose_plan function returns the plan directly, not wrapped in a 'plan' field
-            plan = result if isinstance(result, dict) and "title" in result else result.get("plan")
+            # The API returns the plan directly
+            plan = result if isinstance(result, dict) and "title" in result else (result or {}).get("plan")
             if not plan or not PlanUtils.validate_plan(plan):
                 self.io.print_error("Generated plan is invalid")
                 return None
 
             # Ensure priorities are set
             plan = PlanUtils.ensure_priorities(plan)
-
             return plan
 
         except Exception as e:
@@ -328,9 +322,9 @@ class PlanCommands(MultiCommand):
     def _save_assembled_output(self, title: str, output_path: str) -> bool:
         """Save assembled plan output to file."""
         try:
-            result = get_plan_assembled(title)
+            encoded = urllib.parse.quote(title, safe="")
+            result = _api_get(f"/plans/{encoded}/assembled", timeout=120)
 
-            # get_plan_assembled returns a dict with 'title', 'sections', and 'combined' fields
             if not isinstance(result, dict) or "combined" not in result:
                 self.io.print_error("Failed to get assembled output")
                 return False
@@ -343,9 +337,34 @@ class PlanCommands(MultiCommand):
             if FileUtils.write_file_safe(output_path, content):
                 self.io.print_success(f"Assembled output saved to {output_path}")
                 return True
-            else:
-                return False
+            return False
 
         except Exception as e:
             self.io.print_error(f"Failed to save assembled output: {e}")
             return False
+
+
+# ------------ HTTP helpers ------------
+BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+
+
+def _api_post(path: str, payload: Dict[str, Any], timeout: int = 300) -> Dict[str, Any]:
+    url = f"{BASE_URL}{path}"
+    resp = requests.post(url, json=payload, timeout=timeout)
+    if 200 <= resp.status_code < 300:
+        try:
+            return resp.json()
+        except Exception:
+            return {}
+    raise RuntimeError(f"POST {path} failed: HTTP {resp.status_code} {resp.text}")
+
+
+def _api_get(path: str, timeout: int = 120) -> Dict[str, Any]:
+    url = f"{BASE_URL}{path}"
+    resp = requests.get(url, timeout=timeout)
+    if 200 <= resp.status_code < 300:
+        try:
+            return resp.json()
+        except Exception:
+            return {}
+    raise RuntimeError(f"GET {path} failed: HTTP {resp.status_code} {resp.text}")

@@ -36,13 +36,21 @@ class CoreParamsHandler:
             "--output", type=str, default="output.md", help="Assembled output file path (default: output.md)"
         )
 
+        # Interactive chat mode
+        group.add_argument("--chat", action="store_true", help="Enter interactive chat mode")
+        group.add_argument("--chat-provider", type=str, help="Chat provider override")
+        group.add_argument("--chat-model", type=str, help="Chat model override")
+        group.add_argument("--chat-max-turns", type=int, default=0, help="Autostop chat after N turns (0=unlimited)")
+        group.add_argument("--chat-stream", action="store_true", help="Stream chat output (print incrementally)")
+        group.add_argument("--chat-pretty", action="store_true", help="Pretty chat UI using rich panels")
+
     @staticmethod
     def extract_values(args) -> Dict[str, Any]:
         """Extract core parameter values from parsed args."""
         values = {}
 
         # Required parameters
-        core_attrs = ["goal", "title", "output", "schedule"]
+        core_attrs = ["goal", "title", "output", "schedule", "chat_provider", "chat_model", "chat_max_turns"]
         for attr in core_attrs:
             if hasattr(args, attr):
                 value = getattr(args, attr)
@@ -50,7 +58,7 @@ class CoreParamsHandler:
                     values[attr] = value
 
         # Boolean flags
-        bool_attrs = ["plan_only", "execute_only", "yes", "no_open"]
+        bool_attrs = ["plan_only", "execute_only", "yes", "no_open", "chat"]
         for attr in bool_attrs:
             if hasattr(args, attr) and getattr(args, attr):
                 values[attr] = True
