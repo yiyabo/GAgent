@@ -42,13 +42,13 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
         f"{sections_instruction}\n"
         f"Style (optional): {style}\n"
         f"Notes (optional): {notes}\n"
-        "Rules: Do not include markdown code fences. Keep concise prompts for each task. Use English only."
+        "Rules: Do not include markdown code fences. Keep concise prompts for each task. The user's goal may be in any language; your response should be in the same language."
     )
 
     plan: Dict[str, Any]
     client = client or get_default_client()
     try:
-        content = client.chat(prompt)
+        content = client.chat(prompt, force_real=True)
         print(f"DEBUG: LLM response content: {content}")  # Debug output
         obj = parse_json_obj(content) or {}
         print(f"DEBUG: Parsed JSON object: {obj}")  # Debug output
@@ -92,6 +92,8 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
             }
         )
 
+    if not norm_tasks:
+        raise ValueError("LLM failed to generate any tasks for the given goal.")
     return {"title": plan.get("title") or title, "tasks": norm_tasks}
 
 

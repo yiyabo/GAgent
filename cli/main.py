@@ -4,6 +4,7 @@ import sys
 from typing import List, Optional
 
 from .commands import PlanCommands, RerunCommands
+from .commands.chat_commands import ChatCommands
 from .commands.database_commands import DatabaseCommands
 from .commands.evaluation_commands import EvaluationCommands
 from .commands.memory_commands import MemoryCommands
@@ -41,6 +42,7 @@ class ModernCLIApp(CLIApplication):
         self.register_command(EvaluationCommands())
         self.register_command(DatabaseCommands())
         self.register_command(MemoryCommands())
+        self.register_command(ChatCommands())
 
     def register_command(self, command: CLICommand) -> None:
         """Register a command with the application."""
@@ -112,6 +114,11 @@ class ModernCLIApp(CLIApplication):
             plan_cmd = self._get_command_by_name("plan")
             if plan_cmd:
                 return plan_cmd.execute(args)
+
+        elif operation_type == "chat":
+            chat_cmd = self._get_command_by_name("chat")
+            if chat_cmd:
+                return chat_cmd.execute(args)
 
         elif operation_type == "utility":
             return self._handle_utility_operations(args)
@@ -192,9 +199,9 @@ class ModernCLIApp(CLIApplication):
             return 1
 
         try:
-            import requests
-
-            response = requests.get(f"http://127.0.0.1:8000/tasks/{task_id}/context/snapshots")
+            import os, requests
+            base_url = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+            response = requests.get(f"{base_url}/tasks/{task_id}/context/snapshots")
 
             if response.status_code == 200:
                 snapshots = response.json().get("snapshots", [])
@@ -228,9 +235,9 @@ class ModernCLIApp(CLIApplication):
             return 1
 
         try:
-            import requests
-
-            response = requests.get(f"http://127.0.0.1:8000/tasks/{task_id}/context/snapshots/{label}")
+            import os, requests
+            base_url = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+            response = requests.get(f"{base_url}/tasks/{task_id}/context/snapshots/{label}")
 
             if response.status_code == 200:
                 snapshot_data = response.json()
@@ -253,7 +260,7 @@ class ModernCLIApp(CLIApplication):
     def _handle_index_preview(self, args) -> int:
         """Handle --index-preview operation."""
         try:
-            from app.services.index_root import generate_index
+            from app.services.context.index_root import generate_index
 
             result = generate_index()
             content = result.get("content", "")

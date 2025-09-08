@@ -6,13 +6,14 @@
 
 from fastapi import APIRouter, HTTPException
 
-from ..models import TaskCreate
+from typing import List
+from ..models import Task, TaskCreate, TaskUpdate
 from ..repository.tasks import default_repo
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-@router.post("")
+@router.post("", response_model=Task)
 def create_task(task: TaskCreate):
     """Create a new task with the provided details.
 
@@ -23,10 +24,13 @@ def create_task(task: TaskCreate):
         dict: Dictionary containing the created task ID
     """
     task_id = default_repo.create_task(task.name, status="pending", priority=None, task_type=task.task_type)
-    return {"id": task_id}
+    created_task = default_repo.get_task_info(task_id)
+    if not created_task:
+        raise HTTPException(status_code=500, detail="Failed to create or retrieve task")
+    return created_task
 
 
-@router.get("")
+@router.get("", response_model=List[Task])
 def list_tasks():
     """List all tasks in the system.
 
@@ -34,6 +38,27 @@ def list_tasks():
         list: List of all tasks
     """
     return default_repo.list_all_tasks()
+
+
+@router.get("/{task_id}", response_model=Task)
+def get_task(task_id: int):
+    """Get a single task by its ID."""
+    task = default_repo.get_task_info(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+@router.put("/{task_id}", response_model=Task)
+def update_task(task_id: int, task_update: TaskUpdate):
+    """Update a task's properties, such as its status."""
+    if task_update.status:
+        default_repo.update_task_status(task_id, task_update.status)
+    
+    updated_task = default_repo.get_task_info(task_id)
+    if not updated_task:
+        raise HTTPException(status_code=404, detail="Task not found after update")
+    return updated_task
 
 
 @router.get("/{task_id}/output")

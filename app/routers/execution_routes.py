@@ -38,7 +38,7 @@ router = APIRouter(tags=["execution"])
 
 
 @router.post("/run")
-def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
+async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     """
     Execute tasks. If body contains {"title": "..."}, only run tasks for that plan (by name prefix).
     Otherwise, run all pending tasks (original behavior).
@@ -169,16 +169,14 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                 # Use enhanced executor with evaluation (optionally tool-enhanced)
                 if use_tools:
                     # Combined tool + evaluation path (async wrapper)
-                    result = run_async(
-                        execute_task_with_tools_and_evaluation(
-                            task=task,
-                            repo=default_repo,
-                            evaluation_mode=evaluation_mode or "llm",
-                            max_iterations=evaluation_config["max_iterations"],
-                            quality_threshold=evaluation_config["quality_threshold"],
-                            use_context=use_context,
-                            context_options=context_options,
-                        )
+                    result = await execute_task_with_tools_and_evaluation(
+                        task=task,
+                        repo=default_repo,
+                        evaluation_mode=evaluation_mode or "llm",
+                        max_iterations=evaluation_config["max_iterations"],
+                        quality_threshold=evaluation_config["quality_threshold"],
+                        use_context=use_context,
+                        context_options=context_options,
                     )
                 else:
                     # Select evaluation mode
@@ -248,8 +246,70 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
 
     # 执行过滤后的任务 - 与上面类似的逻辑
     for task in tasks_iter:
-        # ... 相同的执行逻辑
-        pass
+        if enable_evaluation:
+            if use_tools:
+                result = await execute_task_with_tools_and_evaluation(
+                    task=task,
+                    repo=default_repo,
+                    evaluation_mode=evaluation_mode or "llm",
+                    max_iterations=evaluation_config["max_iterations"],
+                    quality_threshold=evaluation_config["quality_threshold"],
+                    use_context=use_context,
+                    context_options=context_options,
+                )
+            else:
+                # This path is less likely with the chat tool but kept for broader API compatibility
+                if evaluation_mode == "multi_expert":
+                    _exec = execute_task_with_multi_expert_evaluation
+                elif evaluation_mode == "adversarial":
+                    _exec = execute_task_with_adversarial_evaluation
+                else:
+                    _exec = execute_task_with_evaluation
+                result = _exec(
+                    task=task,
+                    repo=default_repo,
+                    max_iterations=evaluation_config["max_iterations"],
+                    quality_threshold=evaluation_config["quality_threshold"],
+                    use_context=use_context,
+                    context_options=context_options,
+                )
+            task_id = result.task_id
+            status = result.status
+            default_repo.update_task_status(task_id, status)
+            _accumulate(result, status)
+            results.append(
+                {
+                    "id": task_id,
+                    "status": status,
+                    "evaluation_mode": (evaluation_mode or "none") if enable_evaluation else "none",
+                    "evaluation": (
+                        {
+                            "score": result.evaluation.overall_score if result.evaluation else None,
+                            "iterations": result.iterations,
+                        }
+                        if enable_evaluation
+                        else None
+                    ),
+                }
+            )
+        else:
+            # This path is less likely with the chat tool but kept for broader API compatibility
+            if use_tools:
+                # execute_task_enhanced is a sync wrapper, which we now avoid by making the route async
+                # We directly call the async function it wraps
+                status = await execute_task_with_tools(
+                    task, repo=default_repo, use_context=use_context, context_options=context_options
+                )
+            else:
+                status = execute_task(task, use_context=use_context, context_options=context_options)
+            task_id = task["id"] if isinstance(task, dict) else task[0]
+            default_repo.update_task_status(task_id, status)
+            summary["total"] += 1
+            if status in ("done", "completed"):
+                summary["completed"] += 1
+            else:
+                summary["failed"] += 1
+            results.append({"id": task_id, "status": status})
     
     # Finalize summary averages if requested
     include_summary = bool(getattr(rr, "include_summary", False))
