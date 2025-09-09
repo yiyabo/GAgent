@@ -9,7 +9,7 @@ logging.basicConfig(
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -25,6 +25,7 @@ from .services.planning import (
     propose_plan_service,
 )
 from .routers import chat as chat_router
+from fastapi import BackgroundTasks
 
 
 def _parse_bool(val, default: bool = False) -> bool:
@@ -181,7 +182,7 @@ class AgentCommand(BaseModel):
     command: str
 
 @app.post("/agent/command")
-def agent_command(payload: AgentCommand):
+async def agent_command(payload: AgentCommand, background_tasks: BackgroundTasks):
     """
     Receives a natural language command for the conversational agent.
     """
@@ -191,8 +192,8 @@ def agent_command(payload: AgentCommand):
         raise HTTPException(status_code=400, detail="plan_id is required.")
 
     try:
-        agent = ConversationalAgent(plan_id=payload.plan_id)
-        result = agent.process_command(payload.command)
+        agent = ConversationalAgent(plan_id=payload.plan_id, background_tasks=background_tasks)
+        result = await agent.process_command(payload.command)
         return result
     except Exception as e:
         logging.error(f"Error processing agent command: {e}")
@@ -482,6 +483,22 @@ def propose_plan(payload: Dict[str, Any]):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.post("/plans/propose/stream")
+async def propose_plan_stream(payload: Dict[str, Any], background_tasks: BackgroundTasks):
+    goal = (payload or {}).get("goal") or (payload or {}).get("instruction") or ""
+    if not isinstance(goal, str) or not goal.strip():
+        raise HTTPException(status_code=400, detail="Missing 'goal' in request body")
+
+    # Create an empty plan first to get a plan_id
+    plan_id = default_repo.create_plan(title=f"New Plan for: {goal[:30]}...", description=goal)
+
+    # Start the planning process in the background
+    background_tasks.add_task(propose_plan_service, goal, plan_id)
+
+    # Immediately return the plan_id so the frontend can connect
+    return {"plan_id": plan_id, "message": "Plan creation started..."}
+
+
 @app.post("/plans/approve")
 def approve_plan(plan: Dict[str, Any]):
     try:
@@ -524,7 +541,7 @@ def delete_plan(plan_id: int):
 
 
 @app.post("/run")
-def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
+async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     plan_id = (payload or {}).get("plan_id")
     use_context = _parse_bool((payload or {}).get("use_context"), default=True)
     schedule = _parse_schedule((payload or {}).get("schedule", "postorder"))
@@ -540,7 +557,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         plans = default_repo.list_plans()
         for plan in plans:
             results.extend(
-                _execute_plan_tasks(
+                await _execute_plan_tasks(
                     plan["id"],
                     schedule,
                     use_context,
@@ -552,7 +569,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             )
     else:
         results.extend(
-            _execute_plan_tasks(
+            await _execute_plan_tasks(
                 plan_id,
                 schedule,
                 use_context,
@@ -565,7 +582,7 @@ def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     return results
 
 
-def _execute_plan_tasks(
+async def _execute_plan_tasks(
     plan_id: int,
     schedule: str,
     use_context: bool,
@@ -588,7 +605,8 @@ def _execute_plan_tasks(
 
         for task in tasks_iter:
             task_id = task["id"]
-            default_repo.update_task_status(task_id, "pending")
+            default_repo.update_task_status(task_id, "running")
+            logging.info(f"Broadcasting status update for task {task_id}: running")
             default_repo.upsert_task_output(task_id, "")
             if enable_evaluation:
                 from .executor import execute_task_with_evaluation
@@ -606,6 +624,7 @@ def _execute_plan_tasks(
                     task, use_context=use_context, context_options=context_options
                 )
             default_repo.update_task_status(task_id, status)
+            logging.info(f"Broadcasting status update for task {task_id}: {status}")
             results.append({"id": task_id, "status": status})
     except HTTPException:
         raise

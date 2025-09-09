@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Body
 from fastapi.responses import StreamingResponse
 from typing import List, AsyncGenerator
 import json
@@ -7,11 +7,26 @@ import asyncio
 from .. import models
 from ..repository import chat as chat_repo
 from ..services.conversational_agent import ConversationalAgent
+from ..services.planning import BFS_planner_stream
+
 
 router = APIRouter(
     prefix="/chat",
     tags=["Chat"],
 )
+
+@router.get("/plans/propose-stream")
+async def propose_plan_stream(goal: str):
+    """
+    Stream the plan generation process using Server-Sent Events (SSE).
+    """
+    if not goal:
+        raise HTTPException(status_code=400, detail="Missing 'goal' query parameter")
+
+    return StreamingResponse(
+        BFS_planner_stream(goal),
+        media_type="text/event-stream"
+    )
 
 @router.post("/conversations", response_model=models.Conversation)
 def create_new_conversation(conversation_in: models.ConversationCreate):
@@ -56,7 +71,7 @@ def delete_conversation(conversation_id: int):
     return {"message": "Conversation deleted successfully"}
 
 @router.post("/conversations/{conversation_id}/messages")
-def post_message(conversation_id: int, message_in: models.MessageCreate):
+async def post_message(conversation_id: int, message_in: models.MessageCreate, background_tasks: BackgroundTasks):
     """增强版消息处理，返回消息和可视化指令"""
     # 1. Save the user's message
     user_message = chat_repo.create_message(
@@ -74,9 +89,9 @@ def post_message(conversation_id: int, message_in: models.MessageCreate):
     
     # 3. Process message with simple chat agent (no plan dependency)
     try:
-        agent = ConversationalAgent(plan_id=None)  # Use None to indicate simple chat mode
+        agent = ConversationalAgent(plan_id=None, background_tasks=background_tasks)  # Use None to indicate simple chat mode
         print(f"🚀 Processing command: {message_in.text}")
-        result = agent.process_command(message_in.text)
+        result = await agent.process_command(message_in.text)
         print(f"📋 Agent result: {result}")
         
         # 4. Save agent's response
@@ -191,7 +206,7 @@ def post_message(conversation_id: int, message_in: models.MessageCreate):
         }
 
 @router.post("/conversations/{conversation_id}/messages/stream")
-async def post_message_stream(conversation_id: int, message_in: models.MessageCreate):
+async def post_message_stream(conversation_id: int, message_in: models.MessageCreate, background_tasks: BackgroundTasks):
     """Post a new message and stream the agent's response using SSE."""
     
     # 1. Save the user's message
@@ -210,8 +225,8 @@ async def post_message_stream(conversation_id: int, message_in: models.MessageCr
     
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
-            # Initialize agent without plan dependency
-            agent = ConversationalAgent(plan_id=None)
+            # Initialize agent with background tasks
+            agent = ConversationalAgent(plan_id=None, background_tasks=background_tasks)
             
             # Send start event
             start_data = {
@@ -230,7 +245,7 @@ async def post_message_stream(conversation_id: int, message_in: models.MessageCr
                 # For simple chat, use streaming LLM
                 accumulated_text = ""
                 try:
-                    for chunk in agent.llm.chat_stream(message_in.text):
+                    async for chunk in agent.llm.chat_stream(message_in.text):
                         accumulated_text += chunk
                         
                         # Send chunk as SSE event
@@ -246,7 +261,7 @@ async def post_message_stream(conversation_id: int, message_in: models.MessageCr
                         
                 except Exception as e:
                     # Fallback to regular chat if streaming fails
-                    accumulated_text = agent.llm.chat(message_in.text)
+                    accumulated_text = await agent.llm.chat(message_in.text)
                     
                     # Send as one chunk
                     chunk_data = {
@@ -288,7 +303,8 @@ async def post_message_stream(conversation_id: int, message_in: models.MessageCr
                 yield f"data: {json.dumps(progress_data)}\n\n"
                 
                 # Process command using the full agent
-                result = agent.process_command(message_in.text)
+                result = await agent.process_command(message_in.text)
+
                 
                 # First, send the initial response if available
                 initial_response = result.get("initial_response", "")

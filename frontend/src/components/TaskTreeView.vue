@@ -1,6 +1,6 @@
 <template>
   <div class="tree-container">
-    <div class="">
+    <div class="tree-card">
       <div class="root-node plan-title">
         <div class="root-header">
           <h3><slot name="header">Task Tree</slot></h3>
@@ -63,7 +63,10 @@
                   </div>
                   
                   <div class="task-info" @click="selectTaskOnly(task)">
-                    <div class="task-name">{{ task.shortName || task.name }}</div>
+                    <div class="task-name">
+                      <span v-if="task.status === 'running'" class="spinner-sm"></span>
+                      {{ task.shortName || task.name }}
+                    </div>
                     <div class="task-meta">
                       <span class="task-status" :class="`status-${task.status}`">
                         {{ task.status }}
@@ -91,7 +94,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue';
+import { ref, watch, nextTick } from 'vue';
 
 const props = defineProps({
   tasks: {
@@ -132,10 +135,24 @@ const updateVisibleTasks = () => {
     }
   };
 
-  const rootTasks = props.tasks.filter(t => t.parent_id === null || t.parent_id === 0);
+  // Find root tasks - tasks that don't have a parent in the current task list
+  const taskIds = new Set(props.tasks.map(t => t.id));
+  const rootTasks = props.tasks.filter(t => {
+    // A task is root if:
+    // 1. parent_id is null, undefined, or 0
+    // 2. OR parent_id doesn't exist in current task list (orphaned task)
+    return !t.parent_id || t.parent_id === 0 || !taskIds.has(t.parent_id);
+  });
   console.log('🌳 Root tasks found:', rootTasks.length);
+  console.log('🔍 Root tasks:', rootTasks.map(t => ({ id: t.id, name: t.name, parent_id: t.parent_id })));
   
-  rootTasks.forEach(task => processTask(task));
+  if (rootTasks.length === 0 && props.tasks.length > 0) {
+    // If no root tasks found but we have tasks, show all tasks as root
+    console.log('⚠️ No root tasks found, showing all tasks as root');
+    props.tasks.forEach(task => processTask(task));
+  } else {
+    rootTasks.forEach(task => processTask(task));
+  }
   
   console.log('👁️ Final visible tasks:', visible.length);
   visibleTasks.value = visible;
@@ -182,21 +199,22 @@ watch(() => props.tasks, (newTasks, oldTasks) => {
   
   if (shouldExpandRoots) {
     console.log('✅ Should expand root nodes - conditions met');
-    const rootTasks = newTasks.filter(t => t.parent_id === null || t.parent_id === 0);
+    // Use same root task logic as updateVisibleTasks
+    const taskIds = new Set(newTasks.map(t => t.id));
+    const rootTasks = newTasks.filter(t => {
+      return !t.parent_id || t.parent_id === 0 || !taskIds.has(t.parent_id);
+    });
     console.log('🔍 Found root tasks:', rootTasks.length);
     
+    // Always expand root tasks to make them visible
     rootTasks.forEach(task => {
-      // 直接在这里检查子任务，而不是依赖hasChildren函数
+      console.log('🔄 Expanding root task:', task.id, task.name);
+      expandedTasks.value.add(task.id);
+      
+      // Also expand if it has children
       const childrenCount = newTasks.filter(t => t.parent_id === task.id).length;
       console.log(`🔍 Root task ${task.id} has ${childrenCount} children`);
-      
-      if (childrenCount > 0) {
-        console.log('🔄 Expanding root task:', task.id, task.name);
-        expandedTasks.value.add(task.id);
-      }
     });
-    
-    console.log('✅ After expansion, expanded tasks:', expandedTasks.value.size);
   } else if (oldTasks && newTasks && oldTasks.length > 0 && newTasks.length > 0) {
     console.log('🔄 Updating existing tasks, preserving expand state');
     // 数据更新时，只保留仍然存在的展开任务
@@ -212,8 +230,12 @@ watch(() => props.tasks, (newTasks, oldTasks) => {
     expandedTasks.value = validExpandedTasks;
   }
   
+  // Always update visible tasks when tasks change
   updateVisibleTasks();
 }, { deep: true, immediate: true });
+
+// Initialize visible tasks on mount
+updateVisibleTasks();
 
 </script>
 
@@ -222,7 +244,7 @@ watch(() => props.tasks, (newTasks, oldTasks) => {
 .tree-container {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
 }
-. {
+.tree-card {
   background: white;
   border-radius: 0.75rem;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
@@ -451,6 +473,28 @@ watch(() => props.tasks, (newTasks, oldTasks) => {
   background: #fef2f2;
   color: #dc2626;
 }
+.task-status.status-running {
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+.tree-task-item.status-running {
+  background: #f0f9ff;
+  border-left-color: #3b82f6;
+}
+
+.spinner-sm {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  margin-right: 0.5em;
+  vertical-align: -0.125em;
+}
+
 .task-priority {
   padding: 0.2rem 0.5rem;
   background: #f3f4f6;

@@ -259,6 +259,30 @@ export const evaluationApi = {
   }
 }
 
+function streamPlanGeneration(endpoint, payload, onEvent, onError) {
+  const eventSource = new EventSource(`http://127.0.0.1:8000${endpoint}?goal=${encodeURIComponent(payload.goal)}`);
+
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      onEvent(data);
+    } catch (e) {
+      console.error('Failed to parse SSE event:', e);
+    }
+  };
+
+  eventSource.onerror = (err) => {
+    console.error('EventSource failed:', err);
+    onError(err);
+    eventSource.close();
+  };
+
+  return () => {
+    eventSource.close();
+  };
+}
+
+
 export const chatApi = {
   async getConversation(conversationId) {
     const response = await api.get(`/chat/conversations/${conversationId}`);
@@ -285,12 +309,30 @@ export const chatApi = {
     return response.data;
   },
 
-  async sendMessage(conversationId, message) {
+  async sendMessage(conversationId, message, onPlanStreamEvent, onPlanStreamError) {
     const response = await api.post(`/chat/conversations/${conversationId}/messages`, { 
       text: message,
       sender: 'user'
     });
-    return response.data;
+
+    const result = response.data;
+    const actionResult = result.action_result;
+
+    // Check if the agent wants us to start a stream
+    if (actionResult && actionResult.action === 'stream' && actionResult.stream_endpoint) {
+      // The agent's response is just a confirmation. The actual plan data
+      // will come through the SSE stream.
+      // We return the initial agent message, and the caller is responsible
+      // for handling the stream via the callbacks.
+      streamPlanGeneration(
+        actionResult.stream_endpoint,
+        actionResult.stream_payload,
+        onPlanStreamEvent,
+        onPlanStreamError
+      );
+    }
+    
+    return result;
   },
 
   async sendMessageStream(conversationId, message, onChunk, onComplete, onError) {

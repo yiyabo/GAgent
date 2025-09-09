@@ -13,7 +13,8 @@ export const usePlansStore = defineStore('plans', {
     planExecuting: false,
     planGenerating: false,
     error: null,
-    executionStatus: {}
+    executionStatus: {},
+    forceUpdateTrigger: 0
   }),
 
   getters: {
@@ -65,7 +66,14 @@ export const usePlansStore = defineStore('plans', {
         if (this.plans.length === 0) {
           await this.loadPlans();
         }
-        this.currentPlan = this.plans.find(p => p.id === planId) || null;
+        
+        // Find and update current plan with reactive assignment
+        const planFromList = this.plans.find(p => p.id === planId);
+        if (planFromList) {
+          this.currentPlan = { ...planFromList };
+        } else {
+          this.currentPlan = null;
+        }
 
         // Fetch tasks and chat history in parallel
         const [tasks, history] = await Promise.all([
@@ -73,7 +81,8 @@ export const usePlansStore = defineStore('plans', {
           this.loadChatHistory(planId)
         ]);
 
-        this.currentPlanTasks = tasks || []
+        // Use reactive assignment for tasks
+        this.currentPlanTasks = [...(tasks || [])]
         this.error = null
         return this.currentPlanTasks
       } catch (error) {
@@ -109,23 +118,66 @@ export const usePlansStore = defineStore('plans', {
       }
     },
 
-    // Generate and approve plan
+    // This is now a legacy method, streaming is handled by the chat interface
     async generateAndApprovePlan(goal, sections, title = '', style = '', notes = '') {
       this.planGenerating = true
       try {
-        // The /plans/propose endpoint now creates the plan directly
         const result = await plansApi.generatePlan(goal, sections, title, style, notes)
-        
-        // Reload plans list to include the new plan
         await this.loadPlans()
-        
-        // Return the plan title for success display
         return result.title || title || `Plan_${Date.now()}`
       } catch (error) {
         this.error = error.message
         throw error
       } finally {
         this.planGenerating = false
+      }
+    },
+
+    handlePlanStreamEvent(event) {
+      console.log("Received stream event in store:", event);
+      switch (event.stage) {
+        case 'initialization':
+          this.planGenerating = true;
+          this.currentPlanTasks = [];
+          this.currentPlan = null;
+          break;
+        case 'plan_created':
+          this.currentPlan = { id: event.plan_id, title: event.title, description: '' };
+          // Add to plans list if not already there
+          if (!this.plans.some(p => p.id === event.plan_id)) {
+            this.plans.push({ id: event.plan_id, title: event.title });
+          }
+          break;
+        case 'root_task_created':
+        case 'subtask_created':
+          const newTask = {
+            id: event.subtask_id || event.task_id,
+            name: event.subtask_name || event.task_name,
+            status: 'pending',
+            parent_id: event.parent_id || null, // 确保根任务的parent_id为null
+            // Add other relevant fields from the event
+          };
+          console.log('📝 Creating task:', newTask);
+          this.currentPlanTasks.push(newTask);
+          break;
+        case 'completed':
+          this.planGenerating = false;
+          // The final result might contain the full tree, so we can replace our tasks
+          if (event.result && event.result.flat_tree) {
+            // 确保flat_tree中的任务也有正确的parent_id字段
+            const processedTasks = event.result.flat_tree.map(task => ({
+              ...task,
+              parent_id: task.parent_id || null // 确保parent_id字段存在
+            }));
+            console.log('📝 Processing flat_tree tasks:', processedTasks);
+            this.currentPlanTasks = processedTasks;
+          }
+          this.loadPlans(); // Refresh the main plans list
+          break;
+        case 'fatal_error':
+          this.planGenerating = false;
+          this.error = event.message;
+          break;
       }
     },
 
@@ -156,7 +208,7 @@ export const usePlansStore = defineStore('plans', {
         
         // Refresh plan tasks if we're viewing a plan
         if (this.currentPlan) {
-          await this.loadPlanDetails(this.currentPlan)
+          await this.loadPlanDetails(this.currentPlan.id)
         }
       } catch (error) {
         this.error = error.message
@@ -179,7 +231,7 @@ export const usePlansStore = defineStore('plans', {
         
         // Refresh plan tasks if we're viewing a plan
         if (this.currentPlan) {
-          await this.loadPlanDetails(this.currentPlan)
+          await this.loadPlanDetails(this.currentPlan.id)
         }
       } catch (error) {
         this.error = error.message
@@ -220,11 +272,12 @@ export const usePlansStore = defineStore('plans', {
           ...options
         })
         
-        // Update execution status
-        this.executionStatus = {}
+        // Update execution status using reactive assignment
+        const newExecutionStatus = {}
         results.forEach(result => {
-          this.executionStatus[result.id] = result.status
+          newExecutionStatus[result.id] = result.status
         })
+        this.executionStatus = { ...newExecutionStatus }
         
         // Refresh plan to get updated statuses
         await this.loadPlanDetails(planId)
@@ -246,11 +299,12 @@ export const usePlansStore = defineStore('plans', {
           ...options
         })
         
-        this.executionStatus[taskId] = result.status
+        // Use reactive assignment for execution status
+        this.executionStatus = { ...this.executionStatus, [taskId]: result.status }
         
         // Refresh the plan if we're viewing one
         if (this.currentPlan) {
-          await this.loadPlanDetails(this.currentPlan)
+          await this.loadPlanDetails(this.currentPlan.id)
         }
         
         return result
@@ -264,13 +318,16 @@ export const usePlansStore = defineStore('plans', {
       try {
         const results = await tasksApi.rerunMultipleTasks(taskIds, options)
         
+        // Use reactive assignment for execution status updates
+        const statusUpdates = {}
         results.forEach(result => {
-          this.executionStatus[result.task_id] = result.status
+          statusUpdates[result.task_id] = result.status
         })
+        this.executionStatus = { ...this.executionStatus, ...statusUpdates }
         
         // Refresh plan after re-running
         if (this.currentPlan) {
-          await this.loadPlanDetails(this.currentPlan)
+          await this.loadPlanDetails(this.currentPlan.id)
         }
         
         return results
@@ -295,6 +352,22 @@ export const usePlansStore = defineStore('plans', {
         throw error; // Re-throw for the component to handle
       } finally {
         this.planDetailsLoading = false;
+      }
+    },
+
+    // Force update mechanism as fallback
+    forceUpdate() {
+      this.forceUpdateTrigger++
+    },
+
+    getReactiveData() {
+      // Trigger dependency on forceUpdateTrigger
+      this.forceUpdateTrigger
+      return {
+        plans: this.plans,
+        currentPlan: this.currentPlan,
+        currentPlanTasks: this.currentPlanTasks,
+        executionStatus: this.executionStatus
       }
     }
   }

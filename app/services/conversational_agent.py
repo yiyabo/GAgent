@@ -1,11 +1,14 @@
-
 from typing import Any, Dict, Optional, List
 from enum import Enum
 import logging
+from fastapi import BackgroundTasks
 
 from ..llm import get_default_client as get_llm
 from ..repository.tasks import default_repo
 from ..utils import parse_json_obj
+
+from ..services.planning import propose_plan_service
+from ..services.evaluation_supervisor import EvaluationSupervisor
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +45,20 @@ class ConversationalAgent:
     增强版对话代理，支持意图识别和可视化指令生成
     """
 
-    def __init__(self, plan_id: Optional[int] = None):
+    def __init__(self, plan_id: Optional[int] = None, background_tasks: Optional[BackgroundTasks] = None):
         self.plan_id = plan_id
         self.llm = get_llm()
         self.context = {}  # 存储会话上下文
+        self.background_tasks = background_tasks
         
-    def process_command(self, user_command: str) -> Dict[str, Any]:
+    async def process_command(self, user_command: str) -> Dict[str, Any]:
         """统一处理用户命令：LLM判断是否需要工具调用或直接对话"""
         
-        logger.info(f"🚀 NEW process_command called with: '{user_command[:50]}...'")
+        logger.info(f"🚀 NEW process_command called with: '{user_command[:50]}...\n'")
         
         try:
             # 使用统一的LLM提示进行意图识别和响应生成
-            result = self._unified_intent_and_response(user_command)
+            result = await self._unified_intent_and_response(user_command)
             logger.info(f"🎯 NEW process_command returning: {result.get('intent', 'unknown')}")
             return result
             
@@ -71,10 +75,10 @@ class ConversationalAgent:
                 "success": False
             }
     
-    def _unified_intent_and_response(self, user_command: str) -> Dict[str, Any]:
+    async def _unified_intent_and_response(self, user_command: str) -> Dict[str, Any]:
         """统一的意图识别和响应生成"""
         
-        logger.info(f"🔄 _unified_intent_and_response called with: '{user_command[:50]}...'")
+        logger.info(f"🔄 _unified_intent_and_response called with: '{user_command[:50]}...\n'")
         
         # 构建上下文信息
         context_info = ""
@@ -90,7 +94,7 @@ Analyze the user's message and decide whether it requires tool usage or is casua
 {{
   "needs_tool": true,
   "intent": "create_plan|list_plans|execute_plan|show_tasks|query_status|delete_plan|rerun_task|help",
-  "parameters": {{"goal": "...", "plan_id": 123, ...}},
+  "parameters": {{"goal": "...", "plan_id": "..."}},
   "initial_response": "I'll help you with that. Let me [action description]..."
 }}
 
@@ -147,7 +151,7 @@ Respond with JSON only:"""
             
             if parsed.get("needs_tool", False):
                 # 需要工具调用
-                return self._handle_tool_request(parsed, user_command)
+                return await self._handle_tool_request(parsed, user_command)
             else:
                 # 普通对话
                 return self._handle_chat_response(parsed, user_command)
@@ -155,12 +159,12 @@ Respond with JSON only:"""
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse LLM JSON response: {result}")
             # 降级处理：尝试理解意图
-            return self._fallback_processing(user_command)
+            return await self._fallback_processing(user_command)
         except Exception as e:
             logger.error(f"Error in unified processing: {e}")
             raise e
     
-    def _handle_tool_request(self, parsed_response: Dict, user_command: str) -> Dict[str, Any]:
+    async def _handle_tool_request(self, parsed_response: Dict, user_command: str) -> Dict[str, Any]:
         """处理需要工具调用的请求"""
         try:
             # 转换字符串intent为IntentType枚举
@@ -177,7 +181,7 @@ Respond with JSON only:"""
             logger.info(f"Tool request - Intent: {intent.value}, Params: {params}")
             
             # 执行工具动作
-            action_result = self._execute_action(intent, params)
+            action_result = await self._execute_action(intent, params)
             
             # 生成执行后的反馈
             execution_feedback = self._generate_execution_feedback(intent, action_result)
@@ -217,8 +221,8 @@ Respond with JSON only:"""
         
         return {
             "response": chat_response,
-            "initial_response": chat_response,
-            "execution_feedback": None,
+            "initial_response": chat_response,  # 对于聊天，immediate response就是完整回复
+            "execution_feedback": None,   # 聊天不需要执行反馈
             "intent": "chat",
             "visualization": {"type": "none", "data": {}, "config": {}},
             "action_result": {
@@ -229,7 +233,7 @@ Respond with JSON only:"""
             "success": True
         }
     
-    def _fallback_processing(self, user_command: str) -> Dict[str, Any]:
+    async def _fallback_processing(self, user_command: str) -> Dict[str, Any]:
         """降级处理：当JSON解析失败时的备用方案"""
         # 使用原来的简单关键词检测作为备用
         if self._is_casual_chat_simple(user_command):
@@ -244,7 +248,7 @@ Respond with JSON only:"""
             }
         else:
             # 尝试解析为help请求
-            return self._handle_tool_request({
+            return await self._handle_tool_request({
                 "needs_tool": True,
                 "intent": "help",
                 "parameters": {},
@@ -304,10 +308,7 @@ Respond with JSON only:"""
             return f"❌ {action_result.get('message', 'Operation failed')}"
         
         if intent == IntentType.CREATE_PLAN:
-            plan_info = action_result.get("plan", {})
-            title = plan_info.get("title", "New Plan")
-            total_tasks = plan_info.get("total_tasks", 0)
-            return f"✅ Successfully created plan '{title}' with {total_tasks} tasks! You can now view the task structure in the visualization panel or execute the plan."
+            return "✅ Plan generation started. You will see tasks appearing in real-time in the visualization panel."
         
         elif intent == IntentType.LIST_PLANS:
             plans = action_result.get("plans", [])
@@ -326,7 +327,7 @@ Respond with JSON only:"""
                 total = action_result.get("total_tasks", 0)
                 return f"✅ Plan status retrieved. Total {total} tasks. Check the status dashboard for detailed breakdown."
             else:
-                return f"✅ Status information retrieved successfully."
+                return "✅ Status information retrieved successfully."
         
         elif intent == IntentType.SHOW_TASKS:
             tasks = action_result.get("tasks", [])
@@ -366,23 +367,23 @@ Respond with JSON only:"""
             llm_prompt = f"""You are an intent classifier for a research plan management system. Analyze the user's message and determine if it's casual chat or a task command.
 
 **Task Commands** - User wants to DO something:
-- Create/generate/build plans or tasks: "create a plan", "generate a research outline"
-- Execute/run/start operations: "execute plan 1", "run the tasks", "start the workflow"  
-- View/show/list/display information: "show all plans", "list tasks", "display status"
-- Manage/modify/delete items: "delete plan 2", "update task", "modify the plan"
-- Query specific status/progress: "what's the status of plan 3", "check task progress"
+- Create/generate/build plans or tasks: \"create a plan\", \"generate a research outline\"
+- Execute/run/start operations: \"execute plan 1\", \"run the tasks\", \"start the workflow\"  
+- View/show/list/display information: \"show all plans\", \"list tasks\", \"display status\"
+- Manage/modify/delete items: \"delete plan 2\", \"update task\", \"modify the plan\"
+- Query specific status/progress: \"what's the status of plan 3\", \"check task progress\"
 
 **Casual Chat** - User wants to DISCUSS or EXPRESS:
-- Opinions/comments: "this looks good", "I like this plan", "that's interesting"
-- Emotional reactions: "great!", "awesome!", "I'm excited", "this is confusing"
-- General questions: "how does this work?", "what do you think?", "is this normal?"
-- Social interaction: "thank you", "hello", "how are you?", "goodbye"
-- Satisfaction/feedback without specific requests: "the results look promising"
+- Opinions/comments: \"this looks good\", \"I like this plan\", \"that's interesting\"
+- Emotional reactions: \"great!\", \"awesome!\", \"I'm excited\", \"this is confusing\"
+- General questions: \"how does this work?\", \"what do you think?\", \"is this normal?\"
+- Social interaction: \"thank you\", \"hello\", \"how are you?\", \"goodbye\"
+- Satisfaction/feedback without specific requests: \"the results look promising\"
 
 User message: "{command}"
 
 Respond with JSON only:
-{{"intent": "CHAT"}} or {{"intent": "TASK"}}"""
+{{"intent": "CHAT"}} or {{"intent": "TASK"}} """
 
             result = self.llm.chat(llm_prompt).strip()
             # 尝试解析JSON
@@ -413,7 +414,7 @@ Respond with JSON only:
             # 构建上下文相关的聊天提示
             context_info = ""
             if self.plan_id:
-                context_info = f" You are currently working with plan ID {self.plan_id}."
+                context_info = f" You are currently working with plan ID {self.plan_id}. "
             
             # 使用LLM进行自然对话
             chat_prompt = f"""You are a helpful AI assistant for a research plan management system.{context_info} 
@@ -496,9 +497,9 @@ Examples:
 Return only JSON format: {{"intent": "ACTION_NAME", "parameters": {{"key": "value"}}}}"""
         
         try:
-            logger.info(f"[_identify_intent] Analyzing command: {command[:100]}...")
+            logger.info(f"[_identify_intent] Analyzing command: {command[:100]}...\n")
             response = self.llm.chat(prompt)
-            logger.info(f"[_identify_intent] LLM response: {response[:200]}...")
+            logger.info(f"[_identify_intent] LLM response: {response[:200]}...\n")
             
             result = parse_json_obj(response)
             if not result:
@@ -525,7 +526,7 @@ Return only JSON format: {{"intent": "ACTION_NAME", "parameters": {{"key": "valu
                 "parameters": {}
             }
     
-    def _execute_action(self, intent: IntentType, params: Dict) -> Dict[str, Any]:
+    async def _execute_action(self, intent: IntentType, params: Dict) -> Dict[str, Any]:
         """Execute specific backend actions based on the identified intent"""
         
         try:
@@ -554,69 +555,20 @@ Return only JSON format: {{"intent": "ACTION_NAME", "parameters": {{"key": "valu
             return {"success": False, "message": f"Error executing operation: {str(e)}"}
     
     def _create_plan(self, params: Dict) -> Dict[str, Any]:
-        """创建新计划"""
-        from ..services.planning import propose_plan_service
-        
+        """为流式创建计划做准备"""
         goal = params.get("goal", "")
-        logger.info(f"[_create_plan] Creating plan with goal: {goal}")
-        
         if not goal:
-            return {"success": False, "message": "请提供计划目标"}
-        
-        try:
-            # 调用 propose_plan_service，它会通过 BFS_planner 创建计划和任务
-            logger.info(f"[_create_plan] Calling propose_plan_service with goal: {goal}")
-            
-            # Build payload with optional parameters
-            payload = {"goal": goal}
-            if params.get("sections"):
-                payload["sections"] = params["sections"]
-            if params.get("title"):
-                payload["title"] = params["title"]
-            if params.get("style"):
-                payload["style"] = params["style"]
-            if params.get("notes"):
-                payload["notes"] = params["notes"]
-                
-            result = propose_plan_service(payload)
-            logger.info(f"[_create_plan] propose_plan_service returned: success={result.get('success')}, plan_id={result.get('plan_id')}, total_tasks={result.get('total_tasks')}")
-            
-            # Check if the plan was actually created (plan_id is the key indicator)
-            if not result.get("plan_id"):
-                error_msg = result.get('error', 'Failed to generate plan - no plan_id returned')
-                logger.error(f"[_create_plan] Plan creation failed: {error_msg}")
-                return {
-                    "success": False,
-                    "message": f"创建计划失败：{error_msg}"
-                }
-            
-            # Extract plan information
-            plan_id = result.get("plan_id")
-            title = result.get("title", goal[:60])
-            total_tasks = result.get("total_tasks", 0)
-            max_layer = result.get("max_layer", 0)
-            
-            # Create plan info for response
-            plan_info = {
-                "id": plan_id,
-                "title": title,
-                "total_tasks": total_tasks,
-                "max_layer": max_layer
-            }
-            
-            logger.info(f"[_create_plan] Successfully created plan: {plan_info}")
-            
-            # Return success with plan details
-            return {
-                "success": True,
-                "plan": plan_info,
-                "plan_id": plan_id,
-                "message": f"成功创建计划「{title}」，包含 {total_tasks} 个任务，最大深度 {max_layer} 层"
-            }
-        except Exception as e:
-            logger.error(f"[_create_plan] Failed to create plan: {e}", exc_info=True)
-            return {"success": False, "message": f"创建计划失败：{str(e)}"}
-    
+            return {"success": False, "message": "Please provide a goal for the plan."}
+
+        # 不再启动后台任务，而是返回一个指令给前端
+        return {
+            "success": True,
+            "message": "Ready to generate plan. Frontend should now initiate a stream.",
+            "action": "stream",  # 指示前端需要发起流式请求
+            "stream_endpoint": "/chat/plans/propose-stream", # 告诉前端调用哪个端点
+            "stream_payload": {"goal": goal} # 告诉前端用什么参数
+        }
+
     def _list_plans(self) -> Dict[str, Any]:
         """列出所有计划"""
         try:
@@ -827,13 +779,11 @@ Available Commands:
         """根据意图和数据生成可视化配置"""
         
         if intent == IntentType.CREATE_PLAN:
-            # Show the created plan graph visualization
-            plan_info = data.get("plan", {})
             return {
-                "type": "plan_graph",  # 使用新的图形视图
-                "data": plan_info,
+                "type": VisualizationType.TASK_TREE,
+                "data": [],
                 "config": {
-                    "title": plan_info.get("title", "新计划"),
+                    "title": f"New Plan for: {data.get('stream_payload', {}).get('goal', '')[:30]}...",
                     "showTaskTree": True,
                     "showActions": ["execute", "edit", "delete"],
                     "plan_id": data.get("plan_id")
@@ -898,4 +848,3 @@ Available Commands:
             return result.get("message", "Operation failed")
         
         return result.get("message", "Operation completed")
-

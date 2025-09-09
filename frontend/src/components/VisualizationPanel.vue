@@ -72,6 +72,7 @@
 </template>
 
 <script>
+import { watch, nextTick } from 'vue'
 import PlanListView from './visualization/PlanListView.vue'
 import PlanDetails from './visualizations/PlanDetails.vue'
 import PlanGraphView from './visualization/PlanGraphView.vue'
@@ -106,6 +107,39 @@ export default {
       type: Object,
       default: () => ({})
     }
+  },
+  setup(props) {
+    // Watch for data changes to ensure reactivity
+    watch(
+      () => props.data,
+      (newData, oldData) => {
+        console.log('VisualizationPanel data changed:', {
+          type: props.type,
+          newDataLength: Array.isArray(newData) ? newData.length : Object.keys(newData || {}).length,
+          oldDataLength: Array.isArray(oldData) ? oldData.length : Object.keys(oldData || {}).length
+        });
+        
+        // Force re-render for task tree and task list
+        if (props.type === 'task_tree' || props.type === 'task_list') {
+          nextTick(() => {
+            // Trigger component update
+          });
+        }
+      },
+      { deep: true, immediate: false }
+    );
+
+    watch(
+      () => props.type,
+      (newType, oldType) => {
+        console.log('VisualizationPanel type changed:', { newType, oldType });
+        nextTick(() => {
+          // Ensure proper rendering after type change
+        });
+      }
+    );
+
+    return {};
   },
   methods: {
     handleSelectPlan(planId) {
