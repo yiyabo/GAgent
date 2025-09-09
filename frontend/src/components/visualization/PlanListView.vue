@@ -1,7 +1,7 @@
 <template>
   <div class="plan-list-view">
     <div class="view-header">
-      <h2>计划列表</h2>
+      <h2>Plan List</h2>
       <el-button type="primary" size="small" @click="refreshPlans">
         <i class="el-icon-refresh"></i> 刷新
       </el-button>

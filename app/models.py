@@ -201,3 +201,4 @@ class ConversationCreate(BaseModel):
 class MessageCreate(BaseModel):
     text: str
     sender: str = "user"
+    plan_id: Optional[int] = None

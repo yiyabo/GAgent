@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 class IntentType(Enum):
     """支持的意图类型"""
     CREATE_PLAN = "create_plan"
+    CREATE_TASK = "create_task"
     LIST_PLANS = "list_plans"
     EXECUTE_PLAN = "execute_plan"
     QUERY_STATUS = "query_status"
@@ -93,8 +94,8 @@ Analyze the user's message and decide whether it requires tool usage or is casua
 **If it's a TASK that needs tools**, respond with JSON format:
 {{
   "needs_tool": true,
-  "intent": "create_plan|list_plans|execute_plan|show_tasks|query_status|delete_plan|rerun_task|help",
-  "parameters": {{"goal": "...", "plan_id": "..."}},
+  "intent": "create_plan|create_task|list_plans|execute_plan|show_tasks|query_status|delete_plan|rerun_task|help",
+  "parameters": {{"goal": "...", "plan_id": "...", "task_name": "...", "parent_id": "..."}},
   "initial_response": "I'll help you with that. Let me [action description]..."
 }}
 
@@ -107,6 +108,7 @@ Analyze the user's message and decide whether it requires tool usage or is casua
 
 Available tool intents:
 - create_plan: Create new research plans (extract goal, title, sections, etc.)
+- create_task: Create a new task within a plan (extract task_name, parent_id, and plan_id if available)
 - list_plans: Show all existing plans
 - execute_plan: Start executing a specific plan
 - show_tasks: Display tasks in a plan
@@ -532,6 +534,8 @@ Return only JSON format: {{"intent": "ACTION_NAME", "parameters": {{"key": "valu
         try:
             if intent == IntentType.CREATE_PLAN:
                 return self._create_plan(params)
+            elif intent == IntentType.CREATE_TASK:
+                return self._create_task(params)
             elif intent == IntentType.LIST_PLANS:
                 return self._list_plans()
             elif intent == IntentType.EXECUTE_PLAN:
@@ -553,6 +557,55 @@ Return only JSON format: {{"intent": "ACTION_NAME", "parameters": {{"key": "valu
         except Exception as e:
             logger.error(f"Action execution failed: {e}")
             return {"success": False, "message": f"Error executing operation: {str(e)}"}
+
+    def _create_task(self, params: Dict) -> Dict[str, Any]:
+        """Creates a new task in a plan."""
+        task_name = params.get("task_name")
+        parent_id = params.get("parent_id")
+        plan_id = params.get("plan_id", self.plan_id)
+
+        if not task_name:
+            return {"success": False, "message": "Please provide a name for the task."}
+        
+        # If plan_id is missing, try to infer it from the parent task
+        if not plan_id and parent_id:
+            try:
+                inferred_plan_id = default_repo.get_plan_for_task(int(parent_id))
+                if inferred_plan_id:
+                    plan_id = inferred_plan_id
+                else:
+                    return {"success": False, "message": f"Could not find a plan associated with parent task {parent_id}."}
+            except Exception as e:
+                logger.error(f"Error inferring plan_id from parent_id {parent_id}: {e}")
+                return {"success": False, "message": f"Could not find the parent task {parent_id}."}
+
+        if not plan_id:
+            return {"success": False, "message": "I don't know which plan to add this task to. Please specify a plan."}
+
+        try:
+            plan_id = int(plan_id)
+            
+            # Ensure parent_id is an integer if it exists
+            if parent_id:
+                parent_id = int(parent_id)
+
+            task_id = default_repo.create_task(
+                name=task_name,
+                parent_id=parent_id,
+            )
+            default_repo.link_task_to_plan(plan_id, task_id)
+            
+            new_task = default_repo.get_task_info(task_id)
+
+            return {
+                "success": True,
+                "message": f"Successfully created task '{task_name}' (ID: {task_id}) in plan {plan_id}.",
+                "task": new_task,
+                "plan_id": plan_id
+            }
+        except Exception as e:
+            logger.error(f"Failed to create task: {e}")
+            return {"success": False, "message": f"Failed to create task: {str(e)}"}
     
     def _create_plan(self, params: Dict) -> Dict[str, Any]:
         """为流式创建计划做准备"""
@@ -789,6 +842,15 @@ Available Commands:
                     "plan_id": data.get("plan_id")
                 }
             }
+        elif intent == IntentType.CREATE_TASK:
+            return {
+                "type": VisualizationType.TASK_TREE,
+                "data": { "refresh": True, "plan_id": data.get("plan_id") },
+                "config": {
+                    "title": f"Plan {data.get('plan_id')} - Task Added",
+                    "highlight_task_id": data.get("task", {}).get("id")
+                }
+            }
         elif intent == IntentType.LIST_PLANS:
             return {
                 "type": VisualizationType.PLAN_LIST,
@@ -812,12 +874,10 @@ Available Commands:
             # 使用任务列表视图展示任务
             tasks_data = data.get("task_tree", data.get("tasks", []))
             return {
-                "type": VisualizationType.TASK_LIST,  # 使用任务列表视图
-                "data": tasks_data if isinstance(tasks_data, list) else tasks_data.get("tasks", []),
+                "type": VisualizationType.TASK_TREE,
+                "data": tasks_data,
                 "config": {
-                    "title": f"计划 {data.get('plan_id', '')} 任务列表",
-                    "showProgress": True,
-                    "showActions": True,
+                    "title": f"Plan {data.get('plan_id', '')} Tasks",
                     "plan_id": data.get("plan_id")
                 }
             }

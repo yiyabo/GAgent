@@ -6,6 +6,7 @@ import asyncio
 
 from .. import models
 from ..repository import chat as chat_repo
+from ..repository.tasks import default_repo
 from ..services.conversational_agent import ConversationalAgent
 from ..services.planning import BFS_planner_stream
 
@@ -27,6 +28,20 @@ async def propose_plan_stream(goal: str):
         BFS_planner_stream(goal),
         media_type="text/event-stream"
     )
+
+@router.get("/plans")
+def get_all_plans():
+    """Get all plans for chat visualization."""
+    try:
+        plans = default_repo.list_plans()
+        for plan in plans:
+            tasks = default_repo.get_plan_tasks(plan["id"])
+            plan["task_count"] = len(tasks)
+            plan["completed_count"] = len([t for t in tasks if t.get("status") == "done"])
+            plan["progress"] = plan["completed_count"] / plan["task_count"] if plan["task_count"] > 0 else 0
+        return plans
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/conversations", response_model=models.Conversation)
 def create_new_conversation(conversation_in: models.ConversationCreate):
@@ -89,7 +104,7 @@ async def post_message(conversation_id: int, message_in: models.MessageCreate, b
     
     # 3. Process message with simple chat agent (no plan dependency)
     try:
-        agent = ConversationalAgent(plan_id=None, background_tasks=background_tasks)  # Use None to indicate simple chat mode
+        agent = ConversationalAgent(plan_id=message_in.plan_id, background_tasks=background_tasks)  # Use None to indicate simple chat mode
         print(f"🚀 Processing command: {message_in.text}")
         result = await agent.process_command(message_in.text)
         print(f"📋 Agent result: {result}")
@@ -226,7 +241,7 @@ async def post_message_stream(conversation_id: int, message_in: models.MessageCr
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
             # Initialize agent with background tasks
-            agent = ConversationalAgent(plan_id=None, background_tasks=background_tasks)
+            agent = ConversationalAgent(plan_id=message_in.plan_id, background_tasks=background_tasks)
             
             # Send start event
             start_data = {

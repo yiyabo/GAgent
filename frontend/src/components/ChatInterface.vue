@@ -34,6 +34,10 @@ const props = defineProps({
   useStreaming: {
     type: Boolean,
     default: true
+  },
+  planId: {
+    type: Number,
+    default: null
   }
 });
 
@@ -60,7 +64,7 @@ const sendMessage = () => {
       messages.value.push(streamingMessage);
       isStreaming.value = true;
       
-      emit('send-message-stream', newMessage.value, {
+      emit('send-message-stream', newMessage.value, props.planId, {
         onChunk: (chunk, accumulated) => {
           // Update the streaming message with accumulated text
           const lastMessage = messages.value[messages.value.length - 1];
@@ -88,7 +92,7 @@ const sendMessage = () => {
         }
       });
     } else {
-      emit('send-message', newMessage.value);
+      emit('send-message', newMessage.value, props.planId);
     }
     
     newMessage.value = '';

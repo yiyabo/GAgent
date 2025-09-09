@@ -1318,6 +1318,16 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         tasks = self.get_plan_tasks(plan_id)
         return {"plan": plan, "tasks": tasks}
 
+    def get_plan_for_task(self, task_id: int) -> Optional[int]:
+        """Find the plan_id for a given task_id."""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+            row = conn.execute(
+                "SELECT plan_id FROM plan_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            return row[0] if row else None
+
     def get_plan_summary(self, plan_id: int) -> Optional[Dict[str, Any]]:
         """获取计划汇总信息"""
         with get_db() as conn:

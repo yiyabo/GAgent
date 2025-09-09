@@ -2,7 +2,6 @@
   <div class="conversation-history">
     <div class="history-header">
       <h3 v-if="isOpen">Conversations</h3>
-      <button @click="toggle" class="toggle-btn">{{ isOpen ? '<' : '>' }}</button>
     </div>
     <div v-if="isOpen" class="history-content">
       <button @click="startNewConversation">+ New Chat</button>

@@ -184,14 +184,10 @@ export const usePlansStore = defineStore('plans', {
     async createTask(planId, taskData) {
       this.planDetailsLoading = true; // Set loading state
       try {
-        await tasksApi.createTask(
-          taskData.name,
-          taskData.taskType,
-          taskData.parentId,
-          planId,
-          taskData.prompt,
-          taskData.contexts
-        );
+        // 将 planId 添加到 taskData 对象中，并传递整个对象
+        const payload = { ...taskData, planId };
+        await tasksApi.createTask(payload);
+        
         // After creating, reload the tasks for the current plan to show the new task
         await this.loadPlanDetails(planId);
       } catch (error) {
@@ -350,6 +346,31 @@ export const usePlansStore = defineStore('plans', {
         this.currentChatHistory.push({ sender: 'agent', text: errorMessage });
         this.error = error.message;
         throw error; // Re-throw for the component to handle
+      } finally {
+        this.planDetailsLoading = false;
+      }
+    },
+
+    async executeAgentCommandStream(conversationId, planId, command, callbacks) {
+      // Add user message to history immediately for responsiveness
+      this.currentChatHistory.push({ sender: 'user', text: command });
+      this.planDetailsLoading = true; // or a new 'streaming' state
+      try {
+        await chatApi.sendMessageStream(
+          conversationId,
+          command,
+          planId,
+          callbacks.onChunk,
+          callbacks.onComplete,
+          callbacks.onError
+        );
+        // After stream is complete, it might be good to refresh data
+        this.loadPlanDetails(planId);
+      } catch (error) {
+        const errorMessage = `Error: ${error.message}`;
+        this.currentChatHistory.push({ sender: 'agent', text: errorMessage });
+        this.error = error.message;
+        callbacks.onError(errorMessage);
       } finally {
         this.planDetailsLoading = false;
       }

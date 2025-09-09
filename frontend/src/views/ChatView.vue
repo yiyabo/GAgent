@@ -135,11 +135,9 @@ export default {
       try {
         const conversation = await chatApi.getConversation(conversationId)
         currentMessages.value = conversation.messages || []
-        visualizationType.value = 'help_menu'
-        localVisualizationData.value = [
-          { command: "Create Plan", description: "Create a new research plan" },
-          { command: "Show Plans", description: "View all plan lists" },
-        ]
+        visualizationType.value = 'plan_list';
+        const plans = await chatApi.getAllPlans();
+        localVisualizationData.value = plans;
       } catch (error) {
         console.error('Failed to load conversation:', error)
         currentMessages.value = []
@@ -157,12 +155,10 @@ export default {
         })
         selectedConversationId.value = response.id
         currentMessages.value = []
-        visualizationType.value = 'help_menu'
-        localVisualizationData.value = [
-           { command: "Create Plan", description: "Create a new research plan" },
-           { command: "Show Plans", description: "View all plan lists" },
-        ]
-        visualizationConfig.value = {}
+        visualizationType.value = 'plan_list';
+        const plans = await chatApi.getAllPlans();
+        localVisualizationData.value = plans;
+        visualizationConfig.value = {};
         ElMessage.success('New conversation created')
       } catch (error) {
         console.error('Failed to create conversation:', error)
@@ -185,6 +181,7 @@ export default {
         const response = await chatApi.sendMessage(
           selectedConversationId.value, 
           messageText,
+          planId.value,
           (event) => { // onPlanStreamEvent
             plansStore.handlePlanStreamEvent(event);
             if (visualizationType.value !== 'task_tree') {
@@ -240,6 +237,7 @@ export default {
         await chatApi.sendMessageStream(
           selectedConversationId.value,
           messageText,
+          planId.value,
           callbacks.onChunk,
           (complete) => {
             callbacks.onComplete(complete)

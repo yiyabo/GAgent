@@ -94,15 +94,16 @@ export const tasksApi = {
     return response.data
   },
 
-  async createTask(name, taskType = 'atomic', parentId = null, planId = null, prompt = null, contexts = null) {
+  async createTask(taskData) {
+    const { name, taskType, parentId, planId, prompt, contexts } = taskData;
     const payload = {
       name,
-      task_type: taskType,
+      task_type: taskType || 'atomic',
     };
-    if (parentId !== null) {
+    if (parentId !== null && parentId !== undefined) {
       payload.parent_id = parentId;
     }
-    if (planId !== null) {
+    if (planId !== null && planId !== undefined) {
       payload.plan_id = planId;
     }
     if (prompt && prompt.trim()) {
@@ -309,10 +310,16 @@ export const chatApi = {
     return response.data;
   },
 
-  async sendMessage(conversationId, message, onPlanStreamEvent, onPlanStreamError) {
+  async getAllPlans() {
+    const response = await api.get(`/chat/plans`);
+    return response.data;
+  },
+
+  async sendMessage(conversationId, message, planId = null) {
     const response = await api.post(`/chat/conversations/${conversationId}/messages`, { 
       text: message,
-      sender: 'user'
+      sender: 'user',
+      plan_id: planId
     });
 
     const result = response.data;
@@ -327,7 +334,7 @@ export const chatApi = {
       streamPlanGeneration(
         actionResult.stream_endpoint,
         actionResult.stream_payload,
-        onPlanStreamEvent,
+        onPlanStreamEvent, // Note: onPlanStreamEvent and onError are not passed in the new signature
         onPlanStreamError
       );
     }
@@ -335,14 +342,14 @@ export const chatApi = {
     return result;
   },
 
-  async sendMessageStream(conversationId, message, onChunk, onComplete, onError) {
+  async sendMessageStream(conversationId, message, planId = null, onChunk, onComplete, onError) {
     // Use fetch with ReadableStream for POST request
     const response = await fetch(`http://127.0.0.1:8000/chat/conversations/${conversationId}/messages/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ sender: 'user', text: message })
+      body: JSON.stringify({ sender: 'user', text: message, plan_id: planId })
     });
 
     if (!response.ok) {

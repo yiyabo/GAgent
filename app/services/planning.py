@@ -357,6 +357,7 @@ Return JSON ONLY (no comments):
                             "stage": "subtask_created",
                             "subtask_name": child["name"],
                             "subtask_id": db_task_id,
+                            "parent_id": parent["db_id"],
                         }
                         yield f"data: {json.dumps(subtask_msg)}\n\n"
                         await asyncio.sleep(0.1)
