@@ -2,7 +2,7 @@
   <div class="plans-view">
     <div class="plans-header">
       <div class="header-content">
-        <h1>📋 All Plans</h1>
+        <h1>All Plans</h1>
         <p class="header-subtitle">Manage your AI-generated plans and track progress</p>
       </div>
       <router-link to="/plans/new" class="btn btn-primary">

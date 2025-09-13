@@ -6,6 +6,7 @@
       :plans="data"
       @select-plan="handleSelectPlan"
       @execute-plan="handleExecutePlan"
+      @action="handleAction"
     />
     
     <!-- 计划详情视图 -->
@@ -16,24 +17,42 @@
       @action="handleAction"
     />
     
-    <!-- 计划图形视图 -->
-    <PlanGraphView
-      v-else-if="type === 'plan_graph'"
-      :plan-data="data"
-      :plan-title="config.title"
-    />
+    <!-- 任务视图容器 (包含切换器) -->
+    <div v-else-if="type === 'task_tree'" class="task-view-container">
+      <div class="view-header">
+        <div class="header-left">
+          <el-button 
+            type="text" 
+            icon="el-icon-arrow-left" 
+            @click="handleBackToList"
+            class="back-button"
+          >
+            Back to Plan List
+          </el-button>
+          <h4 class="plan-title">{{ planTitle }}</h4>
+        </div>
+        <el-radio-group v-model="activeTaskView" size="small">
+          <el-radio-button label="tree">Task Tree</el-radio-button>
+          <el-radio-button label="graph">Task Graph</el-radio-button>
+        </el-radio-group>
+      </div>
+      
+      <!-- 动态任务视图 -->
+      <keep-alive>
+        <component 
+          :is="activeTaskViewComponent"
+          :tasks="data"
+          :plan-data="data"
+          :plan-title="planTitle"
+          :loading="config.loading || false"
+          :error="config.error || null"
+          @task-selected="handleSelectTask"
+          @refresh="handleRefresh"
+        />
+      </keep-alive>
+    </div>
     
-    <!-- 任务树视图 -->
-    <TaskTreeView 
-      v-else-if="type === 'task_tree'" 
-      :tasks="data"
-      :loading="config.loading || false"
-      :error="config.error || null"
-      @task-selected="handleSelectTask"
-      @refresh="handleRefresh"
-    />
-    
-    <!-- 任务列表视图 -->
+    <!-- 任务列表视图 (保持不变) -->
     <TaskTreeView 
       v-else-if="type === 'task_list'" 
       :tasks="data"
@@ -72,7 +91,7 @@
 </template>
 
 <script>
-import { watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import PlanListView from './visualization/PlanListView.vue'
 import PlanDetails from './visualizations/PlanDetails.vue'
 import PlanGraphView from './visualization/PlanGraphView.vue'
@@ -109,6 +128,19 @@ export default {
     }
   },
   setup(props) {
+    const activeTaskView = ref('tree'); // 'tree' or 'graph'
+
+    const activeTaskViewComponent = computed(() => {
+      return activeTaskView.value === 'tree' ? 'TaskTreeView' : 'PlanGraphView';
+    });
+
+    const planTitle = computed(() => {
+      if (props.config && props.config.title) {
+        return props.config.title;
+      }
+      return '任务详情';
+    });
+
     // Watch for data changes to ensure reactivity
     watch(
       () => props.data,
@@ -119,7 +151,6 @@ export default {
           oldDataLength: Array.isArray(oldData) ? oldData.length : Object.keys(oldData || {}).length
         });
         
-        // Force re-render for task tree and task list
         if (props.type === 'task_tree' || props.type === 'task_list') {
           nextTick(() => {
             // Trigger component update
@@ -133,13 +164,21 @@ export default {
       () => props.type,
       (newType, oldType) => {
         console.log('VisualizationPanel type changed:', { newType, oldType });
+        // Reset to tree view when a new plan is selected
+        if (newType === 'task_tree') {
+          activeTaskView.value = 'tree';
+        }
         nextTick(() => {
           // Ensure proper rendering after type change
         });
       }
     );
 
-    return {};
+    return {
+      activeTaskView,
+      activeTaskViewComponent,
+      planTitle
+    };
   },
   methods: {
     handleSelectPlan(planId) {
@@ -179,6 +218,17 @@ export default {
         type: 'help_command',
         command: command
       })
+    },
+    
+    handleAction(action) {
+      // A generic handler to pass actions up from child components
+      this.$emit('action', action);
+    },
+
+    handleBackToList() {
+      this.$emit('action', {
+        type: 'show_plan_list'
+      });
     }
   }
 }
@@ -191,6 +241,27 @@ export default {
   padding: 20px;
   background: #f5f7fa;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.task-view-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.view-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+  flex-shrink: 0;
+}
+
+.view-header h4 {
+  margin: 0;
+  color: #303133;
 }
 
 /* 自定义滚动条 */

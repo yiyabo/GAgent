@@ -6,6 +6,9 @@
           <h3><slot name="header">Task Tree</slot></h3>
           <div class="root-controls">
             <span class="tree-status">🌳 {{ tasks.length }} tasks ({{ visibleTasks.length }} visible)</span>
+            <button @click="toggleExpandAll" class="btn-tree">
+              {{ allExpanded ? '收起全部' : '展开全部' }}
+            </button>
             <button @click="$emit('refresh')" class="btn-tree">🔄 刷新</button>
           </div>
         </div>
@@ -94,7 +97,7 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick } from 'vue';
+import { ref, watch, computed } from 'vue';
 
 const props = defineProps({
   tasks: {
@@ -109,68 +112,77 @@ const emit = defineEmits(['task-selected', 'refresh']);
 
 const expandedTasks = ref(new Set());
 const visibleTasks = ref([]);
+const allExpanded = ref(false);
+
+const taskMap = computed(() => {
+  const map = new Map();
+  props.tasks.forEach(task => map.set(task.id, task));
+  return map;
+});
+
+const childrenMap = computed(() => {
+  const map = new Map();
+  props.tasks.forEach(task => {
+    if (task.parent_id) {
+      if (!map.has(task.parent_id)) {
+        map.set(task.parent_id, []);
+      }
+      map.get(task.parent_id).push(task);
+    }
+  });
+  return map;
+});
 
 const hasChildren = (taskId) => {
-  const childCount = props.tasks.filter(t => t.parent_id === taskId).length;
-  console.log(`🔍 hasChildren(${taskId}): ${childCount > 0} (${childCount} children found)`);
-  return childCount > 0;
+  return childrenMap.value.has(taskId);
 };
 
 const updateVisibleTasks = () => {
-  console.log('📋 updateVisibleTasks called');
-  console.log('📊 Current expanded tasks:', Array.from(expandedTasks.value));
-  console.log('📝 Total tasks:', props.tasks.length);
-  
   const visible = [];
   const processTask = (task, level = 0) => {
-    console.log(`  Processing task ${task.id} (${task.name}) at level ${level}`);
     visible.push({ ...task, displayLevel: level });
     
     if (expandedTasks.value.has(task.id)) {
-      const children = props.tasks.filter(t => t.parent_id === task.id);
-      console.log(`    Task ${task.id} is expanded, found ${children.length} children`);
+      const children = childrenMap.value.get(task.id) || [];
       children.forEach(child => processTask(child, level + 1));
-    } else {
-      console.log(`    Task ${task.id} is not expanded (has children: ${hasChildren(task.id)})`);
     }
   };
 
-  // Find root tasks - tasks that don't have a parent in the current task list
-  const taskIds = new Set(props.tasks.map(t => t.id));
   const rootTasks = props.tasks.filter(t => {
-    // A task is root if:
-    // 1. parent_id is null, undefined, or 0
-    // 2. OR parent_id doesn't exist in current task list (orphaned task)
-    return !t.parent_id || t.parent_id === 0 || !taskIds.has(t.parent_id);
+    return !t.parent_id || t.parent_id === 0 || !taskMap.value.has(t.parent_id);
   });
-  console.log('🌳 Root tasks found:', rootTasks.length);
-  console.log('🔍 Root tasks:', rootTasks.map(t => ({ id: t.id, name: t.name, parent_id: t.parent_id })));
   
   if (rootTasks.length === 0 && props.tasks.length > 0) {
-    // If no root tasks found but we have tasks, show all tasks as root
-    console.log('⚠️ No root tasks found, showing all tasks as root');
     props.tasks.forEach(task => processTask(task));
   } else {
     rootTasks.forEach(task => processTask(task));
   }
   
-  console.log('👁️ Final visible tasks:', visible.length);
   visibleTasks.value = visible;
 };
 
 const toggleExpansion = (taskId) => {
-  console.log('🔄 toggleExpansion called for task:', taskId);
-  console.log('📊 Current expanded tasks before toggle:', Array.from(expandedTasks.value));
-  
   if (expandedTasks.value.has(taskId)) {
-    console.log('❌ Collapsing task:', taskId);
     expandedTasks.value.delete(taskId);
   } else {
-    console.log('✅ Expanding task:', taskId);
     expandedTasks.value.add(taskId);
   }
-  
-  console.log('📊 Expanded tasks after toggle:', Array.from(expandedTasks.value));
+  updateVisibleTasks();
+};
+
+const toggleExpandAll = () => {
+  allExpanded.value = !allExpanded.value;
+  if (allExpanded.value) {
+    // Expand all tasks that have children
+    props.tasks.forEach(task => {
+      if (hasChildren(task.id)) {
+        expandedTasks.value.add(task.id);
+      }
+    });
+  } else {
+    // Collapse all
+    expandedTasks.value.clear();
+  }
   updateVisibleTasks();
 };
 
@@ -183,41 +195,21 @@ const isExpanded = (taskId) => {
 };
 
 watch(() => props.tasks, (newTasks, oldTasks) => {
-  console.log('🌳 TaskTreeView watch triggered:', {
-    newTasksLength: newTasks?.length || 0,
-    oldTasksLength: oldTasks?.length || 0,
-    expandedCount: expandedTasks.value.size
-  });
-  
-  // 检查是否应该初始化展开状态
   const shouldExpandRoots = (
-    // 情况1: 真正的首次加载 (oldTasks为空或null, newTasks有内容)
     ((!oldTasks || oldTasks.length === 0) && newTasks && newTasks.length > 0) ||
-    // 情况2: 之前没有展开任何任务，现在有任务数据了
     (expandedTasks.value.size === 0 && newTasks && newTasks.length > 0)
   );
   
   if (shouldExpandRoots) {
-    console.log('✅ Should expand root nodes - conditions met');
-    // Use same root task logic as updateVisibleTasks
     const taskIds = new Set(newTasks.map(t => t.id));
     const rootTasks = newTasks.filter(t => {
       return !t.parent_id || t.parent_id === 0 || !taskIds.has(t.parent_id);
     });
-    console.log('🔍 Found root tasks:', rootTasks.length);
     
-    // Always expand root tasks to make them visible
     rootTasks.forEach(task => {
-      console.log('🔄 Expanding root task:', task.id, task.name);
       expandedTasks.value.add(task.id);
-      
-      // Also expand if it has children
-      const childrenCount = newTasks.filter(t => t.parent_id === task.id).length;
-      console.log(`🔍 Root task ${task.id} has ${childrenCount} children`);
     });
   } else if (oldTasks && newTasks && oldTasks.length > 0 && newTasks.length > 0) {
-    console.log('🔄 Updating existing tasks, preserving expand state');
-    // 数据更新时，只保留仍然存在的展开任务
     const newTaskIds = new Set(newTasks.map(t => t.id));
     const validExpandedTasks = new Set();
     
@@ -230,12 +222,8 @@ watch(() => props.tasks, (newTasks, oldTasks) => {
     expandedTasks.value = validExpandedTasks;
   }
   
-  // Always update visible tasks when tasks change
   updateVisibleTasks();
 }, { deep: true, immediate: true });
-
-// Initialize visible tasks on mount
-updateVisibleTasks();
 
 </script>
 

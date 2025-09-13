@@ -15,13 +15,13 @@
         @click="executePlan"
         :disabled="!data.id"
       >
-        执行计划
+        Execute Plan
       </el-button>
       <el-button 
         @click="viewTasks"
         :disabled="!data.id"
       >
-        查看任务树
+        View Tasks
       </el-button>
       <el-button 
         type="danger" 
@@ -29,7 +29,7 @@
         @click="deletePlan"
         :disabled="!data.id"
       >
-        删除计划
+        Delete Plan
       </el-button>
     </div>
     

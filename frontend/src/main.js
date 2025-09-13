@@ -7,8 +7,14 @@ import router from './router'
 import './style.css'
 
 const app = createApp(App)
+const pinia = createPinia()
 
-app.use(createPinia())
+// Inject the router into all Pinia stores
+pinia.use(({ store }) => {
+  store.router = router
+})
+
+app.use(pinia)
 app.use(router)
 app.use(ElementPlus)
 

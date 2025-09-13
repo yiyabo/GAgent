@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { plansApi, tasksApi } from '../services/api.js'
+import { plansApi, tasksApi, chatApi } from '../services/api.js'
 
 export const usePlansStore = defineStore('plans', {
   state: () => ({
@@ -59,15 +59,15 @@ export const usePlansStore = defineStore('plans', {
 
     // Load specific plan details
     async loadPlanDetails(planId) {
-      this.planDetailsLoading = true
-      this.currentChatHistory = []; // Clear previous history
+      this.planDetailsLoading = true;
+      // We fetch conversation history separately now, so clear history here.
+      this.currentChatHistory = []; 
       try {
         // Ensure plans are loaded first
         if (this.plans.length === 0) {
           await this.loadPlans();
         }
         
-        // Find and update current plan with reactive assignment
         const planFromList = this.plans.find(p => p.id === planId);
         if (planFromList) {
           this.currentPlan = { ...planFromList };
@@ -75,37 +75,30 @@ export const usePlansStore = defineStore('plans', {
           this.currentPlan = null;
         }
 
-        // Fetch tasks and chat history in parallel
-        const [tasks, history] = await Promise.all([
-          plansApi.getPlanTasks(planId),
-          this.loadChatHistory(planId)
-        ]);
-
-        // Use reactive assignment for tasks
-        this.currentPlanTasks = [...(tasks || [])]
-        this.error = null
-        return this.currentPlanTasks
+        const tasks = await plansApi.getPlanTasks(planId);
+        this.currentPlanTasks = [...(tasks || [])];
+        this.error = null;
+        return this.currentPlanTasks;
       } catch (error) {
-        this.error = error.message
-        this.currentPlanTasks = []
+        this.error = error.message;
+        this.currentPlanTasks = [];
       } finally {
-        this.planDetailsLoading = false
+        this.planDetailsLoading = false;
       }
     },
 
-    async loadChatHistory(planId) {
+    async loadConversationHistory(conversationId) {
       try {
-        const history = await plansApi.getChatHistory(planId);
-        this.currentChatHistory = history.map(item => ({
-          sender: item.sender,
-          text: item.message
-        }));
-        return this.currentChatHistory;
+        const conversation = await chatApi.getConversation(conversationId);
+        this.currentChatHistory = conversation.messages || [];
       } catch (error) {
-        this.error = error.message;
+        this.error = `Failed to load conversation history: ${error.message}`;
         this.currentChatHistory = [];
-        return [];
       }
+    },
+
+    clearChatHistory() {
+      this.currentChatHistory = [];
     },
 
     // Load plan output
@@ -158,7 +151,7 @@ export const usePlansStore = defineStore('plans', {
             // Add other relevant fields from the event
           };
           console.log('📝 Creating task:', newTask);
-          this.currentPlanTasks.push(newTask);
+          this.currentPlanTasks = [...this.currentPlanTasks, newTask];
           break;
         case 'completed':
           this.planGenerating = false;
@@ -173,6 +166,14 @@ export const usePlansStore = defineStore('plans', {
             this.currentPlanTasks = processedTasks;
           }
           this.loadPlans(); // Refresh the main plans list
+
+          // Navigate to the new plan's execution view
+          if (this.router && event.plan_id) {
+            this.router.push({ 
+              name: 'PlanExecute', 
+              params: { id: event.plan_id } 
+            });
+          }
           break;
         case 'fatal_error':
           this.planGenerating = false;
@@ -351,21 +352,45 @@ export const usePlansStore = defineStore('plans', {
       }
     },
 
+    addUserMessageToHistory(message) {
+      this.currentChatHistory.push({
+        sender: 'user',
+        text: message,
+        timestamp: new Date().toISOString()
+      });
+    },
+
     async executeAgentCommandStream(conversationId, planId, command, callbacks) {
-      // Add user message to history immediately for responsiveness
-      this.currentChatHistory.push({ sender: 'user', text: command });
-      this.planDetailsLoading = true; // or a new 'streaming' state
+      this.addUserMessageToHistory(command);
+      this.planDetailsLoading = true;
+
       try {
-        await chatApi.sendMessageStream(
+        const initialResponse = await chatApi.sendMessageStream(
           conversationId,
           command,
           planId,
           callbacks.onChunk,
-          callbacks.onComplete,
-          callbacks.onError
+          (fullText, messageId) => { // onComplete
+            const agentMessage = this.currentChatHistory.find(m => m.id === messageId);
+            if (agentMessage) {
+              agentMessage.text = fullText;
+            } else {
+              this.currentChatHistory.push({ id: messageId, sender: 'agent', text: fullText });
+            }
+            callbacks.onComplete(fullText, messageId);
+          },
+          callbacks.onError,
+          (event) => this.handlePlanStreamEvent(event)
         );
-        // After stream is complete, it might be good to refresh data
-        this.loadPlanDetails(planId);
+
+        // Handle initial, non-streamed response part
+        if (initialResponse && initialResponse.message) {
+          this.currentChatHistory.push(initialResponse.message);
+        }
+        if (initialResponse && initialResponse.visualization) {
+          // You might want to handle visualization updates here as well
+        }
+
       } catch (error) {
         const errorMessage = `Error: ${error.message}`;
         this.currentChatHistory.push({ sender: 'agent', text: errorMessage });

@@ -40,9 +40,8 @@
             ref="chatInterface"
             :key="selectedConversationId" 
             :initial-messages="currentMessages"
-            :use-streaming="false"
             @send-message="handleSendMessage"
-            @send-message-stream="handleSendMessageStream"
+            @send-message-stream="handleSendMessage"
           />
           
           <div v-else class="no-conversation-selected">
@@ -78,8 +77,8 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import ConversationHistory from '../components/ConversationHistory.vue'
 import ChatInterface from '../components/ChatInterface.vue'
@@ -98,28 +97,26 @@ export default {
   },
   setup() {
     const route = useRoute()
+    const router = useRouter()
     const plansStore = usePlansStore()
     
     const planId = ref(route.params.id || null)
     const selectedConversationId = ref(null)
-    const showHistory = ref(false)
-    const currentMessages = ref([])
+    const showHistory = ref(true)
     const isLoadingConversation = ref(false)
     const chatInterface = ref(null)
     const selectedTaskForDetail = ref(null)
     const showTaskDetailModal = ref(false)
     const isCreatingConversation = ref(false)
     
-    const visualizationType = ref('none')
-    const localVisualizationData = ref({});
+    const visualizationType = ref('plan_list')
+    const localVisualizationData = ref([]);
     const visualizationConfig = ref({})
 
+    const currentMessages = computed(() => plansStore.currentChatHistory);
+
     const visualizationData = computed(() => {
-      // Include force update trigger in dependency
-      plansStore.forceUpdateTrigger;
-      
-      if (visualizationType.value === 'task_tree' || visualizationType.value === 'task_list') {
-        // Ensure reactive dependency on store state
+      if (visualizationType.value === 'task_tree') {
         return plansStore.currentPlanTasks || [];
       }
       return localVisualizationData.value || {};
@@ -130,249 +127,88 @@ export default {
     }
     
     const handleSelectConversation = async (conversationId) => {
+      if (!conversationId) return;
       selectedConversationId.value = conversationId
       isLoadingConversation.value = true
-      try {
-        const conversation = await chatApi.getConversation(conversationId)
-        currentMessages.value = conversation.messages || []
-        visualizationType.value = 'plan_list';
-        const plans = await chatApi.getAllPlans();
-        localVisualizationData.value = plans;
-      } catch (error) {
-        console.error('Failed to load conversation:', error)
-        currentMessages.value = []
-      } finally {
-        isLoadingConversation.value = false
-      }
+      await plansStore.loadConversationHistory(conversationId);
+      isLoadingConversation.value = false
     }
     
     const createNewConversation = async () => {
       if (isCreatingConversation.value) return
       isCreatingConversation.value = true
       try {
-        const response = await chatApi.createConversation({
-          title: `Conversation ${new Date().toLocaleString()}`
-        })
-        selectedConversationId.value = response.id
-        currentMessages.value = []
-        visualizationType.value = 'plan_list';
-        const plans = await chatApi.getAllPlans();
-        localVisualizationData.value = plans;
-        visualizationConfig.value = {};
-        ElMessage.success('New conversation created')
+        const response = await chatApi.createConversation({ title: `New Conversation` })
+        await handleSelectConversation(response.id);
       } catch (error) {
-        console.error('Failed to create conversation:', error)
-        ElMessage.error(`Failed to create conversation: ${error.message || error}`)
+        ElMessage.error(`Failed to create conversation: ${error.message}`)
       } finally {
         isCreatingConversation.value = false
       }
     }
     
     const handleSendMessage = async (messageText) => {
-      if (!selectedConversationId.value) return
-      
-      currentMessages.value.push({
-        sender: 'user',
-        text: messageText,
-        timestamp: new Date().toISOString()
-      })
-      
-      try {
-        const response = await chatApi.sendMessage(
-          selectedConversationId.value, 
-          messageText,
-          planId.value,
-          (event) => { // onPlanStreamEvent
-            plansStore.handlePlanStreamEvent(event);
-            if (visualizationType.value !== 'task_tree') {
-                visualizationType.value = 'task_tree';
-            }
-            // Force reactivity update
-            plansStore.forceUpdate();
-            nextTick(() => {
-              // Trigger computed property re-evaluation
-            });
-          },
-          (error) => { // onPlanStreamError
-            console.error("Plan stream error:", error);
-            ElMessage.error("Error during plan generation stream.");
-            plansStore.handlePlanStreamEvent({ stage: 'fatal_error', message: 'Streaming failed' });
-          }
-        );
-        
-        if (response.initial_response) {
-          currentMessages.value.push({
-            sender: 'agent',
-            text: response.initial_response,
-            timestamp: new Date().toISOString(),
-          });
-        }
-        
-        handleActionResult(response);
-        
-        if (response.visualization) {
-          updateVisualization(response.visualization);
-        }
-        
-      } catch (error) {
-        console.error('Failed to send message:', error)
-        currentMessages.value.push({ 
-          sender: 'agent', 
-          text: 'Sorry, an error occurred while processing your message.',
-          timestamp: new Date().toISOString()
-        })
-      }
-    }
-    
-    const handleSendMessageStream = async (messageText, callbacks) => {
-      if (!selectedConversationId.value) return
-      
-      currentMessages.value.push({
-        sender: 'user',
-        text: messageText,
-        timestamp: new Date().toISOString()
-      })
-      
-      try {
-        await chatApi.sendMessageStream(
-          selectedConversationId.value,
-          messageText,
-          planId.value,
-          callbacks.onChunk,
-          (complete) => {
-            callbacks.onComplete(complete)
-            if (complete.visualization) {
-              updateVisualization(complete.visualization)
-            }
-            if (complete.full_text) {
-              currentMessages.value.push({
-                sender: 'agent',
-                text: complete.full_text,
-                timestamp: new Date().toISOString()
-              })
-            }
-          },
-          callbacks.onError
-        )
-      } catch (error) {
-        console.error('Failed to send message stream:', error)
-        callbacks.onError('Failed to send message. Please try again.')
-      }
-    }
+      if (!selectedConversationId.value || !messageText.trim()) return;
 
-    const updateVisualization = (visualization) => {
-      visualizationType.value = visualization.type || 'none'
-      visualizationConfig.value = visualization.config || {}
-      
-      if (visualization.type !== 'task_tree' && visualization.type !== 'task_list') {
-        localVisualizationData.value = visualization.data || {};
-      }
-    }
-    
-    const handleVisualizationAction = (action) => {
-      if (action.type === 'select_task') {
-        showTaskDetail(action.task)
-      } else if (action.type === 'refresh_tasks' && plansStore.currentPlan) {
-        plansStore.loadPlanDetails(plansStore.currentPlan.id);
+      const callbacks = {
+        onChunk: (chunk, accumulated) => chatInterface.value?.updateStreamingResponse(accumulated),
+        onComplete: (fullText) => chatInterface.value?.finalizeStreamingResponse(fullText),
+        onError: (error) => {
+          chatInterface.value?.finalizeStreamingResponse(`An error occurred: ${error}`);
+          ElMessage.error(`An error occurred: ${error}`);
+        }
+      };
+
+      await plansStore.executeAgentCommandStream(
+        selectedConversationId.value,
+        planId.value,
+        messageText,
+        callbacks
+      );
+    };
+
+    const handleVisualizationAction = async (action) => {
+      if (action.type === 'select_plan') {
+        planId.value = action.planId;
+        await plansStore.loadPlanDetails(action.planId);
+        visualizationConfig.value = { title: plansStore.currentPlan?.title || 'Plan Details' };
+        visualizationType.value = 'task_tree';
+      } else if (action.type === 'select_task') {
+        selectedTaskForDetail.value = action.task;
+        showTaskDetailModal.value = true;
+      } else if (action.type === 'delete_plan') {
+        try {
+          await chatApi.deletePlan(action.planId);
+          ElMessage.success('Plan deleted successfully.');
+          const plans = await chatApi.getAllPlans();
+          localVisualizationData.value = plans;
+        } catch (error) {
+          ElMessage.error(`Failed to delete plan: ${error.message}`);
+        }
+      } else if (action.type === 'show_plan_list') {
+        visualizationType.value = 'plan_list';
       } else if (chatInterface.value && action.command) {
-        chatInterface.value.sendMessage(action.command)
+        handleSendMessage(action.command);
       }
-    }
-    
-    const showTaskDetail = (task) => {
-      selectedTaskForDetail.value = task
-      showTaskDetailModal.value = true
-    }
+    };
     
     const closeTaskDetailModal = () => {
-      selectedTaskForDetail.value = null
-      showTaskDetailModal.value = false
+      showTaskDetailModal.value = false;
+      selectedTaskForDetail.value = null;
     }
-    
-    const handleTaskRerun = (taskId) => {
-      plansStore.rerunTask(taskId);
-      closeTaskDetailModal()
-    }
-    
-    const handleTaskDeleted = () => {
-      if (plansStore.currentPlan) {
-        plansStore.loadPlanDetails(plansStore.currentPlan.id);
-      }
-      closeTaskDetailModal()
-    }
-    
-    const handleConversationDeleted = () => {
-      selectedConversationId.value = null
-      currentMessages.value = []
-      visualizationType.value = 'help_menu'
-    }
-    
-    const handleActionResult = (response) => {
-      if (response && response.action_result) {
-        const newPlanId = response.action_result.plan_id;
-        if (newPlanId && newPlanId !== planId.value) {
-          planId.value = newPlanId;
-          plansStore.loadPlanDetails(newPlanId);
-        }
-      }
-    }
-    
-    // Watch for store state changes to ensure reactivity
-    watch(
-      () => plansStore.currentPlanTasks,
-      (newTasks) => {
-        if (visualizationType.value === 'task_tree' || visualizationType.value === 'task_list') {
-          // Force re-render when tasks change
-          nextTick(() => {
-            // Ensure UI updates
-          });
-        }
-      },
-      { deep: true }
-    );
 
-    watch(
-      () => plansStore.currentPlan,
-      (newPlan) => {
-        if (newPlan) {
-          // Force re-render when plan changes
-          nextTick(() => {
-            // Ensure UI updates
-          });
-        }
-      },
-      { deep: true }
-    );
+    const handleConversationDeleted = () => {
+      selectedConversationId.value = null;
+      plansStore.clearChatHistory();
+      visualizationType.value = 'help_menu';
+    };
 
     onMounted(async () => {
-      if (planId.value) {
-        try {
-          await plansStore.loadPlanDetails(planId.value)
-          // Force reactivity update after loading
-          nextTick(() => {
-            // Ensure UI updates after async load
-          });
-        } catch (error) {
-          console.error('Failed to load plan details:', error)
-        }
-      }
-      
-      if (!selectedConversationId.value) {
-        try {
-          const conversations = await chatApi.getAllConversations()
-          if (conversations && conversations.length > 0) {
-            handleSelectConversation(conversations[0].id)
-          } else {
-            await createNewConversation()
-          }
-        } catch (error) {
-          console.error('Failed to load initial conversation:', error)
-        }
-      }
-    })
+      const plans = await chatApi.getAllPlans();
+      localVisualizationData.value = plans;
+    });
     
     return {
-      planId,
       selectedConversationId,
       showHistory,
       currentMessages,
@@ -388,13 +224,15 @@ export default {
       handleSelectConversation,
       createNewConversation,
       handleSendMessage,
-      handleSendMessageStream,
-      updateVisualization,
       handleVisualizationAction,
       closeTaskDetailModal,
-      handleTaskRerun,
-      handleTaskDeleted,
-      handleConversationDeleted
+      handleConversationDeleted,
+      handleTaskRerun: (taskId) => plansStore.rerunTask(taskId),
+      handleTaskDeleted: () => {
+        if (plansStore.currentPlan) {
+          plansStore.loadPlanDetails(plansStore.currentPlan.id)
+        }
+      }
     }
   }
 }

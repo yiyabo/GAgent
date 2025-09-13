@@ -229,6 +229,10 @@ const deleteConversation = async (conversationId) => {
 
 .history-content {
   /* New wrapper for content that will be hidden */
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 120px); /* 减去header和padding的高度 */
+  overflow: hidden;
 }
 
 .conversation-history h3 {
@@ -255,6 +259,8 @@ const deleteConversation = async (conversationId) => {
   padding: 0;
   margin: 0;
   overflow-y: auto;
+  flex: 1;
+  max-height: calc(100vh - 200px); /* 确保有足够的滚动空间 */
 }
 
 .conversation-history li {

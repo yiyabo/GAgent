@@ -3,13 +3,13 @@
     <div class="view-header">
       <h2>Plan List</h2>
       <el-button type="primary" size="small" @click="refreshPlans">
-        <i class="el-icon-refresh"></i> 刷新
+        <i class="el-icon-refresh"></i> Refresh
       </el-button>
     </div>
     
     <div v-if="plans.length === 0" class="no-plans">
       <el-empty description="暂无计划">
-        <el-button type="primary" @click="createPlan">创建新计划</el-button>
+        <el-button type="primary" @click="createPlan">Create New Plan</el-button> 
       </el-empty>
     </div>
     
@@ -48,7 +48,7 @@
             size="small" 
             @click="viewTasks(plan.id)"
           >
-            查看任务
+            View Tasks
           </el-button>
           <el-button 
             type="primary" 
@@ -56,7 +56,7 @@
             @click="executePlan(plan.id)"
             :disabled="plan.progress >= 1"
           >
-            执行计划
+            Excute Plan
           </el-button>
           <el-button 
             type="danger" 
@@ -64,7 +64,7 @@
             plain
             @click="deletePlan(plan.id)"
           >
-            删除
+            Delete Plan
           </el-button>
         </div>
       </el-card>
@@ -84,12 +84,12 @@ export default {
   methods: {
     getStatusType(status) {
       const types = {
-        'active': '',
+        'active': 'info',
         'completed': 'success',
         'archived': 'info',
         'failed': 'danger'
       }
-      return types[status] || ''
+      return types[status] || 'primary'
     },
     
     refreshPlans() {

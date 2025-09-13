@@ -260,29 +260,23 @@ export const evaluationApi = {
   }
 }
 
-function streamPlanGeneration(endpoint, payload, onEvent, onError) {
-  const eventSource = new EventSource(`http://127.0.0.1:8000${endpoint}?goal=${encodeURIComponent(payload.goal)}`);
 
-  eventSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      onEvent(data);
-    } catch (e) {
-      console.error('Failed to parse SSE event:', e);
-    }
-  };
+    async function post(url, data, options = {}) {
+  const response = await fetch(`http://127.0.0.1:8000${url}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+    body: JSON.stringify(data),
+  });
 
-  eventSource.onerror = (err) => {
-    console.error('EventSource failed:', err);
-    onError(err);
-    eventSource.close();
-  };
-
-  return () => {
-    eventSource.close();
-  };
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+  }
+  return response;
 }
-
 
 export const chatApi = {
   async getConversation(conversationId) {
@@ -315,46 +309,17 @@ export const chatApi = {
     return response.data;
   },
 
-  async sendMessage(conversationId, message, planId = null) {
-    const response = await api.post(`/chat/conversations/${conversationId}/messages`, { 
-      text: message,
-      sender: 'user',
-      plan_id: planId
-    });
-
-    const result = response.data;
-    const actionResult = result.action_result;
-
-    // Check if the agent wants us to start a stream
-    if (actionResult && actionResult.action === 'stream' && actionResult.stream_endpoint) {
-      // The agent's response is just a confirmation. The actual plan data
-      // will come through the SSE stream.
-      // We return the initial agent message, and the caller is responsible
-      // for handling the stream via the callbacks.
-      streamPlanGeneration(
-        actionResult.stream_endpoint,
-        actionResult.stream_payload,
-        onPlanStreamEvent, // Note: onPlanStreamEvent and onError are not passed in the new signature
-        onPlanStreamError
-      );
-    }
-    
-    return result;
+  async deletePlan(planId) {
+    const response = await api.delete(`/plans/${planId}`);
+    return response.data;
   },
 
-  async sendMessageStream(conversationId, message, planId = null, onChunk, onComplete, onError) {
-    // Use fetch with ReadableStream for POST request
-    const response = await fetch(`http://127.0.0.1:8000/chat/conversations/${conversationId}/messages/stream`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ sender: 'user', text: message, plan_id: planId })
+  async sendMessageStream(conversationId, message, planId = null, onChunk, onComplete, onError, onPlanStreamEvent) {
+    const response = await post(`/chat/conversations/${conversationId}/messages/stream`, {
+      sender: 'user',
+      text: message,
+      plan_id: planId,
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -371,6 +336,8 @@ export const chatApi = {
               onChunk?.(data.content, data.accumulated);
             } else if (data.type === 'complete') {
               onComplete?.(data.full_text, data.message_id);
+            } else if (data.type === 'plan_event') {
+              onPlanStreamEvent?.(data.event);
             } else if (data.type === 'error') {
               onError?.(data.message);
             }
@@ -384,21 +351,14 @@ export const chatApi = {
     try {
       while (true) {
         const { done, value } = await reader.read();
-        
         if (done) break;
-        
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
-        
-        // Process all complete lines
         buffer = lines.pop() || '';
-        
         for (const line of lines) {
           processLine(line);
         }
       }
-      
-      // Process any remaining buffer
       if (buffer) {
         processLine(buffer);
       }
