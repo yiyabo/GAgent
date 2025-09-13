@@ -36,3 +36,8 @@ logs/
 data/
 # External tools (local only)
 gemini-cli
+
+# Environment files (keep example tracked)
+.env
+.env.*
+!.env.example

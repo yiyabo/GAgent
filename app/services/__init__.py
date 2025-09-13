@@ -51,8 +51,7 @@ _ALIAS_MAP = {
     "phage_evaluator": "app.services.evaluation.phage_evaluator",
     "benchmark": "app.services.evaluation.benchmark",
 
-    # planning
-    "planning": "app.services.planning.planning",
+    # planning (do not alias package name to a submodule to avoid import conflicts)
     "recursive_decomposition": "app.services.planning.recursive_decomposition",
     "decomposition_with_evaluation": "app.services.planning.decomposition_with_evaluation",
     "tool_aware_decomposition": "app.services.planning.tool_aware_decomposition",

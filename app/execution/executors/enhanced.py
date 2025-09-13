@@ -125,7 +125,7 @@ def execute_task_with_evaluation(*args, **kwargs):
                         task_name=task.get('name', 'the topic'),
                         length="comprehensive response"
                     )
-                current_content = llm_service.chat(task_prompt)
+                current_content = llm_service.chat(task_prompt, force_real=True)
             else:
                 # Subsequent iterations - use prompt builder for revision
                 revision_prompt = prompt_builder.build_revision_prompt(
@@ -133,7 +133,7 @@ def execute_task_with_evaluation(*args, **kwargs):
                     current_content=current_content,
                     feedback=["Make it more comprehensive and detailed"]
                 )
-                current_content = llm_service.chat(revision_prompt)
+                current_content = llm_service.chat(revision_prompt, force_real=True)
         except Exception:
             # Fallback to basic execution
             current_content = execute_task(*args, **kwargs)

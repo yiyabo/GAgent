@@ -24,7 +24,12 @@ class SmartToolRouter:
     def __init__(self):
         self.tool_registry = get_tool_registry()
         self.llm_integration = None
-        self.glm_api_key = "f887acb2128f41988821c38ee395f542.rmgIq0MwACMMh0Mw"  # GLM API Key
+        # Read GLM API key from environment or centralized settings
+        try:
+            from app.services.foundation.settings import get_settings
+            self.glm_api_key = os.getenv("GLM_API_KEY") or get_settings().glm_api_key
+        except Exception:
+            self.glm_api_key = os.getenv("GLM_API_KEY")
 
     async def initialize(self) -> None:
         """Initialize the router"""
@@ -37,19 +42,28 @@ class SmartToolRouter:
         try:
             import aiohttp
 
-            url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+            # Use centralized settings for API URL/model (supports DashScope/OpenAI-compatible backends)
+            try:
+                from app.services.foundation.settings import get_settings
+                s = get_settings()
+                api_url = s.glm_api_url or "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+                model = s.glm_model or "glm-4"
+            except Exception:
+                api_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+                model = "glm-4"
+
             headers = {"Authorization": f"Bearer {self.glm_api_key}", "Content-Type": "application/json"}
 
             payload = {
-                "model": "glm-4",
+                "model": model,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1,  # 降低随机性，提高确定性
+                "temperature": 0.1,
                 "max_tokens": 1000,
             }
 
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, headers=headers, json=payload) as response:
+                async with session.post(api_url, headers=headers, json=payload) as response:
                     if response.status == 200:
                         data = await response.json()
                         return data["choices"][0]["message"]["content"]
