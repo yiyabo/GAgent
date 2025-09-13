@@ -32,7 +32,8 @@ def _fetch_prompt(task_id, default_prompt, repo: TaskRepository):
 def _glm_chat(prompt: str) -> str:
     # Delegate to default LLM client (Phase 1 abstraction)
     client = get_default_client()
-    return client.chat(prompt)
+    # Force real call to avoid mock responses
+    return client.chat(prompt, force_real=True)
 
 
 def _generate_task_embedding_async(task_id: int, content: str, repo: TaskRepository):

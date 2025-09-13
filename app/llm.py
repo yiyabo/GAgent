@@ -41,15 +41,8 @@ class LLMClient(LLMProvider):
         self.url = url or env_url or settings.glm_api_url or "https://open.bigmodel.cn/api/paas/v4/chat/completions"
         self.model = model or env_model or settings.glm_model or "glm-4-flash"
         self.timeout = timeout or settings.glm_request_timeout
-        # CRITICAL FIX: Force mock mode to False to prevent unexpected mock responses.
-        # The LLM_MOCK environment variable has caused persistent issues.
-        self.mock = False
-
-        # Embedded test key fallback (for local benchmarking only)
-        # If no GLM_API_KEY provided, use a test key to simplify non-mock evaluations.
-        # WARNING: Do not use in production environments.
-        if not self.api_key:
-            self.api_key = os.getenv("GLM_TEST_API_KEY") or "f887acb2128f41988821c38ee395f542.rmgIq0MwACMMh0Mw"
+        # Respect centralized mock setting (from env or config)
+        self.mock = bool(settings.llm_mock)
         # Retry/backoff configuration
         try:
             if retries is None:

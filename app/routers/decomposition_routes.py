@@ -12,19 +12,6 @@ from typing import Any, Dict
 from ..errors import BusinessError, ErrorCode
 from ..errors.exceptions import SystemError as CustomSystemError
 from ..repository.tasks import default_repo
-from ..services.planning.recursive_decomposition import (
-    MAX_DECOMPOSITION_DEPTH,
-    decompose_task,
-    determine_task_type,
-    evaluate_task_complexity,
-    recursive_decompose_plan,
-    should_decompose_task,
-)
-from ..services.planning.decomposition_with_evaluation import (
-    decompose_task_with_evaluation,
-    should_decompose_with_quality_check,
-)
-from ..services.planning.tool_aware_decomposition import decompose_task_with_tool_awareness
 from ..utils.route_helpers import parse_bool, parse_int, parse_opt_float
 
 router = APIRouter(prefix="/tasks", tags=["decomposition"])
@@ -46,6 +33,7 @@ def decompose_task_endpoint(task_id: int, payload: Dict[str, Any] = Body(default
     try:
         if tool_aware:
             # Use tool-aware decomposition
+            from ..services.planning.tool_aware_decomposition import decompose_task_with_tool_awareness
             result = asyncio.run(
                 decompose_task_with_tool_awareness(
                     task_id=task_id, repo=default_repo, max_subtasks=max_subtasks, force=force
@@ -53,6 +41,7 @@ def decompose_task_endpoint(task_id: int, payload: Dict[str, Any] = Body(default
             )
         else:
             # Use standard decomposition
+            from ..services.planning.recursive_decomposition import decompose_task
             result = decompose_task(task_id, repo=default_repo, max_subtasks=max_subtasks, force=force)
 
         if not result.get("success"):
@@ -84,6 +73,7 @@ async def decompose_task_tool_aware_endpoint(task_id: int, payload: Dict[str, An
     force = parse_bool(payload.get("force"), default=False)
 
     try:
+        from ..services.planning.tool_aware_decomposition import decompose_task_with_tool_awareness
         result = await decompose_task_with_tool_awareness(
             task_id=task_id, repo=default_repo, max_subtasks=max_subtasks, force=force
         )
@@ -116,6 +106,12 @@ def evaluate_task_complexity_endpoint(task_id: int):
         task_name = task.get("name", "")
         task_prompt = default_repo.get_task_input_prompt(task_id) or ""
 
+        from ..services.planning.recursive_decomposition import (
+            evaluate_task_complexity,
+            determine_task_type,
+            should_decompose_task,
+            MAX_DECOMPOSITION_DEPTH,
+        )
         complexity = evaluate_task_complexity(task_name, task_prompt)
         task_type = determine_task_type(task)
         should_decompose = should_decompose_task(task, default_repo)
@@ -154,6 +150,7 @@ def decompose_task_with_evaluation_endpoint(task_id: int, payload: Dict[str, Any
     max_iterations = parse_int(payload.get("max_iterations", 2), default=2, min_value=1, max_value=5)
 
     try:
+        from ..services.planning.decomposition_with_evaluation import decompose_task_with_evaluation
         result = decompose_task_with_evaluation(
             task_id=task_id,
             repo=default_repo,
@@ -188,6 +185,7 @@ def get_decomposition_recommendation(task_id: int, min_complexity_score: float =
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
 
+        from ..services.planning.decomposition_with_evaluation import should_decompose_with_quality_check
         min_complexity = parse_opt_float(min_complexity_score, 0.0, 1.0) or 0.6
         recommendation = should_decompose_with_quality_check(
             task=task, repo=default_repo, min_complexity_score=min_complexity
@@ -216,6 +214,7 @@ def decompose_plan_endpoint(title: str, payload: Dict[str, Any] = Body(default={
     max_depth = parse_int(payload.get("max_depth", 3), default=3, min_value=1, max_value=5)
 
     try:
+        from ..services.planning.recursive_decomposition import recursive_decompose_plan
         result = recursive_decompose_plan(title, repo=default_repo, max_depth=max_depth)
 
         if not result.get("success"):

@@ -8,12 +8,14 @@ with the existing task execution system for superior performance.
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ...interfaces import TaskRepository
 from ...repository.tasks import default_repo
 from .base import execute_task as base_execute_task
+from ...utils import split_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,32 @@ class ToolEnhancedExecutor:
         except Exception as e:
             logger.error(f"Failed to initialize tool-enhanced executor: {e}")
             raise
+
+    def _slugify(self, text: str) -> str:
+        try:
+            s = re.sub(r"\s+", "_", text.strip())
+            s = re.sub(r"[^0-9A-Za-z_\-]+", "_", s)
+            return s.strip("_") or "plan"
+        except Exception:
+            return "plan"
+
+    def _default_report_path(self, task_name: str, fallback_filename: str = "report.md") -> str:
+        """Build a unified default path under results/reports/{plan-slug}/filename.md"""
+        try:
+            plan_title, _short = split_prefix(task_name or "")
+        except Exception:
+            plan_title = ""
+        slug = self._slugify(plan_title or (task_name or "report"))
+        base = Path("results") / "reports" / slug
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        # normalize provided filename
+        fname = fallback_filename or "report.md"
+        if not os.path.splitext(fname)[1]:
+            fname = f"{fname}.md"
+        return str(base / fname)
 
     async def execute_task(
         self, task, use_context: bool = True, context_options: Optional[Dict[str, Any]] = None
@@ -108,6 +136,27 @@ class ToolEnhancedExecutor:
                         else:
                             output_tools.append(call)
 
+                # Heuristic/Control: ensure we save generated doc if requested or likely needed
+                def _looks_like_doc_generation(name: str, prompt: str) -> bool:
+                    text = f"{name}\n{prompt}".lower()
+                    return any(k in text for k in [
+                        "report", "markdown", ".md", "write", "generate", "保存", "报告", "文档", "撰写", "生成"
+                    ])
+
+                force_save = bool((context_options or {}).get("force_save_output"))
+                custom_filename = (context_options or {}).get("output_filename")
+                if not output_tools and (force_save or _looks_like_doc_generation(task_name or "", task_prompt or "")):
+                    # Build unified path
+                    default_path = self._default_report_path(task_name or "report", custom_filename or "")
+                    output_tools.append(
+                        {
+                            "tool_name": "file_operations",
+                            "parameters": {"operation": "write", "path": default_path, "content": ""},
+                            "reasoning": "Auto-save generated content as markdown (forced or heuristic)",
+                            "execution_order": 999,
+                        }
+                    )
+
                 # Execute information gathering tools first
                 tool_outputs = []
                 if info_gathering_tools:
@@ -137,7 +186,9 @@ class ToolEnhancedExecutor:
 
                 # Phase 6: Execute output tools AFTER content generation
                 if output_tools and status in ("done", "completed"):
-                    await self._execute_post_generation_tools(output_tools, task, task_id)
+                    saved = await self._execute_post_generation_tools(output_tools, task, task_id)
+                    if saved:
+                        logger.info("Saved generated artifacts: %s", ", ".join(saved))
 
                 # Phase 7: Record tool usage for learning
                 await self._record_tool_usage(task, routing_result, tool_outputs, status)
@@ -478,19 +529,20 @@ class ToolEnhancedExecutor:
 
         return min(tool_success_rate + task_success_bonus, 1.0)
 
-    async def _execute_post_generation_tools(self, output_tools: List[Dict[str, Any]], task, task_id: int):
-        """Execute tools that need the generated content (like file_operations)"""
+    async def _execute_post_generation_tools(self, output_tools: List[Dict[str, Any]], task, task_id: int) -> List[str]:
+        """Execute tools that need the generated content (like file_operations). Returns list of saved file paths."""
         try:
             # Get the generated content
             generated_content = self.repo.get_task_output_content(task_id)
             if not generated_content:
                 logger.warning(f"No content available for post-generation tools in task {task_id}")
-                return
+                return []
 
             logger.info(f"Executing {len(output_tools)} post-generation tools for task {task_id}")
 
             from tool_box import execute_tool
 
+            saved_paths: List[str] = []
             for call in output_tools:
                 try:
                     tool_name = call["tool_name"]
@@ -502,13 +554,16 @@ class ToolEnhancedExecutor:
                             # Update content with actual generated content
                             parameters["content"] = generated_content
 
-                            # Improve file path if needed
-                            if not parameters.get("path") or parameters["path"] in ["report.txt", ""]:
-                                task_name = task.get("name", "report")
-                                if "因果推断" in task_name:
-                                    parameters["path"] = "因果推断报告.md"
-                                else:
-                                    parameters["path"] = f"报告_{task_id}.md"
+                            # Improve file path if needed: unify under results/reports/{plan-slug}/...
+                            path_in = (parameters.get("path") or "").strip()
+                            if not path_in or path_in in ["report.txt", "report.md", ""]:
+                                fallback = f"报告_{task_id}.md"
+                                parameters["path"] = self._default_report_path(task.get("name", "report"), fallback)
+                            else:
+                                # If given a bare filename or relative simple path, prefix our unified directory
+                                dn = os.path.dirname(path_in)
+                                if not dn or dn in {".", "./"}:
+                                    parameters["path"] = self._default_report_path(task.get("name", "report"), os.path.basename(path_in))
 
                     logger.info(f"Executing post-generation tool {tool_name} for task {task_id}")
                     result = await execute_tool(tool_name, **parameters)
@@ -516,15 +571,20 @@ class ToolEnhancedExecutor:
                     if isinstance(result, dict) and result.get("success"):
                         logger.info(f"✅ Post-generation tool {tool_name} executed successfully")
                         if tool_name == "file_operations" and result.get("operation") == "write":
-                            logger.info(f"📁 Report saved to: {result.get('path', 'unknown')}")
+                            path = result.get("path", "unknown")
+                            saved_paths.append(path)
+                            logger.info(f"📁 Report saved to: {path}")
                     else:
                         logger.warning(f"⚠️ Post-generation tool {tool_name} had issues: {result}")
 
                 except Exception as e:
                     logger.error(f"❌ Post-generation tool {call['tool_name']} failed: {e}")
 
+            return saved_paths
+
         except Exception as e:
             logger.error(f"Failed to execute post-generation tools: {e}")
+            return []
 
 
 # Convenience function for enhanced execution
@@ -649,6 +709,32 @@ async def execute_task_with_tools_and_evaluation(
             elif call.get("tool_name") == "file_operations":
                 output_tools.append(call)
 
+    # Heuristic: if user intent looks like "generate report/document/markdown", ensure we save output even
+    # when router didn't plan a file write.
+    def _looks_like_doc_generation(name: str, prompt: str) -> bool:
+        text = f"{name}\n{prompt}".lower()
+        keywords = [
+            "report", "markdown", ".md", "write", "generate",
+            "报告", "文档", "撰写", "生成", "保存",
+        ]
+        return any(k in text for k in keywords)
+
+    if not output_tools:
+        tp_lower = (task_prompt or "").lower()
+        force_save = bool((context_options or {}).get("force_save_output"))
+        custom_filename = (context_options or {}).get("output_filename")
+        if force_save or _looks_like_doc_generation(task_name or "", tp_lower):
+            # Create a synthetic file write action to persist the generated content under unified directory
+            default_path = executor._default_report_path(task_name or "report", custom_filename or "")
+            output_tools.append(
+                {
+                    "tool_name": "file_operations",
+                    "parameters": {"operation": "write", "path": default_path, "content": ""},
+                    "reasoning": "Auto-save generated content as markdown based on user intent or force flag (unified path)",
+                    "execution_order": 999,
+                }
+            )
+
     # Phase 2: Execute info-gathering tools
     tool_outputs = []
     if info_gathering_tools:
@@ -692,9 +778,10 @@ async def execute_task_with_tools_and_evaluation(
         )
 
     # Phase 5: Post-generation output tools
+    saved_files: List[str] = []
     if output_tools and getattr(result, "status", None) in ("done", "completed"):
         try:
-            await executor._execute_post_generation_tools(output_tools, task, task_id)
+            saved_files = await executor._execute_post_generation_tools(output_tools, task, task_id)
         except Exception as e:
             logger.warning(f"Post-generation tools failed: {e}")
     # Attach tool usage metadata for summary
@@ -709,6 +796,7 @@ async def execute_task_with_tools_and_evaluation(
                     "output_planned": len(output_tools),
                     "workspace": executor.base_dir,
                 },
+                "saved_files": saved_files,
             }
         )
     except Exception:

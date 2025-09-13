@@ -10,10 +10,10 @@ from typing import Any, Dict, Optional
 from tool_box import get_cache_stats
 from tool_box import list_available_tools as _list_available_tools
 from tool_box import route_user_request
+from tool_box import execute_tool as _execute_tool
 
 from ..execution.executors.tool_enhanced import execute_task_with_tools
 from ..repository.tasks import default_repo
-from ..services.planning.tool_aware_decomposition import analyze_task_tool_requirements
 from ..utils.route_helpers import parse_bool, sanitize_context_options
 
 router = APIRouter(tags=["tools"])
@@ -73,11 +73,51 @@ async def get_tool_stats():
         raise HTTPException(status_code=500, detail=f"Failed to get tool stats: {str(e)}") from e
 
 
+# Simple web search endpoint for chat CLI
+@router.post("/tools/web-search")
+async def web_search_api(payload: Dict[str, Any] = Body(...)):
+    """Execute a web search via Tool Box.
+
+    Body parameters:
+    - query: string (required)
+    - max_results: int (optional, default 5)
+    - search_engine: string (optional, default 'tavily')
+    """
+    try:
+        query = (payload or {}).get("query", "").strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="query is required")
+        try:
+            max_results = int((payload or {}).get("max_results", 5))
+        except Exception:
+            max_results = 5
+        search_engine = (payload or {}).get("search_engine") or "tavily"
+
+        result = await _execute_tool(
+            "web_search", query=query, max_results=max_results, search_engine=search_engine
+        )
+
+        # Normalize output
+        if not isinstance(result, dict):
+            return {"query": query, "results": [], "total_results": 0, "engine": search_engine}
+        return {
+            "query": result.get("query", query),
+            "results": result.get("results", []),
+            "total_results": result.get("total_results", len(result.get("results", []))),
+            "engine": result.get("search_engine", search_engine),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Web search failed: {e}") from e
+
+
 # 任务相关的工具端点
 @router.get("/tasks/{task_id}/tool-requirements")
 async def get_task_tool_requirements(task_id: int):
     """Analyze tool requirements for a specific task"""
     try:
+        from ..services.planning.tool_aware_decomposition import analyze_task_tool_requirements
         requirements = await analyze_task_tool_requirements(task_id, default_repo)
 
         return {
