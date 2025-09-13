@@ -13,6 +13,7 @@ from functools import lru_cache
 from typing import Optional
 
 _USE_PYDANTIC = False
+_DOTENV_LOADED = False
 try:
     # Pydantic v2: BaseSettings 已迁移到 pydantic_settings 包
     from pydantic import Field  # type: ignore
@@ -34,6 +35,15 @@ except Exception:
             return default
 
         _USE_PYDANTIC = False
+
+# Best-effort: load .env even in fallback or mixed environments
+try:
+    from dotenv import load_dotenv  # type: ignore
+
+    load_dotenv()  # no-op if file missing; respects current working dir
+    _DOTENV_LOADED = True
+except Exception:
+    _DOTENV_LOADED = False
 
 
 if _USE_PYDANTIC:
@@ -84,6 +94,7 @@ if _USE_PYDANTIC:
         openai_api_key: Optional[str] = Field(default=None, env=["OPENAI_API_KEY", "GPT_API_KEY"])
         xai_api_key: Optional[str] = Field(default=None, env=["XAI_API_KEY", "GROK_API_KEY"])
         anthropic_api_key: Optional[str] = Field(default=None, env=["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"])
+        tavily_api_key: Optional[str] = Field(default=None, env="TAVILY_API_KEY")
 
         class Config:
             env_file = ".env"
@@ -93,6 +104,14 @@ else:
 
     class AppSettings:  # 轻量回退实现
         def __init__(self) -> None:
+            # Ensure .env is loaded in pure os.getenv path as well
+            if not _DOTENV_LOADED:
+                try:
+                    from dotenv import load_dotenv  # type: ignore
+
+                    load_dotenv()
+                except Exception:
+                    pass
             self.log_level = os.getenv("LOG_LEVEL", "INFO")
             self.log_format = os.getenv("LOG_FORMAT", "json")
             self.database_url = os.getenv("DATABASE_URL", "sqlite:///./tasks.db")
@@ -115,6 +134,7 @@ else:
             self.openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GPT_API_KEY")
             self.xai_api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
             self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
+            self.tavily_api_key = os.getenv("TAVILY_API_KEY")
 
             # Embeddings 专用配置
             self.glm_embeddings_api_url = os.getenv("GLM_EMBEDDINGS_API_URL")

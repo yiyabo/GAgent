@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Optional
 
 from ...interfaces import TaskRepository
 from ...repository.tasks import default_repo
-from app.services.planning.recursive_decomposition import TaskType
-from app.services.planning.recursive_decomposition import decompose_task as base_decompose_task
-from app.services.planning.recursive_decomposition import determine_task_type, should_decompose_task
+from .recursive_decomposition import TaskType
+from .recursive_decomposition import decompose_task as base_decompose_task
+from .recursive_decomposition import determine_task_type, should_decompose_task
 
 _EVAL_DECOMP_LOGGER = logging.getLogger("app.decomposition.evaluation")
 

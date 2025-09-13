@@ -47,7 +47,8 @@ class BaseTaskExecutor:
 
     def execute_llm_chat(self, prompt: str) -> str:
         """Execute LLM chat using unified LLM service."""
-        return self.llm_service.chat(prompt)
+        # Force real model inference to avoid mock outputs leaking into persisted artifacts
+        return self.llm_service.chat(prompt, force_real=True)
 
     def generate_task_embedding_async(self, task_id: int, content: str):
         """Generate embeddings for task content asynchronously."""

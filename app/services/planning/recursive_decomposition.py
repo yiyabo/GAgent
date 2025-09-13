@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from ...interfaces import TaskRepository
 from ...repository.tasks import default_repo
-from app.services.planning.planning import propose_plan_service
+from .planning import propose_plan_service
 from ...utils import plan_prefix
 from app.services.foundation.settings import get_settings
 
@@ -244,8 +244,16 @@ def decompose_task(
                 child_type = TaskType.COMPOSITE.value
 
             # 创建子任务
+            # CRITICAL FIX: Add plan prefix to subtask names to associate them with the plan.
+            from ...utils import split_prefix
+            plan_title, _ = split_prefix(task_name)
+            if not plan_title and task.get("depth", 0) == 0:
+                plan_title = task_name # The root task's name is the plan title
+            
+            prefix = plan_prefix(plan_title) if plan_title else ""
+            
             subtask_id = repo.create_task(
-                name=subtask_name, status="pending", priority=subtask_priority, parent_id=task_id, task_type=child_type
+                name=prefix + subtask_name, status="pending", priority=subtask_priority, parent_id=task_id, task_type=child_type
             )
 
             # 保存子任务输入

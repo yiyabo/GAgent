@@ -126,6 +126,10 @@ class RunRequest(BaseModel):
     decompose_max_depth: Optional[int] = None  # Optional depth when auto_decompose
     include_summary: Optional[bool] = False  # Return summary object instead of raw list when true
     auto_assemble: Optional[bool] = False  # If true and title provided, include assembled sections/combined in response
+    target_task_id: Optional[int] = None  # New: For single-step execution
+    # Output control
+    auto_save_output: Optional[bool] = False
+    output_filename: Optional[str] = None
     evaluation_options: Optional[EvaluationOptions] = None
     context_options: Optional[ContextOptions] = None
 

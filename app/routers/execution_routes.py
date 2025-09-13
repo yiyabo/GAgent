@@ -5,6 +5,7 @@
 """
 
 import logging
+import asyncio
 from fastapi import APIRouter, HTTPException, Body
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,7 @@ from ..execution.executors.enhanced import (
 from ..execution.executors.tool_enhanced import (
     execute_task_enhanced,
     execute_task_with_tools_and_evaluation,
+    execute_task_with_tools,
 )
 from ..models import (
     RunRequest,
@@ -28,7 +30,6 @@ from ..models import (
 )
 from ..repository.tasks import default_repo
 from ..scheduler import bfs_schedule, postorder_schedule, requires_dag_order
-from ..services.planning.recursive_decomposition import recursive_decompose_plan
 from ..utils import run_async
 from ..utils.route_helpers import (
     parse_bool, parse_int, parse_opt_float, parse_schedule, sanitize_context_options
@@ -51,6 +52,7 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         rr = RunRequest()
     title = (rr.title or "").strip() or None
     use_context = bool(rr.use_context)
+    target_task_id = rr.target_task_id
     # Phase 3: scheduling strategy (bfs|dag)
     schedule = parse_schedule(rr.schedule)
     # Phase 2: optional context options forwarded to executor (sanitized)
@@ -81,6 +83,19 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     # New: Tool-enhanced flag
     use_tools = bool(getattr(rr, "use_tools", False))
 
+    # Output control flags
+    force_save_output = bool(getattr(rr, "auto_save_output", False))
+    output_filename = None
+    try:
+        if getattr(rr, "output_filename", None):
+            output_filename = str(rr.output_filename).strip() or None
+    except Exception:
+        output_filename = None
+    
+    # Response shaping flags
+    include_summary = bool(getattr(rr, "include_summary", False))
+    auto_assemble = bool(getattr(rr, "auto_assemble", False))
+
     # New: Auto-decompose (plan-level) before execution if title provided
     auto_decompose = bool(getattr(rr, "auto_decompose", False))
     decompose_max_depth = None
@@ -99,6 +114,7 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             # Prefer postorder for hierarchical execution when auto-decomposing
             if rr.schedule is None:
                 schedule = "postorder"
+            from ..services.planning.recursive_decomposition import recursive_decompose_plan
             result = recursive_decompose_plan(title, repo=default_repo, max_depth=decompose_max_depth or 3)
             if not isinstance(result, dict) or (not result.get("success", False)):
                 logging.getLogger("app.main").warning("Auto-decompose failed or no-op for plan '%s': %s", title, result)
@@ -147,7 +163,13 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
         except (KeyError, TypeError, AttributeError):
             pass
 
-    if not title:
+    if target_task_id:
+        # Single-step execution mode
+        task = default_repo.get_task_info(target_task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Target task {target_task_id} not found")
+        tasks_iter = [task]
+    elif not title:
         # Original behavior: run all pending tasks using scheduler
         if schedule == "dag":
             ordered, cycle = requires_dag_order(None)
@@ -169,6 +191,13 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                 # Use enhanced executor with evaluation (optionally tool-enhanced)
                 if use_tools:
                     # Combined tool + evaluation path (async wrapper)
+                    # Inject output control via context options
+                    if context_options is None:
+                        context_options = {}
+                    if force_save_output:
+                        context_options["force_save_output"] = True
+                    if output_filename:
+                        context_options["output_filename"] = output_filename
                     result = await execute_task_with_tools_and_evaluation(
                         task=task,
                         repo=default_repo,
@@ -211,6 +240,7 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                             if enable_evaluation
                             else None
                         ),
+                        "artifacts": (getattr(result, "metadata", {}) or {}).get("saved_files"),
                     }
                 )
             else:
@@ -229,10 +259,23 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                 else:
                     summary["failed"] += 1
                 results.append({"id": task_id, "status": status})
-        return results
+        # Always return a consistent format
+        if include_summary:
+            # Finalize summary averages
+            try:
+                if summary["completed"] > 0:
+                    summary["avg_iterations"] = round(summary["avg_iterations"] / summary["completed"], 2)
+                    summary["avg_score"] = round(summary["avg_score"] / summary["completed"], 3)
+            except (ZeroDivisionError, TypeError, KeyError):
+                pass
+            return {"results": results, "summary": summary}
+        return {"results": results}
 
     # Filtered by plan title - 类似的逻辑，但按计划过滤
-    if schedule == "dag":
+    if target_task_id:
+        # tasks_iter already set to the single target task
+        pass
+    elif schedule == "dag":
         ordered, cycle = requires_dag_order(title)
         if cycle:
             raise BusinessError(
@@ -248,6 +291,13 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
     for task in tasks_iter:
         if enable_evaluation:
             if use_tools:
+                # Inject output-control into context options to ensure artifacts are saved
+                if context_options is None:
+                    context_options = {}
+                if force_save_output:
+                    context_options["force_save_output"] = True
+                if output_filename:
+                    context_options["output_filename"] = output_filename
                 result = await execute_task_with_tools_and_evaluation(
                     task=task,
                     repo=default_repo,
@@ -290,6 +340,7 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
                         if enable_evaluation
                         else None
                     ),
+                    "artifacts": (getattr(result, "metadata", {}) or {}).get("saved_files"),
                 }
             )
         else:
@@ -297,6 +348,12 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             if use_tools:
                 # execute_task_enhanced is a sync wrapper, which we now avoid by making the route async
                 # We directly call the async function it wraps
+                if context_options is None:
+                    context_options = {}
+                if force_save_output:
+                    context_options["force_save_output"] = True
+                if output_filename:
+                    context_options["output_filename"] = output_filename
                 status = await execute_task_with_tools(
                     task, repo=default_repo, use_context=use_context, context_options=context_options
                 )
@@ -310,10 +367,10 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             else:
                 summary["failed"] += 1
             results.append({"id": task_id, "status": status})
+            # Non-blocking delay to reduce API rate limiting
+            await asyncio.sleep(2)
     
     # Finalize summary averages if requested
-    include_summary = bool(getattr(rr, "include_summary", False))
-    auto_assemble = bool(getattr(rr, "auto_assemble", False))
     if include_summary or auto_assemble:
         try:
             if summary["completed"] > 0:
@@ -335,7 +392,7 @@ async def run_tasks(payload: Optional[Dict[str, Any]] = Body(None)):
             except (AttributeError, TypeError, KeyError):
                 out["assembled"] = {"title": title, "sections": [], "combined": ""}
         return out
-    return results
+    return {"results": results}
 
 
 @router.post("/tasks/{task_id}/move")

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from ...interfaces import TaskRepository
 from ...repository.tasks import default_repo
+from ...utils import plan_prefix, split_prefix
 from .recursive_decomposition import (
     MAX_DECOMPOSITION_DEPTH,
     TaskType,
@@ -18,7 +19,7 @@ from .recursive_decomposition import (
     determine_task_type,
     evaluate_task_complexity,
 )
-from app.services.planning.planning import propose_plan_service
+from .planning import propose_plan_service
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,13 @@ class ToolAwareTaskDecomposer:
         # Build enhanced decomposition prompt
         enhanced_prompt = self._build_tool_aware_prompt(task_name, task_prompt, task_type, strategy, max_subtasks)
 
+        # Fallback: if prompt is empty (e.g., atomic task with no tool guidance),
+        # force a composite-style prompt to allow a simple breakdown instead of failing.
+        if not isinstance(enhanced_prompt, str) or not enhanced_prompt.strip():
+            enhanced_prompt = _build_decomposition_prompt(
+                task_name, task_prompt, TaskType.COMPOSITE, max_subtasks
+            ) or f"请将以下任务分解为 2-{max_subtasks} 个具体步骤：\n任务名称：{task_name}\n任务描述：{task_prompt}\n"
+
         # Use planning service for decomposition
 
         plan_payload = {
@@ -200,7 +208,23 @@ class ToolAwareTaskDecomposer:
             "sections": strategy["suggested_subtasks"],
         }
 
-        plan_result = propose_plan_service(plan_payload)
+        try:
+            plan_result = propose_plan_service(plan_payload)
+        except Exception as e:
+            logger.warning(f"LLM plan generation failed, using simple fallback: {e}")
+            # Simple mechanical fallback to avoid hard failure under rate limiting
+            simple_count = max(2, min(strategy.get("suggested_subtasks", 3), max_subtasks))
+            fallback_tasks = []
+            for i in range(simple_count):
+                nm = f"{task_name}-子任务{i+1}"
+                pr = 100 + i * 10
+                pp = (
+                    f"围绕父任务‘{task_name}’完成第{i+1}步具体工作。\n"
+                    f"父任务描述：{(task_prompt or '').strip()}\n"
+                    "请给出清晰的子步骤、输入与输出要点（150-300字）。"
+                )
+                fallback_tasks.append({"name": nm, "prompt": pp, "priority": pr})
+            plan_result = {"title": f"工具增强_分解_{task_name}", "tasks": fallback_tasks}
 
         if not isinstance(plan_result, dict) or not plan_result.get("tasks"):
             return {"success": False, "error": "Failed to generate tool-aware subtasks"}
@@ -220,9 +244,18 @@ class ToolAwareTaskDecomposer:
             else:
                 child_type = TaskType.ATOMIC.value
 
-            # Create subtask
+            # Create subtask (ensure plan association via prefix)
+            try:
+                plan_title, short = split_prefix(task_name)
+            except Exception:
+                plan_title, short = "", task_name
+            prefix = plan_prefix(plan_title) if plan_title else ""
             subtask_id = self.repo.create_task(
-                name=subtask_name, status="pending", priority=subtask_priority, parent_id=task_id, task_type=child_type
+                name=prefix + subtask_name,
+                status="pending",
+                priority=subtask_priority,
+                parent_id=task_id,
+                task_type=child_type,
             )
 
             # Enhance subtask prompt with tool context
