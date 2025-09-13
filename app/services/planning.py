@@ -267,14 +267,8 @@ Return JSON ONLY (no comments):
             serial += 1
 
             # 发送根任务创建消息
-            root_created_msg = {
-                "stage": "root_task_created",
-                "message": f"创建根任务: {n['name']}",
-                "task_name": n["name"],
-                "task_id": db_task_id,
-                "progress": {"current": idx + 1, "total": len(tasks0)},
-            }
-            yield f"data: {json.dumps(root_created_msg)}\n\n"
+            root_task_with_children = {**n, "children": []}
+            yield f"data: {json.dumps(root_task_with_children)}\n\n"
             await asyncio.sleep(0.1)
 
         # Step 2: BFS traversal using a queue
@@ -300,7 +294,7 @@ Return JSON ONLY (no comments):
                 "task_name": parent["name"],
                 "layer": parent["layer"],
             }
-            yield f"data: {json.dumps(eval_msg)}\n\n"
+            # yield f"data: {json.dumps(eval_msg)}\n\n" # Temporarily disable verbose events
             await asyncio.sleep(0.1)
 
             task_prompt = _build_improved_assessment_prompt(parent, parent["layer"])
@@ -311,12 +305,6 @@ Return JSON ONLY (no comments):
 
                 if not decision_obj:
                     parent["task_type"] = "atomic"
-                    atomic_msg = {
-                        "stage": "task_marked_atomic",
-                        "task_name": parent["name"],
-                        "reason": "parse_failed",
-                    }
-                    yield f"data: {json.dumps(atomic_msg)}\n\n"
                     continue
 
                 evaluated_type = decision_obj.get("evaluated_task_type")
@@ -324,12 +312,6 @@ Return JSON ONLY (no comments):
 
                 if evaluated_type == "composite" and subtasks:
                     parent["task_type"] = "composite"
-                    decompose_msg = {
-                        "stage": "decomposing_task",
-                        "task_name": parent["name"],
-                        "subtask_count": len(subtasks),
-                    }
-                    yield f"data: {json.dumps(decompose_msg)}\n\n"
 
                     for st in subtasks:
                         child = _make_node(
@@ -353,23 +335,13 @@ Return JSON ONLY (no comments):
                             child
                         )  # Add new subtask to the queue for processing
 
-                        subtask_msg = {
-                            "stage": "subtask_created",
-                            "subtask_name": child["name"],
-                            "subtask_id": db_task_id,
-                            "parent_id": parent["db_id"],
-                        }
-                        yield f"data: {json.dumps(subtask_msg)}\n\n"
+                        # Stream the new subtask to the client
+                        subtask_with_children = {**child, "children": []}
+                        yield f"data: {json.dumps(subtask_with_children)}\n\n"
                         await asyncio.sleep(0.1)
 
                 else:  # Atomic or composite with no subtasks
                     parent["task_type"] = "atomic"
-                    atomic_determined_msg = {
-                        "stage": "task_marked_atomic",
-                        "task_name": parent["name"],
-                        "reason": "ai_determined",
-                    }
-                    yield f"data: {json.dumps(atomic_determined_msg)}\n\n"
 
             except Exception as e:
                 parent["task_type"] = "atomic"
@@ -378,70 +350,23 @@ Return JSON ONLY (no comments):
                     "task_name": parent["name"],
                     "error": str(e),
                 }
-                yield f"data: {json.dumps(error_msg)}\n\n"
+                # yield f"data: {json.dumps(error_msg)}\n\n" # Temporarily disable verbose events
 
-        if processed_tasks >= SAFETY_LIMIT:
-            safety_msg = {
-                "stage": "safety_limit",
-                "message": f"Reached safety limit of {SAFETY_LIMIT} tasks.",
-            }
-            yield f"data: {json.dumps(safety_msg)}\n\n"
-
-        # 统计信息
-        layer_distribution: Dict[int, int] = {}
-        type_distribution: Dict[str, int] = {}
-
-        for n in flat_tree:
-            layer = n.get("layer", 0)
-            task_type = n.get("task_type", "unknown")
-            layer_distribution[layer] = layer_distribution.get(layer, 0) + 1
-            type_distribution[task_type] = type_distribution.get(task_type, 0) + 1
-
-        # 确定停止原因
-        stopped_reason = "exhausted"
-        if processed_tasks >= SAFETY_LIMIT:
-            stopped_reason = "safety_limit"
-
-        print(
-            f"[BFS_planner] Completed: {len(flat_tree)} tasks across {max(layer_distribution.keys(), default=0) + 1} layers"
-        )
-        print(f"[BFS_planner] Task types: {type_distribution}")
-        print(f"[BFS_planner] Stopped due to: {stopped_reason}")
-
-        # 发送最终完成消息
-        final_result = {
-            "success": True,
-            "goal": goal,
-            "title": title,
-            "plan_id": plan_id,
-            "tree": roots,
-            "flat_tree": flat_tree,
-            "bfs_order": bfs_order,
-            "total_tasks": len(flat_tree),
-            "max_layer": max((n.get("layer", 0) for n in flat_tree), default=0),
-            "layer_distribution": layer_distribution,
-            "type_distribution": type_distribution,
-            "evaluation_log": evaluation_log,
-            "stopped_reason": stopped_reason,
-            "task_id_map": task_id_map,
-        }
-
+        # Final completion event (optional, but good practice)
         completed_msg = {
-            "stage": "completed",
-            "message": f"任务规划完成！共创建 {len(flat_tree)} 个任务，分布在 {max(layer_distribution.keys(), default=0) + 1} 层",
-            "result": final_result,
+            "event": "completion",
+            "message": f"Plan generation complete. Total tasks: {len(flat_tree)}",
         }
-        yield f"event: completed\ndata: {json.dumps(completed_msg)}\n\n"
+        yield f"data: {json.dumps(completed_msg)}\n\n"
 
     except Exception as e:
         print(f"[BFS_planner] FATAL ERROR: {e}")
         error_result = {"success": False, "error": str(e)}
         error_msg = {
-            "stage": "fatal_error",
-            "message": f"规划过程出现严重错误: {str(e)}",
-            "error": error_result,
+            "event": "error",
+            "message": f"An error occurred: {str(e)}",
         }
-        yield f"event: error\ndata: {json.dumps(error_msg)}\n\n"
+        yield f"data: {json.dumps(error_msg)}\n\n"
 
 
 def BFS_planner(
@@ -985,43 +910,6 @@ Return JSON ONLY:
             )
         except Exception:
             pass
-
-
-def propose_plan_service(
-    payload: Dict[str, Any], client: Optional[LLMProvider] = None
-) -> Dict[str, Any]:
-    """
-    基于 BFS_planner 生成完整任务树，并将其持久化。
-    """
-    goal = (payload or {}).get("goal") or (payload or {}).get("instruction") or ""
-    if not isinstance(goal, str) or not goal.strip():
-        raise ValueError("Missing 'goal' in request body")
-
-    client = client or get_default_client()
-    repo = default_repo
-
-    result = BFS_planner(goal, repo=repo, client=client)
-
-    if not result.get("success"):
-        return {"title": goal.strip()[:60], "tasks": [], "error": result.get("error")}
-
-    print(
-        f"[propose_plan_service] Successfully created plan with {result['total_tasks']} tasks"
-    )
-
-    return {
-        "success": True,
-        "plan_id": result["plan_id"],
-        "title": result["title"],
-        "goal": goal,
-        "total_tasks": result["total_tasks"],
-        "max_layer": result.get("max_layer", 0),
-        "tree": result["tree"],
-        "flat_tree": result["flat_tree"],
-        "layer_distribution": result.get("layer_distribution", {}),
-        "type_distribution": result.get("type_distribution", {}),
-        "stopped_reason": result.get("stopped_reason", "completed"),
-    }
 
 
 def approve_plan_service(

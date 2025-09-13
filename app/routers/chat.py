@@ -16,16 +16,19 @@ router = APIRouter(
     tags=["Chat"],
 )
 
-@router.get("/plans/propose-stream")
-async def propose_plan_stream(goal: str):
+class ProposePlanRequest(models.BaseModel):
+    goal: str
+
+@router.post("/plans/propose-stream")
+async def propose_plan_stream(req: ProposePlanRequest):
     """
     Stream the plan generation process using Server-Sent Events (SSE).
     """
-    if not goal:
-        raise HTTPException(status_code=400, detail="Missing 'goal' query parameter")
+    if not req.goal:
+        raise HTTPException(status_code=400, detail="Missing 'goal' in request body")
 
     return StreamingResponse(
-        BFS_planner_stream(goal),
+        BFS_planner_stream(req.goal),
         media_type="text/event-stream"
     )
 

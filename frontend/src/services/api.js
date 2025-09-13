@@ -279,6 +279,15 @@ export const evaluationApi = {
 }
 
 export const chatApi = {
+  async sendMessage(conversationId, text, planId) {
+    const response = await api.post(`/chat/conversations/${conversationId}/messages`, {
+      sender: 'user',
+      text: text,
+      plan_id: planId
+    });
+    return response.data;
+  },
+
   async getConversation(conversationId) {
     const response = await api.get(`/chat/conversations/${conversationId}`);
     return response.data;
@@ -312,6 +321,56 @@ export const chatApi = {
   async deletePlan(planId) {
     const response = await api.delete(`/plans/${planId}`);
     return response.data;
+  },
+
+  async proposePlanStream(goal, onData, onComplete, onError) {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/chat/plans/propose-stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream'
+        },
+        body: JSON.stringify({ goal })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          if (onComplete) onComplete();
+          break;
+        }
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.substring(6);
+            if (jsonStr) {
+              try {
+                const data = JSON.parse(jsonStr);
+                if (onData) onData(data);
+              } catch (e) {
+                console.error('Failed to parse SSE event:', e, jsonStr);
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to stream plan proposal:', error);
+      if (onError) onError(error);
+    }
   },
 
   async sendMessageStream(conversationId, message, planId = null, onChunk, onComplete, onError, onPlanStreamEvent) {

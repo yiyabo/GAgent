@@ -7,8 +7,6 @@ from ..llm import get_default_client as get_llm
 from ..repository.tasks import default_repo
 from ..utils import parse_json_obj
 
-from ..services.planning import propose_plan_service
-from ..services.evaluation_supervisor import EvaluationSupervisor
 
 logger = logging.getLogger(__name__)
 

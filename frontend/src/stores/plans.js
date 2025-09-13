@@ -415,6 +415,17 @@ export const usePlansStore = defineStore('plans', {
         currentPlanTasks: this.currentPlanTasks,
         executionStatus: this.executionStatus
       }
+    },
+
+    upsertTaskInPlan(task) {
+      const index = this.currentPlanTasks.findIndex(t => t.id === task.id);
+      if (index !== -1) {
+        // Update existing task
+        this.currentPlanTasks[index] = { ...this.currentPlanTasks[index], ...task };
+      } else {
+        // Add new task
+        this.currentPlanTasks.push(task);
+      }
     }
   }
 })

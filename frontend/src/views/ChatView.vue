@@ -150,21 +150,65 @@ export default {
     const handleSendMessage = async (messageText) => {
       if (!selectedConversationId.value || !messageText.trim()) return;
 
-      const callbacks = {
-        onChunk: (chunk, accumulated) => chatInterface.value?.updateStreamingResponse(accumulated),
-        onComplete: (fullText) => chatInterface.value?.finalizeStreamingResponse(fullText),
-        onError: (error) => {
-          chatInterface.value?.finalizeStreamingResponse(`An error occurred: ${error}`);
-          ElMessage.error(`An error occurred: ${error}`);
-        }
-      };
+      // Use the store action to add the user message
+      plansStore.addUserMessageToHistory(messageText);
 
-      await plansStore.executeAgentCommandStream(
-        selectedConversationId.value,
-        planId.value,
-        messageText,
-        callbacks
-      );
+      const agentMessagePlaceholder = { 
+        sender: 'agent', 
+        text: 'Processing...', 
+        isStreaming: true 
+      };
+      // Manually add placeholder for agent response
+      plansStore.currentChatHistory.push(agentMessagePlaceholder);
+
+      try {
+        // We need a non-streaming API endpoint for sending the initial command
+        // Let's assume chatApi.sendMessage exists and returns the agent's initial response
+        const response = await chatApi.sendMessage(
+          selectedConversationId.value,
+          messageText,
+          planId.value
+        );
+
+        // Update the placeholder with the actual response
+        const lastMessageIndex = plansStore.currentChatHistory.length - 1;
+        plansStore.currentChatHistory[lastMessageIndex] = { ...response.message, isStreaming: false };
+        
+        visualizationType.value = response.visualization.type;
+        localVisualizationData.value = response.visualization.data;
+        visualizationConfig.value = response.visualization.config;
+
+        // Handle stream action for plan creation
+        if (response.action_result && response.action_result.action === 'stream') {
+          visualizationType.value = 'task_tree';
+          plansStore.currentPlanTasks = []; // Clear previous tasks
+          
+          const { goal } = response.action_result.stream_payload;
+          
+          await chatApi.proposePlanStream(
+            goal,
+            (task) => { // onData callback
+              if (task && task.id) {
+                plansStore.upsertTaskInPlan(task);
+              }
+            },
+            () => { // onComplete callback
+              ElMessage.success('Plan generation complete!');
+            },
+            (error) => { // onError callback
+              ElMessage.error(`Plan generation failed: ${error.message}`);
+            }
+          );
+        }
+      } catch (error) {
+        ElMessage.error(`Failed to send message: ${error.message}`);
+        const lastMessageIndex = plansStore.currentChatHistory.length - 1;
+        plansStore.currentChatHistory[lastMessageIndex] = { 
+          sender: 'agent', 
+          text: `Error: ${error.message}`, 
+          isStreaming: false 
+        };
+      }
     };
 
     const handleVisualizationAction = async (action) => {

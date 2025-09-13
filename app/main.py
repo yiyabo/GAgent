@@ -22,7 +22,6 @@ from .scheduler import bfs_schedule, postorder_schedule, requires_dag_order
 from .services.planning import (
     approve_plan_service,
     generate_task_context,
-    propose_plan_service,
 )
 from .routers import chat as chat_router
 from fastapi import BackgroundTasks
@@ -473,30 +472,6 @@ def regenerate_task_context_api(task_id: int):
         "message": "Context regenerated successfully.",
         "context": new_context,
     }
-
-
-@app.post("/plans/propose")
-def propose_plan(payload: Dict[str, Any]):
-    try:
-        return propose_plan_service(payload)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/plans/propose/stream")
-async def propose_plan_stream(payload: Dict[str, Any], background_tasks: BackgroundTasks):
-    goal = (payload or {}).get("goal") or (payload or {}).get("instruction") or ""
-    if not isinstance(goal, str) or not goal.strip():
-        raise HTTPException(status_code=400, detail="Missing 'goal' in request body")
-
-    # Create an empty plan first to get a plan_id
-    plan_id = default_repo.create_plan(title=f"New Plan for: {goal[:30]}...", description=goal)
-
-    # Start the planning process in the background
-    background_tasks.add_task(propose_plan_service, goal, plan_id)
-
-    # Immediately return the plan_id so the frontend can connect
-    return {"plan_id": plan_id, "message": "Plan creation started..."}
 
 
 @app.post("/plans/approve")
