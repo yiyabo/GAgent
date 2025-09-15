@@ -9,14 +9,18 @@
         </div>
       </div>
     </div>
+    <div v-if="confirmation" class="confirmation-buttons">
+      <button @click="handleConfirmation(true)">Yes</button>
+      <button @click="handleConfirmation(false)">No</button>
+    </div>
     <div class="chat-input">
       <input
         v-model="newMessage"
         @keyup.enter="sendMessage"
-        :disabled="isStreaming"
-        :placeholder="isStreaming ? 'Waiting for response...' : 'Type your command...'"
+        :disabled="isStreaming || confirmation"
+        :placeholder="isStreaming ? 'Waiting for response...' : (confirmation ? 'Please respond to the question above.' : 'Type your command...')"
       />
-      <button @click="sendMessage" :disabled="isStreaming">
+      <button @click="sendMessage" :disabled="isStreaming || confirmation">
         {{ isStreaming ? 'Sending...' : 'Send' }}
       </button>
     </div>
@@ -38,10 +42,14 @@ const props = defineProps({
   planId: {
     type: Number,
     default: null
+  },
+  confirmation: {
+    type: Object,
+    default: null
   }
 });
 
-const emit = defineEmits(['send-message', 'send-message-stream']);
+const emit = defineEmits(['send-message', 'send-message-stream', 'confirmation-response']);
 
 const newMessage = ref('');
 const messages = ref([]);
@@ -99,6 +107,10 @@ const sendMessage = () => {
   }
 };
 
+const handleConfirmation = (response) => {
+  emit('confirmation-response', response);
+};
+
 // Expose methods to parent component
 const addMessage = (message) => {
   messages.value.push(message);
@@ -152,6 +164,31 @@ defineExpose({ addMessage, sendMessage: sendMessageText });
   background-color: #f1f1f1;
   color: black;
   align-self: flex-start;
+}
+
+.confirmation-buttons {
+  display: flex;
+  justify-content: center;
+  padding: 10px;
+  border-top: 1px solid #ccc;
+}
+
+.confirmation-buttons button {
+  margin: 0 10px;
+  padding: 8px 20px;
+  border-radius: 20px;
+  border: 1px solid #007bff;
+  cursor: pointer;
+}
+
+.confirmation-buttons button:first-child {
+  background-color: #007bff;
+  color: white;
+}
+
+.confirmation-buttons button:last-child {
+  background-color: white;
+  color: #007bff;
 }
 
 .chat-input {

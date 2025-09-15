@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database import get_db, init_db
 from .executor import execute_task
 from .llm import get_default_client
-from .models import TaskCreate, TaskUpdate
+from .models import TaskCreate, TaskUpdate, TaskSummary
 from .repository.tasks import default_repo
 from .scheduler import bfs_schedule, postorder_schedule, requires_dag_order
 from .services.planning import (
@@ -491,6 +491,17 @@ def list_plans():
 def get_plan_tasks(plan_id: int):
     rows = default_repo.get_plan_tasks(plan_id)
     return rows
+
+
+@app.get("/plans/{plan_id}/tasks/summary", response_model=List[TaskSummary])
+def get_plan_tasks_summary(plan_id: int):
+    """Get a summary (ID and name) of all tasks in a plan."""
+    tasks = default_repo.get_plan_tasks_summary(plan_id)
+    if not tasks:
+        # Even if there are no tasks, it's better to return an empty list
+        # than a 404, as the plan itself exists.
+        return []
+    return tasks
 
 
 @app.get("/plans/{plan_id}/chathistory")

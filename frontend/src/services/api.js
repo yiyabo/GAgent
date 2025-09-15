@@ -279,11 +279,12 @@ export const evaluationApi = {
 }
 
 export const chatApi = {
-  async sendMessage(conversationId, text, planId) {
+  async sendMessage(conversationId, text, planId, confirmed = false) {
     const response = await api.post(`/chat/conversations/${conversationId}/messages`, {
       sender: 'user',
       text: text,
-      plan_id: planId
+      plan_id: planId,
+      confirmed: confirmed
     });
     return response.data;
   },

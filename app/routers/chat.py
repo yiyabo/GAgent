@@ -107,9 +107,12 @@ async def post_message(conversation_id: int, message_in: models.MessageCreate, b
     
     # 3. Process message with simple chat agent (no plan dependency)
     try:
-        agent = ConversationalAgent(plan_id=message_in.plan_id, background_tasks=background_tasks)  # Use None to indicate simple chat mode
+        agent = ConversationalAgent(plan_id=message_in.plan_id, background_tasks=background_tasks)
         print(f"🚀 Processing command: {message_in.text}")
-        result = await agent.process_command(message_in.text)
+        result = await agent.process_command(
+            message_in.text, 
+            confirmed=bool(message_in.confirmed)
+        )
         print(f"📋 Agent result: {result}")
         
         # 4. Save agent's response
@@ -321,7 +324,10 @@ async def post_message_stream(conversation_id: int, message_in: models.MessageCr
                 yield f"data: {json.dumps(progress_data)}\n\n"
                 
                 # Process command using the full agent
-                result = await agent.process_command(message_in.text)
+                result = await agent.process_command(
+                    message_in.text, 
+                    confirmed=bool(message_in.confirmed)
+                )
 
                 
                 # First, send the initial response if available

@@ -1,6 +1,7 @@
 from typing import Any, Dict, Optional, List
 from enum import Enum
 import logging
+import json
 from fastapi import BackgroundTasks
 
 from ..llm import get_default_client as get_llm
@@ -15,6 +16,8 @@ class IntentType(Enum):
     """支持的意图类型"""
     CREATE_PLAN = "create_plan"
     CREATE_TASK = "create_task"
+    UPDATE_TASK = "update_task"
+    UPDATE_TASK_INSTRUCTION = "update_task_instruction"
     LIST_PLANS = "list_plans"
     EXECUTE_PLAN = "execute_plan"
     QUERY_STATUS = "query_status"
@@ -47,17 +50,16 @@ class ConversationalAgent:
     def __init__(self, plan_id: Optional[int] = None, background_tasks: Optional[BackgroundTasks] = None):
         self.plan_id = plan_id
         self.llm = get_llm()
-        self.context = {}  # 存储会话上下文
         self.background_tasks = background_tasks
         
-    async def process_command(self, user_command: str) -> Dict[str, Any]:
+    async def process_command(self, user_command: str, confirmed: bool = False) -> Dict[str, Any]:
         """统一处理用户命令：LLM判断是否需要工具调用或直接对话"""
         
-        logger.info(f"🚀 NEW process_command called with: '{user_command[:50]}...\n'")
-        
+        logger.info(f"🚀 NEW process_command called with: '{user_command[:50]}...', confirmed={confirmed}\n")
+
         try:
             # 使用统一的LLM提示进行意图识别和响应生成
-            result = await self._unified_intent_and_response(user_command)
+            result = await self._unified_intent_and_response(user_command, confirmed)
             logger.info(f"🎯 NEW process_command returning: {result.get('intent', 'unknown')}")
             return result
             
@@ -73,8 +75,48 @@ class ConversationalAgent:
                 "action_result": {"success": False, "message": str(e)},
                 "success": False
             }
+
+    async def _find_task_id_by_name(self, task_name: str) -> Dict[str, Any]:
+        """使用LLM模糊查找任务ID"""
+        if not self.plan_id:
+            return {"success": False, "message": "I don't know which plan you're referring to. Please specify a plan first."}
+
+        logger.info(f"Fuzzy searching for task '{task_name}' in plan {self.plan_id}")
+        tasks_summary = default_repo.get_plan_tasks_summary(self.plan_id)
+
+        if not tasks_summary:
+            return {"success": False, "message": "This plan has no tasks."}
+
+        # 使用LLM进行模糊匹配
+        prompt = f"""From the following list of tasks, find the one that best matches the user's request.
+
+User's request refers to: "{task_name}"
+
+List of available tasks:
+{json.dumps(tasks_summary, indent=2)}
+
+Respond with JSON containing the ID of the best match. For example: {{'best_match_id': 123}}
+If no task is a clear match, respond with: {{'best_match_id': null}}
+"""
+        try:
+            response_str = self.llm.chat(prompt)
+            response_json = parse_json_obj(response_str)
+            task_id = response_json.get("best_match_id")
+
+            if not task_id:
+                return {"success": False, "message": f"I couldn't find a task that clearly matches '{task_name}'."}
+
+            matched_task = next((task for task in tasks_summary if task['id'] == task_id), None)
+            if not matched_task:
+                 return {"success": False, "message": "LLM returned an invalid task ID."}
+
+            return {"success": True, "task": matched_task}
+
+        except Exception as e:
+            logger.error(f"LLM fuzzy search failed: {e}")
+            return {"success": False, "message": "I had trouble searching for the task."}
     
-    async def _unified_intent_and_response(self, user_command: str) -> Dict[str, Any]:
+    async def _unified_intent_and_response(self, user_command: str, confirmed: bool = False) -> Dict[str, Any]:
         """统一的意图识别和响应生成"""
         
         logger.info(f"🔄 _unified_intent_and_response called with: '{user_command[:50]}...\n'")
@@ -92,8 +134,8 @@ Analyze the user's message and decide whether it requires tool usage or is casua
 **If it's a TASK that needs tools**, respond with JSON format:
 {{
   "needs_tool": true,
-  "intent": "create_plan|create_task|list_plans|execute_plan|show_tasks|query_status|delete_plan|rerun_task|help",
-  "parameters": {{"goal": "...", "plan_id": "...", "task_name": "...", "parent_id": "..."}},
+  "intent": "create_plan|create_task|update_task|update_task_instruction|list_plans|execute_plan|show_tasks|query_status|delete_plan|rerun_task|help",
+  "parameters": {{ "goal": "...", "plan_id": "...", "task_id": "...", "task_name": "...", "name": "...", "status": "...", "instruction": "..."}},
   "initial_response": "I'll help you with that. Let me [action description]..."
 }}
 
@@ -107,6 +149,8 @@ Analyze the user's message and decide whether it requires tool usage or is casua
 Available tool intents:
 - create_plan: Create new research plans (extract goal, title, sections, etc.)
 - create_task: Create a new task within a plan (extract task_name, parent_id, and plan_id if available)
+- update_task: Modify a task's METADATA (extract task_id OR task_name, and fields to change like name or status). Does NOT change the instruction.
+- update_task_instruction: Change the detailed instructions/prompt for a task (extract task_id or task_name, and the new instruction)
 - list_plans: Show all existing plans
 - execute_plan: Start executing a specific plan
 - show_tasks: Display tasks in a plan
@@ -114,6 +158,10 @@ Available tool intents:
 - delete_plan: Remove a plan
 - rerun_task: Restart a specific task
 - help: Show available commands
+
+Examples:
+- "change the status of the 'data analysis' task to done" -> {{'intent': 'update_task', 'parameters': {{'task_name': 'data analysis', 'status': 'done'}}}} 
+- "update instruction for 'literature review' to focus on 2023 papers" -> {{'intent': 'update_task_instruction', 'parameters': {{'task_name': 'literature review', 'instruction': 'focus on papers published after 2023'}}}} 
 
 User message: "{user_command}"
 
@@ -151,7 +199,7 @@ Respond with JSON only:"""
             
             if parsed.get("needs_tool", False):
                 # 需要工具调用
-                return await self._handle_tool_request(parsed, user_command)
+                return await self._handle_tool_request(parsed, user_command, confirmed)
             else:
                 # 普通对话
                 return self._handle_chat_response(parsed, user_command)
@@ -164,7 +212,7 @@ Respond with JSON only:"""
             logger.error(f"Error in unified processing: {e}")
             raise e
     
-    async def _handle_tool_request(self, parsed_response: Dict, user_command: str) -> Dict[str, Any]:
+    async def _handle_tool_request(self, parsed_response: Dict, user_command: str, confirmed: bool = False) -> Dict[str, Any]:
         """处理需要工具调用的请求"""
         try:
             # 转换字符串intent为IntentType枚举
@@ -181,7 +229,11 @@ Respond with JSON only:"""
             logger.info(f"Tool request - Intent: {intent.value}, Params: {params}")
             
             # 执行工具动作
-            action_result = await self._execute_action(intent, params)
+            action_result = await self._execute_action(intent, params, confirmed)
+
+            # 如果需要确认，则提前返回
+            if action_result.get("requires_confirmation"):
+                return action_result
             
             # 生成执行后的反馈
             execution_feedback = self._generate_execution_feedback(intent, action_result)
@@ -310,6 +362,14 @@ Respond with JSON only:"""
         if intent == IntentType.CREATE_PLAN:
             return "✅ Plan generation started. You will see tasks appearing in real-time in the visualization panel."
         
+        elif intent == IntentType.UPDATE_TASK:
+            task_id = action_result.get("task_id")
+            return f"✅ Task {task_id} has been successfully updated."
+
+        elif intent == IntentType.UPDATE_TASK_INSTRUCTION:
+            task_id = action_result.get("task_id")
+            return f"✅ Instruction for task {task_id} has been successfully updated."
+
         elif intent == IntentType.LIST_PLANS:
             plans = action_result.get("plans", [])
             return f"✅ Found {len(plans)} plan(s). You can see the details in the visualization panel."
@@ -383,7 +443,7 @@ Respond with JSON only:"""
 User message: "{command}"
 
 Respond with JSON only:
-{{"intent": "CHAT"}} or {{"intent": "TASK"}} """
+{{'intent': 'CHAT'}} or {{'intent': 'TASK'}} """
 
             result = self.llm.chat(llm_prompt).strip()
             # 尝试解析JSON
@@ -489,12 +549,12 @@ Available actions:
 Extract any relevant parameters (IDs, goals, topics) from the user's natural language input.
 
 Examples:
-- "Create a machine learning research plan" → {{"intent": "CREATE_PLAN", "parameters": {{"goal": "machine learning research plan"}}}}
-- "Show me all plans" → {{"intent": "LIST_PLANS", "parameters": {{}}}}
-- "Execute plan 2" → {{"intent": "EXECUTE_PLAN", "parameters": {{"plan_id": "2"}}}}
-- "What's the status?" → {{"intent": "QUERY_STATUS", "parameters": {{}}}}
+- "Create a machine learning research plan" → {{'intent': 'CREATE_PLAN', 'parameters': {{'goal': 'machine learning research plan'}}}} 
+- "Show me all plans" → {{'intent': 'LIST_PLANS', 'parameters': {{}}}} 
+- "Execute plan 2" → {{'intent': 'EXECUTE_PLAN', 'parameters': {{'plan_id': '2'}}}} 
+- "What's the status?" → {{'intent': 'QUERY_STATUS', 'parameters': {{}}}} 
 
-Return only JSON format: {{"intent": "ACTION_NAME", "parameters": {{"key": "value"}}}}"""
+Return only JSON format: {{'intent': 'ACTION_NAME', 'parameters': {{'key': 'value'}}}} """ 
         
         try:
             logger.info(f"[_identify_intent] Analyzing command: {command[:100]}...\n")
@@ -526,7 +586,7 @@ Return only JSON format: {{"intent": "ACTION_NAME", "parameters": {{"key": "valu
                 "parameters": {}
             }
     
-    async def _execute_action(self, intent: IntentType, params: Dict) -> Dict[str, Any]:
+    async def _execute_action(self, intent: IntentType, params: Dict, confirmed: bool = False) -> Dict[str, Any]:
         """Execute specific backend actions based on the identified intent"""
         
         try:
@@ -534,6 +594,10 @@ Return only JSON format: {{"intent": "ACTION_NAME", "parameters": {{"key": "valu
                 return self._create_plan(params)
             elif intent == IntentType.CREATE_TASK:
                 return self._create_task(params)
+            elif intent == IntentType.UPDATE_TASK:
+                return await self._update_task(params, confirmed)
+            elif intent == IntentType.UPDATE_TASK_INSTRUCTION:
+                return await self._update_task_instruction(params, confirmed)
             elif intent == IntentType.LIST_PLANS:
                 return self._list_plans()
             elif intent == IntentType.EXECUTE_PLAN:
@@ -605,6 +669,93 @@ Return only JSON format: {{"intent": "ACTION_NAME", "parameters": {{"key": "valu
             logger.error(f"Failed to create task: {e}")
             return {"success": False, "message": f"Failed to create task: {str(e)}"}
     
+    def _execute_update_task(self, params: Dict) -> Dict[str, Any]:
+        """Performs the actual task update after confirmation."""
+        task_id = params.get("task_id")
+        updates = params.get("updates", {})
+        try:
+            success = default_repo.update_task(task_id=task_id, **updates)
+            if not success:
+                return {"success": False, "message": f"Task {task_id} not found or failed to update."}
+            plan_id = self.plan_id or default_repo.get_plan_for_task(task_id)
+            return {"success": True, "task_id": task_id, "plan_id": plan_id}
+        except Exception as e:
+            logger.error(f"Failed to execute update for task {task_id}: {e}")
+            return {"success": False, "message": str(e)}
+
+    async def _update_task(self, params: Dict, confirmed: bool = False) -> Dict[str, Any]:
+        """Handles the intent to update a task, potentially requiring confirmation."""
+        task_id = params.get("task_id")
+        task_name = params.get("task_name")
+
+        updates = {}
+        if "name" in params: updates["name"] = params["name"]
+        if "status" in params: updates["status"] = params["status"]
+        if "priority" in params: updates["priority"] = params["priority"]
+        if "task_type" in params: updates["task_type"] = params["task_type"]
+
+        if not updates:
+            return {"success": False, "message": "Please provide at least one field to update (e.g., name, status)."}
+        if not task_id and not task_name:
+            return {"success": False, "message": "Please provide a task ID or a task name to update."}
+
+        if not task_id:
+            find_result = await self._find_task_id_by_name(task_name)
+            if not find_result["success"]:
+                return find_result
+            
+            matched_task = find_result["task"]
+            task_id = matched_task["id"]
+            
+            if not confirmed:
+                return {
+                    "requires_confirmation": True,
+                    "response": f"Did you mean to update the task '{matched_task['name']}' (ID: {task_id})? Please confirm.",
+                    "intent": "confirmation_required"
+                }
+
+        return self._execute_update_task({"task_id": int(task_id), "updates": updates})
+
+    def _execute_update_task_instruction(self, params: Dict) -> Dict[str, Any]:
+        """Performs the actual task instruction update after confirmation."""
+        task_id = params.get("task_id")
+        instruction = params.get("instruction")
+        try:
+            default_repo.upsert_task_input(task_id, instruction)
+            plan_id = self.plan_id or default_repo.get_plan_for_task(task_id)
+            return {"success": True, "task_id": task_id, "plan_id": plan_id}
+        except Exception as e:
+            logger.error(f"Failed to execute instruction update for task {task_id}: {e}")
+            return {"success": False, "message": str(e)}
+
+    async def _update_task_instruction(self, params: Dict, confirmed: bool = False) -> Dict[str, Any]:
+        """Handles the intent to update a task's instruction, potentially requiring confirmation."""
+        task_id = params.get("task_id")
+        task_name = params.get("task_name")
+        instruction = params.get("instruction")
+
+        if not instruction:
+            return {"success": False, "message": "Please provide the new instruction for the task."}
+        if not task_id and not task_name:
+            return {"success": False, "message": "Please provide a task ID or a task name to update."}
+
+        if not task_id:
+            find_result = await self._find_task_id_by_name(task_name)
+            if not find_result["success"]:
+                return find_result
+            
+            matched_task = find_result["task"]
+            task_id = matched_task["id"]
+            
+            if not confirmed:
+                return {
+                    "requires_confirmation": True,
+                    "response": f"Did you mean to update the instruction for '{matched_task['name']}' (ID: {task_id})? Please confirm.",
+                    "intent": "confirmation_required"
+                }
+
+        return self._execute_update_task_instruction({"task_id": int(task_id), "instruction": instruction})
+
     def _create_plan(self, params: Dict) -> Dict[str, Any]:
         """为流式创建计划做准备"""
         goal = params.get("goal", "")
@@ -847,6 +998,15 @@ Available Commands:
                 "config": {
                     "title": f"Plan {data.get('plan_id')} - Task Added",
                     "highlight_task_id": data.get("task", {}).get("id")
+                }
+            }
+        elif intent in (IntentType.UPDATE_TASK, IntentType.UPDATE_TASK_INSTRUCTION):
+            return {
+                "type": VisualizationType.TASK_TREE,
+                "data": { "refresh": True, "plan_id": data.get("plan_id") },
+                "config": {
+                    "title": f"Plan {data.get('plan_id')} - Task Updated",
+                    "highlight_task_id": data.get("task_id")
                 }
             }
         elif intent == IntentType.LIST_PLANS:

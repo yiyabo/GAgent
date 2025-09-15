@@ -40,8 +40,10 @@
             ref="chatInterface"
             :key="selectedConversationId" 
             :initial-messages="currentMessages"
+            :confirmation="confirmationRequest"
             @send-message="handleSendMessage"
             @send-message-stream="handleSendMessage"
+            @confirmation-response="handleConfirmationResponse"
           />
           
           <div v-else class="no-conversation-selected">
@@ -77,7 +79,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import ConversationHistory from '../components/ConversationHistory.vue'
@@ -108,6 +110,7 @@ export default {
     const selectedTaskForDetail = ref(null)
     const showTaskDetailModal = ref(false)
     const isCreatingConversation = ref(false)
+    const confirmationRequest = ref(null);
     
     const visualizationType = ref('plan_list')
     const localVisualizationData = ref([]);
@@ -120,6 +123,10 @@ export default {
         return plansStore.currentPlanTasks || [];
       }
       return localVisualizationData.value || {};
+    });
+
+    watch(selectedConversationId, () => {
+      confirmationRequest.value = null;
     });
     
     const toggleHistory = () => {
@@ -147,8 +154,12 @@ export default {
       }
     }
     
-    const handleSendMessage = async (messageText) => {
+    const handleSendMessage = async (messageText, confirmed = false) => {
       if (!selectedConversationId.value || !messageText.trim()) return;
+
+      if (!confirmed) {
+        confirmationRequest.value = null;
+      }
 
       // Use the store action to add the user message
       plansStore.addUserMessageToHistory(messageText);
@@ -162,12 +173,11 @@ export default {
       plansStore.currentChatHistory.push(agentMessagePlaceholder);
 
       try {
-        // We need a non-streaming API endpoint for sending the initial command
-        // Let's assume chatApi.sendMessage exists and returns the agent's initial response
         const response = await chatApi.sendMessage(
           selectedConversationId.value,
           messageText,
-          planId.value
+          planId.value,
+          confirmed
         );
 
         // Update the placeholder with the actual response
@@ -177,6 +187,16 @@ export default {
         visualizationType.value = response.visualization.type;
         localVisualizationData.value = response.visualization.data;
         visualizationConfig.value = response.visualization.config;
+
+        if (response.intent === 'confirmation_required') {
+          confirmationRequest.value = {
+            originalMessage: messageText,
+            intent: response.intent,
+            data: response
+          };
+        } else {
+          confirmationRequest.value = null;
+        }
 
         // Handle stream action for plan creation
         if (response.action_result && response.action_result.action === 'stream') {
@@ -208,6 +228,19 @@ export default {
           text: `Error: ${error.message}`, 
           isStreaming: false 
         };
+      }
+    };
+
+    const handleConfirmationResponse = (confirmed) => {
+      if (!confirmationRequest.value) return;
+
+      const originalMessage = confirmationRequest.value.originalMessage;
+      confirmationRequest.value = null; 
+
+      if (confirmed) {
+        handleSendMessage(originalMessage, true);
+      } else {
+        handleSendMessage('no', false);
       }
     };
 
@@ -264,10 +297,12 @@ export default {
       selectedTaskForDetail,
       showTaskDetailModal,
       isCreatingConversation,
+      confirmationRequest,
       toggleHistory,
       handleSelectConversation,
       createNewConversation,
       handleSendMessage,
+      handleConfirmationResponse,
       handleVisualizationAction,
       closeTaskDetailModal,
       handleConversationDeleted,

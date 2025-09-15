@@ -25,6 +25,11 @@ class TaskUpdate(BaseModel):
     task_type: Optional[str] = None
 
 
+class TaskSummary(BaseModel):
+    id: int
+    name: str
+
+
 class Task(BaseModel):
     id: int
     name: str
@@ -202,3 +207,4 @@ class MessageCreate(BaseModel):
     text: str
     sender: str = "user"
     plan_id: Optional[int] = None
+    confirmed: Optional[bool] = False

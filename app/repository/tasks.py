@@ -1309,6 +1309,20 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 }
             return [_row_to_plan_task(row) for row in rows]
 
+    def get_plan_tasks_summary(self, plan_id: int) -> List[Dict[str, Any]]:
+        """获取特定计划的所有任务的ID和名称"""
+        with get_db() as conn:
+            self._ensure_plans_table(conn)
+            query = """
+                SELECT t.id, t.name
+                FROM tasks t
+                JOIN plan_tasks pt ON t.id = pt.task_id
+                WHERE pt.plan_id = ?
+                ORDER BY t.id
+            """
+            rows = conn.execute(query, (plan_id,)).fetchall()
+            return [{"id": row[0], "name": row[1]} for row in rows]
+
     def get_plan_with_tasks(self, plan_id: int) -> Optional[Dict[str, Any]]:
         """获取完整计划包含所有任务"""
         plan = self.get_plan(plan_id)
