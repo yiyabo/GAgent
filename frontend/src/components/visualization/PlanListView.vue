@@ -56,7 +56,7 @@
             @click="executePlan(plan.id)"
             :disabled="plan.progress >= 1"
           >
-            Excute Plan
+            Execute Plan
           </el-button>
           <el-button 
             type="danger" 

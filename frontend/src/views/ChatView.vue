@@ -41,6 +41,7 @@
             :key="selectedConversationId" 
             :initial-messages="currentMessages"
             :confirmation="confirmationRequest"
+            :is-streaming="isAgentReplying"
             @send-message="handleSendMessage"
             @send-message-stream="handleSendMessage"
             @confirmation-response="handleConfirmationResponse"
@@ -111,6 +112,7 @@ export default {
     const showTaskDetailModal = ref(false)
     const isCreatingConversation = ref(false)
     const confirmationRequest = ref(null);
+    const isAgentReplying = ref(false);
     
     const visualizationType = ref('plan_list')
     const localVisualizationData = ref([]);
@@ -154,33 +156,34 @@ export default {
       }
     }
     
-    const handleSendMessage = async (messageText, confirmed = false) => {
+    const handleSendMessage = async (messageText, confirmed = false, addToHistory = true) => {
       if (!selectedConversationId.value || !messageText.trim()) return;
 
+      isAgentReplying.value = true;
       if (!confirmed) {
         confirmationRequest.value = null;
       }
 
-      // Use the store action to add the user message
-      plansStore.addUserMessageToHistory(messageText);
+      if (addToHistory) {
+        plansStore.addUserMessageToHistory(messageText);
+      }
 
       const agentMessagePlaceholder = { 
         sender: 'agent', 
         text: 'Processing...', 
         isStreaming: true 
       };
-      // Manually add placeholder for agent response
       plansStore.currentChatHistory.push(agentMessagePlaceholder);
 
+      let response;
       try {
-        const response = await chatApi.sendMessage(
+        response = await chatApi.sendMessage(
           selectedConversationId.value,
           messageText,
           planId.value,
           confirmed
         );
 
-        // Update the placeholder with the actual response
         const lastMessageIndex = plansStore.currentChatHistory.length - 1;
         plansStore.currentChatHistory[lastMessageIndex] = { ...response.message, isStreaming: false };
         
@@ -198,16 +201,19 @@ export default {
           confirmationRequest.value = null;
         }
 
-        // Handle stream action for plan creation
         if (response.action_result && response.action_result.action === 'stream') {
-          visualizationType.value = 'task_tree';
           plansStore.currentPlanTasks = []; // Clear previous tasks
           
           const { goal } = response.action_result.stream_payload;
+          let isFirstTask = true;
           
           await chatApi.proposePlanStream(
             goal,
             (task) => { // onData callback
+              if (isFirstTask) {
+                visualizationType.value = 'task_tree';
+                isFirstTask = false;
+              }
               if (task && task.id) {
                 plansStore.upsertTaskInPlan(task);
               }
@@ -228,6 +234,15 @@ export default {
           text: `Error: ${error.message}`, 
           isStreaming: false 
         };
+      } finally {
+        isAgentReplying.value = false;
+        // Ensure streaming is always turned off for non-streaming responses
+        if (response && (!response.action_result || response.action_result.action !== 'stream')) {
+            const lastMessageIndex = plansStore.currentChatHistory.length - 1;
+            if (plansStore.currentChatHistory[lastMessageIndex]) {
+                plansStore.currentChatHistory[lastMessageIndex].isStreaming = false;
+            }
+        }
       }
     };
 
@@ -238,9 +253,9 @@ export default {
       confirmationRequest.value = null; 
 
       if (confirmed) {
-        handleSendMessage(originalMessage, true);
+        handleSendMessage(originalMessage, true, false);
       } else {
-        handleSendMessage('no', false);
+        handleSendMessage('no', false, true);
       }
     };
 
@@ -298,6 +313,7 @@ export default {
       showTaskDetailModal,
       isCreatingConversation,
       confirmationRequest,
+      isAgentReplying,
       toggleHistory,
       handleSelectConversation,
       createNewConversation,

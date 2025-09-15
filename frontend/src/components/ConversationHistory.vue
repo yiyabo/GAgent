@@ -156,11 +156,11 @@ const cancelEdit = () => {
 const deleteConversation = async (conversationId) => {
   try {
     await ElMessageBox.confirm(
-      '确定要删除这个会话吗？此操作无法撤销。',
-      '删除会话',
+      'Are you sure you want to delete this session? This operation cannot be undone.',
+      'Delete Conversation',
       {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
+        confirmButtonText: 'Yes',
+        cancelButtonText: 'Cancel',
         type: 'warning',
       }
     );
@@ -181,11 +181,11 @@ const deleteConversation = async (conversationId) => {
       }
     }
     
-    ElMessage.success('会话已删除');
+    ElMessage.success('Conversation Deleted');
   } catch (error) {
     if (error !== 'cancel') {
       console.error('Error deleting conversation:', error);
-      ElMessage.error('删除会话失败');
+      ElMessage.error('Conversation failed deleted');
     }
   }
 };

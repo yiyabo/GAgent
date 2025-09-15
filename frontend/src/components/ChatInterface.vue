@@ -46,6 +46,10 @@ const props = defineProps({
   confirmation: {
     type: Object,
     default: null
+  },
+  isStreaming: {
+    type: Boolean,
+    default: false
   }
 });
 
@@ -53,56 +57,18 @@ const emit = defineEmits(['send-message', 'send-message-stream', 'confirmation-r
 
 const newMessage = ref('');
 const messages = ref([]);
-const isStreaming = ref(false);
 
 watch(() => props.initialMessages, (newVal) => {
   messages.value = [...newVal];
 }, { immediate: true, deep: true });
 
 const sendMessage = () => {
-  if (newMessage.value.trim() !== '' && !isStreaming.value) {
-    
+  if (newMessage.value.trim() !== '' && !props.isStreaming) {
     if (props.useStreaming) {
-      // Create placeholder for streaming response
-      const streamingMessage = { 
-        sender: 'agent', 
-        text: '', 
-        isStreaming: true 
-      };
-      messages.value.push(streamingMessage);
-      isStreaming.value = true;
-      
-      emit('send-message-stream', newMessage.value, props.planId, {
-        onChunk: (chunk, accumulated) => {
-          // Update the streaming message with accumulated text
-          const lastMessage = messages.value[messages.value.length - 1];
-          if (lastMessage && lastMessage.isStreaming) {
-            lastMessage.text = accumulated;
-          }
-        },
-        onComplete: (fullText) => {
-          // Mark streaming as complete
-          const lastMessage = messages.value[messages.value.length - 1];
-          if (lastMessage && lastMessage.isStreaming) {
-            lastMessage.text = fullText;
-            lastMessage.isStreaming = false;
-          }
-          isStreaming.value = false;
-        },
-        onError: (error) => {
-          // Handle streaming error
-          const lastMessage = messages.value[messages.value.length - 1];
-          if (lastMessage && lastMessage.isStreaming) {
-            lastMessage.text = `Error: ${error}`;
-            lastMessage.isStreaming = false;
-          }
-          isStreaming.value = false;
-        }
-      });
+      emit('send-message-stream', newMessage.value, props.planId);
     } else {
       emit('send-message', newMessage.value, props.planId);
     }
-    
     newMessage.value = '';
   }
 };

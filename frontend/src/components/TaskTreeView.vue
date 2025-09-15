@@ -7,9 +7,9 @@
           <div class="root-controls">
             <span class="tree-status">🌳 {{ tasks.length }} tasks ({{ visibleTasks.length }} visible)</span>
             <button @click="toggleExpandAll" class="btn-tree">
-              {{ allExpanded ? '收起全部' : '展开全部' }}
+              {{ allExpanded ? 'Collapse All' : 'Expand All' }}
             </button>
-            <button @click="$emit('refresh')" class="btn-tree">🔄 刷新</button>
+            <button @click="$emit('refresh')" class="btn-tree"> Refresh</button>
           </div>
         </div>
       </div>
@@ -25,8 +25,8 @@
       </div>
       
       <div v-else-if="!tasks.length" class="empty-card">
-        <p>暂无任务或加载失败</p>
-        <button @click="$emit('refresh')" class="btn-retry">重新加载</button>
+        <p>No tasks available or loading failed</p>
+        <button @click="$emit('refresh')" class="btn-retry">Refresh</button>
       </div>
       
       <div v-else class="tree-scroll-container">
