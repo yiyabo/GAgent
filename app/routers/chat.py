@@ -105,9 +105,20 @@ async def post_message(conversation_id: int, message_in: models.MessageCreate, b
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     
-    # 3. Process message with simple chat agent (no plan dependency)
+    # 3. Process message with agent
     try:
-        agent = ConversationalAgent(plan_id=message_in.plan_id, background_tasks=background_tasks)
+        # Fetch conversation history
+        messages = chat_repo.get_messages_for_conversation(conversation_id)
+        history = [
+            {"role": "assistant" if msg['sender'] == "agent" else "user", "content": msg['text']}
+            for msg in messages
+        ]
+
+        agent = ConversationalAgent(
+            plan_id=message_in.plan_id, 
+            background_tasks=background_tasks,
+            conversation_history=history
+        )
         print(f"🚀 Processing command: {message_in.text}")
         result = await agent.process_command(
             message_in.text, 

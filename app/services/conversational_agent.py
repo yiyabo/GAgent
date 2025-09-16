@@ -47,10 +47,16 @@ class ConversationalAgent:
     增强版对话代理，支持意图识别和可视化指令生成
     """
 
-    def __init__(self, plan_id: Optional[int] = None, background_tasks: Optional[BackgroundTasks] = None):
+    def __init__(
+        self, 
+        plan_id: Optional[int] = None, 
+        background_tasks: Optional[BackgroundTasks] = None,
+        conversation_history: Optional[List[Dict]] = None
+    ):
         self.plan_id = plan_id
         self.llm = get_llm()
         self.background_tasks = background_tasks
+        self.history = conversation_history or []
         
     async def process_command(self, user_command: str, confirmed: bool = False) -> Dict[str, Any]:
         """统一处理用户命令：LLM判断是否需要工具调用或直接对话"""
@@ -168,7 +174,7 @@ User message: "{user_command}"
 Respond with JSON only:"""
 
         try:
-            result = self.llm.chat(unified_prompt).strip()
+            result = self.llm.chat(unified_prompt, history=self.history).strip()
             logger.info(f"Unified LLM response: {result}")
             
             # 解析JSON响应，处理可能的markdown代码块包装
@@ -719,9 +725,33 @@ Return only JSON format: {{'intent': 'ACTION_NAME', 'parameters': {{'key': 'valu
     def _execute_update_task_instruction(self, params: Dict) -> Dict[str, Any]:
         """Performs the actual task instruction update after confirmation."""
         task_id = params.get("task_id")
-        instruction = params.get("instruction")
+        user_instruction = params.get("instruction")
         try:
-            default_repo.upsert_task_input(task_id, instruction)
+            # 1. Fetch the existing instruction
+            existing_instruction = default_repo.get_task_input(task_id)
+
+            # 2. Create a new prompt for the LLM to merge the instructions
+            merge_prompt = f"""You are an AI assistant tasked with refining task instructions.
+            
+Original instruction:
+---
+{existing_instruction}
+---
+
+The user wants to update it with the following request:
+---
+{user_instruction}
+---
+
+Please synthesize these two pieces of information into a new, clear, and comprehensive instruction for the task. The new instruction should incorporate the user's update while maintaining the core of the original instruction.
+
+Respond with only the new, revised instruction text."""
+
+            # 3. Call the LLM to get the merged instruction
+            new_instruction = self.llm.chat(merge_prompt)
+
+            # 4. Update the task with the new instruction
+            default_repo.upsert_task_input(task_id, new_instruction)
             plan_id = self.plan_id or default_repo.get_plan_for_task(task_id)
             return {"success": True, "task_id": task_id, "plan_id": plan_id}
         except Exception as e:
@@ -836,19 +866,39 @@ Return only JSON format: {{'intent': 'ACTION_NAME', 'parameters': {{'key': 'valu
         """查询状态"""
         plan_id = params.get("plan_id")
         task_id = params.get("task_id")
-        
+
+        # If no ID is provided, fall back to the current plan_id from context
+        if not plan_id and not task_id:
+            plan_id = self.plan_id
+
         try:
             if task_id:
-                task = default_repo.get_task_info(int(task_id))
-                if not task:
-                    return {"success": False, "message": f"未找到任务 {task_id}"}
-                return {
-                    "success": True,
-                    "type": "task",
-                    "task": task,
-                    "message": f"任务 {task['name']} 状态：{task['status']}"
-                }
-            elif plan_id:
+                # Validate that task_id is an integer
+                try:
+                    task_id = int(task_id)
+                except (ValueError, TypeError):
+                    # If task_id is not a valid int, fall back to plan_id
+                    logger.warning(f"Invalid task_id '{task_id}', falling back to plan context.")
+                    plan_id = self.plan_id
+                    if not plan_id:
+                        return {"success": False, "message": "Please provide a valid task ID or specify a plan."}
+                else:
+                    task = default_repo.get_task_info(task_id)
+                    if not task:
+                        return {"success": False, "message": f"未找到任务 {task_id}"}
+                    
+                    # To show the tree, we need all tasks of the plan this task belongs to
+                    containing_plan_id = default_repo.get_plan_for_task(task_id)
+                    tasks = default_repo.get_plan_tasks(containing_plan_id)
+                    return {
+                        "success": True,
+                        "type": "task",
+                        "plan_id": containing_plan_id,
+                        "tasks": tasks,
+                        "message": f"任务 {task['name']} 状态：{task['status']}"
+                    }
+
+            if plan_id:
                 tasks = default_repo.get_plan_tasks(int(plan_id))
                 status_count = {}
                 for task in tasks:
@@ -865,7 +915,7 @@ Return only JSON format: {{'intent': 'ACTION_NAME', 'parameters': {{'key': 'valu
                     "message": f"计划 {plan_id} 共有 {len(tasks)} 个任务"
                 }
             else:
-                return {"success": False, "message": "请提供计划ID或任务ID"}
+                return {"success": False, "message": "I'm not sure which plan you're referring to. Please select a plan to see its status."}
         except Exception as e:
             return {"success": False, "message": f"查询状态失败：{str(e)}"}
     
@@ -982,7 +1032,7 @@ Available Commands:
         
         if intent == IntentType.CREATE_PLAN:
             return {
-                "type": VisualizationType.TASK_TREE,
+                "type": VisualizationType.NONE,
                 "data": [],
                 "config": {
                     "title": f"New Plan for: {data.get('stream_payload', {}).get('goal', '')[:30]}...",
@@ -1020,7 +1070,7 @@ Available Commands:
             }
         elif intent == IntentType.EXECUTE_PLAN:
             return {
-                "type": VisualizationType.EXECUTION_PROGRESS,
+                "type": VisualizationType.TASK_TREE,
                 "data": data.get("tasks", []),
                 "config": {
                     "autoRefresh": True,
@@ -1041,10 +1091,11 @@ Available Commands:
             }
         elif intent == IntentType.QUERY_STATUS:
             return {
-                "type": VisualizationType.STATUS_DASHBOARD,
-                "data": data,
+                "type": VisualizationType.TASK_TREE,
+                "data": data.get("tasks", []),
                 "config": {
-                    "showMetrics": True
+                    "title": f"Plan {data.get('plan_id', '')} Status",
+                    "plan_id": data.get("plan_id")
                 }
             }
         elif intent == IntentType.HELP:

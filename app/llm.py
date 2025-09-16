@@ -2,7 +2,7 @@ import json
 import os
 import random
 import time
-from typing import Any, Dict, Generator, Optional
+from typing import Any, Dict, Generator, Optional, List
 from urllib import error, request
 
 from .interfaces import LLMProvider
@@ -54,7 +54,7 @@ class LLMClient(LLMProvider):
         except Exception:
             self.backoff_base = 0.5
 
-    def chat(self, prompt: str) -> str:
+    def chat(self, prompt: str, history: Optional[List[Dict[str, str]]] = None) -> str:
         if self.mock:
             # Return deterministic, parseable content in mock mode
             if (
@@ -68,9 +68,13 @@ class LLMClient(LLMProvider):
 
         if not self.api_key:
             raise RuntimeError("GLM_API_KEY is not set in environment")
+        
+        messages = history or []
+        messages.append({"role": "user", "content": prompt})
+        
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
         }
         headers = {
             "Content-Type": "application/json",
