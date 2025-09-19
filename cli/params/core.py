@@ -43,6 +43,7 @@ class CoreParamsHandler:
         group.add_argument("--chat-max-turns", type=int, default=0, help="Autostop chat after N turns (0=unlimited)")
         group.add_argument("--chat-stream", action="store_true", help="Stream chat output (print incrementally)")
         group.add_argument("--chat-pretty", action="store_true", help="Pretty chat UI using rich panels")
+        group.add_argument("--chat-smart", action="store_true", help="Enable smart auto-routing between engines")
 
     @staticmethod
     def extract_values(args) -> Dict[str, Any]:
@@ -58,7 +59,7 @@ class CoreParamsHandler:
                     values[attr] = value
 
         # Boolean flags
-        bool_attrs = ["plan_only", "execute_only", "yes", "no_open", "chat"]
+        bool_attrs = ["plan_only", "execute_only", "yes", "no_open", "chat", "chat_smart"]
         for attr in bool_attrs:
             if hasattr(args, attr) and getattr(args, attr):
                 values[attr] = True

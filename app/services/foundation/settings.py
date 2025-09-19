@@ -69,6 +69,17 @@ if _USE_PYDANTIC:
         llm_retries: int = Field(default=2, env="LLM_RETRIES")
         llm_backoff_base: float = Field(default=0.5, env="LLM_BACKOFF_BASE")
 
+        # Perplexity API 配置
+        perplexity_api_key: Optional[str] = Field(default=None, env="PERPLEXITY_API_KEY")
+        perplexity_api_url: str = Field(
+            default="https://api.perplexity.ai/chat/completions",
+            env="PERPLEXITY_API_URL",
+        )
+        perplexity_model: str = Field(default="llama-3.1-sonar-small-128k-online", env="PERPLEXITY_MODEL")
+
+        # 通用LLM配置（用于选择提供商）
+        llm_provider: str = Field(default="glm", env="LLM_PROVIDER")  # glm, perplexity, openai, etc.
+
         # GLM Embeddings 专用配置（集中到此，供 app.services.config 使用）
         glm_embeddings_api_url: Optional[str] = Field(default=None, env="GLM_EMBEDDINGS_API_URL")
         glm_embedding_model: str = Field(default="embedding-3", env="GLM_EMBEDDING_MODEL")
@@ -123,6 +134,14 @@ else:
             except Exception:
                 self.glm_request_timeout = 60
             self.llm_mock = os.getenv("LLM_MOCK", "").strip().lower() in {"1", "true", "yes", "on"}
+            
+            # Perplexity API 配置
+            self.perplexity_api_key = os.getenv("PERPLEXITY_API_KEY")
+            self.perplexity_api_url = os.getenv("PERPLEXITY_API_URL", "https://api.perplexity.ai/chat/completions")
+            self.perplexity_model = os.getenv("PERPLEXITY_MODEL", "llama-3.1-sonar-small-128k-online")
+            
+            # 通用LLM配置
+            self.llm_provider = os.getenv("LLM_PROVIDER", "glm")
             try:
                 self.llm_retries = int(os.getenv("LLM_RETRIES", "2"))
             except Exception:

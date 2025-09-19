@@ -15,16 +15,18 @@ def _truthy(val: Optional[str]) -> bool:
 
 class LLMClient(LLMProvider):
     """
-    A thin client for GLM-like chat completion APIs.
+    Multi-provider LLM client supporting GLM, Perplexity, and other APIs.
 
     Responsibilities:
-    - Manage API configuration (key, url, model)
+    - Manage API configuration for different providers
     - Provide chat() to get completion content
     - Provide ping() for connectivity check
+    - Auto-switch providers based on configuration
     """
 
     def __init__(
         self,
+        provider: Optional[str] = None,
         api_key: Optional[str] = None,
         url: Optional[str] = None,
         model: Optional[str] = None,
@@ -33,13 +35,26 @@ class LLMClient(LLMProvider):
         backoff_base: Optional[float] = None,
     ) -> None:
         settings = get_settings()
-        # 环境变量优先于集中配置，便于测试中 monkeypatch 生效
-        env_api_key = os.getenv("GLM_API_KEY")
-        env_url = os.getenv("GLM_API_URL")
-        env_model = os.getenv("GLM_MODEL")
-        self.api_key = api_key or env_api_key or settings.glm_api_key
-        self.url = url or env_url or settings.glm_api_url or "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-        self.model = model or env_model or settings.glm_model or "glm-4-flash"
+        
+        # 确定使用的提供商
+        self.provider = provider or os.getenv("LLM_PROVIDER") or settings.llm_provider or "glm"
+        
+        # 根据提供商配置API参数
+        if self.provider.lower() == "perplexity":
+            env_api_key = os.getenv("PERPLEXITY_API_KEY")
+            env_url = os.getenv("PERPLEXITY_API_URL")
+            env_model = os.getenv("PERPLEXITY_MODEL")
+            self.api_key = api_key or env_api_key or settings.perplexity_api_key
+            self.url = url or env_url or settings.perplexity_api_url
+            self.model = model or env_model or settings.perplexity_model
+        else:  # 默认GLM
+            env_api_key = os.getenv("GLM_API_KEY")
+            env_url = os.getenv("GLM_API_URL")
+            env_model = os.getenv("GLM_MODEL")
+            self.api_key = api_key or env_api_key or settings.glm_api_key
+            self.url = url or env_url or settings.glm_api_url or "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+            self.model = model or env_model or settings.glm_model or "glm-4-flash"
+        
         self.timeout = timeout or settings.glm_request_timeout
         # Respect centralized mock setting (from env or config)
         self.mock = bool(settings.llm_mock)
