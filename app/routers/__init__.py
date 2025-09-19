@@ -12,6 +12,8 @@ This package contains all FastAPI route definitions, organized by functional mod
 - async_execution_routes: Asynchronous execution endpoints
 - benchmark_routes: Benchmark endpoints
 - smart_assembly_routes: Smart assembly endpoints
+- vector_routes: Vector storage and search endpoints
+- system_health_routes: System monitoring and health check endpoints
 """
 
 # Lazy import to avoid circular dependencies
@@ -27,6 +29,8 @@ def get_all_routers():
     from .async_execution_routes import router as async_execution_router
     from .benchmark_routes import router as benchmark_router
     from .smart_assembly_routes import router as smart_assembly_router
+    from .vector_routes import router as vector_router
+    from .system_health_routes import router as system_health_router
     
     return [
         task_router,
@@ -39,6 +43,8 @@ def get_all_routers():
         async_execution_router,
         benchmark_router,
         smart_assembly_router,
+        vector_router,
+        system_health_router,
     ]
 
 __all__ = [
@@ -52,4 +58,6 @@ __all__ = [
     "async_execution_router",
     "benchmark_router",
     "smart_assembly_router",
+    "vector_router",
+    "system_health_router",
 ]

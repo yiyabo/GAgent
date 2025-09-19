@@ -60,9 +60,7 @@ _ALIAS_MAP = {
     "memory_service": "app.services.memory.memory_service",
     "unified_cache": "app.services.memory.unified_cache",
 
-    # optional/legacy
-    "error_decorator": "app.services.legacy.error_decorator",
-    "contrastive_learning": "app.services.legacy.contrastive_learning",
+    # optional
     "base_evaluator": "app.services.evaluation.base_evaluator",
 }
 
