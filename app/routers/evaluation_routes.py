@@ -256,3 +256,158 @@ def clear_evaluation_history(task_id: int):
         return {"task_id": task_id, "history_cleared": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to clear history: {str(e)}") from e
+
+
+@router.get("/supervision")
+def get_evaluation_supervision():
+    """Get evaluation supervision report"""
+    try:
+        from ..services.evaluation.evaluation_supervisor import get_supervision_report
+        
+        supervision_report = get_supervision_report()
+        return {
+            "supervision_report": supervision_report,
+            "timestamp": supervision_report.get("timestamp", "unknown"),
+            "system_health": supervision_report.get("system_health", {}),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get supervision report: {str(e)}") from e
+
+
+@router.post("/supervision/config")
+def update_supervision_config(config: Dict[str, Any] = Body(...)):
+    """Update evaluation supervision configuration"""
+    try:
+        from ..services.evaluation.evaluation_supervisor import get_evaluation_supervisor
+        
+        supervisor = get_evaluation_supervisor()
+        
+        # Extract threshold updates
+        thresholds = {}
+        threshold_fields = [
+            "min_accuracy", "min_consistency", "max_bias_risk", 
+            "min_cache_hit_rate", "max_error_rate", "max_evaluation_time", "min_confidence"
+        ]
+        
+        for field in threshold_fields:
+            if field in config:
+                try:
+                    thresholds[field] = float(config[field])
+                except (ValueError, TypeError):
+                    raise HTTPException(status_code=400, detail=f"Invalid value for {field}, must be a number")
+        
+        if not thresholds:
+            # Return current configuration
+            current_config = supervisor.get_current_config() if hasattr(supervisor, 'get_current_config') else {}
+            return {
+                "action": "get_config", 
+                "current_config": current_config,
+                "available_thresholds": threshold_fields
+            }
+        
+        # Update thresholds
+        success = supervisor.update_thresholds(thresholds)
+        
+        return {
+            "action": "update_config",
+            "success": success,
+            "updated_thresholds": thresholds
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update supervision config: {str(e)}") from e
+
+
+@router.post("/batch")
+def batch_evaluation(payload: Dict[str, Any] = Body(...)):
+    """Execute batch evaluation for multiple tasks"""
+    try:
+        task_ids = payload.get("task_ids", [])
+        if not task_ids or not isinstance(task_ids, list):
+            raise HTTPException(status_code=400, detail="task_ids must be a non-empty list")
+        
+        max_iterations = parse_int(payload.get("max_iterations", 3), default=3, min_value=1, max_value=10)
+        quality_threshold = parse_opt_float(payload.get("quality_threshold"), 0.0, 1.0) or 0.8
+        use_context = parse_bool(payload.get("use_context"), default=False)
+        
+        results = []
+        successful = 0
+        failed = 0
+        
+        for task_id in task_ids:
+            try:
+                # Get task info
+                task = default_repo.get_task_info(task_id)
+                if not task:
+                    results.append({
+                        "task_id": task_id, 
+                        "status": "failed", 
+                        "error": "Task not found"
+                    })
+                    failed += 1
+                    continue
+                
+                # Execute with evaluation
+                result = execute_task_with_evaluation(
+                    task=task,
+                    repo=default_repo,
+                    max_iterations=max_iterations,
+                    quality_threshold=quality_threshold,
+                    use_context=use_context,
+                )
+                
+                # Update task status
+                default_repo.update_task_status(task_id, result.status)
+                
+                # Add to results
+                eval_payload = None
+                if result.evaluation:
+                    eval_payload = {
+                        "overall_score": result.evaluation.overall_score,
+                        "suggestions": getattr(result.evaluation, "suggestions", []),
+                        "needs_revision": getattr(result.evaluation, "needs_revision", False),
+                    }
+                
+                results.append({
+                    "task_id": task_id,
+                    "status": result.status,
+                    "iterations": result.iterations,
+                    "execution_time": result.execution_time,
+                    "final_score": result.evaluation.overall_score if result.evaluation else None,
+                    "evaluation": eval_payload,
+                })
+                
+                if result.status == "done":
+                    successful += 1
+                else:
+                    failed += 1
+                    
+            except Exception as e:
+                results.append({
+                    "task_id": task_id,
+                    "status": "failed", 
+                    "error": str(e)
+                })
+                failed += 1
+        
+        return {
+            "batch_results": results,
+            "summary": {
+                "total": len(task_ids),
+                "successful": successful,
+                "failed": failed,
+                "success_rate": successful / len(task_ids) if task_ids else 0
+            },
+            "configuration": {
+                "max_iterations": max_iterations,
+                "quality_threshold": quality_threshold,
+                "use_context": use_context
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch evaluation failed: {str(e)}") from e
