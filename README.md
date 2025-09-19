@@ -52,7 +52,7 @@ export GLM_API_KEY=your_key_here
 ### 启动 API 服务
 ```bash
 # 生产（需配置真实 API Key）
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+python -m --host 127.0.0.1 --port 8000 --reload
 
 # 开发（可用 Mock）
 # LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload

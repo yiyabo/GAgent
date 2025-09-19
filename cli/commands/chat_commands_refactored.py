@@ -11,6 +11,7 @@ Note: This is a refactored version using unified API client.
 """
 
 import json
+import logging
 import os
 import re
 import signal
@@ -24,6 +25,8 @@ from typing import Any, Dict, List, Optional
 
 from .base import BaseCommand
 from ..utils.api_client import get_api_client, APIClientError
+
+logger = logging.getLogger(__name__)
 
 
 # --- Definition of Tools for LLM ---
@@ -228,6 +231,10 @@ class ChatCommandsRefactored(BaseCommand):
     def _execute_impl(self, args: Namespace) -> int:
         self.debug_mode = getattr(args, "debug", False)
         self.console = Console()
+        
+        # 设置智能路由模式 (默认启用，除非手动模式)
+        manual_mode = getattr(args, "chat_manual", False)
+        self._smart_mode = not manual_mode
 
         # --- Enhanced line editing with prompt_toolkit (fallback to basic input) ---
         self._ptk_available = False
@@ -294,16 +301,13 @@ class ChatCommandsRefactored(BaseCommand):
         settings = get_settings()
         current_provider = getattr(args, "provider", None) or settings.llm_provider
         
-        # 智能路由模式检查
-        smart_mode = getattr(args, "smart", False)
-        
-        if smart_mode:
+        if self._smart_mode:
             self.console.print(Panel.fit(
-                "[bold magenta]🤖 智能路由模式已激活[/bold magenta]\n"
+                "[bold magenta]🤖 智能路由模式已激活 (默认)[/bold magenta]\n"
                 "[cyan]自动特性:[/cyan] 根据您的请求自动选择最佳AI引擎\n"
                 "[yellow]🌐 信息查询:[/yellow] 自动使用Perplexity (实时搜索)\n"
                 "[yellow]🛠️ 工具操作:[/yellow] 自动使用GLM (任务执行)\n"
-                "[dim]💡 手动模式：/smart off  |  查看路由：/route[/dim]",
+                "[dim]💡 手动模式：/smart off  |  查看路由：/route  |  帮助：/help[/dim]",
                 border_style="magenta"
             ))
         elif current_provider == "perplexity":
@@ -438,16 +442,16 @@ class ChatCommandsRefactored(BaseCommand):
                     if len(cmd_parts) > 1:
                         smart_action = cmd_parts[1].lower()
                         if smart_action == "on":
-                            args.smart = True
+                            self._smart_mode = True
                             self.console.print("[green]✅ 智能路由模式已开启[/green]")
                             self.console.print("[yellow]🤖 系统将根据您的请求自动选择最佳AI引擎[/yellow]")
                         elif smart_action == "off":
-                            args.smart = False
+                            self._smart_mode = False
                             self.console.print("[yellow]📱 智能路由模式已关闭，回到手动模式[/yellow]")
                         else:
                             self.console.print("[red]❌ 无效选项。使用: /smart on 或 /smart off[/red]")
                     else:
-                        current_smart = getattr(args, "smart", False)
+                        current_smart = self._smart_mode
                         status = "开启" if current_smart else "关闭"
                         self.console.print(f"[cyan]当前智能路由模式: {status}[/cyan]")
                         self.console.print("[yellow]用法: /smart on 开启 | /smart off 关闭[/yellow]")
@@ -455,7 +459,7 @@ class ChatCommandsRefactored(BaseCommand):
                     
                 elif cmd in {"/route"}:
                     # 显示路由分析（仅在智能模式下）
-                    if not getattr(args, "smart", False):
+                    if not self._smart_mode:
                         self.console.print("[yellow]⚠️ 路由分析仅在智能模式下可用。使用 /smart on 开启[/yellow]")
                     else:
                         self.console.print("[cyan]💡 在下一次对话中，系统会显示路由分析过程[/cyan]")
@@ -463,7 +467,7 @@ class ChatCommandsRefactored(BaseCommand):
                 
                 elif cmd == "/help":
                     # 显示帮助信息
-                    smart_status = "开启" if getattr(args, "smart", False) else "关闭"
+                    smart_status = "开启" if self._smart_mode else "关闭"
                     self.console.print(Panel.fit(
                         "[bold cyan]🚀 双引擎聊天系统帮助[/bold cyan]\n\n"
                         "[yellow]系统命令:[/yellow]\n"
@@ -498,23 +502,40 @@ class ChatCommandsRefactored(BaseCommand):
             original_provider = getattr(args, "provider", None) or settings.llm_provider
             selected_provider = original_provider
             
-            if getattr(args, "smart", False):
-                # 智能路由分析
-                from ..utils.smart_router import get_smart_router, EngineType
-                router = get_smart_router()
-                recommended_engine, confidence, reason = router.analyze_intent(user_in)
+            if self._smart_mode:
+                # 使用新的统一智能路由架构
+                from ..utils.unified_router import get_unified_router
+                from ..utils.perplexity_search import get_perplexity_search
                 
-                if router.should_auto_route(confidence, threshold=0.6):
-                    selected_provider = recommended_engine.value
+                router = get_unified_router(self.api_client, self.console)
+                
+                try:
+                    # 分析用户意图并提供思考过程反馈
+                    decision = router.analyze_intent_with_thinking(user_in)
                     
                     # 显示路由决策
-                    route_explanation = router.get_routing_explanation(recommended_engine, confidence, reason)
-                    self.console.print(f"[dim]{route_explanation}[/dim]")
+                    confidence_pct = decision.confidence * 100
+                    confidence_level = "高" if decision.confidence > 0.8 else "中" if decision.confidence > 0.6 else "低"
                     
-                    # 如果需要切换引擎，临时更新provider
-                    if selected_provider != original_provider:
-                        args.provider = selected_provider
-                        self.console.print(f"[yellow]🔄 自动切换到 {selected_provider.upper()} 引擎[/yellow]")
+                    self.console.print(f"🤖 统一智能路由 (置信度:{confidence_level} {confidence_pct:.1f}%)")
+                    self.console.print(f"📋 推荐工具: {', '.join(decision.recommended_tools)}")
+                    self.console.print(f"🎯 执行策略: {decision.execution_strategy}")
+                    
+                    if decision.use_web_search:
+                        self.console.print(f"[dim]🌐 将使用Perplexity进行网络搜索[/dim]")
+                    
+                    # 统一使用GLM作为主引擎（支持工具调用）
+                    selected_provider = "glm"
+                    args.provider = selected_provider
+                    
+                    # 存储推荐的工具列表供后续使用
+                    args._recommended_tools = decision.recommended_tools
+                    args._use_web_search = decision.use_web_search
+                        
+                except Exception as e:
+                    logger.error(f"统一路由失败: {e}")
+                    self.console.print(f"[yellow]⚠️ 智能路由失败，使用默认引擎: {original_provider}[/yellow]")
+                    selected_provider = original_provider
 
             # --- Main Tool-Calling Loop ---
             while True:
@@ -739,53 +760,34 @@ class ChatCommandsRefactored(BaseCommand):
                 search_engine = tool_args.get("search_engine", "tavily")
                 
                 try:
-                    with self.console.status(f"[cyan]Searching: {query} via API...", spinner="dots"):
-                        data = self.api_client.post(
-                            "/tools/web-search",
-                            json_data={"query": query, "max_results": max_results, "search_engine": search_engine}
-                        )
+                    # 使用新的Perplexity搜索工具
+                    from ..utils.perplexity_search import get_perplexity_search
+                    search_tool = get_perplexity_search()
                     
-                    # Pretty print results table
-                    results = data.get("results", [])
+                    with self.console.status(f"[cyan]🌐 Perplexity搜索: {query}...", spinner="dots"):
+                        search_result = search_tool.search(query, max_results)
                     
-                    if not results:
-                        # 检查是否有错误信息
-                        if "error" in data:
-                            self.console.print(f"[red]❌ 搜索失败: {data.get('error', 'Unknown error')}[/red]")
-                        else:
-                            self.console.print(f"[yellow]⚠️ 未找到关于 '{query}' 的搜索结果[/yellow]")
-                            self.console.print("[dim]💡 提示: Tavily API可能未配置或暂时不可用[/dim]")
-                        return {"status": "warning", "message": "No search results found", "result": data}
-                    
-                    table = Table(title=f"Web Search: {data.get('query', query)}", show_lines=True, expand=True)
-                    table.add_column("#", style="bold", width=3)
-                    table.add_column("Title", style="cyan", width=30)
-                    table.add_column("Source", style="magenta", width=20)
-                    table.add_column("Snippet", style="white")
-                    
-                    for i, item in enumerate(results[:5], 1):  # 显示最多5个结果
-                        title = item.get("title") or "(no title)"
-                        src = item.get("source") or ""
-                        snip = (item.get("snippet") or "").strip()
-                        # 限制长度避免表格过宽
-                        title = title[:80] + "..." if len(title) > 80 else title
-                        snip = snip[:100] + "..." if len(snip) > 100 else snip
-                        table.add_row(str(i), title, src, snip)
-                    
-                    self.console.print(table)
-                    return {"status": "success", "result": data}
-                    
-                except APIClientError as e:
-                    self.console.print(f"[red]❌ Tavily搜索失败: {e}[/red]")
-                    self.console.print("[yellow]🔄 正在尝试使用Perplexity进行搜索...[/yellow]")
-                    
-                    # 智能回退：使用Perplexity进行搜索
-                    try:
-                        fallback_result = self._fallback_to_perplexity_search(query)
-                        return fallback_result
-                    except Exception as fallback_error:
-                        self.console.print(f"[red]❌ Perplexity搜索也失败了: {fallback_error}[/red]")
-                        return {"status": "error", "message": f"All search methods failed: Tavily={e}, Perplexity={fallback_error}"}
+                    if search_result["status"] == "success":
+                        # 显示搜索结果
+                        content = search_result.get("content", "")
+                        
+                        # 创建搜索结果面板
+                        from rich.panel import Panel
+                        self.console.print(Panel.fit(
+                            content,
+                            title=f"🌐 搜索结果: {query}",
+                            border_style="green"
+                        ))
+                        
+                        return {"status": "success", "result": search_result}
+                    else:
+                        error_msg = search_result.get("message", "搜索失败")
+                        self.console.print(f"[red]❌ 搜索失败: {error_msg}[/red]")
+                        return {"status": "error", "message": error_msg}
+                        
+                except Exception as e:
+                    self.console.print(f"[red]❌ 网络搜索异常: {e}[/red]")
+                    return {"status": "error", "message": f"Search failed: {str(e)}"}
 
             elif tool_name == "save_content_to_file":
                 filename = tool_args.get("filename", "").strip()
