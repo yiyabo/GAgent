@@ -120,6 +120,12 @@ const contexts = ref([]);
 const saving = ref({ input: false, output: false });
 const editingState = ref({}); // To hold the state of contexts being edited
 
+const resolveTaskId = () => {
+  const current = task.value;
+  if (!current) return null;
+  return current.db_id ?? current.id;
+};
+
 const formatLabel = (label) => {
   if (label === 'ai-initial') {
     return 'Initial AI Analysis';
@@ -132,10 +138,11 @@ watch(task, async (newTask) => {
     try {
       // Always fetch input, output, and context.
       // The API layer will gracefully handle 404s for tasks without output.
+      const targetId = resolveTaskId();
       const [inputRes, outputRes, contextRes] = await Promise.all([
-        tasksApi.getTaskInput(newTask.id).catch(() => ''),
-        tasksApi.getTaskOutput(newTask.id), 
-        tasksApi.getTaskContextSnapshots(newTask.id).catch(() => ({ snapshots: [] }))
+        targetId ? tasksApi.getTaskInput(targetId).catch(() => '') : Promise.resolve(''),
+        targetId ? tasksApi.getTaskOutput(targetId) : Promise.resolve(''),
+        targetId ? tasksApi.getTaskContextSnapshots(targetId).catch(() => ({ snapshots: [] })) : Promise.resolve({ snapshots: [] })
       ]);
 
       editableInput.value = inputRes || '';
@@ -189,11 +196,13 @@ const saveContext = async (label) => {
       meta: JSON.parse(editedContext.meta),
       sections: JSON.parse(editedContext.sections),
     };
-    await tasksApi.updateTaskContext(task.value.id, label, payload);
+    const targetId = resolveTaskId();
+    if (!targetId) return;
+    await tasksApi.updateTaskContext(targetId, label, payload);
     alert('Context updated successfully!');
     delete editingState.value[label];
     // Refresh contexts
-    const contextRes = await tasksApi.getTaskContextSnapshots(task.value.id);
+    const contextRes = await tasksApi.getTaskContextSnapshots(targetId);
     contexts.value = contextRes.snapshots || [];
   } catch (e) {
     alert('Failed to save context: ' + e.message);
@@ -206,10 +215,12 @@ const saveInput = async () => {
   if (!task.value || !task.value.id) return;
   saving.value.input = true;
   try {
-    await tasksApi.updateTaskInput(task.value.id, editableInput.value);
+    const targetId = resolveTaskId();
+    if (!targetId) return;
+    await tasksApi.updateTaskInput(targetId, editableInput.value);
     alert('Input saved successfully!');
     // Refresh input from server to confirm it was saved
-    const newInput = await tasksApi.getTaskInput(task.value.id);
+    const newInput = await tasksApi.getTaskInput(targetId);
     editableInput.value = newInput || '';
   } catch (error) {
     console.error('Failed to save task input:', error);
@@ -223,10 +234,12 @@ const saveOutput = async () => {
   if (!task.value || !task.value.id) return;
   saving.value.output = true;
   try {
-    await tasksApi.updateTaskOutput(task.value.id, editableOutput.value);
+    const targetId = resolveTaskId();
+    if (!targetId) return;
+    await tasksApi.updateTaskOutput(targetId, editableOutput.value);
     alert('Output saved successfully!');
     // Refresh output from server to confirm it was saved
-    const newOutput = await tasksApi.getTaskOutput(task.value.id);
+    const newOutput = await tasksApi.getTaskOutput(targetId);
     editableOutput.value = newOutput || '';
   } catch (error) {
     console.error('Failed to save task output:', error);
@@ -235,16 +248,18 @@ const saveOutput = async () => {
     saving.value.output = false;
   }
 };
-const runThisTask = () => emit('task-rerun', task.value.id);
+const runThisTask = () => emit('task-rerun', resolveTaskId());
 
 const regenerateContext = async () => {
   if (!task.value || !task.value.id) return;
   if (confirm('Are you sure you want to regenerate the initial AI context? This will overwrite the existing \'ai-initial\' context.')) {
     try {
-      await tasksApi.regenerateTaskContext(task.value.id);
+      const targetId = resolveTaskId();
+      if (!targetId) return;
+      await tasksApi.regenerateTaskContext(targetId);
       alert('Context regenerated successfully!');
       // Refresh contexts to show the new one
-      const contextRes = await tasksApi.getTaskContextSnapshots(task.value.id);
+      const contextRes = await tasksApi.getTaskContextSnapshots(targetId);
       contexts.value = contextRes.snapshots || [];
     } catch (error) {
       console.error('Failed to regenerate context:', error);
@@ -258,7 +273,9 @@ const deleteThisTask = async () => {
   
   if (confirm(`Are you sure you want to delete task "${task.value.name}" and all its sub-tasks? This action cannot be undone.`)) {
     try {
-      await tasksApi.deleteTask(task.value.id);
+      const targetId = resolveTaskId();
+      if (!targetId) return;
+      await tasksApi.deleteTask(targetId);
       alert('Task deleted successfully!');
       emit('task-deleted');
       close();

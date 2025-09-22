@@ -324,54 +324,82 @@ export const chatApi = {
     return response.data;
   },
 
-  async proposePlanStream(goal, onData, onComplete, onError) {
-    try {
-      const response = await fetch('http://127.0.0.1:8000/chat/plans/propose-stream', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream'
-        },
-        body: JSON.stringify({ goal })
-      });
+  proposePlanStream(goal, onData, onComplete, onError) {
+    const controller = new AbortController();
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+    (async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:8000/chat/plans/propose-stream', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream'
+          },
+          body: JSON.stringify({ goal }),
+          signal: controller.signal
+        });
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          if (onComplete) onComplete();
-          break;
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const jsonStr = line.substring(6);
-            if (jsonStr) {
-              try {
-                const data = JSON.parse(jsonStr);
-                if (onData) onData(data);
-              } catch (e) {
-                console.error('Failed to parse SSE event:', e, jsonStr);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            if (onComplete) onComplete();
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const jsonStr = line.substring(6);
+              if (jsonStr) {
+                try {
+                  const data = JSON.parse(jsonStr);
+                  if (onData) onData(data);
+                } catch (e) {
+                  console.error('Failed to parse SSE event:', e, jsonStr);
+                }
               }
             }
           }
         }
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          console.info('Plan stream aborted by client');
+        } else {
+          console.error('Failed to stream plan proposal:', error);
+          if (onError) onError(error);
+        }
       }
-    } catch (error) {
-      console.error('Failed to stream plan proposal:', error);
-      if (onError) onError(error);
-    }
+    })();
+
+    return {
+      cancel: () => controller.abort()
+    };
+  },
+
+  async cancelPlanGeneration(planId) {
+    const response = await api.post(`/chat/plans/${planId}/cancel`);
+    return response.data;
+  },
+
+  async resendMessage(messageId, payload) {
+    const response = await api.post(`/chat/messages/${messageId}/resend`, payload);
+    return response.data;
+  },
+
+  async syncPlanGraph(planId) {
+    const response = await api.post(`/chat/plans/${planId}/sync`);
+    return response.data;
   },
 
   async sendMessageStream(conversationId, message, planId = null, onChunk, onComplete, onError, onPlanStreamEvent) {

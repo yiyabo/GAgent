@@ -7,6 +7,9 @@ export const usePlansStore = defineStore('plans', {
     currentPlan: null,
     currentPlanTasks: [],
     currentChatHistory: [],
+    planStreamController: null,
+    planStreamPlanId: null,
+    planStreamStatus: 'idle',
     // Granular loading states
     plansLoading: false,
     planDetailsLoading: false,
@@ -76,7 +79,23 @@ export const usePlansStore = defineStore('plans', {
         }
 
         const tasks = await plansApi.getPlanTasks(planId);
-        this.currentPlanTasks = [...(tasks || [])];
+        const sourceTasks = Array.isArray(tasks) ? tasks : [];
+        const dbToLogical = new Map();
+        sourceTasks.forEach((task, index) => {
+          if (task && task.id != null) {
+            dbToLogical.set(task.id, index + 1);
+          }
+        });
+        this.currentPlanTasks = sourceTasks.map((task) => {
+          const logicalId = dbToLogical.get(task.id) ?? task.id;
+          const parentLogical = task.parent_id != null ? (dbToLogical.get(task.parent_id) ?? null) : null;
+          return {
+            ...task,
+            db_id: task.id,
+            id: logicalId,
+            parent_id: parentLogical,
+          };
+        });
         this.error = null;
         return this.currentPlanTasks;
       } catch (error) {
@@ -131,10 +150,12 @@ export const usePlansStore = defineStore('plans', {
       switch (event.stage) {
         case 'initialization':
           this.planGenerating = true;
+          this.planStreamStatus = 'running';
           this.currentPlanTasks = [];
           this.currentPlan = null;
           break;
         case 'plan_created':
+          this.planStreamPlanId = event.plan_id;
           this.currentPlan = { id: event.plan_id, title: event.title, description: '' };
           // Add to plans list if not already there
           if (!this.plans.some(p => p.id === event.plan_id)) {
@@ -155,6 +176,9 @@ export const usePlansStore = defineStore('plans', {
           break;
         case 'completed':
           this.planGenerating = false;
+          this.planStreamController = null;
+          this.planStreamPlanId = null;
+          this.planStreamStatus = 'completed';
           // The final result might contain the full tree, so we can replace our tasks
           if (event.result && event.result.flat_tree) {
             // 确保flat_tree中的任务也有正确的parent_id字段
@@ -175,11 +199,77 @@ export const usePlansStore = defineStore('plans', {
             });
           }
           break;
+        case 'task_update':
+          if (event.task && event.task.id) {
+            this.upsertTaskInPlan(event.task);
+          }
+          break;
+        case 'cancelled':
+          this.planGenerating = false;
+          this.planStreamController = null;
+          this.planStreamPlanId = null;
+          this.planStreamStatus = 'cancelled';
+          // Clear any staged tasks since generation did not finish
+          this.currentPlanTasks = [];
+          break;
         case 'fatal_error':
           this.planGenerating = false;
+          this.planStreamController = null;
+          this.planStreamPlanId = null;
+          this.planStreamStatus = 'error';
           this.error = event.message;
           break;
       }
+    },
+
+    startPlanStream(goal, { onData, onComplete, onError }) {
+      if (this.planStreamController) {
+        // Abort any previous stream before starting a new one
+        try {
+          this.planStreamController.cancel();
+        } catch (err) {
+          console.warn('Failed to abort previous plan stream:', err);
+        }
+      }
+      this.planGenerating = true;
+       this.planStreamStatus = 'running';
+      this.planStreamController = chatApi.proposePlanStream(goal, onData, () => {
+        const status = this.planStreamStatus;
+        this.planGenerating = false;
+        this.planStreamController = null;
+        this.planStreamPlanId = null;
+        onComplete?.(status);
+        this.planStreamStatus = 'idle';
+      }, (error) => {
+        this.planGenerating = false;
+        this.planStreamController = null;
+        this.planStreamPlanId = null;
+        this.planStreamStatus = 'error';
+        onError?.(error);
+      });
+    },
+
+    async cancelPlanStream() {
+      if (this.planStreamController) {
+        try {
+          this.planStreamController.cancel();
+        } catch (err) {
+          console.warn('Failed to abort client-side stream:', err);
+        }
+        this.planStreamController = null;
+      }
+
+      if (this.planStreamPlanId != null) {
+        try {
+          await chatApi.cancelPlanGeneration(this.planStreamPlanId);
+        } catch (error) {
+          console.warn('Failed to cancel plan generation on server:', error);
+        }
+      }
+
+      this.planGenerating = false;
+      this.planStreamPlanId = null;
+      this.planStreamStatus = 'cancelled';
     },
 
     async createTask(planId, taskData) {
@@ -200,8 +290,10 @@ export const usePlansStore = defineStore('plans', {
 
     // Update task information
     async updateTask(taskId, updates) {
+      const targetId = typeof taskId === 'object' ? (taskId.db_id ?? taskId.id) : taskId
+      if (!targetId) return
       try {
-        await tasksApi.updateTask(taskId, updates)
+        await tasksApi.updateTask(targetId, updates)
         
         // Refresh plan tasks if we're viewing a plan
         if (this.currentPlan) {
@@ -214,8 +306,10 @@ export const usePlansStore = defineStore('plans', {
 
     // Update task input/prompt
     async updateTaskPrompt(taskId, prompt) {
+      const targetId = typeof taskId === 'object' ? (taskId.db_id ?? taskId.id) : taskId
+      if (!targetId) return
       try {
-        await tasksApi.updateTaskInput(taskId, prompt)
+        await tasksApi.updateTaskInput(targetId, prompt)
       } catch (error) {
         this.error = error.message
       }
@@ -223,8 +317,10 @@ export const usePlansStore = defineStore('plans', {
 
     // Update task output
     async updateTaskOutput(taskId, content) {
+      const targetId = typeof taskId === 'object' ? (taskId.db_id ?? taskId.id) : taskId
+      if (!targetId) return
       try {
-        await tasksApi.updateTaskOutput(taskId, content)
+        await tasksApi.updateTaskOutput(targetId, content)
         
         // Refresh plan tasks if we're viewing a plan
         if (this.currentPlan) {
@@ -237,24 +333,30 @@ export const usePlansStore = defineStore('plans', {
 
     // 任务上下文快照管理
     async createTaskContext(taskId, label, content) {
+      const targetId = typeof taskId === 'object' ? (taskId.db_id ?? taskId.id) : taskId
+      if (!targetId) return
       try {
-        await tasksApi.createTaskContext(taskId, label, content)
+        await tasksApi.createTaskContext(targetId, label, content)
       } catch (error) {
         this.error = error.message
       }
     },
 
     async updateTaskContext(taskId, label, content) {
+      const targetId = typeof taskId === 'object' ? (taskId.db_id ?? taskId.id) : taskId
+      if (!targetId) return
       try {
-        await tasksApi.updateTaskContext(taskId, label, content)
+        await tasksApi.updateTaskContext(targetId, label, content)
       } catch (error) {
         this.error = error.message
       }
     },
 
     async deleteTaskContext(taskId, label) {
+      const targetId = typeof taskId === 'object' ? (taskId.db_id ?? taskId.id) : taskId
+      if (!targetId) return
       try {
-        await tasksApi.deleteTaskContext(taskId, label)
+        await tasksApi.deleteTaskContext(targetId, label)
       } catch (error) {
         this.error = error.message
       }
@@ -290,14 +392,16 @@ export const usePlansStore = defineStore('plans', {
 
     // Re-run single task
     async rerunTask(taskId, options = {}) {
+      const targetId = typeof taskId === 'object' ? (taskId.db_id ?? taskId.id) : taskId
+      if (!targetId) return
       try {
-        const result = await tasksApi.rerunTask(taskId, {
+        const result = await tasksApi.rerunTask(targetId, {
           use_context: true,
           ...options
         })
         
         // Use reactive assignment for execution status
-        this.executionStatus = { ...this.executionStatus, [taskId]: result.status }
+        this.executionStatus = { ...this.executionStatus, [targetId]: result.status }
         
         // Refresh the plan if we're viewing one
         if (this.currentPlan) {
@@ -312,8 +416,10 @@ export const usePlansStore = defineStore('plans', {
 
     // Re-run multiple tasks
     async rerunTasks(taskIds, options = {}) {
+      const targetIds = taskIds.map(id => (typeof id === 'object' ? (id.db_id ?? id.id) : id)).filter(Boolean)
+      if (!targetIds.length) return []
       try {
-        const results = await tasksApi.rerunMultipleTasks(taskIds, options)
+        const results = await tasksApi.rerunMultipleTasks(targetIds, options)
         
         // Use reactive assignment for execution status updates
         const statusUpdates = {}
