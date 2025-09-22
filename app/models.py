@@ -208,3 +208,13 @@ class MessageCreate(BaseModel):
     sender: str = "user"
     plan_id: Optional[int] = None
     confirmed: Optional[bool] = False
+
+
+class MessageUpdate(BaseModel):
+    text: str
+
+
+class MessageResend(BaseModel):
+    text: Optional[str] = None
+    plan_id: Optional[int] = None
+    confirmed: Optional[bool] = False

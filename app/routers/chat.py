@@ -8,7 +8,8 @@ from .. import models
 from ..repository import chat as chat_repo
 from ..repository.tasks import default_repo
 from ..services.conversational_agent import ConversationalAgent
-from ..services.planning import BFS_planner_stream
+from ..services.planning import BFS_planner_stream, request_planner_cancellation
+from ..services.plan_session import plan_session_manager
 
 
 router = APIRouter(
@@ -31,6 +32,39 @@ async def propose_plan_stream(req: ProposePlanRequest):
         BFS_planner_stream(req.goal),
         media_type="text/event-stream"
     )
+
+
+@router.post("/plans/{plan_id}/cancel")
+async def cancel_plan_generation(plan_id: int):
+    """Signal an in-flight plan generation stream to stop."""
+
+    cancelled = request_planner_cancellation(plan_id)
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="No running planner found for the specified plan_id.")
+    return {"success": True, "message": f"Cancellation signal sent for plan {plan_id}."}
+
+
+@router.post("/plans/{plan_id}/sync")
+def sync_plan_graph(plan_id: int):
+    """Persist any pending in-memory task graph changes for a plan."""
+
+    plan = default_repo.get_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found.")
+
+    session = plan_session_manager.get_session(plan_id)
+    session.ensure_loaded()
+    id_map = session.commit()
+    tasks = session.list_tasks()
+    task_tree = session.build_task_tree()
+
+    return {
+        "success": True,
+        "plan_id": plan_id,
+        "id_map": id_map,
+        "tasks": tasks,
+        "task_tree": task_tree,
+    }
 
 @router.get("/plans")
 def get_all_plans():
@@ -88,6 +122,16 @@ def delete_conversation(conversation_id: int):
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return {"message": "Conversation deleted successfully"}
 
+
+@router.put("/messages/{message_id}", response_model=models.Message)
+def update_message(message_id: int, payload: models.MessageUpdate):
+    """Update the text body of an existing message."""
+
+    updated = chat_repo.update_message(message_id, payload.text)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Message not found.")
+    return updated
+
 @router.post("/conversations/{conversation_id}/messages")
 async def post_message(conversation_id: int, message_in: models.MessageCreate, background_tasks: BackgroundTasks):
     """增强版消息处理，返回消息和可视化指令"""
@@ -117,7 +161,8 @@ async def post_message(conversation_id: int, message_in: models.MessageCreate, b
         agent = ConversationalAgent(
             plan_id=message_in.plan_id, 
             background_tasks=background_tasks,
-            conversation_history=history
+            conversation_history=history,
+            conversation_id=conversation_id,
         )
         print(f"🚀 Processing command: {message_in.text}")
         result = await agent.process_command(
@@ -205,7 +250,8 @@ async def post_message(conversation_id: int, message_in: models.MessageCreate, b
             "success": result.get("success", True),
             "action_result": result.get("action_result", {}),  # 添加缺失的 action_result 字段
             "initial_response": result.get("initial_response", ""),
-            "execution_feedback": result.get("execution_feedback", "")
+            "execution_feedback": result.get("execution_feedback", ""),
+            "steps": result.get("steps", []),
         }
         print(f"📤 Returning response: {response}")
         return response
@@ -234,9 +280,132 @@ async def post_message(conversation_id: int, message_in: models.MessageCreate, b
             "success": False,
             "action_result": {"success": False, "message": str(e)},
             "initial_response": error_message,
-            "execution_feedback": ""
+            "execution_feedback": "",
+            "steps": [],
         }
 
+
+@router.post("/messages/{message_id}/resend")
+async def resend_message(message_id: int, payload: models.MessageResend, background_tasks: BackgroundTasks):
+    """Edit an existing user message and re-run the agent from that point."""
+
+    message = chat_repo.get_message(message_id)
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found.")
+
+    conversation_id = message["conversation_id"]
+    conversation = chat_repo.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    # Update message text if provided
+    if payload.text is not None:
+        updated = chat_repo.update_message(message_id, payload.text)
+        if not updated:
+            raise HTTPException(status_code=500, detail="Failed to update message text.")
+        message = updated
+
+    # Remove all later messages so we can recompute the dialogue from this point forward
+    chat_repo.delete_messages_after(conversation_id, message_id)
+
+    # Rebuild history up to and including this message
+    history_messages = chat_repo.get_messages_for_conversation(conversation_id)
+    history = [
+        {
+            "role": "assistant" if msg['sender'] == "agent" else "user",
+            "content": msg['text']
+        }
+        for msg in history_messages
+    ]
+
+    agent = ConversationalAgent(
+        plan_id=payload.plan_id,
+        background_tasks=background_tasks,
+        conversation_history=history if history else None,
+        conversation_id=conversation_id,
+    )
+
+    try:
+        result = await agent.process_command(
+            message["text"],
+            confirmed=bool(payload.confirmed)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    agent_message = chat_repo.create_message(
+        conversation_id=conversation_id,
+        sender='agent',
+        text=result["response"]
+    )
+
+    # Re-run any side effects from action results, mirroring the send message flow.
+    if result.get("action_result", {}).get("should_execute"):
+        if result["intent"] == "execute_plan":
+            plan_id = result["action_result"].get("plan_id")
+            if plan_id:
+                import threading
+                import requests
+
+                def execute_plan_async():
+                    try:
+                        response = requests.post(
+                            "http://127.0.0.1:8000/run",
+                            json={
+                                "plan_id": int(plan_id),
+                                "use_context": True,
+                                "schedule": "postorder",
+                                "rerun_all": False
+                            }
+                        )
+                        if response.status_code == 200:
+                            print(f"Successfully started execution for plan {plan_id}")
+                        else:
+                            print(f"Failed to execute plan {plan_id}: {response.text}")
+                    except Exception as exc:
+                        print(f"Error executing plan {plan_id}: {exc}")
+
+                thread = threading.Thread(target=execute_plan_async, daemon=True)
+                thread.start()
+        elif result["intent"] == "rerun_task":
+            task_id = result["action_result"].get("task", {}).get("id")
+            if task_id:
+                import threading
+                import requests
+
+                def rerun_task_async():
+                    try:
+                        response = requests.post(
+                            f"http://127.0.0.1:8000/tasks/{task_id}/rerun",
+                            json={
+                                "use_context": True
+                            }
+                        )
+                        if response.status_code == 200:
+                            print(f"Successfully rerun task {task_id}")
+                        else:
+                            print(f"Failed to rerun task {task_id}: {response.text}")
+                    except Exception as exc:
+                        print(f"Error rerunning task {task_id}: {exc}")
+
+                thread = threading.Thread(target=rerun_task_async, daemon=True)
+                thread.start()
+
+    response = {
+        "message": agent_message,
+        "visualization": result.get("visualization", {
+            "type": "none",
+            "data": {},
+            "config": {}
+        }),
+        "intent": result.get("intent", "unknown"),
+        "success": result.get("success", True),
+        "action_result": result.get("action_result", {}),
+        "initial_response": result.get("initial_response", ""),
+        "execution_feedback": result.get("execution_feedback", ""),
+        "steps": result.get("steps", []),
+    }
+    return response
 @router.post("/conversations/{conversation_id}/messages/stream")
 async def post_message_stream(conversation_id: int, message_in: models.MessageCreate, background_tasks: BackgroundTasks):
     """Post a new message and stream the agent's response using SSE."""
@@ -258,7 +427,11 @@ async def post_message_stream(conversation_id: int, message_in: models.MessageCr
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
             # Initialize agent with background tasks
-            agent = ConversationalAgent(plan_id=message_in.plan_id, background_tasks=background_tasks)
+            agent = ConversationalAgent(
+                plan_id=message_in.plan_id,
+                background_tasks=background_tasks,
+                conversation_id=conversation_id,
+            )
             
             # Send start event
             start_data = {

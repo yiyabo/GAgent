@@ -6,6 +6,21 @@ from ..interfaces import LLMProvider, TaskRepository
 from ..llm import get_default_client
 from ..repository.tasks import default_repo
 from ..utils import parse_json_obj
+from .plan_session import plan_session_manager
+
+
+# Tracks in-progress plan generations so they can be cancelled externally.
+_planner_cancellation_registry: Dict[int, asyncio.Event] = {}
+
+
+def request_planner_cancellation(plan_id: int) -> bool:
+    """Signal a running planner stream to cancel. Returns True if signalled."""
+
+    event = _planner_cancellation_registry.get(plan_id)
+    if event:
+        event.set()
+        return True
+    return False
 
 
 async def BFS_planner_stream(
@@ -25,87 +40,36 @@ async def BFS_planner_stream(
         """规范化任务类型"""
         return v if v in ("root", "composite", "atomic") else "composite"
 
-    def _make_node(
+    def _create_task_node(
+        plan_session,
         name: str,
         prompt: str,
         task_type: str,
         layer: int,
-        parent_id: Optional[str],
-        nid: str,
-        parent_db_id: Optional[int] = None,
+        parent_temp_id: Optional[int],
     ) -> Dict[str, Any]:
-        """创建任务节点"""
-        return {
-            "id": nid,
-            "name": name,
-            "prompt": prompt or "",
-            "task_type": _sanitize_type(task_type),
+        info = plan_session.create_task(
+            name=name,
+            parent_id=parent_temp_id,
+            task_type=task_type,
+            priority=layer * 10,
+        )
+        temp_id = info["id"]
+        if prompt:
+            plan_session.set_instruction(temp_id, prompt)
+
+        node = {
+            "temp_id": temp_id,
+            "id": temp_id,
+            "name": info.get("name", name),
+            "prompt": prompt,
+            "task_type": info.get("task_type", task_type),
             "layer": layer,
-            "parent_id": parent_id,
-            "parent_db_id": parent_db_id,
+            "parent_temp_id": parent_temp_id,
+            "parent_id": parent_temp_id,
             "children": [],
-            "db_id": None,
         }
-
-    def _create_task_in_db(node: Dict[str, Any], plan_id: int) -> int:
-        """在数据库中创建任务并返回任务ID"""
-        try:
-            task_id = repo.create_task(
-                name=node["name"],
-                status="pending",
-                priority=node.get("layer", 0) * 10,
-                task_type=node.get("task_type", "composite"),
-                parent_id=node.get("parent_db_id"),
-            )
-            print(
-                f"[BFS_planner] Created task '{node['name']}' with ID {task_id} in database"
-            )
-        except TypeError:
-            task_id = repo.create_task(
-                name=node["name"],
-                status="pending",
-                priority=node.get("layer", 0) * 10,
-            )
-
-            if node.get("parent_db_id"):
-                if hasattr(repo, "set_task_parent"):
-                    try:
-                        repo.set_task_parent(task_id, node["parent_db_id"])
-                        print(
-                            f"[BFS_planner] Set parent relationship for task {task_id}"
-                        )
-                    except Exception as e:
-                        print(f"[BFS_planner] WARNING: Failed to set parent: {e}")
-                elif hasattr(repo, "update_task"):
-                    try:
-                        repo.update_task(task_id, parent_id=node["parent_db_id"])
-                        print(
-                            f"[BFS_planner] Updated parent relationship for task {task_id}"
-                        )
-                    except Exception as e:
-                        print(f"[BFS_planner] WARNING: Failed to update parent: {e}")
-
-        # 设置任务输入
-        try:
-            repo.upsert_task_input(task_id, node.get("prompt", ""))
-        except Exception as e:
-            print(f"[BFS_planner] WARNING: Failed to set input for task {task_id}: {e}")
-
-        # 将任务链接到计划
-        try:
-            repo.link_task_to_plan(plan_id, task_id, "task")
-        except Exception as e:
-            print(f"[BFS_planner] WARNING: Failed to link task {task_id} to plan: {e}")
-
-        # 生成任务上下文
-        try:
-            generate_task_context(repo, client, task_id, node)
-        except Exception as e:
-            print(
-                f"[BFS_planner] WARNING: Failed to generate context for task {task_id}: {e}"
-            )
-
-        return task_id
+        return node
 
     def _build_improved_assessment_prompt(task: Dict[str, Any], depth: int) -> str:
         """改进的任务评估提示"""
@@ -148,6 +112,10 @@ OR for atomic tasks:
   "tasks": []
 }}"""
 
+    plan_id: Optional[int] = None
+    cancel_event: Optional[asyncio.Event] = None
+    plan_session = None
+
     try:
         # 发送初始化消息
         init_msg = {
@@ -177,6 +145,14 @@ Return only the title (no quotes, no extra text):"""
         # 在数据库中创建计划
         plan_id = repo.create_plan(title, description=goal)
         print(f"[BFS_planner] Created plan '{title}' with ID {plan_id}")
+
+        cancel_event = asyncio.Event()
+        _planner_cancellation_registry[plan_id] = cancel_event
+
+        # Initialize plan session for in-memory graph management
+        plan_session_manager.flush_stale()
+        plan_session = plan_session_manager.activate_plan(plan_id)
+        tasks_for_context: List[Dict[str, Any]] = []
 
         # 发送计划创建成功消息
         plan_msg = {
@@ -235,41 +211,69 @@ Return JSON ONLY (no comments):
         yield f"data: {json.dumps(root_success_msg)}\n\n"
         await asyncio.sleep(0.1)
 
+        def build_cancel_message() -> Optional[Dict[str, Any]]:
+            if cancel_event and cancel_event.is_set():
+                return {
+                    "stage": "cancelled",
+                    "plan_id": plan_id,
+                    "title": title,
+                    "message": "Plan generation cancelled by user.",
+                }
+            return None
+
         # 初始化数据结构
         roots: List[Dict[str, Any]] = []
         flat_tree: List[Dict[str, Any]] = []
-        bfs_order: List[str] = []
+        bfs_order: List[int] = []
         evaluation_log: List[Dict[str, Any]] = []
-        task_id_map: Dict[str, int] = {}
 
-        serial = 0
-
-        # 创建根任务节点并立即写入数据库
+        # 创建根任务，先写入会话缓存
         for idx, t in enumerate(tasks0):
-            n = _make_node(
-                name=t.get("name", f"Task {idx + 1}"),
-                prompt=t.get("prompt", ""),
-                task_type=t.get("task_type", "root"),
+            name = t.get("name", f"Task {idx + 1}")
+            prompt = t.get("prompt", "")
+            task_type = _sanitize_type(t.get("task_type", "root"))
+
+            node = _create_task_node(
+                plan_session=plan_session,
+                name=name,
+                prompt=prompt,
+                task_type=task_type,
                 layer=0,
-                parent_id=None,
-                nid=f"L0_T{serial}",
-                parent_db_id=None,
+                parent_temp_id=None,
             )
 
-            # 立即在数据库中创建任务
-            db_task_id = _create_task_in_db(n, plan_id)
-            n["db_id"] = db_task_id
-            task_id_map[n["id"]] = db_task_id
+            tasks_for_context.append({
+                "temp_id": node["temp_id"],
+                "name": node["name"],
+                "prompt": node["prompt"],
+                "task_type": node["task_type"],
+                "layer": node["layer"],
+                "parent_temp_id": node.get("parent_temp_id"),
+            })
 
-            roots.append(n)
-            flat_tree.append(n)
-            bfs_order.append(n["id"])
-            serial += 1
+            roots.append(node)
+            flat_tree.append(node)
+            bfs_order.append(node["temp_id"])
 
-            # 发送根任务创建消息
-            root_task_with_children = {**n, "children": []}
-            yield f"data: {json.dumps(root_task_with_children)}\n\n"
+            root_event = {
+                "stage": "root_task_created",
+                "task_id": node["temp_id"],
+                "task_name": node["name"],
+                "task_type": node["task_type"],
+                "parent_id": None,
+                "id": node["temp_id"],
+                "temp_id": node["temp_id"],
+                "name": node["name"],
+                "layer": node["layer"],
+                "prompt": node["prompt"],
+            }
+            yield f"data: {json.dumps(root_event)}\n\n"
             await asyncio.sleep(0.1)
+
+            cancel_payload = build_cancel_message()
+            if cancel_payload:
+                yield f"data: {json.dumps(cancel_payload)}\n\n"
+                return
 
         # Step 2: BFS traversal using a queue
         from collections import deque
@@ -280,6 +284,11 @@ Return JSON ONLY (no comments):
         SAFETY_LIMIT = 300
 
         while queue and processed_tasks < SAFETY_LIMIT:
+            cancel_payload = build_cancel_message()
+            if cancel_payload:
+                yield f"data: {json.dumps(cancel_payload)}\n\n"
+                return
+
             parent = queue.popleft()
             processed_tasks += 1
 
@@ -314,31 +323,52 @@ Return JSON ONLY (no comments):
                     parent["task_type"] = "composite"
 
                     for st in subtasks:
-                        child = _make_node(
-                            name=st.get("name", "Subtask"),
-                            prompt=st.get("prompt", ""),
-                            task_type=st.get("task_type", "atomic"),
-                            layer=parent["layer"] + 1,
-                            parent_id=parent["id"],
-                            nid=f"L{parent['layer'] + 1}_T{serial}",
-                            parent_db_id=parent["db_id"],
-                        )
-                        serial += 1
+                        child_name = st.get("name", "Subtask")
+                        child_prompt = st.get("prompt", "")
+                        child_type = _sanitize_type(st.get("task_type", "atomic"))
+                        child_layer = parent["layer"] + 1
 
-                        db_task_id = _create_task_in_db(child, plan_id)
-                        child["db_id"] = db_task_id
-                        task_id_map[child["id"]] = db_task_id
+                        child = _create_task_node(
+                            plan_session=plan_session,
+                            name=child_name,
+                            prompt=child_prompt,
+                            task_type=child_type,
+                            layer=child_layer,
+                            parent_temp_id=parent["temp_id"],
+                        )
+                        tasks_for_context.append({
+                            "temp_id": child["temp_id"],
+                            "name": child["name"],
+                            "prompt": child["prompt"],
+                            "task_type": child["task_type"],
+                            "layer": child["layer"],
+                            "parent_temp_id": child.get("parent_temp_id"),
+                        })
 
                         parent["children"].append(child)
                         flat_tree.append(child)
-                        queue.append(
-                            child
-                        )  # Add new subtask to the queue for processing
+                        queue.append(child)
+                        bfs_order.append(child["temp_id"])
 
-                        # Stream the new subtask to the client
-                        subtask_with_children = {**child, "children": []}
-                        yield f"data: {json.dumps(subtask_with_children)}\n\n"
+                        subtask_event = {
+                            "stage": "subtask_created",
+                            "task_id": child["temp_id"],
+                            "task_name": child["name"],
+                            "task_type": child["task_type"],
+                            "parent_id": parent["temp_id"],
+                            "id": child["temp_id"],
+                            "temp_id": child["temp_id"],
+                            "name": child["name"],
+                            "layer": child["layer"],
+                            "prompt": child["prompt"],
+                        }
+                        yield f"data: {json.dumps(subtask_event)}\n\n"
                         await asyncio.sleep(0.1)
+
+                        cancel_payload = build_cancel_message()
+                        if cancel_payload:
+                            yield f"data: {json.dumps(cancel_payload)}\n\n"
+                            return
 
                 else:  # Atomic or composite with no subtasks
                     parent["task_type"] = "atomic"
@@ -352,9 +382,86 @@ Return JSON ONLY (no comments):
                 }
                 # yield f"data: {json.dumps(error_msg)}\n\n" # Temporarily disable verbose events
 
-        # Final completion event (optional, but good practice)
+        # Persist tasks from session to database once generation completes
+        cancel_payload = build_cancel_message()
+        if cancel_payload:
+            yield f"data: {json.dumps(cancel_payload)}\n\n"
+            return
+
+        id_map = plan_session.commit()
+        task_id_map: Dict[int, int] = {}
+
+        if id_map:
+            for node in flat_tree:
+                final_id = id_map.get(node["temp_id"], node["temp_id"])
+                node["id"] = final_id
+                node["parent_id"] = (
+                    None
+                    if node.get("parent_temp_id") is None
+                    else id_map.get(node["parent_temp_id"], node["parent_temp_id"])
+                )
+                task_id_map[node["temp_id"]] = final_id
+            bfs_order = [id_map.get(temp_id, temp_id) for temp_id in bfs_order]
+        else:
+            for node in flat_tree:
+                task_id_map[node["temp_id"]] = node["id"]
+
+        # Generate task contexts now that we have stable database IDs
+        if task_id_map:
+            for meta in tasks_for_context:
+                temp_id = meta["temp_id"]
+                actual_id = task_id_map.get(temp_id)
+                if not actual_id:
+                    continue
+                try:
+                    generate_task_context(
+                        repo,
+                        client,
+                        actual_id,
+                        {
+                            "name": meta.get("name"),
+                            "prompt": meta.get("prompt"),
+                            "task_type": meta.get("task_type"),
+                            "layer": meta.get("layer"),
+                        },
+                    )
+                except Exception as exc:
+                    print(
+                        f"[BFS_planner] WARNING: Failed to generate context for task {actual_id}: {exc}"
+                    )
+
+        # Refresh plan session view to ensure we have persisted data
+        persisted_tasks = plan_session.list_tasks()
+        persisted_tree = plan_session.build_task_tree()
+
+        # Statistics for analytics / completion event
+        layer_distribution: Dict[int, int] = {}
+        type_distribution: Dict[str, int] = {}
+
+        for node in flat_tree:
+            layer = node.get("layer", 0)
+            task_type = node.get("task_type", "unknown")
+            layer_distribution[layer] = layer_distribution.get(layer, 0) + 1
+            type_distribution[task_type] = type_distribution.get(task_type, 0) + 1
+
+        stopped_reason = "safety_limit" if processed_tasks >= SAFETY_LIMIT else "completed"
+
         completed_msg = {
-            "event": "completion",
+            "stage": "completed",
+            "plan_id": plan_id,
+            "title": title,
+            "result": {
+                "flat_tree": flat_tree,
+                "persisted_tasks": persisted_tasks,
+                "task_tree": persisted_tree,
+                "task_id_map": task_id_map,
+                "total_tasks": len(flat_tree),
+                "layer_distribution": layer_distribution,
+                "type_distribution": type_distribution,
+                "stopped_reason": stopped_reason,
+                "bfs_order": bfs_order,
+                "evaluation_log": evaluation_log,
+            },
             "message": f"Plan generation complete. Total tasks: {len(flat_tree)}",
         }
         yield f"data: {json.dumps(completed_msg)}\n\n"
@@ -363,10 +470,20 @@ Return JSON ONLY (no comments):
         print(f"[BFS_planner] FATAL ERROR: {e}")
         error_result = {"success": False, "error": str(e)}
         error_msg = {
-            "event": "error",
+            "stage": "fatal_error",
+            "plan_id": plan_id,
             "message": f"An error occurred: {str(e)}",
         }
         yield f"data: {json.dumps(error_msg)}\n\n"
+    finally:
+        if plan_id is not None:
+            _planner_cancellation_registry.pop(plan_id, None)
+            if cancel_event and cancel_event.is_set() and plan_session:
+                try:
+                    plan_session.refresh()
+                except Exception:
+                    pass
+            plan_session_manager.release_session(plan_id)
 
 
 def BFS_planner(

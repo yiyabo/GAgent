@@ -1,15 +1,25 @@
 from typing import Any, Dict, Optional, List
 from enum import Enum
-import logging
+import copy
 import json
+import logging
+import os
+from datetime import datetime
 from fastapi import BackgroundTasks
 
 from ..llm import get_default_client as get_llm
 from ..repository.tasks import default_repo
+from .plan_session import plan_session_manager, PlanGraphSession
 from ..utils import parse_json_obj
 
 
 logger = logging.getLogger(__name__)
+
+
+
+SNAPSHOT_DIR = os.path.join(os.getcwd(), "logs", "plan_snapshots")
+
+_PENDING_INSTRUCTIONS: Dict[int, List[Dict[str, Any]]] = {}
 
 
 class IntentType(Enum):
@@ -18,12 +28,14 @@ class IntentType(Enum):
     CREATE_TASK = "create_task"
     UPDATE_TASK = "update_task"
     UPDATE_TASK_INSTRUCTION = "update_task_instruction"
+    MOVE_TASK = "move_task"
     LIST_PLANS = "list_plans"
     EXECUTE_PLAN = "execute_plan"
     QUERY_STATUS = "query_status"
     SHOW_TASKS = "show_tasks"
     RERUN_TASK = "rerun_task"
     DELETE_PLAN = "delete_plan"
+    DELETE_TASK = "delete_task"
     HELP = "help"
     CHAT = "chat"  # 普通聊天
     UNKNOWN = "unknown"
@@ -51,12 +63,21 @@ class ConversationalAgent:
         self, 
         plan_id: Optional[int] = None, 
         background_tasks: Optional[BackgroundTasks] = None,
-        conversation_history: Optional[List[Dict]] = None
+        conversation_history: Optional[List[Dict]] = None,
+        conversation_id: Optional[int] = None,
     ):
         self.plan_id = plan_id
         self.llm = get_llm()
         self.background_tasks = background_tasks
         self.history = conversation_history or []
+        self.conversation_id = conversation_id
+        self.plan_session: Optional[PlanGraphSession] = None
+        self._id_aliases: Dict[int, int] = {}
+        self._graph_summary_cache: Optional[Dict[str, Any]] = None
+        self._subgraph_cache: Dict[int, Dict[str, Any]] = {}
+        if self.plan_id:
+            plan_session_manager.flush_stale()
+            self.plan_session = plan_session_manager.activate_plan(self.plan_id)
         
     async def process_command(self, user_command: str, confirmed: bool = False) -> Dict[str, Any]:
         """统一处理用户命令：LLM判断是否需要工具调用或直接对话"""
@@ -88,7 +109,10 @@ class ConversationalAgent:
             return {"success": False, "message": "I don't know which plan you're referring to. Please specify a plan first."}
 
         logger.info(f"Fuzzy searching for task '{task_name}' in plan {self.plan_id}")
-        tasks_summary = default_repo.get_plan_tasks_summary(self.plan_id)
+        if self.plan_session:
+            tasks_summary = self.plan_session.list_task_summaries()
+        else:
+            tasks_summary = default_repo.get_plan_tasks_summary(self.plan_id)
 
         if not tasks_summary:
             return {"success": False, "message": "This plan has no tasks."}
@@ -112,7 +136,19 @@ If no task is a clear match, respond with: {{'best_match_id': null}}
             if not task_id:
                 return {"success": False, "message": f"I couldn't find a task that clearly matches '{task_name}'."}
 
-            matched_task = next((task for task in tasks_summary if task['id'] == task_id), None)
+            if self.plan_session:
+                # Convert best_match_id (db) to logical if needed
+                logical = self.plan_session.get_logical_id(task_id)
+                if logical is not None:
+                    task_id = logical
+
+            matched_task = None
+            for task in tasks_summary:
+                candidate_id = task.get("id")
+                candidate_db = task.get("db_id")
+                if candidate_id == task_id or candidate_db == task_id:
+                    matched_task = task
+                    break
             if not matched_task:
                  return {"success": False, "message": "LLM returned an invalid task ID."}
 
@@ -124,99 +160,430 @@ If no task is a clear match, respond with: {{'best_match_id': null}}
     
     async def _unified_intent_and_response(self, user_command: str, confirmed: bool = False) -> Dict[str, Any]:
         """统一的意图识别和响应生成"""
-        
+
         logger.info(f"🔄 _unified_intent_and_response called with: '{user_command[:50]}...\n'")
-        
+
         # 构建上下文信息
-        context_info = ""
-        if self.plan_id:
-            context_info = f"Current plan ID: {self.plan_id}. "
-        
-        # 统一的LLM提示
-        unified_prompt = f"""You are an AI assistant for a research plan management system. {context_info}
+        context_sections: List[str] = []
+        graph_summary_payload: Optional[Dict[str, Any]] = None
 
-Analyze the user's message and decide whether it requires tool usage or is casual conversation.
+        if self.plan_id is not None:
+            context_sections.append(f"Current plan ID: {self.plan_id}.")
 
-**If it's a TASK that needs tools**, respond with JSON format:
+        if self.plan_session:
+            try:
+                graph_summary_payload = self._build_graph_summary_payload()
+            except Exception as exc:
+                logger.warning("Failed to build graph summary payload: %s", exc)
+                graph_summary_payload = None
+            if graph_summary_payload:
+                summary_text = json.dumps(graph_summary_payload, ensure_ascii=False, indent=2)
+                context_sections.append(
+                    "GraphSummary (current layer + direct children):\n" + summary_text
+                )
+                self._save_plan_snapshot(graph_summary_payload, label="graph_summary")
+
+        context_info = "\n\n".join(context_sections).strip()
+        if context_info:
+            context_info += "\n\n"
+
+        if not confirmed and self.conversation_id is not None:
+            # Drop any stale instructions awaiting confirmation if the user issues a new command
+            _PENDING_INSTRUCTIONS.pop(self.conversation_id, None)
+
+        instructions: Optional[List[Dict[str, Any]]] = None
+        raw_result: Optional[str] = None
+
+        if confirmed and self.conversation_id is not None:
+            cached = _PENDING_INSTRUCTIONS.pop(self.conversation_id, None)
+            if cached:
+                instructions = copy.deepcopy(cached)
+                logger.info(
+                    "Using cached instructions for confirmation run (conversation_id=%s)",
+                    self.conversation_id,
+                )
+
+        if instructions is None:
+            llm_history = list(self.history or [])
+            provided_subgraphs: Dict[int, Dict[str, Any]] = {}
+            max_subgraph_rounds = 6
+
+            def extract_subgraph_requests(items: List[Dict[str, Any]]) -> List[int]:
+                request_ids: List[int] = []
+                for entry in items:
+                    intent_val = (entry.get("intent") or "").strip().lower()
+                    if intent_val != "request_subgraph":
+                        continue
+                    params = entry.get("parameters") or {}
+                    logical = params.get("logical_id", params.get("task_id"))
+                    try:
+                        logical_id = int(logical)
+                    except (TypeError, ValueError):
+                        continue
+                    request_ids.append(logical_id)
+                return request_ids
+
+            def format_subgraph_payloads(payloads: List[Dict[str, Any]]) -> str:
+                sections: List[str] = []
+                for payload in payloads:
+                    detail_json = json.dumps(payload, ensure_ascii=False, indent=2)
+                    sections.append(
+                        f"SubgraphDetail for logical_id {payload['root_id']} (current layer + direct children):\n{detail_json}"
+                    )
+                return "\n\n".join(sections)
+
+            def build_invalid_request_message(missing: List[int], repeated: List[int]) -> str:
+                parts: List[str] = []
+                if missing:
+                    parts.append(
+                        "The following logical_id values are not available in the current plan: "
+                        + ", ".join(str(mid) for mid in sorted(set(missing)))
+                        + "."
+                    )
+                if repeated:
+                    parts.append(
+                        "You already have the subgraph details for logical_id(s): "
+                        + ", ".join(str(rid) for rid in sorted(set(repeated)))
+                        + "."
+                    )
+                parts.append(
+                    "Select another logical_id from the GraphSummary or proceed using the available context."
+                )
+                parts.append(
+                    "If you still require more detail, issue a new 'request_subgraph' instruction. Otherwise, return the actionable instruction list in the required JSON format."
+                )
+                return "\n".join(parts)
+
+            unified_prompt = f"""You are an AI assistant for a research plan management system. {context_info}Analyze the user's message and break it down into an ordered list of instructions that should be executed sequentially.
+
+Respond with JSON ONLY using the following structure:
 {{
-  "needs_tool": true,
-  "intent": "create_plan|create_task|update_task|update_task_instruction|list_plans|execute_plan|show_tasks|query_status|delete_plan|rerun_task|help",
-  "parameters": {{ "goal": "...", "plan_id": "...", "task_id": "...", "task_name": "...", "name": "...", "status": "...", "instruction": "..."}},
-  "initial_response": "I'll help you with that. Let me [action description]..."
+  "instructions": [
+    {{
+      "needs_tool": true,
+      "intent": "create_plan|create_task|update_task|update_task_instruction|list_plans|execute_plan|show_tasks|query_status|delete_plan|delete_task|rerun_task|help|request_subgraph",
+      "parameters": {{ "goal": "...", "plan_id": "...", "task_id": "...", "task_name": "...", "name": "...", "status": "...", "instruction": "...", "logical_id": "..." }},
+      "initial_response": "I'll help you with that. Let me [action description]..."
+    }},
+    {{
+      "needs_tool": false,
+      "intent": "chat",
+      "response": "Your natural conversational follow-up after the tools finish..."
+    }}
+  ]
 }}
 
-**If it's CASUAL CHAT**, respond with JSON format:
-{{
-  "needs_tool": false,
-  "intent": "chat", 
-  "response": "Your natural conversational response here..."
-}}
+Rules:
+- Always return the array in execution order (step 1 first).
+- Include at least one instruction. Use a single item when only one action is needed.
+- Only set "needs_tool" to true when a repository tool must be called. Casual replies should use "needs_tool": false and "intent": "chat".
+- Reuse tool intents exactly as listed below.
 
-Available tool intents:
+Tool intents:
 - create_plan: Create new research plans (extract goal, title, sections, etc.)
 - create_task: Create a new task within a plan (extract task_name, parent_id, and plan_id if available)
 - update_task: Modify a task's METADATA (extract task_id OR task_name, and fields to change like name or status). Does NOT change the instruction.
 - update_task_instruction: Change the detailed instructions/prompt for a task (extract task_id or task_name, and the new instruction)
+- move_task: Reparent a task under a new parent (extract task_id and new_parent_id; use null/None to move to root)
 - list_plans: Show all existing plans
 - execute_plan: Start executing a specific plan
 - show_tasks: Display tasks in a plan
 - query_status: Check status/progress of plans or tasks  
 - delete_plan: Remove a plan
+- delete_task: Remove a task (and its subtasks) from a plan
 - rerun_task: Restart a specific task
 - help: Show available commands
+- request_subgraph: Ask for a deeper view of a task when the GraphSummary is insufficient (set "needs_tool": false and include {{"logical_id": <id>}}). Wait for the new context before issuing other actions.
+
+Additional rules:
+- If you schedule a create_plan instruction, do not include any create_task instructions for the same request. The plan generator initializes the entire task graph automatically.
+- When you emit a request_subgraph instruction, it should be the only instruction in that response. After you receive the SubgraphDetail, issue the actionable instruction list.
 
 Examples:
-- "change the status of the 'data analysis' task to done" -> {{'intent': 'update_task', 'parameters': {{'task_name': 'data analysis', 'status': 'done'}}}} 
-- "update instruction for 'literature review' to focus on 2023 papers" -> {{'intent': 'update_task_instruction', 'parameters': {{'task_name': 'literature review', 'instruction': 'focus on papers published after 2023'}}}} 
+- "change the status of the 'data analysis' task to done" → {{"instructions": [{{"needs_tool": true, "intent": "update_task", "parameters": {{"task_name": "data analysis", "status": "done"}}, "initial_response": "Updating the task status..."}}]}}
+- "create a plan and then show it" → {{"instructions": [{{"needs_tool": true, "intent": "create_plan", "parameters": {{"goal": "..."}}, "initial_response": "Creating the plan..."}}, {{"needs_tool": true, "intent": "show_tasks", "parameters": {{"plan_id": "..."}}, "initial_response": "Listing the tasks..."}}]}} (note: no create_task step needed)
+- "drill into task 7" → {{"instructions": [{{"needs_tool": false, "intent": "request_subgraph", "parameters": {{"logical_id": 7}}, "initial_response": "Fetching the detailed subgraph for task 7..."}}]}}
+- "thanks" → {{"instructions": [{{"needs_tool": false, "intent": "chat", "response": "You're welcome!"}}]}}
 
 User message: "{user_command}"
 
 Respond with JSON only:"""
 
-        try:
-            result = self.llm.chat(unified_prompt, history=self.history).strip()
-            logger.info(f"Unified LLM response: {result}")
-            
-            # 解析JSON响应，处理可能的markdown代码块包装
-            import json
-            
-            # 提取JSON内容，去除可能的markdown代码块标记
-            json_content = result
-            if result.startswith('```json'):
-                # 提取```json和```之间的内容
-                start_marker = '```json'
-                end_marker = '```'
-                start_idx = result.find(start_marker)
-                if start_idx != -1:
-                    start_idx += len(start_marker)
-                    end_idx = result.find(end_marker, start_idx)
-                    if end_idx != -1:
-                        json_content = result[start_idx:end_idx].strip()
-            elif result.startswith('```'):
-                # 处理普通的```包装
-                start_idx = result.find('\n')
-                if start_idx != -1:
-                    end_idx = result.rfind('```')
-                    if end_idx != -1 and end_idx > start_idx:
-                        json_content = result[start_idx:end_idx].strip()
-            
-            logger.info(f"Extracted JSON content: {json_content}")
-            parsed = json.loads(json_content)
-            
-            if parsed.get("needs_tool", False):
-                # 需要工具调用
-                return await self._handle_tool_request(parsed, user_command, confirmed)
+            prompt = unified_prompt
+            rounds = 0
+
+            while True:
+                rounds += 1
+                try:
+                    raw_result = self.llm.chat(prompt, history=llm_history).strip()
+                    logger.info(f"Unified LLM response: {raw_result}")
+                    llm_history.append({"role": "assistant", "content": raw_result})
+
+                    instructions = self._parse_instruction_sequence(raw_result)
+                    logger.info(f"Parsed instruction count: {len(instructions)}")
+                except (json.JSONDecodeError, ValueError):
+                    logger.error(f"Failed to parse LLM JSON response: {raw_result}")
+                    return await self._fallback_processing(user_command)
+                except Exception as e:
+                    logger.error(f"Error in unified processing: {e}")
+                    raise e
+
+                request_ids = extract_subgraph_requests(instructions)
+                if not request_ids:
+                    break
+
+                if rounds >= max_subgraph_rounds:
+                    raise RuntimeError("Exceeded maximum subgraph request rounds")
+
+                new_payloads: List[Dict[str, Any]] = []
+                invalid_ids: List[int] = []
+                repeated_ids: List[int] = []
+                for logical_id in request_ids:
+                    if logical_id in provided_subgraphs:
+                        repeated_ids.append(logical_id)
+                        continue
+                    payload = self._build_subgraph_payload(logical_id)
+                    if payload:
+                        provided_subgraphs[logical_id] = payload
+                        self._save_plan_snapshot(payload, label=f"subgraph_{logical_id}")
+                        new_payloads.append(payload)
+                    else:
+                        invalid_ids.append(logical_id)
+
+                if new_payloads:
+                    prompt = (
+                        "You requested additional task subgraphs. Here is the information you asked for:\n\n"
+                        + format_subgraph_payloads(new_payloads)
+                        + "\n\nUse this information together with the original GraphSummary to continue processing the user's command. "
+                        "If you still require more detail, return another 'request_subgraph'. Otherwise, output the actionable instruction list in the required JSON format."
+                    )
+                    continue
+
+                prompt = build_invalid_request_message(invalid_ids, repeated_ids)
+
+            self.history = llm_history
+
+        if instructions:
+            instructions = [
+                instr
+                for instr in instructions
+                if (instr.get("intent") or "").strip().lower() != "request_subgraph"
+            ]
+
+        if not instructions:
+            raise ValueError("No instructions generated")
+
+        # Remap any temporary identifiers before showing them to the user
+        for instruction in instructions:
+            params = instruction.get("parameters")
+            if isinstance(params, dict):
+                instruction["parameters"] = self._remap_instruction_ids(params)
+
+        requires_confirmation = any(bool(instr.get("needs_tool")) for instr in instructions)
+
+        if not confirmed and requires_confirmation:
+            logger.info("Instructions require confirmation; deferring execution.")
+            if self.conversation_id is not None:
+                _PENDING_INSTRUCTIONS[self.conversation_id] = copy.deepcopy(instructions)
+            self._id_aliases.clear()
+            return self._format_confirmation_request(instructions)
+
+        step_results: List[Dict[str, Any]] = []
+        self._id_aliases.clear()
+        for idx, instruction in enumerate(instructions):
+            params = instruction.get("parameters")
+            if isinstance(params, dict):
+                instruction["parameters"] = self._remap_instruction_ids(params)
+            needs_tool = bool(instruction.get("needs_tool"))
+            if needs_tool:
+                step_result = await self._handle_tool_request(instruction, user_command, confirmed)
             else:
-                # 普通对话
-                return self._handle_chat_response(parsed, user_command)
-                
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse LLM JSON response: {result}")
-            # 降级处理：尝试理解意图
-            return await self._fallback_processing(user_command)
-        except Exception as e:
-            logger.error(f"Error in unified processing: {e}")
-            raise e
+                step_result = self._handle_chat_response(instruction, user_command)
+
+            annotated_step = {
+                **step_result,
+                "step_index": idx,
+                "instruction": instruction,
+                "needs_tool": needs_tool,
+            }
+            step_results.append(annotated_step)
+
+            if annotated_step.get("requires_confirmation"):
+                logger.info("Step requires user confirmation; halting further execution.")
+                break
+
+        return self._format_final_response(step_results)
+
+    def _strip_json_code_fence(self, raw: str) -> str:
+        """Remove markdown code fences from an LLM JSON string if present."""
+        if not raw:
+            return raw
+
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+        return cleaned
+
+    def _parse_instruction_sequence(self, raw_response: str) -> List[Dict[str, Any]]:
+        """Parse the LLM JSON output into an ordered instruction list."""
+        json_payload = self._strip_json_code_fence(raw_response)
+        logger.debug(f"Parsing instruction payload: {json_payload}")
+
+        parsed_obj = json.loads(json_payload)
+
+        if isinstance(parsed_obj, dict):
+            if "instructions" in parsed_obj:
+                instructions_candidate = parsed_obj.get("instructions")
+            else:
+                instructions_candidate = [parsed_obj]
+        else:
+            instructions_candidate = parsed_obj
+
+        if isinstance(instructions_candidate, dict):
+            instructions_candidate = [instructions_candidate]
+
+        if not isinstance(instructions_candidate, list):
+            raise ValueError("LLM response did not contain a list of instructions")
+
+        instructions: List[Dict[str, Any]] = []
+        for idx, item in enumerate(instructions_candidate):
+            if not isinstance(item, dict):
+                logger.warning(f"Ignoring non-dict instruction at index {idx}: {item}")
+                continue
+            normalized = {**item}
+            intent = normalized.get("intent")
+            if isinstance(intent, str):
+                normalized["intent"] = intent.strip()
+            instructions.append(normalized)
+
+        if not instructions:
+            raise ValueError("No valid instructions parsed from LLM response")
+
+        return instructions
+
+    def _format_confirmation_request(self, instructions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Build a response prompting the user to confirm pending instructions."""
+
+        steps: List[Dict[str, Any]] = []
+        for idx, instruction in enumerate(instructions):
+            needs_tool = bool(instruction.get("needs_tool"))
+            preview = instruction.get("initial_response") or instruction.get("response") or ""
+            steps.append(
+                {
+                    "step_index": idx,
+                    "instruction": instruction,
+                    "needs_tool": needs_tool,
+                    "response": preview,
+                    "initial_response": instruction.get("initial_response"),
+                }
+            )
+
+        default_visualization = {"type": "none", "data": {}, "config": {}}
+        message = "已生成以下操作步骤，请确认后继续。"
+
+        return {
+            "response": message,
+            "initial_response": message,
+            "execution_feedback": None,
+            "intent": "confirmation_required",
+            "visualization": default_visualization,
+            "action_result": {
+                "success": True,
+                "requires_confirmation": True,
+                "instructions": instructions,
+            },
+            "success": True,
+            "steps": steps,
+        }
+
+    def _format_final_response(self, steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Aggregate step results into the final response contract."""
+        default_visualization = {"type": "none", "data": {}, "config": {}}
+
+        if not steps:
+            return {
+                "response": "抱歉，我未能解析出有效的执行步骤。请再描述一次。",
+                "initial_response": "",
+                "execution_feedback": None,
+                "intent": "unknown",
+                "visualization": default_visualization,
+                "action_result": {"success": False, "message": "no_steps"},
+                "success": False,
+                "steps": []
+            }
+
+        # Combine textual responses
+        response_parts = []
+        for step in steps:
+            text = step.get("response") or step.get("message")
+            if text:
+                response_parts.append(text.strip())
+        combined_response = "\n\n".join(part for part in response_parts if part)
+        if not combined_response:
+            combined_response = steps[-1].get("response", "")
+
+        initial_response = next(
+            (step.get("initial_response") for step in steps if step.get("initial_response")),
+            steps[0].get("initial_response", "")
+        )
+
+        execution_feedback_parts = [
+            step.get("execution_feedback") for step in steps if step.get("execution_feedback")
+        ]
+        execution_feedback = "\n\n".join(execution_feedback_parts) if execution_feedback_parts else None
+
+        success = all(step.get("success", True) for step in steps)
+        if any(step.get("requires_confirmation") for step in steps):
+            success = False
+        intents = [step.get("intent") for step in steps if step.get("intent")]
+        primary_intent = intents[-1] if intents else "unknown"
+
+        visualization = default_visualization
+        for step in reversed(steps):
+            viz = step.get("visualization")
+            if viz and viz.get("type") and viz.get("type") != "none":
+                visualization = viz
+                break
+        if visualization is default_visualization:
+            # Fallback to the last available visualization even if 'none'
+            for step in reversed(steps):
+                viz = step.get("visualization")
+                if viz:
+                    visualization = viz
+                    break
+
+        action_result = None
+        for step in reversed(steps):
+            act = step.get("action_result")
+            if not act:
+                continue
+            if step.get("needs_tool") or act.get("should_execute") or act.get("type") not in (None, "chat"):
+                action_result = act
+                break
+        if not action_result:
+            for step in reversed(steps):
+                act = step.get("action_result")
+                if act:
+                    action_result = act
+                    break
+        if not action_result:
+            action_result = {"success": success}
+
+        return {
+            "response": combined_response,
+            "initial_response": initial_response,
+            "execution_feedback": execution_feedback,
+            "intent": primary_intent,
+            "visualization": visualization,
+            "action_result": action_result,
+            "success": success,
+            "steps": steps,
+        }
     
     async def _handle_tool_request(self, parsed_response: Dict, user_command: str, confirmed: bool = False) -> Dict[str, Any]:
         """处理需要工具调用的请求"""
@@ -230,17 +597,47 @@ Respond with JSON only:"""
                 intent = IntentType.HELP
             
             params = parsed_response.get("parameters", {})
+            if params:
+                params = self._remap_instruction_ids(params)
+                parsed_response["parameters"] = params
             initial_response = parsed_response.get("initial_response", "Let me help you with that...")
-            
+
             logger.info(f"Tool request - Intent: {intent.value}, Params: {params}")
-            
+
             # 执行工具动作
             action_result = await self._execute_action(intent, params, confirmed)
 
             # 如果需要确认，则提前返回
             if action_result.get("requires_confirmation"):
                 return action_result
-            
+
+            # Commit staged plan updates once per tool action
+            if self.plan_session and self.plan_session.has_pending_changes():
+                self.plan_session.commit()
+                self._refresh_action_result_from_session(action_result)
+                self._invalidate_plan_graph_cache()
+
+            if self.plan_session and intent in {
+                IntentType.CREATE_TASK,
+                IntentType.UPDATE_TASK,
+                IntentType.UPDATE_TASK_INSTRUCTION,
+                IntentType.MOVE_TASK,
+                IntentType.DELETE_TASK,
+            }:
+                task_id = (
+                    action_result.get("task", {}).get("id")
+                    if isinstance(action_result.get("task"), dict)
+                    else action_result.get("task_id")
+                )
+                if task_id:
+                    refreshed = self.plan_session.get_task(task_id)
+                    if refreshed:
+                        action_result["task"] = refreshed
+                action_result["tasks"] = self.plan_session.list_tasks()
+                if self.plan_id:
+                    action_result["task_tree"] = self._get_plan_task_tree(self.plan_id)
+                self._invalidate_plan_graph_cache()
+
             # 生成执行后的反馈
             execution_feedback = self._generate_execution_feedback(intent, action_result)
             
@@ -295,70 +692,97 @@ Respond with JSON only:"""
         """降级处理：当JSON解析失败时的备用方案"""
         # 使用原来的简单关键词检测作为备用
         if self._is_casual_chat_simple(user_command):
-            return {
-                "response": "I understand you're chatting with me. How can I help you today?",
-                "initial_response": "I understand you're chatting with me. How can I help you today?", 
-                "execution_feedback": None,
+            chat_instruction = {
+                "needs_tool": False,
                 "intent": "chat",
-                "visualization": {"type": "none", "data": {}, "config": {}},
-                "action_result": {"success": True, "type": "chat", "is_casual_chat": True},
-                "success": True
+                "response": "I understand you're chatting with me. How can I help you today?"
             }
-        else:
-            # 尝试解析为help请求
-            return await self._handle_tool_request({
-                "needs_tool": True,
-                "intent": "help",
-                "parameters": {},
-                "initial_response": "I'm not sure what you're asking for. Let me show you what I can help with..."
-            }, user_command)
+            chat_step = self._handle_chat_response(chat_instruction, user_command)
+            chat_step.update({
+                "step_index": 0,
+                "instruction": chat_instruction,
+                "needs_tool": False,
+            })
+            return self._format_final_response([chat_step])
+
+        help_instruction = {
+            "needs_tool": True,
+            "intent": "help",
+            "parameters": {},
+            "initial_response": "I'm not sure what you're asking for. Let me show you what I can help with..."
+        }
+        help_step = await self._handle_tool_request(help_instruction, user_command, confirmed=False)
+        help_step.update({
+            "step_index": 0,
+            "instruction": help_instruction,
+            "needs_tool": True,
+        })
+        return self._format_final_response([help_step])
     
     def _is_casual_chat_simple(self, command: str) -> bool:
         """简单的关键词检测（用作备用方案）"""
         casual_patterns = ['hello', 'hi', 'thanks', 'thank', 'good', 'how are', '你好', '谢谢', '好的', '嗯']
         command_lower = command.lower()
         return any(pattern in command_lower for pattern in casual_patterns) or len(command.strip()) < 6
-    
-    def _generate_initial_response(self, intent: IntentType, params: Dict, user_command: str) -> str:
-        """生成即时响应（在执行工具之前）"""
-        
-        if intent == IntentType.CREATE_PLAN:
-            goal = params.get("goal", "research project")
-            return f"I'll help you create a research plan about '{goal}'. Let me generate the plan structure and tasks for you..."
-        
-        elif intent == IntentType.LIST_PLANS:
-            return "Let me fetch all your current plans..."
-        
-        elif intent == IntentType.EXECUTE_PLAN:
-            plan_id = params.get("plan_id", "the specified")
-            return f"I'll start executing plan {plan_id}. Let me check the tasks and begin execution..."
-        
-        elif intent == IntentType.QUERY_STATUS:
-            if params.get("plan_id"):
-                return f"Let me check the status of plan {params.get('plan_id')}..."
-            elif params.get("task_id"):
-                return f"Checking the status of task {params.get('task_id')}..."
-            else:
-                return "Let me check the overall status..."
-        
-        elif intent == IntentType.SHOW_TASKS:
-            plan_id = params.get("plan_id", "the specified")
-            return f"I'll show you all tasks in plan {plan_id}..."
-        
-        elif intent == IntentType.RERUN_TASK:
-            task_id = params.get("task_id", "the specified")
-            return f"I'll restart task {task_id} for you..."
-        
-        elif intent == IntentType.DELETE_PLAN:
-            plan_id = params.get("plan_id", "the specified")
-            return f"I'll delete plan {plan_id} as requested..."
-        
-        elif intent == IntentType.HELP:
-            return "Here's what I can help you with..."
-        
-        else:
-            return "Let me process your request..."
-    
+
+    def _refresh_action_result_from_session(self, action_result: Dict[str, Any]) -> None:
+        """Ensure action results reflect the latest session state (logical + db IDs)."""
+
+        if not action_result or not self.plan_session:
+            return
+
+        task_entry = action_result.get("task")
+        if isinstance(task_entry, dict):
+            logical_id = task_entry.get("id")
+            if logical_id is not None:
+                refreshed = self.plan_session.get_task(logical_id)
+                if refreshed:
+                    action_result["task"] = refreshed
+                    action_result["task_id"] = logical_id
+
+        if "tasks" in action_result:
+            action_result["tasks"] = self.plan_session.list_tasks()
+
+        plan_id = action_result.get("plan_id", self.plan_id)
+        if plan_id and "task_tree" in action_result:
+            action_result["task_tree"] = self._get_plan_task_tree(plan_id)
+
+    def _invalidate_plan_graph_cache(self) -> None:
+        self._graph_summary_cache = None
+        self._subgraph_cache.clear()
+
+    def _remap_instruction_ids(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._id_aliases or not params:
+            return params
+
+        remapped = dict(params)
+
+        def try_convert(val):
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                return val
+
+        keys = ["task_id", "parent_id", "new_parent_id", "from_task_id", "to_task_id"]
+        for key in keys:
+            if key in remapped:
+                converted = try_convert(remapped[key])
+                if isinstance(converted, int) and converted in self._id_aliases:
+                    remapped[key] = self._id_aliases[converted]
+
+        for key, value in list(remapped.items()):
+            if key.endswith("_ids") and isinstance(value, (list, tuple)):
+                updated = []
+                for item in value:
+                    converted = try_convert(item)
+                    if isinstance(converted, int) and converted in self._id_aliases:
+                        updated.append(self._id_aliases[converted])
+                    else:
+                        updated.append(item)
+                remapped[key] = updated
+
+        return remapped
+
     def _generate_execution_feedback(self, intent: IntentType, action_result: Dict) -> str:
         """生成工具执行后的反馈"""
         
@@ -401,196 +825,26 @@ Respond with JSON only:"""
         
         elif intent == IntentType.RERUN_TASK:
             return "✅ Task has been reset and queued for re-execution."
-        
+
         elif intent == IntentType.DELETE_PLAN:
             return "✅ Plan has been successfully deleted."
-        
+
+        elif intent == IntentType.DELETE_TASK:
+            deleted = action_result.get("deleted_task") or {}
+            task_label = deleted.get("name") or f"Task {action_result.get('task_id')}"
+            return f"✅ {task_label} and any subtasks have been removed."
+
+        elif intent == IntentType.MOVE_TASK:
+            target = action_result.get("new_parent_id")
+            if target is None:
+                return "✅ Task moved to the root level."
+            return f"✅ Task reparented under {target}."
+
         elif intent == IntentType.HELP:
             return "You can click on any command above to quickly execute it, or type your request naturally."
-        
+
         else:
             return "✅ Operation completed successfully."
-    
-    def _is_casual_chat(self, command: str) -> bool:
-        """使用LLM智能判断是否是普通聊天而非工具调用"""
-        command_lower = command.lower().strip()
-        
-        # 明确的问候、感谢等一定是普通聊天
-        casual_patterns = [
-            'hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening',
-            'thank', 'thanks', 'sorry', 'excuse me', 'how are you', 'what\'s up',
-            'nice to meet', 'goodbye', 'bye', 'see you', 'lol', 'haha', 'wow',
-            '你好', '您好', '早上好', '下午好', '晚上好', '谢谢', '感谢', '对不起',
-            '不好意思', '你怎么样', '最近怎样', '再见', '拜拜', '哈哈', '哇', '嗯', '好的'
-        ]
-        
-        # 如果是明确的问候或很短的消息，直接判断为聊天
-        if len(command.strip()) < 6 or any(pattern in command_lower for pattern in casual_patterns):
-            return True
-        
-        # 使用LLM进行智能判断
-        try:
-            llm_prompt = f"""You are an intent classifier for a research plan management system. Analyze the user's message and determine if it's casual chat or a task command.
-
-**Task Commands** - User wants to DO something:
-- Create/generate/build plans or tasks: \"create a plan\", \"generate a research outline\"
-- Execute/run/start operations: \"execute plan 1\", \"run the tasks\", \"start the workflow\"  
-- View/show/list/display information: \"show all plans\", \"list tasks\", \"display status\"
-- Manage/modify/delete items: \"delete plan 2\", \"update task\", \"modify the plan\"
-- Query specific status/progress: \"what's the status of plan 3\", \"check task progress\"
-
-**Casual Chat** - User wants to DISCUSS or EXPRESS:
-- Opinions/comments: \"this looks good\", \"I like this plan\", \"that's interesting\"
-- Emotional reactions: \"great!\", \"awesome!\", \"I'm excited\", \"this is confusing\"
-- General questions: \"how does this work?\", \"what do you think?\", \"is this normal?\"
-- Social interaction: \"thank you\", \"hello\", \"how are you?\", \"goodbye\"
-- Satisfaction/feedback without specific requests: \"the results look promising\"
-
-User message: "{command}"
-
-Respond with JSON only:
-{{'intent': 'CHAT'}} or {{'intent': 'TASK'}} """
-
-            result = self.llm.chat(llm_prompt).strip()
-            # 尝试解析JSON
-            import json
-            try:
-                parsed = json.loads(result)
-                intent_detected = parsed.get("intent") == "CHAT"
-                logger.info(f"LLM intent classification: {result} → is_chat: {intent_detected}")
-                return intent_detected
-            except json.JSONDecodeError as je:
-                # 如果JSON解析失败，尝试从文本中提取
-                logger.warning(f"JSON parse failed for: {result}, using fallback")
-                return "CHAT" in result.upper()
-            
-        except Exception as e:
-            logger.warning(f"Failed to determine chat vs task intent: {e}")
-            # 如果LLM调用失败，使用保守的关键词检查
-            task_keywords = [
-                'create', 'generate', 'make', 'build', 'execute', 'run', 'start', 
-                'show', 'display', 'list', 'view', 'status', 'progress', 'delete',
-                '创建', '生成', '执行', '运行', '显示', '列表', '查看', '状态', '删除'
-            ]
-            return not any(keyword in command_lower for keyword in task_keywords)
-    
-    def _handle_casual_chat(self, command: str) -> Dict[str, Any]:
-        """处理普通聊天"""
-        try:
-            # 构建上下文相关的聊天提示
-            context_info = ""
-            if self.plan_id:
-                context_info = f" You are currently working with plan ID {self.plan_id}. "
-            
-            # 使用LLM进行自然对话
-            chat_prompt = f"""You are a helpful AI assistant for a research plan management system.{context_info} 
-The user is having a casual conversation with you. Respond naturally and helpfully.
-
-This is casual chat, not a task command. Be conversational, friendly, and supportive. 
-You can reference the current plan context if relevant, but don't assume the user wants to perform any specific task.
-
-User: {command}
-
-Respond in a friendly, conversational way. Keep it natural and engaging."""
-            
-            response = self.llm.chat(chat_prompt)
-            
-            return {
-                "response": response,
-                "initial_response": response,  # 对于聊天，immediate response就是完整回复
-                "execution_feedback": None,   # 聊天不需要执行反馈
-                "intent": "chat",
-                "visualization": {
-                    "type": "none",
-                    "data": {},
-                    "config": {}
-                },
-                "action_result": {
-                    "success": True, 
-                    "type": "chat",
-                    "is_casual_chat": True  # 明确标识这是casual chat
-                },
-                "success": True
-            }
-        except Exception as e:
-            logger.error(f"Error in casual chat: {e}")
-            fallback_response = "I'm here to help! You can ask me to create plans, execute tasks, or just chat."
-            return {
-                "response": fallback_response,
-                "initial_response": fallback_response,
-                "execution_feedback": None,
-                "intent": "chat", 
-                "visualization": {
-                    "type": "none",
-                    "data": {},
-                    "config": {}
-                },
-                "action_result": {
-                    "success": True, 
-                    "type": "chat",
-                    "is_casual_chat": True
-                },
-                "success": True
-            }
-    
-    def _identify_intent(self, command: str) -> Dict[str, Any]:
-        """使用LLM识别用户意图"""
-        
-        prompt = f"""You are a research plan management assistant. Analyze the user's command and determine what action to take.
-
-User command: {command}
-
-Available actions:
-- CREATE_PLAN: Create a new research plan (extract the research topic/goal)
-- LIST_PLANS: Show all existing plans  
-- EXECUTE_PLAN: Start executing a plan (extract plan ID/number)
-- QUERY_STATUS: Check execution status (extract plan/task ID if mentioned)
-- SHOW_TASKS: Display tasks in a plan (extract plan ID if mentioned)
-- RERUN_TASK: Retry a failed task (extract task ID)
-- DELETE_PLAN: Remove a plan (extract plan ID)
-- HELP: Show available commands
-- CHAT: General conversation/casual chat
-- UNKNOWN: Cannot understand the request
-
-Extract any relevant parameters (IDs, goals, topics) from the user's natural language input.
-
-Examples:
-- "Create a machine learning research plan" → {{'intent': 'CREATE_PLAN', 'parameters': {{'goal': 'machine learning research plan'}}}} 
-- "Show me all plans" → {{'intent': 'LIST_PLANS', 'parameters': {{}}}} 
-- "Execute plan 2" → {{'intent': 'EXECUTE_PLAN', 'parameters': {{'plan_id': '2'}}}} 
-- "What's the status?" → {{'intent': 'QUERY_STATUS', 'parameters': {{}}}} 
-
-Return only JSON format: {{'intent': 'ACTION_NAME', 'parameters': {{'key': 'value'}}}} """ 
-        
-        try:
-            logger.info(f"[_identify_intent] Analyzing command: {command[:100]}...\n")
-            response = self.llm.chat(prompt)
-            logger.info(f"[_identify_intent] LLM response: {response[:200]}...\n")
-            
-            result = parse_json_obj(response)
-            if not result:
-                logger.error(f"[_identify_intent] Failed to parse JSON from: {response[:200]}...")
-                raise ValueError("Failed to parse JSON")
-                
-            intent_str = result.get("intent", "UNKNOWN")
-            logger.info(f"[_identify_intent] Identified intent: {intent_str}, params: {result.get('parameters', {})}")
-            
-            try:
-                intent = IntentType[intent_str]
-            except KeyError:
-                logger.warning(f"[_identify_intent] Unknown intent: {intent_str}")
-                intent = IntentType.UNKNOWN
-                
-            return {
-                "intent": intent,
-                "parameters": result.get("parameters", {})
-            }
-        except Exception as e:
-            logger.error(f"[_identify_intent] Intent identification failed: {e}", exc_info=True)
-            return {
-                "intent": IntentType.UNKNOWN,
-                "parameters": {}
-            }
     
     async def _execute_action(self, intent: IntentType, params: Dict, confirmed: bool = False) -> Dict[str, Any]:
         """Execute specific backend actions based on the identified intent"""
@@ -604,6 +858,8 @@ Return only JSON format: {{'intent': 'ACTION_NAME', 'parameters': {{'key': 'valu
                 return await self._update_task(params, confirmed)
             elif intent == IntentType.UPDATE_TASK_INSTRUCTION:
                 return await self._update_task_instruction(params, confirmed)
+            elif intent == IntentType.MOVE_TASK:
+                return await self._move_task(params)
             elif intent == IntentType.LIST_PLANS:
                 return self._list_plans()
             elif intent == IntentType.EXECUTE_PLAN:
@@ -616,6 +872,8 @@ Return only JSON format: {{'intent': 'ACTION_NAME', 'parameters': {{'key': 'valu
                 return self._rerun_task(params)
             elif intent == IntentType.DELETE_PLAN:
                 return self._delete_plan(params)
+            elif intent == IntentType.DELETE_TASK:
+                return await self._delete_task(params)
             elif intent == IntentType.HELP:
                 return self._show_help()
             elif intent == IntentType.CHAT:
@@ -652,18 +910,27 @@ Return only JSON format: {{'intent': 'ACTION_NAME', 'parameters': {{'key': 'valu
 
         try:
             plan_id = int(plan_id)
-            
-            # Ensure parent_id is an integer if it exists
-            if parent_id:
+
+            if parent_id is not None:
                 parent_id = int(parent_id)
 
-            task_id = default_repo.create_task(
-                name=task_name,
-                parent_id=parent_id,
-            )
-            default_repo.link_task_to_plan(plan_id, task_id)
-            
-            new_task = default_repo.get_task_info(task_id)
+            if self.plan_session and self.plan_session.plan_id == plan_id:
+                new_task = self.plan_session.create_task(
+                    name=task_name,
+                    parent_id=parent_id,
+                    task_type=params.get("task_type", "atomic"),
+                    priority=params.get("priority"),
+                )
+                task_id = new_task["id"]
+            else:
+                task_id = default_repo.create_task(
+                    name=task_name,
+                    parent_id=parent_id,
+                    task_type=params.get("task_type", "atomic"),
+                    priority=params.get("priority"),
+                )
+                default_repo.link_task_to_plan(plan_id, task_id)
+                new_task = default_repo.get_task_info(task_id)
 
             return {
                 "success": True,
@@ -680,10 +947,13 @@ Return only JSON format: {{'intent': 'ACTION_NAME', 'parameters': {{'key': 'valu
         task_id = params.get("task_id")
         updates = params.get("updates", {})
         try:
-            success = default_repo.update_task(task_id=task_id, **updates)
+            if self.plan_session:
+                success = self.plan_session.update_task(task_id=task_id, **updates)
+            else:
+                success = default_repo.update_task(task_id=task_id, **updates)
             if not success:
                 return {"success": False, "message": f"Task {task_id} not found or failed to update."}
-            plan_id = self.plan_id or default_repo.get_plan_for_task(task_id)
+            plan_id = self.plan_id or (self.plan_session.plan_id if self.plan_session else default_repo.get_plan_for_task(task_id))
             return {"success": True, "task_id": task_id, "plan_id": plan_id}
         except Exception as e:
             logger.error(f"Failed to execute update for task {task_id}: {e}")
@@ -728,7 +998,11 @@ Return only JSON format: {{'intent': 'ACTION_NAME', 'parameters': {{'key': 'valu
         user_instruction = params.get("instruction")
         try:
             # 1. Fetch the existing instruction
-            existing_instruction = default_repo.get_task_input(task_id)
+            existing_instruction = (
+                self.plan_session.get_or_fetch_instruction(task_id)
+                if self.plan_session
+                else default_repo.get_task_input(task_id)
+            )
 
             # 2. Create a new prompt for the LLM to merge the instructions
             merge_prompt = f"""You are an AI assistant tasked with refining task instructions.
@@ -751,8 +1025,12 @@ Respond with only the new, revised instruction text."""
             new_instruction = self.llm.chat(merge_prompt)
 
             # 4. Update the task with the new instruction
-            default_repo.upsert_task_input(task_id, new_instruction)
-            plan_id = self.plan_id or default_repo.get_plan_for_task(task_id)
+            if self.plan_session:
+                self.plan_session.set_instruction(task_id, new_instruction)
+                plan_id = self.plan_session.plan_id
+            else:
+                default_repo.upsert_task_input(task_id, new_instruction)
+                plan_id = self.plan_id or default_repo.get_plan_for_task(task_id)
             return {"success": True, "task_id": task_id, "plan_id": plan_id}
         except Exception as e:
             logger.error(f"Failed to execute instruction update for task {task_id}: {e}")
@@ -786,6 +1064,63 @@ Respond with only the new, revised instruction text."""
 
         return self._execute_update_task_instruction({"task_id": int(task_id), "instruction": instruction})
 
+    async def _move_task(self, params: Dict) -> Dict[str, Any]:
+        """Handles moving a task under a new parent within the plan graph."""
+
+        task_id = params.get("task_id")
+        task_name = params.get("task_name")
+        new_parent_id = params.get("new_parent_id")
+        new_parent_name = params.get("new_parent_name")
+
+        if task_id is None and not task_name:
+            return {"success": False, "message": "Please provide the task_id or task_name to move."}
+
+        if self.plan_session is None:
+            return {"success": False, "message": "Plan session is not initialized."}
+
+        try:
+            if task_id is None:
+                find_result = await self._find_task_id_by_name(task_name)
+                if not find_result.get("success"):
+                    return find_result
+                task_id = find_result["task"]["id"]
+
+            task_id = int(task_id)
+            parent_id_int: Optional[int]
+            if (new_parent_id in (None, "null", "None", "root") and not new_parent_name):
+                parent_id_int = None
+            else:
+                if new_parent_id not in (None, "null", "None", "root"):
+                    parent_id_int = int(new_parent_id)
+                elif new_parent_name:
+                    find_parent = await self._find_task_id_by_name(new_parent_name)
+                    if not find_parent.get("success"):
+                        return find_parent
+                    parent_id_int = find_parent["task"]["id"]
+                else:
+                    parent_id_int = None
+
+            self.plan_session.move_task(task_id, parent_id_int)
+            task_info = self.plan_session.get_task(task_id)
+            return {
+                "success": True,
+                "task_id": task_id,
+                "plan_id": self.plan_id,
+                "new_parent_id": parent_id_int,
+                "task": task_info,
+                "message": (
+                    f"Moved task {task_id} under parent {parent_id_int}" if parent_id_int is not None
+                    else f"Moved task {task_id} to root"
+                ),
+                "tasks": self.plan_session.list_tasks(),
+                "task_tree": self.plan_session.build_task_tree(),
+            }
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except Exception as e:
+            logger.error(f"Failed to move task: {e}")
+            return {"success": False, "message": f"Failed to move task: {str(e)}"}
+
     def _create_plan(self, params: Dict) -> Dict[str, Any]:
         """为流式创建计划做准备"""
         goal = params.get("goal", "")
@@ -814,7 +1149,7 @@ Respond with only the new, revised instruction text."""
             
             # 为每个计划获取任务统计
             for plan in plans:
-                tasks = default_repo.get_plan_tasks(plan["id"])
+                tasks = self._get_plan_tasks_cached(plan["id"])
                 plan["task_count"] = len(tasks)
                 plan["completed_count"] = len([t for t in tasks if t.get("status") == "done"])
                 plan["progress"] = plan["completed_count"] / plan["task_count"] if plan["task_count"] > 0 else 0
@@ -835,7 +1170,8 @@ Respond with only the new, revised instruction text."""
         
         try:
             # 首先获取计划任务列表，用于返回给前端显示
-            tasks = default_repo.get_plan_tasks(int(plan_id))
+            plan_id_int = int(plan_id)
+            tasks = self._get_plan_tasks_cached(plan_id_int)
             
             # 过滤出待执行的任务
             pending_tasks = [t for t in tasks if t.get("status") == "pending"]
@@ -845,7 +1181,7 @@ Respond with only the new, revised instruction text."""
                     "success": True,
                     "message": "没有待执行的任务",
                     "tasks": tasks,
-                    "plan_id": plan_id
+                    "plan_id": plan_id_int
                 }
             
             # 标记需要执行，实际执行将在路由层处理
@@ -855,7 +1191,7 @@ Respond with only the new, revised instruction text."""
                 "tasks": tasks,
                 "pending_count": len(pending_tasks),
                 "total_count": len(tasks),
-                "plan_id": plan_id,
+                "plan_id": plan_id_int,
                 "should_execute": True  # 标记需要执行
             }
         except Exception as e:
@@ -883,13 +1219,18 @@ Respond with only the new, revised instruction text."""
                     if not plan_id:
                         return {"success": False, "message": "Please provide a valid task ID or specify a plan."}
                 else:
-                    task = default_repo.get_task_info(task_id)
+                    cached_task = (
+                        self.plan_session.get_task(task_id)
+                        if self.plan_session
+                        else None
+                    )
+                    task = cached_task or default_repo.get_task_info(task_id)
                     if not task:
                         return {"success": False, "message": f"未找到任务 {task_id}"}
                     
                     # To show the tree, we need all tasks of the plan this task belongs to
                     containing_plan_id = default_repo.get_plan_for_task(task_id)
-                    tasks = default_repo.get_plan_tasks(containing_plan_id)
+                    tasks = self._get_plan_tasks_cached(containing_plan_id)
                     return {
                         "success": True,
                         "type": "task",
@@ -897,9 +1238,9 @@ Respond with only the new, revised instruction text."""
                         "tasks": tasks,
                         "message": f"任务 {task['name']} 状态：{task['status']}"
                     }
-
             if plan_id:
-                tasks = default_repo.get_plan_tasks(int(plan_id))
+                plan_id_int = int(plan_id)
+                tasks = self._get_plan_tasks_cached(plan_id_int)
                 status_count = {}
                 for task in tasks:
                     status = task.get("status", "unknown")
@@ -908,11 +1249,11 @@ Respond with only the new, revised instruction text."""
                 return {
                     "success": True,
                     "type": "plan",
-                    "plan_id": plan_id,
+                    "plan_id": plan_id_int,
                     "total_tasks": len(tasks),
                     "status_count": status_count,
                     "tasks": tasks,
-                    "message": f"计划 {plan_id} 共有 {len(tasks)} 个任务"
+                    "message": f"计划 {plan_id_int} 共有 {len(tasks)} 个任务"
                 }
             else:
                 return {"success": False, "message": "I'm not sure which plan you're referring to. Please select a plan to see its status."}
@@ -926,17 +1267,16 @@ Respond with only the new, revised instruction text."""
             return {"success": False, "message": "请提供计划ID"}
         
         try:
-            tasks = default_repo.get_plan_tasks(int(plan_id))
-            
-            # 构建任务树结构
-            task_tree = self._build_task_tree(tasks)
+            plan_id_int = int(plan_id)
+            tasks = self._get_plan_tasks_cached(plan_id_int)
+            task_tree = self._get_plan_task_tree(plan_id_int)
             
             return {
                 "success": True,
-                "plan_id": int(plan_id),
+                "plan_id": plan_id_int,
                 "tasks": tasks,
                 "task_tree": task_tree,
-                "message": f"计划 {plan_id} 包含 {len(tasks)} 个任务"
+                "message": f"计划 {plan_id_int} 包含 {len(tasks)} 个任务"
             }
         except Exception as e:
             return {"success": False, "message": f"获取任务失败：{str(e)}"}
@@ -945,15 +1285,315 @@ Respond with only the new, revised instruction text."""
         """构建任务树结构"""
         task_map = {task["id"]: {**task, "children": []} for task in tasks}
         roots = []
-        
+
         for task in tasks:
             parent_id = task.get("parent_id")
             if parent_id and parent_id in task_map:
                 task_map[parent_id]["children"].append(task_map[task["id"]])
             else:
                 roots.append(task_map[task["id"]])
-        
+
+        def sort_children(node: Dict[str, Any]) -> None:
+            if node.get("children"):
+                node["children"].sort(key=lambda c: c["id"])
+                for child in node["children"]:
+                    sort_children(child)
+
+        for root in roots:
+            sort_children(root)
+
+        roots.sort(key=lambda c: c["id"])
         return roots
+
+    def _get_plan_title(self) -> Optional[str]:
+        if self.plan_session and self.plan_session.plan:
+            return self.plan_session.plan.get("title")
+        return None
+
+    def _collect_task_snapshot(self, logical_id: int, max_depth: int = 0) -> Optional[Dict[str, Any]]:
+        if not self.plan_session:
+            return None
+
+        base = self.plan_session.get_task(logical_id)
+        if not base:
+            return None
+
+        child_ids = self.plan_session.get_child_ids(logical_id)
+        base["child_ids"] = child_ids
+        base["has_children"] = bool(child_ids)
+        base["instruction"] = self.plan_session.get_or_fetch_instruction(logical_id)
+        base["contexts"] = self.plan_session.get_task_context_snapshots(logical_id)
+        base["output"] = self.plan_session.get_task_output(logical_id)
+
+        children: List[Dict[str, Any]] = []
+        if max_depth > 0 and child_ids:
+            for child_id in child_ids:
+                child_snapshot = self._collect_task_snapshot(child_id, max_depth=max_depth - 1)
+                if child_snapshot:
+                    children.append(child_snapshot)
+        base["children"] = children
+        return base
+
+    def _build_graph_summary_payload(self) -> Optional[Dict[str, Any]]:
+        if not self.plan_session:
+            return None
+
+        if self._graph_summary_cache is not None:
+            return copy.deepcopy(self._graph_summary_cache)
+
+        root_ids = self.plan_session.get_root_task_ids()
+        nodes: List[Dict[str, Any]] = []
+        for logical_id in root_ids:
+            snapshot = self._collect_task_snapshot(logical_id, max_depth=1)
+            if snapshot:
+                nodes.append(snapshot)
+
+        payload = {
+            "type": "GraphSummary",
+            "plan_id": self.plan_id,
+            "plan_title": self._get_plan_title(),
+            "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "layer_depth": 0,
+            "root_task_ids": list(root_ids),
+            "nodes": nodes,
+        }
+
+        cached = copy.deepcopy(payload)
+        self._graph_summary_cache = cached
+        return copy.deepcopy(cached)
+
+    def _build_subgraph_payload(self, logical_id: int) -> Optional[Dict[str, Any]]:
+        if not self.plan_session:
+            return None
+
+        if logical_id in self._subgraph_cache:
+            return copy.deepcopy(self._subgraph_cache[logical_id])
+
+        snapshot = self._collect_task_snapshot(logical_id, max_depth=1)
+        if not snapshot:
+            return None
+
+        payload = {
+            "type": "SubgraphDetail",
+            "plan_id": self.plan_id,
+            "plan_title": self._get_plan_title(),
+            "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "root_id": logical_id,
+            "node": snapshot,
+        }
+
+        cached = copy.deepcopy(payload)
+        self._subgraph_cache[logical_id] = cached
+        return copy.deepcopy(cached)
+
+    def _summarize_plan_graph(self, max_tasks: int = 60) -> str:
+        """Build a human-readable summary of the current plan graph for LLM prompts."""
+
+        if not self.plan_id or not self.plan_session:
+            return ""
+
+        tree = self.plan_session.build_task_tree()
+        summary_lines: List[str] = []
+        tasks_rendered = 0
+
+        context_cache: Dict[int, List[Dict[str, Any]]] = {}
+        output_cache: Dict[int, Optional[str]] = {}
+
+        def get_instruction_preview(logical_id: int, db_id: Optional[int]) -> Optional[str]:
+            if self.plan_session:
+                instruction = self.plan_session.get_or_fetch_instruction(logical_id)
+            else:
+                lookup_id = db_id if db_id is not None else logical_id
+                instruction = default_repo.get_task_input(lookup_id)
+            if not instruction:
+                return None
+            snippet = instruction.strip().replace("\n", " ")
+            if len(snippet) > 200:
+                snippet = snippet[:197] + "…"
+            return snippet
+
+        def get_context_previews(logical_id: int, db_id: Optional[int]) -> List[str]:
+            cache_key = logical_id if self.plan_session else (db_id if db_id is not None else logical_id)
+            if cache_key not in context_cache:
+                lookup_id = db_id if db_id is not None else logical_id
+                try:
+                    contexts = default_repo.list_task_contexts(lookup_id)
+                except Exception:
+                    contexts = []
+                context_cache[cache_key] = contexts or []
+
+            previews: List[str] = []
+            contexts = context_cache.get(cache_key, [])
+            if not contexts:
+                return previews
+
+            limit = 2
+            for index, payload in enumerate(contexts[:limit]):
+                label = payload.get("label") or "latest"
+                combined = (payload.get("combined") or "").strip()
+                if combined:
+                    previews.append(f"Context [{label}]: {combined}")
+
+                sections = payload.get("sections") or []
+                if isinstance(sections, list) and sections:
+                    first_section = sections[0]
+                    if isinstance(first_section, dict):
+                        section_title = first_section.get("title") or "section"
+                        section_content = (first_section.get("content") or "").strip()
+                        if section_content:
+                            previews.append(f"  Section [{section_title}]: {section_content}")
+
+                meta = payload.get("meta")
+                if isinstance(meta, dict) and meta:
+                    meta_summary = json.dumps(meta, ensure_ascii=False)
+                    previews.append(f"  Meta: {meta_summary}")
+                elif meta:
+                    previews.append(f"  Meta: {meta}")
+
+            remaining = max(0, len(contexts) - limit)
+            if remaining > 0:
+                previews.append(f"  (Additional {remaining} context snapshot(s) omitted)")
+
+            return previews
+
+        def get_output_preview(logical_id: int, db_id: Optional[int]) -> Optional[str]:
+            cache_key = logical_id if self.plan_session else (db_id if db_id is not None else logical_id)
+            if cache_key not in output_cache:
+                lookup_id = db_id if db_id is not None else logical_id
+                try:
+                    output_cache[cache_key] = default_repo.get_task_output_content(lookup_id)
+                except Exception:
+                    output_cache[cache_key] = None
+            content = output_cache.get(cache_key)
+            if not content:
+                return None
+            snippet = content.strip().replace("\n", " ")
+            if not snippet:
+                return None
+            if len(snippet) > 200:
+                snippet = snippet[:197] + "…"
+            return f"Output: {snippet}"
+
+        def render(nodes: List[Dict[str, Any]], prefix: str = "") -> None:
+            nonlocal summary_lines, tasks_rendered
+            ordered = sorted(nodes, key=lambda n: (n.get("depth", 0) or 0, n.get("id", 0)))
+            total = len(ordered)
+            for index, node in enumerate(ordered):
+                is_last = index == total - 1
+                if tasks_rendered >= max_tasks:
+                    summary_lines.append(f"{prefix}└─ …")
+                    return
+
+                connector = "└─" if is_last else "├─"
+                status = node.get("status")
+                priority = node.get("priority")
+                parent_id = node.get("parent_id")
+                children_nodes = node.get("children") or []
+                if isinstance(children_nodes, list):
+                    child_ids = [child.get("id") if isinstance(child, dict) else child for child in children_nodes]
+                else:
+                    child_ids = []
+
+                meta_parts = []
+                if status:
+                    meta_parts.append(f"status: {status}")
+                if priority is not None:
+                    meta_parts.append(f"priority: {priority}")
+                meta_parts.append(f"parent: {parent_id if parent_id is not None else 'None'}")
+                meta_parts.append(f"children: {child_ids if child_ids else '[]'}")
+                meta_suffix = f" ({'; '.join(meta_parts)})"
+                line = f"{prefix}{connector} [#{node['id']}] {node.get('name', 'Untitled')}{meta_suffix}"
+                summary_lines.append(line)
+                tasks_rendered += 1
+
+                child_prefix = prefix + ("   " if is_last else "│  ")
+
+                logical_id = node["id"]
+                db_id = node.get("db_id")
+
+                instruction_snippet = get_instruction_preview(logical_id, db_id)
+                if instruction_snippet:
+                    summary_lines.append(f"{child_prefix}Instruction: {instruction_snippet}")
+
+                context_snippets = get_context_previews(logical_id, db_id)
+                for snippet in context_snippets:
+                    summary_lines.append(f"{child_prefix}{snippet}")
+
+                output_snippet = get_output_preview(logical_id, db_id)
+                if output_snippet:
+                    summary_lines.append(f"{child_prefix}{output_snippet}")
+
+                children = node.get("children") or []
+                if isinstance(children, list):
+                    children = sorted(children, key=lambda c: c.get("id", 0) if isinstance(c, dict) else c)
+                if children and tasks_rendered < max_tasks:
+                    next_prefix = prefix + ("   " if is_last else "│  ")
+                    render(children, next_prefix)
+                if tasks_rendered >= max_tasks:
+                    return
+
+        render(tree)
+        if not summary_lines:
+            summary_lines.append("(Plan has no tasks yet.)")
+        return "\n".join(summary_lines)
+
+    def _build_plan_graph_context(self) -> str:
+        """Return formatted plan graph context for inclusion in prompts."""
+
+        try:
+            payload = self._build_graph_summary_payload()
+            if not payload:
+                return ""
+            plan_title = ""
+            title = self._get_plan_title()
+            if title:
+                plan_title = f"Plan title: {title}\n"
+            summary_text = json.dumps(payload, ensure_ascii=False, indent=2)
+            full_context = (
+                f"{plan_title}GraphSummary (current layer + direct children):\n"
+                f"{summary_text}\n"
+            )
+            self._save_plan_snapshot(payload, label="graph_summary")
+            return full_context
+        except Exception as exc:
+            logger.warning(f"Failed to summarize plan graph: {exc}")
+            return ""
+
+    def _save_plan_snapshot(self, payload: Any, label: str = "plan") -> None:
+        if payload in (None, ""):
+            return
+        try:
+            os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+            plan_identifier = self.plan_id if self.plan_id is not None else "unknown"
+            timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            safe_label = label.strip().replace(" ", "_") or "snapshot"
+            safe_label = "".join(
+                ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in safe_label
+            )
+            content: str
+            extension = "txt"
+            if isinstance(payload, str):
+                content = payload
+            else:
+                content = json.dumps(payload, ensure_ascii=False, indent=2)
+                extension = "json"
+            filename = f"plan_{plan_identifier}_{timestamp}_{safe_label}.{extension}"
+            filepath = os.path.join(SNAPSHOT_DIR, filename)
+            with open(filepath, "w", encoding="utf-8") as handle:
+                handle.write(content)
+        except Exception:
+            logger.warning("Failed to persist plan snapshot", exc_info=True)
+
+    def _get_plan_tasks_cached(self, plan_id: int) -> List[Dict[str, Any]]:
+        if self.plan_session and self.plan_session.plan_id == plan_id:
+            return self.plan_session.list_tasks()
+        return default_repo.get_plan_tasks(plan_id)
+
+    def _get_plan_task_tree(self, plan_id: int) -> List[Dict[str, Any]]:
+        if self.plan_session and self.plan_session.plan_id == plan_id:
+            return self.plan_session.build_task_tree()
+        tasks = default_repo.get_plan_tasks(plan_id)
+        return self._build_task_tree(tasks)
     
     def _rerun_task(self, params: Dict) -> Dict[str, Any]:
         """重新执行任务"""
@@ -977,7 +1617,7 @@ Respond with only the new, revised instruction text."""
             }
         except Exception as e:
             return {"success": False, "message": f"重新执行任务失败：{str(e)}"}
-    
+
     def _delete_plan(self, params: Dict) -> Dict[str, Any]:
         """删除计划"""
         plan_id = params.get("plan_id")
@@ -998,6 +1638,98 @@ Respond with only the new, revised instruction text."""
                 }
         except Exception as e:
             return {"success": False, "message": f"删除计划失败：{str(e)}"}
+
+    async def _delete_task(self, params: Dict, confirmed: bool = False) -> Dict[str, Any]:
+        """删除指定任务及其子任务"""
+
+        task_id = params.get("task_id")
+        task_name = params.get("task_name")
+
+        if not task_id and not task_name:
+            return {"success": False, "message": "请提供任务ID或任务名称"}
+
+        matched_task: Optional[Dict[str, Any]] = None
+
+        session_task: Optional[Dict[str, Any]] = None
+
+        if task_id is not None:
+            try:
+                task_id = int(task_id)
+            except (TypeError, ValueError):
+                return {"success": False, "message": "无效的任务ID"}
+
+            if self.plan_session:
+                session_task = self.plan_session.get_task(task_id)
+
+            matched_task = session_task or default_repo.get_task_info(task_id)
+            if not matched_task:
+                return {"success": False, "message": f"未找到任务 {task_id}"}
+        else:
+            find_result = await self._find_task_id_by_name(task_name)
+            if not find_result.get("success"):
+                return find_result
+            matched_task = find_result.get("task")
+            task_id = matched_task["id"]
+            session_task = self.plan_session.get_task(task_id) if self.plan_session else None
+
+        plan_id_param = params.get("plan_id")
+        if plan_id_param is not None:
+            try:
+                plan_id = int(plan_id_param)
+            except (TypeError, ValueError):
+                return {"success": False, "message": "无效的计划ID"}
+        else:
+            plan_id = None
+
+        if not plan_id:
+            if self.plan_session and session_task:
+                plan_id = self.plan_session.plan_id
+            else:
+                plan_id = self.plan_id or default_repo.get_plan_for_task(int(task_id))
+
+        if plan_id is None:
+            return {"success": False, "message": "无法确定任务所属的计划"}
+
+        # Stage deletion in session when available; otherwise delete directly
+        deletion_snapshot: Dict[str, Any]
+        tasks_snapshot: Optional[List[Dict[str, Any]]] = None
+        task_tree_snapshot: Optional[List[Dict[str, Any]]] = None
+
+        if self.plan_session and self.plan_session.plan_id == plan_id:
+            try:
+                deletion_snapshot = self.plan_session.delete_task(int(task_id))
+            except ValueError as exc:
+                return {"success": False, "message": str(exc)}
+        else:
+            deleted = default_repo.delete_task(int(task_id))
+            if not deleted:
+                return {"success": False, "message": f"任务 {task_id} 不存在或已删除"}
+            deletion_snapshot = {
+                "removed_ids": [int(task_id)],
+                "removed_nodes": [matched_task] if matched_task else [],
+                "parent_id": matched_task.get("parent_id") if matched_task else None,
+            }
+            tasks_snapshot = default_repo.get_plan_tasks(plan_id) if plan_id else []
+            task_tree_snapshot = self._build_task_tree(tasks_snapshot) if tasks_snapshot else []
+
+        removed_ids = deletion_snapshot.get("removed_ids", [])
+        descendant_count = max(len(removed_ids) - 1, 0)
+        if descendant_count > 0:
+            message = f"成功删除任务 {task_id} 及其 {descendant_count} 个子任务"
+        else:
+            message = f"成功删除任务 {task_id}"
+
+        return {
+            "success": True,
+            "message": message,
+            "plan_id": int(plan_id) if plan_id is not None else None,
+            "task_id": int(task_id),
+            "deleted_task": matched_task,
+            "removed_task_ids": removed_ids,
+            "parent_id": deletion_snapshot.get("parent_id"),
+            "tasks": tasks_snapshot,
+            "task_tree": task_tree_snapshot,
+        }
     
     def _show_help(self) -> Dict[str, Any]:
         """显示帮助信息"""
@@ -1024,6 +1756,7 @@ Available Commands:
                 {"command": "Show Tasks", "description": "View task tree of a plan"},
                 {"command": "Rerun Task", "description": "Retry failed tasks"},
                 {"command": "Delete Plan", "description": "Delete specified plan"},
+                {"command": "Delete Task", "description": "Remove a task and its descendants"},
             ]
         }
     
@@ -1042,20 +1775,54 @@ Available Commands:
                 }
             }
         elif intent == IntentType.CREATE_TASK:
+            plan_id = data.get("plan_id") or self.plan_id
+            task_tree = data.get("task_tree")
+            if not task_tree and plan_id:
+                task_tree = self._get_plan_task_tree(plan_id)
             return {
                 "type": VisualizationType.TASK_TREE,
-                "data": { "refresh": True, "plan_id": data.get("plan_id") },
+                "data": task_tree or [],
                 "config": {
-                    "title": f"Plan {data.get('plan_id')} - Task Added",
+                    "title": f"Plan {plan_id} - Task Added" if plan_id else "Task Added",
                     "highlight_task_id": data.get("task", {}).get("id")
                 }
             }
-        elif intent in (IntentType.UPDATE_TASK, IntentType.UPDATE_TASK_INSTRUCTION):
+        elif intent == IntentType.MOVE_TASK:
+            plan_id = data.get("plan_id") or self.plan_id
+            task_tree = data.get("task_tree")
+            if not task_tree and plan_id:
+                task_tree = self._get_plan_task_tree(plan_id)
             return {
                 "type": VisualizationType.TASK_TREE,
-                "data": { "refresh": True, "plan_id": data.get("plan_id") },
+                "data": task_tree or [],
                 "config": {
-                    "title": f"Plan {data.get('plan_id')} - Task Updated",
+                    "title": f"Plan {plan_id} - Task Moved" if plan_id else "Task Moved",
+                    "highlight_task_id": data.get("task_id")
+                }
+            }
+        elif intent == IntentType.DELETE_TASK:
+            plan_id = data.get("plan_id") or self.plan_id
+            task_tree = data.get("task_tree")
+            if not task_tree and plan_id:
+                task_tree = self._get_plan_task_tree(plan_id)
+            return {
+                "type": VisualizationType.TASK_TREE,
+                "data": task_tree or [],
+                "config": {
+                    "title": f"Plan {plan_id} - Task Deleted" if plan_id else "Task Deleted",
+                    "plan_id": plan_id
+                }
+            }
+        elif intent in (IntentType.UPDATE_TASK, IntentType.UPDATE_TASK_INSTRUCTION):
+            plan_id = data.get("plan_id") or self.plan_id
+            task_tree = data.get("task_tree")
+            if not task_tree and plan_id:
+                task_tree = self._get_plan_task_tree(plan_id)
+            return {
+                "type": VisualizationType.TASK_TREE,
+                "data": task_tree or [],
+                "config": {
+                    "title": f"Plan {plan_id} - Task Updated" if plan_id else "Task Updated",
                     "highlight_task_id": data.get("task_id")
                 }
             }
