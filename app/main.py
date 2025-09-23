@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from tool_box import initialize_toolbox
 
@@ -78,6 +79,20 @@ app = FastAPI(
     description="智能任务编排系统 - 将自然语言目标转为可执行计划并产出高质量结果",
     version="2.0.0",
     lifespan=lifespan
+)
+
+# Add CORS middleware to allow web UI access
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001", 
+        "http://127.0.0.1:3001"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

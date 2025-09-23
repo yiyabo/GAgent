@@ -40,6 +40,33 @@ def list_tasks():
     return default_repo.list_all_tasks()
 
 
+@router.get("/stats")
+def get_task_stats():
+    """获取任务统计信息"""
+    try:
+        all_tasks = default_repo.list_all_tasks()
+        
+        # 按状态分组统计
+        by_status = {}
+        for task in all_tasks:
+            status = task.get('status', 'unknown')
+            by_status[status] = by_status.get(status, 0) + 1
+        
+        # 按类型分组统计  
+        by_type = {}
+        for task in all_tasks:
+            task_type = task.get('task_type', 'unknown')
+            by_type[task_type] = by_type.get(task_type, 0) + 1
+            
+        return {
+            "total": len(all_tasks),
+            "by_status": by_status,
+            "by_type": by_type,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get task stats: {str(e)}")
+
+
 @router.get("/{task_id}", response_model=Task)
 def get_task(task_id: int):
     """Get a single task by its ID."""
