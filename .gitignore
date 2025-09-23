@@ -34,6 +34,7 @@ run.json
 results/
 logs/
 data/
+web-ui/node_modules/
 # External tools (local only)
 gemini-cli
 
