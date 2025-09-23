@@ -31,6 +31,7 @@ def get_all_routers():
     from .smart_assembly_routes import router as smart_assembly_router
     from .vector_routes import router as vector_router
     from .system_health_routes import router as system_health_router
+    from .chat_routes import router as chat_router
     
     return [
         task_router,
@@ -45,6 +46,7 @@ def get_all_routers():
         smart_assembly_router,
         vector_router,
         system_health_router,
+        chat_router,
     ]
 
 __all__ = [
