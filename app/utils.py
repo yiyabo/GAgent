@@ -59,26 +59,33 @@ def run_async(coro):
     Behavior:
     - If there's no running loop in this thread: run directly (run_until_complete / asyncio.run)
     - If a loop is running (e.g., called from within an async context):
-      execute the coroutine in a separate thread with its own event loop.
+      use loop.run_in_executor to avoid nested event loop issues.
     """
     try:
         loop = asyncio.get_running_loop()
         if loop.is_running():
-            result_box: Dict[str, Any] = {}
-            error_box: Dict[str, BaseException] = {}
-
-            def _runner():
+            # Use executor instead of creating new thread with new event loop
+            # This avoids the dangerous nested event loop pattern
+            import concurrent.futures
+            import functools
+            
+            def _sync_runner():
+                # Create new event loop in executor thread
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
                 try:
-                    result_box["value"] = asyncio.run(coro)
-                except BaseException as e:  # noqa: BLE001
-                    error_box["error"] = e
-
-            t = threading.Thread(target=_runner, daemon=True)
-            t.start()
-            t.join()
-            if "error" in error_box:
-                raise error_box["error"]
-            return result_box.get("value")
+                    return new_loop.run_until_complete(coro)
+                finally:
+                    new_loop.close()
+                    asyncio.set_event_loop(None)
+            
+            # Run in thread pool executor for better resource management
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                future = executor.submit(_sync_runner)
+                return future.result(timeout=300)  # 5 minute timeout
+            finally:
+                executor.shutdown(wait=False)
         else:
             try:
                 return loop.run_until_complete(coro)
