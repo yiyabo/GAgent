@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from ..interfaces import LLMProvider, TaskRepository
@@ -8,9 +9,10 @@ from ..repository.tasks import default_repo
 from ..utils import parse_json_obj
 from .plan_session import plan_session_manager
 
-
 # Tracks in-progress plan generations so they can be cancelled externally.
 _planner_cancellation_registry: Dict[int, asyncio.Event] = {}
+
+logger = logging.getLogger(__name__)
 
 
 def request_planner_cancellation(plan_id: int) -> bool:
@@ -23,11 +25,36 @@ def request_planner_cancellation(plan_id: int) -> bool:
     return False
 
 
+def _build_fallback_subtasks(task_name: str) -> List[Dict[str, str]]:
+    """Create a simple three-phase fallback decomposition for a task."""
+
+    base = (task_name or "Task").strip()
+    if ":" in base:
+        base_prefix = base.split(":", 1)[0].strip() or base
+    else:
+        base_prefix = base
+
+    phases = [
+        ("Analysis", f"Analyze requirements, constraints, and resources for {base} to clarify the work."),
+        ("Execution", f"Carry out the main activities required to fulfill {base} and produce tangible outputs."),
+        ("Validation", f"Review results, verify success criteria, and capture learnings for {base}."),
+    ]
+
+    return [
+        {
+            "name": f"{base_prefix} - {phase}",
+            "prompt": prompt,
+            "task_type": "atomic",
+        }
+        for phase, prompt in phases
+    ]
+
+
 async def BFS_planner_stream(
     goal: str,
     repo: Optional[TaskRepository] = None,
     client: Optional[LLMProvider] = None,
-    max_depth: int = 10,
+    max_depth: int = 3,
 ) -> AsyncGenerator[str, None]:
     """
     流式版本的 BFS 任务规划器：
@@ -36,9 +63,14 @@ async def BFS_planner_stream(
     repo = repo or default_repo
     client = client or get_default_client()
 
-    def _sanitize_type(v: str) -> str:
-        """规范化任务类型"""
-        return v if v in ("root", "composite", "atomic") else "composite"
+    def _sanitize_type(v: Optional[str]) -> str:
+        """Normalize task type into 'composite' or 'atomic'."""
+        if v is None:
+            return "composite"
+        normalized = str(v).strip().lower()
+        if normalized == "root":
+            return "composite"
+        return normalized if normalized in {"composite", "atomic"} else "composite"
 
     def _create_task_node(
         plan_session,
@@ -127,7 +159,7 @@ OR for atomic tasks:
         await asyncio.sleep(0.1)
 
         # Step 0: 创建计划
-        print(f"[BFS_planner] Starting analysis for goal: {goal[:100]}...")
+        logger.info("[planner] Starting stream generation: %.100s", goal)
 
         # 生成计划标题
         title_prompt = f"""Generate a concise, descriptive title for this goal:
@@ -144,7 +176,7 @@ Return only the title (no quotes, no extra text):"""
 
         # 在数据库中创建计划
         plan_id = repo.create_plan(title, description=goal)
-        print(f"[BFS_planner] Created plan '{title}' with ID {plan_id}")
+        logger.info("[planner] Created plan '%s' (id=%s)", title, plan_id)
 
         cancel_event = asyncio.Event()
         _planner_cancellation_registry[plan_id] = cancel_event
@@ -174,13 +206,13 @@ Return only the title (no quotes, no extra text):"""
 Goal: {goal}
 
 Create the initial layer with:
-1. Proper task types: "root", "composite", or "atomic"
+1. Proper task types: "composite" or "atomic"
 2. Clear names and actionable prompts  
 3. Complete coverage of the goal
 4. Logical grouping and sequencing
 
 Return JSON ONLY (no comments):
-{{"title": "Plan Title", "tasks": [{{"name": "task name", "prompt": "detailed description", "task_type": "root"}}]}}"""
+{{"title": "Plan Title", "tasks": [{{"name": "task name", "prompt": "detailed description", "task_type": "composite"}}]}}"""
 
         root_content = client.chat(root_prompt)
         root_obj = parse_json_obj(root_content)
@@ -241,6 +273,12 @@ Return JSON ONLY (no comments):
                 layer=0,
                 parent_temp_id=None,
             )
+            logger.info(
+                "[planner] Root task created (stream): id=%s name=%s type=%s",
+                node["temp_id"],
+                node["name"],
+                node["task_type"],
+            )
 
             tasks_for_context.append({
                 "temp_id": node["temp_id"],
@@ -292,8 +330,19 @@ Return JSON ONLY (no comments):
             parent = queue.popleft()
             processed_tasks += 1
 
-            # Only composite/root tasks need evaluation
-            if parent.get("task_type") not in ("root", "composite"):
+            # Enforce depth cap to avoid infinite decomposition while keeping
+            # explicit task types intact.
+            node_layer = parent.get("layer", 0)
+            if node_layer >= max_depth:
+                continue
+
+            if node_layer >= max_depth - 1 and parent.get("task_type") == "atomic":
+                logger.debug(
+                    "[planner] Reached terminal depth for atomic task: id=%s name=%s layer=%s",
+                    parent.get("temp_id"),
+                    parent.get("name"),
+                    node_layer,
+                )
                 continue
 
             # Emit evaluation event
@@ -314,19 +363,66 @@ Return JSON ONLY (no comments):
 
                 if not decision_obj:
                     parent["task_type"] = "atomic"
+                    parent["llm_task_type"] = "atomic"
+                    logger.info(
+                        "[planner] Task marked atomic (no LLM response): id=%s name=%s",
+                        parent["temp_id"],
+                        parent["name"],
+                    )
                     continue
 
-                evaluated_type = decision_obj.get("evaluated_task_type")
+                evaluated_type = _sanitize_type(decision_obj.get("evaluated_task_type"))
                 subtasks = decision_obj.get("tasks", [])
+                parent["llm_task_type_raw"] = evaluated_type
+                parent["llm_task_type"] = evaluated_type
+
+                fallback_used = False
+                if (
+                    evaluated_type == "composite"
+                    and not subtasks
+                    and node_layer < max_depth - 1
+                ):
+                    fallback_candidates = _build_fallback_subtasks(
+                        parent.get("name", "Task")
+                    )
+                    if fallback_candidates:
+                        logger.info(
+                            "[planner] Fallback decomposition applied: id=%s name=%s layer=%s phases=%s",
+                            parent.get("temp_id"),
+                            parent.get("name"),
+                            node_layer,
+                            len(fallback_candidates),
+                        )
+                        subtasks = fallback_candidates
+                        fallback_used = True
+                        parent["fallback_decomposition"] = True
+
+                if parent.get("task_type") != evaluated_type:
+                    plan_session.update_task(parent["temp_id"], task_type=evaluated_type)
+                    parent["task_type"] = evaluated_type
 
                 if evaluated_type == "composite" and subtasks:
-                    parent["task_type"] = "composite"
+                    logger.info(
+                        "[planner] Decomposing task: id=%s name=%s subtasks=%d",
+                        parent["temp_id"],
+                        parent["name"],
+                        len(subtasks),
+                    )
 
                     for st in subtasks:
                         child_name = st.get("name", "Subtask")
                         child_prompt = st.get("prompt", "")
-                        child_type = _sanitize_type(st.get("task_type", "atomic"))
+                        child_type = _sanitize_type(st.get("task_type"))
                         child_layer = parent["layer"] + 1
+
+                        if child_layer > max_depth:
+                            logger.info(
+                                "[planner] Skipping subtask beyond depth: parent=%s child=%s layer=%s",
+                                parent["temp_id"],
+                                child_name,
+                                child_layer,
+                            )
+                            continue
 
                         child = _create_task_node(
                             plan_session=plan_session,
@@ -336,18 +432,29 @@ Return JSON ONLY (no comments):
                             layer=child_layer,
                             parent_temp_id=parent["temp_id"],
                         )
+                        child["llm_task_type"] = child_type
+                        logger.info(
+                            "[planner] Subtask created (stream): id=%s parent=%s name=%s type=%s layer=%s",
+                            child["temp_id"],
+                            parent["temp_id"],
+                            child["name"],
+                            child["task_type"],
+                            child_layer,
+                        )
                         tasks_for_context.append({
                             "temp_id": child["temp_id"],
                             "name": child["name"],
                             "prompt": child["prompt"],
                             "task_type": child["task_type"],
+                            "llm_task_type": child_type,
                             "layer": child["layer"],
                             "parent_temp_id": child.get("parent_temp_id"),
                         })
 
                         parent["children"].append(child)
                         flat_tree.append(child)
-                        queue.append(child)
+                        if child.get("task_type") == "composite" and child_layer < max_depth:
+                            queue.append(child)
                         bfs_order.append(child["temp_id"])
 
                         subtask_event = {
@@ -370,16 +477,45 @@ Return JSON ONLY (no comments):
                             yield f"data: {json.dumps(cancel_payload)}\n\n"
                             return
 
-                else:  # Atomic or composite with no subtasks
-                    parent["task_type"] = "atomic"
+                else:
+                    logger.info(
+                        "[planner] Task finalized without further decomposition: id=%s name=%s type=%s",
+                        parent["temp_id"],
+                        parent["name"],
+                        evaluated_type,
+                    )
+                    if node_layer < max_depth - 1:
+                        logger.debug(
+                            "[planner] No subtasks generated before depth limit: id=%s layer=%s llm_type=%s",
+                            parent.get("temp_id"),
+                            node_layer,
+                            parent.get("llm_task_type"),
+                        )
+
+                evaluation_log.append(
+                    {
+                        "task_name": parent.get("name"),
+                        "layer": node_layer,
+                        "evaluated_type": evaluated_type,
+                        "llm_type": parent.get("llm_task_type"),
+                        "subtask_count": len(subtasks) if evaluated_type == "composite" and subtasks else 0,
+                        "fallback_used": fallback_used,
+                    }
+                )
 
             except Exception as e:
                 parent["task_type"] = "atomic"
+                parent["llm_task_type"] = "atomic"
                 error_msg = {
                     "stage": "task_error",
                     "task_name": parent["name"],
                     "error": str(e),
                 }
+                logger.exception(
+                    "[planner] Exception while decomposing task (stream): id=%s name=%s",
+                    parent["temp_id"],
+                    parent["name"],
+                )
                 # yield f"data: {json.dumps(error_msg)}\n\n" # Temporarily disable verbose events
 
         # Persist tasks from session to database once generation completes
@@ -426,8 +562,10 @@ Return JSON ONLY (no comments):
                         },
                     )
                 except Exception as exc:
-                    print(
-                        f"[BFS_planner] WARNING: Failed to generate context for task {actual_id}: {exc}"
+                    logger.warning(
+                        "[planner] Failed to generate context for task %s: %s",
+                        actual_id,
+                        exc,
                     )
 
         # Refresh plan session view to ensure we have persisted data
@@ -444,7 +582,9 @@ Return JSON ONLY (no comments):
             layer_distribution[layer] = layer_distribution.get(layer, 0) + 1
             type_distribution[task_type] = type_distribution.get(task_type, 0) + 1
 
-        stopped_reason = "safety_limit" if processed_tasks >= SAFETY_LIMIT else "completed"
+        stopped_reason = (
+            "safety_limit" if processed_tasks >= SAFETY_LIMIT else "completed"
+        )
 
         completed_msg = {
             "stage": "completed",
@@ -467,7 +607,7 @@ Return JSON ONLY (no comments):
         yield f"data: {json.dumps(completed_msg)}\n\n"
 
     except Exception as e:
-        print(f"[BFS_planner] FATAL ERROR: {e}")
+        logger.exception("[planner] Stream planner fatal error")
         error_result = {"success": False, "error": str(e)}
         error_msg = {
             "stage": "fatal_error",
@@ -490,7 +630,7 @@ def BFS_planner(
     goal: str,
     repo: Optional[TaskRepository] = None,
     client: Optional[LLMProvider] = None,
-    max_depth: int = 10,
+    max_depth: int = 3,
 ) -> Dict[str, Any]:
     """
     改进版 BFS 任务规划器（同步版本）
@@ -498,9 +638,13 @@ def BFS_planner(
     repo = repo or default_repo
     client = client or get_default_client()
 
-    def _sanitize_type(v: str) -> str:
-        """规范化任务类型"""
-        return v if v in ("root", "composite", "atomic") else "composite"
+    def _sanitize_type(v: Optional[str]) -> str:
+        if v is None:
+            return "composite"
+        normalized = str(v).strip().lower()
+        if normalized == "root":
+            return "composite"
+        return normalized if normalized in {"composite", "atomic"} else "composite"
 
     def _make_node(
         name: str,
@@ -534,8 +678,14 @@ def BFS_planner(
                 task_type=node.get("task_type", "composite"),
                 parent_id=node.get("parent_db_id"),
             )
-            print(
-                f"[BFS_planner] Created task '{node['name']}' with ID {task_id} in database"
+            logger.info(
+                "[planner] Created DB task: plan_id=%s task_id=%s name=%s type=%s layer=%s parent_db=%s",
+                plan_id,
+                task_id,
+                node["name"],
+                node.get("task_type"),
+                node.get("layer"),
+                node.get("parent_db_id"),
             )
         except TypeError:
             task_id = repo.create_task(
@@ -548,38 +698,61 @@ def BFS_planner(
                 if hasattr(repo, "set_task_parent"):
                     try:
                         repo.set_task_parent(task_id, node["parent_db_id"])
-                        print(
-                            f"[BFS_planner] Set parent relationship for task {task_id}"
+                        logger.info(
+                            "[planner] Set parent relationship: task_id=%s parent_db=%s",
+                            task_id,
+                            node["parent_db_id"],
                         )
                     except Exception as e:
-                        print(f"[BFS_planner] WARNING: Failed to set parent: {e}")
+                        logger.warning(
+                            "[planner] Failed to set parent relationship: task_id=%s error=%s",
+                            task_id,
+                            e,
+                        )
                 elif hasattr(repo, "update_task"):
                     try:
                         repo.update_task(task_id, parent_id=node["parent_db_id"])
-                        print(
-                            f"[BFS_planner] Updated parent relationship for task {task_id}"
+                        logger.info(
+                            "[planner] Updated parent relationship: task_id=%s parent_db=%s",
+                            task_id,
+                            node["parent_db_id"],
                         )
                     except Exception as e:
-                        print(f"[BFS_planner] WARNING: Failed to update parent: {e}")
+                        logger.warning(
+                            "[planner] Failed to update parent relationship: task_id=%s error=%s",
+                            task_id,
+                            e,
+                        )
 
         # 设置任务输入
         try:
             repo.upsert_task_input(task_id, node.get("prompt", ""))
         except Exception as e:
-            print(f"[BFS_planner] WARNING: Failed to set input for task {task_id}: {e}")
+            logger.warning(
+                "[planner] Failed to upsert task input: task_id=%s error=%s",
+                task_id,
+                e,
+            )
 
         # 将任务链接到计划
         try:
             repo.link_task_to_plan(plan_id, task_id, "task")
         except Exception as e:
-            print(f"[BFS_planner] WARNING: Failed to link task {task_id} to plan: {e}")
+            logger.warning(
+                "[planner] Failed to link task to plan: plan_id=%s task_id=%s error=%s",
+                plan_id,
+                task_id,
+                e,
+            )
 
         # 生成任务上下文
         try:
             generate_task_context(repo, client, task_id, node)
         except Exception as e:
-            print(
-                f"[BFS_planner] WARNING: Failed to generate context for task {task_id}: {e}"
+            logger.warning(
+                "[planner] Failed to generate context for task %s: %s",
+                task_id,
+                e,
             )
 
         return task_id
@@ -627,7 +800,7 @@ OR for atomic tasks:
 
     try:
         # 创建计划
-        print(f"[BFS_planner] Starting analysis for goal: {goal[:100]}...")
+        logger.info("[planner] Starting synchronous generation: %.100s", goal)
 
         title_prompt = f"""Generate a concise, descriptive title for this goal:
 
@@ -642,7 +815,7 @@ Return only the title (no quotes, no extra text):"""
             title = goal[:60]
 
         plan_id = repo.create_plan(title, description=goal)
-        print(f"[BFS_planner] Created plan '{title}' with ID {plan_id}")
+        logger.info("[planner] Created plan '%s' (id=%s)", title, plan_id)
 
         # 生成第一层任务
         root_prompt = f"""Analyze this goal and create the optimal root-level tasks (Layer 0):
@@ -650,19 +823,19 @@ Return only the title (no quotes, no extra text):"""
 Goal: {goal}
 
 Create the initial layer with:
-1. Proper task types: "root", "composite", or "atomic"
+1. Proper task types: "composite" or "atomic"
 2. Clear names and actionable prompts  
 3. Complete coverage of the goal
 4. Logical grouping and sequencing
 
 Return JSON ONLY (no comments):
-{{"title": "Plan Title", "tasks": [{{"name": "task name", "prompt": "detailed description", "task_type": "root"}}]}}"""
+{{"title": "Plan Title", "tasks": [{{"name": "task name", "prompt": "detailed description", "task_type": "composite"}}]}}"""
 
         root_content = client.chat(root_prompt)
         root_obj = parse_json_obj(root_content)
 
         if not root_obj:
-            print("[BFS_planner] ERROR: Failed to parse initial planning response")
+            logger.error("[planner] Failed to parse initial planning response")
             return {
                 "success": False,
                 "error": "Failed to parse initial planning response",
@@ -670,10 +843,14 @@ Return JSON ONLY (no comments):
 
         tasks0 = root_obj.get("tasks", [])
         if not tasks0:
-            print("[BFS_planner] ERROR: No initial tasks generated")
+            logger.error("[planner] No initial tasks generated")
             return {"success": False, "error": "Failed to generate initial tasks"}
 
-        print(f"[BFS_planner] Generated {len(tasks0)} root tasks for plan: {title}")
+        logger.info(
+            "[planner] Generated %d root tasks for plan '%s'",
+            len(tasks0),
+            title,
+        )
 
         # 初始化数据结构
         roots: List[Dict[str, Any]] = []
@@ -690,7 +867,7 @@ Return JSON ONLY (no comments):
             n = _make_node(
                 name=t.get("name", f"Task {idx + 1}"),
                 prompt=t.get("prompt", ""),
-                task_type=t.get("task_type", "root"),
+                task_type=_sanitize_type(t.get("task_type", "root")),
                 layer=0,
                 parent_id=None,
                 nid=f"L0_T{serial}",
@@ -700,6 +877,14 @@ Return JSON ONLY (no comments):
             db_task_id = _create_task_in_db(n, plan_id)
             n["db_id"] = db_task_id
             task_id_map[n["id"]] = db_task_id
+            logger.info(
+                "[planner] Root task persisted: plan_id=%s db_id=%s logical=%s name=%s type=%s",
+                plan_id,
+                db_task_id,
+                n["id"],
+                n["name"],
+                n["task_type"],
+            )
 
             roots.append(n)
             current_layer_nodes.append(n)
@@ -716,17 +901,33 @@ Return JSON ONLY (no comments):
             and current_layer < max_depth
             and len(flat_tree) <= SAFETY_LIMIT
         ):
-            print(
-                f"[BFS_planner] Processing Layer {current_layer} with {len(current_layer_nodes)} tasks"
+            logger.info(
+                "[planner] Processing layer %s with %s tasks",
+                current_layer,
+                len(current_layer_nodes),
             )
             next_layer_nodes: List[Dict[str, Any]] = []
 
             for parent in current_layer_nodes:
-                if parent.get("task_type") not in ("root", "composite"):
-                    print(f"[BFS_planner] Skipping atomic task: {parent['name']}")
+                layer = parent.get("layer", 0)
+                if layer >= max_depth:
                     continue
 
-                print(f"[BFS_planner] Evaluating: {parent['name']}")
+                if layer >= max_depth - 1 and parent.get("task_type") == "atomic":
+                    logger.debug(
+                        "[planner] Terminal depth reached for atomic task: id=%s name=%s layer=%s",
+                        parent.get("id"),
+                        parent.get("name"),
+                        layer,
+                    )
+                    continue
+
+                logger.info(
+                    "[planner] Evaluating task: id=%s name=%s layer=%s",
+                    parent["id"],
+                    parent["name"],
+                    parent.get("layer"),
+                )
 
                 task_prompt = _build_improved_assessment_prompt(parent, current_layer)
 
@@ -735,8 +936,10 @@ Return JSON ONLY (no comments):
                     decision_obj = parse_json_obj(decision_raw)
 
                     if not decision_obj:
-                        print(
-                            f"[BFS_planner] WARNING: Failed to parse AI response for '{parent['name']}', treating as atomic"
+                        logger.warning(
+                            "[planner] Failed to parse LLM response; marking atomic: id=%s name=%s",
+                            parent["id"],
+                            parent["name"],
                         )
                         evaluation_log.append({
                             "task_name": parent["name"],
@@ -745,11 +948,50 @@ Return JSON ONLY (no comments):
                             "action": "marked_atomic",
                         })
                         parent["task_type"] = "atomic"
+                        parent["llm_task_type"] = "atomic"
                         continue
 
-                    evaluated_type = decision_obj.get("evaluated_task_type")
+                    evaluated_type = _sanitize_type(
+                        decision_obj.get("evaluated_task_type")
+                    )
                     subtasks = decision_obj.get("tasks", [])
                     reasoning = decision_obj.get("reasoning", "")
+                    parent["llm_task_type_raw"] = evaluated_type
+                    parent["llm_task_type"] = evaluated_type
+
+                    fallback_used = False
+                    if (
+                        evaluated_type == "composite"
+                        and not subtasks
+                        and layer < max_depth - 1
+                    ):
+                        fallback_candidates = _build_fallback_subtasks(
+                            parent.get("name", "Task")
+                        )
+                        if fallback_candidates:
+                            logger.info(
+                                "[planner] Fallback decomposition applied: id=%s name=%s layer=%s phases=%s",
+                                parent.get("id"),
+                                parent.get("name"),
+                                layer,
+                                len(fallback_candidates),
+                            )
+                            subtasks = fallback_candidates
+                            fallback_used = True
+                            parent["fallback_decomposition"] = True
+
+                    if parent.get("task_type") != evaluated_type:
+                        parent["task_type"] = evaluated_type
+                        db_id = parent.get("db_id")
+                        if db_id:
+                            try:
+                                repo.update_task(db_id, task_type=evaluated_type)
+                            except Exception as update_exc:
+                                logger.warning(
+                                    "[planner] Failed to update task type in DB: id=%s error=%s",
+                                    db_id,
+                                    update_exc,
+                                )
 
                     log_entry = {
                         "task_name": parent["name"],
@@ -759,69 +1001,92 @@ Return JSON ONLY (no comments):
                         "subtask_count": len(subtasks),
                     }
 
-                    if evaluated_type == "composite":
-                        if subtasks:
-                            print(
-                                f"[BFS_planner] Decomposing '{parent['name']}' into {len(subtasks)} subtasks"
-                            )
-                            parent["decomposed"] = True
-                            parent["task_type"] = "composite"
-
-                            for st in subtasks:
-                                child = _make_node(
-                                    name=st.get("name", "Subtask"),
-                                    prompt=st.get(
-                                        "prompt",
-                                        f"Complete {st.get('name', 'subtask')}",
-                                    ),
-                                    task_type=st.get("task_type", "atomic"),
-                                    layer=parent["layer"] + 1,
-                                    parent_id=parent["id"],
-                                    nid=f"{parent['id']}_S{serial}",
-                                    parent_db_id=parent["db_id"],
-                                )
-
-                                db_task_id = _create_task_in_db(child, plan_id)
-                                child["db_id"] = db_task_id
-                                task_id_map[child["id"]] = db_task_id
-
-                                parent["children"].append(child)
-                                next_layer_nodes.append(child)
-                                flat_tree.append(child)
-                                bfs_order.append(child["id"])
-                                serial += 1
-
-                            log_entry["status"] = "decomposed"
-                            log_entry["action"] = f"created_{len(subtasks)}_subtasks"
-                        else:
-                            print(
-                                f"[BFS_planner] WARNING: '{parent['name']}' classified as composite but no subtasks provided"
-                            )
-                            parent["task_type"] = "composite"
-                            log_entry["status"] = "composite_no_subtasks"
-                            log_entry["action"] = "kept_composite"
-
-                    elif evaluated_type == "atomic":
-                        print(f"[BFS_planner] Finalizing '{parent['name']}' as atomic")
-                        parent["task_type"] = "atomic"
-                        log_entry["status"] = "atomic"
-                        log_entry["action"] = "marked_atomic"
-
-                    else:
-                        print(
-                            f"[BFS_planner] WARNING: Unknown evaluation type '{evaluated_type}' for '{parent['name']}', treating as atomic"
+                    if evaluated_type == "composite" and subtasks:
+                        logger.info(
+                            "[planner] Decomposing task: id=%s name=%s subtasks=%d",
+                            parent["id"],
+                            parent["name"],
+                            len(subtasks),
                         )
-                        parent["task_type"] = "atomic"
-                        log_entry["status"] = "unknown_type"
-                        log_entry["action"] = "marked_atomic_fallback"
+                        parent["decomposed"] = True
+                        parent["task_type"] = "composite"
+
+                        for st in subtasks:
+                            child_type = _sanitize_type(st.get("task_type"))
+                            child_layer = parent["layer"] + 1
+
+                            if child_layer > max_depth:
+                                logger.info(
+                                    "[planner] Skipping subtask beyond depth: parent=%s child=%s layer=%s",
+                                    parent["id"],
+                                    st.get("name", "Subtask"),
+                                    child_layer,
+                                )
+                                continue
+
+                            child = _make_node(
+                                name=st.get("name", "Subtask"),
+                                prompt=st.get(
+                                    "prompt",
+                                    f"Complete {st.get('name', 'subtask')}",
+                                ),
+                                task_type=child_type,
+                                layer=child_layer,
+                                parent_id=parent["id"],
+                                nid=f"{parent['id']}_S{serial}",
+                                parent_db_id=parent["db_id"],
+                            )
+                            child["llm_task_type"] = child_type
+
+                            db_task_id = _create_task_in_db(child, plan_id)
+                            child["db_id"] = db_task_id
+                            task_id_map[child["id"]] = db_task_id
+                            logger.info(
+                                "[planner] Subtask persisted: plan_id=%s parent=%s db_id=%s logical=%s name=%s type=%s layer=%s",
+                                plan_id,
+                                parent["id"],
+                                db_task_id,
+                                child["id"],
+                                child["name"],
+                                child["task_type"],
+                                child["layer"],
+                            )
+
+                            parent["children"].append(child)
+                            if child_layer < max_depth:
+                                next_layer_nodes.append(child)
+                            flat_tree.append(child)
+                            bfs_order.append(child["id"])
+                            serial += 1
+
+                        log_entry["status"] = "decomposed"
+                        log_entry["action"] = (
+                            "fallback_decomposition"
+                            if fallback_used
+                            else f"created_{len(subtasks)}_subtasks"
+                        )
+                        log_entry["fallback_used"] = fallback_used
+                    else:
+                        log_entry["status"] = evaluated_type
+                        log_entry["action"] = "kept_type"
+                        log_entry["fallback_used"] = False
+                        logger.info(
+                            "[planner] Task finalized without further decomposition: id=%s name=%s type=%s",
+                            parent["id"],
+                            parent["name"],
+                            evaluated_type,
+                        )
 
                     evaluation_log.append(log_entry)
 
                 except Exception as e:
-                    print(
-                        f"[BFS_planner] ERROR: Exception during evaluation of '{parent['name']}': {e}"
+                    logger.exception(
+                        "[planner] Exception evaluating task: id=%s name=%s",
+                        parent["id"],
+                        parent["name"],
                     )
                     parent["task_type"] = "atomic"
+                    parent["llm_task_type"] = "atomic"
                     evaluation_log.append({
                         "task_name": parent["name"],
                         "layer": current_layer,
@@ -831,8 +1096,8 @@ Return JSON ONLY (no comments):
                     })
 
                 if len(flat_tree) > SAFETY_LIMIT:
-                    print(
-                        f"[BFS_planner] WARNING: Hit safety limit of {SAFETY_LIMIT} tasks"
+                    logger.warning(
+                        "[planner] Hit safety limit (%d tasks)", SAFETY_LIMIT
                     )
                     break
 
@@ -859,11 +1124,14 @@ Return JSON ONLY (no comments):
         else:
             stopped_reason = "exhausted"
 
-        print(
-            f"[BFS_planner] Completed: {len(flat_tree)} tasks across {max(layer_distribution.keys(), default=0) + 1} layers"
+        logger.info(
+            "[planner] Completed plan: plan_id=%s tasks=%d layers=%d stop=%s",
+            plan_id,
+            len(flat_tree),
+            max(layer_distribution.keys(), default=0) + 1,
+            stopped_reason,
         )
-        print(f"[BFS_planner] Task types: {type_distribution}")
-        print(f"[BFS_planner] Stopped due to: {stopped_reason}")
+        logger.debug("[planner] Task type distribution: %s", type_distribution)
 
         return {
             "success": True,
@@ -883,7 +1151,7 @@ Return JSON ONLY (no comments):
         }
 
     except Exception as e:
-        print(f"[BFS_planner] FATAL ERROR: {e}")
+        logger.exception("[planner] Planner fatal error")
         return {"success": False, "error": str(e)}
 
 
@@ -944,6 +1212,13 @@ def generate_task_context(
         return meta
 
     try:
+        logger.info(
+            "[planner] Generating context for task_id=%s name=%s type=%s layer=%s",
+            task_id,
+            task_data.get("name"),
+            task_data.get("task_type", "composite"),
+            task_data.get("layer", 0),
+        )
         context_prompt = f"""
 Analyze this newly created task and generate comprehensive context including metadata.
 
@@ -988,6 +1263,11 @@ Return JSON ONLY:
         meta = _coerce_meta(context_result.get("meta"))
 
         repo.upsert_task_context(task_id, combined, sections, meta, label="ai-initial")
+        logger.info(
+            "[planner] Context stored for task_id=%s label=ai-initial sections=%s",
+            task_id,
+            len(sections),
+        )
 
     except Exception as e:
         basic_context = {
@@ -1024,6 +1304,10 @@ Return JSON ONLY:
                 basic_context["sections"],
                 basic_context["meta"],
                 label="basic-fallback",
+            )
+            logger.info(
+                "[planner] Fallback context stored for task_id=%s label=basic-fallback",
+                task_id,
             )
         except Exception:
             pass
@@ -1111,8 +1395,10 @@ def approve_plan_service(
                     try:
                         repo.set_task_parent(task_id, parent_id)
                     except Exception:
-                        print(
-                            f"WARNING: Failed to set parent_id for approved task {idx}"
+                        logger.warning(
+                            "[planner] Failed to set parent for task during approval: index=%s plan_id=%s",
+                            idx,
+                            plan_id,
                         )
 
             repo.upsert_task_input(task_id, task.get("prompt", ""))

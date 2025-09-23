@@ -291,7 +291,7 @@ export default {
 
       const agentMessagePlaceholder = { 
         sender: 'agent', 
-        text: 'Processing...', 
+        text: 'Processing', 
         isStreaming: true 
       }
       plansStore.currentChatHistory.push(agentMessagePlaceholder)

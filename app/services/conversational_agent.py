@@ -293,17 +293,18 @@ Tool intents:
 - delete_task: Remove a task (and its subtasks) from a plan
 - rerun_task: Restart a specific task
 - help: Show available commands
-- request_subgraph: Ask for a deeper view of a task when the GraphSummary is insufficient (set "needs_tool": false and include {{"logical_id": <id>}}). Wait for the new context before issuing other actions.
+- request_subgraph: Ask for a deeper view of a task when the GraphSummary is insufficient (set "needs_tool": false and include {{'logical_id': <id>}}). Wait for the new context before issuing other actions.
 
 Additional rules:
+- The `GraphSummary` may include a `"has_more_children": true` flag on a task. If the user's request might involve these unlisted children, you MUST use `request_subgraph` with that task's `id` to get more details before proceeding. Do not guess.
 - If you schedule a create_plan instruction, do not include any create_task instructions for the same request. The plan generator initializes the entire task graph automatically.
 - When you emit a request_subgraph instruction, it should be the only instruction in that response. After you receive the SubgraphDetail, issue the actionable instruction list.
 
 Examples:
-- "change the status of the 'data analysis' task to done" → {{"instructions": [{{"needs_tool": true, "intent": "update_task", "parameters": {{"task_name": "data analysis", "status": "done"}}, "initial_response": "Updating the task status..."}}]}}
-- "create a plan and then show it" → {{"instructions": [{{"needs_tool": true, "intent": "create_plan", "parameters": {{"goal": "..."}}, "initial_response": "Creating the plan..."}}, {{"needs_tool": true, "intent": "show_tasks", "parameters": {{"plan_id": "..."}}, "initial_response": "Listing the tasks..."}}]}} (note: no create_task step needed)
-- "drill into task 7" → {{"instructions": [{{"needs_tool": false, "intent": "request_subgraph", "parameters": {{"logical_id": 7}}, "initial_response": "Fetching the detailed subgraph for task 7..."}}]}}
-- "thanks" → {{"instructions": [{{"needs_tool": false, "intent": "chat", "response": "You're welcome!"}}]}}
+- "change the status of the 'data analysis' task to done" → {{'instructions': [{{'needs_tool': true, 'intent': 'update_task', 'parameters': {{'task_name': 'data analysis', 'status': 'done'}}, 'initial_response': 'Updating the task status...'}}]}}
+- "create a plan and then show it" → {{'instructions': [{{'needs_tool': true, 'intent': 'create_plan', 'parameters': {{'goal': '...'}}, 'initial_response': 'Creating the plan...'}}, {{'needs_tool': true, 'intent': 'show_tasks', 'parameters': {{'plan_id': '...'}}, 'initial_response': 'Listing the tasks...'}}]}} (note: no create_task step needed)
+- "drill into task 7" → {{'instructions': [{{'needs_tool': false, 'intent': 'request_subgraph', 'parameters': {{'logical_id': 7}}, 'initial_response': 'Fetching the detailed subgraph for task 7...'}}]}}
+- "thanks" → {{'instructions': [{{'needs_tool': false, 'intent': 'chat', 'response': 'You\'re welcome!'}}]}}
 
 User message: "{user_command}"
 
@@ -314,6 +315,8 @@ Respond with JSON only:"""
 
             while True:
                 rounds += 1
+                logger.info(f"--- LLM Call (Round {rounds}) ---")
+                logger.info(f"Prompt sent to LLM:\n{prompt}")
                 try:
                     raw_result = self.llm.chat(prompt, history=llm_history).strip()
                     logger.info(f"Unified LLM response: {raw_result}")
@@ -331,6 +334,8 @@ Respond with JSON only:"""
                 request_ids = extract_subgraph_requests(instructions)
                 if not request_ids:
                     break
+
+                logger.info(f"LLM requested subgraph for logical_id(s): {request_ids}")
 
                 if rounds >= max_subgraph_rounds:
                     raise RuntimeError("Exceeded maximum subgraph request rounds")
@@ -1318,21 +1323,27 @@ Respond with only the new, revised instruction text."""
         if not base:
             return None
 
-        child_ids = self.plan_session.get_child_ids(logical_id)
-        base["child_ids"] = child_ids
-        base["has_children"] = bool(child_ids)
-        base["instruction"] = self.plan_session.get_or_fetch_instruction(logical_id)
-        base["contexts"] = self.plan_session.get_task_context_snapshots(logical_id)
-        base["output"] = self.plan_session.get_task_output(logical_id)
+        snapshot = {
+            "id": base.get("id"),
+            "name": base.get("name"),
+            "status": base.get("status"),
+        }
 
+        child_ids = self.plan_session.get_child_ids(logical_id)
+        
         children: List[Dict[str, Any]] = []
-        if max_depth > 0 and child_ids:
-            for child_id in child_ids:
-                child_snapshot = self._collect_task_snapshot(child_id, max_depth=max_depth - 1)
-                if child_snapshot:
-                    children.append(child_snapshot)
-        base["children"] = children
-        return base
+        if child_ids:
+            snapshot["has_more_children"] = True
+            if max_depth > 0:
+                for child_id in child_ids:
+                    child_snapshot = self._collect_task_snapshot(child_id, max_depth=max_depth - 1)
+                    if child_snapshot:
+                        children.append(child_snapshot)
+        
+        if children:
+            snapshot["children"] = children
+
+        return snapshot
 
     def _build_graph_summary_payload(self) -> Optional[Dict[str, Any]]:
         if not self.plan_session:
