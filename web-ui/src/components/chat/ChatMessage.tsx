@@ -7,7 +7,7 @@ import {
   CopyOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
-import { ChatMessage as ChatMessageType } from '@types/index';
+import { ChatMessage as ChatMessageType } from '@/types';
 import ReactMarkdown from 'markdown-to-jsx';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
