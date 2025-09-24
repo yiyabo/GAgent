@@ -6,7 +6,12 @@ This package contains storage-related services:
 - hybrid_vector_storage: Hybrid vector storage manager
 """
 
-from .milvus_service import MilvusVectorService, get_milvus_service
+# 使Milvus成为可选依赖
+try:
+    from .milvus_service import MilvusVectorService, get_milvus_service
+except ImportError:
+    MilvusVectorService = None
+    get_milvus_service = None
 from .hybrid_vector_storage import HybridVectorStorage, get_hybrid_storage
 
 __all__ = [
