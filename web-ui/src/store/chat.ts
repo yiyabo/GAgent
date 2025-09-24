@@ -199,7 +199,24 @@ export const useChatStore = create<ChatState>()(
         // 处理特殊操作
         let finalContent = result.response;
         
-        // 如果AI建议创建计划，尝试执行
+        // 检查是否为Agent工作流程响应
+        if (result.metadata?.agent_workflow) {
+          console.log('🤖 检测到Agent工作流程响应:', result.metadata);
+          
+          // 触发DAG更新事件
+          window.dispatchEvent(new CustomEvent('tasksUpdated', { 
+            detail: { 
+              type: 'agent_workflow_created',
+              workflow_id: result.metadata.workflow_id,
+              total_tasks: result.metadata.total_tasks,
+              dag_structure: result.metadata.dag_structure
+            }
+          }));
+          
+          console.log('✅ Agent工作流程创建成功，已通知DAG组件刷新');
+        }
+        
+        // 如果AI建议创建计划，尝试执行（兼容旧版本）
         if (result.actions && result.actions.length > 0) {
           for (const action of result.actions) {
             if (action.type === 'suggest_plan_creation') {
@@ -213,6 +230,17 @@ export const useChatStore = create<ChatState>()(
                 
                 // 添加计划创建结果到回复中
                 finalContent += `\n\n🎉 **我已经为你创建了计划！**\n\n📋 **计划标题**: ${planResult.title}\n📝 **任务数量**: ${planResult.tasks?.length || 0}个\n\n💡 你可以说"查看计划详情"了解更多信息。`;
+                
+                // 触发全局状态更新，让DAG组件知道需要刷新
+                console.log('✅ 计划创建成功，触发任务数据刷新...');
+                // 使用事件总线通知DAG组件刷新
+                window.dispatchEvent(new CustomEvent('tasksUpdated', { 
+                  detail: { 
+                    type: 'plan_created',
+                    planTitle: planResult.title,
+                    tasksCount: planResult.tasks?.length || 0
+                  }
+                }));
               } catch (planError) {
                 console.error('自动创建计划失败:', planError);
                 finalContent += '\n\n💡 我可以帮你创建详细的任务计划，请描述具体的目标。';
