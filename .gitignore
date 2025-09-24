@@ -26,9 +26,9 @@ llm_cache.db
 test_report_structure.docx
 approve.out
 statistics.db
-.gitignore
+
 statistics.db-wal
-.gitignore
+
 statistics.db-shm
 run.json
 results/
@@ -42,3 +42,17 @@ gemini-cli
 .env
 .env.*
 !.env.example
+
+# 日志和临时文件
+*.log
+*.tmp
+*.temp
+
+# 前端构建和缓存
+web-ui/dist/
+web-ui/node_modules/.vite/
+web-ui/.vite/
+
+# 其他数据库文件（通配符）
+*.db
+evaluation_cache.db

@@ -56,6 +56,9 @@ if _USE_PYDANTIC:
 
         # 数据库配置（保留扩展位）
         database_url: str = Field(default="sqlite:///./tasks.db", env="DATABASE_URL")
+        
+        # API服务配置
+        base_url: str = Field(default="http://127.0.0.1:8000", env="BASE_URL")
 
         # GLM / LLM 配置
         glm_api_key: Optional[str] = Field(default=None, env="GLM_API_KEY")

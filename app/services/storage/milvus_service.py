@@ -11,31 +11,47 @@ from datetime import datetime
 import asyncio
 from pathlib import Path
 
-from pymilvus import (
-    MilvusClient, 
-    FieldSchema, 
-    CollectionSchema, 
-    DataType,
-    connections
-)
+try:
+    from pymilvus import (
+        MilvusClient, 
+        FieldSchema, 
+        CollectionSchema, 
+        DataType,
+        connections
+    )
+    PYMILVUS_AVAILABLE = True
+except ImportError:
+    PYMILVUS_AVAILABLE = False
+    # 创建占位符类
+    MilvusClient = None
+    FieldSchema = None
+    CollectionSchema = None
+    DataType = None
+    connections = None
 
 import logging
 
 # 简化日志配置
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class MilvusVectorService:
     """Milvus向量存储服务"""
     
-    def __init__(self, db_path: str = "./data/milvus/milvus_lite.db"):
+    def __init__(self, uri: str = "data/milvus/milvus_demo.db", token: str = ""):
+        if not PYMILVUS_AVAILABLE:
+            logger.warning("pymilvus不可用，MilvusVectorService将以降级模式运行")
+            self.client = None
+            return
+            
         """
         初始化Milvus服务
         
         Args:
-            db_path: Milvus Lite数据库文件路径
+            uri: Milvus服务URI
+            token: Milvus服务Token
         """
-        self.db_path = db_path
+        self.uri = uri
+        self.token = token
         self.client = None
         self.collections = {
             "embedding_cache": "embedding_cache_collection",
@@ -43,15 +59,15 @@ class MilvusVectorService:
         }
         
         # 确保数据目录存在
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(uri).parent.mkdir(parents=True, exist_ok=True)
         
     async def initialize(self):
         """初始化Milvus客户端和集合"""
         try:
-            logger.info(f"🚀 初始化Milvus Lite: {self.db_path}")
+            logger.info(f"🚀 初始化Milvus Lite: {self.uri}")
             
             # 创建Milvus Lite客户端
-            self.client = MilvusClient(uri=self.db_path)
+            self.client = MilvusClient(uri=self.uri)
             
             # 创建集合
             await self._create_collections()
