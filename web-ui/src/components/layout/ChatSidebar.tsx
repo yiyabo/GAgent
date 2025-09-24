@@ -20,7 +20,7 @@ import {
   ExportOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
-import { ChatSession } from '@types/index';
+import { ChatSession } from '@/types';
 
 const { Text, Title } = Typography;
 const { Search } = Input;

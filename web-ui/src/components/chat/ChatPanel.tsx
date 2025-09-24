@@ -54,7 +54,7 @@ const ChatPanel: React.FC = () => {
 
     const metadata = {
       task_id: selectedTask?.id,
-      plan_title: currentPlan,
+      plan_title: currentPlan || undefined,
     };
 
     await sendMessage(inputText.trim(), metadata);
