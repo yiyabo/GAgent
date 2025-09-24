@@ -56,3 +56,5 @@ web-ui/.vite/
 # 其他数据库文件（通配符）
 *.db
 evaluation_cache.db
+web-ui/node_modules/.vite/
+web-ui/node_modules/.cache/
