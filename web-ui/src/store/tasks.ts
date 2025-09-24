@@ -1,11 +1,34 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
-import { Task, DAGNode, DAGEdge } from '@types/index';
+import { Task } from '@/types';
+
+// 临时类型定义，解决编译错误
+interface TaskStats {
+  total: number;
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+}
+
+interface DAGNode {
+  id: string;
+  label: string;
+  color?: string;
+  shape?: string;
+}
+
+interface DAGEdge {
+  from: string;
+  to: string;
+  color?: string;
+}
 
 interface TasksState {
   // 任务数据
   tasks: Task[];
   selectedTask: Task | null;
+  taskStats: TaskStats | null;
   currentPlan: string | null;
   
   // DAG可视化数据
@@ -53,6 +76,7 @@ export const useTasksStore = create<TasksState>()(
     // 初始状态
     tasks: [],
     selectedTask: null,
+    taskStats: null,
     currentPlan: null,
     dagNodes: [],
     dagEdges: [],

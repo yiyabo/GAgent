@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
-import { SystemStatus } from '@types/index';
+import { SystemStatus } from '@/types';
 
 interface SystemState {
   // 系统状态
