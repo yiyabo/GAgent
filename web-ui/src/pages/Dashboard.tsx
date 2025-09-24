@@ -27,7 +27,32 @@ const Dashboard: React.FC = () => {
     refetchInterval: 10000, // 10秒刷新一次
   });
 
-  const stats = taskStats || getTaskStats();
+  // 处理统计数据格式差异
+  const processStats = (rawStats: any) => {
+    if (!rawStats) return { total: 0, pending: 0, running: 0, completed: 0, failed: 0 };
+    
+    // 如果是新格式 (后端API返回的格式)
+    if (rawStats.by_status) {
+      return {
+        total: rawStats.total || 0,
+        pending: rawStats.by_status.pending || 0,
+        running: rawStats.by_status.running || 0,
+        completed: rawStats.by_status.done || rawStats.by_status.completed || 0,
+        failed: rawStats.by_status.failed || 0,
+      };
+    }
+    
+    // 如果是旧格式
+    return {
+      total: rawStats.total || 0,
+      pending: rawStats.pending || 0,
+      running: rawStats.running || 0,
+      completed: rawStats.completed || 0,
+      failed: rawStats.failed || 0,
+    };
+  };
+
+  const stats = processStats(taskStats || getTaskStats());
 
   return (
     <div>
@@ -186,37 +211,28 @@ const Dashboard: React.FC = () => {
         {/* DAG 可视化 */}
         <Row gutter={[16, 16]}>
           <Col span={24}>
-            <Card title="🎯 任务编排图" size="small">
-              {tasks.length > 0 ? (
-                <DAGVisualization height={500} />
-              ) : (
-                <div style={{ 
-                  height: 400, 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  alignItems: 'center', 
-                  justifyContent: 'center',
-                  color: '#999'
-                }}>
-                  <DatabaseOutlined style={{ fontSize: 48, marginBottom: 16 }} />
-                  <Title level={4} type="secondary">
-                    暂无任务数据
-                  </Title>
-                  <Text type="secondary">
-                    创建您的第一个计划来开始任务编排
-                  </Text>
-                  <Button 
-                    type="primary" 
-                    style={{ marginTop: 16 }}
-                    onClick={() => {
-                      // 这里可以跳转到计划创建页面
-                      console.log('Navigate to plans page');
-                    }}
-                  >
-                    创建计划
-                  </Button>
-                </div>
-              )}
+            <Card 
+              title="🎯 任务编排图" 
+              size="small"
+              extra={
+                <Button 
+                  onClick={async () => {
+                    console.log('🔄 手动测试API连接...');
+                    try {
+                      const response = await fetch('http://127.0.0.1:8000/tasks');
+                      const data = await response.json();
+                      console.log('✅ 直接API测试结果:', data.length, '个任务');
+                    } catch (error) {
+                      console.error('❌ 直接API测试失败:', error);
+                    }
+                  }}
+                >
+                  调试API
+                </Button>
+              }
+            >
+              <DAGVisualization />
+            
             </Card>
           </Col>
         </Row>
