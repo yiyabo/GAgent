@@ -10,7 +10,7 @@ import asyncio
 import logging
 
 from ..llm import get_default_client
-from tool_box import execute_tool
+from tool_box import execute_tool, list_available_tools, initialize_toolbox
 import httpx
 import re
 
@@ -193,30 +193,47 @@ async def _is_task_query_request(message: str) -> bool:
 
 
 async def _handle_with_smart_router(message: str, context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """使用智能路由处理用户请求（参考CLI端实现）"""
+    """使用LLM驱动的智能工具路由"""
     try:
         from ..llm import get_default_client
         
-        # 构建工具定义（参考CLI端）
-        tools_definition = _get_tools_definition()
+        # 获取所有可用工具定义
+        tools_definition = await _get_tools_definition()
         
-        # 构建系统提示，包含智能路由协议
-        system_prompt = _get_smart_router_system_prompt()
+        # 构建智能工具选择提示
+        system_prompt = await _get_smart_tool_selection_prompt(tools_definition)
         
-        # 调用LLM进行意图识别
+        # 调用LLM进行工具选择和参数推理
         llm_client = get_default_client()
         
-        full_prompt = f"{system_prompt}\n\n用户: {message}\n\n请先调用intent_router判断用户意图。"
+        full_prompt = f"{system_prompt}\n\n用户请求: {message}\n\n请分析用户意图，选择最合适的工具并提供参数。"
         
-        # 这里需要模拟工具调用，因为GLM-4.5-Air支持function calling
-        response = llm_client.chat(full_prompt, force_real=True)
+        # 使用GLM的function calling能力
+        try:
+            # 让LLM直接基于工具定义做决策（移除不支持的tools参数）
+            response = llm_client.chat(
+                full_prompt, 
+                force_real=True
+            )
+            
+            # 解析LLM的工具选择结果
+            tool_result = await _parse_llm_tool_selection(response, message, tools_definition)
+            
+            if tool_result:
+                return tool_result
+                
+        except Exception as llm_error:
+            logger.warning(f"⚠️ LLM工具选择失败，使用备用路由: {llm_error}")
+            
+        # 备用方案：增强的语义分析
+        fallback_result = _parse_intent_from_response(message)
+        if fallback_result:
+            return await _execute_routed_action(fallback_result, message, context)
         
-        # 解析用户消息，提取意图路由结果
-        intent_result = _parse_intent_from_response(message)
-        
-        if intent_result:
-            # 根据意图执行相应操作
-            return await _execute_routed_action(intent_result, message, context)
+        # 最后尝试直接语义解析
+        direct_result = await _direct_semantic_analysis(message)
+        if direct_result:
+            return direct_result
             
         return None
         
@@ -225,85 +242,381 @@ async def _handle_with_smart_router(message: str, context: Optional[Dict[str, An
         return None
 
 
-def _get_tools_definition() -> List[Dict[str, Any]]:
-    """获取工具定义（参考CLI端）"""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "intent_router",
-                "description": "判定用户意图，仅返回执行建议，不直接执行任何动作。返回 {action, args, confidence}。action ∈ ['show_plan','show_tasks','show_plan_graph','execute_task','search','unknown']。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": [
-                                "show_plan",
-                                "show_tasks", 
-                                "show_plan_graph",
-                                "execute_task",
-                                "search",
-                                "unknown"
-                            ]
+async def _get_tools_definition() -> List[Dict[str, Any]]:
+    """获取工具定义（集成Tool Box所有工具）"""
+    try:
+        # 确保Tool Box已初始化
+        await initialize_toolbox()
+        
+        # 获取Tool Box中的所有工具
+        available_tools = await list_available_tools()
+        
+        tools_definition = [
+            # 意图路由工具（系统内置）
+            {
+                "type": "function",
+                "function": {
+                    "name": "intent_router",
+                    "description": "判定用户意图，仅返回执行建议，不直接执行任何动作。返回 {action, args, confidence}。action ∈ ['show_plan','show_tasks','show_plan_graph','execute_task','search','database_query','unknown']。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": [
+                                    "show_plan",
+                                    "show_tasks", 
+                                    "show_plan_graph",
+                                    "execute_task",
+                                    "search",
+                                    "database_query",
+                                    "unknown"
+                                ]
+                            },
+                            "args": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "task_id": {"type": "integer"},
+                                    "output_filename": {"type": "string"},
+                                    "query": {"type": "string"},
+                                    "max_results": {"type": "integer"},
+                                    "operation": {"type": "string"},
+                                    "table_name": {"type": "string"}
+                                }
+                            },
+                            "confidence": {"type": "number"}
                         },
-                        "args": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string"},
-                                "task_id": {"type": "integer"},
-                                "output_filename": {"type": "string"},
-                                "query": {"type": "string"},
-                                "max_results": {"type": "integer"}
-                            }
-                        },
-                        "confidence": {"type": "number"}
-                    },
-                    "required": ["action"]
+                        "required": ["action"]
+                    }
                 }
             }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "使用联网搜索引擎（默认 Tavily）检索信息并返回摘要结果。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "搜索查询语句"},
-                        "max_results": {"type": "integer", "description": "返回结果数量", "default": 5},
-                        "search_engine": {
-                            "type": "string",
-                            "description": "搜索引擎标识，默认 tavily",
-                            "enum": ["tavily"],
-                            "default": "tavily",
+        ]
+        
+        # 添加Tool Box中的所有工具
+        for tool in available_tools:
+            tool_def = {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool.get("parameters_schema", {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    })
+                }
+            }
+            tools_definition.append(tool_def)
+        
+        logger.info(f"✅ 加载了 {len(tools_definition)} 个工具定义 (包含Tool Box: {len(available_tools)}个)")
+        return tools_definition
+        
+    except Exception as e:
+        logger.error(f"❌ 获取工具定义失败: {e}")
+        # 返回基础工具定义作为备选
+        return [
+            {
+                "type": "function", 
+                "function": {
+                    "name": "intent_router",
+                    "description": "判定用户意图",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["search", "database_query", "unknown"]},
+                            "args": {"type": "object"}
                         },
-                    },
-                    "required": ["query"],
-                },
-            },
-        }
-    ]
+                        "required": ["action"]
+                    }
+                }
+            }
+        ]
+
+
+async def _get_smart_tool_selection_prompt(tools_definition: List[Dict[str, Any]]) -> str:
+    """构建LLM工具选择提示"""
+    
+    # 构建工具列表描述
+    tools_desc = []
+    for tool_def in tools_definition:
+        if tool_def.get("type") == "function":
+            func_info = tool_def.get("function", {})
+            name = func_info.get("name", "unknown")
+            desc = func_info.get("description", "无描述")
+            
+            # 获取参数信息
+            params = func_info.get("parameters", {}).get("properties", {})
+            param_list = []
+            for param_name, param_info in params.items():
+                param_type = param_info.get("type", "any")
+                param_desc = param_info.get("description", "")
+                param_list.append(f"{param_name}({param_type}): {param_desc}")
+            
+            tool_entry = f"🔧 **{name}**: {desc}"
+            if param_list:
+                tool_entry += f"\n   参数: {', '.join(param_list[:3])}" # 只显示前3个参数
+            
+            tools_desc.append(tool_entry)
+    
+    return f"""你是一个智能工具路由助手。你的任务是分析用户请求，然后选择最合适的工具来处理。
+
+📋 **可用工具列表**:
+{chr(10).join(tools_desc)}
+
+🎯 **智能工具选择规则**:
+- 🔍 **数据库查询**: 用户询问"任务/待办/工作/项目进度/完成情况"等 → `database_query`
+  示例: "查看任务"、"还有哪些工作没完成"、"项目进度如何"
+- 🌐 **网络搜索**: 用户询问"天气/新闻/最新信息/知识问答"等 → `web_search`  
+  示例: "北京天气"、"最新AI新闻"、"什么是量子计算"
+- 📁 **文件操作**: 用户要求"读取/保存/管理文件"等 → `file_operations`
+  示例: "保存报告"、"读取配置文件"
+- 💬 **直接对话**: 用户打招呼、咨询能力、闲聊等 → 直接文本回复
+
+🧠 **语义理解重点**:
+- 重点理解用户的**真实意图**，而不是表面词汇
+- "工作"、"事项"、"完成情况" = 任务查询
+- "怎么样"、"如何"、"什么" + 外部信息 = 搜索
+
+🤖 **响应策略**:
+1. 优先调用最匹配的工具函数
+2. 如果意图不明确，选择最可能的工具
+3. 对于纯对话性质的请求，直接文本回复
+
+请智能分析用户意图，选择最佳工具。"""
 
 
 def _get_smart_router_system_prompt() -> str:
     """获取智能路由系统提示（参考CLI端）"""
     return """你是GLM (General Language Model) by ZhipuAI, 一个工具驱动的助手。始终遵循这个决策协议：
 
-- Step 1: 调用 `intent_router` 来决定行动，行动类型包括 ['show_plan','show_tasks','show_plan_graph','execute_task','search','unknown']。
-- Step 2: 对于显示类行动 (show_* / search)，你可以直接调用相应的工具。
+- Step 1: 调用 `intent_router` 来决定行动，行动类型包括 ['show_plan','show_tasks','show_plan_graph','execute_task','search','database_query','unknown']。
+- Step 2: 对于显示类行动 (show_* / search / database_query)，你可以直接调用相应的工具。
 - Step 3: 对于执行类行动 (execute_task)，不要直接执行，等待人类确认。
 - 永远不要绕过确认直接调用执行工具。
 
-工具使用指南:
-- 'show_tasks': 当用户询问任务、待办、清单时
-- 'search': 当用户询问天气、新闻、搜索信息时
-- 'show_plan': 当用户询问计划、项目时
-- 'execute_task': 当用户要求执行特定任务时
-- 'unknown': 当意图不明确时
+重要工具选择指南:
+🔍 'database_query': 当用户询问任务、待办、清单、项目进度时 - 查询本地数据库
+🌐 'search': 当用户询问天气、新闻、最新信息时 - 联网搜索
+📋 'show_tasks': 显示任务列表
+📊 'show_plan': 显示计划详情
+⚡ 'execute_task': 执行特定任务（需确认）
+❓ 'unknown': 当意图不明确时
 
 请根据用户消息判断意图并执行相应操作。"""
+
+
+async def _parse_llm_tool_selection(llm_response: str, original_message: str, tools_definition: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """解析LLM的工具选择结果"""
+    try:
+        # 检查LLM是否进行了function calling
+        # 这里需要根据实际的LLM响应格式来解析
+        
+        # 如果LLM直接返回文本回复（没有调用工具）
+        if not any(tool_name in llm_response.lower() for tool_name in ['database_query', 'web_search', 'file_operations']):
+            return {
+                "response": llm_response,
+                "suggestions": ["继续对话", "询问其他问题"],
+                "actions": [],
+                "action": "direct_response",
+                "confidence": 0.8
+            }
+        
+        # 尝试推断LLM想要调用的工具
+        message_lower = original_message.lower()
+        
+        # 任务查询检测（增强语义识别）
+        task_keywords = ["任务", "待办", "清单", "列表", "todo", "项目", "进度", "工作", "事项", "计划"]
+        query_keywords = ["查看", "显示", "列出", "看看", "有什么", "多少", "统计", "查询", "还有", "哪些", "没有完成", "未完成"]
+        work_context = ["工作", "完成", "未完成", "没完成", "剩余", "还剩", "进行中"]
+        
+        # 检查任务相关 + 查询相关 或者 工作上下文
+        has_task_query = (any(t in message_lower for t in task_keywords) and any(q in message_lower for q in query_keywords)) or \
+                        (any(w in message_lower for w in work_context) and any(q in message_lower for q in query_keywords))
+        
+        if has_task_query:
+            # 调用数据库查询工具
+            result = await execute_tool("database_query", 
+                                      database="data/databases/main/tasks.db",
+                                      sql="SELECT * FROM tasks WHERE status = 'pending' ORDER BY priority ASC, id DESC LIMIT 10",
+                                      operation="query")
+            
+            return await _format_database_result(result, "待办任务查询")
+        
+        # 搜索查询检测  
+        search_keywords = ["天气", "新闻", "搜索", "查找", "最新", "什么是", "如何"]
+        if any(s in message_lower for s in search_keywords):
+            # 调用网络搜索工具
+            result = await execute_tool("web_search", 
+                                      query=original_message,
+                                      max_results=5)
+            
+            return await _format_search_result(result, original_message)
+        
+        # 如果无法确定，返回None让系统使用备用方案
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ LLM工具选择解析失败: {e}")
+        return None
+
+
+async def _format_database_result(result: Dict[str, Any], description: str) -> Dict[str, Any]:
+    """格式化数据库查询结果"""
+    try:
+        logger.info(f"🔍 格式化数据库结果: {result}")
+        
+        if isinstance(result, dict) and result.get("success"):
+            # Tool Box返回的数据在'rows'字段，不是'data'字段
+            data = result.get("rows", [])
+            if data:
+                response = f"📊 {description}结果：\n\n"
+                if isinstance(data, list) and len(data) > 0:
+                    response += f"找到 {len(data)} 条记录：\n"
+                    for i, item in enumerate(data[:10], 1):
+                        if isinstance(item, dict):
+                            name = item.get("name", f"记录{i}")
+                            status = item.get("status", "未知")
+                            # 清理任务名称，移除前缀
+                            if name.startswith(('ROOT:', 'COMPOSITE:', 'ATOMIC:')):
+                                name = name.split(':', 1)[1].strip()
+                            response += f"{i}. {name} ({status})\n"
+                else:
+                    response += str(data)
+            else:
+                response = "📭 暂无相关数据"
+        else:
+            response = f"❌ 数据库查询失败: {result}"
+        
+        return {
+            "response": response,
+            "suggestions": ["查看详细信息", "刷新数据", "修改筛选条件"],
+            "actions": [{"type": "refresh_data", "label": "刷新数据", "data": {}}],
+            "action": "database_query",
+            "confidence": 0.95
+        }
+    except Exception as e:
+        return {
+            "response": f"❌ 结果格式化失败: {str(e)}",
+            "suggestions": ["重试查询"],
+            "actions": [],
+            "action": "database_query",
+            "confidence": 0.5
+        }
+
+
+async def _format_search_result(result: Dict[str, Any], query: str) -> Dict[str, Any]:
+    """格式化搜索结果"""
+    try:
+        if isinstance(result, dict) and result.get("success"):
+            search_engine = result.get("search_engine", "unknown")
+            
+            if search_engine == "perplexity":
+                # Perplexity返回智能回答
+                search_response = f"🧠 **智能搜索回答**：\n\n{result.get('response', '无搜索结果')}"
+            elif search_engine == "tavily_fallback":
+                # Perplexity fallback to Tavily
+                if "results" in result:
+                    results = result["results"]
+                    if results:
+                        search_response = f"🔍 **搜索结果** (Perplexity不可用，使用备用搜索，{len(results)}条)：\n\n"
+                        for i, item in enumerate(results[:5], 1):
+                            title = item.get("title", "无标题")
+                            snippet = item.get("snippet", "无内容摘要")
+                            source = item.get("source", "")
+                            search_response += f"**{i}. {title}**\n{snippet}\n来源: {source}\n\n"
+                    else:
+                        search_response = "📭 未找到相关搜索结果"
+                else:
+                    search_response = "❌ 备用搜索也失败了"
+            else:
+                # Tavily等返回搜索结果列表
+                if "results" in result:
+                    results = result["results"]
+                    if results:
+                        search_response = f"🔍 **搜索结果** ({len(results)}条)：\n\n"
+                        for i, item in enumerate(results[:5], 1):
+                            title = item.get("title", "无标题")
+                            snippet = item.get("snippet", "无内容摘要")
+                            source = item.get("source", "")
+                            search_response += f"**{i}. {title}**\n{snippet}\n来源: {source}\n\n"
+                    else:
+                        search_response = "📭 未找到相关搜索结果"
+                else:
+                    search_response = result.get("formatted_response", str(result))
+        else:
+            error_msg = result.get("error", "未知错误")
+            search_response = f"❌ 搜索失败：{error_msg}"
+        
+        return {
+            "response": search_response,
+            "suggestions": ["搜索更多", "相关信息", "继续对话"],
+            "actions": [{"type": "search_more", "label": "搜索更多", "data": {"query": query}}],
+            "action": "search",
+            "confidence": 0.9
+        }
+    except Exception as e:
+        return {
+            "response": f"❌ 搜索结果格式化失败: {str(e)}",
+            "suggestions": ["重试搜索"],
+            "actions": [],
+            "action": "search",
+            "confidence": 0.5
+        }
+
+
+async def _direct_semantic_analysis(message: str) -> Optional[Dict[str, Any]]:
+    """直接语义分析 - 最后的备用方案"""
+    try:
+        message_lower = message.lower()
+        
+        # 任务查询的多种表达方式
+        task_patterns = [
+            # 直接询问
+            any(word in message_lower for word in ["任务", "待办", "todo", "清单"]),
+            # 工作相关
+            ("工作" in message_lower and any(word in message_lower for word in ["完成", "没完成", "未完成", "剩余", "还有", "哪些"])),
+            # 项目相关  
+            ("项目" in message_lower and any(word in message_lower for word in ["进度", "状态", "完成"])),
+            # 事项相关
+            ("事项" in message_lower and any(word in message_lower for word in ["还有", "剩余", "未完成"])),
+        ]
+        
+        # 查询动作词
+        query_actions = any(word in message_lower for word in ["看", "查", "显示", "列出", "告诉", "帮我"])
+        
+        if any(task_patterns) and query_actions:
+            logger.info(f"🎯 直接语义分析识别为任务查询: {message}")
+            
+            # 调用数据库查询工具
+            result = await execute_tool("database_query", 
+                                      database="data/databases/main/tasks.db",
+                                      sql="SELECT * FROM tasks WHERE status = 'pending' ORDER BY priority ASC, id DESC LIMIT 10",
+                                      operation="query")
+            
+            return await _format_database_result(result, "待办任务查询")
+        
+        # 搜索查询检测
+        search_patterns = [
+            any(word in message_lower for word in ["天气", "新闻", "最新"]),
+            ("什么是" in message_lower or "如何" in message_lower or "怎么" in message_lower),
+            any(word in message_lower for word in ["搜索", "查找", "search"]),
+        ]
+        
+        if any(search_patterns):
+            logger.info(f"🎯 直接语义分析识别为搜索: {message}")
+            
+            result = await execute_tool("web_search", 
+                                      query=message,
+                                      max_results=5)
+            
+            return await _format_search_result(result, message)
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ 直接语义分析失败: {e}")
+        return None
 
 
 def _parse_intent_from_response(original_message: str) -> Optional[Dict[str, Any]]:
@@ -321,9 +634,13 @@ def _parse_intent_from_response(original_message: str) -> Optional[Dict[str, Any
         
         if has_task and has_query:
             return {
-                "action": "show_tasks", 
-                "args": {"title": "当前任务"},
-                "confidence": 0.9
+                "action": "database_query",
+                "args": {
+                    "operation": "query",
+                    "query": "SELECT * FROM tasks WHERE status = 'pending' ORDER BY priority ASC, id DESC",
+                    "description": "查询待办任务列表"
+                },
+                "confidence": 0.95
             }
         
         # 地点+天气搜索意图（专门针对你的例子）
@@ -348,9 +665,13 @@ def _parse_intent_from_response(original_message: str) -> Optional[Dict[str, Any
                 "confidence": 0.95
             }
         
-        # 通用搜索意图  
-        search_keywords = ["搜索", "查询", "search", "find", "新闻", "资讯", "信息"]
-        if any(keyword in message_lower for keyword in search_keywords):
+        # 通用搜索意图（排除任务相关的查询）
+        search_keywords = ["搜索", "search", "find", "新闻", "资讯", "信息"]
+        # 注意：不包含"查询"，因为它经常用于任务查询
+        has_search = any(keyword in message_lower for keyword in search_keywords)
+        
+        # 如果包含搜索关键词，但不是任务相关，则使用搜索
+        if has_search and not has_task:
             return {
                 "action": "search",
                 "args": {"query": original_message.strip(), "max_results": 5},
@@ -390,17 +711,84 @@ async def _execute_routed_action(intent_result: Dict[str, Any], original_message
                 "confidence": confidence
             }
         
+        elif action == "database_query":
+            # 执行数据库查询（使用Tool Box）
+            try:
+                operation = args.get("operation", "query")
+                sql_query = args.get("query", "")
+                description = args.get("description", "数据库查询")
+                
+                # 调用Tool Box的database_query工具（注意参数名是sql而不是query）
+                result = await execute_tool("database_query", 
+                                          database="data/databases/main/tasks.db",
+                                          sql=sql_query, 
+                                          operation=operation)
+                
+                if isinstance(result, dict) and result.get("success"):
+                    data = result.get("data", [])
+                    if data:
+                        response = f"📊 {description}结果：\n\n"
+                        if isinstance(data, list) and len(data) > 0:
+                            response += f"找到 {len(data)} 条记录：\n"
+                            for i, item in enumerate(data[:10], 1):  # 最多显示10条
+                                if isinstance(item, dict):
+                                    name = item.get("name", f"记录{i}")
+                                    status = item.get("status", "未知")
+                                    response += f"{i}. {name} ({status})\n"
+                        else:
+                            response += str(data)
+                    else:
+                        response = "📭 暂无相关数据"
+                else:
+                    response = f"❌ 数据库查询失败: {result}"
+                
+                return {
+                    "response": response,
+                    "suggestions": ["查看详细信息", "刷新数据", "修改筛选条件"],
+                    "actions": [{"type": "refresh_data", "label": "刷新数据", "data": {}}],
+                    "action": action,
+                    "confidence": confidence
+                }
+            except Exception as e:
+                logger.error(f"❌ 数据库查询执行失败: {e}")
+                return {
+                    "response": f"❌ 查询执行失败: {str(e)}",
+                    "suggestions": ["重试查询", "检查连接"],
+                    "actions": [],
+                    "action": action,
+                    "confidence": confidence
+                }
+        
         elif action == "search":
-            # 执行网络搜索
-            query = args.get("query", original_message)
-            search_response = await _handle_web_search(query, args.get("max_results", 5))
-            return {
-                "response": search_response,
-                "suggestions": ["搜索更多", "相关信息", "继续对话"],
-                "actions": [{"type": "search_more", "label": "搜索更多", "data": {"query": query}}],
-                "action": action,
-                "confidence": confidence
-            }
+            # 执行网络搜索（使用Tool Box）
+            try:
+                query = args.get("query", original_message)
+                max_results = args.get("max_results", 5)
+                
+                # 调用Tool Box的web_search工具
+                result = await execute_tool("web_search", query=query, max_results=max_results)
+                
+                if isinstance(result, dict) and result.get("success"):
+                    search_response = result.get("formatted_response", str(result))
+                else:
+                    search_response = f"🔍 搜索结果：{str(result)}"
+                
+                return {
+                    "response": search_response,
+                    "suggestions": ["搜索更多", "相关信息", "继续对话"],
+                    "actions": [{"type": "search_more", "label": "搜索更多", "data": {"query": query}}],
+                    "action": action,
+                    "confidence": confidence
+                }
+            except Exception as e:
+                logger.error(f"❌ 网络搜索执行失败: {e}")
+                return {
+                    "response": f"❌ 搜索执行失败: {str(e)}",
+                    "suggestions": ["重试搜索", "修改查询"],
+                    "actions": [],
+                    "action": action,
+                    "confidence": confidence
+                }
         
         elif action == "show_plan":
             # 显示计划
