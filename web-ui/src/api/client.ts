@@ -5,7 +5,7 @@ import { ApiResponse } from '../types/index';
 const createApiClient = (): AxiosInstance => {
   const client = axios.create({
     baseURL: 'http://localhost:8000',  // 直接连接后端API
-    timeout: 30000,
+    timeout: 120000,
     headers: {
       'Content-Type': 'application/json',
     },
@@ -67,13 +67,15 @@ export class BaseApi {
   protected async request<T>(
     method: 'get' | 'post' | 'put' | 'delete',
     url: string,
-    data?: any
+    data?: any,
+    params?: Record<string, any>
   ): Promise<T> {
     try {
       const response = await this.client.request({
         method,
         url,
         data,
+        params,
       });
       
       console.log(`📡 API ${method.toUpperCase()} ${url}:`, response.status, response.data);
@@ -98,8 +100,8 @@ export class BaseApi {
     }
   }
 
-  protected async get<T>(url: string): Promise<T> {
-    return this.request<T>('get', url);
+  protected async get<T>(url: string, params?: Record<string, any>): Promise<T> {
+    return this.request<T>('get', url, undefined, params);
   }
 
   protected async post<T>(url: string, data?: any): Promise<T> {

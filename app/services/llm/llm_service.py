@@ -6,6 +6,7 @@ across different executors and provides consistent error handling and retry logi
 """
 
 import asyncio
+import functools
 import json
 import logging
 import time
@@ -148,7 +149,8 @@ class LLMService:
             
             # Fallback to sync execution in thread pool
             loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, self._execute_chat, prompt, **kwargs)
+            bound = functools.partial(self._execute_chat, prompt, **kwargs)
+            return await loop.run_in_executor(None, bound)
             
         except Exception as e:
             logger.error(f"Async LLM chat execution failed: {e}")

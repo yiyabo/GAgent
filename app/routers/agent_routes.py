@@ -78,11 +78,17 @@ async def create_agent_workflow(request: AgentRequest):
         
         # 步骤2: 创建ROOT任务
         logger.info("🌳 步骤2: 创建ROOT任务")
+        session_context = request.context or {}
+        session_id = session_context.get("session_id")
+        workflow_hint = session_context.get("workflow_id")
+
         root_task_id = default_repo.create_task(
             name=f"ROOT: {plan_result['title']}",
             status="pending",
             priority=1,
-            task_type="root"
+            task_type="root",
+            session_id=session_id,
+            workflow_id=workflow_hint,
         )
         
         # 步骤3: 创建简化的任务层次结构

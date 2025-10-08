@@ -12,6 +12,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useSystemStore } from '@store/system';
 import { useTasksStore } from '@store/tasks';
 import { tasksApi } from '@api/tasks';
+import { resolveScopeParams } from '@api/scope';
+import { useChatStore } from '@store/chat';
 import DAGVisualization from '@components/dag/DAGVisualization';
 
 const { Title, Text } = Typography;
@@ -19,11 +21,21 @@ const { Title, Text } = Typography;
 const Dashboard: React.FC = () => {
   const { systemStatus } = useSystemStore();
   const { tasks, getTaskStats } = useTasksStore();
+  const { currentWorkflowId, currentSession } = useChatStore((state) => ({
+    currentWorkflowId: state.currentWorkflowId,
+    currentSession: state.currentSession,
+  }));
 
   // 获取任务统计数据
   const { data: taskStats, isLoading: statsLoading } = useQuery({
-    queryKey: ['task-stats'],
-    queryFn: tasksApi.getTaskStats,
+    queryKey: ['task-stats', currentWorkflowId, currentSession?.session_id],
+    queryFn: () => {
+      const scope = resolveScopeParams({
+        workflow_id: currentWorkflowId,
+        session_id: currentSession?.session_id ?? null,
+      });
+      return tasksApi.getTaskStats(scope);
+    },
     refetchInterval: 10000, // 10秒刷新一次
   });
 

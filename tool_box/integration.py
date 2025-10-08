@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from .client import MCPToolBoxClient
 from .tools import get_tool_registry, register_tool
-from .tools_impl import database_query_tool, file_operations_tool, web_search_tool
+from .tools_impl import database_query_tool, file_operations_tool, internal_api_tool, web_search_tool
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,17 @@ class ToolBoxIntegration:
             handler=database_query_tool["handler"],
             tags=database_query_tool.get("tags", []),
             examples=database_query_tool.get("examples", []),
+        )
+
+        # Register internal API tool
+        register_tool(
+            name=internal_api_tool["name"],
+            description=internal_api_tool["description"],
+            category=internal_api_tool["category"],
+            parameters_schema=internal_api_tool["parameters_schema"],
+            handler=internal_api_tool["handler"],
+            tags=internal_api_tool.get("tags", []),
+            examples=internal_api_tool.get("examples", []),
         )
 
         logger.info("Built-in tools registered")

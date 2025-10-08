@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Card, Typography, Button, Space, Badge, Tooltip, Divider, Switch, Spin } from 'antd';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Card, Typography, Button, Space, Badge, Tooltip, Divider, Select, Empty } from 'antd';
 import {
   NodeIndexOutlined,
   FullscreenOutlined,
@@ -8,42 +8,106 @@ import {
   EyeOutlined,
   EyeInvisibleOutlined,
 } from '@ant-design/icons';
+import { usePlanTitles, usePlanTasks } from '@hooks/usePlans';
+import PlanDagVisualization from '@components/dag/PlanDagVisualization';
+import type { PlanTaskNode } from '@/types';
 import { useTasksStore } from '@store/tasks';
-import { useAllTasks, useTaskStats } from '@hooks/useTasks';
-import DAGVisualization from '@components/dag/DAGVisualization';
+import { useChatStore } from '@store/chat';
 
 const { Title, Text } = Typography;
 
 const DAGSidebar: React.FC = () => {
-  const { 
-    dagNodes, 
-    selectedTask,
-    currentPlan 
-  } = useTasksStore();
-
+  const { setCurrentPlan } = useTasksStore((state) => ({
+    setCurrentPlan: state.setCurrentPlan,
+  }));
+  const { setChatContext, currentWorkflowId, currentSession } = useChatStore((state) => ({
+    setChatContext: state.setChatContext,
+    currentWorkflowId: state.currentWorkflowId,
+    currentSession: state.currentSession,
+  }));
+  const [selectedTask, setSelectedTask] = useState<PlanTaskNode | null>(null);
   const [dagVisible, setDagVisible] = useState(true);
+
+  // 稳定化session_id以避免无限循环
+  const sessionId = currentSession?.session_id;
   
-  // 使用真实的任务数据
-  const { isLoading: tasksLoading, refetch } = useAllTasks();
-  const { data: statsData } = useTaskStats();
-  
-  // 处理不同的统计数据格式
-  const stats = statsData ? {
-    total: statsData.total,
-    pending: (statsData as any).by_status?.pending || (statsData as any).pending || 0,
-    running: (statsData as any).by_status?.running || (statsData as any).running || 0,
-    completed: (statsData as any).by_status?.completed || (statsData as any).completed || 0,
-    failed: (statsData as any).by_status?.failed || (statsData as any).failed || 0,
-  } : {
-    total: 0,
-    pending: 0,
-    running: 0,
-    completed: 0,
-    failed: 0,
-  };
+  const workflowFilters = useMemo(
+    () => ({
+      workflowId: currentWorkflowId || undefined,
+      sessionId: sessionId || undefined,
+    }),
+    [currentWorkflowId, sessionId]
+  );
+
+  // 不再需要planTitles，因为一个对话只对应一个ROOT任务
+  const [selectedPlan, setSelectedPlan] = useState<string | undefined>();
+  const {
+    data: planTasks = [],
+    isFetching: planTasksLoading,
+    refetch: refetchTasks,
+  } = usePlanTasks(workflowFilters);
+
+  // 移除错误的useCallback包装
+
+  // 监听全局任务更新事件，自动刷新侧栏DAG数据
+  useEffect(() => {
+    const handleTasksUpdated = (event: CustomEvent) => {
+      console.log('📣 DAGSidebar 收到任务更新事件:', event.detail);
+      refetchTasks();
+    };
+    window.addEventListener('tasksUpdated', handleTasksUpdated as EventListener);
+    return () => window.removeEventListener('tasksUpdated', handleTasksUpdated as EventListener);
+  }, [refetchTasks]);
+
+  useEffect(() => {
+    // 核心逻辑：一个对话只对应一个ROOT任务
+    if (planTasks.length > 0) {
+      // 查找当前会话的ROOT任务（应该只有一个）
+      const rootTask = planTasks.find((task) => task.task_type === 'root');
+      if (rootTask && rootTask.name !== selectedTask?.name) {
+        // 设置为当前会话的唯一ROOT任务
+        setSelectedPlan(rootTask.name);
+        setSelectedTask(rootTask);
+        // 使用setTimeout异步调用，避免同步状态更新冲突
+        setTimeout(() => {
+          setCurrentPlan(rootTask.name);
+          setChatContext({
+            planTitle: rootTask.name,
+            taskId: rootTask.id,
+            taskName: rootTask.name,
+          });
+        }, 0);
+      }
+    } else if (selectedTask !== null) {
+      setSelectedTask(null);
+      setSelectedPlan(undefined);
+      setTimeout(() => {
+        setCurrentPlan(null);
+      }, 0);
+    }
+  }, [planTasks, selectedTask]); // 只依赖planTasks，不再依赖planTitles
+
+  const stats = useMemo(() => {
+    if (!planTasks || planTasks.length === 0) {
+      return {
+        total: 0,
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+      };
+    }
+    return {
+      total: planTasks.length,
+      pending: planTasks.filter((task) => task.status === 'pending').length,
+      running: planTasks.filter((task) => task.status === 'running').length,
+      completed: planTasks.filter((task) => task.status === 'completed').length,
+      failed: planTasks.filter((task) => task.status === 'failed').length,
+    };
+  }, [planTasks]);
 
   const handleRefresh = () => {
-    refetch();
+    refetchTasks();
   };
 
   return (
@@ -113,13 +177,24 @@ const DAGSidebar: React.FC = () => {
           )}
         </Space>
 
-        {currentPlan && (
-          <div style={{ marginTop: 8 }}>
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              当前计划: {currentPlan}
-            </Text>
+        <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 12 }}>
+          <Text type="secondary" style={{ fontSize: 11 }}>当前ROOT任务：</Text>
+          <div 
+            style={{ 
+              padding: '6px 12px',
+              background: '#f5f5f5',
+              border: '1px solid #d9d9d9',
+              borderRadius: '6px',
+              fontSize: '14px',
+              color: selectedPlan ? '#262626' : '#8c8c8c'
+            }}
+          >
+            {selectedPlan || '暂无ROOT任务'}
           </div>
-        )}
+          <Text type="secondary" style={{ fontSize: 10, color: '#999' }}>
+            💡 一个对话对应一个ROOT任务，所有子任务都从此展开
+          </Text>
+        </Space>
       </div>
 
       {/* DAG可视化区域 */}
@@ -129,31 +204,36 @@ const DAGSidebar: React.FC = () => {
           padding: '8px',
           overflow: 'hidden',
         }}>
-          {dagNodes.length > 0 ? (
-            <DAGVisualization 
-              height="100%" 
-              interactive={true}
-              showToolbar={false}
+          {planTasks && planTasks.length > 0 ? (
+            <PlanDagVisualization
+              tasks={planTasks}
+              loading={planTasksLoading}
+              onSelectTask={(task) => {
+                setSelectedTask(task);
+                if (task) {
+                  const rootName = selectedPlan || planTasks.find((t) => t.task_type === 'root')?.name || null;
+                  setChatContext({
+                    planTitle: rootName,
+                    taskId: task.id,
+                    taskName: task.name,
+                  });
+                } else {
+                  setChatContext({ taskId: null, taskName: null });
+                }
+              }}
+              height="100%"
             />
           ) : (
-            <div style={{
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#999',
-              padding: '20px',
-              textAlign: 'center',
-            }}>
-              <NodeIndexOutlined style={{ fontSize: 48, marginBottom: 16, color: '#d9d9d9' }} />
-              <Text type="secondary" style={{ fontSize: 14, marginBottom: 8 }}>
-                暂无任务数据
-              </Text>
-              <Text type="secondary" style={{ fontSize: 12, lineHeight: 1.5 }}>
-                在聊天中创建计划后<br />这里将显示任务结构图
-              </Text>
-            </div>
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={
+                planTasksLoading
+                  ? '加载任务中...'
+                  : (currentWorkflowId || currentSession?.session_id)
+                    ? '当前会话尚无任务'
+                    : '请先开始一个对话或创建工作流'
+              }
+            />
           )}
         </div>
       )}
@@ -208,7 +288,7 @@ const DAGSidebar: React.FC = () => {
             size="small" 
             icon={<ReloadOutlined />}
             onClick={handleRefresh}
-            loading={tasksLoading}
+            loading={planTasksLoading}
           >
             刷新
           </Button>

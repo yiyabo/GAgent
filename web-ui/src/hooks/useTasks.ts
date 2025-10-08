@@ -5,12 +5,15 @@ import { useTasksStore } from '@store/tasks';
 import { Task } from '../types/index';
 
 // 获取所有任务的Hook
-export const useAllTasks = (refetchInterval?: number) => {
+export const useAllTasks = (
+  filters?: { session_id?: string; workflow_id?: string },
+  refetchInterval?: number
+) => {
   const { setTasks } = useTasksStore();
   
   const query = useQuery({
-    queryKey: ['tasks', 'all'],
-    queryFn: tasksApi.getAllTasks,
+    queryKey: ['tasks', 'all', filters?.session_id, filters?.workflow_id],
+    queryFn: () => tasksApi.getAllTasks(filters),
     refetchInterval: refetchInterval || 30000, // 默认30秒刷新
     staleTime: 5000,
   });
@@ -20,7 +23,7 @@ export const useAllTasks = (refetchInterval?: number) => {
     if (query.data) {
       setTasks(query.data);
     }
-  }, [query.data, setTasks]);
+  }, [query.data]); // 移除setTasks依赖，避免无限循环
 
   return query;
 };
@@ -40,7 +43,7 @@ export const useTaskHierarchy = (planTitle?: string) => {
     if (query.data) {
       setTasks(query.data);
     }
-  }, [query.data, setTasks]);
+  }, [query.data]); // 移除setTasks依赖，避免无限循环
 
   return query;
 };
@@ -94,19 +97,19 @@ export const useSearchTasks = (query: string, filters?: {
   status?: string;
   task_type?: string;
   plan_title?: string;
-}) => {
+}, scope?: { session_id?: string; workflow_id?: string }) => {
   return useQuery({
-    queryKey: ['tasks', 'search', query, filters],
-    queryFn: () => tasksApi.searchTasks(query, filters),
+    queryKey: ['tasks', 'search', query, filters, scope?.session_id, scope?.workflow_id],
+    queryFn: () => tasksApi.searchTasks(query, filters, scope),
     enabled: query.length > 2, // 至少输入3个字符才搜索
   });
 };
 
 // 获取任务统计的Hook
-export const useTaskStats = () => {
+export const useTaskStats = (filters?: { session_id?: string; workflow_id?: string }) => {
   return useQuery({
-    queryKey: ['tasks', 'stats'],
-    queryFn: tasksApi.getTaskStats,
+    queryKey: ['tasks', 'stats', filters?.session_id, filters?.workflow_id],
+    queryFn: () => tasksApi.getTaskStats(filters),
     refetchInterval: 15000, // 15秒刷新统计数据
   });
 };

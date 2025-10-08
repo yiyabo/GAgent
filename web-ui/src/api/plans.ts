@@ -1,5 +1,6 @@
 import { BaseApi } from './client';
-import { Plan, PlanProposal } from '../types/index';
+import { mergeWithScope, resolveScopeParams, ScopeOverrides } from './scope';
+import { Plan, PlanProposal, PlanTaskNode } from '../types/index';
 
 export class PlansApi extends BaseApi {
   // 提议计划 - 使用箭头函数确保this绑定
@@ -13,8 +14,22 @@ export class PlansApi extends BaseApi {
   }
 
   // 获取所有计划
-  getAllPlans = async (): Promise<Plan[]> => {
-    return this.get<Plan[]>('/plans');
+  getAllPlans = async (filters?: ScopeOverrides): Promise<{ plans: string[] }> => {
+    return this.get<{ plans: string[] }>('/plans', resolveScopeParams(filters));
+  }
+
+  // 获取计划标题列表（便捷封装）
+  listPlanTitles = async (filters?: ScopeOverrides): Promise<string[]> => {
+    const data = await this.getAllPlans(filters);
+    if (data && Array.isArray(data.plans)) {
+      return data.plans;
+    }
+    return [];
+  }
+
+  // 获取计划任务
+  getPlanTasks = async (title: string, filters?: ScopeOverrides): Promise<PlanTaskNode[]> => {
+    return this.get<PlanTaskNode[]>(`/plans/${encodeURIComponent(title)}/tasks`, resolveScopeParams(filters));
   }
 
   // 获取计划详情
@@ -86,7 +101,7 @@ export class PlansApi extends BaseApi {
     category: string;
     tasks_count: number;
   }[]> => {
-    return this.get('/plans/templates');
+    return this.get('/plans/templates', resolveScopeParams());
   }
 
   // 从模板创建计划
@@ -95,10 +110,10 @@ export class PlansApi extends BaseApi {
     title: string,
     customizations?: Record<string, any>
   ): Promise<Plan> => {
-    return this.post(`/plans/templates/${templateId}/create`, {
+    return this.post(`/plans/templates/${templateId}/create`, mergeWithScope({
       title,
       customizations,
-    });
+    }));
   }
 }
 

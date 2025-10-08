@@ -23,6 +23,8 @@ const ChatMainArea: React.FC = () => {
     inputText,
     isProcessing,
     currentSession,
+    currentPlanTitle,
+    currentTaskName,
     setInputText,
     sendMessage,
     startNewSession,
@@ -40,15 +42,16 @@ const ChatMainArea: React.FC = () => {
     if (!currentSession) {
       startNewSession('AI 任务编排助手');
     }
-  }, [currentSession, startNewSession]);
+  }, [currentSession]); // 移除函数依赖，避免无限循环
 
   // 处理发送消息
   const handleSendMessage = async () => {
     if (!inputText.trim() || isProcessing) return;
 
     const metadata = {
-      task_id: selectedTask?.id,
-      plan_title: currentPlan || undefined,
+      task_id: selectedTask?.id ?? undefined,
+      plan_title: currentPlan || currentPlanTitle || undefined,
+      task_name: selectedTask?.name ?? currentTaskName ?? undefined,
     };
 
     await sendMessage(inputText.trim(), metadata);
@@ -172,10 +175,10 @@ const ChatMainArea: React.FC = () => {
           </div>
 
           {/* 上下文信息 */}
-          {(selectedTask || currentPlan) && (
+          {(selectedTask || currentPlan || currentPlanTitle || currentTaskName) && (
             <div style={{ fontSize: 12, color: '#666', textAlign: 'right' }}>
-              {currentPlan && <div>当前计划: {currentPlan}</div>}
-              {selectedTask && <div>选中任务: {selectedTask.name}</div>}
+              {(currentPlan || currentPlanTitle) && <div>当前计划: {currentPlan || currentPlanTitle}</div>}
+              {(selectedTask || currentTaskName) && <div>选中任务: {selectedTask?.name || currentTaskName}</div>}
             </div>
           )}
         </div>

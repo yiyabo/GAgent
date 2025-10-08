@@ -9,6 +9,19 @@ function App() {
 
   // 初始化系统状态检查
   useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      console.error('Unhandled error:', event.error || event.message);
+      message.error(`前端运行错误: ${event.message || '未知错误'}`, 6);
+    };
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      const reason = (event.reason && (event.reason.message || event.reason.toString())) || '未知原因';
+      console.error('Unhandled rejection:', event.reason);
+      message.error(`前端未处理的异常: ${reason}`, 6);
+    };
+
+    window.addEventListener('error', handleError);
+    window.addEventListener('unhandledrejection', handleRejection);
+
     const initializeApp = async () => {
       console.log('🚀 Initializing AI Task Orchestration System...');
       console.log('⚡ Running in PRODUCTION mode - using REAL APIs (No Mock)');
@@ -61,7 +74,12 @@ function App() {
     };
 
     initializeApp();
-  }, [setSystemStatus, setApiConnected]);
+
+    return () => {
+      window.removeEventListener('error', handleError);
+      window.removeEventListener('unhandledrejection', handleRejection);
+    };
+  }, []); // 移除store函数依赖，避免无限循环
 
   return <ChatLayout />;
 }

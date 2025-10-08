@@ -41,6 +41,11 @@ class TaskRepository(ABC):
         priority: Optional[int] = None,
         parent_id: Optional[int] = None,
         task_type: str = "atomic",
+        session_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        root_id: Optional[int] = None,
+        context_refs: Optional[str] = None,
+        artifacts: Optional[str] = None,
     ) -> int:
         raise NotImplementedError
 
@@ -58,7 +63,11 @@ class TaskRepository(ABC):
 
     # --- queries ---
     @abstractmethod
-    def list_all_tasks(self) -> List[Dict[str, Any]]:
+    def list_all_tasks(
+        self,
+        session_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
     @abstractmethod
@@ -89,6 +98,27 @@ class TaskRepository(ABC):
 
     @abstractmethod
     def list_plan_outputs(self, title: str) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+    # --- execution metadata ---
+    def update_task_context(self, task_id: int, *, context_refs: Optional[str] = None, artifacts: Optional[str] = None) -> None:
+        raise NotImplementedError
+
+    def append_execution_log(
+        self,
+        task_id: int,
+        *,
+        workflow_id: Optional[str] = None,
+        step_type: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        raise NotImplementedError
+
+    def list_execution_logs(self, task_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+    def get_workflow_metadata(self, workflow_id: str) -> Optional[Dict[str, Any]]:
         raise NotImplementedError
 
     # --- links (graph) ---
