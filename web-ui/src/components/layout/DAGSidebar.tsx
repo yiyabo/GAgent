@@ -9,7 +9,7 @@ import {
   EyeInvisibleOutlined,
 } from '@ant-design/icons';
 import { usePlanTitles, usePlanTasks } from '@hooks/usePlans';
-import PlanDagVisualization from '@components/dag/PlanDagVisualization';
+import PlanTreeVisualization from '@components/dag/PlanTreeVisualization';
 import type { PlanTaskNode } from '@/types';
 import { useTasksStore } from '@store/tasks';
 import { useChatStore } from '@store/chat';
@@ -205,7 +205,7 @@ const DAGSidebar: React.FC = () => {
           overflow: 'hidden',
         }}>
           {planTasks && planTasks.length > 0 ? (
-            <PlanDagVisualization
+            <PlanTreeVisualization
               tasks={planTasks}
               loading={planTasksLoading}
               onSelectTask={(task) => {
