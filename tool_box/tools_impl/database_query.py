@@ -145,6 +145,12 @@ async def database_query_handler(
 async def _execute_query(database: str, sql: str, params: Optional[List[Any]] = None) -> Dict[str, Any]:
     """Execute SELECT query using connection pool"""
     try:
+        # 🔒 专事专办检查：如果是查询pending任务且没有session_id过滤，记录警告
+        if ("tasks" in sql.lower() and "status" in sql.lower() and "pending" in sql.lower() 
+            and "session_id" not in sql.lower() and "SELECT" in sql.upper()):
+            logger.warning(f"🚨 检测到可能违反专事专办原则的SQL查询: {sql}")
+            logger.warning("💡 建议：待办任务查询应包含 session_id 过滤条件")
+        
         async with get_db_connection(database) as conn:
             cursor = conn.cursor()
 

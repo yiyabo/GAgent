@@ -47,10 +47,10 @@ export const useSystemStore = create<SystemState>()(
     setSystemStatus: (status) => set({ systemStatus: status }),
     
     // 设置API连接状态
-    setApiConnected: (connected) => set({ 
+    setApiConnected: (connected) => set((state) => ({ 
       apiConnected: connected,
-      systemStatus: { ...get().systemStatus, api_connected: connected }
-    }),
+      systemStatus: { ...state.systemStatus, api_connected: connected }
+    })),
     
     // 设置加载状态
     setLoading: (loading) => set({ loading }),

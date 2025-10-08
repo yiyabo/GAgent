@@ -7,12 +7,25 @@ from pydantic import BaseModel
 class TaskCreate(BaseModel):
     name: str
     task_type: Optional[str] = "atomic"
+    session_id: Optional[str] = None
+    workflow_id: Optional[str] = None
+    root_id: Optional[int] = None
 
 
 class Task(BaseModel):
     id: int
     name: str
     status: str
+    priority: Optional[int] = None
+    parent_id: Optional[int] = None
+    path: Optional[str] = None
+    depth: Optional[int] = None
+    task_type: Optional[str] = None
+    session_id: Optional[str] = None
+    workflow_id: Optional[str] = None
+    root_id: Optional[int] = None
+    context_refs: Optional[str] = None
+    artifacts: Optional[str] = None
 
 
 class PlanTaskIn(BaseModel):
@@ -83,6 +96,16 @@ class TaskExecutionResult(BaseModel):
     evaluation: Optional[EvaluationResult] = None
     iterations: int = 1  # Number of iterations performed
     execution_time: Optional[float] = None
+
+
+class TaskExecutionLog(BaseModel):
+    id: int
+    task_id: int
+    workflow_id: Optional[str] = None
+    step_type: str
+    content: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: Optional[str] = None
 
 
 # -----------------------------

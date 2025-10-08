@@ -126,38 +126,63 @@ class SmartEngineRouter:
             # 默认使用Perplexity (适合更多场景)
             return EngineType.PERPLEXITY, 0.5, "默认选择：通用信息查询"
 
-    def _calculate_perplexity_score(self, text: str) -> float:
-        """计算Perplexity引擎的匹配分数"""
-        score = 0.0
-        total_patterns = 0
-        
-        for category, patterns in self.perplexity_patterns.items():
-            if isinstance(patterns, list):
-                for pattern in patterns:
-                    total_patterns += 1
-                    if re.search(pattern, text):
-                        score += 1.0
-            else:
-                total_patterns += 1
-                if re.search(patterns, text):
-                    score += 1.0
-        
-        # 归一化分数
-        return score / max(total_patterns, 1) if total_patterns > 0 else 0.0
+    async def _calculate_perplexity_score(self, text: str) -> float:
+        """使用LLM计算Perplexity引擎的适用分数 - 科研项目零妥协版本"""
+        try:
+            from tool_box.router import get_smart_router
+            router = await get_smart_router()
+            
+            prompt = f"""
+分析以下用户请求，判断是否适合使用Perplexity搜索引擎处理:
 
-    def _calculate_glm_score(self, text: str) -> float:
-        """计算GLM引擎的匹配分数"""
-        score = 0.0
-        total_patterns = 0
-        
-        for category, patterns in self.glm_patterns.items():
-            for pattern in patterns:
-                total_patterns += 1
-                if re.search(pattern, text):
-                    score += 1.0
-        
-        # 归一化分数
-        return score / max(total_patterns, 1) if total_patterns > 0 else 0.0
+用户请求: {text}
+
+请考虑:
+1. 是否需要实时信息
+2. 是否需要网络搜索
+3. 是否涉及外部知识查询
+
+返回0.0-1.0的分数，表示适用程度。只返回数字。
+"""
+            
+            response = await router._call_glm_api(prompt)
+            try:
+                score = float(response.strip())
+                return max(0.0, min(1.0, score))
+            except:
+                return 0.5  # 默认中等适用性
+                
+        except Exception:
+            return 0.5
+
+    async def _calculate_glm_score(self, text: str) -> float:
+        """使用LLM计算GLM引擎的适用分数 - 科研项目零妥协版本"""  
+        try:
+            from tool_box.router import get_smart_router
+            router = await get_smart_router()
+            
+            prompt = f"""
+分析以下用户请求，判断是否适合使用GLM处理:
+
+用户请求: {text}
+
+请考虑:
+1. 是否需要任务管理
+2. 是否需要复杂推理
+3. 是否需要本地数据操作
+
+返回0.0-1.0的分数，表示适用程度。只返回数字。
+"""
+            
+            response = await router._call_glm_api(prompt)
+            try:
+                score = float(response.strip())
+                return max(0.0, min(1.0, score))
+            except:
+                return 0.5  # 默认中等适用性
+                
+        except Exception:
+            return 0.5
 
     def should_auto_route(self, confidence: float, threshold: float = 0.7) -> bool:
         """判断是否应该自动路由（置信度足够高）"""

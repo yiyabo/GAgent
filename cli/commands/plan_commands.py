@@ -246,7 +246,7 @@ class PlanCommands(MultiCommand):
                             self.io.print_warning("Using original plan (edited version invalid)")
 
             # 4. Approve plan (persist to database) via REST
-            _api_post("/plans/approve", plan_result, timeout=120)
+            _api_post("/plans/approve", plan_result, timeout=300)
 
             title = plan_result.get("title", "Untitled")
             self.io.print_success(f"Plan approved and saved to database: {title}")
@@ -323,7 +323,7 @@ class PlanCommands(MultiCommand):
         """Save assembled plan output to file."""
         try:
             encoded = urllib.parse.quote(title, safe="")
-            result = _api_get(f"/plans/{encoded}/assembled", timeout=120)
+            result = _api_get(f"/plans/{encoded}/assembled", timeout=300)
 
             if not isinstance(result, dict) or "combined" not in result:
                 self.io.print_error("Failed to get assembled output")
@@ -359,7 +359,7 @@ def _api_post(path: str, payload: Dict[str, Any], timeout: int = 300) -> Dict[st
     raise RuntimeError(f"POST {path} failed: HTTP {resp.status_code} {resp.text}")
 
 
-def _api_get(path: str, timeout: int = 120) -> Dict[str, Any]:
+def _api_get(path: str, timeout: int = 300) -> Dict[str, Any]:
     url = f"{BASE_URL}{path}"
     resp = requests.get(url, timeout=timeout)
     if 200 <= resp.status_code < 300:

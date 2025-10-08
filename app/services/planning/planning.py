@@ -97,7 +97,11 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
     return {"title": plan.get("title") or title, "tasks": norm_tasks}
 
 
-def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = None) -> Dict[str, Any]:
+def approve_plan_service(
+    plan: Dict[str, Any],
+    repo: Optional[TaskRepository] = None,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Persist tasks from plan into DB with name prefixing by [title].
     Optional hierarchical mode: if plan contains {"hierarchical": true}, create a root task
@@ -127,7 +131,7 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
             root_priority = None
         root_name = f"{prefix}{root_label}"  # e.g., "[Title] Plan Root"
         # Do not pass parent_id for root creation to keep compatibility with repos without parent_id arg
-        root_id = repo.create_task(root_name, status="pending", priority=root_priority)
+        root_id = repo.create_task(root_name, status="pending", priority=root_priority, session_id=session_id)
         repo.upsert_task_input(root_id, f"Root task node for plan '{title}'.")
 
     # Build existing index to avoid duplicate creation under the same plan
@@ -168,17 +172,17 @@ def approve_plan_service(plan: Dict[str, Any], repo: Optional[TaskRepository] = 
             except Exception:
                 # Fallback to creation if update path fails
                 if hierarchical and root_id is not None:
-                    task_id = repo.create_task(prefix + name, status="pending", priority=priority, parent_id=root_id)
+                    task_id = repo.create_task(prefix + name, status="pending", priority=priority, parent_id=root_id, session_id=session_id)
                 else:
-                    task_id = repo.create_task(prefix + name, status="pending", priority=priority)
+                    task_id = repo.create_task(prefix + name, status="pending", priority=priority, session_id=session_id)
                 repo.upsert_task_input(task_id, prompt_t)
                 created.append({"id": task_id, "name": name, "priority": priority})
         else:
             # Only pass parent_id when hierarchical mode is enabled to preserve backward compatibility
             if hierarchical and root_id is not None:
-                task_id = repo.create_task(prefix + name, status="pending", priority=priority, parent_id=root_id)
+                task_id = repo.create_task(prefix + name, status="pending", priority=priority, parent_id=root_id, session_id=session_id)
             else:
-                task_id = repo.create_task(prefix + name, status="pending", priority=priority)
+                task_id = repo.create_task(prefix + name, status="pending", priority=priority, session_id=session_id)
             repo.upsert_task_input(task_id, prompt_t)
             created.append({"id": task_id, "name": name, "priority": priority})
 

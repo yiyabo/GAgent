@@ -42,7 +42,9 @@ class ToolEnhancedExecutor:
         try:
             from tool_box import get_smart_router
 
-            self.tool_router = await get_smart_router()
+            # 重用全局router实例，避免重复创建
+            if self.tool_router is None:
+                self.tool_router = await get_smart_router()
             self._initialized = True
             logger.info("Tool-enhanced executor initialized successfully")
         except Exception as e:

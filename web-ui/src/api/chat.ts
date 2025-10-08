@@ -12,6 +12,7 @@ interface ChatRequest {
   history?: ChatMessage[];
   context?: Record<string, any>;
   mode?: 'assistant' | 'planner' | 'analyzer';
+  session_id?: string; // 🔒 专事专办：会话隔离参数
 }
 
 interface ChatResponse {
@@ -32,14 +33,20 @@ export class ChatApi extends BaseApi {
     plan_title?: string;
     history?: ChatMessage[];
     mode?: 'assistant' | 'planner' | 'analyzer';
+    workflow_id?: string;
+    session_id?: string;
+    metadata?: Record<string, any>;
   }): Promise<ChatResponse> => {
     const request: ChatRequest = {
       message,
       mode: context?.mode || 'assistant',
       history: context?.history || [],
+      session_id: context?.session_id, // 🔒 专事专办：将session_id提升为顶级参数
       context: {
         task_id: context?.task_id,
         plan_title: context?.plan_title,
+        workflow_id: context?.workflow_id,
+        ...context?.metadata, // 🔒 包含metadata信息
       }
     };
     

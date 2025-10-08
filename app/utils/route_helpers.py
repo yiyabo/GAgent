@@ -4,7 +4,9 @@
 包含所有路由共用的解析和验证函数，从main.py中提取出来。
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import HTTPException
 
 
 def parse_bool(val, default: bool = False) -> bool:
@@ -128,3 +130,44 @@ def sanitize_context_options(co: Dict[str, Any]) -> Dict[str, Any]:
         "save_snapshot": parse_bool(co.get("save_snapshot"), default=False),
         "label": (str(co.get("label")).strip()[:64] if co.get("label") else None),
     }
+
+
+def resolve_scope_params(
+    session_id: Optional[str],
+    workflow_id: Optional[str],
+    *,
+    repo=None,
+    require_scope: bool = False,
+    default_session: Optional[str] = None,  # 🔒 改为None，实现专事专办
+) -> Tuple[Optional[str], Optional[str]]:
+    """Validate and resolve session/workflow scope parameters.
+
+    When ``workflow_id`` is provided, ensure it存在且归属提供的 ``session_id``。
+    当 ``require_scope`` 为 ``True`` 且两个参数均为空时抛出 400。
+    默认情况下如果未提供任何作用域但指定了 ``default_session``，则回退到默认会话。
+    """
+
+    if repo is None:
+        from ..repository.tasks import default_repo
+
+        repo = default_repo
+
+    normalized_session = (session_id or "").strip() or None
+    normalized_workflow = (workflow_id or "").strip() or None
+
+    if require_scope and not normalized_session and not normalized_workflow:
+        raise HTTPException(status_code=400, detail="必须提供 session_id 或 workflow_id 参数")
+
+    if normalized_workflow:
+        metadata = repo.get_workflow_metadata(normalized_workflow)
+        if not metadata:
+            raise HTTPException(status_code=404, detail="指定的 workflow_id 不存在")
+        workflow_session = metadata.get("session_id") or None
+        if normalized_session and workflow_session and normalized_session != workflow_session:
+            raise HTTPException(status_code=403, detail="workflow_id 不属于指定的 session_id")
+        normalized_session = normalized_session or workflow_session
+
+    if not normalized_session and default_session:
+        normalized_session = default_session
+
+    return normalized_session, normalized_workflow

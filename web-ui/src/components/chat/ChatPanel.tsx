@@ -46,7 +46,7 @@ const ChatPanel: React.FC = () => {
     if (!currentSession) {
       startNewSession('AI 任务编排助手');
     }
-  }, [currentSession, startNewSession]);
+  }, [currentSession]); // 移除函数依赖，避免无限循环
 
   // 处理发送消息
   const handleSendMessage = async () => {

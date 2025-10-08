@@ -6,6 +6,8 @@ Split from the original monolithic executor_enhanced.py into focused components.
 """
 
 from .adversarial_execution_strategy import AdversarialExecutionStrategy
+from .atomic_executor import AtomicExecutor, execute_atomic_task
+from .assemblers import CompositeAssembler, RootAssembler
 from .base_executor import BaseTaskExecutor
 from .evaluation_orchestrator import EvaluationOrchestrator
 from .llm_execution_strategy import LLMExecutionStrategy
@@ -19,4 +21,8 @@ __all__ = [
     "MultiExpertExecutionStrategy",
     "AdversarialExecutionStrategy",
     "PromptBuilder",
+    "AtomicExecutor",
+    "CompositeAssembler",
+    "RootAssembler",
+    "execute_atomic_task",
 ]
