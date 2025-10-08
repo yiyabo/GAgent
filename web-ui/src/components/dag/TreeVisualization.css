@@ -1,0 +1,187 @@
+.tree-visualization-container {
+  height: calc(100vh - 200px);
+  overflow-y: auto;
+  overflow-x: auto;
+  padding: 20px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  border-radius: 8px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', 'Courier New', monospace;
+}
+
+.tree-content {
+  min-width: fit-content;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.tree-node {
+  position: relative;
+  margin: 0;
+  padding: 0;
+}
+
+.tree-node-content {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  margin: 2px 0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-radius: 4px;
+  min-height: 36px;
+}
+
+.tree-node-content:hover {
+  background: rgba(24, 144, 255, 0.08);
+  transform: translateX(4px);
+}
+
+.tree-node-content.task-type-root {
+  background: linear-gradient(90deg, rgba(114, 46, 209, 0.1) 0%, rgba(114, 46, 209, 0.05) 100%);
+  border-left: 4px solid #722ed1;
+  font-weight: bold;
+}
+
+.tree-node-content.task-type-composite {
+  background: linear-gradient(90deg, rgba(24, 144, 255, 0.08) 0%, rgba(24, 144, 255, 0.03) 100%);
+  border-left: 3px solid #1890ff;
+}
+
+.tree-node-content.task-type-atomic {
+  background: linear-gradient(90deg, rgba(82, 196, 26, 0.06) 0%, rgba(82, 196, 26, 0.02) 100%);
+  border-left: 2px solid #52c41a;
+}
+
+.tree-connector {
+  color: #8c8c8c;
+  font-weight: normal;
+  white-space: pre;
+  user-select: none;
+  font-size: 14px;
+  line-height: 1;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+}
+
+.tree-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin: 0 8px 0 4px;
+  font-size: 10px;
+  color: #1890ff;
+  background: rgba(24, 144, 255, 0.1);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.tree-collapse-btn:hover {
+  background: rgba(24, 144, 255, 0.2);
+  transform: scale(1.1);
+}
+
+.tree-node-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.node-type-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.node-status-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.node-name {
+  font-size: 14px;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.tree-node-content:hover .node-name {
+  color: #1890ff !important;
+}
+
+.node-id {
+  font-size: 11px;
+  color: #8c8c8c;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'Monaco', 'Menlo', monospace;
+}
+
+.tree-children {
+  margin: 0;
+  padding: 0;
+}
+
+.tree-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 400px;
+}
+
+/* 滚动条美化 */
+.tree-visualization-container::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.tree-visualization-container::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 5px;
+}
+
+.tree-visualization-container::-webkit-scrollbar-thumb {
+  background: rgba(24, 144, 255, 0.3);
+  border-radius: 5px;
+  transition: background 0.2s ease;
+}
+
+.tree-visualization-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(24, 144, 255, 0.5);
+}
+
+/* 响应式适配 */
+@media (max-width: 768px) {
+  .tree-visualization-container {
+    padding: 10px;
+  }
+  
+  .tree-connector {
+    font-size: 12px;
+  }
+  
+  .node-name {
+    font-size: 13px;
+  }
+  
+  .node-type-icon {
+    font-size: 16px;
+  }
+}
+
+/* 打印样式 */
+@media print {
+  .tree-visualization-container {
+    background: white;
+    box-shadow: none;
+  }
+  
+  .tree-node-content:hover {
+    transform: none;
+  }
+}

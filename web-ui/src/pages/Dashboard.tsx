@@ -14,7 +14,7 @@ import { useTasksStore } from '@store/tasks';
 import { tasksApi } from '@api/tasks';
 import { resolveScopeParams } from '@api/scope';
 import { useChatStore } from '@store/chat';
-import DAGVisualization from '@components/dag/DAGVisualization';
+import TreeVisualization from '@components/dag/TreeVisualization';
 
 const { Title, Text } = Typography;
 
@@ -243,7 +243,7 @@ const Dashboard: React.FC = () => {
                 </Button>
               }
             >
-              <DAGVisualization />
+              <TreeVisualization />
             
             </Card>
           </Col>
