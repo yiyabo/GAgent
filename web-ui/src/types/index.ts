@@ -3,13 +3,16 @@ export interface Task {
   id: number;
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
-  priority: number;
+  priority?: number;
   parent_id?: number;
   path?: string;
-  depth: number;
-  task_type: 'root' | 'composite' | 'atomic';
+  depth?: number;
+  task_type?: 'root' | 'composite' | 'atomic';
   created_at?: string;
   updated_at?: string;
+  session_id?: string | null;
+  workflow_id?: string | null;
+  root_id?: number | null;
 }
 
 export interface TaskInput {
@@ -28,6 +31,10 @@ export interface Plan {
   tasks: Task[];
   created_at: string;
   status: 'draft' | 'approved' | 'executing' | 'completed';
+}
+
+export interface PlanTaskNode extends Task {
+  short_name?: string;
 }
 
 export interface PlanProposal {
@@ -86,12 +93,21 @@ export interface ChatMessage {
   metadata?: {
     task_id?: number;
     plan_title?: string;
+    task_name?: string;
+    workflow_id?: string;
+    session_id?: string;
     code_blocks?: string[];
     attachments?: string[];
     actions?: Array<{
       type: string;
       data: any;
     }>;
+    // 任务搜索相关
+    task_search_result?: boolean;
+    tasks_found?: number;
+    // 工具执行相关
+    tool_executed?: boolean;
+    tool_type?: string;
   };
 }
 
@@ -101,6 +117,8 @@ export interface ChatSession {
   messages: ChatMessage[];
   created_at: Date;
   updated_at: Date;
+  workflow_id?: string | null;
+  session_id?: string | null;
 }
 
 // WebSocket 消息类型

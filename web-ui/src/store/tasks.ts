@@ -7,7 +7,7 @@ interface TaskStats {
   total: number;
   pending: number;
   running: number;
-  done: number;
+  completed: number;
   failed: number;
 }
 
@@ -22,6 +22,7 @@ interface DAGEdge {
   from: string;
   to: string;
   color?: string;
+  label?: string;
 }
 
 interface TasksState {
@@ -30,6 +31,7 @@ interface TasksState {
   selectedTask: Task | null;
   taskStats: TaskStats | null;
   currentPlan: string | null;
+  currentWorkflowId: string | null;
   
   // DAG可视化数据
   dagNodes: DAGNode[];
@@ -50,6 +52,8 @@ interface TasksState {
   removeTask: (id: number) => void;
   setSelectedTask: (task: Task | null) => void;
   setCurrentPlan: (planTitle: string | null) => void;
+  setCurrentWorkflowId: (workflowId: string | null) => void;
+  setTaskStats: (stats: TaskStats | null) => void;
   
   // DAG操作
   setDagData: (nodes: DAGNode[], edges: DAGEdge[]) => void;
@@ -78,6 +82,7 @@ export const useTasksStore = create<TasksState>()(
     selectedTask: null,
     taskStats: null,
     currentPlan: null,
+    currentWorkflowId: null,
     dagNodes: [],
     dagEdges: [],
     dagLayout: 'hierarchical',
@@ -89,10 +94,16 @@ export const useTasksStore = create<TasksState>()(
 
     // 设置任务列表
     setTasks: (tasks) => {
-      set({ tasks });
-      // 自动生成DAG数据
-      const { nodes, edges } = generateDagData(tasks);
-      set({ dagNodes: nodes, dagEdges: edges });
+      set(() => {
+        const { nodes, edges } = generateDagData(tasks);
+        const rootTask = tasks.find((task) => task.task_type === 'root');
+        return {
+          tasks,
+          dagNodes: nodes,
+          dagEdges: edges,
+          currentPlan: rootTask?.name ?? null,
+        };
+      });
     },
 
     // 添加任务
@@ -135,6 +146,10 @@ export const useTasksStore = create<TasksState>()(
 
     // 设置当前计划
     setCurrentPlan: (planTitle) => set({ currentPlan: planTitle }),
+
+    setCurrentWorkflowId: (workflowId) => set({ currentWorkflowId: workflowId }),
+
+    setTaskStats: (stats) => set({ taskStats: stats }),
 
     // 设置DAG数据
     setDagData: (nodes, edges) => set({ dagNodes: nodes, dagEdges: edges }),

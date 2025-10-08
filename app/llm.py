@@ -56,8 +56,8 @@ class LLMClient(LLMProvider):
             self.model = model or env_model or settings.glm_model or "glm-4-flash"
         
         self.timeout = timeout or settings.glm_request_timeout
-        # Respect centralized mock setting (from env or config)
-        self.mock = bool(settings.llm_mock)
+        # 🚫 科研项目要求：强制禁用Mock模式，必须使用真实API
+        self.mock = False  # 永远不使用Mock模式
         # Retry/backoff configuration
         try:
             if retries is None:

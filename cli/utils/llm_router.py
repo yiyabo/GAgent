@@ -221,18 +221,61 @@ class LLMBasedRouter:
             logger.error(f"原始响应: {llm_response}")
             return self._get_fallback_decision("")
     
-    def _get_fallback_decision(self, user_query: str) -> RoutingDecision:
-        """获取回退决策"""
-        # 简单的关键词匹配作为最后的回退
-        local_keywords = ["待办", "任务", "todo", "保存", "文件", "我的", "当前"]
-        
-        if any(keyword in user_query.lower() for keyword in local_keywords):
+    async def _get_fallback_decision(self, user_query: str) -> RoutingDecision:
+        """获取回退决策 - 科研项目纯LLM版本"""
+        try:
+            # 使用纯LLM分析作为回退，不使用关键词匹配
+            from tool_box.router import get_smart_router
+            router = await get_smart_router()
+            
+            prompt = f"""
+作为最后的回退分析，请判断以下用户请求应该使用哪个执行引擎:
+
+用户请求: {user_query}
+
+执行引擎选项:
+1. GLM_TOOLS - 本地任务管理、文件操作、数据查询
+2. PERPLEXITY - 网络搜索、实时信息、外部知识
+
+请返回JSON:
+{{
+    "engine": "GLM_TOOLS 或 PERPLEXITY",
+    "confidence": 0.0-1.0,
+    "reasoning": "选择理由"
+}}
+"""
+            
+            response = await router._call_glm_api(prompt)
+            
+            try:
+                import json
+                result = json.loads(response.strip())
+                
+                engine = ExecutionEngine.GLM_TOOLS if result.get("engine") == "GLM_TOOLS" else ExecutionEngine.PERPLEXITY
+                
+                return RoutingDecision(
+                    engine=engine,
+                    confidence=max(0.1, result.get("confidence", 0.3)),
+                    reasoning=f"LLM回退分析: {result.get('reasoning', '智能分析结果')}",
+                    tool_suggestions=[],
+                    fallback_engine=ExecutionEngine.PERPLEXITY if engine == ExecutionEngine.GLM_TOOLS else ExecutionEngine.GLM_TOOLS
+                )
+                
+            except json.JSONDecodeError:
+                # 如果JSON解析失败，使用默认的智能选择
+                pass
+                
+        except Exception as e:
+            logger.error(f"LLM回退分析失败: {e}")
+            
+        # 最终兜底：基于请求长度的智能判断（仍然是启发式，但不是关键词匹配）
+        if len(user_query) > 20:  # 较长的请求可能需要搜索
             return RoutingDecision(
-                engine=ExecutionEngine.GLM_TOOLS,
-                confidence=0.6,
-                reasoning="回退策略: 检测到本地数据相关关键词",
-                tool_suggestions=["list_todos"],
-                fallback_engine=ExecutionEngine.PERPLEXITY
+                engine=ExecutionEngine.PERPLEXITY,
+                confidence=0.4,
+                reasoning="智能回退: 复杂请求推荐搜索引擎",
+                tool_suggestions=[],
+                fallback_engine=ExecutionEngine.GLM_TOOLS
             )
         else:
             return RoutingDecision(

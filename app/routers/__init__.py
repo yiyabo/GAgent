@@ -33,6 +33,7 @@ def get_all_routers():
     from .system_health_routes import router as system_health_router
     from .chat_routes import router as chat_router
     from .agent_routes import router as agent_router
+    from .session_routes import router as session_router
     
     return [
         task_router,
@@ -49,6 +50,7 @@ def get_all_routers():
         system_health_router,
         chat_router,
         agent_router,
+        session_router,
     ]
 
 __all__ = [

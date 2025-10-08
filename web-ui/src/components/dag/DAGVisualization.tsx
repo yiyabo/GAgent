@@ -4,6 +4,10 @@ import { DataSet } from 'vis-data';
 import { Card, Spin, Button, Space, Select, Input, message, Badge } from 'antd';
 import { ReloadOutlined, ExpandOutlined } from '@ant-design/icons';
 import { tasksApi } from '@api/tasks';
+import { resolveScopeParams } from '@api/scope';
+import type { Task as TaskType } from '@/types';
+import { useChatStore } from '@store/chat';
+import { useTasksStore } from '@store/tasks';
 
 interface DAGVisualizationProps {
   onNodeClick?: (taskId: number, taskData: any) => void;
@@ -13,28 +17,24 @@ interface DAGVisualizationProps {
   showToolbar?: boolean;
 }
 
-interface Task {
-  id: number;
-  name: string;
-  status: string;
-  task_type: string;
-  depth: number;
-  parent_id?: number;
-  path?: string;
-  priority?: number;
-}
-
 const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   onNodeClick,
   onNodeDoubleClick,
 }) => {
   const networkRef = useRef<HTMLDivElement>(null);
   const networkInstance = useRef<Network | null>(null);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [tasks, setTasks] = useState<TaskType[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [stats, setStats] = useState<any>(null);
+  const currentWorkflowId = useChatStore((state) => state.currentWorkflowId);
+  const currentSession = useChatStore((state) => state.currentSession);
+  const { setTasks: updateStoreTasks, setTaskStats, setCurrentWorkflowId } = useTasksStore((state) => ({
+    setTasks: state.setTasks,
+    setTaskStats: state.setTaskStats,
+    setCurrentWorkflowId: state.setCurrentWorkflowId,
+  }));
 
   // 状态颜色映射
   const getStatusColor = (status: string) => {
@@ -71,19 +71,35 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
     }
   };
 
-  // 获取节点大小 (根据任务重要性，安全处理undefined)
+  // 获取节点大小 (根据任务重要性，突出三层结构)
   const getNodeSize = (taskType?: string, hasChildren: boolean = false) => {
     if (!taskType) return 15;
     
     switch (taskType.toUpperCase()) {
       case 'ROOT':
-        return 40;  // ROOT最大
+        return 50;  // ROOT显著增大，突出核心地位
       case 'COMPOSITE':
-        return hasChildren ? 30 : 25;  // COMPOSITE中等，有子节点时稍大
+        return hasChildren ? 35 : 30;  // COMPOSITE明显区分有无子节点
       case 'ATOMIC':
-        return 20;  // ATOMIC最小
+        return 25;  // ATOMIC适中，易于点击
       default:
         return 15;
+    }
+  };
+
+  // 获取字体大小 (根据任务层级)
+  const getFontSize = (taskType?: string) => {
+    if (!taskType) return 12;
+    
+    switch (taskType.toUpperCase()) {
+      case 'ROOT':
+        return 16;  // ROOT字体最大
+      case 'COMPOSITE':
+        return 13;  // COMPOSITE中等
+      case 'ATOMIC':
+        return 11;  // ATOMIC较小
+      default:
+        return 12;
     }
   };
 
@@ -92,10 +108,26 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
     try {
       setLoading(true);
       console.log('🔄 Loading tasks for DAG visualization...');
-      
+
+      // 允许在存在 session_id 或 workflow_id 其一时加载
+      if (!currentWorkflowId && !currentSession?.session_id) {
+        console.warn('⚠️ 当前无关联的工作流或会话，跳过任务加载');
+        setTasks([]);
+        setStats(null);
+        updateStoreTasks([]);
+        setTaskStats(null);
+        setCurrentWorkflowId(null);
+        return;
+      }
+
+      const filters = resolveScopeParams({
+        workflow_id: currentWorkflowId,
+        session_id: currentSession?.session_id ?? null,
+      });
+
       const [allTasks, taskStats] = await Promise.all([
-        tasksApi.getAllTasks(),
-        tasksApi.getTaskStats()
+        tasksApi.getAllTasks(filters),
+        tasksApi.getTaskStats(filters),
       ]);
       
       console.log('📊 Raw tasks data:', allTasks);
@@ -104,13 +136,76 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
       
       if (allTasks && allTasks.length > 0) {
         console.log('✅ 前5个任务示例:', allTasks.slice(0, 5));
-        setTasks(allTasks);
-        console.log(`✅ 加载了 ${allTasks.length} 个任务`);
+
+        // 🔍 关键修改：只显示当前对话的ROOT任务及其子任务树（多级兜底）
+        const eq = (a?: string | number | null, b?: string | number | null) => String(a ?? '') === String(b ?? '');
+        const isRootType = (t: any) => (t?.task_type && String(t.task_type).toLowerCase() === 'root');
+        const typedRoots = allTasks.filter((t) => isRootType(t));
+        const roots = typedRoots.length > 0 ? typedRoots : allTasks.filter((t) => t.parent_id == null);
+
+        // 1) 优先按 session_id 匹配
+        let pickedRoot: any = roots.find((r) => eq(r.session_id, currentSession?.session_id));
+        // 2) 其次按 workflow_id 匹配
+        if (!pickedRoot) {
+          pickedRoot = roots.find((r) => eq(r.workflow_id, currentWorkflowId));
+        }
+        // 3) 若只有一个 ROOT，直接采用
+        if (!pickedRoot && roots.length === 1) {
+          pickedRoot = roots[0];
+        }
+        // 4) 兜底：选择最新的 ROOT（按id最大）
+        if (!pickedRoot && roots.length > 1) {
+          pickedRoot = roots.reduce((acc, cur) => (cur.id > acc.id ? cur : acc));
+        }
+
+        let filteredTasks: any[] = [];
+        if (pickedRoot) {
+          // 递归收集ROOT任务及其所有子任务
+          const collectTaskTree = (rootId: number): any[] => {
+            const rootTask = allTasks.find(task => task.id === rootId);
+            if (!rootTask) return [];
+
+            const children = allTasks
+              .filter(task => task.parent_id === rootId)
+              .flatMap(child => collectTaskTree(child.id));
+
+            return [rootTask, ...children];
+          };
+
+          filteredTasks = collectTaskTree(pickedRoot.id);
+          console.log(`🎯 过滤后显示 ${filteredTasks.length} 个任务（ROOT: ${pickedRoot.name}，id=${pickedRoot.id}）`);
+        } else {
+          console.warn('⚠️ 未选中ROOT任务。候选ROOT数量:', roots.length, {
+            session: currentSession?.session_id,
+            workflow: currentWorkflowId,
+          });
+          filteredTasks = [];
+        }
+
+        setTasks(filteredTasks);
+        updateStoreTasks(filteredTasks); // 使用过滤后的任务更新store
+        console.log(`✅ 最终显示 ${filteredTasks.length} 个任务`);
       } else {
         console.warn('⚠️ 未获取到任务数据或数据为空');
+        setTasks([]);
+        updateStoreTasks([]);
       }
-      
       setStats(taskStats);
+      const normalizedStats = taskStats
+        ? {
+            total: taskStats.total || 0,
+            pending: taskStats.by_status?.pending || 0,
+            running: taskStats.by_status?.running || 0,
+            completed:
+              taskStats.by_status?.completed ||
+              taskStats.by_status?.done ||
+              taskStats.by_status?.finished ||
+              0,
+            failed: taskStats.by_status?.failed || 0,
+          }
+        : null;
+      setTaskStats(normalizedStats);
+      setCurrentWorkflowId(currentWorkflowId);
     } catch (error: any) {
       console.error('❌ Failed to load tasks:', error);
       console.error('❌ Error details:', error.response?.data || error.message);
@@ -175,10 +270,10 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
         size: getNodeSize(task.task_type, hasChildren),
         level: task.depth,
         font: { 
-          size: task.task_type?.toUpperCase() === 'ROOT' ? 14 : 12, 
+          size: getFontSize(task.task_type), 
           color: '#ffffff',
           face: 'Arial',
-          strokeWidth: 1,
+          strokeWidth: 2,
           strokeColor: '#000000'
         },
         borderWidth: task.task_type?.toUpperCase() === 'ROOT' ? 3 : 2,
@@ -204,21 +299,24 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
           const getEdgeStyle = (fromType: string, toType: string) => {
             if (fromType.toUpperCase() === 'ROOT' && toType.toUpperCase() === 'COMPOSITE') {
               return {
-                color: { color: '#722ed1' },  // 紫色 - ROOT到COMPOSITE
-                width: 3,
-                dashes: false
+                color: { color: '#722ed1', highlight: '#9254de', hover: '#9254de' },  // 紫色渐变 - ROOT到COMPOSITE
+                width: 4,
+                dashes: false,
+                shadow: { enabled: true, color: 'rgba(114, 46, 209, 0.3)', size: 8 }
               };
             } else if (fromType.toUpperCase() === 'COMPOSITE' && toType.toUpperCase() === 'ATOMIC') {
               return {
-                color: { color: '#1890ff' },  // 蓝色 - COMPOSITE到ATOMIC  
-                width: 2,
-                dashes: false
+                color: { color: '#1890ff', highlight: '#40a9ff', hover: '#40a9ff' },  // 蓝色渐变 - COMPOSITE到ATOMIC  
+                width: 3,
+                dashes: false,
+                shadow: { enabled: true, color: 'rgba(24, 144, 255, 0.3)', size: 6 }
               };
             } else {
               return {
-                color: { color: '#52c41a' },  // 绿色 - 其他关系
+                color: { color: '#52c41a', highlight: '#73d13d', hover: '#73d13d' },  // 绿色渐变 - 其他关系
                 width: 2,
-                dashes: false
+                dashes: false,
+                shadow: { enabled: true, color: 'rgba(82, 196, 26, 0.3)', size: 4 }
               };
             }
           };
@@ -267,12 +365,13 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
           hierarchical: {
             direction: 'UD',           // 从上到下
             sortMethod: 'directed',    // 有向图排序
-            nodeSpacing: 200,          // 增大节点间距，Agent工作流程需要更多空间
-            levelSeparation: 120,      // 增大层级间距
-            treeSpacing: 250,          // 树间距
-            blockShifting: true,       // 允许块移动优化
-            edgeMinimization: true,    // 边最小化
-            parentCentralization: true // 父节点居中
+            nodeSpacing: 150,          // 同层节点水平间距
+            levelSeparation: 180,      // 层级间垂直距离（增大以突出层次）
+            treeSpacing: 200,          // 不同树之间的间距
+            blockShifting: true,       // 允许块移动优化布局
+            edgeMinimization: true,    // 最小化边交叉
+            parentCentralization: true, // 父节点在子节点中央
+            shakeTowards: 'roots'      // 向根节点收敛
           },
         },
         nodes: {
@@ -374,10 +473,10 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
     };
   }, [tasks, searchText, statusFilter, onNodeClick, onNodeDoubleClick]);
 
-  // 组件挂载时加载数据
+  // 组件挂载及依赖变更时加载数据
   useEffect(() => {
     loadTasks();
-  }, []);
+  }, [currentWorkflowId, currentSession?.session_id]);
 
   // 监听任务更新事件（从聊天系统等地方触发）
   useEffect(() => {

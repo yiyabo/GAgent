@@ -44,9 +44,11 @@ class ToolAwareTaskDecomposer:
         """Initialize the decomposer with tool capabilities"""
         try:
             from tool_box import get_smart_router
-
-            self.tool_router = await get_smart_router()
-            logger.info("Tool-aware decomposer initialized")
+            
+            # 只有在未初始化时才获取router
+            if self.tool_router is None:
+                self.tool_router = await get_smart_router()
+                logger.info("Tool-aware decomposer initialized")
         except Exception as e:
             logger.warning(f"Tool router initialization failed: {e}")
 

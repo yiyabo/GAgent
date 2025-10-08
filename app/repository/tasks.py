@@ -22,56 +22,85 @@ class _SqliteTaskRepositoryBase(TaskRepository):
         priority: Optional[int] = None,
         parent_id: Optional[int] = None,
         task_type: str = "atomic",
+        session_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        root_id: Optional[int] = None,
+        context_refs: Optional[str] = None,
+        artifacts: Optional[str] = None,
     ) -> int:
         """Create a task. Optionally set parent_id to place it in the hierarchy.
 
         Backward compatible signature extension: existing callers need not pass parent_id.
         """
         # Compute path/depth first
-        if parent_id is None:
-            path = None  # Will be set after getting task_id
-            depth = 0
-        else:
-            with get_db() as conn:
+        parent_path = None
+        depth = 0
+        with get_db() as conn:
+            if parent_id is not None:
                 prow = conn.execute(
-                    "SELECT path, depth FROM tasks WHERE id=?",
+                    "SELECT path, depth, workflow_id, root_id, session_id FROM tasks WHERE id=?",
                     (parent_id,),
                 ).fetchone()
                 if not prow:
                     raise ValueError(f"Parent task {parent_id} not found")
-                try:
-                    p_path = prow[0]
-                    p_depth = prow[1]
-                except Exception:
-                    p_path = prow["path"]
-                    p_depth = prow["depth"]
-                p_path = p_path or f"/{parent_id}"
-                path = None  # Will be computed after getting task_id
-                depth = (p_depth or 0) + 1
 
-        with get_db() as conn:
+                parent_path = prow["path"] or f"/{parent_id}"
+                parent_depth = prow["depth"] or 0
+                depth = parent_depth + 1
+
+                if workflow_id is None:
+                    workflow_id = prow["workflow_id"]
+                if root_id is None:
+                    root_id = prow["root_id"] or _extract_root_id_from_path(parent_path)
+                if session_id is None:
+                    session_id = prow["session_id"]
+
             cursor = conn.execute(
-                "INSERT INTO tasks (name, status, priority, parent_id, depth, task_type) VALUES (?, ?, ?, ?, ?, ?)",
-                (name, status, priority or 100, parent_id, depth, task_type),
+                "INSERT INTO tasks (name, status, priority, parent_id, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    name,
+                    status,
+                    priority or 100,
+                    parent_id,
+                    depth,
+                    task_type,
+                    session_id,
+                    workflow_id,
+                    root_id,
+                    context_refs,
+                    artifacts,
+                ),
             )
             task_id = cursor.lastrowid
 
-            # Compute and set path
             if parent_id is None:
-                new_path = f"/{task_id}"
+                # Root task – initialize workflow and hierarchy defaults
+                root_id = root_id or task_id
+                workflow_id = workflow_id or f"wf_{task_id}"
+                parent_path = f"/{task_id}"
             else:
-                prow = conn.execute(
-                    "SELECT path FROM tasks WHERE id=?",
-                    (parent_id,),
-                ).fetchone()
-                p_path = prow[0] if prow else f"/{parent_id}"
-                new_path = f"{p_path}/{task_id}"
+                parent_path = parent_path or f"/{parent_id}"
+                parent_path = f"{parent_path}/{task_id}"
 
-            # Update the path
             conn.execute(
-                "UPDATE tasks SET path=? WHERE id=?",
-                (new_path, task_id),
+                "UPDATE tasks SET path=?, root_id=?, workflow_id=?, context_refs=COALESCE(context_refs, ?), artifacts=COALESCE(artifacts, ?) WHERE id=?",
+                (parent_path, root_id, workflow_id, context_refs, artifacts, task_id),
             )
+
+            if parent_id is None:
+                # Ensure workflow registry exists for new root
+                conn.execute(
+                    """
+                    INSERT INTO workflows (workflow_id, session_id, root_task_id, title)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(workflow_id) DO UPDATE SET
+                        session_id=excluded.session_id,
+                        root_task_id=excluded.root_task_id,
+                        title=excluded.title
+                    """,
+                    (workflow_id, session_id, task_id, name),
+                )
+
             conn.commit()
             return task_id
 
@@ -96,6 +125,107 @@ class _SqliteTaskRepositoryBase(TaskRepository):
             conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
             conn.commit()
 
+    def update_task_context(
+        self,
+        task_id: int,
+        *,
+        context_refs: Optional[str] = None,
+        artifacts: Optional[str] = None,
+    ) -> None:
+        sets: List[str] = []
+        params: List[Any] = []
+        if context_refs is not None:
+            sets.append("context_refs=?")
+            params.append(context_refs)
+        if artifacts is not None:
+            sets.append("artifacts=?")
+            params.append(artifacts)
+        if not sets:
+            return
+        params.append(task_id)
+        sql = f"UPDATE tasks SET {', '.join(sets)} WHERE id=?"
+        with get_db() as conn:
+            conn.execute(sql, params)
+            conn.commit()
+
+    def append_execution_log(
+        self,
+        task_id: int,
+        *,
+        workflow_id: Optional[str] = None,
+        step_type: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        metadata_json = None
+        if metadata is not None:
+            try:
+                metadata_json = json.dumps(metadata, ensure_ascii=False)
+            except Exception:
+                metadata_json = str(metadata)
+        with get_db() as conn:
+            cursor = conn.execute(
+                "INSERT INTO task_execution_logs (task_id, workflow_id, step_type, content, metadata) VALUES (?, ?, ?, ?, ?)",
+                (task_id, workflow_id, step_type, content, metadata_json),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def list_execution_logs(self, task_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, task_id, workflow_id, step_type, content, metadata, created_at FROM task_execution_logs WHERE task_id=? ORDER BY datetime(created_at) DESC LIMIT ?",
+                (task_id, limit),
+            ).fetchall()
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            meta = None
+            raw_meta = row["metadata"] if hasattr(row, "__getitem__") else row[5]
+            if isinstance(raw_meta, str) and raw_meta.strip():
+                try:
+                    meta = json.loads(raw_meta)
+                except Exception:
+                    meta = {"raw": raw_meta}
+            results.append(
+                {
+                    "id": row["id"] if hasattr(row, "__getitem__") else row[0],
+                    "task_id": row["task_id"] if hasattr(row, "__getitem__") else row[1],
+                    "workflow_id": row["workflow_id"] if hasattr(row, "__getitem__") else row[2],
+                    "step_type": row["step_type"] if hasattr(row, "__getitem__") else row[3],
+                    "content": row["content"] if hasattr(row, "__getitem__") else row[4],
+                    "metadata": meta,
+                    "created_at": row["created_at"] if hasattr(row, "__getitem__") else row[6],
+                }
+            )
+        return results
+
+    def get_workflow_metadata(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        if not workflow_id:
+            return None
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT workflow_id, session_id, root_task_id, title FROM workflows WHERE workflow_id=?",
+                (workflow_id,),
+            ).fetchone()
+        if not row:
+            return None
+
+        def _safe(index: int, key: str):
+            try:
+                return row[key]
+            except Exception:
+                try:
+                    return row[index]
+                except Exception:
+                    return None
+
+        return {
+            "workflow_id": _safe(0, "workflow_id"),
+            "session_id": _safe(1, "session_id"),
+            "root_task_id": _safe(2, "root_task_id"),
+            "title": _safe(3, "title"),
+        }
+
 
 # -------------------------------
 # Task queries
@@ -111,26 +241,73 @@ def _row_to_dict(row) -> Dict[str, Any]:
     }
 
 
+def _extract_root_id_from_path(path_value: Optional[str]) -> Optional[int]:
+    if not path_value:
+        return None
+    try:
+        first = str(path_value).strip("/").split("/")[0]
+        return int(first) if first.isdigit() else None
+    except Exception:
+        return None
+
+
 def _row_to_full(row) -> Dict[str, Any]:
     """Convert a sqlite row to a full task dict including hierarchy fields."""
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
+
+    def _safe_get(name: str, index: int):
+        if name in keys:
+            return row[name]
+        try:
+            return row[index]
+        except Exception:
+            return None
+
     return {
-        "id": row[0],
-        "name": row[1],
-        "status": row[2],
-        "priority": row[3],
-        "parent_id": row[4],
-        "path": row[5],
-        "depth": row[6],
-        "task_type": row[7],
+        "id": _safe_get("id", 0),
+        "name": _safe_get("name", 1),
+        "status": _safe_get("status", 2),
+        "priority": _safe_get("priority", 3),
+        "parent_id": _safe_get("parent_id", 4),
+        "path": _safe_get("path", 5),
+        "depth": _safe_get("depth", 6),
+        "task_type": _safe_get("task_type", 7),
+        "session_id": _safe_get("session_id", 8),
+        "workflow_id": _safe_get("workflow_id", 9),
+        "root_id": _safe_get("root_id", 10),
+        "context_refs": _safe_get("context_refs", 11),
+        "artifacts": _safe_get("artifacts", 12),
     }
 
 
 class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     # queries continued
-    def list_all_tasks(self) -> List[Dict[str, Any]]:
+    def list_all_tasks(
+        self,
+        session_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        where_clauses: List[str] = []
+        params: List[Any] = []
+
+        if session_id:
+            where_clauses.append("session_id = ?")
+            params.append(session_id)
+        if workflow_id:
+            where_clauses.append("workflow_id = ?")
+            params.append(workflow_id)
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        sql = (
+            "SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts "
+            "FROM tasks"
+            f"{where_sql}"
+        )
+
         with get_db() as conn:
-            rows = conn.execute("SELECT id, name, status, priority FROM tasks").fetchall()
-        return [_row_to_dict(r) for r in rows]
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_full(r) for r in rows]
 
     def list_tasks_by_status(self, status: str) -> List[Dict[str, Any]]:
         with get_db() as conn:
@@ -148,7 +325,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         """
         with get_db() as conn:
             rows = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE status='pending' ORDER BY priority ASC, id ASC"
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts FROM tasks WHERE status='pending' ORDER BY priority ASC, id ASC"
             ).fetchall()
         return [_row_to_full(r) for r in rows]
 
@@ -160,7 +337,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         if pending_only:
             where += " AND status='pending'"
         order = "ORDER BY priority ASC, id ASC" if ordered else ""
-        sql = f"SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE {where} {order}"
+        sql = f"SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts FROM tasks WHERE {where} {order}"
         with get_db() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_full(r) for r in rows]
@@ -207,7 +384,46 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
 
     def list_plan_tasks(self, title: str) -> List[Dict[str, Any]]:
         prefix = plan_prefix(title)
-        return self.list_tasks_by_prefix(prefix, pending_only=False, ordered=True)
+        rows = self.list_tasks_by_prefix(prefix, pending_only=False, ordered=True)
+        if rows:
+            return rows
+
+        # Fallback: match root tasks by exact name (e.g., "ROOT: ...") and return their subtrees
+        with get_db() as conn:
+            root_rows = conn.execute(
+                "SELECT id FROM tasks WHERE task_type = 'root' AND name = ?",
+                (title,),
+            ).fetchall()
+
+        processed_roots: set[int] = set()
+        collected: List[Dict[str, Any]] = []
+        added: set[int] = set()
+        for r in root_rows:
+            try:
+                root_id = r["id"]
+            except Exception:
+                root_id = r[0]
+            if root_id in processed_roots:
+                continue
+            processed_roots.add(root_id)
+            with get_db() as conn:
+                sub_rows = conn.execute(
+                    """
+                    SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts
+                    FROM tasks
+                    WHERE root_id = ?
+                    ORDER BY depth ASC, priority ASC, id ASC
+                    """,
+                    (root_id,),
+                ).fetchall()
+            for sr in sub_rows:
+                node = _row_to_full(sr)
+                node_id = node.get("id")
+                if node_id in added:
+                    continue
+                added.add(node_id)
+                collected.append(node)
+        return collected
 
     def list_plan_outputs(self, title: str) -> List[Dict[str, Any]]:
         """Return sections with name (short), full name, and content for a plan."""
@@ -221,7 +437,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             # 首先尝试精确匹配
             rows = conn.execute(
                 """
-                SELECT t.name, o.content
+                SELECT t.name, o.content, t.session_id, t.workflow_id
                 FROM tasks t
                 JOIN task_outputs o ON o.task_id = t.id
                 WHERE t.name LIKE ?
@@ -236,7 +452,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 fuzzy_pattern = f"%{title}%"
                 rows = conn.execute(
                     """
-                    SELECT t.name, o.content
+                    SELECT t.name, o.content, t.session_id, t.workflow_id
                     FROM tasks t
                     JOIN task_outputs o ON o.task_id = t.id
                     WHERE t.name LIKE ?
@@ -255,7 +471,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                         keyword_pattern = f"%{main_keyword}%"
                         rows = conn.execute(
                             """
-                            SELECT t.name, o.content
+                            SELECT t.name, o.content, t.session_id, t.workflow_id
                             FROM tasks t
                             JOIN task_outputs o ON o.task_id = t.id
                             WHERE t.name LIKE ?
@@ -270,10 +486,20 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             try:
                 name = r["name"]
                 content = r["content"]
+                session_id = r["session_id"]
+                workflow_id = r["workflow_id"]
             except Exception:
-                name, content = r[0], r[1]
+                name, content, session_id, workflow_id = r[0], r[1], r[2], r[3]
             _, short = split_prefix(name)
-            out.append({"name": name, "short_name": short, "content": content})
+            out.append(
+                {
+                    "name": name,
+                    "short_name": short,
+                    "content": content,
+                    "session_id": session_id,
+                    "workflow_id": workflow_id,
+                }
+            )
         return out
 
     # -------------------------------
@@ -505,7 +731,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     def get_task_info(self, task_id: int) -> Optional[Dict[str, Any]]:
         with get_db() as conn:
             row = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id=?",
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts FROM tasks WHERE id=?",
                 (task_id,),
             ).fetchone()
         if not row:
@@ -524,7 +750,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             if pid is None:
                 return None
             prow = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id=?",
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts FROM tasks WHERE id=?",
                 (pid,),
             ).fetchone()
         if not prow:
@@ -535,7 +761,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         """Return direct children of a task, ordered by priority and id."""
         with get_db() as conn:
             rows = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE parent_id=? ORDER BY priority ASC, id ASC",
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts FROM tasks WHERE parent_id=? ORDER BY priority ASC, id ASC",
                 (parent_id,),
             ).fetchall()
         return [_row_to_full(r) for r in rows]
@@ -565,19 +791,27 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             cur = conn.cursor()
             # Fetch current node info
             row = cur.execute(
-                "SELECT id, parent_id, path, depth FROM tasks WHERE id=?",
+                "SELECT id, name, parent_id, path, depth, session_id, workflow_id, root_id FROM tasks WHERE id=?",
                 (task_id,),
             ).fetchone()
             if not row:
                 raise ValueError(f"Task {task_id} not found")
             try:
-                old_parent_id = row[1]
-                old_path = row[2]
-                old_depth = row[3] or 0
+                old_parent_id = row[2]
+                old_path = row[3]
+                old_depth = row[4] or 0
+                task_name = row[1]
+                current_session = row[5]
+                current_workflow = row[6]
+                current_root_id = row[7]
             except Exception:
                 old_parent_id = row["parent_id"]
                 old_path = row["path"]
                 old_depth = row["depth"] or 0
+                task_name = row["name"]
+                current_session = row["session_id"]
+                current_workflow = row["workflow_id"]
+                current_root_id = row["root_id"]
 
             if new_parent_id == old_parent_id:
                 return
@@ -588,9 +822,12 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 new_parent_depth = -1
                 new_root_path = f"/{task_id}"
                 new_depth = 0
+                target_root_id = task_id
+                target_workflow_id = current_workflow or f"wf_{task_id}"
+                target_session_id = current_session
             else:
                 prow = cur.execute(
-                    "SELECT id, path, depth FROM tasks WHERE id=?",
+                    "SELECT id, path, depth, root_id, workflow_id, session_id FROM tasks WHERE id=?",
                     (new_parent_id,),
                 ).fetchone()
                 if not prow:
@@ -598,9 +835,15 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 try:
                     p_path = prow[1]
                     p_depth = prow[2]
+                    p_root_id = prow[3]
+                    p_workflow_id = prow[4]
+                    p_session_id = prow[5]
                 except Exception:
                     p_path = prow["path"]
                     p_depth = prow["depth"]
+                    p_root_id = prow["root_id"]
+                    p_workflow_id = prow["workflow_id"]
+                    p_session_id = prow["session_id"]
                 p_path = p_path or f"/{new_parent_id}"
 
                 # Prevent cycles: cannot move under own subtree
@@ -611,12 +854,42 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 new_parent_depth = p_depth or 0
                 new_root_path = f"{new_parent_path}/{task_id}"
                 new_depth = new_parent_depth + 1
+                target_root_id = p_root_id or _extract_root_id_from_path(p_path) or new_parent_id
+                target_workflow_id = p_workflow_id or (current_workflow if current_root_id == target_root_id else None)
+                if target_workflow_id is None:
+                    target_workflow_id = f"wf_{target_root_id}"
+                target_session_id = p_session_id or current_session
 
-            # Update root node
+            # Root demoted: cleanup workflow registry reference
+            if old_parent_id is None and new_parent_id is not None and current_workflow:
+                conn.execute("DELETE FROM workflows WHERE workflow_id=?", (current_workflow,))
+
+            # Update root node with new hierarchy metadata
             conn.execute(
-                "UPDATE tasks SET parent_id=?, path=?, depth=? WHERE id=?",
-                (new_parent_id, new_root_path, new_depth, task_id),
+                "UPDATE tasks SET parent_id=?, path=?, depth=?, root_id=?, workflow_id=?, session_id=? WHERE id=?",
+                (
+                    new_parent_id,
+                    new_root_path,
+                    new_depth,
+                    target_root_id,
+                    target_workflow_id,
+                    target_session_id,
+                    task_id,
+                ),
             )
+
+            if new_parent_id is None:
+                conn.execute(
+                    """
+                    INSERT INTO workflows (workflow_id, session_id, root_task_id, title)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(workflow_id) DO UPDATE SET
+                        session_id=excluded.session_id,
+                        root_task_id=excluded.root_task_id,
+                        title=excluded.title
+                    """,
+                    (target_workflow_id, target_session_id, task_id, task_name),
+                )
 
             # Update all descendants' paths and depths
             if old_path:
@@ -636,8 +909,15 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                         desc_new_depth = desc_new_path.count("/") - 1
 
                         conn.execute(
-                            "UPDATE tasks SET path=?, depth=? WHERE id=?",
-                            (desc_new_path, desc_new_depth, desc_id),
+                            "UPDATE tasks SET path=?, depth=?, root_id=?, workflow_id=?, session_id=? WHERE id=?",
+                            (
+                                desc_new_path,
+                                desc_new_depth,
+                                target_root_id,
+                                target_workflow_id,
+                                target_session_id,
+                                desc_id,
+                            ),
                         )
 
             conn.commit()

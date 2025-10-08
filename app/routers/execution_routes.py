@@ -10,6 +10,8 @@ from fastapi import APIRouter, HTTPException, Body
 from typing import Any, Dict, List, Optional
 
 from ..errors import ValidationError, BusinessError, ErrorCode
+from ..execution.atomic_executor import execute_atomic_task
+from ..execution.assemblers import AssemblyStrategy, CompositeAssembler, RootAssembler
 from ..execution.executors import execute_task
 from ..execution.executors.enhanced import (
     execute_task_with_evaluation,
@@ -572,3 +574,51 @@ def rerun_selected_tasks(payload: Dict[str, Any] = Body(...)):
         "failed": failed_count,
         "results": results,
     }
+
+
+@router.post("/tasks/{task_id}/execute/atomic")
+async def execute_atomic_task_api(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
+    """Execute a single atomic task, respecting its context references."""
+
+    try:
+        force_real = bool((payload or {}).get("force_real", True))
+    except Exception:
+        force_real = True
+
+    try:
+        result = execute_atomic_task(task_id, force_real=force_real)
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
+    except Exception as exc:  # pragma: no cover
+        logger.exception("Atomic task execution failed for %s", task_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/tasks/{task_id}/assemble")
+async def assemble_task(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
+    """Assemble outputs for composite or root tasks."""
+
+    task = default_repo.get_task_info(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    requested_mode = (payload or {}).get("mode", "auto") if payload else "auto"
+    strategy = (payload or {}).get("strategy", AssemblyStrategy.LLM.value) if payload else AssemblyStrategy.LLM.value
+    force_real_raw = (payload or {}).get("force_real") if payload else None
+    try:
+        force_real = True if force_real_raw is None else bool(force_real_raw)
+    except Exception:
+        force_real = True
+
+    task_type = (task.get("task_type") or "").lower()
+
+    if requested_mode == "root" or (requested_mode == "auto" and task_type == "root"):
+        assembler = RootAssembler(default_repo)
+        return assembler.assemble(task_id, strategy=strategy, force_real=force_real)
+
+    if requested_mode == "composite" or (requested_mode == "auto" and task_type == "composite"):
+        assembler = CompositeAssembler(default_repo)
+        return assembler.assemble(task_id, strategy=strategy, force_real=force_real)
+
+    raise HTTPException(status_code=400, detail="Only root or composite tasks can be assembled")

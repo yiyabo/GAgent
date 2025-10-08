@@ -5,13 +5,14 @@
 """
 
 import json
-from fastapi import APIRouter, HTTPException
-from typing import Any, Dict, List
+from fastapi import APIRouter, HTTPException, Query
+from typing import Any, Dict, List, Optional
 
 from ..errors import ValidationError, BusinessError, ErrorCode
 from ..repository.tasks import default_repo
 from ..services.planning import approve_plan_service
 from ..utils import split_prefix
+from ..utils.route_helpers import resolve_scope_params
 
 router = APIRouter(prefix="/plans", tags=["plans"])
 
@@ -93,17 +94,27 @@ def approve_plan(plan: Dict[str, Any]):
 
 
 @router.get("")
-def list_plans():
+def list_plans(
+    session_id: Optional[str] = Query(None, description="仅返回指定会话(session)下的计划"),
+    workflow_id: Optional[str] = Query(None, description="仅返回指定工作流(workflow)下的计划"),
+):
     """List all available plans.
 
     Returns:
         dict: Dictionary containing list of plan titles
     """
-    return {"plans": default_repo.list_plan_titles()}
+    resolved_session, resolved_workflow = resolve_scope_params(session_id, workflow_id)
+    scoped_tasks = default_repo.list_all_tasks(session_id=resolved_session, workflow_id=resolved_workflow)
+    titles = sorted({task["name"] for task in scoped_tasks if task.get("task_type") == "root"})
+    return {"plans": titles}
 
 
 @router.get("/{title}/tasks")
-def get_plan_tasks(title: str):
+def get_plan_tasks(
+    title: str,
+    session_id: Optional[str] = Query(None, description="仅返回指定会话(session)下的任务"),
+    workflow_id: Optional[str] = Query(None, description="仅返回指定工作流(workflow)下的任务"),
+):
     """Get all tasks for a specific plan.
 
     Args:
@@ -113,7 +124,15 @@ def get_plan_tasks(title: str):
         list: List of task dictionaries with id, name, short_name, status,
             priority, task_type, depth, and parent_id
     """
-    rows = default_repo.list_plan_tasks(title)
+    resolved_session, resolved_workflow = resolve_scope_params(session_id, workflow_id)
+    rows = [
+        row
+        for row in default_repo.list_plan_tasks(title)
+        if (not resolved_session or row.get("session_id") == resolved_session)
+        and (not resolved_workflow or row.get("workflow_id") == resolved_workflow)
+    ]
+    if not rows:
+        return []
     out: List[Dict[str, Any]] = []
     for r in rows:
         rid, nm, st, pr = r["id"], r["name"], r.get("status"), r.get("priority")
@@ -134,9 +153,19 @@ def get_plan_tasks(title: str):
 
 
 @router.get("/{title}/visualize")
-def visualize_plan(title: str):
+def visualize_plan(
+    title: str,
+    session_id: Optional[str] = Query(None, description="仅返回指定会话(session)下的计划"),
+    workflow_id: Optional[str] = Query(None, description="仅返回指定工作流(workflow)下的计划"),
+):
     """Generate a Mermaid.js graph for the plan's task hierarchy."""
-    tasks = default_repo.list_plan_tasks(title)
+    resolved_session, resolved_workflow = resolve_scope_params(session_id, workflow_id)
+    tasks = [
+        task
+        for task in default_repo.list_plan_tasks(title)
+        if (not resolved_session or task.get("session_id") == resolved_session)
+        and (not resolved_workflow or task.get("workflow_id") == resolved_workflow)
+    ]
     if not tasks:
         raise HTTPException(status_code=404, detail="Plan not found or has no tasks.")
 
@@ -181,7 +210,11 @@ def decompose_specific_task(task_id: int):
 
 
 @router.get("/{title}/assembled")
-def get_plan_assembled(title: str):
+def get_plan_assembled(
+    title: str,
+    session_id: Optional[str] = Query(None, description="仅返回指定会话(session)下的计划"),
+    workflow_id: Optional[str] = Query(None, description="仅返回指定工作流(workflow)下的计划"),
+):
     """Get assembled content for all tasks in a plan.
 
     Args:
@@ -190,7 +223,13 @@ def get_plan_assembled(title: str):
     Returns:
         dict: Dictionary with title, sections, and combined content
     """
-    items = default_repo.list_plan_outputs(title)
+    resolved_session, resolved_workflow = resolve_scope_params(session_id, workflow_id)
+    items = [
+        item
+        for item in default_repo.list_plan_outputs(title)
+        if (not resolved_session or item.get("session_id") == resolved_session)
+        and (not resolved_workflow or item.get("workflow_id") == resolved_workflow)
+    ]
     sections = [{"name": it["short_name"], "content": it["content"]} for it in items]
-    combined = "\n\n".join([f"{s['name']}\n\n{s['content']}" for s in sections])
+    combined = "\n\n".join([f"{s['name']}\n\n{s['content']}" for s in sections]) if sections else ""
     return {"title": title, "sections": sections, "combined": combined}

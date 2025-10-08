@@ -28,7 +28,13 @@ def init_db():
             ("parent_id", "INTEGER"),
             ("path", "TEXT"),
             ("depth", "INTEGER DEFAULT 0"),
-            ("task_type", 'TEXT DEFAULT "atomic"')
+            ("task_type", 'TEXT DEFAULT "atomic"'),
+            ("session_id", "TEXT"),
+            ("root_id", "INTEGER"),
+            ("workflow_id", "TEXT"),
+            ("metadata", "TEXT"),
+            ("context_refs", "TEXT"),
+            ("artifacts", "TEXT")
         ]
         
         for column_name, column_def in columns_to_add:
@@ -76,6 +82,58 @@ def init_db():
         )"""
         )
 
+        # Create conversation sessions table
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS chat_sessions (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT TRUE
+        )"""
+        )
+
+        # Workflow registry for root/composite/atomic isolation
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS workflows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workflow_id TEXT NOT NULL UNIQUE,
+            session_id TEXT,
+            root_task_id INTEGER UNIQUE,
+            title TEXT,
+            metadata TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (root_task_id) REFERENCES tasks (id) ON DELETE SET NULL
+        )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_workflows_session ON workflows(session_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_workflows_root ON workflows(root_task_id)")
+        conn.execute(
+            """CREATE TRIGGER IF NOT EXISTS trg_workflows_updated_at
+            AFTER UPDATE ON workflows
+            FOR EACH ROW BEGIN
+                UPDATE workflows SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id;
+            END;
+        """
+        )
+
+        # Execution logs capture per-step outputs for atomic/composite assembly
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS task_execution_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            workflow_id TEXT,
+            step_type TEXT,
+            content TEXT,
+            metadata TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
+        )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_execution_logs_task ON task_execution_logs(task_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_execution_logs_workflow ON task_execution_logs(workflow_id)")
+
         # Backfill hierarchy values for existing rows (after all columns are added)
         try:
             conn.execute("UPDATE tasks SET path = '/' || id WHERE path IS NULL")
@@ -86,6 +144,17 @@ def init_db():
             conn.execute("UPDATE tasks SET depth = 0 WHERE depth IS NULL")
         except sqlite3.OperationalError:
             # Depth column may not exist yet
+            pass
+        
+        # Assign existing tasks to a default session if they don't have one
+        try:
+            # Create a default session for existing tasks
+            conn.execute("""INSERT OR IGNORE INTO chat_sessions (id, name, created_at) 
+                           VALUES ('default', 'Legacy Tasks', CURRENT_TIMESTAMP)""")
+            
+            # Assign existing tasks without session_id to default session
+            conn.execute("UPDATE tasks SET session_id = 'default' WHERE session_id IS NULL")
+        except sqlite3.OperationalError:
             pass
 
         # Useful indexes
@@ -98,6 +167,13 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_depth ON tasks(depth)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(task_type)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_status ON tasks(session_id, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_root_id ON tasks(root_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_root_status ON tasks(root_id, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_workflow_id ON tasks(workflow_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_workflow_status ON tasks(workflow_id, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_sessions_active ON chat_sessions(is_active)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_inputs_task_id ON task_inputs(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_outputs_task_id ON task_outputs(task_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_links_to_id ON task_links(to_id)")

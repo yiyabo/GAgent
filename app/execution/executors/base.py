@@ -7,7 +7,7 @@ from ...interfaces import TaskRepository
 from ...llm import get_default_client
 from ...repository.tasks import default_repo
 from ...services.context import gather_context
-from ...services.context_budget import apply_budget
+from ...services.context.context_budget import apply_budget
 from ...services.embeddings import get_embeddings_service
 
 logger = logging.getLogger(__name__)

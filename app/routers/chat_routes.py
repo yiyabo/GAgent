@@ -6,12 +6,14 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
+from collections import Counter, defaultdict
 import asyncio
 import logging
 
 from ..llm import get_default_client
+from ..utils import parse_json_obj
 from tool_box import execute_tool, list_available_tools, initialize_toolbox
-import httpx
+from app.services.llm.llm_service import get_llm_service
 import re
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,7 @@ class ChatRequest(BaseModel):
     history: Optional[List[ChatMessage]] = None
     context: Optional[Dict[str, Any]] = None
     mode: Optional[str] = "assistant"  # "assistant" | "planner" | "analyzer"
+    session_id: Optional[str] = None  # Chat session ID for task isolation
 
 
 class ChatResponse(BaseModel):
@@ -49,20 +52,43 @@ async def chat_message(request: ChatRequest):
     - analyzer: 专注分析和解答的对话
     """
     try:
-        # 检查是否为Agent工作流程触发请求
-        if _is_agent_workflow_intent(request.message):
-            logger.info(f"🤖 检测到Agent工作流程意图: {request.message}")
-            return await _handle_agent_workflow_creation(request)
-        
-        # 使用智能路由处理其他用户请求
-        try:
-            logger.info(f"🎯 使用智能路由处理请求: {request.message}")
-            smart_response = await _handle_with_smart_router(request.message, request.context)
+        # 构建带上下文的消息历史
+        context_messages = []
+        if request.history:
+            context_messages = [{"role": msg.role, "content": msg.content} for msg in request.history[-5:]]  # 保留最近5条
+        context_messages.append({"role": "user", "content": request.message})
+        # 快速预筛选：识别明显的非工具需求（问候语、感谢等）
+        if _is_simple_greeting(request.message):
+            logger.info("💬 识别为简单问候语，跳过复杂路由")
+            return ChatResponse(
+                response=_get_simple_greeting_response(request.message),
+                suggestions=["告诉我你需要什么帮助", "我可以协助你完成任务"],
+                actions=[],
+                metadata={"routing_method": "simple_greeting", "skipped_tool_analysis": True}
+            )
+
+        # 🔒 检查是否为内部分析请求，如果是则跳过工作流程创建  
+        is_internal_analysis = request.context and request.context.get('internal_analysis', False)
+        if is_internal_analysis:
+            logger.debug(f"🔒 内部分析请求，跳过工作流程创建: {request.context.get('original_user_input', 'unknown')}")
+        else:
+            # 检查是否为Agent工作流程触发请求
+            workflow_intent = _is_agent_workflow_intent(request.message)
+            logger.debug(f"🔍 工作流程意图检测: '{request.message}' -> {workflow_intent}")
             
+            if workflow_intent:
+                logger.info(f"🤖 检测到Agent工作流程意图: {request.message}")
+                return await _handle_agent_workflow_creation(request, context_messages)
+            else:
+                logger.debug(f"✅ 跳过工作流程创建: '{request.message}' 被识别为普通对话")
+
+        # 尝试智能路由处理
+        try:
+            smart_response = await _intelligent_routing(request.message, context_messages, request.context)
             if smart_response:
                 return ChatResponse(
-                    response=smart_response.get("response", "已完成处理"),
-                    suggestions=smart_response.get("suggestions", ["继续对话", "查看更多信息"]),
+                    response=smart_response.get("response", ""),
+                    suggestions=smart_response.get("suggestions", []),
                     actions=smart_response.get("actions", []),
                     metadata={
                         "mode": request.mode,
@@ -114,7 +140,20 @@ async def chat_message(request: ChatRequest):
         
     except Exception as e:
         logger.error(f"❌ Chat processing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Chat processing failed: {str(e)}")
+        # 统一的错误消息，不使用关键词匹配
+        error_type = type(e).__name__
+        error_msg = f"⚠️ 处理请求时遇到问题: {error_type}。请稍后重试或联系管理员。"
+        
+        return ChatResponse(
+            response=error_msg,
+            suggestions=["重新尝试", "简化问题", "检查网络连接"],
+            actions=[],
+            metadata={
+                "mode": request.mode,
+                "error": True,
+                "error_type": error_type
+            }
+        )
 
 
 @router.get("/suggestions")
@@ -192,13 +231,34 @@ async def _is_task_query_request(message: str) -> bool:
     return has_task_keyword and has_query_keyword
 
 
-async def _handle_with_smart_router(message: str, context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+async def _handle_with_smart_router(message: str, context: Optional[Dict[str, Any]] = None, session_id: Optional[str] = None, context_messages: Optional[List[Dict[str, str]]] = None) -> Optional[Dict[str, Any]]:
     """使用LLM驱动的智能工具路由"""
     try:
         from ..llm import get_default_client
         
         # 获取所有可用工具定义
         tools_definition = await _get_tools_definition()
+        
+        # 检测是否需要专业知识搜索
+        professional_keywords = ["因果推断", "机器学习", "深度学习", "统计学", "数据科学", "算法", "编程", "框架"]
+        need_search = any(keyword in message for keyword in professional_keywords)
+        
+        # 如果是专业话题且LLM可能不确定，先搜索相关信息
+        if need_search:
+            logger.info(f"🔍 检测到专业话题，先搜索相关信息: {message}")
+            search_result = await execute_tool("web_search", query=message, max_results=3)
+            
+            # 将搜索结果添加到上下文
+            if search_result and search_result.get("success"):
+                search_content = search_result.get("response", "")
+                if search_content and not search_content.startswith("❌"):
+                    # 添加搜索信息到上下文消息
+                    if not context_messages:
+                        context_messages = []
+                    context_messages.insert(-1, {
+                        "role": "system", 
+                        "content": f"参考信息：{search_content[:1000]}"  # 限制长度
+                    })
         
         # 构建智能工具选择提示
         system_prompt = await _get_smart_tool_selection_prompt(tools_definition)
@@ -225,13 +285,13 @@ async def _handle_with_smart_router(message: str, context: Optional[Dict[str, An
         except Exception as llm_error:
             logger.warning(f"⚠️ LLM工具选择失败，使用备用路由: {llm_error}")
             
-        # 备用方案：增强的语义分析
-        fallback_result = _parse_intent_from_response(message)
+        # 科研项目要求：使用纯LLM智能路由替代正则匹配
+        fallback_result = await _pure_llm_intelligent_routing(message, tools_definition)
         if fallback_result:
-            return await _execute_routed_action(fallback_result, message, context)
+            return fallback_result
         
         # 最后尝试直接语义解析
-        direct_result = await _direct_semantic_analysis(message)
+        direct_result = await _direct_semantic_analysis(message, session_id)
         if direct_result:
             return direct_result
             
@@ -245,10 +305,7 @@ async def _handle_with_smart_router(message: str, context: Optional[Dict[str, An
 async def _get_tools_definition() -> List[Dict[str, Any]]:
     """获取工具定义（集成Tool Box所有工具）"""
     try:
-        # 确保Tool Box已初始化
-        await initialize_toolbox()
-        
-        # 获取Tool Box中的所有工具
+        # 获取Tool Box中的所有工具（tool-box已在main.py中初始化）
         available_tools = await list_available_tools()
         
         tools_definition = [
@@ -406,58 +463,262 @@ def _get_smart_router_system_prompt() -> str:
 请根据用户消息判断意图并执行相应操作。"""
 
 
+def _normalize_generation_output(
+    raw_text: str,
+    default_suggestions: List[str],
+    default_actions: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Parse LLM输出，确保返回结构完整。"""
+    parsed = parse_json_obj(raw_text) if raw_text else None
+
+    if isinstance(parsed, dict):
+        plan_text = str(parsed.get("plan") or parsed.get("content") or raw_text).strip()
+
+        suggestions_raw = parsed.get("suggestions")
+        if isinstance(suggestions_raw, list):
+            suggestions = [str(item).strip() for item in suggestions_raw if str(item).strip()]
+            if not suggestions:
+                suggestions = default_suggestions
+        else:
+            suggestions = default_suggestions
+
+        actions_raw = parsed.get("actions")
+        if isinstance(actions_raw, list):
+            actions = [item for item in actions_raw if isinstance(item, dict)]
+            if not actions:
+                actions = default_actions
+        else:
+            actions = default_actions
+    else:
+        plan_text = raw_text.strip()
+        suggestions = default_suggestions
+        actions = default_actions
+
+    return {
+        "plan": plan_text,
+        "suggestions": suggestions,
+        "actions": actions,
+    }
+
+
+async def _generate_learning_plan_with_llm(
+    topic: str,
+    user_message: str,
+    search_info: str,
+    plan_type: str,
+) -> Dict[str, Any]:
+    """调用LLM生成学习计划。"""
+    llm_service = get_llm_service()
+
+    detail_hint = "详细、分阶段的学习计划" if plan_type == "detailed" else "概览型学习计划"
+    reference_section = search_info.strip() if search_info else "（无外部参考资料，按最佳实践给出建议）"
+
+    prompt = (
+        "你是一名专业的学习规划顾问，需要为用户制定可执行的学习方案。请用中文回答。\n"
+        f"学习主题：{topic}\n"
+        f"用户原始需求：{user_message}\n"
+        f"计划颗粒度：{detail_hint}\n"
+        "--- 参考资料开始 ---\n"
+        f"{reference_section}\n"
+        "--- 参考资料结束 ---\n\n"
+        "请基于以上信息输出一个 JSON，包含以下字段：\n"
+        "{\n"
+        '  "plan": "使用 Markdown 写出的完整学习计划，至少包含阶段、目标和行动项",\n'
+        '  "suggestions": ["下一步建议1", "下一步建议2", ...],\n'
+        '  "actions": [{"type": "create_study_schedule", "label": "制定学习时间表", "data": {"topic": "<主题>"}}, ...]\n'
+        "}\n"
+        "如果参考资料不足，请结合通用最佳实践给出合理安排。严禁编造不存在的资源。"
+    )
+
+    raw_text = await llm_service.chat_async(prompt, force_real=True)
+
+    default_actions = [
+        {"type": "create_study_schedule", "label": "制定学习时间表", "data": {"topic": topic}},
+    ]
+    default_suggestions = [f"制定{topic}的学习时间表", "开始第一阶段学习", "根据反馈优化计划"]
+
+    return _normalize_generation_output(raw_text, default_suggestions, default_actions)
+
+
+async def _generate_task_breakdown_with_llm(
+    target: str,
+    user_message: str,
+    search_info: str,
+) -> Dict[str, Any]:
+    """调用LLM生成任务拆分建议。"""
+    llm_service = get_llm_service()
+
+    reference_section = search_info.strip() if search_info else "（无外部参考资料，结合经验拆分）"
+
+    prompt = (
+        "你是一名任务拆解专家，需要帮助用户将目标转化为可执行任务。请用中文回答。\n"
+        f"拆分目标：{target}\n"
+        f"用户原始需求：{user_message}\n"
+        "--- 参考资料开始 ---\n"
+        f"{reference_section}\n"
+        "--- 参考资料结束 ---\n\n"
+        "请输出一个 JSON，包含以下字段：\n"
+        "{\n"
+        '  "plan": "使用 Markdown 表达的任务拆分建议，按阶段或步骤列出任务",\n'
+        '  "suggestions": ["后续建议1", "后续建议2"],\n'
+        '  "actions": [{"type": "create_tasks", "label": "创建任务", "data": {"target": "<目标>"}}, ...]\n'
+        "}\n"
+        "任务要具体、可执行，并给出必要的资源或产出要求。"
+    )
+
+    raw_text = await llm_service.chat_async(prompt, force_real=True)
+
+    default_actions = [
+        {"type": "create_tasks", "label": "创建任务", "data": {"target": target}},
+    ]
+    default_suggestions = ["继续细化任务", "制定时间表", "收集所需资源"]
+
+    return _normalize_generation_output(raw_text, default_suggestions, default_actions)
+
+
 async def _parse_llm_tool_selection(llm_response: str, original_message: str, tools_definition: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """解析LLM的工具选择结果"""
     try:
         # 检查LLM是否进行了function calling
         # 这里需要根据实际的LLM响应格式来解析
         
-        # 如果LLM直接返回文本回复（没有调用工具）
-        if not any(tool_name in llm_response.lower() for tool_name in ['database_query', 'web_search', 'file_operations']):
-            return {
-                "response": llm_response,
-                "suggestions": ["继续对话", "询问其他问题"],
-                "actions": [],
-                "action": "direct_response",
-                "confidence": 0.8
-            }
-        
-        # 尝试推断LLM想要调用的工具
-        message_lower = original_message.lower()
-        
-        # 任务查询检测（增强语义识别）
-        task_keywords = ["任务", "待办", "清单", "列表", "todo", "项目", "进度", "工作", "事项", "计划"]
-        query_keywords = ["查看", "显示", "列出", "看看", "有什么", "多少", "统计", "查询", "还有", "哪些", "没有完成", "未完成"]
-        work_context = ["工作", "完成", "未完成", "没完成", "剩余", "还剩", "进行中"]
-        
-        # 检查任务相关 + 查询相关 或者 工作上下文
-        has_task_query = (any(t in message_lower for t in task_keywords) and any(q in message_lower for q in query_keywords)) or \
-                        (any(w in message_lower for w in work_context) and any(q in message_lower for q in query_keywords))
-        
-        if has_task_query:
-            # 调用数据库查询工具
-            result = await execute_tool("database_query", 
-                                      database="data/databases/main/tasks.db",
-                                      sql="SELECT * FROM tasks WHERE status = 'pending' ORDER BY priority ASC, id DESC LIMIT 10",
-                                      operation="query")
-            
-            return await _format_database_result(result, "待办任务查询")
-        
-        # 搜索查询检测  
-        search_keywords = ["天气", "新闻", "搜索", "查找", "最新", "什么是", "如何"]
-        if any(s in message_lower for s in search_keywords):
-            # 调用网络搜索工具
-            result = await execute_tool("web_search", 
-                                      query=original_message,
-                                      max_results=5)
-            
-            return await _format_search_result(result, original_message)
-        
-        # 如果无法确定，返回None让系统使用备用方案
-        return None
+        # 🧠 完全基于LLM的智能路由分析 - 科研项目要求：零关键词匹配
+        return await _pure_llm_intelligent_routing(original_message, tools_definition)
         
     except Exception as e:
         logger.error(f"❌ LLM工具选择解析失败: {e}")
+        # 科研项目要求：即使出错也使用智能路由，不降级到正则匹配
+        return await _pure_llm_intelligent_routing(original_message, tools_definition)
+
+
+async def _pure_llm_intelligent_routing(user_message: str, tools_definition: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """完全基于LLM的智能路由分析 - 科研项目专用，零妥协"""
+    try:
+        from tool_box import route_user_request
+        
+        logger.info("🧠 启用纯LLM智能路由分析")
+        
+        # 使用Tool-box的SmartRouter进行完全智能分析
+        routing_result = await route_user_request(user_message)
+        
+        if not routing_result or routing_result.get("confidence", 0.0) < 0.1:
+            logger.warning("⚠️ LLM路由置信度过低，但仍采用智能路由结果")
+            # 科研项目要求：即使置信度低也不降级，而是增强LLM分析
+            routing_result = await _enhanced_llm_routing(user_message, tools_definition)
+        
+        # 执行智能路由选择的工具
+        if routing_result and routing_result.get("tool_calls"):
+            return await _execute_intelligent_routing(routing_result, user_message)
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ 纯LLM智能路由失败: {e}")
+        # 最后兜底：仍然尝试增强LLM分析
+        try:
+            return await _enhanced_llm_routing(user_message, tools_definition)
+        except:
+            return None
+
+
+async def _enhanced_llm_routing(user_message: str, tools_definition: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """增强的LLM路由分析 - 当基础路由失败时使用"""
+    try:
+        from tool_box.router import get_smart_router
+        
+        logger.info("🔬 启用增强LLM路由分析")
+        
+        # 获取智能路由器实例
+        router = await get_smart_router()
+        
+        # 构建更详细的上下文
+        enhanced_context = {
+            "available_tools": tools_definition,
+            "request_type": "scientific_research_routing",
+            "precision_required": True,
+            "user_intent_analysis": True
+        }
+        
+        # 执行增强路由分析
+        result = await router.route_request(user_message, context=enhanced_context)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ 增强LLM路由分析失败: {e}")
+        return None
+
+
+async def _execute_intelligent_routing(routing_result: Dict[str, Any], original_message: str) -> Optional[Dict[str, Any]]:
+    """执行智能路由结果"""
+    try:
+        tool_calls = routing_result.get("tool_calls", [])
+        
+        if not tool_calls:
+            logger.warning("智能路由未返回工具调用")
+            return None
+        
+        # 执行第一个推荐的工具
+        first_tool = tool_calls[0]
+        tool_name = first_tool.get("tool_name")
+        parameters = first_tool.get("parameters", {})
+        
+        logger.info(f"🛠️ 执行智能路由选择的工具: {tool_name}")
+        
+        if tool_name == "database_query":
+            return await _handle_database_tool_call(parameters, original_message)
+        elif tool_name == "web_search":
+            return await _handle_search_tool_call(parameters, original_message)
+        elif tool_name == "file_operations":
+            return await _handle_file_tool_call(parameters, original_message)
+        elif tool_name == "internal_api":
+            return await _handle_internal_api_tool_call(parameters, original_message)
+        else:
+            logger.warning(f"未知工具类型: {tool_name}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ 智能路由执行失败: {e}")
+        return None
+
+
+async def _handle_database_tool_call(parameters: Dict[str, Any], original_message: str) -> Dict[str, Any]:
+    """处理数据库工具调用"""
+    try:
+        result = await execute_tool("database_query", **parameters)
+        return await _format_database_result(result, "智能路由数据库查询")
+    except Exception as e:
+        logger.error(f"数据库工具调用失败: {e}")
+        return None
+
+
+async def _handle_search_tool_call(parameters: Dict[str, Any], original_message: str) -> Dict[str, Any]:
+    """处理搜索工具调用"""
+    try:
+        result = await execute_tool("web_search", **parameters)
+        return await _format_search_result(result, original_message)
+    except Exception as e:
+        logger.error(f"搜索工具调用失败: {e}")
+        return None
+
+
+async def _handle_file_tool_call(parameters: Dict[str, Any], original_message: str) -> Dict[str, Any]:
+    """处理文件工具调用"""
+    try:
+        result = await execute_tool("file_operations", **parameters)
+        return {"response": f"文件操作完成: {result}", "suggestions": ["查看结果", "继续操作"]}
+    except Exception as e:
+        logger.error(f"文件工具调用失败: {e}")
+        return None
+
+
+async def _handle_internal_api_tool_call(parameters: Dict[str, Any], original_message: str) -> Dict[str, Any]:
+    """处理内部API工具调用"""
+    try:
+        result = await execute_tool("internal_api", **parameters)
+        return {"response": f"内部API调用完成: {result}", "suggestions": ["查看结果", "继续操作"]}
+    except Exception as e:
+        logger.error(f"内部API工具调用失败: {e}")
         return None
 
 
@@ -467,24 +728,32 @@ async def _format_database_result(result: Dict[str, Any], description: str) -> D
         logger.info(f"🔍 格式化数据库结果: {result}")
         
         if isinstance(result, dict) and result.get("success"):
-            # Tool Box返回的数据在'rows'字段，不是'data'字段
-            data = result.get("rows", [])
-            if data:
-                response = f"📊 {description}结果：\n\n"
-                if isinstance(data, list) and len(data) > 0:
-                    response += f"找到 {len(data)} 条记录：\n"
-                    for i, item in enumerate(data[:10], 1):
-                        if isinstance(item, dict):
-                            name = item.get("name", f"记录{i}")
-                            status = item.get("status", "未知")
-                            # 清理任务名称，移除前缀
-                            if name.startswith(('ROOT:', 'COMPOSITE:', 'ATOMIC:')):
-                                name = name.split(':', 1)[1].strip()
-                            response += f"{i}. {name} ({status})\n"
+            # 统一处理数据库执行操作结果，不使用关键词匹配
+            if result.get("operation") == "execute":
+                rows_affected = result.get("rows_affected", 0)
+                if rows_affected > 0:
+                    response = f"✅ **{description}成功**：\n\n影响了 {rows_affected} 条记录"
                 else:
-                    response += str(data)
+                    response = f"📭 **{description}完成**：\n\n没有记录受到影响"
             else:
-                response = "📭 暂无相关数据"
+                # 查询操作 - Tool Box返回的数据在'rows'字段
+                data = result.get("rows", [])
+                if data:
+                    response = f"📊 {description}结果：\n\n"
+                    if isinstance(data, list) and len(data) > 0:
+                        response += f"找到 {len(data)} 条记录：\n"
+                        for i, item in enumerate(data[:10], 1):
+                            if isinstance(item, dict):
+                                name = item.get("name", f"记录{i}")
+                                status = item.get("status", "未知")
+                                # 清理任务名称，移除前缀
+                                if name.startswith(('ROOT:', 'COMPOSITE:', 'ATOMIC:')):
+                                    name = name.split(':', 1)[1].strip()
+                                response += f"{i}. {name} ({status})\n"
+                    else:
+                        response += str(data)
+                else:
+                    response = "📭 暂无相关数据"
         else:
             response = f"❌ 数据库查询失败: {result}"
         
@@ -565,7 +834,7 @@ async def _format_search_result(result: Dict[str, Any], query: str) -> Dict[str,
         }
 
 
-async def _direct_semantic_analysis(message: str) -> Optional[Dict[str, Any]]:
+async def _direct_semantic_analysis(message: str, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """直接语义分析 - 最后的备用方案"""
     try:
         message_lower = message.lower()
@@ -582,19 +851,103 @@ async def _direct_semantic_analysis(message: str) -> Optional[Dict[str, Any]]:
             ("事项" in message_lower and any(word in message_lower for word in ["还有", "剩余", "未完成"])),
         ]
         
+        # 删除动作词
+        delete_actions = any(word in message_lower for word in ["删除", "清除", "清空", "移除", "删掉", "去掉", "清理"])
+        
+        # 创建动作词
+        create_actions = any(word in message_lower for word in ["新建", "创建", "添加", "建立", "制定", "做个", "建个"])
+        
         # 查询动作词
         query_actions = any(word in message_lower for word in ["看", "查", "显示", "列出", "告诉", "帮我"])
+        
+        # 检查删除操作
+        if any(task_patterns) and delete_actions:
+            logger.info(f"🗑️ 直接语义分析识别为任务删除: {message}")
+            
+            # 调用数据库删除工具 - 添加session_id支持
+            session_filter = ""
+            if session_id:
+                session_filter = f" AND session_id = '{session_id}'"
+            else:
+                # 如果没有session_id，只删除没有session_id的任务（向后兼容）
+                session_filter = " AND session_id IS NULL"
+                
+            sql = f"DELETE FROM tasks WHERE status = 'pending'{session_filter}"
+            result = await execute_tool("database_query", 
+                                      database="data/databases/main/tasks.db",
+                                      sql=sql,
+                                      operation="execute")
+            
+            return await _format_database_result(result, "任务删除")
+        
+        # 检查创建操作
+        if any(task_patterns) and create_actions:
+            logger.info(f"➕ 直接语义分析识别为任务创建: {message}")
+            
+            # 提取任务名称 - 简单的文本处理
+            task_name = message
+            # 清理动作词，保留任务描述
+            for action_word in ["新建", "创建", "添加", "建立", "制定", "做个", "建个"]:
+                task_name = task_name.replace(action_word, "")
+            for task_word in ["任务", "待办", "清单", "事项"]:
+                task_name = task_name.replace(task_word, "")
+            
+            # 清理标点和多余空格
+            import re
+            task_name = re.sub(r'[，。！？,!?]', '', task_name).strip()
+            task_name = task_name.replace("，", "").replace("：", "").replace(":", "").strip()
+            
+            if not task_name:
+                task_name = "新任务"
+            
+            # 调用数据库插入工具
+            session_value = f"'{session_id}'" if session_id else "NULL"
+            sql = f"""INSERT INTO tasks (name, status, priority, session_id, task_type) 
+                     VALUES ('{task_name}', 'pending', 1, {session_value}, 'atomic')"""
+            
+            result = await execute_tool("database_query", 
+                                      database="data/databases/main/tasks.db",
+                                      sql=sql,
+                                      operation="execute")
+            
+            # 格式化创建结果
+            if isinstance(result, dict) and result.get("success"):
+                rows_affected = result.get("rows_affected", 0)
+                if rows_affected > 0:
+                    response = f"✅ **任务创建成功**：\n\n已添加任务：「{task_name}」"
+                else:
+                    response = f"❌ **任务创建失败**：\n\n无法添加任务"
+            else:
+                response = f"❌ **任务创建失败**：\n\n{result.get('error', '未知错误')}"
+                
+            return {
+                "response": response,
+                "suggestions": ["查看任务", "继续添加", "开始工作"],
+                "actions": [{"type": "view_tasks", "label": "查看任务", "data": {}}],
+                "action": "task_create",
+                "confidence": 0.9
+            }
         
         if any(task_patterns) and query_actions:
             logger.info(f"🎯 直接语义分析识别为任务查询: {message}")
             
-            # 调用数据库查询工具
+            # 强制会话隔离 - 数据库查询工具
+            if not session_id:
+                return {
+                    "response": "🔒 请先在当前对话中创建一个任务或计划，然后我就能显示当前工作空间的任务了。",
+                    "suggestions": ["创建新计划", "开始新对话"],
+                    "actions": [],
+                    "action": "database_query",
+                    "confidence": 1.0
+                }
+                
+            sql = f"SELECT * FROM tasks WHERE status = 'pending' AND session_id = '{session_id}' ORDER BY priority ASC, id DESC LIMIT 10"
             result = await execute_tool("database_query", 
                                       database="data/databases/main/tasks.db",
-                                      sql="SELECT * FROM tasks WHERE status = 'pending' ORDER BY priority ASC, id DESC LIMIT 10",
+                                      sql=sql,
                                       operation="query")
             
-            return await _format_database_result(result, "待办任务查询")
+            return await _format_database_result(result, f"当前工作空间待办任务 (会话: {session_id})")
         
         # 搜索查询检测
         search_patterns = [
@@ -619,81 +972,36 @@ async def _direct_semantic_analysis(message: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _parse_intent_from_response(original_message: str) -> Optional[Dict[str, Any]]:
-    """从用户原始消息中解析意图路由结果（直接基于关键词）"""
+async def _direct_semantic_analysis(original_message: str, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """直接语义分析 - 完全基于LLM的最终兜底方案"""
     try:
-        # 基于用户原始消息识别意图，而不是LLM响应
-        message_lower = original_message.lower()
+        logger.info("🔬 启用直接语义分析兜底方案")
         
-        # 任务查询意图
-        task_keywords = ["任务", "待办", "清单", "列表", "未完成", "完成", "todo"]
-        query_keywords = ["查看", "显示", "列出", "看看", "有什么", "多少", "统计"]
+        from tool_box.router import get_smart_router
         
-        has_task = any(keyword in message_lower for keyword in task_keywords)
-        has_query = any(keyword in message_lower for keyword in query_keywords)
+        # 获取智能路由器并进行最后的分析尝试
+        router = await get_smart_router()
         
-        if has_task and has_query:
-            return {
-                "action": "database_query",
-                "args": {
-                    "operation": "query",
-                    "query": "SELECT * FROM tasks WHERE status = 'pending' ORDER BY priority ASC, id DESC",
-                    "description": "查询待办任务列表"
-                },
-                "confidence": 0.95
-            }
+        # 使用更宽松的置信度阈值，但仍然是LLM分析
+        result = await router._enhanced_llm_routing(original_message, context={
+            "fallback_mode": True,
+            "min_confidence": 0.05,  # 极低阈值，但仍是LLM分析
+            "session_id": session_id
+        })
         
-        # 地点+天气搜索意图（专门针对你的例子）
-        location_pattern = r'(北京|上海|广州|深圳|杭州|成都|重庆|西安|南京|武汉|天津|苏州|珠海|厦门|青岛|大连|宁波|无锡|佛山|东莞|中山|惠州|江门|肇庆|清远|韶关|河源|梅州|汕头|潮州|揭阳|汕尾|阳江|湛江|茂名|云浮)'
-        weather_keywords = ["天气", "气温", "温度", "下雨", "晴天", "阴天", "多云"]
-        
-        import re
-        location_match = re.search(location_pattern, original_message)
-        has_weather = any(keyword in message_lower for keyword in weather_keywords)
-        
-        if location_match or has_weather:
-            # 构建搜索查询
-            if location_match:
-                location = location_match.group(1)
-                query = f"{location}天气" 
-            else:
-                query = original_message.strip()
-                
-            return {
-                "action": "search",
-                "args": {"query": query, "max_results": 5},
-                "confidence": 0.95
-            }
-        
-        # 通用搜索意图（排除任务相关的查询）
-        search_keywords = ["搜索", "search", "find", "新闻", "资讯", "信息"]
-        # 注意：不包含"查询"，因为它经常用于任务查询
-        has_search = any(keyword in message_lower for keyword in search_keywords)
-        
-        # 如果包含搜索关键词，但不是任务相关，则使用搜索
-        if has_search and not has_task:
-            return {
-                "action": "search",
-                "args": {"query": original_message.strip(), "max_results": 5},
-                "confidence": 0.8
-            }
-            
-        # 计划查询意图
-        if any(keyword in message_lower for keyword in ["计划", "项目", "plan", "规划"]):
-            return {
-                "action": "show_plan",
-                "args": {"title": "当前计划"},
-                "confidence": 0.7
-            }
-        
-        return None
+        return result
         
     except Exception as e:
-        logger.error(f"❌ 意图解析失败: {e}")
-        return None
+        logger.error(f"❌ 直接语义分析失败: {e}")
+        # 科研项目要求：即使最终兜底也不使用正则匹配
+        return {
+            "response": "抱歉，我暂时无法理解您的请求。请尝试重新表达或提供更多详细信息。",
+            "suggestions": ["重新表达请求", "提供更多上下文", "换个方式描述"],
+            "metadata": {"fallback_used": True, "routing_failed": True}
+        }
 
 
-async def _execute_routed_action(intent_result: Dict[str, Any], original_message: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def _execute_routed_action(intent_result: Dict[str, Any], original_message: str, context: Optional[Dict[str, Any]] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
     """执行路由的行动"""
     action = intent_result.get("action")
     args = intent_result.get("args", {})
@@ -701,12 +1009,65 @@ async def _execute_routed_action(intent_result: Dict[str, Any], original_message
     
     try:
         if action == "show_tasks":
-            # 显示任务列表
-            task_response = await _handle_task_query(original_message)
+            # 显示任务列表 - 传递会话信息以支持专事专办
+            workflow_id = context.get("workflow_id") if context else None
+            task_response = await _handle_task_query(
+                original_message,
+                session_id=session_id,
+                workflow_id=workflow_id
+            )
             return {
                 "response": task_response,
                 "suggestions": ["查看详细信息", "按优先级排序", "筛选特定状态"],
                 "actions": [{"type": "show_task_details", "label": "查看详情", "data": {}}],
+                "action": action,
+                "confidence": confidence
+            }
+        
+        elif action == "create_learning_plan":
+            # 学习计划生成
+            topic = args.get("topic", "学习计划")
+            plan_type = args.get("type", "detailed")
+            
+            search_info = ""
+            search_query = f"{topic} 学习计划 教材 课程 步骤"
+            search_result = await execute_tool("web_search", query=search_query, max_results=3)
+
+            if isinstance(search_result, dict) and search_result.get("success"):
+                search_content = search_result.get("response", "") or search_result.get("formatted_response", "")
+                if search_content and not str(search_content).startswith("❌"):
+                    search_info = str(search_content)[:1200]
+
+            generation = await _generate_learning_plan_with_llm(topic, original_message, search_info, plan_type)
+
+            return {
+                "response": generation["plan"],
+                "suggestions": generation["suggestions"],
+                "actions": generation["actions"],
+                "action": action,
+                "confidence": confidence
+            }
+
+        elif action == "task_breakdown":
+            # 任务拆分处理
+            target = args.get("target", "任务")
+            
+            # 先搜索相关信息
+            search_query = f"{target} 拆分 步骤 行动 建议"
+            search_result = await execute_tool("web_search", query=search_query, max_results=3)
+
+            search_info = ""
+            if isinstance(search_result, dict) and search_result.get("success"):
+                search_content = search_result.get("response", "") or search_result.get("formatted_response", "")
+                if search_content and not str(search_content).startswith("❌"):
+                    search_info = str(search_content)[:1000]
+
+            generation = await _generate_task_breakdown_with_llm(target, original_message, search_info)
+
+            return {
+                "response": generation["plan"],
+                "suggestions": generation["suggestions"],
+                "actions": generation["actions"],
                 "action": action,
                 "confidence": confidence
             }
@@ -718,29 +1079,67 @@ async def _execute_routed_action(intent_result: Dict[str, Any], original_message
                 sql_query = args.get("query", "")
                 description = args.get("description", "数据库查询")
                 
+                # 🔒 专事专办：强制在待办任务查询中添加session_id过滤
+                if ("tasks" in sql_query.lower() and "status" in sql_query.lower() and 
+                    "pending" in sql_query.lower() and "session_id" not in sql_query.lower() and 
+                    "SELECT" in sql_query.upper()):
+                    
+                    logger.warning(f"🚨 检测到LLM生成的无会话过滤SQL: {sql_query}")
+                    
+                    # 强制添加会话过滤
+                    if session_id:
+                        # 在WHERE子句中添加session_id过滤
+                        if "WHERE" in sql_query.upper():
+                            sql_query = sql_query.replace("WHERE", f"WHERE session_id = '{session_id}' AND", 1)
+                        else:
+                            # 如果没有WHERE子句，添加一个
+                            sql_query = sql_query.replace("FROM tasks", f"FROM tasks WHERE session_id = '{session_id}'")
+                        
+                        logger.info(f"✅ 已修正为带会话过滤的SQL: {sql_query}")
+                    else:
+                        # 没有session_id时，只返回全局任务
+                        if "WHERE" in sql_query.upper():
+                            sql_query = sql_query.replace("WHERE", "WHERE session_id IS NULL AND", 1)
+                        else:
+                            sql_query = sql_query.replace("FROM tasks", "FROM tasks WHERE session_id IS NULL")
+                        
+                        logger.info(f"🌐 已修正为全局任务SQL: {sql_query}")
+                
                 # 调用Tool Box的database_query工具（注意参数名是sql而不是query）
                 result = await execute_tool("database_query", 
-                                          database="data/databases/main/tasks.db",
-                                          sql=sql_query, 
-                                          operation=operation)
+                                        database="data/databases/main/tasks.db",
+                                        sql=sql_query, 
+                                        operation=operation)
                 
                 if isinstance(result, dict) and result.get("success"):
-                    data = result.get("data", [])
-                    if data:
-                        response = f"📊 {description}结果：\n\n"
-                        if isinstance(data, list) and len(data) > 0:
-                            response += f"找到 {len(data)} 条记录：\n"
-                            for i, item in enumerate(data[:10], 1):  # 最多显示10条
-                                if isinstance(item, dict):
-                                    name = item.get("name", f"记录{i}")
-                                    status = item.get("status", "未知")
-                                    response += f"{i}. {name} ({status})\n"
+                    # 统一处理execute操作，不使用关键词匹配
+                    if operation == "execute":
+                        rows_affected = result.get("rows_affected", 0)
+                        if rows_affected > 0:
+                            response = f"✅ **{description}成功**：\n\n影响了 {rows_affected} 条记录"
                         else:
-                            response += str(data)
+                            response = f"📭 **{description}完成**：\n\n没有记录受到影响"
                     else:
-                        response = "📭 暂无相关数据"
+                        # 查询操作
+                        data = result.get("rows", [])
+                        if data:
+                            response = f"📊 {description}结果：\n\n"
+                            if isinstance(data, list) and len(data) > 0:
+                                response += f"找到 {len(data)} 条记录：\n"
+                                for i, item in enumerate(data[:10], 1):  # 最多显示10条
+                                    if isinstance(item, dict):
+                                        name = item.get("name", f"记录{i}")
+                                        status = item.get("status", "未知")
+                                        # 清理任务名称，移除前缀
+                                        if name.startswith(('ROOT:', 'COMPOSITE:', 'ATOMIC:')):
+                                            name = name.split(':', 1)[1].strip()
+                                        response += f"{i}. {name} ({status})\n"
+                            else:
+                                response += str(data)
+                        else:
+                            response = "📭 暂无相关数据"
                 else:
-                    response = f"❌ 数据库查询失败: {result}"
+                    response = f"❌ 数据库操作失败: {result}"
                 
                 return {
                     "response": response,
@@ -791,8 +1190,13 @@ async def _execute_routed_action(intent_result: Dict[str, Any], original_message
                 }
         
         elif action == "show_plan":
-            # 显示计划
-            plan_response = await _handle_plan_query(args.get("title", ""))
+            # 显示计划 - 传递会话信息以支持专事专办
+            workflow_id = context.get("workflow_id") if context else None
+            plan_response = await _handle_plan_query(
+                args.get("title", ""),
+                session_id=session_id,
+                workflow_id=workflow_id
+            )
             return {
                 "response": plan_response,
                 "suggestions": ["查看任务详情", "创建新计划", "修改计划"],
@@ -861,60 +1265,83 @@ async def _handle_web_search(query: str, max_results: int = 5) -> str:
         return f"⚠️ 抱歉，搜索功能暂时不可用: {str(e)}"
 
 
-async def _handle_plan_query(title: str) -> str:
-    """处理计划查询请求"""
+async def _handle_plan_query(title: str, session_id: str = None, workflow_id: str = None) -> str:
+    """处理计划查询请求 - 支持会话级隔离"""
     try:
-        import httpx
+        from ..repository.tasks import default_repo
+        from ..utils.route_helpers import resolve_scope_params
         
-        # 通过API查询计划
-        async with httpx.AsyncClient() as client:
-            response = await client.get("http://127.0.0.1:8000/plans")
+        # 直接查询数据库，支持会话隔离
+        try:
+            resolved_session, resolved_workflow = resolve_scope_params(
+                session_id, workflow_id, require_scope=True
+            )
+        except Exception:
+            # 如果没有会话信息，返回提示
+            return "🔒 请先创建一个任务或计划，然后我就能显示当前工作空间的内容了。"
+        
+        # 获取当前会话的所有任务
+        tasks = default_repo.list_all_tasks(session_id=resolved_session, workflow_id=resolved_workflow)
+        
+        # 找出ROOT任务（计划）
+        root_tasks = [t for t in tasks if t.get("task_type") == "root"]
+        
+        if not root_tasks:
+            return "📋 当前工作空间中没有计划。您可以通过聊天创建新的计划。"
+        
+        response_text = f"📊 **当前工作空间计划概览**\n\n📝 **计划数量**: {len(root_tasks)}\n\n"
+        
+        # 显示每个ROOT计划的详细信息
+        for i, plan in enumerate(root_tasks, 1):
+            plan_title = plan.get("name", "未命名计划")
+            status = plan.get("status", "pending")
+            plan_id = plan.get("id")
+            workflow = plan.get("workflow_id", "未知")
             
-            if response.status_code == 200:
-                plans = response.json()
-                
-                if not plans:
-                    return "📋 当前系统中没有计划。您可以通过聊天创建新的计划。"
-                
-                response_text = f"📊 **计划概览**\n\n📝 **总计划数**: {len(plans)}\n\n"
-                
-                # 显示前5个计划
-                for i, plan in enumerate(plans[:5], 1):
-                    plan_title = plan.get("title", "未命名计划") 
-                    created_at = plan.get("created_at", "未知时间")
-                    status = plan.get("status", "unknown")
-                    
-                    status_emoji = {
-                        "draft": "📝",
-                        "active": "🏃",
-                        "completed": "✅",
-                        "archived": "📦"
-                    }.get(status, "📌")
-                    
-                    response_text += f"{i}. {status_emoji} **{plan_title}**\n   创建时间: {created_at}\n   状态: {status}\n\n"
-                
-                if len(plans) > 5:
-                    response_text += f"💡 还有 {len(plans) - 5} 个计划未显示。"
-                    
-                return response_text
-            else:
-                return "📋 当前系统中没有计划。您可以通过聊天创建新的计划。"
+            # 获取这个计划下的子任务数量
+            subtasks = [t for t in tasks if t.get("root_id") == plan_id]
+            subtask_count = len(subtasks)
+            
+            status_emoji = {
+                "pending": "⏳",
+                "running": "🏃",
+                "completed": "✅",
+                "failed": "❌"
+            }.get(status, "📌")
+            
+            response_text += f"{i}. {status_emoji} **{plan_title}**\n"
+            response_text += f"   📋 计划ID: {plan_id}\n"
+            response_text += f"   🔄 工作流: {workflow}\n" 
+            response_text += f"   📊 状态: {status}\n"
+            response_text += f"   👥 子任务数: {subtask_count}\n\n"
+        
+        response_text += f"💡 这是您当前工作空间的专属计划，实现了真正的'专事专办'。"
+        return response_text
         
     except Exception as e:
         logger.error(f"❌ 计划查询失败: {e}")
-        return "📋 当前系统中没有计划。您可以通过聊天创建新的计划。"
+        return f"📋 查询计划时出错: {str(e)}\n\n您可以通过聊天创建新的计划。"
 
 
-async def _handle_task_query(message: str) -> str:
-    """处理任务查询请求，直接查询数据库"""
+async def _handle_task_query(message: str, session_id: str = None, workflow_id: str = None) -> str:
+    """处理任务查询请求，支持会话级隔离"""
     try:
         from ..repository.tasks import default_repo
+        from ..utils.route_helpers import resolve_scope_params
         
-        # 获取所有任务
-        all_tasks = default_repo.list_all_tasks()
+        # 强制会话隔离
+        try:
+            resolved_session, resolved_workflow = resolve_scope_params(
+                session_id, workflow_id, require_scope=True
+            )
+        except Exception:
+            return "🔒 请先在当前对话中创建一个任务或计划，然后我就能显示当前工作空间的任务了。"
+        
+        # 获取当前会话的任务
+        all_tasks = default_repo.list_all_tasks(session_id=resolved_session, workflow_id=resolved_workflow)
         
         if not all_tasks:
-            return "📋 当前系统中没有任务。您可以通过聊天创建新的计划和任务。"
+            return "📋 当前工作空间中没有任务。您可以通过聊天创建新的计划和任务。"
         
         # 统计任务状态
         stats = {
@@ -934,8 +1361,9 @@ async def _handle_task_query(message: str) -> str:
                 incomplete_tasks.append(task)
         
         # 构建响应
-        response = f"""📊 **任务统计概览**
+        response = f"""📊 **当前工作空间任务统计**
         
+🔒 **会话**: {resolved_session}
 📝 **总任务数**: {len(all_tasks)}
 ⏳ **待处理**: {stats.get('pending', 0)} 个
 🏃 **进行中**: {stats.get('running', 0)} 个  
@@ -962,7 +1390,7 @@ async def _handle_task_query(message: str) -> str:
         if len(incomplete_tasks) > 10:
             response += f"\n\n💡 还有 {len(incomplete_tasks) - 10} 个未完成任务未显示。"
             
-        response += f"\n\n🎯 您可以询问特定任务的详情，或请求按优先级、类型筛选任务。"
+        response += f"\n\n💡 这是您当前工作空间的专属任务，实现了真正的'专事专办'。\n🎯 您可以询问特定任务的详情，或请求按优先级、类型筛选任务。"
         
         return response
         
@@ -1031,133 +1459,280 @@ async def get_chat_status():
 # ============ Agent工作流程处理函数 ============
 
 def _is_agent_workflow_intent(message: str) -> bool:
-    """检测是否为Agent工作流程创建意图"""
-    # 基础工作流程关键词
-    workflow_keywords = [
-        "构建", "开发", "创建", "制作", "建立", "设计", "实现",
-        "学习系统", "项目", "应用", "平台", "工具", "框架",
-        "计划", "方案", "流程", "步骤"
+    """检测是否为Agent工作流程创建意图 - 加强过滤，避免简单问候触发任务"""
+    
+    # 🚫 首先排除简单问候和常见对话
+    simple_excludes = [
+        # 问候语
+        "你好", "hi", "hello", "嗨", "在吗", "在不在", "早上好", "下午好", "晚上好",
+        # 简单询问  
+        "怎么样", "如何", "什么", "哪里", "为什么", "干嘛", "在干嘛",
+        # 状态询问
+        "最近", "现在", "目前", "当前",
+        # 简单回复
+        "好的", "可以", "不行", "没问题", "谢谢", "不客气"
     ]
     
-    # 学习指南和教程相关关键词
-    guide_keywords = [
-        "指南", "教程", "学习计划", "入门", "课程", "培训",
-        "整理", "制定", "安排", "规划", "路线图", "攻略"
-    ]
+    message_clean = message.strip().lower()
     
-    # 强意图检测模式
-    strong_patterns = [
-        # 原有模式
-        r"(构建|开发|创建|制作|建立).+(系统|项目|应用|平台)",
-        r"(学习|掌握).+(C\+\+|Python|Java|JavaScript)",
-        r"(设计|实现).+(方案|流程|架构)",
-        r"我想要.+(做|建|写|开发)",
+    # 🔍 长度过滤：小于8个字符的消息通常不是复杂任务
+    if len(message_clean) < 8:
+        return False
         
-        # 新增学习指南模式
-        r"(帮我|帮忙|请).*(整理|制定|规划|设计).*(指南|教程|计划|路线)",
-        r"(学习|掌握|入门).*(指南|教程|攻略|计划)",
-        r"(制作|创建|建立).*(学习|教程|指南|课程)",
-        r"我想.*(学习|学会|掌握).*(.*)",
-        r"(入门|基础|初级).*(指南|教程|攻略)"
+    # 🔍 简单问候过滤  
+    if any(exclude in message_clean for exclude in simple_excludes):
+        # 如果包含问候词且长度<20，大概率是简单问候
+        if len(message_clean) < 20:
+            return False
+    
+    # 🔍 问号结尾的短句通常是询问，不是任务创建
+    if message_clean.endswith('?') or message_clean.endswith('？'):
+        if len(message_clean) < 30:
+            return False
+    
+    # 排除纯学习计划请求 - 优先级最高
+    learning_plan_indicators = [
+        "学习C++", "学习Python", "学习Java", "学习JavaScript", "学习因果推断",
+        "c++", "python", "java", "javascript",
+        "学习计划", "教程", "课程", "培训"
     ]
     
-    # 检查强模式 - 优先级最高
+    # 如果是纯学习计划请求，不触发Agent工作流程
+    if any(indicator.lower() in message.lower() for indicator in learning_plan_indicators):
+        # 进一步检查是否真的是纯学习请求
+        pure_learning_patterns = [
+            r"(学习|掌握).*(C\+\+|Python|Java|JavaScript|因果推断)",
+            r"(写|制定|制作).*(计划|教程|指南).*(学习|掌握)",
+            r"帮我.*(计划|规划).*(学习|教程)"
+        ]
+        if any(re.search(pattern, message, re.IGNORECASE) for pattern in pure_learning_patterns):
+            return False
+    
+    # 基础工作流程关键词 - 排除学习相关
+    workflow_keywords = [
+        "构建", "开发", "制作", "建立", "设计", "实现",
+        "项目", "应用", "平台", "工具", "框架", "系统",
+        "方案", "流程"
+    ]
+    
+    # 强意图检测模式 - 更精确
+    strong_patterns = [
+        # 软件开发相关
+        r"(构建|开发|创建|制作|建立).+(系统|项目|应用|平台|工具)",
+        r"(设计|实现).+(方案|流程|架构)",
+        r"我想要.+(做|建|写|开发).+(系统|项目|应用)",
+        # 复杂工作流程
+        r"(帮我|帮忙).*(制定|规划|设计).*(方案|流程|步骤)",
+        r"(整理|制定|规划).*(工作|项目|开发).*(流程|步骤)"
+    ]
+    
+    # 检查强模式
     for pattern in strong_patterns:
         if re.search(pattern, message):
             return True
     
-    # 检查学习指南组合
-    guide_count = sum(1 for keyword in guide_keywords if keyword in message)
-    if guide_count >= 1:
-        return True
-    
-    # 检查基础关键词组合
-    keyword_count = sum(1 for keyword in workflow_keywords if keyword in message)
+    # 检查基础关键词组合 - 需要至少2个工作流程关键词
+    keyword_count = sum(1 for keyword in workflow_keywords if keyword in message.lower())
     return keyword_count >= 2
 
 
-async def _handle_agent_workflow_creation(request: ChatRequest) -> ChatResponse:
+
+
+def _format_dag_preview(dag_nodes: List[Dict[str, Any]]) -> str:
+    """将DAG节点渲染为文本树，方便在聊天窗口中快速预览。"""
+    if not dag_nodes:
+        return "（暂无DAG数据）"
+
+    by_parent = defaultdict(list)
+    for node in dag_nodes:
+        by_parent[node.get("parent_id")].append(node)
+
+    for siblings in by_parent.values():
+        siblings.sort(key=lambda n: (n.get("depth", 0), n.get("id", 0), str(n.get("name", ""))))
+
+    root_candidates = [n for n in dag_nodes if n.get("parent_id") is None]
+    root = root_candidates[0] if root_candidates else dag_nodes[0]
+
+    lines: List[str] = []
+
+    def render(node: Dict[str, Any], prefix: str = "", is_last: bool = True) -> None:
+        connector = "└──" if is_last else "├──"
+        name = node.get("name") or "未命名任务"
+        task_type = (node.get("task_type") or "unknown").upper()
+        label = f"{name} [{task_type}]"
+        if not prefix:
+            lines.append(label)
+        else:
+            lines.append(f"{prefix}{connector} {label}")
+
+        children = by_parent.get(node.get("id"), [])
+        child_prefix = prefix + ("    " if is_last else "│   ")
+        for idx, child in enumerate(children):
+            render(child, child_prefix, idx == len(children) - 1)
+
+    render(root)
+    return "\n".join(lines)
+
+
+def _format_execution_plan(execution_plan: List[Dict[str, Any]], max_steps: int = 5) -> str:
+    """格式化执行计划，突出最早需要关注的任务。"""
+    if not execution_plan:
+        return "暂无执行计划数据"
+
+    lines: List[str] = []
+    for index, step in enumerate(execution_plan[:max_steps]):
+        order = step.get("execution_order") or index + 1
+        try:
+            order_int = int(order)
+        except Exception:
+            order_int = index + 1
+        name = step.get("name") or f"步骤{order_int}"
+        prerequisites = step.get("prerequisites") or []
+        prereq_text = ", ".join(str(p) for p in prerequisites) if prerequisites else "无"
+        duration = step.get("estimated_duration") or "未估算"
+        lines.append(f"{order_int}. {name}（前置: {prereq_text}，预计: {duration}）")
+
+    if len(execution_plan) > max_steps:
+        lines.append("...（更多任务已生成，可在DAG面板查看）")
+
+    return "\n".join(lines)
+
+async def _handle_agent_workflow_creation(request: ChatRequest, context_messages: Optional[List[Dict[str, str]]] = None) -> ChatResponse:
     """处理Agent工作流程创建"""
     try:
-        # 调用Agent工作流程创建API
-        async with httpx.AsyncClient() as client:
-            agent_request = {
-                "goal": request.message,
-                "context": request.context or {},
-                "user_preferences": {}
-            }
+        # 先搜索相关专业信息以提高规划质量
+        search_enhanced_goal = request.message
+        if any(keyword in request.message for keyword in ["学习", "计划", "指南"]):
+            logger.info(f"🔍 学习计划请求，先搜索相关信息: {request.message}")
+            search_result = await execute_tool("web_search", query=request.message, max_results=3)
+            if search_result and search_result.get("success"):
+                search_content = search_result.get("response", "")
+                if search_content and not search_content.startswith("❌"):
+                    search_enhanced_goal = f"{request.message}\n\n参考信息：{search_content[:800]}"
+        
+        # 🔧 通过tool-box调用Agent工作流程创建API
+        # 构建上下文信息
+        context_info = request.context or {}
+        if context_messages:
+            context_info["conversation_history"] = context_messages[-3:]  # 最近3条消息
+        
+        agent_request = {
+            "goal": search_enhanced_goal,
+            "context": context_info,
+            "user_preferences": {}
+        }
+        
+        # 使用tool-box的internal_api工具替代直接的httpx调用
+        api_result = await execute_tool(
+            "internal_api",
+            endpoint="/agent/create-workflow", 
+            method="POST",
+            data=agent_request,
+            timeout=60.0
+        )
+        
+        if api_result and api_result.get("success"):
+            workflow_data = api_result.get("data", {})
             
-            response = await client.post(
-                "http://127.0.0.1:8000/agent/create-workflow",
-                json=agent_request,
-                timeout=60.0
-            )
-            
-            if response.status_code == 200:
-                workflow_data = response.json()
-                
-                # 构建用户友好的响应
-                total_tasks = workflow_data['metadata']['total_tasks']
-                atomic_tasks = workflow_data['metadata']['atomic_tasks']
-                
-                response_text = f"""🤖 **Agent工作流程已创建！**
+            # 构建用户友好的响应并动态摘要工作流结构
+            metadata = workflow_data.get('metadata') or {}
+            dag_nodes = workflow_data.get('dag_structure') or []
+            execution_plan = workflow_data.get('execution_plan') or []
 
-📋 **目标**: {workflow_data['goal']}
-🔢 **任务总数**: {total_tasks}个 (包含{atomic_tasks}个可执行任务)
-🌳 **任务结构**: ROOT → COMPOSITE → ATOMIC 层次分解
-🔗 **依赖关系**: 已自动分析任务间依赖
+            task_counts = Counter(node.get('task_type', 'unknown') for node in dag_nodes)
+            total_tasks = metadata.get('total_tasks') or len(dag_nodes)
+            root_count = task_counts.get('root', 0)
+            composite_count = task_counts.get('composite', 0)
+            atomic_count = task_counts.get('atomic', 0)
 
-**📊 DAG结构预览**:
-```
-{workflow_data['goal']} (ROOT)
-├── 环境准备和基础配置
-├── 核心功能开发
-├── 测试和优化
-└── 部署和维护
-```
+            dag_preview = _format_dag_preview(dag_nodes)
+            execution_summary = _format_execution_plan(execution_plan)
+            key_tasks = [node.get('name', '未命名任务') for node in dag_nodes if node.get('task_type') == 'composite'][:3]
 
-**🎯 下一步操作**:
-1. **查看DAG图** - 在右侧面板查看完整任务依赖图
-2. **修改任务** - 可以调整任务内容和依赖关系  
-3. **确认执行** - 确认无误后开始执行atomic任务
-4. **智能调度** - 系统将根据依赖关系智能调度任务执行
+            goal_text = workflow_data.get('goal', request.message)
+            estimated_completion = metadata.get('estimated_completion') or '未提供'
+            created_at = metadata.get('created_at')
 
-点击右侧DAG图查看详细的任务分解结构！"""
+            response_lines = [
+                "🤖 **Agent工作流程已创建！**",
+                "",
+                f"📋 **目标**: {goal_text}",
+                f"🔢 **任务总数**: {total_tasks} 个（ROOT {root_count}、COMPOSITE {composite_count}、ATOMIC {atomic_count}）",
+                f"⏱️ **预计完成时间**: {estimated_completion}",
+            ]
+            if created_at:
+                response_lines.append(f"🗓️ **创建时间戳**: {created_at}")
+            if key_tasks:
+                response_lines.append("")
+                response_lines.append("**📌 关键任务概览**:")
+                for name in key_tasks:
+                    response_lines.append(f"- {name}")
+            response_lines.append("")
+            response_lines.append("**🧭 执行计划（前若干步）**:")
+            response_lines.append(execution_summary)
+            response_lines.append("")
 
-                return ChatResponse(
-                    response=response_text,
-                    suggestions=[
-                        "查看DAG结构图",
-                        "修改任务分解",
-                        "开始执行工作流程",
-                        "查看执行计划"
-                    ],
-                    actions=[
-                        {
-                            "type": "show_dag",
-                            "label": "显示DAG图",
-                            "data": {"workflow_id": workflow_data['workflow_id']}
-                        },
-                        {
-                            "type": "approve_workflow", 
-                            "label": "确认并开始执行",
-                            "data": {"workflow_id": workflow_data['workflow_id']}
-                        }
-                    ],
-                    metadata={
-                        "mode": request.mode,
-                        "agent_workflow": True,
-                        "workflow_id": workflow_data['workflow_id'],
-                        "total_tasks": total_tasks,
-                        "dag_structure": workflow_data['dag_structure']
+            response_lines.append("**📊 DAG结构预览**:")
+            response_lines.append("```")
+            response_lines.append(dag_preview)
+            response_lines.append("```")
+            next_steps = [
+                "打开右侧DAG视图检查依赖关系",
+                "根据需要调整任务内容或顺序",
+                "确认执行前置任务后继续推进",
+            ]
+            if key_tasks:
+                next_steps.insert(0, f"细化任务：{key_tasks[0]}")
+            response_lines.append("")
+            response_lines.append("**🎯 下一步操作**:")
+            for idx, item in enumerate(next_steps, 1):
+                response_lines.append(f"{idx}. {item}")
+
+            response_text = "\n".join(response_lines)
+            suggestions = [
+                "查看DAG结构图",
+                "检查执行计划详情",
+                "调整任务或依赖关系",
+                "开始执行首个任务",
+            ]
+            if key_tasks:
+                suggestions.insert(0, f"聚焦任务：{key_tasks[0]}")
+
+            return ChatResponse(
+                response=response_text,
+                suggestions=suggestions,
+                actions=[
+                    {
+                        "type": "show_dag",
+                        "label": "显示DAG图",
+                        "data": {"workflow_id": workflow_data.get('workflow_id')}
+                    },
+                    {
+                        "type": "approve_workflow",
+                        "label": "确认并开始执行",
+                        "data": {"workflow_id": workflow_data.get('workflow_id')}
                     }
-                )
-            else:
-                return ChatResponse(
-                    response=f"❌ 工作流程创建失败: {response.text}",
-                    suggestions=["重新尝试", "简化描述再试"],
-                    metadata={"mode": request.mode, "error": True}
-                )
+                ],
+                metadata={
+                    "mode": request.mode,
+                    "agent_workflow": True,
+                    "workflow_id": workflow_data.get('workflow_id'),
+                    "total_tasks": total_tasks,
+                    "task_counts": dict(task_counts),
+                    "dag_structure": dag_nodes,
+                    "dag_preview": dag_preview,
+                    "execution_plan": execution_plan,
+                    "execution_plan_summary": execution_summary
+                }
+            )
+        else:
+            # API调用失败的情况
+            api_error = api_result.get("error", "未知错误") if api_result else "API调用失败"
+            return ChatResponse(
+                response=f"❌ 工作流程创建失败: {api_error}",
+                suggestions=["重新尝试", "简化描述再试"],
+                metadata={"mode": request.mode, "error": True}
+            )
                 
     except Exception as e:
         logger.error(f"❌ Agent工作流程创建失败: {e}")
@@ -1166,3 +1741,50 @@ async def _handle_agent_workflow_creation(request: ChatRequest) -> ChatResponse:
             suggestions=["重新描述目标", "联系技术支持"],
             metadata={"mode": request.mode, "error": True}
         )
+
+
+def _is_simple_greeting(message: str) -> bool:
+    """快速识别简单问候语，避免过度分析"""
+    message_lower = message.lower().strip()
+    
+    # 常见问候语模式
+    simple_greetings = [
+        "你好", "您好", "hi", "hello", "hey", "嗨",
+        "你好呀", "您好呀", "hello there", "hi there",
+        "好久不见", "最近怎么样", "怎么样", "在吗",
+        "早上好", "下午好", "晚上好", "晚安",
+        "good morning", "good afternoon", "good evening", "good night"
+    ]
+    
+    # 简单感谢语
+    simple_thanks = [
+        "谢谢", "感谢", "thanks", "thank you", "thx",
+        "多谢", "谢了", "非常感谢"
+    ]
+    
+    # 简单确认语  
+    simple_confirmations = [
+        "好的", "好", "ok", "okay", "行", "可以",
+        "明白了", "知道了", "了解", "收到"
+    ]
+    
+    all_simple_phrases = simple_greetings + simple_thanks + simple_confirmations
+    
+    # 检查是否完全匹配或非常接近
+    return any(phrase in message_lower for phrase in all_simple_phrases) and len(message) <= 15
+
+
+def _get_simple_greeting_response(message: str) -> str:
+    """为简单问候语生成快速响应"""
+    message_lower = message.lower().strip()
+    
+    if any(greeting in message_lower for greeting in ["你好", "您好", "hi", "hello", "hey", "嗨"]):
+        return "你好！我是AI任务编排助手，很高兴为您服务。有什么我可以帮助您的吗？"
+    elif any(thanks in message_lower for thanks in ["谢谢", "感谢", "thanks", "thank you"]):
+        return "不客气！随时为您服务。还有其他需要帮助的地方吗？"
+    elif any(confirm in message_lower for confirm in ["好的", "好", "ok", "okay", "明白"]):
+        return "好的，请告诉我下一步需要做什么，我会全力协助您。"
+    elif "好久不见" in message_lower:
+        return "确实好久不见！我一直在这里等待为您提供帮助。今天有什么任务需要处理吗？"
+    else:
+        return "我收到了您的消息。作为您的AI助手，我随时准备帮助您处理各种任务。请告诉我您需要什么？"

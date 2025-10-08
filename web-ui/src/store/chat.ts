@@ -1,12 +1,20 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import { ChatMessage, ChatSession } from '../types/index';
+import { useTasksStore } from '@store/tasks';
+import { analyzeUserIntent, executeToolBasedOnIntent } from '../services/intentAnalysis';
 
 interface ChatState {
   // 聊天数据
   currentSession: ChatSession | null;
   sessions: ChatSession[];
   messages: ChatMessage[];
+  currentWorkflowId: string | null;
+
+  // 当前上下文
+  currentPlanTitle: string | null;
+  currentTaskId: number | null;
+  currentTaskName: string | null;
   
   // 输入状态
   inputText: string;
@@ -35,6 +43,11 @@ interface ChatState {
   toggleChatPanel: () => void;
   setChatPanelVisible: (visible: boolean) => void;
   setChatPanelWidth: (width: number) => void;
+
+  // 上下文操作
+  setChatContext: (context: { planTitle?: string | null; taskId?: number | null; taskName?: string | null }) => void;
+  clearChatContext: () => void;
+  setCurrentWorkflowId: (workflowId: string | null) => void;
   
   // 快捷操作
   sendMessage: (content: string, metadata?: ChatMessage['metadata']) => Promise<void>;
@@ -48,6 +61,10 @@ export const useChatStore = create<ChatState>()(
     currentSession: null,
     sessions: [],
     messages: [],
+    currentWorkflowId: null,
+    currentPlanTitle: null,
+    currentTaskId: null,
+    currentTaskName: null,
     inputText: '',
     isTyping: false,
     isProcessing: false,
@@ -56,12 +73,21 @@ export const useChatStore = create<ChatState>()(
 
     // 设置当前会话
     setCurrentSession: (session) => {
-      set({ currentSession: session });
-      if (session) {
-        set({ messages: session.messages });
-      } else {
-        set({ messages: [] });
+      const state = get();
+      const currentId = state.currentSession?.id;
+      if ((session?.id || null) === (currentId || null)) {
+        return;
       }
+
+      // 合并所有状态更新为单次set调用，避免多次重渲染
+      set({
+        currentSession: session,
+        currentWorkflowId: session?.workflow_id ?? null,
+        messages: session ? session.messages : [],
+        currentPlanTitle: null,
+        currentTaskId: null,
+        currentTaskName: null,
+      });
     },
 
     // 添加会话
@@ -132,6 +158,59 @@ export const useChatStore = create<ChatState>()(
     // 清空消息
     clearMessages: () => set({ messages: [] }),
 
+    // 设置聊天上下文
+    setChatContext: ({ planTitle, taskId, taskName }) => {
+      const state = get();
+      const nextPlanTitle = planTitle !== undefined ? planTitle : state.currentPlanTitle;
+      const nextTaskId = taskId !== undefined ? taskId : state.currentTaskId;
+      const nextTaskName = taskName !== undefined ? taskName : state.currentTaskName;
+
+      if (
+        state.currentPlanTitle === nextPlanTitle &&
+        state.currentTaskId === nextTaskId &&
+        state.currentTaskName === nextTaskName
+      ) {
+        return;
+      }
+
+      set({
+        currentPlanTitle: nextPlanTitle ?? null,
+        currentTaskId: nextTaskId ?? null,
+        currentTaskName: nextTaskName ?? null,
+      });
+    },
+
+    clearChatContext: () => set({ currentPlanTitle: null, currentTaskId: null, currentTaskName: null }),
+
+    setCurrentWorkflowId: (workflowId) => {
+      const state = get();
+      if (state.currentWorkflowId === workflowId) {
+        return;
+      }
+
+      const currentSession = state.currentSession
+        ? { ...state.currentSession, workflow_id: workflowId ?? undefined }
+        : null;
+      const sessions = state.sessions.map((session) =>
+        session.id === currentSession?.id
+          ? { ...session, workflow_id: workflowId ?? undefined }
+          : session
+      );
+
+      try {
+        const { setCurrentWorkflowId } = useTasksStore.getState();
+        setCurrentWorkflowId(workflowId ?? null);
+      } catch (err) {
+        console.warn('Unable to sync workflow id to tasks store:', err);
+      }
+
+      set({
+        currentWorkflowId: workflowId ?? null,
+        currentSession,
+        sessions,
+      });
+    },
+
     // 设置输入文本
     setInputText: (text) => set({ inputText: text }),
 
@@ -154,6 +233,14 @@ export const useChatStore = create<ChatState>()(
 
     // 发送消息
     sendMessage: async (content, metadata) => {
+      const { currentPlanTitle, currentTaskId, currentTaskName, currentWorkflowId, currentSession } = get();
+      const mergedMetadata = {
+        ...metadata,
+        plan_title: metadata?.plan_title ?? currentPlanTitle ?? undefined,
+        task_id: metadata?.task_id ?? currentTaskId ?? undefined,
+        task_name: metadata?.task_name ?? currentTaskName ?? undefined,
+        workflow_id: metadata?.workflow_id ?? currentWorkflowId ?? undefined,
+      };
       
       // 创建用户消息
       const userMessage: ChatMessage = {
@@ -161,7 +248,7 @@ export const useChatStore = create<ChatState>()(
         type: 'user',
         content,
         timestamp: new Date(),
-        metadata,
+        metadata: mergedMetadata,
       };
 
       // 添加用户消息
@@ -185,9 +272,53 @@ export const useChatStore = create<ChatState>()(
           timestamp: msg.timestamp.toISOString()
         }));
         
+        // 🧠 智能预处理：让LLM分析用户意图并决定是否需要工具调用
+        const intentAnalysisResult = await analyzeUserIntent(content, {
+          currentSession,
+          currentWorkflowId,
+          recentMessages: recentMessages.slice(-5) // 提供最近5条消息作为上下文
+        });
+        
+        console.log('🧠 LLM意图分析结果:', intentAnalysisResult);
+        
+        // 如果LLM判断需要工具调用，先执行工具
+        if (intentAnalysisResult.needsToolCall) {
+          const toolResult = await executeToolBasedOnIntent(intentAnalysisResult, {
+            currentSession,
+            currentWorkflowId,
+            userInput: content
+          });
+          
+          if (toolResult.handled) {
+            // 工具已处理，直接返回结果
+            const toolResponse: ChatMessage = {
+              id: `msg_${Date.now()}_assistant`,
+              type: 'assistant',
+              content: toolResult.response,
+              timestamp: new Date(),
+              metadata: {
+                tool_executed: true,
+                tool_type: intentAnalysisResult.toolType,
+                ...toolResult.metadata
+              }
+            };
+            
+            get().addMessage(toolResponse);
+            set({ isProcessing: false });
+            
+            // 派发刷新事件
+            window.dispatchEvent(new CustomEvent('tasksUpdated', {
+              detail: { type: 'tool_execution_completed', tool: intentAnalysisResult.toolType }
+            }));
+            return;
+          }
+        }
+
         const chatRequest = {
-          task_id: metadata?.task_id,
-          plan_title: metadata?.plan_title,
+          task_id: mergedMetadata.task_id,
+          plan_title: mergedMetadata.plan_title,
+          workflow_id: mergedMetadata.workflow_id,
+          session_id: currentSession?.session_id,
           history: recentMessages,
           mode: 'assistant' as const
         };
@@ -214,6 +345,23 @@ export const useChatStore = create<ChatState>()(
           }));
           
           console.log('✅ Agent工作流程创建成功，已通知DAG组件刷新');
+
+          if (result.metadata.workflow_id) {
+            const workflowId = result.metadata.workflow_id;
+            get().setCurrentWorkflowId(workflowId);
+          }
+          // 同步后端返回的 session_id 到当前会话（用于前端按会话过滤任务）
+          if (result.metadata?.session_id) {
+            const state = get();
+            const newSessionId = result.metadata.session_id as string;
+            const current = state.currentSession
+              ? { ...state.currentSession, session_id: newSessionId }
+              : null;
+            const sessions = state.sessions.map((s) =>
+              s.id === current?.id ? { ...s, session_id: newSessionId } : s
+            );
+            set({ currentSession: current, sessions });
+          }
         }
         
         // 如果AI建议创建计划，尝试执行（兼容旧版本）
@@ -231,16 +379,17 @@ export const useChatStore = create<ChatState>()(
                 // 添加计划创建结果到回复中
                 finalContent += `\n\n🎉 **我已经为你创建了计划！**\n\n📋 **计划标题**: ${planResult.title}\n📝 **任务数量**: ${planResult.tasks?.length || 0}个\n\n💡 你可以说"查看计划详情"了解更多信息。`;
                 
-                // 触发全局状态更新，让DAG组件知道需要刷新
-                console.log('✅ 计划创建成功，触发任务数据刷新...');
-                // 使用事件总线通知DAG组件刷新
-                window.dispatchEvent(new CustomEvent('tasksUpdated', { 
-                  detail: { 
-                    type: 'plan_created',
-                    planTitle: planResult.title,
-                    tasksCount: planResult.tasks?.length || 0
-                  }
-                }));
+               // 触发全局状态更新，让DAG组件知道需要刷新
+               console.log('✅ 计划创建成功，触发任务数据刷新...');
+               // 使用事件总线通知DAG组件刷新
+               window.dispatchEvent(new CustomEvent('tasksUpdated', { 
+                 detail: { 
+                   type: 'plan_created',
+                   planTitle: planResult.title,
+                   tasksCount: planResult.tasks?.length || 0
+                 }
+               }));
+                set({ currentPlanTitle: planResult.title, currentTaskId: null, currentTaskName: null });
               } catch (planError) {
                 console.error('自动创建计划失败:', planError);
                 finalContent += '\n\n💡 我可以帮你创建详细的任务计划，请描述具体的目标。';
@@ -255,13 +404,52 @@ export const useChatStore = create<ChatState>()(
           content: finalContent,
           timestamp: new Date(),
           metadata: {
-            actions: result.actions
+            actions: result.actions,
+            plan_title: result.metadata?.plan_title || mergedMetadata.plan_title,
+            task_id: result.metadata?.task_id || mergedMetadata.task_id,
           }
         };
         
         get().addMessage(assistantMessage);
         set({ isProcessing: false });
-        
+
+        // 如果响应中带有新的上下文，更新状态
+        if (result.metadata?.plan_title) {
+          set({ currentPlanTitle: result.metadata.plan_title });
+        }
+        if (result.metadata?.task_id) {
+          set({ currentTaskId: result.metadata.task_id });
+        }
+        if (result.metadata?.workflow_id) {
+          get().setCurrentWorkflowId(result.metadata.workflow_id);
+        }
+        // 捕获并写入 session_id，确保后续任务过滤能匹配到当前对话
+        if (result.metadata?.session_id) {
+          const state = get();
+          const newSessionId = result.metadata.session_id as string;
+          const current = state.currentSession
+            ? { ...state.currentSession, session_id: newSessionId }
+            : null;
+          const sessions = state.sessions.map((s) =>
+            s.id === current?.id ? { ...s, session_id: newSessionId } : s
+          );
+          set({ currentSession: current, sessions });
+        }
+
+        // 无论是否携带metadata，统一派发一次刷新事件，驱动DAG重新加载
+        try {
+          const { currentSession: cs, currentWorkflowId: cw } = get();
+          window.dispatchEvent(new CustomEvent('tasksUpdated', {
+            detail: {
+              type: 'chat_message_processed',
+              session_id: cs?.session_id ?? null,
+              workflow_id: cw ?? null,
+            }
+          }));
+        } catch (e) {
+          console.warn('Failed to dispatch tasksUpdated event:', e);
+        }
+      
       } catch (error) {
         console.error('Failed to send message:', error);
         set({ isProcessing: false });
@@ -289,16 +477,26 @@ export const useChatStore = create<ChatState>()(
 
     // 开始新会话
     startNewSession: (title) => {
+      const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const session: ChatSession = {
-        id: `session_${Date.now()}`,
+        id: sessionId,
         title: title || `对话 ${new Date().toLocaleString()}`,
         messages: [],
         created_at: new Date(),
         updated_at: new Date(),
+        workflow_id: null,
+        session_id: sessionId,  // 🔒 使用相同的ID作为后端session_id
       };
+
+      console.log('🆕 创建新会话:', {
+        前端会话ID: session.id,
+        后端会话ID: session.session_id,
+        标题: session.title
+      });
 
       get().addSession(session);
       get().setCurrentSession(session);
+      set({ currentWorkflowId: null });
       
       return session;
     },
