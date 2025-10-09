@@ -82,23 +82,8 @@ async def chat_message(request: ChatRequest):
             else:
                 logger.debug(f"✅ 跳过工作流程创建: '{request.message}' 被识别为普通对话")
 
-        # 尝试智能路由处理
-        try:
-            smart_response = await _intelligent_routing(request.message, context_messages, request.context)
-            if smart_response:
-                return ChatResponse(
-                    response=smart_response.get("response", ""),
-                    suggestions=smart_response.get("suggestions", []),
-                    actions=smart_response.get("actions", []),
-                    metadata={
-                        "mode": request.mode,
-                        "smart_router": True,
-                        "action": smart_response.get("action"),
-                        "confidence": smart_response.get("confidence")
-                    }
-                )
-        except Exception as router_error:
-            logger.warning(f"⚠️ 智能路由处理失败，回退到普通LLM: {router_error}")
+        # 智能路由处理已移至tool_box集成中
+        # 这里直接使用普通LLM处理，工具调用在后续流程中通过_pure_llm_intelligent_routing完成
         
         # 回退到普通LLM处理
         llm_client = get_default_client()

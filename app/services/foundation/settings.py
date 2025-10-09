@@ -80,8 +80,16 @@ if _USE_PYDANTIC:
         )
         perplexity_model: str = Field(default="llama-3.1-sonar-small-128k-online", env="PERPLEXITY_MODEL")
 
+        # QWEN API 配置
+        qwen_api_key: Optional[str] = Field(default=None, env="QWEN_API_KEY")
+        qwen_api_url: str = Field(
+            default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            env="QWEN_API_URL",
+        )
+        qwen_model: str = Field(default="qwen-turbo", env="QWEN_MODEL")
+
         # 通用LLM配置（用于选择提供商）
-        llm_provider: str = Field(default="glm", env="LLM_PROVIDER")  # glm, perplexity, openai, etc.
+        llm_provider: str = Field(default="glm", env="LLM_PROVIDER")  # glm, perplexity, qwen, openai, etc.
 
         # GLM Embeddings 专用配置（集中到此，供 app.services.config 使用）
         glm_embeddings_api_url: Optional[str] = Field(default=None, env="GLM_EMBEDDINGS_API_URL")
