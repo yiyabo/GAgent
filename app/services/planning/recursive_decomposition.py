@@ -262,7 +262,7 @@ def decompose_task(
                 repo.upsert_task_input(subtask_id, subtask_prompt)
 
             created_subtasks.append(
-                {"id": subtask_id, "name": subtask_name, "type": child_type, "priority": subtask_priority}
+                {"id": subtask_id, "name": subtask_name, "type": child_type, "task_type": child_type, "priority": subtask_priority}  # ⭐ 前端需要task_type字段
             )
 
         # 更新父任务类型（如果需要）

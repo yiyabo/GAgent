@@ -59,8 +59,19 @@ class ToolEnhancedExecutor:
         except Exception:
             return "plan"
 
-    def _default_report_path(self, task_name: str, fallback_filename: str = "report.md") -> str:
-        """Build a unified default path under results/reports/{plan-slug}/filename.md"""
+    def _default_report_path(self, task_name: str, fallback_filename: str = "report.md", task=None) -> str:
+        """Build a path based on task hierarchy (ROOT → COMPOSITE → ATOMIC)"""
+        # 如果提供了task对象，使用层级路径生成器
+        if task:
+            try:
+                from app.utils.task_path_generator import get_task_file_path, ensure_task_directory
+                file_path = get_task_file_path(task, self.repo)
+                ensure_task_directory(file_path)
+                return file_path
+            except Exception as e:
+                logger.warning(f"Failed to generate hierarchical path: {e}, falling back to default")
+        
+        # Fallback to original logic
         try:
             plan_title, _short = split_prefix(task_name or "")
         except Exception:
@@ -147,14 +158,20 @@ class ToolEnhancedExecutor:
 
                 force_save = bool((context_options or {}).get("force_save_output"))
                 custom_filename = (context_options or {}).get("output_filename")
-                if not output_tools and (force_save or _looks_like_doc_generation(task_name or "", task_prompt or "")):
-                    # Build unified path
-                    default_path = self._default_report_path(task_name or "report", custom_filename or "")
+                
+                # 自动保存ATOMIC任务的输出到层级文件结构
+                task_type = task.get("task_type") if isinstance(task, dict) else (task[7] if len(task) > 7 else "atomic")
+                is_atomic = task_type == "atomic"
+                
+                if not output_tools and (force_save or is_atomic or _looks_like_doc_generation(task_name or "", task_prompt or "")):
+                    # Build unified path using task hierarchy
+                    default_path = self._default_report_path(task_name or "report", custom_filename or "", task=task)
+                    logger.info(f"🗂️ Auto-save enabled for {task_type} task → {default_path}")
                     output_tools.append(
                         {
                             "tool_name": "file_operations",
                             "parameters": {"operation": "write", "path": default_path, "content": ""},
-                            "reasoning": "Auto-save generated content as markdown (forced or heuristic)",
+                            "reasoning": f"Auto-save {task_type} task output to hierarchical structure",
                             "execution_order": 999,
                         }
                     )
@@ -725,14 +742,20 @@ async def execute_task_with_tools_and_evaluation(
         tp_lower = (task_prompt or "").lower()
         force_save = bool((context_options or {}).get("force_save_output"))
         custom_filename = (context_options or {}).get("output_filename")
-        if force_save or _looks_like_doc_generation(task_name or "", tp_lower):
-            # Create a synthetic file write action to persist the generated content under unified directory
-            default_path = executor._default_report_path(task_name or "report", custom_filename or "")
+        
+        # 自动保存ATOMIC任务
+        task_type = task.get("task_type") if isinstance(task, dict) else (task[7] if len(task) > 7 else "atomic")
+        is_atomic = task_type == "atomic"
+        
+        if force_save or is_atomic or _looks_like_doc_generation(task_name or "", tp_lower):
+            # Create a synthetic file write action to persist the generated content with hierarchical path
+            default_path = executor._default_report_path(task_name or "report", custom_filename or "", task=task)
+            logger.info(f"🗂️ Auto-save enabled for {task_type} task → {default_path}")
             output_tools.append(
                 {
                     "tool_name": "file_operations",
                     "parameters": {"operation": "write", "path": default_path, "content": ""},
-                    "reasoning": "Auto-save generated content as markdown based on user intent or force flag (unified path)",
+                    "reasoning": f"Auto-save {task_type} task output to hierarchical structure",
                     "execution_order": 999,
                 }
             )

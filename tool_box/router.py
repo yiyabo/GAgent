@@ -24,12 +24,12 @@ class SmartToolRouter:
     def __init__(self):
         self.tool_registry = get_tool_registry()
         self.llm_integration = None
-        # Read GLM API key from environment or centralized settings
+        # Use unified LLM client instead of direct API calls
         try:
             from app.services.foundation.settings import get_settings
-            self.glm_api_key = os.getenv("GLM_API_KEY") or get_settings().glm_api_key
+            self.settings = get_settings()
         except Exception:
-            self.glm_api_key = os.getenv("GLM_API_KEY")
+            self.settings = None
 
     async def initialize(self) -> None:
         """Initialize the router"""
@@ -37,79 +37,42 @@ class SmartToolRouter:
 
         self.llm_integration = await get_llm_integration()
 
-    async def _call_glm_api(self, prompt: str, max_retries: int = 3) -> str:
-        """Call GLM API for intelligent routing with enhanced robustness"""
+    async def _call_llm_api(self, prompt: str, max_retries: int = 3) -> str:
+        """Call unified LLM API (supports GLM, QWEN, etc.) for intelligent routing"""
         last_error = None
         
         for attempt in range(max_retries):
             try:
-                import aiohttp
-
-                # Use centralized settings for API URL/model
-                try:
-                    from app.services.foundation.settings import get_settings
-                    s = get_settings()
-                    api_url = s.glm_api_url or "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-                    model = s.glm_model or "glm-4"
-                except Exception:
-                    api_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-                    model = "glm-4"
-
-                if not self.glm_api_key:
-                    logger.error("GLM API key not configured")
-                    return ""
-
-                headers = {"Authorization": f"Bearer {self.glm_api_key}", "Content-Type": "application/json"}
-
-                # Enhanced payload for better routing precision
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "You are an intelligent tool routing system. Analyze user requests with high precision and return structured JSON responses."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.05,  # Lower temperature for more consistent routing
-                    "max_tokens": 1500,   # Increased for detailed analysis
-                    "top_p": 0.8,         # Focused but not overly narrow
-                }
-
-                # Progressive timeout: longer for later attempts
-                timeout_seconds = 30 + (attempt * 10)
-                timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+                # Use unified LLM client from app.llm
+                from app.llm import get_default_client
+                import asyncio
                 
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.post(api_url, headers=headers, json=payload) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            content = data["choices"][0]["message"]["content"]
-                            
-                            # Validate response quality
-                            if self._validate_api_response(content):
-                                logger.info(f"✅ GLM API成功 (尝试 {attempt + 1}/{max_retries})")
-                                return content
-                            else:
-                                logger.warning(f"⚠️ GLM API响应质量不佳 (尝试 {attempt + 1})")
-                                
-                        elif response.status == 429:  # Rate limit
-                            logger.warning(f"🚦 GLM API限流 (尝试 {attempt + 1}), 等待重试...")
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                                continue
-                        else:
-                            logger.error(f"GLM API HTTP {response.status}: {await response.text()}")
-                            
+                client = get_default_client()
+                provider = client.provider
+                
+                # Run sync client.chat in executor to avoid blocking
+                loop = asyncio.get_event_loop()
+                content = await loop.run_in_executor(None, client.chat, prompt)
+                
+                # Validate response quality
+                if self._validate_api_response(content):
+                    logger.info(f"✅ {provider.upper()} API成功 (尝试 {attempt + 1}/{max_retries})")
+                    return content
+                else:
+                    logger.warning(f"⚠️ {provider.upper()} API响应质量不佳 (尝试 {attempt + 1})")
+                    
             except asyncio.TimeoutError:
-                logger.warning(f"⏱️ GLM API超时 (尝试 {attempt + 1}/{max_retries})")
+                logger.warning(f"⏱️ LLM API超时 (尝试 {attempt + 1}/{max_retries})")
                 last_error = "Request timeout"
             except Exception as e:
-                logger.error(f"GLM API调用失败 (尝试 {attempt + 1}): {e}")
+                logger.error(f"LLM API调用失败 (尝试 {attempt + 1}): {e}")
                 last_error = str(e)
                 
                 # Brief delay before retry
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
 
-        logger.error(f"❌ GLM API所有重试失败: {last_error}")
+        logger.error(f"❌ LLM API所有重试失败: {last_error}")
         return ""
         
     def _validate_api_response(self, content: str) -> bool:
@@ -230,7 +193,7 @@ class SmartToolRouter:
 """
 
             # Call GLM API
-            llm_response = await self._call_glm_api(prompt)
+            llm_response = await self._call_llm_api(prompt)
 
             if not llm_response:
                 return {"confidence": 0.0, "error": "LLM call failed"}
@@ -293,7 +256,7 @@ class SmartToolRouter:
 只返回JSON，不要其他内容。
 """
             
-            llm_response = await self._call_glm_api(prompt)
+            llm_response = await self._call_llm_api(prompt)
             
             if not llm_response:
                 return {"confidence": 0.0, "error": "Simplified LLM routing failed"}
