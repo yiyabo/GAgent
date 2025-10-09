@@ -34,7 +34,9 @@ def init_db():
             ("workflow_id", "TEXT"),
             ("metadata", "TEXT"),
             ("context_refs", "TEXT"),
-            ("artifacts", "TEXT")
+            ("artifacts", "TEXT"),
+            ("created_at", "TIMESTAMP"),  # SQLite doesn't support DEFAULT CURRENT_TIMESTAMP in ALTER TABLE
+            ("updated_at", "TIMESTAMP")
         ]
         
         for column_name, column_def in columns_to_add:

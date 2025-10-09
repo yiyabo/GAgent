@@ -47,6 +47,13 @@ class LLMClient(LLMProvider):
             self.api_key = api_key or env_api_key or settings.perplexity_api_key
             self.url = url or env_url or settings.perplexity_api_url
             self.model = model or env_model or settings.perplexity_model
+        elif self.provider.lower() == "qwen":
+            env_api_key = os.getenv("QWEN_API_KEY")
+            env_url = os.getenv("QWEN_API_URL")
+            env_model = os.getenv("QWEN_MODEL")
+            self.api_key = api_key or env_api_key or settings.qwen_api_key
+            self.url = url or env_url or settings.qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            self.model = model or env_model or settings.qwen_model or "qwen-turbo"
         else:  # 默认GLM
             env_api_key = os.getenv("GLM_API_KEY")
             env_url = os.getenv("GLM_API_URL")
@@ -81,7 +88,7 @@ class LLMClient(LLMProvider):
             return "This is a mock completion."
 
         if not self.api_key:
-            raise RuntimeError("GLM_API_KEY is not set in environment")
+            raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
