@@ -272,47 +272,12 @@ export const useChatStore = create<ChatState>()(
           timestamp: msg.timestamp.toISOString()
         }));
         
-        // 🧠 智能预处理：让LLM分析用户意图并决定是否需要工具调用
-        const intentAnalysisResult = await analyzeUserIntent(content, {
-          currentSession,
-          currentWorkflowId,
-          recentMessages: recentMessages.slice(-5) // 提供最近5条消息作为上下文
-        });
+        // 🎯 方案B2: 所有请求直接走后端chat端点
+        // 后端有完整的智能路由系统（_should_create_new_workflow）
+        // 可以正确处理：创建、拆分、执行、普通对话
+        // 前端意图分析已禁用，避免逻辑重复和不一致
         
-        console.log('🧠 LLM意图分析结果:', intentAnalysisResult);
-        
-        // 如果LLM判断需要工具调用，先执行工具
-        if (intentAnalysisResult.needsToolCall) {
-          const toolResult = await executeToolBasedOnIntent(intentAnalysisResult, {
-            currentSession,
-            currentWorkflowId,
-            userInput: content
-          });
-          
-          if (toolResult.handled) {
-            // 工具已处理，直接返回结果
-            const toolResponse: ChatMessage = {
-              id: `msg_${Date.now()}_assistant`,
-              type: 'assistant',
-              content: toolResult.response,
-              timestamp: new Date(),
-              metadata: {
-                tool_executed: true,
-                tool_type: intentAnalysisResult.toolType,
-                ...toolResult.metadata
-              }
-            };
-            
-            get().addMessage(toolResponse);
-            set({ isProcessing: false });
-            
-            // 派发刷新事件
-            window.dispatchEvent(new CustomEvent('tasksUpdated', {
-              detail: { type: 'tool_execution_completed', tool: intentAnalysisResult.toolType }
-            }));
-            return;
-          }
-        }
+        console.log('🎯 所有请求统一走后端智能路由');
 
         const chatRequest = {
           task_id: mergedMetadata.task_id,

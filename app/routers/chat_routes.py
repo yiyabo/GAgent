@@ -72,15 +72,34 @@ async def chat_message(request: ChatRequest):
         if is_internal_analysis:
             logger.debug(f"🔒 内部分析请求，跳过工作流程创建: {request.context.get('original_user_input', 'unknown')}")
         else:
-            # 检查是否为Agent工作流程触发请求
-            workflow_intent = _is_agent_workflow_intent(request.message)
-            logger.debug(f"🔍 工作流程意图检测: '{request.message}' -> {workflow_intent}")
+            # 检查是否为Agent工作流程触发请求 - 使用上下文感知判断
+            workflow_decision = await _should_create_new_workflow(
+                request.message, 
+                request.session_id, 
+                request.context,
+                context_messages
+            )
             
-            if workflow_intent:
-                logger.info(f"🤖 检测到Agent工作流程意图: {request.message}")
+            # 🔍 DEBUG: 打印完整的意图判断结果
+            logger.info(f"🧠 LLM意图判断结果: {workflow_decision}")
+            logger.info(f"📝 用户消息: {request.message}")
+            logger.info(f"🆔 Session ID: {request.session_id}")
+            
+            if workflow_decision.get("create_new_root"):
+                logger.info(f"🤖 ====> 路由到: 创建新ROOT任务")
                 return await _handle_agent_workflow_creation(request, context_messages)
+            elif workflow_decision.get("add_to_existing"):
+                logger.info(f"📎 ====> 路由到: 在现有ROOT任务下添加子任务")
+                return await _handle_add_subtask_to_existing(request, workflow_decision, context_messages)
+            elif workflow_decision.get("decompose_task"):
+                logger.info(f"🔀 ====> 路由到: 拆分任务")
+                return await _handle_task_decomposition(request, workflow_decision, context_messages)
+            elif workflow_decision.get("execute_task"):
+                logger.info(f"▶️ ====> 路由到: 执行任务")
+                return await _handle_task_execution(request, workflow_decision, context_messages)
             else:
-                logger.debug(f"✅ 跳过工作流程创建: '{request.message}' 被识别为普通对话")
+                logger.info(f"💬 ====> 路由到: 普通对话")
+                logger.debug(f"✅ 普通对话，无需创建任务: '{request.message}'")
 
         # 智能路由处理已移至tool_box集成中
         # 这里直接使用普通LLM处理，工具调用在后续流程中通过_pure_llm_intelligent_routing完成
@@ -1443,8 +1462,639 @@ async def get_chat_status():
 
 # ============ Agent工作流程处理函数 ============
 
+async def _should_create_new_workflow(
+    message: str, 
+    session_id: Optional[str], 
+    context: Optional[Dict[str, Any]],
+    context_messages: Optional[List[Dict[str, str]]] = None
+) -> Dict[str, Any]:
+    """
+    使用LLM智能判断用户意图
+    
+    Returns:
+        {
+            "create_new_root": bool,   # 是否创建新ROOT任务
+            "add_to_existing": bool,   # 是否在现有ROOT下添加子任务
+            "decompose_task": bool,    # 是否拆分现有任务
+            "execute_task": bool,      # 是否执行现有任务
+            "existing_root_id": int,   # 现有ROOT任务的ID
+            "task_id": int,           # 要操作的任务ID
+            "task_name": str,         # 要操作的任务名称
+            "reasoning": str          # LLM的推理过程
+        }
+    """
+    from ..repository.tasks import default_repo
+    
+    # 1. 检查session中是否已有ROOT任务
+    existing_root = None
+    # 查询当前session的任务
+    all_pending_tasks = []
+    if session_id:
+        try:
+            # 查询当前session的ROOT任务
+            from ..database import get_db
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, name, status FROM tasks WHERE session_id = ? AND task_type = 'root' ORDER BY created_at DESC LIMIT 1",
+                    (session_id,)
+                )
+                result = cursor.fetchone()
+                if result:
+                    existing_root = {"id": result[0], "name": result[1], "status": result[2]}
+                    logger.info(f"📋 发现现有ROOT任务: {existing_root['name']} (ID: {existing_root['id']})")
+                    
+                    # 查询所有pending任务，让LLM了解上下文
+                    cursor.execute(
+                        """SELECT id, name, task_type, parent_id 
+                           FROM tasks 
+                           WHERE session_id = ? AND status = 'pending' 
+                           ORDER BY id ASC
+                           LIMIT 20""",
+                        (session_id,)
+                    )
+                    all_pending_tasks = cursor.fetchall()
+                    logger.info(f"📋 当前session有 {len(all_pending_tasks)} 个pending任务")
+        except Exception as e:
+            logger.warning(f"查询ROOT任务失败: {e}")
+    
+    # 2. 使用LLM判断用户意图
+    from ..llm import get_default_client
+    llm_client = get_default_client()
+    
+    # 构建分析prompt
+    if existing_root:
+        # 构建任务列表文本
+        task_list_text = ""
+        if all_pending_tasks:
+            task_list_text = "\n**当前工作空间的任务列表**:\n"
+            for task_id, task_name, task_type, parent_id in all_pending_tasks[:10]:  # 最多显示10个
+                task_list_text += f"  • ID:{task_id} - {task_name} [{task_type.upper()}]\n"
+        
+        prompt = f"""你是一个智能任务规划助手。当前用户在一个对话session中已经有一个进行中的ROOT任务和子任务：
+
+**现有ROOT任务**: {existing_root['name']} (ID: {existing_root['id']})
+{task_list_text}
+
+**用户当前消息**: {message}
+
+**判断任务**:
+分析用户的消息，判断用户的意图是：
+A) 创建一个全新的、独立的ROOT任务（与现有任务完全无关的新项目）
+B) 在现有ROOT任务下添加相关的子任务或补充内容
+C) 拆分现有的任务为子任务（把一个任务分解成更小的子任务）
+D) 执行/完成现有的任务（开始运行某个已创建的任务）
+E) 普通对话，不需要创建或执行任务
+
+**判断标准**（重要！请仔细匹配）:
+1. **"拆分"、"分解"、"细化"、"拆成"关键词** → C（拆分任务）
+   例如："拆分第1个任务"、"帮我拆分任务"、"分解这个任务"
+   
+2. **"完成"、"执行"、"运行"、"开始做"、"帮我做"关键词** → D（执行任务）
+   例如："完成任务507"、"执行这个任务"、"帮我完成XXX"
+   ⚠️ 注意："完成XXX研究"如果XXX在任务列表中，选D而不是A！
+   
+3. **"新的"、"另一个"、"不同的项目"、与现有任务完全不同的主题** → A（创建新ROOT）
+   例如："我想研究另一个主题"、"创建一个新项目"
+   
+4. **"相关的"、"这个"、"补充"、"添加"** → B（添加子任务）
+   
+5. **问问题、闲聊、查询信息** → E（普通对话）
+
+**特别注意**:
+- 如果用户消息中提到的任务名称在上面的任务列表中出现，优先判断为C（拆分）或D（执行）
+- "完成一下这个任务：XXX" → 检查XXX是否在任务列表中 → 如果在，选D；如果不在且是新主题，选A
+
+请以JSON格式回复：
+{{
+  "intent": "A" | "B" | "C" | "D" | "E",
+  "task_id": <任务ID，如果用户提到>,
+  "task_name": "<任务名称，如果用户提到>",
+  "reasoning": "你的分析理由",
+  "confidence": 0.0-1.0
+}}
+"""
+    else:
+        # 没有现有ROOT任务，判断是否需要创建新任务
+        prompt = f"""你是一个智能任务规划助手。分析用户消息，判断是否需要创建一个任务计划。
+
+**用户消息**: {message}
+
+**判断标准**:
+- 需要创建任务：用户想要学习、研究、开发、规划某个复杂主题或项目
+- 不需要创建：简单问答、闲聊、单一信息查询
+
+请以JSON格式回复：
+{{
+  "needs_task": true | false,
+  "reasoning": "你的分析理由",
+  "confidence": 0.0-1.0
+}}
+"""
+    
+    try:
+        response = llm_client.chat(prompt, force_real=True)
+        logger.info(f"🤖 LLM原始回复: {response[:200]}...")  # 只打印前200字符
+        
+        from ..utils import parse_json_obj
+        result = parse_json_obj(response)
+        logger.info(f"📊 解析后的结果: {result}")
+        
+        if existing_root:
+            intent = result.get("intent", "E")
+            if intent == "A":
+                return {
+                    "create_new_root": True,
+                    "add_to_existing": False,
+                    "decompose_task": False,
+                    "execute_task": False,
+                    "existing_root_id": None,
+                    "reasoning": result.get("reasoning", "")
+                }
+            elif intent == "B":
+                return {
+                    "create_new_root": False,
+                    "add_to_existing": True,
+                    "decompose_task": False,
+                    "execute_task": False,
+                    "existing_root_id": existing_root["id"],
+                    "existing_root_name": existing_root["name"],
+                    "reasoning": result.get("reasoning", "")
+                }
+            elif intent == "C":
+                # 拆分任务
+                return {
+                    "create_new_root": False,
+                    "add_to_existing": False,
+                    "decompose_task": True,
+                    "execute_task": False,
+                    "existing_root_id": existing_root["id"],
+                    "existing_root_name": existing_root["name"],
+                    "task_id": result.get("task_id"),
+                    "task_name": result.get("task_name"),
+                    "reasoning": result.get("reasoning", "")
+                }
+            elif intent == "D":
+                # 执行任务
+                return {
+                    "create_new_root": False,
+                    "add_to_existing": False,
+                    "decompose_task": False,
+                    "execute_task": True,
+                    "existing_root_id": existing_root["id"],
+                    "existing_root_name": existing_root["name"],
+                    "reasoning": result.get("reasoning", "")
+                }
+            else:
+                # E - 普通对话
+                return {
+                    "create_new_root": False,
+                    "add_to_existing": False,
+                    "decompose_task": False,
+                    "execute_task": False,
+                    "existing_root_id": None,
+                    "reasoning": result.get("reasoning", "")
+                }
+        else:
+            needs_task = result.get("needs_task", False)
+            if needs_task:
+                return {
+                    "create_new_root": True,
+                    "add_to_existing": False,
+                    "decompose_task": False,
+                    "execute_task": False,
+                    "existing_root_id": None,
+                    "reasoning": result.get("reasoning", "")
+                }
+            else:
+                return {
+                    "create_new_root": False,
+                    "add_to_existing": False,
+                    "decompose_task": False,
+                    "execute_task": False,
+                    "existing_root_id": None,
+                    "reasoning": result.get("reasoning", "")
+                }
+    except Exception as e:
+        logger.error(f"LLM判断失败: {e}")
+        # Fallback
+        if existing_root:
+            # 检查关键词
+            decompose_keywords = ["拆分", "分解", "细化", "拆分第"]
+            execute_keywords = ["执行", "完成", "开始", "运行", "做", "帮我做"]
+            
+            if any(kw in message for kw in decompose_keywords):
+                return {
+                    "create_new_root": False,
+                    "add_to_existing": False,
+                    "decompose_task": True,
+                    "execute_task": False,
+                    "existing_root_id": existing_root["id"],
+                    "existing_root_name": existing_root["name"],
+                    "reasoning": "Fallback: 检测到拆分关键词"
+                }
+            elif any(kw in message for kw in execute_keywords):
+                return {
+                    "create_new_root": False,
+                    "add_to_existing": False,
+                    "decompose_task": False,
+                    "execute_task": True,
+                    "existing_root_id": existing_root["id"],
+                    "existing_root_name": existing_root["name"],
+                    "reasoning": "Fallback: 检测到执行关键词"
+                }
+            elif len(message) < 50:
+                return {
+                    "create_new_root": False,
+                    "add_to_existing": True,
+                    "decompose_task": False,
+                    "execute_task": False,
+                    "existing_root_id": existing_root["id"],
+                    "existing_root_name": existing_root["name"],
+                    "reasoning": "Fallback: 简短消息 + 现有ROOT"
+                }
+        return {
+            "create_new_root": False,
+            "add_to_existing": False,
+            "decompose_task": False,
+            "execute_task": False,
+            "existing_root_id": None,
+            "reasoning": "LLM分析失败，默认为普通对话"
+        }
+
+
+async def _handle_task_decomposition(
+    request: ChatRequest,
+    workflow_decision: Dict[str, Any],
+    context_messages: Optional[List[Dict[str, str]]] = None
+) -> ChatResponse:
+    """拆分现有任务为子任务"""
+    from ..repository.tasks import default_repo
+    from ..llm import get_default_client
+    
+    logger.info(f"🔀 进入任务拆分函数")
+    logger.info(f"📝 用户消息: {request.message}")
+    logger.info(f"🆔 Session ID: {request.session_id}")
+    
+    try:
+        # 1. 查询session中的任务
+        from ..database import get_db
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT id, name, status, task_type, parent_id, root_id 
+                   FROM tasks 
+                   WHERE session_id = ? AND status = 'pending' 
+                   ORDER BY id ASC""",
+                (request.session_id,)
+            )
+            all_tasks = cursor.fetchall()
+        
+        if not all_tasks:
+            return ChatResponse(
+                response="❌ 当前工作空间没有可拆分的任务。\n\n💡 请先创建一个ROOT任务。",
+                suggestions=["创建新任务"],
+                metadata={"error": "no_tasks"}
+            )
+        
+        # 2. 使用LLM匹配用户想拆分的任务
+        llm_client = get_default_client()
+        
+        # 构建任务列表
+        task_list = []
+        for i, task in enumerate(all_tasks):
+            task_id, name, status, task_type, parent_id, root_id = task
+            task_list.append(f"[{i+1}] ID: {task_id}, 名称: \"{name}\", 类型: {task_type}")
+        
+        prompt = f"""用户想要拆分一个任务。
+
+**用户消息**: {request.message}
+
+**可拆分任务列表**:
+{chr(10).join(task_list)}
+
+请分析用户最可能想要拆分哪个任务。
+
+**规则**:
+1. ROOT任务可以拆分为COMPOSITE任务
+2. COMPOSITE任务可以拆分为ATOMIC任务
+3. ATOMIC任务不能再拆分
+4. 如果用户说"第1个"、"第一个"，选择对应序号
+5. 如果用户提到任务名称，选择匹配度最高的
+6. 优先选择ROOT和COMPOSITE类型的任务
+
+返回JSON：
+{{
+  "task_id": <任务ID>,
+  "reasoning": "为什么选择这个任务"
+}}
+"""
+        
+        response = llm_client.chat(prompt, force_real=True)
+        from ..utils import parse_json_obj
+        result = parse_json_obj(response)
+        
+        task_id = result.get("task_id")
+        if not task_id:
+            task_id = all_tasks[0][0]  # 默认选第一个
+        
+        # 3. 检查任务是否存在和类型
+        task = default_repo.get_task_info(task_id)
+        if not task:
+            return ChatResponse(
+                response=f"❌ 任务 ID: {task_id} 不存在。",
+                metadata={"error": "task_not_found"}
+            )
+        
+        task_name = task.get("name", "")
+        task_type = task.get("task_type", "")
+        
+        # 4. 检查是否是ATOMIC任务
+        if task_type == "atomic":
+            return ChatResponse(
+                response=f"""❌ **无法拆分ATOMIC任务！**
+
+📋 **任务**: {task_name}
+🆔 **ID**: {task_id}
+📊 **类型**: atomic
+
+⚠️ ATOMIC任务是最小执行单元，不能再拆分。
+
+💡 你可以：
+• 直接执行这个ATOMIC任务："帮我完成任务{task_id}"
+• 拆分其他ROOT或COMPOSITE任务
+• 查看任务列表选择其他任务""",
+                suggestions=["执行ATOMIC任务", "查看任务列表"],
+                metadata={"error": "atomic_cannot_decompose", "task_id": task_id}
+            )
+        
+        logger.info(f"🔀 开始拆分任务: {task_name} (ID: {task_id}, Type: {task_type})")
+        
+        # 5. 调用拆分API
+        logger.info(f"🔧 准备调用拆分API: /tasks/{task_id}/decompose")
+        
+        api_result = await execute_tool(
+            "internal_api",
+            endpoint=f"/tasks/{task_id}/decompose",
+            method="POST",
+            data={"max_subtasks": 5, "force": False, "tool_aware": True},
+            timeout=60.0
+        )
+        
+        logger.info(f"📦 拆分API返回结果: {api_result}")
+        
+        if not api_result or not api_result.get("success"):
+            error_msg = api_result.get("error", "未知错误") if api_result else "API调用失败"
+            return ChatResponse(
+                response=f"❌ 拆分任务失败: {error_msg}",
+                metadata={"error": error_msg}
+            )
+        
+        # 6. 解析结果
+        decompose_data = api_result.get("data", {})
+        subtasks = decompose_data.get("subtasks", [])
+        child_type = "ATOMIC" if task_type == "composite" else "COMPOSITE"
+        
+        return ChatResponse(
+            response=f"""✅ **任务拆分完成！**
+
+📋 **原任务**: {task_name}
+🆔 **任务ID**: {task_id}
+📊 **类型**: {task_type}
+
+🔄 **已创建 {len(subtasks)} 个{child_type}子任务**:
+{chr(10).join([f"{i+1}. {st.get('name', '未命名')} (ID: {st.get('id')})" for i, st in enumerate(subtasks[:5])])}
+
+💡 下一步：
+• 继续拆分{child_type}任务为更小的单元
+• 开始执行ATOMIC任务
+• 查看完整任务结构""",
+            suggestions=["查看任务列表", "继续拆分", "开始执行"],
+            metadata={
+                "task_id": task_id,
+                "subtask_count": len(subtasks),
+                "child_type": child_type,
+                "action": "task_decomposed"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"拆分任务失败: {e}")
+        return ChatResponse(
+            response=f"❌ 拆分任务时出错: {str(e)}",
+            metadata={"error": str(e)}
+        )
+
+
+async def _handle_task_execution(
+    request: ChatRequest,
+    workflow_decision: Dict[str, Any],
+    context_messages: Optional[List[Dict[str, str]]] = None
+) -> ChatResponse:
+    """执行现有任务"""
+    from ..repository.tasks import default_repo
+    from ..execution.executors.tool_enhanced import ToolEnhancedExecutor
+    from ..llm import get_default_client
+    
+    logger.info(f"▶️ 进入任务执行函数")
+    logger.info(f"📝 用户消息: {request.message}")
+    logger.info(f"🆔 Session ID: {request.session_id}")
+    
+    try:
+        # 1. 查询session中的ATOMIC任务
+        from ..database import get_db
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT id, name, status, task_type, parent_id, root_id 
+                   FROM tasks 
+                   WHERE session_id = ? AND status = 'pending' 
+                   ORDER BY task_type DESC, id ASC""",
+                (request.session_id,)
+            )
+            pending_tasks = cursor.fetchall()
+        
+        logger.info(f"📋 查询到 {len(pending_tasks)} 个pending任务")
+        if pending_tasks:
+            for task in pending_tasks[:5]:  # 只打印前5个
+                logger.info(f"   - ID: {task[0]}, 名称: {task[1]}, 类型: {task[3]}")
+        
+        if not pending_tasks:
+            return ChatResponse(
+                response="❌ 当前工作空间没有待执行的任务。\n\n💡 你可以先创建一个任务或说'查看任务列表'。",
+                suggestions=["创建新任务", "查看所有任务"],
+                metadata={"error": "no_pending_tasks"}
+            )
+        
+        # 2. 使用LLM匹配用户想要执行的任务
+        llm_client = get_default_client()
+        
+        # 构建任务列表
+        task_list = []
+        for i, task in enumerate(pending_tasks):
+            task_id, name, status, task_type, parent_id, root_id = task
+            task_list.append(f"[{i+1}] ID: {task_id}, 名称: \"{name}\", 类型: {task_type}")
+        
+        prompt = f"""用户想要执行一个任务。
+
+**用户消息**: {request.message}
+
+**可执行任务列表**:
+{chr(10).join(task_list)}
+
+请分析用户最可能想要执行哪个任务。
+
+优先级：
+1. ATOMIC任务（最小执行单元，可以直接执行）
+2. 如果用户明确提到任务ID，选择该ID
+3. 如果用户提到任务名称，选择匹配度最高的
+4. 如果用户说"第一个"、"第二个"，选择对应序号
+
+返回JSON：
+{{
+  "task_id": <任务ID>,
+  "reasoning": "为什么选择这个任务"
+}}
+"""
+        
+        response = llm_client.chat(prompt, force_real=True)
+        from ..utils import parse_json_obj
+        result = parse_json_obj(response)
+        
+        task_id = result.get("task_id")
+        if not task_id:
+            task_id = pending_tasks[0][0]  # 默认选第一个
+        
+        # 3. 执行任务
+        task = default_repo.get_task_info(task_id)
+        if not task:
+            return ChatResponse(
+                response=f"❌ 任务 ID: {task_id} 不存在。",
+                metadata={"error": "task_not_found"}
+            )
+        
+        task_name = task.get("name", "")
+        task_type = task.get("task_type", "")
+        
+        logger.info(f"▶️ 开始执行任务: {task_name} (ID: {task_id}, Type: {task_type})")
+        
+        # 执行任务
+        executor = ToolEnhancedExecutor(repo=default_repo)
+        status = await executor.execute_task(
+            task=task,
+            use_context=True,
+            context_options={"force_save_output": True}
+        )
+        
+        # 获取任务输出
+        output_content = default_repo.get_task_output_content(task_id)
+        
+        return ChatResponse(
+            response=f"""✅ **任务执行完成！**
+
+📋 **任务名称**: {task_name}
+🆔 **任务ID**: {task_id}
+📊 **类型**: {task_type}
+✨ **状态**: {status}
+
+**执行结果**:
+{output_content[:500] if output_content else '（无输出内容）'}
+{'...' if output_content and len(output_content) > 500 else ''}
+
+💾 完整输出已保存到 results/ 目录的层级结构中。
+
+💡 你可以继续执行其他任务，或查看任务列表。""",
+            suggestions=["查看任务列表", "执行下一个任务", "查看完整输出"],
+            metadata={
+                "task_id": task_id,
+                "status": status,
+                "has_output": bool(output_content),
+                "action": "task_executed"
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"执行任务失败: {e}")
+        return ChatResponse(
+            response=f"❌ 执行任务时出错: {str(e)}",
+            metadata={"error": str(e)}
+        )
+
+
+async def _handle_add_subtask_to_existing(
+    request: ChatRequest, 
+    workflow_decision: Dict[str, Any],
+    context_messages: Optional[List[Dict[str, str]]] = None
+) -> ChatResponse:
+    """在现有ROOT任务下添加子任务"""
+    from ..repository.tasks import default_repo
+    
+    existing_root_id = workflow_decision.get("existing_root_id")
+    existing_root_name = workflow_decision.get("existing_root_name", "现有项目")
+    
+    logger.info(f"📎 在ROOT任务 {existing_root_id} 下添加子任务: {request.message}")
+    
+    # 创建一个新的COMPOSITE或ATOMIC任务
+    try:
+        # 使用LLM生成任务描述
+        from ..llm import get_default_client
+        llm_client = get_default_client()
+        
+        prompt = f"""用户在项目"{existing_root_name}"下提出了新的需求：{request.message}
+
+请生成一个简洁的任务名称（不超过50字）："""
+        
+        task_name = llm_client.chat(prompt, force_real=True).strip()
+        # 清理任务名称
+        task_name = task_name.strip('"\'')
+        if len(task_name) > 50:
+            task_name = task_name[:50]
+        
+        # 创建子任务
+        task_id = default_repo.create_task(
+            name=f"COMPOSITE: {task_name}",
+            status="pending",
+            priority=1,
+            parent_id=existing_root_id,
+            root_id=existing_root_id,
+            task_type="composite",
+            session_id=request.session_id
+        )
+        
+        return ChatResponse(
+            response=f"""✅ **已在现有项目下添加子任务！**
+
+📋 **父任务**: {existing_root_name}
+📝 **新任务**: {task_name}
+🆔 **任务ID**: {task_id}
+📊 **状态**: pending
+
+🎯 该任务已加入您的项目计划中。系统会在执行时自动：
+• 在 `results/{existing_root_name}/` 目录下创建相应的文件结构
+• ATOMIC子任务会生成为 .md 文件
+
+💡 你可以继续补充更多需求，或者说"开始执行任务"来运行它们。""",
+            suggestions=["开始执行任务", "查看任务列表", "继续添加任务"],
+            metadata={
+                "task_id": task_id,
+                "parent_id": existing_root_id,
+                "root_name": existing_root_name,
+                "action": "subtask_added"
+            }
+        )
+    except Exception as e:
+        logger.error(f"创建子任务失败: {e}")
+        return ChatResponse(
+            response=f"❌ 创建子任务时出错: {str(e)}",
+            metadata={"error": str(e)}
+        )
+
+
 def _is_agent_workflow_intent(message: str) -> bool:
-    """检测是否为Agent工作流程创建意图 - 加强过滤，避免简单问候触发任务"""
+    """检测是否为Agent工作流程创建意图 - 加强过滤，避免简单问候触发任务
+    
+    ⚠️ DEPRECATED: 此函数已被 _should_create_new_workflow 替代
+    """
     
     # 🚫 首先排除简单问候和常见对话
     simple_excludes = [
@@ -1596,8 +2246,21 @@ async def _handle_agent_workflow_creation(request: ChatRequest, context_messages
                     search_enhanced_goal = f"{request.message}\n\n参考信息：{search_content[:800]}"
         
         # 🔧 通过tool-box调用Agent工作流程创建API
-        # 构建上下文信息
+        # 构建上下文信息（确保携带会话/工作流标识）
         context_info = request.context or {}
+        # 强制补齐 session_id 与 workflow_id，避免后端创建到错误会话
+        try:
+            if request.session_id:
+                context_info["session_id"] = request.session_id
+        except Exception:
+            pass
+        try:
+            # ChatRequest 可能不含 workflow_id 字段，做兼容处理
+            wf_id = getattr(request, "workflow_id", None) or context_info.get("workflow_id")
+            if wf_id:
+                context_info["workflow_id"] = wf_id
+        except Exception:
+            pass
         if context_messages:
             context_info["conversation_history"] = context_messages[-3:]  # 最近3条消息
         
@@ -1702,6 +2365,7 @@ async def _handle_agent_workflow_creation(request: ChatRequest, context_messages
                     "mode": request.mode,
                     "agent_workflow": True,
                     "workflow_id": workflow_data.get('workflow_id'),
+                    "session_id": request.session_id,  # ⭐ 回传session，便于前端修正上下文
                     "total_tasks": total_tasks,
                     "task_counts": dict(task_counts),
                     "dag_structure": dag_nodes,
