@@ -80,7 +80,10 @@ async def create_agent_workflow(request: AgentRequest):
         logger.info("🌳 步骤2: 创建ROOT任务")
         session_context = request.context or {}
         session_id = session_context.get("session_id")
-        workflow_hint = session_context.get("workflow_id")
+        # 统一工作流ID来源：优先使用前端/调用方提供的workflow_id，否则生成一次并贯穿使用
+        workflow_id = session_context.get("workflow_id")
+        if not workflow_id:
+            workflow_id = f"workflow_{int(time.time())}"
 
         root_task_id = default_repo.create_task(
             name=f"ROOT: {plan_result['title']}",
@@ -88,7 +91,7 @@ async def create_agent_workflow(request: AgentRequest):
             priority=1,
             task_type="root",
             session_id=session_id,
-            workflow_id=workflow_hint,
+            workflow_id=workflow_id,
         )
         
         # 步骤3: 创建简化的任务层次结构
@@ -102,7 +105,10 @@ async def create_agent_workflow(request: AgentRequest):
                 status="pending", 
                 priority=i + 1,
                 parent_id=root_task_id,
-                task_type="composite"
+                root_id=root_task_id,  # ⭐ 关键：设置root_id用于层级路径
+                task_type="composite",
+                session_id=session_id,  # ⭐ 关键：传递session_id
+                workflow_id=workflow_id
             )
             composite_tasks.append({
                 "id": composite_task_id,
@@ -161,8 +167,7 @@ async def create_agent_workflow(request: AgentRequest):
                 "estimated_duration": "30-60分钟"
             })
         
-        # 生成工作流程ID
-        workflow_id = f"workflow_{root_task_id}_{int(time.time())}"
+        # 注意：workflow_id 已在上方确定，必须与存入DB的一致
         
         return AgentWorkflowResponse(
             workflow_id=workflow_id,

@@ -25,7 +25,7 @@ ALLOWED_BASE_PATHS = [
 ]
 
 # 默认工作目录 - 避免在根目录创建文件
-DEFAULT_WORK_DIR = "data/temp"
+DEFAULT_WORK_DIR = "results"
 
 
 def _normalize_file_path(file_path: str) -> str:

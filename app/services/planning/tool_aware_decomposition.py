@@ -272,6 +272,7 @@ class ToolAwareTaskDecomposer:
                     "id": subtask_id,
                     "name": subtask_name,
                     "type": child_type,
+                    "task_type": child_type,  # ⭐ 前端需要task_type字段
                     "priority": subtask_priority,
                     "tool_enhanced": True,
                 }
