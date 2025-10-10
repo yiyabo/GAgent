@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..repository.tasks import default_repo
 from ..services.llm.llm_service import get_llm_service
+from ..utils.task_path_generator import get_task_file_path, ensure_task_directory
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +169,17 @@ class CompositeAssembler(_BaseAssembler):
             ],
         }
 
+        # 写入到文件系统：results/<root>/<composite>/summary.md
+        try:
+            comp_dir = get_task_file_path(composite_task, self.repo)  # ends with '/'
+            if ensure_task_directory(comp_dir):
+                comp_summary_path = os.path.join(comp_dir, "summary.md")
+                with open(comp_summary_path, "w", encoding="utf-8") as f:
+                    f.write(assembled_content)
+                logger.info("Composite summary written to %s", comp_summary_path)
+        except Exception as e:
+            logger.warning("Failed to write composite summary.md: %s", e)
+
         self.repo.upsert_task_output(composite_task_id, assembled_content)
         self.repo.update_task_context(
             composite_task_id,
@@ -262,6 +275,17 @@ class RootAssembler(_BaseAssembler):
             "strategy": strategy_enum.value,
             "fallback_used": fallback_used,
         }
+        # 写入到文件系统：results/<root>/summary.md
+        try:
+            root_dir = get_task_file_path(root_task, self.repo)  # ends with '/'
+            if ensure_task_directory(root_dir):
+                root_summary_path = os.path.join(root_dir, "summary.md")
+                with open(root_summary_path, "w", encoding="utf-8") as f:
+                    f.write(final_report)
+                logger.info("Root summary written to %s", root_summary_path)
+        except Exception as e:
+            logger.warning("Failed to write root summary.md: %s", e)
+
         self.repo.upsert_task_output(root_task_id, final_report)
         self.repo.update_task_context(
             root_task_id,
