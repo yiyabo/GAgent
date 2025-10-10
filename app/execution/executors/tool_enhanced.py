@@ -16,6 +16,7 @@ from ...interfaces import TaskRepository
 from ...repository.tasks import default_repo
 from .base import execute_task as base_execute_task
 from ...utils import split_prefix
+from ..assemblers import CompositeAssembler, RootAssembler
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +213,15 @@ class ToolEnhancedExecutor:
                 # Phase 7: Record tool usage for learning
                 await self._record_tool_usage(task, routing_result, tool_outputs, status)
 
+                # Phase 8: Ensure status and auto-assemble upwards when eligible
+                if status in ("done", "completed"):
+                    try:
+                        self.repo.update_task_status(task_id, "done")
+                    except Exception:
+                        pass
+                    # Trigger composite/root assembly if conditions are met
+                    await self._maybe_assemble_upstream(task_id)
+
                 logger.info(f"Tool-enhanced execution completed for task {task_id}")
                 return status
             else:
@@ -346,17 +356,24 @@ class ToolEnhancedExecutor:
         for call in tool_calls:
             try:
                 logger.info(f"Executing tool {call['tool_name']} for task {task_id}")
-                # Normalize file paths for file_operations into workspace dir
+                # Normalize file paths for file_operations
                 params = dict(call.get("parameters", {}) or {})
                 if call.get("tool_name") == "file_operations":
-                    op = str(params.get("operation", "")).lower()
+                    op = str(params.get("operation", "").lower())
 
                     # Path normalization for relative paths
                     def _norm_path(p: Optional[str]) -> Optional[str]:
                         if not p:
                             return None
                         try:
-                            return p if os.path.isabs(p) else str(Path(self.base_dir, p))
+                            if os.path.isabs(p):
+                                return p
+                            # Keep project results/ paths relative to project root
+                            raw = str(p).replace("\\", "/")
+                            if raw.startswith("results/") or raw.startswith("./results/"):
+                                return raw
+                            # Otherwise, route into workspace sandbox
+                            return str(Path(self.base_dir, p))
                         except Exception:
                             return p
 
@@ -604,6 +621,52 @@ class ToolEnhancedExecutor:
         except Exception as e:
             logger.error(f"Failed to execute post-generation tools: {e}")
             return []
+
+    async def _maybe_assemble_upstream(self, task_id: int) -> None:
+        """If an ATOMIC task just finished, assemble its composite and possibly root when eligible."""
+        try:
+            task = self.repo.get_task_info(task_id)
+            if not task or (task.get("task_type") != "atomic"):
+                return
+
+            # Check composite parent
+            parent = self.repo.get_parent(task_id)
+            if not parent or parent.get("task_type") != "composite":
+                return
+
+            # All atomic children done/completed?
+            children = self.repo.get_children(parent["id"])
+            if not children:
+                return
+            all_atomic_done = True
+            for ch in children:
+                if ch.get("task_type") == "atomic" and ch.get("status") not in {"done", "completed"}:
+                    all_atomic_done = False
+                    break
+            if not all_atomic_done:
+                return
+
+            # Assemble composite summary and mark completed
+            try:
+                CompositeAssembler(self.repo).assemble(parent["id"], strategy="llm", force_real=True)
+                logger.info("Composite %s assembled from all atomic children", parent.get("id"))
+            except Exception as e:
+                logger.warning("Composite assembly failed for %s: %s", parent.get("id"), e)
+                return
+
+            # Check root readiness
+            root_parent = self.repo.get_parent(parent["id"])
+            if not root_parent or root_parent.get("task_type") != "root":
+                return
+            comps = self.repo.get_children(root_parent["id"])
+            if comps and all((c.get("task_type") != "composite" or c.get("status") == "completed") for c in comps):
+                try:
+                    RootAssembler(self.repo).assemble(root_parent["id"], strategy="llm", force_real=True)
+                    logger.info("Root %s assembled from all composite children", root_parent.get("id"))
+                except Exception as e:
+                    logger.warning("Root assembly failed for %s: %s", root_parent.get("id"), e)
+        except Exception as e:
+            logger.warning("maybe_assemble_upstream failed: %s", e)
 
 
 # Convenience function for enhanced execution
