@@ -423,7 +423,7 @@ export const useChatStore = create<ChatState>()(
         const errorMessage: ChatMessage = {
           id: `msg_${Date.now()}_assistant`,
           type: 'assistant',
-          content: '抱歉，我暂时无法处理你的请求。可能的原因：\n\n1. 后端服务未完全启动\n2. GLM API未配置\n3. 网络连接问题\n\n请检查后端服务状态，或稍后重试。',
+          content: '抱歉，我暂时无法处理你的请求。可能的原因：\n\n1. 后端服务未完全启动\n2. LLM API未配置\n3. 网络连接问题\n\n请检查后端服务状态，或稍后重试。',
           timestamp: new Date(),
         };
         get().addMessage(errorMessage);

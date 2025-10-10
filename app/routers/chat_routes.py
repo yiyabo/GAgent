@@ -2239,7 +2239,12 @@ async def _handle_agent_workflow_creation(request: ChatRequest, context_messages
         search_enhanced_goal = request.message
         if any(keyword in request.message for keyword in ["学习", "计划", "指南"]):
             logger.info(f"🔍 学习计划请求，先搜索相关信息: {request.message}")
-            search_result = await execute_tool("web_search", query=request.message, max_results=3)
+            search_result = None
+            try:
+                search_result = await execute_tool("web_search", query=request.message, max_results=3)
+            except Exception as e:
+                # 避免可选增强导致整体失败：网络/协议错误时直接跳过增强
+                logger.warning(f"web_search 调用失败，跳过增强: {e}")
             if search_result and search_result.get("success"):
                 search_content = search_result.get("response", "")
                 if search_content and not search_content.startswith("❌"):
