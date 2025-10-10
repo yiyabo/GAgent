@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional
 
 from ...interfaces import TaskRepository
 from ...repository.tasks import default_repo
-from .planning import propose_plan_service
+from ..planning import propose_plan_service
+from ...utils.task_path_generator import get_task_file_path, ensure_task_directory
 from ...utils import plan_prefix
 from app.services.foundation.settings import get_settings
 
@@ -260,6 +261,31 @@ def decompose_task(
             subtask_prompt = subtask.get("prompt", "")
             if subtask_prompt:
                 repo.upsert_task_input(subtask_id, subtask_prompt)
+
+            # 新增：为COMPOSITE/ATOMIC自动创建结果目录或占位md文件
+            try:
+                child_info = repo.get_task_info(subtask_id)
+                child_path = get_task_file_path(child_info, repo)
+                # COMPOSITE → 目录 + summary.md
+                if child_info.get("task_type") == "composite":
+                    if ensure_task_directory(child_path):
+                        summary_md = os.path.join(child_path, "summary.md")
+                        if not os.path.exists(summary_md):
+                            with open(summary_md, "w", encoding="utf-8") as f:
+                                f.write(f"# {subtask_name} — 阶段总结\n\n此文档将聚合该 COMPOSITE 下所有 ATOMIC 的输出，以形成阶段总结。\n")
+                # ATOMIC → 文件占位
+                elif child_info.get("task_type") == "atomic":
+                    ensure_task_directory(child_path)
+                    if not os.path.exists(child_path):
+                        with open(child_path, "w", encoding="utf-8") as f:
+                            f.write(f"# {subtask_name}\n\n(自动生成的任务文档，执行完成后将写入内容)\n")
+            except Exception as e:
+                _DECOMP_LOGGER.warning({
+                    "event": "decompose_task.files_init_failed",
+                    "task_id": task_id,
+                    "child_id": subtask_id,
+                    "error": str(e)
+                })
 
             created_subtasks.append(
                 {"id": subtask_id, "name": subtask_name, "type": child_type, "task_type": child_type, "priority": subtask_priority}  # ⭐ 前端需要task_type字段

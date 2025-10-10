@@ -8,6 +8,8 @@ Agent工作流程路由模块
 
 import logging
 import time
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -16,6 +18,7 @@ from ..services.planning.planning import propose_plan_service
 from ..scheduler import bfs_schedule
 from ..repository.tasks import default_repo
 from ..llm import get_default_client
+from ..utils.task_path_generator import get_task_file_path, ensure_task_directory
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -85,23 +88,41 @@ async def create_agent_workflow(request: AgentRequest):
         if not workflow_id:
             workflow_id = f"workflow_{int(time.time())}"
 
+        # 使用LLM生成的标题作为ROOT名称（不加人工前缀）
+        root_task_name = plan_result['title']
         root_task_id = default_repo.create_task(
-            name=f"ROOT: {plan_result['title']}",
+            name=root_task_name,
             status="pending",
             priority=1,
             task_type="root",
             session_id=session_id,
             workflow_id=workflow_id,
         )
+        # 为ROOT创建结果目录与占位文件（summary.md, paper.md）
+        try:
+            root_task_info = default_repo.get_task_info(root_task_id)
+            root_dir = get_task_file_path(root_task_info, default_repo)  # results/<root_name>/
+            if ensure_task_directory(root_dir):
+                summary_path = os.path.join(root_dir, "summary.md")
+                paper_path = os.path.join(root_dir, "paper.md")
+                if not os.path.exists(summary_path):
+                    with open(summary_path, "w", encoding="utf-8") as f:
+                        f.write(f"# {root_task_name} — 综合总结\n\n此文档将聚合各个 COMPOSITE 的 summary.md 以形成最终的研究总结。\n")
+                if not os.path.exists(paper_path):
+                    with open(paper_path, "w", encoding="utf-8") as f:
+                        f.write(f"# {root_task_name} — 论文草稿\n\n该文档由专用LLM撰写，将参考所有 ATOMIC 文档与参考论文来生成。\n")
+        except Exception as e:
+            logger.warning(f"Failed to bootstrap ROOT result folder: {e}")
         
         # 步骤3: 创建简化的任务层次结构
         logger.info("🔄 步骤3: 创建任务层次")
         composite_tasks = []
         
-        # 创建COMPOSITE任务（直接作为可执行任务）
+        # 创建COMPOSITE任务（直接作为可执行任务），名称直接使用LLM生成的子任务名
         for i, task in enumerate(plan_result['tasks']):
+            composite_name = task['name']
             composite_task_id = default_repo.create_task(
-                name=f"COMPOSITE: {task['name']}",
+                name=composite_name,
                 status="pending", 
                 priority=i + 1,
                 parent_id=root_task_id,
@@ -110,6 +131,17 @@ async def create_agent_workflow(request: AgentRequest):
                 session_id=session_id,  # ⭐ 关键：传递session_id
                 workflow_id=workflow_id
             )
+            # 为COMPOSITE创建目录与占位summary.md
+            try:
+                comp_info = default_repo.get_task_info(composite_task_id)
+                comp_dir = get_task_file_path(comp_info, default_repo)  # results/<root>/<composite>/
+                if ensure_task_directory(comp_dir):
+                    comp_summary_path = os.path.join(comp_dir, "summary.md")
+                    if not os.path.exists(comp_summary_path):
+                        with open(comp_summary_path, "w", encoding="utf-8") as f:
+                            f.write(f"# {composite_name} — 阶段总结\n\n此文档将聚合该 COMPOSITE 下所有 ATOMIC 的输出，以形成阶段总结。\n")
+            except Exception as e:
+                logger.warning(f"Failed to bootstrap COMPOSITE folder for task {composite_task_id}: {e}")
             composite_tasks.append({
                 "id": composite_task_id,
                 "name": task['name'],
@@ -134,7 +166,7 @@ async def create_agent_workflow(request: AgentRequest):
         # 添加ROOT任务
         dag_structure.append(TaskNode(
             id=root_task_id,
-            name=f"ROOT: {plan_result['title']}",
+            name=root_task_name,
             task_type="root",
             status="pending",
             parent_id=None,
