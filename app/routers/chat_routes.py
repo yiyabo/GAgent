@@ -41,6 +41,116 @@ class ChatResponse(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+def _ensure_session_exists(session_id: str, conn):
+    """Ensure session exists in chat_sessions table"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM chat_sessions WHERE id = ?", (session_id,))
+    if not cursor.fetchone():
+        # Create session if it doesn't exist
+        cursor.execute(
+            """INSERT INTO chat_sessions (id, name, created_at, updated_at, is_active)
+               VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)""",
+            (session_id, f"Session {session_id[:8]}")
+        )
+        logger.info(f"📝 Created new chat session: {session_id}")
+
+
+def _save_chat_message(session_id: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None):
+    """Save a chat message to database"""
+    try:
+        from ..database import get_db
+        import json
+        
+        with get_db() as conn:
+            # Ensure session exists first
+            _ensure_session_exists(session_id, conn)
+            
+            cursor = conn.cursor()
+            metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+            cursor.execute(
+                """INSERT INTO chat_messages (session_id, role, content, metadata)
+                   VALUES (?, ?, ?, ?)""",
+                (session_id, role, content, metadata_json)
+            )
+            conn.commit()
+            logger.debug(f"💾 Saved {role} message for session {session_id}")
+    except Exception as e:
+        logger.warning(f"Failed to save chat message: {e}")
+
+
+def _load_chat_history(session_id: str, limit: int = 50) -> List[ChatMessage]:
+    """Load chat history from database"""
+    try:
+        from ..database import get_db
+        import json
+        from datetime import datetime
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT role, content, metadata, created_at 
+                   FROM chat_messages 
+                   WHERE session_id = ? 
+                   ORDER BY created_at ASC 
+                   LIMIT ?""",
+                (session_id, limit)
+            )
+            rows = cursor.fetchall()
+            
+            messages = []
+            for role, content, metadata_json, created_at in rows:
+                messages.append(ChatMessage(
+                    role=role,
+                    content=content,
+                    timestamp=created_at
+                ))
+            
+            logger.info(f"📖 Loaded {len(messages)} messages for session {session_id}")
+            return messages
+    except Exception as e:
+        logger.warning(f"Failed to load chat history: {e}")
+        return []
+
+
+def _save_assistant_response(session_id: Optional[str], response: ChatResponse) -> ChatResponse:
+    """Save assistant response and return it"""
+    if session_id and response.response:
+        _save_chat_message(session_id, "assistant", response.response, response.metadata)
+    return response
+
+
+@router.get("/history/{session_id}")
+async def get_chat_history(session_id: str, limit: int = 50):
+    """
+    获取指定会话的聊天历史
+    
+    Args:
+        session_id: 会话ID
+        limit: 返回的最大消息数量（默认50）
+    
+    Returns:
+        聊天历史消息列表
+    """
+    try:
+        messages = _load_chat_history(session_id, limit)
+        return {
+            "success": True,
+            "session_id": session_id,
+            "messages": [
+                {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "timestamp": msg.timestamp
+                }
+                for msg in messages
+            ],
+            "total": len(messages)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get chat history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/message", response_model=ChatResponse)
 async def chat_message(request: ChatRequest):
     """
@@ -52,6 +162,10 @@ async def chat_message(request: ChatRequest):
     - analyzer: 专注分析和解答的对话
     """
     try:
+        # Save user message to database
+        if request.session_id:
+            _save_chat_message(request.session_id, "user", request.message)
+        
         # 构建带上下文的消息历史
         context_messages = []
         if request.history:
@@ -60,12 +174,12 @@ async def chat_message(request: ChatRequest):
         # 快速预筛选：识别明显的非工具需求（问候语、感谢等）
         if _is_simple_greeting(request.message):
             logger.info("💬 识别为简单问候语，跳过复杂路由")
-            return ChatResponse(
+            return _save_assistant_response(request.session_id, ChatResponse(
                 response=_get_simple_greeting_response(request.message),
                 suggestions=["告诉我你需要什么帮助", "我可以协助你完成任务"],
                 actions=[],
                 metadata={"routing_method": "simple_greeting", "skipped_tool_analysis": True}
-            )
+            ))
 
         # 🔒 检查是否为内部分析请求，如果是则跳过工作流程创建  
         is_internal_analysis = request.context and request.context.get('internal_analysis', False)
@@ -87,19 +201,24 @@ async def chat_message(request: ChatRequest):
             
             if workflow_decision.get("create_new_root"):
                 logger.info(f"🤖 ====> 路由到: 创建新ROOT任务")
-                return await _handle_agent_workflow_creation(request, context_messages)
+                response = await _handle_agent_workflow_creation(request, context_messages)
+                return _save_assistant_response(request.session_id, response)
             elif workflow_decision.get("add_to_existing"):
                 logger.info(f"📎 ====> 路由到: 在现有ROOT任务下添加子任务")
-                return await _handle_add_subtask_to_existing(request, workflow_decision, context_messages)
+                response = await _handle_add_subtask_to_existing(request, workflow_decision, context_messages)
+                return _save_assistant_response(request.session_id, response)
             elif workflow_decision.get("decompose_task"):
                 logger.info(f"🔀 ====> 路由到: 拆分任务")
-                return await _handle_task_decomposition(request, workflow_decision, context_messages)
+                response = await _handle_task_decomposition(request, workflow_decision, context_messages)
+                return _save_assistant_response(request.session_id, response)
             elif workflow_decision.get("execute_task"):
                 logger.info(f"▶️ ====> 路由到: 执行任务")
-                return await _handle_task_execution(request, workflow_decision, context_messages)
+                response = await _handle_task_execution(request, workflow_decision, context_messages)
+                return _save_assistant_response(request.session_id, response)
             elif workflow_decision.get("re_execute_with_info"):
                 logger.info(f"🔄 ====> 路由到: 重新执行任务（附带补充信息）")
-                return await _handle_re_execute_with_info(request, workflow_decision, context_messages)
+                response = await _handle_re_execute_with_info(request, workflow_decision, context_messages)
+                return _save_assistant_response(request.session_id, response)
             else:
                 logger.info(f"💬 ====> 路由到: 普通对话")
                 logger.debug(f"✅ 普通对话，无需创建任务: '{request.message}'")
@@ -133,7 +252,7 @@ async def chat_message(request: ChatRequest):
         # 分析回复，提取建议和操作
         suggestions, actions = _extract_suggestions_and_actions(response, request.message)
         
-        return ChatResponse(
+        return _save_assistant_response(request.session_id, ChatResponse(
             response=response,
             suggestions=suggestions,
             actions=actions,
@@ -143,7 +262,7 @@ async def chat_message(request: ChatRequest):
                 "provider": llm_client.provider,
                 "tool_box_response": False
             }
-        )
+        ))
         
     except Exception as e:
         logger.error(f"❌ Chat processing failed: {e}")
@@ -151,7 +270,7 @@ async def chat_message(request: ChatRequest):
         error_type = type(e).__name__
         error_msg = f"⚠️ 处理请求时遇到问题: {error_type}。请稍后重试或联系管理员。"
         
-        return ChatResponse(
+        return _save_assistant_response(request.session_id, ChatResponse(
             response=error_msg,
             suggestions=["重新尝试", "简化问题", "检查网络连接"],
             actions=[],
@@ -160,7 +279,7 @@ async def chat_message(request: ChatRequest):
                 "error": True,
                 "error_type": error_type
             }
-        )
+        ))
 
 
 @router.get("/suggestions")
@@ -2258,7 +2377,11 @@ def _format_execution_plan(execution_plan: List[Dict[str, Any]], max_steps: int 
 
     return "\n".join(lines)
 
-async def _handle_agent_workflow_creation(request: ChatRequest, context_messages: Optional[List[Dict[str, str]]] = None) -> ChatResponse:
+async def _handle_agent_workflow_creation(
+    request: ChatRequest,
+    context_messages: Optional[List[Dict[str, str]]] = None
+) -> ChatResponse:
+    """Handle agent workflow creation and save response"""
     """处理Agent工作流程创建"""
     try:
         # 先搜索相关专业信息以提高规划质量
