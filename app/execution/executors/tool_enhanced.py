@@ -612,10 +612,11 @@ class ToolEnhancedExecutor:
             if not all_atomic_done:
                 return
 
-            # Assemble composite summary and mark completed
+            # Assemble composite summary (always re-assemble to capture latest changes)
+            # This ensures that if any atomic task is re-executed, the composite summary is updated
             try:
                 CompositeAssembler(self.repo).assemble(parent["id"], strategy="llm", force_real=True)
-                logger.info("Composite %s assembled from all atomic children", parent.get("id"))
+                logger.info("Composite %s (re-)assembled from all atomic children", parent.get("id"))
             except Exception as e:
                 logger.warning("Composite assembly failed for %s: %s", parent.get("id"), e)
                 return
