@@ -10,6 +10,7 @@ import {
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import ChatMessage from '@components/chat/ChatMessage';
+import { SessionStorage } from '@/utils/sessionStorage';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
@@ -43,12 +44,11 @@ const ChatMainArea: React.FC = () => {
     if (!currentSession) {
       (async () => {
         try {
-          // 恢复所有会话ID
-          const allSessionIdsStr = localStorage.getItem('all_session_ids');
-          const currentSessionId = localStorage.getItem('current_session_id');
+          // 使用 SessionStorage 工具类恢复所有会话ID
+          const allSessionIds = SessionStorage.getAllSessionIds();
+          const currentSessionId = SessionStorage.getCurrentSessionId();
           
-          if (allSessionIdsStr && currentSessionId) {
-            const allSessionIds: string[] = JSON.parse(allSessionIdsStr);
+          if (allSessionIds.length > 0 && currentSessionId) {
             console.log('🔄 [ChatMainArea] 恢复所有会话:', allSessionIds);
             
             // 恢复所有会话（但不加载历史，只恢复当前会话的历史）
@@ -82,12 +82,12 @@ const ChatMainArea: React.FC = () => {
             // 首次访问，创建新会话
             console.log('🆕 [ChatMainArea] 创建新会话');
             const session = startNewSession('AI 任务编排助手');
-            localStorage.setItem('current_session_id', session.id);
+            SessionStorage.setCurrentSessionId(session.id);
           }
         } catch (err) {
           console.warn('[ChatMainArea] 恢复会话失败，创建新会话:', err);
           const session = startNewSession('AI 任务编排助手');
-          localStorage.setItem('current_session_id', session.id);
+          SessionStorage.setCurrentSessionId(session.id);
         }
       })();
     }
