@@ -8,10 +8,12 @@ available tool capabilities when breaking down complex tasks.
 import logging
 from enum import Enum
 from typing import Any, Dict, List, Optional
+import os
 
 from ...interfaces import TaskRepository
 from ...repository.tasks import default_repo
 from ...utils import plan_prefix, split_prefix
+from ...utils.task_path_generator import get_task_file_path, ensure_task_directory
 from .recursive_decomposition import (
     MAX_DECOMPOSITION_DEPTH,
     TaskType,
@@ -260,12 +262,39 @@ class ToolAwareTaskDecomposer:
                 task_type=child_type,
             )
 
-            # Enhance subtask prompt with tool context
+            # Enhance subtask prompt with Root Brief, parent chain, and tool context
             original_prompt = subtask.get("prompt", "")
-            enhanced_subtask_prompt = self._enhance_subtask_prompt(original_prompt, strategy, i)
+            enhanced_subtask_prompt = self._enhance_subtask_prompt(original_prompt, strategy, i, task_id)
 
             if enhanced_subtask_prompt:
                 self.repo.upsert_task_input(subtask_id, enhanced_subtask_prompt)
+
+            # 新增：为COMPOSITE/ATOMIC自动创建结果目录或占位md文件（与标准分解一致）
+            try:
+                child_info = self.repo.get_task_info(subtask_id)
+                child_path = get_task_file_path(child_info, self.repo)
+                # COMPOSITE → 目录 + summary.md
+                if child_info.get("task_type") == "composite":
+                    if ensure_task_directory(child_path):
+                        summary_md = os.path.join(child_path, "summary.md")
+                        if not os.path.exists(summary_md):
+                            with open(summary_md, "w", encoding="utf-8") as f:
+                                f.write(f"# {subtask_name} — 阶段总结\n\n此文档将聚合该 COMPOSITE 下所有 ATOMIC 的输出，以形成阶段总结。\n")
+                # ATOMIC → 文件占位
+                elif child_info.get("task_type") == "atomic":
+                    ensure_task_directory(child_path)
+                    if not os.path.exists(child_path):
+                        with open(child_path, "w", encoding="utf-8") as f:
+                            f.write(f"# {subtask_name}\n\n(自动生成的任务文档，执行完成后将写入内容)\n")
+            except Exception as e:
+                logger.warning(
+                    {
+                        "event": "tool_aware_decompose.files_init_failed",
+                        "task_id": task_id,
+                        "child_id": subtask_id,
+                        "error": str(e),
+                    }
+                )
 
             created_subtasks.append(
                 {
@@ -335,29 +364,69 @@ class ToolAwareTaskDecomposer:
 
         return enhanced_prompt
 
-    def _enhance_subtask_prompt(self, original_prompt: str, strategy: Dict[str, Any], index: int) -> str:
-        """Enhance subtask prompt with tool-aware context"""
-
+    def _enhance_subtask_prompt(self, original_prompt: str, strategy: Dict[str, Any], index: int, task_id: int = None) -> str:
+        """Enhance subtask prompt with Root Brief, parent chain, and tool-aware context"""
+        
+        # Phase 1: Inject Root Brief and Parent Chain at the top
+        root_brief = ""
+        parent_chain = ""
+        
+        if task_id:
+            try:
+                # Get root task
+                root = self._find_root_task(task_id)
+                if root:
+                    root_name = root.get("name", "")
+                    root_prompt = self.repo.get_task_input_prompt(root.get("id")) or ""
+                    root_brief = f"[ROOT主题] {root_name}\n[核心目标] {root_prompt[:500]}\n\n"
+                
+                # Get parent chain
+                parent = self.repo.get_parent(task_id)
+                if parent:
+                    parent_name = parent.get("name", "")
+                    parent_chain = f"[父任务] {parent_name}\n\n"
+            except Exception as e:
+                logger.warning(f"Failed to inject root brief: {e}")
+        
+        # Phase 2: Add tool availability notice
         tool_requirements = strategy.get("tool_requirements", [])
-
-        if not tool_requirements or ToolRequirement.NONE.value in tool_requirements:
-            return original_prompt
-
-        # Add tool availability notice
-        tool_notice = "\n\n[可用工具提示]\n"
-
-        if ToolRequirement.INFORMATION_RETRIEVAL.value in tool_requirements:
-            tool_notice += "- 如需最新信息或外部资料，可以请求搜索相关内容\n"
-
-        if ToolRequirement.DATA_PROCESSING.value in tool_requirements:
-            tool_notice += "- 如需结构化数据分析，可以请求查询相关数据库\n"
-
-        if ToolRequirement.FILE_MANAGEMENT.value in tool_requirements:
-            tool_notice += "- 如需文件操作，可以请求读写相关文件\n"
-
-        tool_notice += "系统会自动识别需求并调用相应工具。"
-
-        return f"{original_prompt}{tool_notice}"
+        tool_notice = ""
+        
+        if tool_requirements and ToolRequirement.NONE.value not in tool_requirements:
+            tool_notice = "\n\n[可用工具提示]\n"
+            
+            if ToolRequirement.INFORMATION_RETRIEVAL.value in tool_requirements:
+                tool_notice += "- 如需最新信息或外部资料，可以请求搜索相关内容\n"
+            
+            if ToolRequirement.DATA_PROCESSING.value in tool_requirements:
+                tool_notice += "- 如需结构化数据分析，可以请求查询相关数据库\n"
+            
+            if ToolRequirement.FILE_MANAGEMENT.value in tool_requirements:
+                tool_notice += "- 如需文件操作，可以请求读写相关文件\n"
+            
+            tool_notice += "系统会自动识别需求并调用相应工具。"
+        
+        # Phase 3: Combine all parts with explicit theme constraint
+        theme_constraint = "\n\n⚠️ 重要约束：所有内容必须紧扣上述ROOT主题，不得偏离。若信息不足，优先提问澄清。\n"
+        
+        return f"{root_brief}{parent_chain}{original_prompt}{theme_constraint}{tool_notice}"
+    
+    def _find_root_task(self, task_id: int) -> Optional[Dict[str, Any]]:
+        """Find root task by walking up parent chain"""
+        try:
+            current = self.repo.get_task_info(task_id)
+            guard = 0
+            while current and guard < 100:
+                if current.get("task_type") == "root":
+                    return current
+                parent = self.repo.get_parent(current.get("id"))
+                if not parent:
+                    break
+                current = parent
+                guard += 1
+        except Exception:
+            pass
+        return None
 
 
 # Convenience functions for integration
