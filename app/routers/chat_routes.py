@@ -97,6 +97,9 @@ async def chat_message(request: ChatRequest):
             elif workflow_decision.get("execute_task"):
                 logger.info(f"▶️ ====> 路由到: 执行任务")
                 return await _handle_task_execution(request, workflow_decision, context_messages)
+            elif workflow_decision.get("re_execute_with_info"):
+                logger.info(f"🔄 ====> 路由到: 重新执行任务（附带补充信息）")
+                return await _handle_re_execute_with_info(request, workflow_decision, context_messages)
             else:
                 logger.info(f"💬 ====> 路由到: 普通对话")
                 logger.debug(f"✅ 普通对话，无需创建任务: '{request.message}'")
@@ -1544,22 +1547,28 @@ A) 创建一个全新的、独立的ROOT任务（与现有任务完全无关的�
 B) 在现有ROOT任务下添加相关的子任务或补充内容
 C) 拆分现有的任务为子任务（把一个任务分解成更小的子任务）
 D) 执行/完成现有的任务（开始运行某个已创建的任务）
+F) 提供补充信息并重新执行任务（用户在回答之前任务提出的问题，或要求重新执行某个任务并提供了新的约束条件）
 E) 普通对话，不需要创建或执行任务
 
 **判断标准**（重要！请仔细匹配）:
 1. **"拆分"、"分解"、"细化"、"拆成"关键词** → C（拆分任务）
    例如："拆分第1个任务"、"帮我拆分任务"、"分解这个任务"
+   ⚠️ 注意：如果同时有"重新执行"或"重跑"，优先选F而不是C！
    
 2. **"完成"、"执行"、"运行"、"开始做"、"帮我做"关键词** → D（执行任务）
    例如："完成任务507"、"执行这个任务"、"帮我完成XXX"
    ⚠️ 注意："完成XXX研究"如果XXX在任务列表中，选D而不是A！
    
-3. **"新的"、"另一个"、"不同的项目"、与现有任务完全不同的主题** → A（创建新ROOT）
+3. **"重新执行"、"重跑"、"再执行"、"再来一次"关键词，或提供了编号答案（如"1: xx 2: xx"）** → F（重新执行+补充信息）
+   例如："重新执行任务697"、"重新执行识别并筛选潜在研究问题"、"1: 临床环境 2: 大肠杆菌"
+   ⚠️ 这是最高优先级！如果用户明确说"重新执行"，必须选F！
+   
+4. **"新的"、"另一个"、"不同的项目"、与现有任务完全不同的主题** → A（创建新ROOT）
    例如："我想研究另一个主题"、"创建一个新项目"
    
-4. **"相关的"、"这个"、"补充"、"添加"** → B（添加子任务）
+5. **"相关的"、"这个"、"补充"、"添加"** → B（添加子任务）
    
-5. **问问题、闲聊、查询信息** → E（普通对话）
+6. **问问题、闲聊、查询信息** → E（普通对话）
 
 **特别注意**:
 - 如果用户消息中提到的任务名称在上面的任务列表中出现，优先判断为C（拆分）或D（执行）
@@ -1567,9 +1576,9 @@ E) 普通对话，不需要创建或执行任务
 
 请以JSON格式回复：
 {{
-  "intent": "A" | "B" | "C" | "D" | "E",
-  "task_id": <任务ID，如果用户提到>,
-  "task_name": "<任务名称，如果用户提到>",
+  "intent": "A" | "B" | "C" | "D" | "F" | "E",
+  "task_id": <任务ID，如果用户提到（支持#697或697格式）>,
+  "task_name": "<任务名称，如果用户提到（用于模糊匹配）>",
   "reasoning": "你的分析理由",
   "confidence": 0.0-1.0
 }}
@@ -1643,6 +1652,23 @@ E) 普通对话，不需要创建或执行任务
                     "execute_task": True,
                     "existing_root_id": existing_root["id"],
                     "existing_root_name": existing_root["name"],
+                    "task_id": result.get("task_id"),
+                    "task_name": result.get("task_name"),
+                    "reasoning": result.get("reasoning", "")
+                }
+            elif intent == "F":
+                # 重新执行+补充信息
+                return {
+                    "create_new_root": False,
+                    "add_to_existing": False,
+                    "decompose_task": False,
+                    "execute_task": False,
+                    "re_execute_with_info": True,
+                    "existing_root_id": existing_root["id"],
+                    "existing_root_name": existing_root["name"],
+                    "task_id": result.get("task_id"),
+                    "task_name": result.get("task_name"),
+                    "additional_info": message,
                     "reasoning": result.get("reasoning", "")
                 }
             else:
@@ -2442,3 +2468,115 @@ def _get_simple_greeting_response(message: str) -> str:
         return "确实好久不见！我一直在这里等待为您提供帮助。今天有什么任务需要处理吗？"
     else:
         return "我收到了您的消息。作为您的AI助手，我随时准备帮助您处理各种任务。请告诉我您需要什么？"
+
+
+async def _handle_re_execute_with_info(
+    request: ChatRequest,
+    workflow_decision: Dict[str, Any],
+    context_messages: Optional[List[Dict[str, str]]] = None
+) -> ChatResponse:
+    """重新执行任务并附带补充信息"""
+    from ..repository.tasks import default_repo
+    from ..database import get_db
+    
+    logger.info(f"🔄 进入重新执行（附补充信息）函数")
+    logger.info(f"📝 用户消息: {request.message}")
+    logger.info(f"🆔 决策信息: task_id={workflow_decision.get('task_id')}, task_name={workflow_decision.get('task_name')}")
+    
+    try:
+        # 1. 提取task_id（优先从LLM返回，否则从task_name查找）
+        task_id = workflow_decision.get("task_id")
+        task_name = workflow_decision.get("task_name")
+        
+        if not task_id and task_name:
+            # 从任务名称模糊匹配task_id
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """SELECT id, name FROM tasks 
+                       WHERE session_id = ? AND status IN ('pending', 'done')
+                       ORDER BY id DESC LIMIT 50""",
+                    (request.session_id,)
+                )
+                tasks = cursor.fetchall()
+                for tid, tname in tasks:
+                    if task_name in tname or tname in task_name:
+                        task_id = tid
+                        logger.info(f"✅ 通过任务名称匹配到 task_id={task_id}: {tname}")
+                        break
+        
+        if not task_id:
+            return ChatResponse(
+                response=f"❌ 无法找到要重新执行的任务。\n\n请提供任务ID（如：#697）或完整的任务名称。",
+                suggestions=["查看任务列表", "明确指定任务ID"],
+                metadata={"mode": request.mode, "error": True}
+            )
+        
+        # 2. 获取任务信息
+        task = default_repo.get_task_info(task_id)
+        if not task:
+            return ChatResponse(
+                response=f"❌ 任务 #{task_id} 不存在。",
+                suggestions=["检查任务ID", "查看任务列表"],
+                metadata={"mode": request.mode, "error": True}
+            )
+        
+        # 3. 获取原始输入并追加补充信息
+        original_prompt = default_repo.get_task_input_prompt(task_id) or ""
+        additional_info = workflow_decision.get("additional_info", request.message)
+        
+        # 构建增强提示
+        enhanced_prompt = f"""{original_prompt}
+
+【用户补充信息】
+{additional_info}
+
+⚠️ 请根据以上补充信息重新执行任务，给出明确的结果而不是提问。"""
+        
+        # 4. 更新任务输入
+        default_repo.upsert_task_input(task_id, enhanced_prompt)
+        
+        # 5. 重置任务状态为pending
+        default_repo.update_task_status(task_id, "pending")
+        
+        logger.info(f"✅ 任务 #{task_id} 输入已更新并重置为pending")
+        
+        # 6. 调用执行器执行任务
+        from ..execution.executors.tool_enhanced import execute_task_with_tools
+        
+        status = await execute_task_with_tools(task, use_context=True)
+        
+        # 7. 返回执行结果
+        task_name_display = task.get("name", "未知任务")
+        output_content = default_repo.get_task_output_content(task_id) or "(暂无输出)"
+        
+        return ChatResponse(
+            response=f"""✅ 任务重新执行完成！
+
+📋 任务名称: {task_name_display}
+🆔 任务ID: {task_id}
+📊 类型: {task.get("task_type", "unknown")}
+✨ 状态: {status}
+
+**执行结果**:
+{output_content[:800]}{'...' if len(output_content) > 800 else ''}
+
+💾 完整输出已保存到 results/ 目录的层级结构中。""",
+            suggestions=["继续执行其他任务", "查看完整输出", "查看任务列表"],
+            metadata={
+                "mode": request.mode,
+                "task_id": task_id,
+                "task_name": task_name_display,
+                "task_type": task.get("task_type"),
+                "status": status,
+                "re_executed": True
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ 重新执行任务失败: {e}", exc_info=True)
+        return ChatResponse(
+            response=f"⚠️ 重新执行任务时遇到问题: {str(e)}\n\n请检查任务状态或稍后重试。",
+            suggestions=["查看任务详情", "重新尝试"],
+            metadata={"mode": request.mode, "error": True}
+        )
