@@ -32,6 +32,7 @@ const ChatSidebar: React.FC = () => {
     setCurrentSession,
     startNewSession,
     removeSession,
+    loadChatHistory,
   } = useChatStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -48,8 +49,19 @@ const ChatSidebar: React.FC = () => {
   };
 
   // 处理选择对话
-  const handleSelectSession = (session: ChatSession) => {
+  const handleSelectSession = async (session: ChatSession) => {
+    // 先切换会话
     setCurrentSession(session);
+    
+    // 如果会话没有消息，尝试从后端加载历史
+    if (session.messages.length === 0 && session.session_id) {
+      console.log('🔄 [ChatSidebar] 加载会话历史:', session.session_id);
+      try {
+        await loadChatHistory(session.session_id);
+      } catch (err) {
+        console.warn('加载会话历史失败:', err);
+      }
+    }
   };
 
   // 会话操作菜单
