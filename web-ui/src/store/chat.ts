@@ -90,19 +90,48 @@ export const useChatStore = create<ChatState>()(
         currentTaskId: null,
         currentTaskName: null,
       });
+      
+      // 更新 localStorage 中的当前会话ID
+      if (session) {
+        try {
+          localStorage.setItem('current_session_id', session.id);
+        } catch {}
+      }
     },
 
     // 添加会话
-    addSession: (session) => set((state) => ({
-      sessions: [...state.sessions, session],
-    })),
+    addSession: (session) => {
+      set((state) => {
+        const newSessions = [...state.sessions, session];
+        // 更新 localStorage 中的所有会话ID列表
+        try {
+          const allSessionIds = newSessions.map(s => s.id);
+          localStorage.setItem('all_session_ids', JSON.stringify(allSessionIds));
+        } catch {}
+        return { sessions: newSessions };
+      });
+    },
 
     // 删除会话
-    removeSession: (sessionId) => set((state) => ({
-      sessions: state.sessions.filter(s => s.id !== sessionId),
-      currentSession: state.currentSession?.id === sessionId ? null : state.currentSession,
-      messages: state.currentSession?.id === sessionId ? [] : state.messages,
-    })),
+    removeSession: (sessionId) => {
+      set((state) => {
+        const newSessions = state.sessions.filter(s => s.id !== sessionId);
+        // 更新 localStorage
+        try {
+          const allSessionIds = newSessions.map(s => s.id);
+          localStorage.setItem('all_session_ids', JSON.stringify(allSessionIds));
+          // 如果删除的是当前会话，清除current_session_id
+          if (state.currentSession?.id === sessionId) {
+            localStorage.removeItem('current_session_id');
+          }
+        } catch {}
+        return {
+          sessions: newSessions,
+          currentSession: state.currentSession?.id === sessionId ? null : state.currentSession,
+          messages: state.currentSession?.id === sessionId ? [] : state.messages,
+        };
+      });
+    },
 
     // 添加消息
     addMessage: (message) => set((state) => {
@@ -455,7 +484,7 @@ export const useChatStore = create<ChatState>()(
         created_at: new Date(),
         updated_at: new Date(),
         workflow_id: null,
-        session_id: sessionId,  // 🔒 使用相同的ID作为后端session_id
+        session_id: sessionId,
       };
 
       console.log('🆕 创建新会话:', {
@@ -467,8 +496,14 @@ export const useChatStore = create<ChatState>()(
       get().addSession(session);
       get().setCurrentSession(session);
       set({ currentWorkflowId: null });
-      // 写入 localStorage，供刷新后恢复
-      try { localStorage.setItem('current_session_id', sessionId); } catch {}
+      
+      // 保存当前会话ID和所有会话ID列表
+      try {
+        localStorage.setItem('current_session_id', sessionId);
+        const allSessionIds = get().sessions.map(s => s.id);
+        localStorage.setItem('all_session_ids', JSON.stringify(allSessionIds));
+      } catch {}
+      
       return session;
     },
 
@@ -545,12 +580,30 @@ export const useChatStore = create<ChatState>()(
           // 更新消息列表
           set({ messages });
           
-          // 更新当前会话的消息
-          const currentSession = get().currentSession;
-          if (currentSession && currentSession.id === sessionId) {
-            get().setCurrentSession({
-              ...currentSession,
+          // 更新对应会话的消息（无论是否为当前会话）
+          const state = get();
+          const targetSession = state.sessions.find(s => s.id === sessionId);
+          
+          if (targetSession) {
+            const updatedSession = {
+              ...targetSession,
               messages,
+              updated_at: new Date(),
+            };
+            
+            // 更新 sessions 数组
+            const updatedSessions = state.sessions.map(s => 
+              s.id === sessionId ? updatedSession : s
+            );
+            
+            // 如果是当前会话，也更新 currentSession
+            const updatedCurrentSession = state.currentSession?.id === sessionId
+              ? updatedSession
+              : state.currentSession;
+            
+            set({
+              sessions: updatedSessions,
+              currentSession: updatedCurrentSession,
             });
           }
         } else {
