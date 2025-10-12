@@ -149,7 +149,7 @@ else:
             # Perplexity API 配置
             self.perplexity_api_key = os.getenv("PERPLEXITY_API_KEY")
             self.perplexity_api_url = os.getenv("PERPLEXITY_API_URL", "https://api.perplexity.ai/chat/completions")
-            self.perplexity_model = os.getenv("PERPLEXITY_MODEL", "llama-3.1-sonar-small-128k-online")
+            self.perplexity_model = os.getenv("PERPLEXITY_MODEL", "sonar-reasoning-pro")
             
             # 通用LLM配置
             self.llm_provider = os.getenv("LLM_PROVIDER", "glm")

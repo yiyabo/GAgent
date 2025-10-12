@@ -49,6 +49,51 @@ def _debug_on() -> bool:
         return str(v).strip().lower() in {"1", "true", "yes", "on"} if v else False
 
 
+def _find_root_task(task_id: int, repo: TaskRepository) -> Optional[Dict[str, Any]]:
+    """Find root task by walking up parent chain"""
+    try:
+        current = repo.get_task_info(task_id)
+        guard = 0
+        while current and guard < 100:
+            if current.get("task_type") == "root":
+                return current
+            parent = repo.get_parent(current.get("id"))
+            if not parent:
+                break
+            current = parent
+            guard += 1
+    except Exception:
+        pass
+    return None
+
+
+def _inject_root_brief_to_prompt(original_prompt: str, task_id: int, repo: TaskRepository) -> str:
+    """Inject Root Brief and parent chain into subtask prompt to ensure theme consistency"""
+    root_brief = ""
+    parent_chain = ""
+    
+    try:
+        # Get root task
+        root = _find_root_task(task_id, repo)
+        if root:
+            root_name = root.get("name", "")
+            root_prompt = repo.get_task_input_prompt(root.get("id")) or ""
+            root_brief = f"[ROOT主题] {root_name}\n[核心目标] {root_prompt[:500]}\n\n"
+        
+        # Get parent task
+        parent = repo.get_parent(task_id)
+        if parent:
+            parent_name = parent.get("name", "")
+            parent_chain = f"[父任务] {parent_name}\n\n"
+    except Exception as e:
+        _DECOMP_LOGGER.warning(f"Failed to inject root brief: {e}")
+    
+    # Add explicit theme constraint
+    theme_constraint = "\n\n⚠️ 重要约束：所有内容必须紧扣上述ROOT主题，不得偏离。若信息不足，优先提问澄清。\n"
+    
+    return f"{root_brief}{parent_chain}{original_prompt}{theme_constraint}"
+
+
 def evaluate_task_complexity(task_name: str, task_prompt: str = "") -> str:
     """评估任务复杂度
 
@@ -257,10 +302,12 @@ def decompose_task(
                 name=prefix + subtask_name, status="pending", priority=subtask_priority, parent_id=task_id, task_type=child_type
             )
 
-            # 保存子任务输入
+            # 保存子任务输入（注入Root Brief和父链信息）
             subtask_prompt = subtask.get("prompt", "")
             if subtask_prompt:
-                repo.upsert_task_input(subtask_id, subtask_prompt)
+                # Inject Root Brief and parent chain to ensure theme consistency
+                enhanced_prompt = _inject_root_brief_to_prompt(subtask_prompt, task_id, repo)
+                repo.upsert_task_input(subtask_id, enhanced_prompt)
 
             # 新增：为COMPOSITE/ATOMIC自动创建结果目录或占位md文件
             try:

@@ -16,6 +16,7 @@ from ...interfaces import TaskRepository
 from ...repository.tasks import default_repo
 from .base import execute_task as base_execute_task
 from ...utils import split_prefix
+from ...utils.task_path_generator import get_task_file_path, ensure_task_directory
 from ..assemblers import CompositeAssembler, RootAssembler
 
 logger = logging.getLogger(__name__)
@@ -204,6 +205,15 @@ class ToolEnhancedExecutor:
                 )
                 status = result_obj.status
 
+                # Phase 5.5: One-time theme consistency check and correction (if needed)
+                if status in ("done", "completed"):
+                    try:
+                        corrected = await self._check_and_correct_theme(task, task_id)
+                        if corrected:
+                            logger.info(f"✅ Theme correction applied for task {task_id}")
+                    except Exception as e:
+                        logger.warning(f"Theme consistency check failed: {e}")
+
                 # Phase 6: Execute output tools AFTER content generation
                 if output_tools and status in ("done", "completed"):
                     saved = await self._execute_post_generation_tools(output_tools, task, task_id)
@@ -225,100 +235,32 @@ class ToolEnhancedExecutor:
                 logger.info(f"Tool-enhanced execution completed for task {task_id}")
                 return status
             else:
-                # Fallback to standard execution
-                logger.info(f"Task {task_id} does not require tools, using standard execution")
-                return base_execute_task(task, use_context=use_context, context_options=context_options)
+                # Fallback to standard execution, but still materialize ATOMIC output
+                logger.info(f"Task {task_id} does not require tools, using standard execution with materialization")
+                status = base_execute_task(task, use_context=use_context, context_options=context_options)
+                try:
+                    await self._materialize_atomic_output(task)
+                except Exception:
+                    pass
+                return status
 
         except Exception as e:
             logger.error(f"Tool-enhanced execution failed for task {task_id}: {e}")
-            # Fallback to standard execution on error
-            return base_execute_task(task, use_context=use_context, context_options=context_options)
+            # Fallback to standard execution on error, still materialize ATOMIC output
+            status = base_execute_task(task, use_context=use_context, context_options=context_options)
+            try:
+                await self._materialize_atomic_output(task)
+            except Exception:
+                pass
+            return status
 
     async def _analyze_tool_requirements(self, task_prompt: str, task) -> tuple[bool, Dict[str, Any]]:
-        """Analyze if task requires external tools"""
+        """Always use LLM SmartRouter for routing; no keyword/regex heuristics."""
         try:
-            # Use simple heuristics for tool requirement analysis
-            prompt_lower = task_prompt.lower()
-
-            # Check for information retrieval needs
-            needs_search = any(
-                keyword in prompt_lower
-                for keyword in [
-                    "搜索",
-                    "查找",
-                    "最新",
-                    "当前",
-                    "实时",
-                    "新闻",
-                    "趋势",
-                    "研究",
-                    "search",
-                    "find",
-                    "latest",
-                    "current",
-                    "real-time",
-                    "news",
-                    "trends",
-                    "research",
-                ]
-            )
-
-            # Check for file operation needs
-            needs_files = any(
-                keyword in prompt_lower
-                for keyword in [
-                    "文件",
-                    "保存",
-                    "读取",
-                    "导出",
-                    "报告",
-                    "文档",
-                    "file",
-                    "save",
-                    "read",
-                    "export",
-                    "report",
-                    "document",
-                ]
-            )
-
-            # Check for data analysis needs
-            needs_data = any(
-                keyword in prompt_lower
-                for keyword in [
-                    "数据",
-                    "统计",
-                    "分析",
-                    "查询",
-                    "数据库",
-                    "表",
-                    "data",
-                    "statistics",
-                    "analysis",
-                    "query",
-                    "database",
-                    "table",
-                ]
-            )
-
-            analysis = {
-                "needs_search": needs_search,
-                "needs_files": needs_files,
-                "needs_data": needs_data,
-                "complexity": (
-                    "high"
-                    if sum([needs_search, needs_files, needs_data]) >= 2
-                    else "medium" if any([needs_search, needs_files, needs_data]) else "low"
-                ),
-            }
-
-            needs_tools = any([needs_search, needs_files, needs_data])
-
-            return needs_tools, analysis
-
+            return True, {"llm_routing": True}
         except Exception as e:
             logger.warning(f"Tool requirement analysis failed: {e}")
-            return False, {}
+            return True, {"llm_routing": True, "warning": str(e)}
 
     async def _build_routing_context(self, task, context_options) -> Dict[str, Any]:
         """Build context for tool routing"""
@@ -622,6 +564,30 @@ class ToolEnhancedExecutor:
             logger.error(f"Failed to execute post-generation tools: {e}")
             return []
 
+    async def _materialize_atomic_output(self, task) -> None:
+        """Ensure ATOMIC task output is written to its .md path from DB output, even if base executor was used."""
+        try:
+            task_id = task.get("id") if isinstance(task, dict) else task[0]
+            task_info = task if isinstance(task, dict) else self.repo.get_task_info(task_id)
+            if not task_info:
+                return
+            task_type = task_info.get("task_type") if isinstance(task_info, dict) else None
+            if task_type != "atomic":
+                return
+            content = self.repo.get_task_output_content(task_id)
+            if not content:
+                return
+            file_path = get_task_file_path(task_info, self.repo)
+            ensure_task_directory(file_path)
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                logger.info(f"Materialized atomic output to {file_path}")
+            except Exception as io_err:
+                logger.warning(f"Failed to write atomic output to {file_path}: {io_err}")
+        except Exception as e:
+            logger.warning(f"_materialize_atomic_output failed: {e}")
+
     async def _maybe_assemble_upstream(self, task_id: int) -> None:
         """If an ATOMIC task just finished, assemble its composite and possibly root when eligible."""
         try:
@@ -667,6 +633,111 @@ class ToolEnhancedExecutor:
                     logger.warning("Root assembly failed for %s: %s", root_parent.get("id"), e)
         except Exception as e:
             logger.warning("maybe_assemble_upstream failed: %s", e)
+
+    async def _check_and_correct_theme(self, task, task_id: int) -> bool:
+        """Check theme consistency and perform one-time correction if needed. Returns True if corrected."""
+        try:
+            # Get generated content
+            content = self.repo.get_task_output_content(task_id)
+            if not content or len(content) < 100:
+                return False
+            
+            # Get root task info
+            root = self._find_root_for_correction(task_id)
+            if not root:
+                return False
+            
+            root_name = root.get("name", "")
+            root_prompt = self.repo.get_task_input_prompt(root.get("id")) or ""
+            
+            # Build consistency check prompt
+            check_prompt = f"""请判断以下生成内容是否紧扣ROOT主题，并给出评分（0-10分）和简短理由。
+
+[ROOT主题] {root_name}
+[核心目标] {root_prompt[:500]}
+
+[生成内容]
+{content[:1500]}
+
+请以JSON格式回复：
+{{
+  "score": <0-10的整数>,
+  "on_topic": <true/false>,
+  "reasoning": "<简短理由>",
+  "suggestions": "<若偏题，给出纠正建议>"
+}}"""
+            
+            # Call LLM for consistency check
+            from app.services.llm.llm_service import get_llm_service
+            llm = get_llm_service()
+            check_result = await llm.generate_async(check_prompt, temperature=0.1, max_tokens=500)
+            
+            # Parse result
+            import json
+            import re
+            json_match = re.search(r'\{[^{}]*"score"[^{}]*\}', check_result, re.DOTALL)
+            if not json_match:
+                return False
+            
+            result = json.loads(json_match.group())
+            score = result.get("score", 10)
+            on_topic = result.get("on_topic", True)
+            
+            # If score < 7 or explicitly off-topic, perform one-time correction
+            if score < 7 or not on_topic:
+                logger.warning(f"Task {task_id} theme drift detected (score={score}), performing correction")
+                suggestions = result.get("suggestions", "")
+                
+                # Build correction prompt
+                correction_prompt = f"""以下内容偏离了ROOT主题，请根据纠正建议重写，确保紧扣主题。
+
+[ROOT主题] {root_name}
+[核心目标] {root_prompt[:500]}
+
+[原内容]
+{content[:1500]}
+
+[纠正建议]
+{suggestions}
+
+请重写内容，确保：
+1. 紧扣ROOT主题的关键词和核心目标
+2. 保持原有结构和格式
+3. 补充缺失的主题相关要点
+4. 删除无关内容
+
+重写后的内容："""
+                
+                # Generate corrected content
+                corrected = await llm.generate_async(correction_prompt, temperature=0.3, max_tokens=2000)
+                
+                # Update task output
+                self.repo.upsert_task_output(task_id, corrected)
+                logger.info(f"Task {task_id} content corrected (original score: {score})")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.warning(f"Theme consistency check failed for task {task_id}: {e}")
+            return False
+    
+    def _find_root_for_correction(self, task_id: int) -> Optional[Dict[str, Any]]:
+        """Find root task for theme correction"""
+        try:
+            current = self.repo.get_task_info(task_id)
+            guard = 0
+            while current and guard < 100:
+                if current.get("task_type") == "root":
+                    return current
+                parent = self.repo.get_parent(current.get("id"))
+                if not parent:
+                    break
+                current = parent
+                guard += 1
+        except Exception:
+            pass
+        return None
 
 
 # Convenience function for enhanced execution

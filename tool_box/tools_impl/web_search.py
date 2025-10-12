@@ -28,33 +28,27 @@ async def web_search_handler(query: str, max_results: int = 5, search_engine: st
         Dict containing search results
     """
     try:
-        if search_engine == "perplexity":
-            # Try Perplexity first, fallback to Tavily if it fails
-            response = await _search_perplexity(query)
-            if response.startswith("❌"):
-                # Perplexity failed, fallback to Tavily
-                logger.warning("Perplexity API failed, falling back to Tavily")
-                results = await _search_tavily(query, max_results)
-                return {"query": query, "results": results, "total_results": len(results), "search_engine": "tavily_fallback", "success": True}
-            else:
-                return {"query": query, "response": response, "search_engine": search_engine, "success": True}
-        elif search_engine == "tavily":
-            # Use Tavily for traditional search results
-            results = await _search_tavily(query, max_results)
-            return {"query": query, "results": results, "total_results": len(results), "search_engine": search_engine, "success": True}
-        else:
-            # Default to Perplexity with Tavily fallback
-            response = await _search_perplexity(query)
-            if response.startswith("❌"):
-                logger.warning("Perplexity API failed, falling back to Tavily")
-                results = await _search_tavily(query, max_results)
-                return {"query": query, "results": results, "total_results": len(results), "search_engine": "tavily_fallback", "success": True}
-            else:
-                return {"query": query, "response": response, "search_engine": "perplexity", "success": True}
-
+        # Perplexity-only implementation; unify return shape for downstream consumers
+        response = await _search_perplexity(query)
+        results = [
+            {
+                "title": "Perplexity Answer",
+                "url": "",
+                "snippet": response,
+                "source": "Perplexity",
+            }
+        ]
+        return {
+            "query": query,
+            "response": response,
+            "results": results,
+            "total_results": len(results),
+            "search_engine": "perplexity",
+            "success": True,
+        }
     except Exception as e:
         logger.error(f"Web search failed: {e}")
-        return {"query": query, "error": str(e), "search_engine": search_engine, "success": False}
+        return {"query": query, "error": str(e), "search_engine": "perplexity", "success": False}
 
 
 async def _search_tavily(query: str, max_results: int) -> List[Dict[str, Any]]:
@@ -279,16 +273,16 @@ web_search_tool = {
             "query": {"type": "string", "description": "搜索查询字符串"},
             "max_results": {
                 "type": "integer",
-                "description": "最大返回结果数量（仅对tavily有效）",
+                "description": "最大返回结果数量（Perplexity模式下忽略）",
                 "default": 5,
                 "minimum": 1,
                 "maximum": 20,
             },
             "search_engine": {
-                "type": "string", 
-                "description": "搜索引擎选择：perplexity为智能问答，tavily为传统搜索结果", 
-                "enum": ["perplexity", "tavily"], 
-                "default": "perplexity"
+                "type": "string",
+                "description": "固定为perplexity",
+                "enum": ["perplexity"],
+                "default": "perplexity",
             },
         },
         "required": ["query"],
