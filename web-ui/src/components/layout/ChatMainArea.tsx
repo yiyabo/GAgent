@@ -28,6 +28,7 @@ const ChatMainArea: React.FC = () => {
     setInputText,
     sendMessage,
     startNewSession,
+    restoreSession,
   } = useChatStore();
 
   const { selectedTask, currentPlan } = useTasksStore();
@@ -37,12 +38,30 @@ const ChatMainArea: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 如果没有当前会话，自动创建一个
+  // 初始化会话 - 从 localStorage 恢复或创建新会话
   useEffect(() => {
     if (!currentSession) {
-      startNewSession('AI 任务编排助手');
+      let savedSessionId: string | null = null;
+      try {
+        savedSessionId = localStorage.getItem('current_session_id');
+      } catch {
+        savedSessionId = null;
+      }
+
+      if (savedSessionId) {
+        console.log('🔄 [ChatMainArea] 恢复会话:', savedSessionId);
+        restoreSession(savedSessionId, 'AI 任务编排助手').catch((err) => {
+          console.warn('[ChatMainArea] 恢复会话失败，创建新会话:', err);
+          const session = startNewSession('AI 任务编排助手');
+          try { localStorage.setItem('current_session_id', session.id); } catch {}
+        });
+      } else {
+        console.log('🆕 [ChatMainArea] 创建新会话');
+        const session = startNewSession('AI 任务编排助手');
+        try { localStorage.setItem('current_session_id', session.id); } catch {}
+      }
     }
-  }, [currentSession]); // 移除函数依赖，避免无限循环
+  }, [currentSession, restoreSession, startNewSession]);
 
   // 处理发送消息
   const handleSendMessage = async () => {

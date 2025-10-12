@@ -53,6 +53,8 @@ interface ChatState {
   sendMessage: (content: string, metadata?: ChatMessage['metadata']) => Promise<void>;
   retryLastMessage: () => Promise<void>;
   startNewSession: (title?: string) => ChatSession;
+  restoreSession: (sessionId: string, title?: string) => Promise<ChatSession>;
+  loadChatHistory: (sessionId: string) => Promise<void>;
 }
 
 export const useChatStore = create<ChatState>()(
@@ -399,6 +401,9 @@ export const useChatStore = create<ChatState>()(
             s.id === current?.id ? { ...s, session_id: newSessionId } : s
           );
           set({ currentSession: current, sessions });
+          try {
+            localStorage.setItem('current_session_id', newSessionId);
+          } catch {}
         }
 
         // 无论是否携带metadata，统一派发一次刷新事件，驱动DAG重新加载
@@ -440,7 +445,7 @@ export const useChatStore = create<ChatState>()(
       }
     },
 
-    // 开始新会话
+    // 开始新会话（总是生成新的ID）
     startNewSession: (title) => {
       const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const session: ChatSession = {
@@ -462,8 +467,99 @@ export const useChatStore = create<ChatState>()(
       get().addSession(session);
       get().setCurrentSession(session);
       set({ currentWorkflowId: null });
-      
+      // 写入 localStorage，供刷新后恢复
+      try { localStorage.setItem('current_session_id', sessionId); } catch {}
       return session;
+    },
+
+    // 恢复已有会话（用于刷新后保持历史）
+    restoreSession: async (sessionId, title) => {
+      const state = get();
+      let session = state.sessions.find((s) => s.id === sessionId) || null;
+
+      if (!session) {
+        session = {
+          id: sessionId,
+          title: title || `对话 ${new Date().toLocaleString()}`,
+          messages: [],
+          created_at: new Date(),
+          updated_at: new Date(),
+          workflow_id: null,
+          session_id: sessionId,
+        };
+        get().addSession(session);
+      }
+
+      set({
+        currentSession: session,
+        currentWorkflowId: null,
+      });
+
+      try { localStorage.setItem('current_session_id', sessionId); } catch {}
+
+      await get().loadChatHistory(sessionId);
+
+      const updatedMessages = get().messages;
+      if (updatedMessages.length > 0) {
+        const refreshed = {
+          ...session,
+          messages: updatedMessages,
+          updated_at: new Date(),
+        };
+        set((currentState) => ({
+          currentSession: refreshed,
+          sessions: currentState.sessions.some((s) => s.id === refreshed.id)
+            ? currentState.sessions.map((s) => (s.id === refreshed.id ? refreshed : s))
+            : [...currentState.sessions, refreshed],
+        }));
+        return refreshed;
+      }
+
+      return get().currentSession || session;
+    },
+
+    // 加载聊天历史
+    loadChatHistory: async (sessionId: string) => {
+      try {
+        console.log('📖 加载聊天历史:', sessionId);
+        const response = await fetch(`http://127.0.0.1:8000/chat/history/${sessionId}?limit=100`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.success && data.messages && data.messages.length > 0) {
+          console.log(`✅ 加载了 ${data.messages.length} 条历史消息`);
+          
+          // 转换后端消息格式为前端格式
+          const messages: ChatMessage[] = data.messages.map((msg: any, index: number) => ({
+            id: `${sessionId}_${index}`,
+            type: (msg.role || 'assistant') as 'user' | 'assistant' | 'system',
+            content: msg.content,
+            timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+            metadata: {},
+          }));
+          
+          // 更新消息列表
+          set({ messages });
+          
+          // 更新当前会话的消息
+          const currentSession = get().currentSession;
+          if (currentSession && currentSession.id === sessionId) {
+            get().setCurrentSession({
+              ...currentSession,
+              messages,
+            });
+          }
+        } else {
+          console.log('📭 没有历史消息');
+        }
+      } catch (error) {
+        console.error('加载聊天历史失败:', error);
+        throw error;
+      }
     },
   }))
 );
