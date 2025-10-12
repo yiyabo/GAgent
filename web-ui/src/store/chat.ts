@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
-import { ChatMessage, ChatSession } from '../types/index';
+import { ChatMessage, ChatSession } from '@/types';
+import { SessionStorage } from '@/utils/sessionStorage';
 import { useTasksStore } from '@store/tasks';
 import { analyzeUserIntent, executeToolBasedOnIntent } from '../services/intentAnalysis';
 
@@ -93,9 +94,7 @@ export const useChatStore = create<ChatState>()(
       
       // 更新 localStorage 中的当前会话ID
       if (session) {
-        try {
-          localStorage.setItem('current_session_id', session.id);
-        } catch {}
+        SessionStorage.setCurrentSessionId(session.id);
       }
     },
 
@@ -104,10 +103,8 @@ export const useChatStore = create<ChatState>()(
       set((state) => {
         const newSessions = [...state.sessions, session];
         // 更新 localStorage 中的所有会话ID列表
-        try {
-          const allSessionIds = newSessions.map(s => s.id);
-          localStorage.setItem('all_session_ids', JSON.stringify(allSessionIds));
-        } catch {}
+        const allSessionIds = newSessions.map(s => s.id);
+        SessionStorage.setAllSessionIds(allSessionIds);
         return { sessions: newSessions };
       });
     },
@@ -117,14 +114,12 @@ export const useChatStore = create<ChatState>()(
       set((state) => {
         const newSessions = state.sessions.filter(s => s.id !== sessionId);
         // 更新 localStorage
-        try {
-          const allSessionIds = newSessions.map(s => s.id);
-          localStorage.setItem('all_session_ids', JSON.stringify(allSessionIds));
-          // 如果删除的是当前会话，清除current_session_id
-          if (state.currentSession?.id === sessionId) {
-            localStorage.removeItem('current_session_id');
-          }
-        } catch {}
+        const allSessionIds = newSessions.map(s => s.id);
+        SessionStorage.setAllSessionIds(allSessionIds);
+        // 如果删除的是当前会话，清除current_session_id
+        if (state.currentSession?.id === sessionId) {
+          SessionStorage.clearCurrentSessionId();
+        }
         return {
           sessions: newSessions,
           currentSession: state.currentSession?.id === sessionId ? null : state.currentSession,
@@ -430,9 +425,7 @@ export const useChatStore = create<ChatState>()(
             s.id === current?.id ? { ...s, session_id: newSessionId } : s
           );
           set({ currentSession: current, sessions });
-          try {
-            localStorage.setItem('current_session_id', newSessionId);
-          } catch {}
+          SessionStorage.setCurrentSessionId(newSessionId);
         }
 
         // 无论是否携带metadata，统一派发一次刷新事件，驱动DAG重新加载
@@ -498,11 +491,9 @@ export const useChatStore = create<ChatState>()(
       set({ currentWorkflowId: null });
       
       // 保存当前会话ID和所有会话ID列表
-      try {
-        localStorage.setItem('current_session_id', sessionId);
-        const allSessionIds = get().sessions.map(s => s.id);
-        localStorage.setItem('all_session_ids', JSON.stringify(allSessionIds));
-      } catch {}
+      SessionStorage.setCurrentSessionId(sessionId);
+      const allSessionIds = get().sessions.map(s => s.id);
+      SessionStorage.setAllSessionIds(allSessionIds);
       
       return session;
     },
@@ -530,7 +521,7 @@ export const useChatStore = create<ChatState>()(
         currentWorkflowId: null,
       });
 
-      try { localStorage.setItem('current_session_id', sessionId); } catch {}
+      SessionStorage.setCurrentSessionId(sessionId);
 
       await get().loadChatHistory(sessionId);
 

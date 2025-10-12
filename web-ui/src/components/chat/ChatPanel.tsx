@@ -30,8 +30,6 @@ const ChatPanel: React.FC = () => {
     sendMessage,
     clearMessages,
     retryLastMessage,
-    startNewSession,
-    restoreSession,
     currentSession,
   } = useChatStore();
 
@@ -41,30 +39,6 @@ const ChatPanel: React.FC = () => {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
-
-  // 初始化会话 - 从 localStorage 恢复或创建新会话
-  useEffect(() => {
-    if (!currentSession) {
-      let savedSessionId: string | null = null;
-      try {
-        savedSessionId = localStorage.getItem('current_session_id');
-      } catch {
-        savedSessionId = null;
-      }
-
-      if (savedSessionId) {
-        console.log('🔄 恢复会话:', savedSessionId);
-        restoreSession(savedSessionId, 'AI 任务编排助手').catch((err) => {
-          console.warn('恢复会话失败，创建新会话:', err);
-          const session = startNewSession('AI 任务编排助手');
-          try { localStorage.setItem('current_session_id', session.id); } catch {}
-        });
-      } else {
-        const session = startNewSession('AI 任务编排助手');
-        try { localStorage.setItem('current_session_id', session.id); } catch {}
-      }
-    }
-  }, [currentSession, restoreSession, startNewSession]);
 
   // 处理发送消息
   const handleSendMessage = async () => {
