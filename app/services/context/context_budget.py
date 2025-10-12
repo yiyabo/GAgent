@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Optional, Tuple
 # Phase 4: add 'index' with highest priority, before dependencies.
 # Phase 5: add hierarchy-based context types (ancestor, h_sibling).
 # Include TF-IDF retrieved items between dep:refers and sibling.
-PRIORITY_ORDER = ("index", "dep:requires", "dep:refers", "ancestor", "retrieved", "h_sibling", "sibling", "manual")
+# Pinned sections are forced to the highest priority and are not trimmed.
+PRIORITY_ORDER = ("pinned", "index", "dep:requires", "dep:refers", "ancestor", "retrieved", "h_sibling", "sibling", "manual")
 
 
 _BUD_LOGGER = logging.getLogger("app.context.budget")
@@ -79,8 +80,11 @@ def _priority_key(s: Dict[str, Any]) -> Tuple[int, int]:
     try:
         group = PRIORITY_ORDER.index(kind)
     except ValueError:
+        # Handle pinned:* with the highest priority
+        if isinstance(kind, str) and kind.startswith("pinned"):
+            group = 0
         # Handle dep:* variants and hierarchy types defensively
-        if isinstance(kind, str) and kind.startswith("dep:"):
+        elif isinstance(kind, str) and kind.startswith("dep:"):
             if "requires" in kind:
                 group = 1  # dep:requires
             elif "refers" in kind:
@@ -155,6 +159,40 @@ def apply_budget(
     for idx, s in enumerate(sections):
         content = s.get("content") or ""
         original_len = len(content)
+        kind = s.get("kind") or ""
+
+        # Handle pinned sections: never trim and do not consume total budget
+        is_pinned = bool(s.get("pinned") or (isinstance(kind, str) and kind.startswith("pinned")))
+        if is_pinned:
+            # Determine ordering group for metadata (mirrors _priority_key)
+            try:
+                group = PRIORITY_ORDER.index("pinned")
+            except ValueError:
+                group = 0
+
+            meta = {
+                "truncated": False,
+                "original_len": original_len,
+                "new_len": original_len,
+                "strategy": "none",
+                "allowed": original_len,
+                "allowed_by_per_section": original_len,
+                "allowed_by_total": original_len,
+                "truncated_reason": "none",
+                "group": group,
+                "index": idx,
+                "pinned": True,
+            }
+
+            s2 = dict(s)
+            s2["content"] = content
+            s2["budget"] = meta
+            new_sections.append(s2)
+
+            header = s2.get("short_name") or s2.get("name") or f"Task {s2.get('task_id')}"
+            combined_parts.append(f"## {header}\n\n{content}")
+            # Do NOT decrement remaining for pinned sections
+            continue
 
         # Calculate effective allowances before summarization
         allowed_by_per = min(original_len, per_cap) if per_cap is not None else original_len
@@ -164,7 +202,6 @@ def apply_budget(
         truncated, meta = _summarize(content, allow, strategy)
 
         # Determine ordering group for metadata (mirrors _priority_key)
-        kind = s.get("kind") or ""
         try:
             group = PRIORITY_ORDER.index(kind)
         except ValueError:

@@ -113,13 +113,110 @@ def _index_section() -> Dict[str, Any]:
         "content": content,
     }
 
+# -----------------
+# Root Brief and Parent Chain (pinned)
+# -----------------
+
+def _get_ancestor_chain(task_id: int, repo: TaskRepository) -> List[Dict[str, Any]]:
+    """Return ancestor chain from root -> ... -> parent of task_id (excludes self)."""
+    chain: List[Dict[str, Any]] = []
+    try:
+        if hasattr(repo, "get_ancestors"):
+            anc = repo.get_ancestors(task_id) or []
+            # Normalize order: root first if depth is available
+            try:
+                anc = sorted(anc, key=lambda x: x.get("depth", 0))
+            except Exception:
+                pass
+            chain = [a for a in anc if a.get("task_type") in {"root", "composite"}]
+        else:
+            cur = repo.get_parent(task_id) if hasattr(repo, "get_parent") else None
+            guard = 0
+            stack: List[Dict[str, Any]] = []
+            while cur and guard < 100:
+                stack.append(cur)
+                if cur.get("task_type") == "root":
+                    break
+                cur = repo.get_parent(cur.get("id")) if hasattr(repo, "get_parent") else None
+                guard += 1
+            chain = list(reversed(stack))
+    except Exception:
+        chain = []
+    return chain
+
+
+def _synthesize_root_brief(task_id: int, repo: TaskRepository) -> Optional[Dict[str, Any]]:
+    """Build a concise Root Brief from the root's name and input prompt. Mark as pinned."""
+    # Find root task
+    root: Optional[Dict[str, Any]] = None
+    try:
+        me = _get_task_by_id(task_id, repo)
+        if me and me.get("task_type") == "root":
+            root = me
+        else:
+            chain = _get_ancestor_chain(task_id, repo)
+            for a in chain:
+                if a.get("task_type") == "root":
+                    root = a
+                    break
+    except Exception:
+        root = None
+    if not root:
+        return None
+
+    rid = root.get("id")
+    rname = root.get("name", "")
+    try:
+        rprompt = repo.get_task_input_prompt(rid) or ""
+    except Exception:
+        rprompt = ""
+    # Trim overly long prompt
+    max_len = 1200
+    brief_body = (rprompt or "").strip()
+    if len(brief_body) > max_len:
+        brief_body = brief_body[:max_len].rstrip()
+
+    content = f"# Root Brief\n\n- Title: {rname}\n- Problem/Goal:\n{brief_body}\n\n要求：所有子任务必须与上述主题保持一致；若信息不足，优先提问澄清或引用Root Brief。"
+    return {
+        "task_id": rid,
+        "name": "ROOT_BRIEF",
+        "short_name": "ROOT_BRIEF",
+        "kind": "pinned:root_brief",
+        "pinned": True,
+        "content": content,
+    }
+
+
+def _synthesize_parent_chain(task_id: int, repo: TaskRepository) -> Optional[Dict[str, Any]]:
+    """Produce a single pinned section summarizing the ancestor chain (root -> ... -> parent)."""
+    chain = _get_ancestor_chain(task_id, repo)
+    if not chain:
+        return None
+    lines: List[str] = ["# Parent Chain"]
+    for a in chain:
+        aid = a.get("id")
+        name = a.get("name", "")
+        ttype = a.get("task_type", "")
+        lines.append(f"- [{ttype}] {name} (id={aid})")
+    content = "\n".join(lines)
+    return {
+        "task_id": chain[0].get("id"),
+        "name": "PARENT_CHAIN",
+        "short_name": "PARENT_CHAIN",
+        "kind": "pinned:parent_chain",
+        "pinned": True,
+        "content": content,
+    }
+
 
 # GLM semantic retrieval replaces TF-IDF utilities
 
 
 def _priority_key_local(s: Dict[str, Any]) -> Tuple[int, int]:
     kind = s.get("kind") or ""
-    # Ensure global index sorts before everything else locally
+    # Pinned sections always sort before everything else locally, then INDEX
+    if isinstance(kind, str) and kind.startswith("pinned"):
+        return (-2, int(s.get("task_id") or 0))
     if kind == "index":
         return (-1, int(s.get("task_id") or 0))
     try:
@@ -175,16 +272,27 @@ def gather_context(
         Dict containing task_id, sections list, and combined text string
     """
     sections: List[Dict[str, Any]] = []
+    # 0) Pinned sections: Root Brief and Parent Chain — always at the top and never trimmed
+    try:
+        rb = _synthesize_root_brief(task_id, repo)
+        if rb:
+            sections.append(rb)
+        pc = _synthesize_parent_chain(task_id, repo)
+        if pc:
+            sections.append(pc)
+    except Exception:
+        # Never block context assembly due to pinned synthesis issues
+        pass
     seen_ids = set()
 
-    # 0) Always include global index (INDEX.md) as the top-priority anchor
+    # 1) Always include global index (INDEX.md) as an anchor (after pinned)
     try:
         sections.append(_index_section())
     except Exception:
         # Never block context assembly due to index read issues
         pass
 
-    # 1) Dependencies (requires first, then refers) as provided by repo
+    # 2) Dependencies (requires first, then refers) as provided by repo
     if include_deps:
         try:
             deps = repo.list_dependencies(task_id)
@@ -197,7 +305,7 @@ def gather_context(
                 sections.append(sec)
                 seen_ids.add(sec["task_id"])
 
-    # 2) Siblings in same plan (exclude self)
+    # 3) Siblings in same plan (exclude self)
     if include_plan:
         me = _get_task_by_id(task_id, repo)
         if me and isinstance(me, dict):
@@ -219,7 +327,7 @@ def gather_context(
                         if len([x for x in sections if x.get("kind") == "sibling"]) >= k:
                             break
 
-    # 3) Hierarchy-based context (ancestors and siblings)
+    # 4) Hierarchy-based context (ancestors and siblings)
     if include_ancestors or include_siblings:
         try:
             # Get current task info to access hierarchy methods
@@ -262,7 +370,7 @@ def gather_context(
             # Never block context assembly due to hierarchy issues
             pass
 
-    # 4) Manual selections
+    # 5) Manual selections
     if manual:
         for mid in manual:
             if mid in seen_ids:
@@ -274,7 +382,7 @@ def gather_context(
                     sections.append(sec)
                     seen_ids.add(sec["task_id"])
 
-    # 5) GLM semantic retrieval (always enabled with default parameters)
+    # 6) GLM semantic retrieval (always enabled with default parameters)
     if semantic_k > 0:
         # Query text: prefer current task input prompt, else task name
         me = _get_task_by_id(task_id, repo)
