@@ -38,28 +38,58 @@ const ChatMainArea: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 初始化会话 - 从 localStorage 恢复或创建新会话
+  // 初始化会话 - 从 localStorage 恢复所有会话
   useEffect(() => {
     if (!currentSession) {
-      let savedSessionId: string | null = null;
-      try {
-        savedSessionId = localStorage.getItem('current_session_id');
-      } catch {
-        savedSessionId = null;
-      }
-
-      if (savedSessionId) {
-        console.log('🔄 [ChatMainArea] 恢复会话:', savedSessionId);
-        restoreSession(savedSessionId, 'AI 任务编排助手').catch((err) => {
+      (async () => {
+        try {
+          // 恢复所有会话ID
+          const allSessionIdsStr = localStorage.getItem('all_session_ids');
+          const currentSessionId = localStorage.getItem('current_session_id');
+          
+          if (allSessionIdsStr && currentSessionId) {
+            const allSessionIds: string[] = JSON.parse(allSessionIdsStr);
+            console.log('🔄 [ChatMainArea] 恢复所有会话:', allSessionIds);
+            
+            // 恢复所有会话（但不加载历史，只恢复当前会话的历史）
+            for (const sessionId of allSessionIds) {
+              if (sessionId !== currentSessionId) {
+                // 其他会话只创建空壳，不加载历史
+                const session = {
+                  id: sessionId,
+                  title: `对话 ${sessionId.slice(-8)}`,
+                  messages: [],
+                  created_at: new Date(),
+                  updated_at: new Date(),
+                  workflow_id: null,
+                  session_id: sessionId,
+                };
+                // 手动添加到sessions（避免触发localStorage更新）
+                const { sessions } = useChatStore.getState();
+                if (!sessions.find(s => s.id === sessionId)) {
+                  useChatStore.setState({ sessions: [...sessions, session] });
+                }
+              }
+            }
+            
+            // 恢复当前会话并加载历史
+            await restoreSession(currentSessionId, 'AI 任务编排助手');
+          } else if (currentSessionId) {
+            // 只有当前会话ID，恢复它
+            console.log('🔄 [ChatMainArea] 恢复当前会话:', currentSessionId);
+            await restoreSession(currentSessionId, 'AI 任务编排助手');
+          } else {
+            // 首次访问，创建新会话
+            console.log('🆕 [ChatMainArea] 创建新会话');
+            const session = startNewSession('AI 任务编排助手');
+            localStorage.setItem('current_session_id', session.id);
+          }
+        } catch (err) {
           console.warn('[ChatMainArea] 恢复会话失败，创建新会话:', err);
           const session = startNewSession('AI 任务编排助手');
-          try { localStorage.setItem('current_session_id', session.id); } catch {}
-        });
-      } else {
-        console.log('🆕 [ChatMainArea] 创建新会话');
-        const session = startNewSession('AI 任务编排助手');
-        try { localStorage.setItem('current_session_id', session.id); } catch {}
-      }
+          localStorage.setItem('current_session_id', session.id);
+        }
+      })();
     }
   }, [currentSession, restoreSession, startNewSession]);
 
