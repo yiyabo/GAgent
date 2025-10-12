@@ -817,10 +817,10 @@ async def execute_task_with_tools_and_evaluation(
     Execute with tool-enhanced context, then run evaluation-driven generation.
 
     Steps:
-      1) Analyze tool needs and run info-gathering tools
-      2) Enhance context options with tool outputs
-      3) Run evaluation loop (LLM/multi-expert/adversarial)
-      4) Execute post-generation output tools (e.g., write file)
+    1) Analyze tool needs and run info-gathering tools
+    2) Enhance context options with tool outputs
+    3) Run evaluation loop (LLM/multi-expert/adversarial)
+    4) Execute post-generation output tools (e.g., write file)
     """
     repo = repo or default_repo
 
