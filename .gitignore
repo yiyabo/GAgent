@@ -58,3 +58,4 @@ web-ui/.vite/
 evaluation_cache.db
 web-ui/node_modules/.vite/
 web-ui/node_modules/.cache/
+.pytest_cache/
