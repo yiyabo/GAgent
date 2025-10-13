@@ -26,61 +26,7 @@
 
 ## 快速开始
 
-### 1. 基础评估
-
-```bash
-# 执行基础评估
-python -m cli.main --eval-execute 123 --threshold 0.8 --max-iterations 3
-
-# 查看评估历史
-python -m cli.main --eval-history 123
-
-# 查看评估统计
-python -m cli.main --eval-stats --detailed
-```
-
-### 2. LLM智能评估
-
-```bash
-# 使用LLM智能评估执行任务
-python -m cli.main --eval-llm 123 --threshold 0.8 --max-iterations 3
-
-# 带上下文的LLM评估
-python -m cli.main --eval-llm 123 --use-context --threshold 0.85
-```
-
-### 3. 多专家评估
-
-```bash
-# 使用所有专家进行评估
-python -m cli.main --eval-multi-expert 123 --threshold 0.8
-
-# 选择特定专家
-python -m cli.main --eval-multi-expert 123 --experts "theoretical_biologist,clinical_physician" --threshold 0.8
-```
-
-### 4. 对抗性评估
-
-```bash
-# 对抗性评估（生成器vs批评者）
-python -m cli.main --eval-adversarial 123 --max-rounds 3 --improvement-threshold 0.1
-
-# 高强度对抗性评估
-python -m cli.main --eval-adversarial 123 --max-rounds 5 --improvement-threshold 0.05
-```
-
-### 5. 监督系统
-
-```bash
-# 查看系统监督报告
-python -m cli.main --eval-supervision --detailed
-
-# 配置监督阈值
-python -m cli.main --eval-supervision-config --min-accuracy 0.75 --max-evaluation-time 25.0
-
-# 查看当前监督配置
-python -m cli.main --eval-supervision-config
-```
+评估相关 CLI/REST 的常用命令与端到端示例已收敛到 `docs/QUICK_START.md`，本指南聚焦于配置、代码示例与最佳实践。
 
 ## 详细功能说明
 
@@ -98,7 +44,7 @@ LLM智能评估器使用大语言模型进行深度语义理解，提供6个维�
 #### 使用示例
 
 ```python
-from app.executor_enhanced import execute_task_with_llm_evaluation
+from app.execution.executors.enhanced import execute_task_with_llm_evaluation
 from app.models import EvaluationConfig
 
 # 配置评估参数
@@ -121,6 +67,41 @@ print(f"执行状态: {result.status}")
 print(f"迭代次数: {result.iterations_completed}")
 ```
 
+## 上下文策略与预算控制
+
+评估与执行时可通过上下文和预算参数精细控制提示词上下文，兼顾质量与成本：
+
+- 上下文收集：
+  - **include_deps**: 是否包含依赖任务输出（默认 true）
+  - **include_plan**: 是否包含同计划兄弟任务（默认 true）
+  - **include_ancestors / include_siblings**: 是否包含祖先/同级（默认 false）
+  - **semantic_k / min_similarity**: GLM 语义检索数量与相似度阈值（默认 5 / 0.1）
+  - **hierarchy_k**: 层次检索数量（默认 3）
+
+- 预算裁剪：
+  - **max_chars**: 合并上下文的总字符预算（None 表示不裁剪）
+  - **per_section_max**: 每个片段的最大字符数（None 表示不限制）
+  - **strategy**: `truncate` 或 `sentence`（在有预算参数时生效）
+
+请求示例（REST /tasks/{id}/context/preview）：
+
+```json
+{
+  "include_deps": true,
+  "include_plan": true,
+  "semantic_k": 5,
+  "min_similarity": 0.15,
+  "include_ancestors": false,
+  "include_siblings": false,
+  "hierarchy_k": 3,
+  "max_chars": 6000,
+  "per_section_max": 1200,
+  "strategy": "truncate"
+}
+```
+
+严格评估建议：将 `quality_threshold` ≥ 0.92，`max_iterations` 设为 3-5，维度权重侧重 **accuracy** 与 **scientific_rigor**，可有效拉开不同配置的评分差异。
+
 ### 多专家评估系统
 
 多专家评估系统模拟5位不同领域的专家进行协作评估：
@@ -134,7 +115,7 @@ print(f"迭代次数: {result.iterations_completed}")
 #### 专家评估流程
 
 ```python
-from app.services.expert_evaluator import get_multi_expert_evaluator
+from app.services.evaluation.expert_evaluator import get_multi_expert_evaluator
 
 evaluator = get_multi_expert_evaluator()
 
@@ -170,7 +151,7 @@ for disagreement in disagreements:
 #### 评估流程
 
 ```python
-from app.services.adversarial_evaluator import get_adversarial_evaluator
+from app.services.evaluation.adversarial_evaluator import get_adversarial_evaluator
 
 evaluator = get_adversarial_evaluator()
 
@@ -203,7 +184,7 @@ print(f"对抗性效果: {result['final_assessment']['adversarial_effectiveness'
 #### 使用示例
 
 ```python
-from app.services.meta_evaluator import get_meta_evaluator
+from app.services.evaluation.meta_evaluator import get_meta_evaluator
 
 meta_evaluator = get_meta_evaluator()
 
@@ -238,7 +219,7 @@ for bias_type, risk_level in bias_risks.items():
 #### 使用示例
 
 ```python
-from app.services.phage_evaluator import get_phage_evaluator
+from app.services.evaluation.phage_evaluator import get_phage_evaluator
 
 phage_evaluator = get_phage_evaluator()
 
@@ -261,7 +242,7 @@ print(f"安全性评估: {result['safety_assessment']:.3f}")
 #### 缓存配置
 
 ```python
-from app.services.evaluation_cache import get_evaluation_cache
+from app.services.evaluation.evaluation_cache import get_evaluation_cache
 
 cache = get_evaluation_cache()
 
@@ -282,7 +263,7 @@ cache.clear_cache()
 
 ```python
 # 查看性能统计
-from app.services.evaluation_cache import get_evaluation_cache
+from app.services.evaluation.evaluation_cache import get_evaluation_cache
 
 cache = get_evaluation_cache()
 performance_stats = cache.get_performance_stats()
@@ -306,7 +287,7 @@ print(f"缓存效率: {performance_stats['cache_efficiency']:.1%}")
 #### 监督配置
 
 ```python
-from app.services.evaluation_supervisor import get_evaluation_supervisor
+from app.services.evaluation.evaluation_supervisor import get_evaluation_supervisor
 
 supervisor = get_evaluation_supervisor()
 
@@ -380,10 +361,10 @@ python -m cli.main --eval-supervision
 python -m cli.main --eval-stats --detailed
 
 # 重置监督状态（如果需要）
-python -c "from app.services.evaluation_supervisor import get_evaluation_supervisor; get_evaluation_supervisor().reset_supervision_state()"
+python -c "from app.services.evaluation.evaluation_supervisor import get_evaluation_supervisor; get_evaluation_supervisor().reset_supervision_state()"
 
 # 清理缓存
-python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().clear_cache()"
+python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; get_evaluation_cache().clear_cache()"
 ```
 
 ## API参考
@@ -481,7 +462,7 @@ A:
 1. 定期清理缓存
 2. 优化缓存配置
 3. 限制并发评估数量
-4. 监控系统性能
+4. 监控系统性能指标
 
 ## 更新日志
 

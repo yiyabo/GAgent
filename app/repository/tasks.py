@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Optional
 
 from ..database import get_db
 from ..interfaces import TaskRepository
+from ..utils import plan_prefix, split_prefix
+from .optimized_queries import OptimizedTaskQueries
 
 # -------------------------------
 # Concrete repository implementation
@@ -20,56 +22,85 @@ class _SqliteTaskRepositoryBase(TaskRepository):
         priority: Optional[int] = None,
         parent_id: Optional[int] = None,
         task_type: str = "atomic",
+        session_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        root_id: Optional[int] = None,
+        context_refs: Optional[str] = None,
+        artifacts: Optional[str] = None,
     ) -> int:
         """Create a task. Optionally set parent_id to place it in the hierarchy.
 
         Backward compatible signature extension: existing callers need not pass parent_id.
         """
         # Compute path/depth first
-        if parent_id is None:
-            path = None  # Will be set after getting task_id
-            depth = 0
-        else:
-            with get_db() as conn:
+        parent_path = None
+        depth = 0
+        with get_db() as conn:
+            if parent_id is not None:
                 prow = conn.execute(
-                    "SELECT path, depth FROM tasks WHERE id=?",
+                    "SELECT path, depth, workflow_id, root_id, session_id FROM tasks WHERE id=?",
                     (parent_id,),
                 ).fetchone()
                 if not prow:
                     raise ValueError(f"Parent task {parent_id} not found")
-                try:
-                    p_path = prow[0]
-                    p_depth = prow[1]
-                except Exception:
-                    p_path = prow["path"]
-                    p_depth = prow["depth"]
-                p_path = p_path or f"/{parent_id}"
-                path = None  # Will be computed after getting task_id
-                depth = (p_depth or 0) + 1
 
-        with get_db() as conn:
+                parent_path = prow["path"] or f"/{parent_id}"
+                parent_depth = prow["depth"] or 0
+                depth = parent_depth + 1
+
+                if workflow_id is None:
+                    workflow_id = prow["workflow_id"]
+                if root_id is None:
+                    root_id = prow["root_id"] or _extract_root_id_from_path(parent_path)
+                if session_id is None:
+                    session_id = prow["session_id"]
+
             cursor = conn.execute(
-                "INSERT INTO tasks (name, status, priority, parent_id, depth, task_type) VALUES (?, ?, ?, ?, ?, ?)",
-                (name, status, priority or 100, parent_id, depth, task_type),
+                "INSERT INTO tasks (name, status, priority, parent_id, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    name,
+                    status,
+                    priority or 100,
+                    parent_id,
+                    depth,
+                    task_type,
+                    session_id,
+                    workflow_id,
+                    root_id,
+                    context_refs,
+                    artifacts,
+                ),
             )
             task_id = cursor.lastrowid
 
-            # Compute and set path
             if parent_id is None:
-                new_path = f"/{task_id}"
+                # Root task – initialize workflow and hierarchy defaults
+                root_id = root_id or task_id
+                workflow_id = workflow_id or f"wf_{task_id}"
+                parent_path = f"/{task_id}"
             else:
-                prow = conn.execute(
-                    "SELECT path FROM tasks WHERE id=?",
-                    (parent_id,),
-                ).fetchone()
-                p_path = prow[0] if prow else f"/{parent_id}"
-                new_path = f"{p_path}/{task_id}"
+                parent_path = parent_path or f"/{parent_id}"
+                parent_path = f"{parent_path}/{task_id}"
 
-            # Update the path
             conn.execute(
-                "UPDATE tasks SET path=? WHERE id=?",
-                (new_path, task_id),
+                "UPDATE tasks SET path=?, root_id=?, workflow_id=?, context_refs=COALESCE(context_refs, ?), artifacts=COALESCE(artifacts, ?) WHERE id=?",
+                (parent_path, root_id, workflow_id, context_refs, artifacts, task_id),
             )
+
+            if parent_id is None:
+                # Ensure workflow registry exists for new root
+                conn.execute(
+                    """
+                    INSERT INTO workflows (workflow_id, session_id, root_task_id, title)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(workflow_id) DO UPDATE SET
+                        session_id=excluded.session_id,
+                        root_task_id=excluded.root_task_id,
+                        title=excluded.title
+                    """,
+                    (workflow_id, session_id, task_id, name),
+                )
+
             conn.commit()
             return task_id
 
@@ -80,49 +111,6 @@ class _SqliteTaskRepositoryBase(TaskRepository):
                 (task_id, prompt),
             )
             conn.commit()
-
-    def get_task_input(self, task_id: int) -> Optional[str]:
-        """Get task input prompt."""
-        with get_db() as conn:
-            row = conn.execute(
-                "SELECT prompt FROM task_inputs WHERE task_id=?",
-                (task_id,),
-            ).fetchone()
-            return row[0] if row else None
-
-    def delete_task(self, task_id: int) -> bool:
-        """Delete a task and all its descendants and associated data."""
-        with get_db() as conn:
-            # Get the task and all its descendants
-            tasks_to_delete = self.get_subtree(task_id)
-            if not tasks_to_delete:
-                return False
-
-            task_ids_to_delete = [task['id'] for task in tasks_to_delete]
-            placeholders = ",".join("?" * len(task_ids_to_delete))
-
-            # Perform deletions in a single transaction
-            cursor = conn.cursor()
-            
-            # Tables to delete from
-            tables_to_clean = [
-                "task_inputs", "task_outputs", "task_contexts", 
-                "task_embeddings", "evaluation_history", "evaluation_configs",
-                "plan_tasks"
-            ]
-
-            for table in tables_to_clean:
-                cursor.execute(f"DELETE FROM {table} WHERE task_id IN ({placeholders})", task_ids_to_delete)
-
-            # Delete from task_links (as from_id or to_id)
-            cursor.execute(f"DELETE FROM task_links WHERE from_id IN ({placeholders})", task_ids_to_delete)
-            cursor.execute(f"DELETE FROM task_links WHERE to_id IN ({placeholders})", task_ids_to_delete)
-
-            # Finally, delete the tasks themselves
-            cursor.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", task_ids_to_delete)
-            
-            conn.commit()
-            return cursor.rowcount > 0
 
     def upsert_task_output(self, task_id: int, content: str) -> None:
         with get_db() as conn:
@@ -137,51 +125,106 @@ class _SqliteTaskRepositoryBase(TaskRepository):
             conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
             conn.commit()
 
-    def update_task(
+    def update_task_context(
         self,
         task_id: int,
-        name: Optional[str] = None,
-        status: Optional[str] = None,
-        priority: Optional[int] = None,
-        task_type: Optional[str] = None,
-    ) -> bool:
-        """Update task fields. Returns True if task was found and updated."""
+        *,
+        context_refs: Optional[str] = None,
+        artifacts: Optional[str] = None,
+    ) -> None:
+        sets: List[str] = []
+        params: List[Any] = []
+        if context_refs is not None:
+            sets.append("context_refs=?")
+            params.append(context_refs)
+        if artifacts is not None:
+            sets.append("artifacts=?")
+            params.append(artifacts)
+        if not sets:
+            return
+        params.append(task_id)
+        sql = f"UPDATE tasks SET {', '.join(sets)} WHERE id=?"
         with get_db() as conn:
-            # Build dynamic update query
-            fields = []
-            values = []
-
-            if name is not None:
-                fields.append("name=?")
-                values.append(name)
-            if status is not None:
-                fields.append("status=?")
-                values.append(status)
-            if priority is not None:
-                fields.append("priority=?")
-                values.append(priority)
-            if task_type is not None:
-                fields.append("task_type=?")
-                values.append(task_type)
-
-            if not fields:
-                return False
-
-            values.append(task_id)
-            query = f"UPDATE tasks SET {', '.join(fields)} WHERE id=?"
-
-            cursor = conn.execute(query, values)
+            conn.execute(sql, params)
             conn.commit()
-            return cursor.rowcount > 0
 
-    def get_task(self, task_id: int) -> Optional[Dict[str, Any]]:
-        """Get task by ID."""
+    def append_execution_log(
+        self,
+        task_id: int,
+        *,
+        workflow_id: Optional[str] = None,
+        step_type: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        metadata_json = None
+        if metadata is not None:
+            try:
+                metadata_json = json.dumps(metadata, ensure_ascii=False)
+            except Exception:
+                metadata_json = str(metadata)
+        with get_db() as conn:
+            cursor = conn.execute(
+                "INSERT INTO task_execution_logs (task_id, workflow_id, step_type, content, metadata) VALUES (?, ?, ?, ?, ?)",
+                (task_id, workflow_id, step_type, content, metadata_json),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def list_execution_logs(self, task_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, task_id, workflow_id, step_type, content, metadata, created_at FROM task_execution_logs WHERE task_id=? ORDER BY datetime(created_at) DESC LIMIT ?",
+                (task_id, limit),
+            ).fetchall()
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            meta = None
+            raw_meta = row["metadata"] if hasattr(row, "__getitem__") else row[5]
+            if isinstance(raw_meta, str) and raw_meta.strip():
+                try:
+                    meta = json.loads(raw_meta)
+                except Exception:
+                    meta = {"raw": raw_meta}
+            results.append(
+                {
+                    "id": row["id"] if hasattr(row, "__getitem__") else row[0],
+                    "task_id": row["task_id"] if hasattr(row, "__getitem__") else row[1],
+                    "workflow_id": row["workflow_id"] if hasattr(row, "__getitem__") else row[2],
+                    "step_type": row["step_type"] if hasattr(row, "__getitem__") else row[3],
+                    "content": row["content"] if hasattr(row, "__getitem__") else row[4],
+                    "metadata": meta,
+                    "created_at": row["created_at"] if hasattr(row, "__getitem__") else row[6],
+                }
+            )
+        return results
+
+    def get_workflow_metadata(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        if not workflow_id:
+            return None
         with get_db() as conn:
             row = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id=?",
-                (task_id,),
+                "SELECT workflow_id, session_id, root_task_id, title FROM workflows WHERE workflow_id=?",
+                (workflow_id,),
             ).fetchone()
-            return _row_to_full(row) if row else None
+        if not row:
+            return None
+
+        def _safe(index: int, key: str):
+            try:
+                return row[key]
+            except Exception:
+                try:
+                    return row[index]
+                except Exception:
+                    return None
+
+        return {
+            "workflow_id": _safe(0, "workflow_id"),
+            "session_id": _safe(1, "session_id"),
+            "root_task_id": _safe(2, "root_task_id"),
+            "title": _safe(3, "title"),
+        }
 
 
 # -------------------------------
@@ -198,28 +241,73 @@ def _row_to_dict(row) -> Dict[str, Any]:
     }
 
 
+def _extract_root_id_from_path(path_value: Optional[str]) -> Optional[int]:
+    if not path_value:
+        return None
+    try:
+        first = str(path_value).strip("/").split("/")[0]
+        return int(first) if first.isdigit() else None
+    except Exception:
+        return None
+
+
 def _row_to_full(row) -> Dict[str, Any]:
     """Convert a sqlite row to a full task dict including hierarchy fields."""
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
+
+    def _safe_get(name: str, index: int):
+        if name in keys:
+            return row[name]
+        try:
+            return row[index]
+        except Exception:
+            return None
+
     return {
-        "id": row[0],
-        "name": row[1],
-        "status": row[2],
-        "priority": row[3],
-        "parent_id": row[4],
-        "path": row[5],
-        "depth": row[6],
-        "task_type": row[7],
+        "id": _safe_get("id", 0),
+        "name": _safe_get("name", 1),
+        "status": _safe_get("status", 2),
+        "priority": _safe_get("priority", 3),
+        "parent_id": _safe_get("parent_id", 4),
+        "path": _safe_get("path", 5),
+        "depth": _safe_get("depth", 6),
+        "task_type": _safe_get("task_type", 7),
+        "session_id": _safe_get("session_id", 8),
+        "workflow_id": _safe_get("workflow_id", 9),
+        "root_id": _safe_get("root_id", 10),
+        "context_refs": _safe_get("context_refs", 11),
+        "artifacts": _safe_get("artifacts", 12),
     }
 
 
 class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     # queries continued
-    def list_all_tasks(self) -> List[Dict[str, Any]]:
+    def list_all_tasks(
+        self,
+        session_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        where_clauses: List[str] = []
+        params: List[Any] = []
+
+        if session_id:
+            where_clauses.append("session_id = ?")
+            params.append(session_id)
+        if workflow_id:
+            where_clauses.append("workflow_id = ?")
+            params.append(workflow_id)
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        sql = (
+            "SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts "
+            "FROM tasks"
+            f"{where_sql}"
+        )
+
         with get_db() as conn:
-            rows = conn.execute(
-                "SELECT id, name, status, priority FROM tasks"
-            ).fetchall()
-        return [_row_to_dict(r) for r in rows]
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_full(r) for r in rows]
 
     def list_tasks_by_status(self, status: str) -> List[Dict[str, Any]]:
         with get_db() as conn:
@@ -237,15 +325,22 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         """
         with get_db() as conn:
             rows = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE status='pending' ORDER BY priority ASC, id ASC"
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts FROM tasks WHERE status='pending' ORDER BY priority ASC, id ASC"
             ).fetchall()
         return [_row_to_full(r) for r in rows]
 
     def list_tasks_by_prefix(
         self, prefix: str, pending_only: bool = False, ordered: bool = True
     ) -> List[Dict[str, Any]]:
-        # Prefix system removed - return empty list for backward compatibility
-        return []
+        where = "name LIKE ?"
+        params = [prefix + "%"]
+        if pending_only:
+            where += " AND status='pending'"
+        order = "ORDER BY priority ASC, id ASC" if ordered else ""
+        sql = f"SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts FROM tasks WHERE {where} {order}"
+        with get_db() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_full(r) for r in rows]
 
     def get_task_input_prompt(self, task_id: int) -> Optional[str]:
         with get_db() as conn:
@@ -282,20 +377,130 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 nm = r["name"]
             except Exception:
                 nm = r[0]
-            # Prefix system removed - just use the name as is
-            t = nm
+            t, _ = split_prefix(nm)
             if t:
                 titles.add(t)
         return sorted(titles)
 
     def list_plan_tasks(self, title: str) -> List[Dict[str, Any]]:
-        # Prefix system removed - use plan system instead
-        return []
+        prefix = plan_prefix(title)
+        rows = self.list_tasks_by_prefix(prefix, pending_only=False, ordered=True)
+        if rows:
+            return rows
+
+        # Fallback: match root tasks by exact name (e.g., "ROOT: ...") and return their subtrees
+        with get_db() as conn:
+            root_rows = conn.execute(
+                "SELECT id FROM tasks WHERE task_type = 'root' AND name = ?",
+                (title,),
+            ).fetchall()
+
+        processed_roots: set[int] = set()
+        collected: List[Dict[str, Any]] = []
+        added: set[int] = set()
+        for r in root_rows:
+            try:
+                root_id = r["id"]
+            except Exception:
+                root_id = r[0]
+            if root_id in processed_roots:
+                continue
+            processed_roots.add(root_id)
+            with get_db() as conn:
+                sub_rows = conn.execute(
+                    """
+                    SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts
+                    FROM tasks
+                    WHERE root_id = ?
+                    ORDER BY depth ASC, priority ASC, id ASC
+                    """,
+                    (root_id,),
+                ).fetchall()
+            for sr in sub_rows:
+                node = _row_to_full(sr)
+                node_id = node.get("id")
+                if node_id in added:
+                    continue
+                added.add(node_id)
+                collected.append(node)
+        return collected
 
     def list_plan_outputs(self, title: str) -> List[Dict[str, Any]]:
         """Return sections with name (short), full name, and content for a plan."""
-        # Prefix system removed - use plan system instead
-        return []
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        prefix = plan_prefix(title)
+        logger.info(f"组装查询: title='{title}', prefix='{prefix}'")
+        
+        with get_db() as conn:
+            # 首先尝试精确匹配
+            rows = conn.execute(
+                """
+                SELECT t.name, o.content, t.session_id, t.workflow_id
+                FROM tasks t
+                JOIN task_outputs o ON o.task_id = t.id
+                WHERE t.name LIKE ?
+                ORDER BY t.priority ASC, t.id ASC
+                """,
+                (prefix + "%",),
+            ).fetchall()
+            
+            # 如果精确匹配失败，尝试多种模糊匹配策略
+            if not rows:
+                # 策略1：标题关键词匹配
+                fuzzy_pattern = f"%{title}%"
+                rows = conn.execute(
+                    """
+                    SELECT t.name, o.content, t.session_id, t.workflow_id
+                    FROM tasks t
+                    JOIN task_outputs o ON o.task_id = t.id
+                    WHERE t.name LIKE ?
+                    ORDER BY t.priority ASC, t.id ASC
+                    """,
+                    (fuzzy_pattern,),
+                ).fetchall()
+                
+                # 策略2：如果仍然没有结果，尝试分词匹配
+                if not rows and title:
+                    # 提取标题中的关键词进行匹配
+                    keywords = [word for word in title.split() if len(word) > 1]
+                    if keywords:
+                        # 尝试用第一个关键词匹配
+                        main_keyword = keywords[0]
+                        keyword_pattern = f"%{main_keyword}%"
+                        rows = conn.execute(
+                            """
+                            SELECT t.name, o.content, t.session_id, t.workflow_id
+                            FROM tasks t
+                            JOIN task_outputs o ON o.task_id = t.id
+                            WHERE t.name LIKE ?
+                            ORDER BY t.priority ASC, t.id ASC
+                            """,
+                            (keyword_pattern,),
+                        ).fetchall()
+        
+        logger.info(f"组装结果: 找到 {len(rows)} 个任务")
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                name = r["name"]
+                content = r["content"]
+                session_id = r["session_id"]
+                workflow_id = r["workflow_id"]
+            except Exception:
+                name, content, session_id, workflow_id = r[0], r[1], r[2], r[3]
+            _, short = split_prefix(name)
+            out.append(
+                {
+                    "name": name,
+                    "short_name": short,
+                    "content": content,
+                    "session_id": session_id,
+                    "workflow_id": workflow_id,
+                }
+            )
+        return out
 
     # -------------------------------
     # Links (graph) - Phase 1
@@ -356,17 +561,21 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         out: List[Dict[str, Any]] = []
         for r in rows:
             try:
-                out.append({
-                    "from_id": r["from_id"],
-                    "to_id": r["to_id"],
-                    "kind": r["kind"],
-                })
+                out.append(
+                    {
+                        "from_id": r["from_id"],
+                        "to_id": r["to_id"],
+                        "kind": r["kind"],
+                    }
+                )
             except Exception:
-                out.append({
-                    "from_id": r[0],
-                    "to_id": r[1],
-                    "kind": r[2],
-                })
+                out.append(
+                    {
+                        "from_id": r[0],
+                        "to_id": r[1],
+                        "kind": r[2],
+                    }
+                )
         return out
 
     def list_dependencies(self, task_id: int) -> List[Dict[str, Any]]:
@@ -444,9 +653,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             )
             conn.commit()
 
-    def get_task_context(
-        self, task_id: int, label: Optional[str] = "latest"
-    ) -> Optional[Dict[str, Any]]:
+    def get_task_context(self, task_id: int, label: Optional[str] = "latest") -> Optional[Dict[str, Any]]:
         with get_db() as conn:
             self._ensure_task_contexts_table(conn)
             row = None
@@ -455,43 +662,49 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "SELECT task_id, label, combined, sections, meta, created_at FROM task_contexts WHERE task_id=? AND label=?",
                     (task_id, label),
                 ).fetchone()
-                # If a specific label was requested and not found, return immediately.
-                if not row:
-                    return None
-
-            # Fallback to the latest if no label was specified and nothing was found yet.
             if not row:
                 row = conn.execute(
                     "SELECT task_id, label, combined, sections, meta, created_at FROM task_contexts WHERE task_id=? ORDER BY datetime(created_at) DESC LIMIT 1",
                     (task_id,),
                 ).fetchone()
-
         if not row:
             return None
-
         try:
-            sections_obj = json.loads(row["sections"]) if isinstance(row["sections"], str) else row["sections"]
+            tid = row[0]
+            lbl = row[1]
+            combined = row[2]
+            sections = row[3]
+            meta = row[4]
+            created_at = row[5]
+        except Exception:
+            tid = row["task_id"]
+            lbl = row["label"]
+            combined = row["combined"]
+            sections = row["sections"]
+            meta = row["meta"]
+            created_at = row["created_at"]
+        try:
+            sections_obj = json.loads(sections) if isinstance(sections, str) else sections
         except Exception:
             sections_obj = []
         try:
-            meta_obj = json.loads(row["meta"]) if isinstance(row["meta"], str) else row["meta"]
+            meta_obj = json.loads(meta) if isinstance(meta, str) else meta
         except Exception:
             meta_obj = {}
-
         return {
-            "task_id": row["task_id"],
-            "label": row["label"],
-            "combined": row["combined"],
+            "task_id": tid,
+            "label": lbl,
+            "combined": combined,
             "sections": sections_obj,
             "meta": meta_obj,
-            "created_at": row["created_at"],
+            "created_at": created_at,
         }
 
     def list_task_contexts(self, task_id: int) -> List[Dict[str, Any]]:
         with get_db() as conn:
             self._ensure_task_contexts_table(conn)
             rows = conn.execute(
-                "SELECT label, created_at, meta, combined, sections FROM task_contexts WHERE task_id=? ORDER BY datetime(created_at) DESC",
+                "SELECT label, created_at, meta FROM task_contexts WHERE task_id=? ORDER BY datetime(created_at) DESC",
                 (task_id,),
             ).fetchall()
         out: List[Dict[str, Any]] = []
@@ -500,29 +713,15 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 lbl = r[0]
                 created_at = r[1]
                 meta = r[2]
-                combined = r[3]
-                sections = r[4]
             except Exception:
                 lbl = r["label"]
                 created_at = r["created_at"]
                 meta = r["meta"]
-                combined = r["combined"]
-                sections = r["sections"]
             try:
                 meta_obj = json.loads(meta) if isinstance(meta, str) else meta
             except Exception:
                 meta_obj = {}
-            try:
-                sections_obj = json.loads(sections) if isinstance(sections, str) else sections
-            except Exception:
-                sections_obj = []
-            out.append({
-                "label": lbl, 
-                "created_at": created_at, 
-                "meta": meta_obj,
-                "combined": combined,
-                "sections": sections_obj
-            })
+            out.append({"label": lbl, "created_at": created_at, "meta": meta_obj})
         return out
 
     # -------------------------------
@@ -532,7 +731,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     def get_task_info(self, task_id: int) -> Optional[Dict[str, Any]]:
         with get_db() as conn:
             row = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id=?",
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts FROM tasks WHERE id=?",
                 (task_id,),
             ).fetchone()
         if not row:
@@ -541,9 +740,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
 
     def get_parent(self, task_id: int) -> Optional[Dict[str, Any]]:
         with get_db() as conn:
-            row = conn.execute(
-                "SELECT parent_id FROM tasks WHERE id=?", (task_id,)
-            ).fetchone()
+            row = conn.execute("SELECT parent_id FROM tasks WHERE id=?", (task_id,)).fetchone()
             if not row:
                 return None
             try:
@@ -553,7 +750,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             if pid is None:
                 return None
             prow = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id=?",
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts FROM tasks WHERE id=?",
                 (pid,),
             ).fetchone()
         if not prow:
@@ -564,57 +761,18 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         """Return direct children of a task, ordered by priority and id."""
         with get_db() as conn:
             rows = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE parent_id=? ORDER BY priority ASC, id ASC",
+                "SELECT id, name, status, priority, parent_id, path, depth, task_type, session_id, workflow_id, root_id, context_refs, artifacts FROM tasks WHERE parent_id=? ORDER BY priority ASC, id ASC",
                 (parent_id,),
             ).fetchall()
         return [_row_to_full(r) for r in rows]
 
     def get_ancestors(self, task_id: int) -> List[Dict[str, Any]]:
-        with get_db() as conn:
-            row = conn.execute(
-                "SELECT path FROM tasks WHERE id=?", (task_id,)
-            ).fetchone()
-            if not row:
-                return []
-            try:
-                path = row[0]
-            except Exception:
-                path = row["path"]
-            if not path:
-                return []
-            # Parse ids from path like '/12/45/79'
-            parts = [p for p in (path.split("/") if path else []) if p]
-            if not parts:
-                return []
-            ancestor_ids = [int(p) for p in parts[:-1]]  # exclude self
-            if not ancestor_ids:
-                return []
-            placeholders = ",".join(["?"] * len(ancestor_ids))
-            rows = conn.execute(
-                f"SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE id IN ({placeholders}) ORDER BY depth ASC",
-                ancestor_ids,
-            ).fetchall()
-        return [_row_to_full(r) for r in rows]
+        """Get ancestors using optimized query to avoid N+1 problem."""
+        return OptimizedTaskQueries.get_ancestors_optimized(task_id)
 
     def get_descendants(self, root_id: int) -> List[Dict[str, Any]]:
-        with get_db() as conn:
-            row = conn.execute(
-                "SELECT path FROM tasks WHERE id=?", (root_id,)
-            ).fetchone()
-            if not row:
-                return []
-            try:
-                root_path = row[0]
-            except Exception:
-                root_path = row["path"]
-            if not root_path:
-                root_path = f"/{root_id}"
-            like_prefix = root_path + "/%"
-            rows = conn.execute(
-                "SELECT id, name, status, priority, parent_id, path, depth, task_type FROM tasks WHERE path LIKE ? ORDER BY path ASC",
-                (like_prefix,),
-            ).fetchall()
-        return [_row_to_full(r) for r in rows]
+        """Get descendants using optimized query for better performance."""
+        return OptimizedTaskQueries.get_descendants_with_details(root_id)
 
     def get_subtree(self, root_id: int) -> List[Dict[str, Any]]:
         """Return root task followed by all descendants ordered by path."""
@@ -633,19 +791,27 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             cur = conn.cursor()
             # Fetch current node info
             row = cur.execute(
-                "SELECT id, parent_id, path, depth FROM tasks WHERE id=?",
+                "SELECT id, name, parent_id, path, depth, session_id, workflow_id, root_id FROM tasks WHERE id=?",
                 (task_id,),
             ).fetchone()
             if not row:
                 raise ValueError(f"Task {task_id} not found")
             try:
-                old_parent_id = row[1]
-                old_path = row[2]
-                old_depth = row[3] or 0
+                old_parent_id = row[2]
+                old_path = row[3]
+                old_depth = row[4] or 0
+                task_name = row[1]
+                current_session = row[5]
+                current_workflow = row[6]
+                current_root_id = row[7]
             except Exception:
                 old_parent_id = row["parent_id"]
                 old_path = row["path"]
                 old_depth = row["depth"] or 0
+                task_name = row["name"]
+                current_session = row["session_id"]
+                current_workflow = row["workflow_id"]
+                current_root_id = row["root_id"]
 
             if new_parent_id == old_parent_id:
                 return
@@ -656,9 +822,12 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 new_parent_depth = -1
                 new_root_path = f"/{task_id}"
                 new_depth = 0
+                target_root_id = task_id
+                target_workflow_id = current_workflow or f"wf_{task_id}"
+                target_session_id = current_session
             else:
                 prow = cur.execute(
-                    "SELECT id, path, depth FROM tasks WHERE id=?",
+                    "SELECT id, path, depth, root_id, workflow_id, session_id FROM tasks WHERE id=?",
                     (new_parent_id,),
                 ).fetchone()
                 if not prow:
@@ -666,27 +835,61 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 try:
                     p_path = prow[1]
                     p_depth = prow[2]
+                    p_root_id = prow[3]
+                    p_workflow_id = prow[4]
+                    p_session_id = prow[5]
                 except Exception:
                     p_path = prow["path"]
                     p_depth = prow["depth"]
+                    p_root_id = prow["root_id"]
+                    p_workflow_id = prow["workflow_id"]
+                    p_session_id = prow["session_id"]
                 p_path = p_path or f"/{new_parent_id}"
 
                 # Prevent cycles: cannot move under own subtree
-                if old_path and (
-                    p_path == old_path or p_path.startswith(old_path + "/")
-                ):
+                if old_path and (p_path == old_path or p_path.startswith(old_path + "/")):
                     raise ValueError("Cannot move a task under its own subtree")
 
                 new_parent_path = p_path
                 new_parent_depth = p_depth or 0
                 new_root_path = f"{new_parent_path}/{task_id}"
                 new_depth = new_parent_depth + 1
+                target_root_id = p_root_id or _extract_root_id_from_path(p_path) or new_parent_id
+                target_workflow_id = p_workflow_id or (current_workflow if current_root_id == target_root_id else None)
+                if target_workflow_id is None:
+                    target_workflow_id = f"wf_{target_root_id}"
+                target_session_id = p_session_id or current_session
 
-            # Update root node
+            # Root demoted: cleanup workflow registry reference
+            if old_parent_id is None and new_parent_id is not None and current_workflow:
+                conn.execute("DELETE FROM workflows WHERE workflow_id=?", (current_workflow,))
+
+            # Update root node with new hierarchy metadata
             conn.execute(
-                "UPDATE tasks SET parent_id=?, path=?, depth=? WHERE id=?",
-                (new_parent_id, new_root_path, new_depth, task_id),
+                "UPDATE tasks SET parent_id=?, path=?, depth=?, root_id=?, workflow_id=?, session_id=? WHERE id=?",
+                (
+                    new_parent_id,
+                    new_root_path,
+                    new_depth,
+                    target_root_id,
+                    target_workflow_id,
+                    target_session_id,
+                    task_id,
+                ),
             )
+
+            if new_parent_id is None:
+                conn.execute(
+                    """
+                    INSERT INTO workflows (workflow_id, session_id, root_task_id, title)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(workflow_id) DO UPDATE SET
+                        session_id=excluded.session_id,
+                        root_task_id=excluded.root_task_id,
+                        title=excluded.title
+                    """,
+                    (target_workflow_id, target_session_id, task_id, task_name),
+                )
 
             # Update all descendants' paths and depths
             if old_path:
@@ -706,8 +909,15 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                         desc_new_depth = desc_new_path.count("/") - 1
 
                         conn.execute(
-                            "UPDATE tasks SET path=?, depth=? WHERE id=?",
-                            (desc_new_path, desc_new_depth, desc_id),
+                            "UPDATE tasks SET path=?, depth=?, root_id=?, workflow_id=?, session_id=? WHERE id=?",
+                            (
+                                desc_new_path,
+                                desc_new_depth,
+                                target_root_id,
+                                target_workflow_id,
+                                target_session_id,
+                                desc_id,
+                            ),
                         )
 
             conn.commit()
@@ -725,9 +935,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     # GLM Embeddings operations
     # -------------------------------
 
-    def store_task_embedding(
-        self, task_id: int, embedding_vector: str, model: str = "embedding-2"
-    ) -> None:
+    def store_task_embedding(self, task_id: int, embedding_vector: str, model: str = "embedding-2") -> None:
         """Store embedding vector for a task."""
         with get_db() as conn:
             conn.execute(
@@ -762,9 +970,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 }
             return None
 
-    def get_tasks_with_embeddings(
-        self, limit: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+    def get_tasks_with_embeddings(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get all tasks that have embeddings with their content."""
         with get_db() as conn:
             query = """
@@ -812,9 +1018,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 result.append(task_dict)
             return result
 
-    def get_tasks_without_embeddings(
-        self, status: Optional[str] = "done"
-    ) -> List[Dict[str, Any]]:
+    def get_tasks_without_embeddings(self, status: Optional[str] = "done") -> List[Dict[str, Any]]:
         """Get tasks that don't have embeddings yet."""
         with get_db() as conn:
             where_clause = ""
@@ -855,22 +1059,20 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
         """Get statistics about embeddings."""
         with get_db() as conn:
             total_tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-            total_embeddings = conn.execute(
-                "SELECT COUNT(*) FROM task_embeddings"
-            ).fetchone()[0]
+            total_embeddings = conn.execute("SELECT COUNT(*) FROM task_embeddings").fetchone()[0]
 
-            model_stats = conn.execute("""
+            model_stats = conn.execute(
+                """
                 SELECT embedding_model, COUNT(*) as count
                 FROM task_embeddings
                 GROUP BY embedding_model
-            """).fetchall()
+            """
+            ).fetchall()
 
             return {
                 "total_tasks": total_tasks,
                 "total_embeddings": total_embeddings,
-                "coverage_percent": (total_embeddings / total_tasks * 100)
-                if total_tasks > 0
-                else 0,
+                "coverage_percent": (total_embeddings / total_tasks * 100) if total_tasks > 0 else 0,
                 "model_distribution": {row[0]: row[1] for row in model_stats},
             }
 
@@ -917,7 +1119,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             rows = conn.execute(
                 """
                 SELECT id, task_id, iteration, content, overall_score, dimension_scores, 
-                       suggestions, needs_revision, timestamp, metadata
+                    suggestions, needs_revision, timestamp, metadata
                 FROM evaluation_history
                 WHERE task_id = ?
                 ORDER BY iteration ASC
@@ -949,17 +1151,11 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                         "iteration": row["iteration"],
                         "content": row["content"],
                         "overall_score": row["overall_score"],
-                        "dimension_scores": json.loads(row["dimension_scores"])
-                        if row["dimension_scores"]
-                        else {},
-                        "suggestions": json.loads(row["suggestions"])
-                        if row["suggestions"]
-                        else [],
+                        "dimension_scores": json.loads(row["dimension_scores"]) if row["dimension_scores"] else {},
+                        "suggestions": json.loads(row["suggestions"]) if row["suggestions"] else [],
                         "needs_revision": bool(row["needs_revision"]),
                         "timestamp": row["timestamp"],
-                        "metadata": json.loads(row["metadata"])
-                        if row["metadata"]
-                        else None,
+                        "metadata": json.loads(row["metadata"]) if row["metadata"] else None,
                     }
                 result.append(row_dict)
             return result
@@ -970,7 +1166,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             row = conn.execute(
                 """
                 SELECT id, task_id, iteration, content, overall_score, dimension_scores, 
-                       suggestions, needs_revision, timestamp, metadata
+                    suggestions, needs_revision, timestamp, metadata
                 FROM evaluation_history
                 WHERE task_id = ?
                 ORDER BY iteration DESC
@@ -1003,17 +1199,11 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "iteration": row["iteration"],
                     "content": row["content"],
                     "overall_score": row["overall_score"],
-                    "dimension_scores": json.loads(row["dimension_scores"])
-                    if row["dimension_scores"]
-                    else {},
-                    "suggestions": json.loads(row["suggestions"])
-                    if row["suggestions"]
-                    else [],
+                    "dimension_scores": json.loads(row["dimension_scores"]) if row["dimension_scores"] else {},
+                    "suggestions": json.loads(row["suggestions"]) if row["suggestions"] else [],
                     "needs_revision": bool(row["needs_revision"]),
                     "timestamp": row["timestamp"],
-                    "metadata": json.loads(row["metadata"])
-                    if row["metadata"]
-                    else None,
+                    "metadata": json.loads(row["metadata"]) if row["metadata"] else None,
                 }
 
     def store_evaluation_config(
@@ -1032,16 +1222,14 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                 """
                 INSERT OR REPLACE INTO evaluation_configs
                 (task_id, quality_threshold, max_iterations, evaluation_dimensions, 
-                 domain_specific, strict_mode, custom_weights, updated_at)
+                domain_specific, strict_mode, custom_weights, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
                 (
                     task_id,
                     quality_threshold,
                     max_iterations,
-                    json.dumps(evaluation_dimensions)
-                    if evaluation_dimensions
-                    else None,
+                    json.dumps(evaluation_dimensions) if evaluation_dimensions else None,
                     domain_specific,
                     strict_mode,
                     json.dumps(custom_weights) if custom_weights else None,
@@ -1055,7 +1243,7 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
             row = conn.execute(
                 """
                 SELECT task_id, quality_threshold, max_iterations, evaluation_dimensions,
-                       domain_specific, strict_mode, custom_weights, created_at, updated_at
+                    domain_specific, strict_mode, custom_weights, created_at, updated_at
                 FROM evaluation_configs
                 WHERE task_id = ?
             """,
@@ -1083,14 +1271,12 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     "task_id": row["task_id"],
                     "quality_threshold": row["quality_threshold"],
                     "max_iterations": row["max_iterations"],
-                    "evaluation_dimensions": json.loads(row["evaluation_dimensions"])
-                    if row["evaluation_dimensions"]
-                    else None,
+                    "evaluation_dimensions": (
+                        json.loads(row["evaluation_dimensions"]) if row["evaluation_dimensions"] else None
+                    ),
                     "domain_specific": bool(row["domain_specific"]),
                     "strict_mode": bool(row["strict_mode"]),
-                    "custom_weights": json.loads(row["custom_weights"])
-                    if row["custom_weights"]
-                    else None,
+                    "custom_weights": json.loads(row["custom_weights"]) if row["custom_weights"] else None,
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                 }
@@ -1104,27 +1290,30 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
     def get_evaluation_stats(self) -> Dict[str, Any]:
         """Get overall evaluation statistics."""
         with get_db() as conn:
-            total_evaluations = conn.execute(
-                "SELECT COUNT(*) FROM evaluation_history"
-            ).fetchone()[0]
+            total_evaluations = conn.execute("SELECT COUNT(*) FROM evaluation_history").fetchone()[0]
 
             avg_score = (
-                conn.execute("""
+                conn.execute(
+                    """
                 SELECT AVG(overall_score) FROM evaluation_history
-            """).fetchone()[0]
+            """
+                ).fetchone()[0]
                 or 0.0
             )
 
-            iteration_stats = conn.execute("""
+            iteration_stats = conn.execute(
+                """
                 SELECT AVG(iteration) as avg_iterations, MAX(iteration) as max_iterations
                 FROM (
                     SELECT task_id, MAX(iteration) as iteration
                     FROM evaluation_history
                     GROUP BY task_id
                 )
-            """).fetchone()
+            """
+            ).fetchone()
 
-            quality_distribution = conn.execute("""
+            quality_distribution = conn.execute(
+                """
                 SELECT 
                     CASE 
                         WHEN overall_score >= 0.9 THEN 'excellent'
@@ -1135,384 +1324,16 @@ class SqliteTaskRepository(_SqliteTaskRepositoryBase):
                     COUNT(*) as count
                 FROM evaluation_history
                 GROUP BY quality_tier
-            """).fetchall()
+            """
+            ).fetchall()
 
             return {
                 "total_evaluations": total_evaluations,
                 "average_score": round(avg_score, 3),
                 "average_iterations": round(iteration_stats[0] or 0, 2),
                 "max_iterations_used": iteration_stats[1] or 0,
-                "quality_distribution": {
-                    row[0]: row[1] for row in quality_distribution
-                },
+                "quality_distribution": {row[0]: row[1] for row in quality_distribution},
             }
-
-    # -----------------------------
-    # Plan Management System
-    # -----------------------------
-
-    def _ensure_plans_table(self, conn) -> None:
-        """确保plan相关表存在"""
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS plans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL UNIQUE,
-                description TEXT,
-                status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                config_json TEXT
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS plan_tasks (
-                plan_id INTEGER NOT NULL,
-                task_id INTEGER NOT NULL,
-                task_category TEXT DEFAULT 'general',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (plan_id, task_id),
-                FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE,
-                FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-            )
-        """)
-
-    def create_plan(
-        self,
-        title: str,
-        description: Optional[str] = None,
-        config_json: Optional[Dict[str, Any]] = None,
-    ) -> int:
-        """创建新的研究计划"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-            
-            # 检查标题是否已存在，如果存在则添加序号
-            original_title = title
-            counter = 1
-            while True:
-                try:
-                    cursor = conn.execute(
-                        """
-                        INSERT INTO plans (title, description, config_json)
-                        VALUES (?, ?, ?)
-                    """,
-                        (title, description, json.dumps(config_json) if config_json else None),
-                    )
-                    conn.commit()
-                    return cursor.lastrowid
-                except Exception as e:
-                    if "UNIQUE constraint failed" in str(e):
-                        # 标题重复，添加序号
-                        counter += 1
-                        title = f"{original_title} ({counter})"
-                        continue
-                    else:
-                        # 其他错误，重新抛出
-                        raise e
-
-    def link_task_to_plan(
-        self, plan_id: int, task_id: int, task_category: str = "general"
-    ) -> bool:
-        """将任务与计划关联"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO plan_tasks (plan_id, task_id, task_category)
-                    VALUES (?, ?, ?)
-                """,
-                    (plan_id, task_id, task_category),
-                )
-                conn.commit()
-                return True
-            except sqlite3.IntegrityError:
-                return False
-
-    def get_plan(self, plan_id: int) -> Optional[Dict[str, Any]]:
-        """获取计划详情"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-            row = conn.execute(
-                """
-                SELECT id, title, description, status, created_at, updated_at, config_json
-                FROM plans WHERE id = ?
-            """,
-                (plan_id,),
-            ).fetchone()
-            return dict(row) if row else None
-
-    def get_plan_by_title(self, title: str) -> Optional[Dict[str, Any]]:
-        """根据标题获取计划"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-            row = conn.execute(
-                """
-                SELECT id, title, description, status, created_at, updated_at, config_json
-                FROM plans WHERE title = ?
-            """,
-                (title,),
-            ).fetchone()
-            return dict(row) if row else None
-
-    def list_plans(self) -> List[Dict[str, Any]]:
-        """列出所有计划"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-            rows = conn.execute("""
-                SELECT id, title, description, status, created_at, updated_at, config_json
-                FROM plans ORDER BY created_at DESC
-            """).fetchall()
-            return [dict(row) for row in rows]
-
-    def get_plan_tasks(
-        self, plan_id: int, task_category: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """获取特定计划的所有任务"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-            if task_category:
-                query = """
-                    SELECT t.id, t.name, t.status, t.priority, t.task_type, 
-                           t.parent_id, t.path, t.depth, pt.task_category
-                    FROM plans p
-                    JOIN plan_tasks pt ON p.id = pt.plan_id
-                    JOIN tasks t ON pt.task_id = t.id
-                    WHERE p.id = ? AND pt.task_category = ?
-                    ORDER BY t.id
-                """
-                params = (plan_id, task_category)
-            else:
-                query = """
-                    SELECT t.id, t.name, t.status, t.priority, t.task_type, 
-                           t.parent_id, t.path, t.depth, pt.task_category
-                    FROM plans p
-                    JOIN plan_tasks pt ON p.id = pt.plan_id
-                    JOIN tasks t ON pt.task_id = t.id
-                    WHERE p.id = ?
-                    ORDER BY t.id
-                """
-                params = (plan_id,)
-
-            rows = conn.execute(query, params).fetchall()
-            def _row_to_plan_task(row) -> Dict[str, Any]:
-                return {
-                    "id": row[0],
-                    "name": row[1],
-                    "status": row[2],
-                    "priority": row[3],
-                    "task_type": row[4],
-                    "parent_id": row[5],
-                    "path": row[6],
-                    "depth": row[7],
-                }
-            return [_row_to_plan_task(row) for row in rows]
-
-    def get_plan_tasks_summary(self, plan_id: int) -> List[Dict[str, Any]]:
-        """获取特定计划的所有任务的ID和名称"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-            query = """
-                SELECT t.id, t.name
-                FROM tasks t
-                JOIN plan_tasks pt ON t.id = pt.task_id
-                WHERE pt.plan_id = ?
-                ORDER BY t.id
-            """
-            rows = conn.execute(query, (plan_id,)).fetchall()
-            return [{"id": row[0], "name": row[1]} for row in rows]
-
-    def get_plan_with_tasks(self, plan_id: int) -> Optional[Dict[str, Any]]:
-        """获取完整计划包含所有任务"""
-        plan = self.get_plan(plan_id)
-        if not plan:
-            return None
-
-        tasks = self.get_plan_tasks(plan_id)
-        return {"plan": plan, "tasks": tasks}
-
-    def get_plan_for_task(self, task_id: int) -> Optional[int]:
-        """Find the plan_id for a given task_id."""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-            row = conn.execute(
-                "SELECT plan_id FROM plan_tasks WHERE task_id = ?",
-                (task_id,),
-            ).fetchone()
-            return row[0] if row else None
-
-    def get_plan_summary(self, plan_id: int) -> Optional[Dict[str, Any]]:
-        """获取计划汇总信息"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-
-            # 基础计划信息
-            plan = self.get_plan(plan_id)
-            if not plan:
-                return None
-
-            # 任务统计
-            cursor = conn.execute(
-                """
-                SELECT 
-                    COUNT(*) as total_tasks,
-                    COUNT(CASE WHEN t.status = 'done' THEN 1 END) as completed_tasks,
-                    COUNT(CASE WHEN t.status = 'pending' THEN 1 END) as pending_tasks,
-                    COUNT(CASE WHEN t.status = 'failed' THEN 1 END) as failed_tasks
-                FROM plan_tasks pt
-                JOIN tasks t ON pt.task_id = t.id
-                WHERE pt.plan_id = ?
-            """,
-                (plan_id,),
-            )
-
-            stats = cursor.fetchone()
-            if stats:
-                total = stats[0] or 0
-                completed = stats[1] or 0
-                progress = completed / total if total > 0 else 0.0
-
-                return {
-                    **plan,
-                    "task_count": total,
-                    "completed_count": completed,
-                    "pending_count": stats[2] or 0,
-                    "failed_count": stats[3] or 0,
-                    "progress": progress,
-                }
-
-            return {**plan, "task_count": 0, "completed_count": 0, "progress": 0.0}
-
-    def delete_plan(self, plan_id: int) -> bool:
-        """删除计划（级联删除关联的tasks和关联数据）"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-
-            # 1. Get all task_ids for this plan
-            task_rows = conn.execute(
-                """
-                SELECT task_id FROM plan_tasks WHERE plan_id = ?
-            """,
-                (plan_id,),
-            ).fetchall()
-            task_ids = [row[0] for row in task_rows]
-
-            # 2. Delete associated plan_tasks records
-            conn.execute("DELETE FROM plan_tasks WHERE plan_id = ?", (plan_id,))
-
-            # 3. Delete evaluation history for related tasks
-            for task_id in task_ids:
-                conn.execute(
-                    "DELETE FROM evaluation_history WHERE task_id = ?", (task_id,)
-                )
-
-            # 4. Delete evaluation configs for related tasks
-            for task_id in task_ids:
-                conn.execute(
-                    "DELETE FROM evaluation_configs WHERE task_id = ?", (task_id,)
-                )
-
-            # 5. Delete tasks related to this plan
-            for task_id in task_ids:
-                # Delete task context snapshots
-                conn.execute("DELETE FROM task_contexts WHERE task_id = ?", (task_id,))
-                # Delete task embeddings
-                conn.execute(
-                    "DELETE FROM task_embeddings WHERE task_id = ?", (task_id,)
-                )
-                # Delete task links
-                conn.execute(
-                    "DELETE FROM task_links WHERE from_id = ? OR to_id = ?",
-                    (task_id, task_id),
-                )
-                # Delete task inputs and outputs
-                conn.execute("DELETE FROM task_inputs WHERE task_id = ?", (task_id,))
-                conn.execute("DELETE FROM task_outputs WHERE task_id = ?", (task_id,))
-                # Finally delete the task itself
-                conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-
-            # 6. Delete the plan itself
-            cursor = conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
-            conn.commit()
-            return cursor.rowcount > 0
-
-    def unlink_task_from_plan(self, plan_id: int, task_id: int) -> bool:
-        """从计划中移除任务"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-            cursor = conn.execute(
-                """
-                DELETE FROM plan_tasks WHERE plan_id = ? AND task_id = ?
-            """,
-                (plan_id, task_id),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-
-    def get_plan_statistics(self) -> Dict[str, Any]:
-        """获取系统级计划统计"""
-        with get_db() as conn:
-            self._ensure_plans_table(conn)
-
-            plans_total = conn.execute("SELECT COUNT(*) FROM plans").fetchone()[0]
-
-            if plans_total == 0:
-                return {
-                    "total_plans": 0,
-                    "active_plans": 0,
-                    "total_tasks_in_plans": 0,
-                    "plans_with_tasks": 0,
-                }
-
-            plans_with_tasks = conn.execute("""
-                SELECT COUNT(DISTINCT plan_id) FROM plan_tasks
-            """).fetchone()[0]
-
-            total_tasks = conn.execute("""
-                SELECT COUNT(*) FROM plan_tasks
-            """).fetchone()[0]
-
-            return {
-                "total_plans": plans_total,
-                "active_plans": conn.execute(
-                    "SELECT COUNT(*) FROM plans WHERE status = ?", ("active",)
-                ).fetchone()[0],
-                "completed_plans": conn.execute(
-                    "SELECT COUNT(*) FROM plans WHERE status = ?", ("completed",)
-                ).fetchone()[0],
-                "total_tasks_in_plans": total_tasks,
-                "plans_with_tasks": plans_with_tasks,
-            }
-
-    # Legacy support for prefix-based plans
-    def migrate_from_prefix_system(self) -> int:
-        """从前缀系统迁移到Plan系统 - 前缀系统已删除，返回0"""
-        # Prefix system removed - no migration needed
-        return 0
-
-    # -----------------------------
-    # Chat History
-    # -----------------------------
-
-    def add_chat_message(self, plan_id: int, sender: str, message: str) -> int:
-        """Adds a new chat message to the history for a plan."""
-        with get_db() as conn:
-            cursor = conn.execute(
-                "INSERT INTO chat_messages (plan_id, sender, message) VALUES (?, ?, ?)",
-                (plan_id, sender, message),
-            )
-            conn.commit()
-            return cursor.lastrowid
-
-    def get_chat_history(self, plan_id: int) -> List[Dict[str, Any]]:
-        """Retrieves the chat history for a given plan."""
-        with get_db() as conn:
-            rows = conn.execute(
-                "SELECT sender, message, timestamp FROM chat_messages WHERE plan_id = ? ORDER BY timestamp ASC",
-                (plan_id,),
-            ).fetchall()
-            return [dict(row) for row in rows]
 
 
 default_repo = SqliteTaskRepository()

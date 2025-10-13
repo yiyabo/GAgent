@@ -25,50 +25,20 @@
 ## 📚 文档导航
 
 ### 🏃‍♂️ 快速开始
-- **[快速开始指南](docs/QUICK_START.md)** - 5分钟快速上手
-- **[示例代码](examples/evaluation_examples.py)** - 完整的使用示例
+- **[快速开始指南](QUICK_START.md)** - 5分钟快速上手
+- **[示例代码](../examples/evaluation_examples.py)** - 完整的使用示例
 
 ### 📖 详细文档
-- **[完整使用指南](docs/EVALUATION_SYSTEM_GUIDE.md)** - 详细的功能说明和最佳实践
-- **[API参考文档](docs/API_REFERENCE.md)** - 完整的编程接口文档
+- **[完整使用指南](EVALUATION_SYSTEM_GUIDE.md)** - 详细的功能说明和最佳实践
+- **[API参考文档](API_REFERENCE.md)** - 完整的编程接口文档
 
 ## 🎯 快速开始
 
-### 1. 基础评估
-```bash
-python -m cli.main --eval-execute 123 --threshold 0.8
-```
-
-### 2. LLM智能评估 (推荐)
-```bash
-python -m cli.main --eval-llm 123 --threshold 0.8 --max-iterations 3
-```
-
-### 3. 多专家评估
-```bash
-python -m cli.main --eval-multi-expert 123 --threshold 0.8
-```
-
-### 4. 对抗性评估
-```bash
-python -m cli.main --eval-adversarial 123 --max-rounds 3
-```
-
-### 5. 系统监控
-```bash
-python -m cli.main --eval-supervision --detailed
-```
+请参考 Quick Start 文档中的评估相关命令与示例：`docs/QUICK_START.md`
 
 ## 🔧 运行示例
 
-```bash
-# 运行所有示例
-python examples/evaluation_examples.py --example all
-
-# 运行特定示例
-python examples/evaluation_examples.py --example llm
-python examples/evaluation_examples.py --example multi-expert
-```
+更多示例代码与脚本，请参见 `docs/QUICK_START.md` 与 `examples/` 目录。
 
 ## 📊 系统架构
 
@@ -79,15 +49,15 @@ python examples/evaluation_examples.py --example multi-expert
 │   ├── LLM智能评估执行
 │   ├── 多专家评估执行
 │   └── 对抗性评估执行
-├── 评估器层 (services/)
+├── 评估器层 (services/evaluation)
 │   ├── LLM评估器 (llm_evaluator.py)
 │   ├── 多专家评估器 (expert_evaluator.py)
 │   ├── 对抗性评估器 (adversarial_evaluator.py)
 │   ├── 元认知评估器 (meta_evaluator.py)
 │   └── 噬菌体专业评估器 (phage_evaluator.py)
 ├── 优化层
-│   ├── 缓存系统 (evaluation_cache.py)
-│   └── 监督系统 (evaluation_supervisor.py)
+│   ├── 缓存系统 (evaluation/evaluation_cache.py)
+│   └── 监督系统 (evaluation/evaluation_supervisor.py)
 └── 接口层 (cli/commands/evaluation_commands.py)
     └── CLI命令支持
 ```
@@ -145,10 +115,10 @@ python examples/evaluation_examples.py --example multi-expert
 ### 评估速度慢？
 ```bash
 # 检查缓存状态
-python -c "from app.services.evaluation_cache import get_evaluation_cache; print(get_evaluation_cache().get_cache_stats())"
+python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; print(get_evaluation_cache().get_cache_stats())"
 
 # 优化缓存
-python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
+python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
 ```
 
 ### 评估质量不稳定？
@@ -163,7 +133,7 @@ python -m cli.main --eval-stats --detailed
 ### 系统错误？
 ```bash
 # 重置监督状态
-python -c "from app.services.evaluation_supervisor import get_evaluation_supervisor; get_evaluation_supervisor().reset_supervision_state()"
+python -c "from app.services.evaluation.evaluation_supervisor import get_evaluation_supervisor; get_evaluation_supervisor().reset_supervision_state()"
 ```
 
 ## 📞 技术支持

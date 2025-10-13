@@ -5,5 +5,5 @@ Exports:
 """
 
 __all__ = [
-    'tasks',
+    "tasks",
 ]

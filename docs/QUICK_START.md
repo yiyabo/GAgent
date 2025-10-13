@@ -1,6 +1,40 @@
-# 评估系统快速开始指南
+# AI-Driven 智能任务编排系统 - 快速开始指南
 
 ## 5分钟快速上手
+
+### 🚀 递归任务分解 (新功能)
+
+#### 1. 基础任务分解
+```bash
+# 启动API服务
+python -m uvicorn app.main:app --host 127.0.0.1 --port 9000 --reload
+
+# 创建任务
+curl -X POST http://localhost:9000/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"name": "开发智能客服系统", "task_type": "root"}'
+
+# 分解任务 (假设任务ID为123)
+curl -X POST http://localhost:9000/tasks/123/decompose \
+  -H "Content-Type: application/json" \
+  -d '{"max_subtasks": 5, "force": false}'
+```
+
+#### 2. 带质量评估的分解
+```bash
+# 高质量智能分解
+curl -X POST http://localhost:9000/tasks/123/decompose/with-evaluation \
+  -H "Content-Type: application/json" \
+  -d '{"quality_threshold": 0.8, "max_iterations": 3}'
+
+# 获取分解建议
+curl http://localhost:9000/tasks/123/decomposition/recommendation
+
+# 评估任务复杂度
+curl http://localhost:9000/tasks/123/complexity
+```
+
+### 🎯 高级评估系统
 
 ### 1. 基础评估 (最简单)
 
@@ -64,6 +98,33 @@ python examples/evaluation_examples.py --example multi-expert
 python examples/evaluation_examples.py --example adversarial
 ```
 
+## 基准评测（Benchmark）
+
+```bash
+# 运行多配置基准评测（CLI）
+conda run -n LLM python -m cli.main --benchmark \
+  --benchmark-topic "抗菌素耐药" \
+  --benchmark-configs "base,use_context=False" "ctx,use_context=True,max_chars=3000,semantic_k=5" \
+  --benchmark-sections 5 \
+  --benchmark-outdir results/抗菌素耐药 \
+  --benchmark-csv results/抗菌素耐药/summary.csv \
+  --benchmark-output results/抗菌素耐药/overview.md
+
+# 通过 REST API 触发
+curl -X POST http://127.0.0.1:9000/benchmark \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "抗菌素耐药",
+    "configs": ["base,use_context=False", "ctx,use_context=True,max_chars=3000,semantic_k=5"],
+    "sections": 5
+  }'
+```
+
+说明：
+- **--benchmark-outdir**: 每个配置生成的 Markdown 报告输出目录
+- **--benchmark-csv**: 汇总各配置的维度均值/平均分/耗时等为统一 CSV
+- **--benchmark-output**: 基准评测总览 Markdown（表格汇总）
+
 ## 常用参数
 
 | 参数 | 说明 | 默认值 | 推荐值 |
@@ -96,10 +157,10 @@ python examples/evaluation_examples.py --example adversarial
 ### 评估速度慢？
 ```bash
 # 检查缓存状态
-python -c "from app.services.evaluation_cache import get_evaluation_cache; print(get_evaluation_cache().get_cache_stats())"
+python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; print(get_evaluation_cache().get_cache_stats())"
 
 # 优化缓存
-python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
+python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; get_evaluation_cache().optimize_cache()"
 ```
 
 ### 评估质量不稳定？
@@ -114,10 +175,10 @@ python -m cli.main --eval-stats --detailed
 ### 系统错误？
 ```bash
 # 重置监督状态
-python -c "from app.services.evaluation_supervisor import get_evaluation_supervisor; get_evaluation_supervisor().reset_supervision_state()"
+python -c "from app.services.evaluation.evaluation_supervisor import get_evaluation_supervisor; get_evaluation_supervisor().reset_supervision_state()"
 
 # 清理缓存
-python -c "from app.services.evaluation_cache import get_evaluation_cache; get_evaluation_cache().clear_cache()"
+python -c "from app.services.evaluation.evaluation_cache import get_evaluation_cache; get_evaluation_cache().clear_cache()"
 ```
 
 ## 下一步

@@ -16,13 +16,48 @@ venv/
 .vscode/
 tasks.db
 embedding_cache.db
-evaluation_cache.db
 CLAUDE.md
-GEMINI.md
 plan.json
 plan.md
-frontend/node_modules
-.kiro/
-.claude/
-firebase-debug.log
-*.json
+tasks.db-shm
+.gitignore
+tasks.db-wal
+llm_cache.db
+test_report_structure.docx
+approve.out
+statistics.db
+
+statistics.db-wal
+
+statistics.db-shm
+run.json
+results/
+logs/
+data/
+web-ui/node_modules/
+# External tools (local only)
+gemini-cli
+
+# Environment files (keep example tracked)
+.env
+.env.*
+!.env.example
+
+# 日志和临时文件
+*.log
+*.tmp
+*.temp
+
+# 前端构建和缓存
+web-ui/dist/
+web-ui/node_modules/.vite/
+web-ui/.vite/
+
+# 其他数据库文件（通配符）
+*.db
+evaluation_cache.db
+web-ui/node_modules/.vite/
+web-ui/node_modules/.cache/
+package-lock.json
+web-ui/package.json
+web-ui/.package-lock.json

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Frontend Test</title>
+    <script>
+        // 测试前端是否正常加载
+        console.log('Testing frontend...');
+        
+        // 测试API连接
+        fetch('http://localhost:9000/health')
+            .then(response => response.json())
+            .then(data => {
+                console.log('Backend health:', data);
+                document.body.innerHTML += '<p>✅ Backend connection successful!</p>';
+            })
+            .catch(error => {
+                console.error('Backend connection failed:', error);
+                document.body.innerHTML += '<p>❌ Backend connection failed!</p>';
+            });
+    </script>
+</head>
+<body>
+    <h1>AI Task Orchestration System - Frontend Test</h1>
+    <p>Testing frontend and backend connectivity...</p>
+</body>
+</html>

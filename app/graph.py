@@ -4,6 +4,7 @@ class TaskNode:
         self.name = name
         self.dependencies = []
 
+
 class TaskGraph:
     def __init__(self):
         self.nodes = {}

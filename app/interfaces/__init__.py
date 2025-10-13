@@ -3,6 +3,7 @@
 - LLMProvider: abstraction for LLM clients (chat, ping, config)
 - TaskRepository: abstraction for task persistence and queries
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -33,7 +34,19 @@ class TaskRepository(ABC):
 
     # --- mutations ---
     @abstractmethod
-    def create_task(self, name: str, status: str = "pending", priority: Optional[int] = None, parent_id: Optional[int] = None, task_type: str = "atomic") -> int:
+    def create_task(
+        self,
+        name: str,
+        status: str = "pending",
+        priority: Optional[int] = None,
+        parent_id: Optional[int] = None,
+        task_type: str = "atomic",
+        session_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        root_id: Optional[int] = None,
+        context_refs: Optional[str] = None,
+        artifacts: Optional[str] = None,
+    ) -> int:
         raise NotImplementedError
 
     @abstractmethod
@@ -50,7 +63,11 @@ class TaskRepository(ABC):
 
     # --- queries ---
     @abstractmethod
-    def list_all_tasks(self) -> List[Dict[str, Any]]:
+    def list_all_tasks(
+        self,
+        session_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
     @abstractmethod
@@ -58,7 +75,9 @@ class TaskRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list_tasks_by_prefix(self, prefix: str, pending_only: bool = False, ordered: bool = True) -> List[Dict[str, Any]]:
+    def list_tasks_by_prefix(
+        self, prefix: str, pending_only: bool = False, ordered: bool = True
+    ) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
     @abstractmethod
@@ -79,6 +98,27 @@ class TaskRepository(ABC):
 
     @abstractmethod
     def list_plan_outputs(self, title: str) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+    # --- execution metadata ---
+    def update_task_context(self, task_id: int, *, context_refs: Optional[str] = None, artifacts: Optional[str] = None) -> None:
+        raise NotImplementedError
+
+    def append_execution_log(
+        self,
+        task_id: int,
+        *,
+        workflow_id: Optional[str] = None,
+        step_type: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        raise NotImplementedError
+
+    def list_execution_logs(self, task_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+    def get_workflow_metadata(self, workflow_id: str) -> Optional[Dict[str, Any]]:
         raise NotImplementedError
 
     # --- links (graph) ---
@@ -155,15 +195,15 @@ class TaskRepository(ABC):
 
     def update_task_parent(self, task_id: int, new_parent_id: Optional[int]) -> None:
         """Move a task to a different parent (or to root level if new_parent_id is None).
-        
+
         This should update the task's parent_id, path, and depth fields consistently.
         Implementations should handle path/depth recalculation for the moved subtree.
         """
         raise NotImplementedError
-    
+
     def update_task_type(self, task_id: int, task_type: str) -> None:
         """Update the task type (root/composite/atomic).
-        
+
         This is used by the recursive decomposition service to mark tasks
         that have been decomposed into subtasks.
         """

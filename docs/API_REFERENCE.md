@@ -1,6 +1,160 @@
-# 评估系统 API 参考
+# AI-Driven 智能任务编排系统 API 参考
 
-## 核心执行函数
+## 🚀 递归任务分解 API
+
+### 任务分解端点
+
+#### POST /tasks/{task_id}/decompose
+对指定任务进行智能分解。
+
+**请求参数:**
+```json
+{
+  "max_subtasks": 5,      // 最大子任务数量 (2-20，默认8)
+  "force": false          // 强制分解，忽略现有子任务
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "task_id": 123,
+  "subtasks": [
+    {
+      "id": 124,
+      "name": "用户注册模块",
+      "type": "composite",
+      "priority": 100
+    }
+  ],
+  "decomposition_depth": 1
+}
+```
+
+#### POST /tasks/{task_id}/decompose/with-evaluation
+带质量评估的任务分解，支持迭代改进。
+
+**请求参数:**
+```json
+{
+  "max_subtasks": 5,
+  "quality_threshold": 0.7,    // 质量阈值 (0.0-1.0)
+  "max_iterations": 2          // 最大迭代次数
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "task_id": 123,
+  "subtasks": [...],
+  "quality_evaluation": {
+    "quality_score": 0.85,
+    "needs_refinement": false,
+    "issues": [],
+    "suggestions": []
+  },
+  "best_quality_score": 0.85,
+  "meets_threshold": true,
+  "iterations_performed": 1
+}
+```
+
+#### GET /tasks/{task_id}/complexity
+评估任务复杂度。
+
+**响应示例:**
+```json
+{
+  "task_id": 123,
+  "complexity": "high",           // high/medium/low
+  "task_type": "root",           // root/composite/atomic
+  "should_decompose": true,
+  "depth": 0,
+  "existing_children": 0
+}
+```
+
+#### GET /tasks/{task_id}/decomposition/recommendation
+获取任务分解建议。
+
+**请求参数:**
+- `min_complexity_score`: 最小复杂度分数 (默认0.6)
+
+**响应示例:**
+```json
+{
+  "task_id": 123,
+  "recommendation": {
+    "should_decompose": true,
+    "complexity": "high",
+    "complexity_score": 0.9,
+    "recommendations": [
+      "任务复杂度较高，建议进行分解",
+      "建议分解为4-6个子任务"
+    ]
+  },
+  "analysis": {
+    "basic_decomposition_eligible": true,
+    "complexity_sufficient": true,
+    "within_depth_limit": true,
+    "not_atomic": true
+  },
+  "timestamp": "2024-08-31T10:30:00Z"
+}
+```
+
+#### POST /plans/{title}/decompose
+递归分解整个计划中的所有任务。
+
+**请求参数:**
+```json
+{
+  "max_depth": 3    // 最大分解深度
+}
+```
+
+**响应示例:**
+```json
+{
+  "success": true,
+  "plan_title": "智能系统开发计划",
+  "decompositions": [...],
+  "total_tasks_decomposed": 5
+}
+```
+
+### 任务分解算法说明
+
+#### 复杂度评估算法
+基于关键词密度和任务描述长度进行智能评估：
+
+**高复杂度关键词:**
+- 系统、架构、平台、框架、完整、全面、端到端、整体、综合
+
+**中等复杂度关键词:**
+- 模块、组件、功能、特性、集成、优化、重构、扩展
+
+**低复杂度关键词:**
+- 修复、调试、测试、文档、配置、部署、更新、检查
+
+#### 任务类型体系
+```
+ROOT (深度0)     → COMPOSITE (深度1)  → ATOMIC (深度2)
+高复杂度项目      → 中等粒度任务        → 可执行最小单元
+```
+
+#### 质量评估指标
+- **子任务数量**: 2-8个为最优
+- **名称质量**: 避免空名称和泛化名称
+- **类型一致性**: 同层级任务类型应保持一致
+- **重叠检测**: 避免子任务间功能重叠
+
+## 🎯 评估系统 API
+
+### 核心执行函数
 
 ### execute_task_with_evaluation()
 
@@ -99,16 +253,17 @@ def execute_task_with_adversarial_evaluation(
 
 ### EvaluationConfig
 
-评估配置类。
+评估配置类（Pydantic）。
 
 ```python
-@dataclass
-class EvaluationConfig:
+class EvaluationConfig(BaseModel):
     quality_threshold: float = 0.8
     max_iterations: int = 3
-    strict_mode: bool = False
-    evaluation_dimensions: Optional[List[str]] = None
+    evaluation_dimensions: List[str] = [
+        "relevance", "completeness", "accuracy", "clarity", "coherence"
+    ]
     domain_specific: bool = False
+    strict_mode: bool = False
     custom_weights: Optional[Dict[str, float]] = None
 ```
 
@@ -130,18 +285,16 @@ class EvaluationConfig:
 
 ### TaskExecutionResult
 
-任务执行结果类。
+任务执行结果类（Pydantic）。
 
 ```python
-@dataclass
-class TaskExecutionResult:
+class TaskExecutionResult(BaseModel):
     task_id: int
     status: str
-    content: Optional[str]
-    evaluation: Optional[EvaluationResult]
-    iterations: int
-    execution_time: float
-    metadata: Optional[Dict[str, Any]] = None
+    content: Optional[str] = None
+    evaluation: Optional[EvaluationResult] = None
+    iterations: int = 1
+    execution_time: Optional[float] = None
 ```
 
 **字段说明:**
@@ -155,17 +308,16 @@ class TaskExecutionResult:
 
 ### EvaluationResult
 
-评估结果类。
+评估结果类（Pydantic）。
 
 ```python
-@dataclass
-class EvaluationResult:
+class EvaluationResult(BaseModel):
     overall_score: float
     dimensions: EvaluationDimensions
-    suggestions: List[str]
-    needs_revision: bool
-    iteration: int
-    timestamp: datetime
+    suggestions: List[str] = []
+    needs_revision: bool = False
+    iteration: int = 0
+    timestamp: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
 ```
 
@@ -189,7 +341,7 @@ class LLMEvaluator:
 
 **使用示例:**
 ```python
-from app.services.llm_evaluator import get_llm_evaluator
+from app.services.evaluation.llm_evaluator import get_llm_evaluator
 
 evaluator = get_llm_evaluator()
 result = evaluator.evaluate_content_intelligent(
@@ -197,6 +349,42 @@ result = evaluator.evaluate_content_intelligent(
     task_context={"name": "任务名称", "task_type": "content_generation"},
     iteration=1
 )
+```
+
+## Benchmark 基准评测接口
+
+### REST API
+
+```http
+POST /benchmark
+Content-Type: application/json
+
+{
+  "topic": "抗菌素耐药",
+  "configs": [
+    "base,use_context=False",
+    "ctx,use_context=True,max_chars=3000,semantic_k=5"
+  ],
+  "sections": 5
+}
+```
+
+返回：
+- `summary_md`: 汇总 Markdown 表
+- `metrics`: 每个配置的均值、维度均值、失败数、计数等
+- `files`: 每个配置生成的 MD 文件路径（若设置 outdir）
+- `csv_path`: 统一 CSV 路径（若设置 csv_path）
+
+### CLI
+
+```bash
+python -m cli.main --benchmark \
+  --benchmark-topic "抗菌素耐药" \
+  --benchmark-configs "base,use_context=False" "ctx,use_context=True,max_chars=3000,semantic_k=5" \
+  --benchmark-sections 5 \
+  --benchmark-outdir results/抗菌素耐药 \
+  --benchmark-csv results/抗菌素耐药/summary.csv \
+  --benchmark-output results/抗菌素耐药/overview.md
 ```
 
 ### MultiExpertEvaluator
@@ -309,7 +497,7 @@ class EvaluationCache:
 
 **使用示例:**
 ```python
-from app.services.evaluation_cache import get_evaluation_cache
+from app.services.evaluation.evaluation_cache import get_evaluation_cache
 
 cache = get_evaluation_cache()
 
@@ -348,7 +536,7 @@ class EvaluationSupervisor:
 
 **使用示例:**
 ```python
-from app.services.evaluation_supervisor import get_evaluation_supervisor
+from app.services.evaluation.evaluation_supervisor import get_evaluation_supervisor
 
 supervisor = get_evaluation_supervisor()
 
@@ -543,7 +731,7 @@ result = execute_task(task, enable_evaluation=True)  # 仍然有效
 ### 自定义评估器
 
 ```python
-from app.services.content_evaluator import ContentEvaluator
+from app.services.evaluation.content_evaluator import ContentEvaluator
 
 class CustomEvaluator(ContentEvaluator):
     def __init__(self, config: Optional[EvaluationConfig] = None):

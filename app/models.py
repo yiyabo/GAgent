@@ -4,36 +4,28 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 
-class ContextCreate(BaseModel):
-    label: str
-    content: str
-
-
 class TaskCreate(BaseModel):
     name: str
     task_type: Optional[str] = "atomic"
-    parent_id: Optional[int] = None
-    plan_id: Optional[int] = None
-    prompt: Optional[str] = None
-    contexts: Optional[List[ContextCreate]] = None
-
-
-class TaskUpdate(BaseModel):
-    name: Optional[str] = None
-    status: Optional[str] = None
-    priority: Optional[int] = None
-    task_type: Optional[str] = None
-
-
-class TaskSummary(BaseModel):
-    id: int
-    name: str
+    session_id: Optional[str] = None
+    workflow_id: Optional[str] = None
+    root_id: Optional[int] = None
 
 
 class Task(BaseModel):
     id: int
     name: str
     status: str
+    priority: Optional[int] = None
+    parent_id: Optional[int] = None
+    path: Optional[str] = None
+    depth: Optional[int] = None
+    task_type: Optional[str] = None
+    session_id: Optional[str] = None
+    workflow_id: Optional[str] = None
+    root_id: Optional[int] = None
+    context_refs: Optional[str] = None
+    artifacts: Optional[str] = None
 
 
 class PlanTaskIn(BaseModel):
@@ -89,13 +81,7 @@ class EvaluationConfig(BaseModel):
 
     quality_threshold: float = 0.8  # Minimum acceptable quality score
     max_iterations: int = 3  # Maximum revision iterations
-    evaluation_dimensions: List[str] = [
-        "relevance",
-        "completeness",
-        "accuracy",
-        "clarity",
-        "coherence",
-    ]
+    evaluation_dimensions: List[str] = ["relevance", "completeness", "accuracy", "clarity", "coherence"]
     domain_specific: bool = False  # Enable domain-specific evaluation
     strict_mode: bool = False  # Enable strict evaluation mode
     custom_weights: Optional[Dict[str, float]] = None  # Custom dimension weights
@@ -112,109 +98,104 @@ class TaskExecutionResult(BaseModel):
     execution_time: Optional[float] = None
 
 
-# Plan Management System Models
-class Plan(BaseModel):
-    """研究计划/项目的完整定义"""
-
+class TaskExecutionLog(BaseModel):
     id: int
-    title: str
-    description: Optional[str] = None
-    status: str = "active"  # active/completed/archived
-    created_at: datetime
-    updated_at: datetime
-    config_json: Optional[Dict[str, Any]] = None
-    task_count: int = 0  # 关联的任务数量
-    progress: float = 0.0  # 完成进度 0-1
-
-
-class PlanTask(BaseModel):
-    """任务与计划的精确关联"""
-
-    plan_id: int
     task_id: int
-    task_category: str = "general"  # root/chapter/section/atomic
-    created_at: datetime
+    workflow_id: Optional[str] = None
+    step_type: str
+    content: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: Optional[str] = None
 
 
-class PlanCreate(BaseModel):
-    """创建新计划的请求模型"""
-
-    title: str
-    description: Optional[str] = None
-    config_json: Optional[Dict[str, Any]] = None
+# -----------------------------
+# Request models (optional)
+# -----------------------------
 
 
-class PlanUpdate(BaseModel):
-    """更新计划的请求模型"""
+class ContextOptions(BaseModel):
+    include_deps: bool = True
+    include_plan: bool = True
+    k: int = 5
+    manual: Optional[List[int]] = None
+    semantic_k: int = 5
+    min_similarity: float = 0.1
+    include_ancestors: bool = False
+    include_siblings: bool = False
+    hierarchy_k: int = 3
+    max_chars: Optional[int] = None
+    per_section_max: Optional[int] = None
+    strategy: Optional[str] = None  # "truncate" | "sentence"
+    save_snapshot: bool = False
+    label: Optional[str] = None
+    # executor-specific optional
+    generate_embeddings: Optional[bool] = None
 
+
+class EvaluationOptions(BaseModel):
+    max_iterations: int = 3
+    quality_threshold: float = 0.8
+
+
+class RunRequest(BaseModel):
     title: Optional[str] = None
-    description: Optional[str] = None
+    schedule: Optional[str] = None  # bfs|dag|postorder
+    use_context: bool = False
+    enable_evaluation: bool = False
+    # New flags for orchestration
+    use_tools: Optional[bool] = False  # Enable tool-enhanced execution
+    auto_decompose: Optional[bool] = False  # Auto run plan decomposition before executing (requires title)
+    evaluation_mode: Optional[str] = None  # 'llm' | 'multi_expert' | 'adversarial'
+    decompose_max_depth: Optional[int] = None  # Optional depth when auto_decompose
+    include_summary: Optional[bool] = False  # Return summary object instead of raw list when true
+    auto_assemble: Optional[bool] = False  # If true and title provided, include assembled sections/combined in response
+    target_task_id: Optional[int] = None  # New: For single-step execution
+    # Output control
+    auto_save_output: Optional[bool] = False
+    output_filename: Optional[str] = None
+    evaluation_options: Optional[EvaluationOptions] = None
+    context_options: Optional[ContextOptions] = None
+
+
+class ContextPreviewRequest(BaseModel):
+    include_deps: bool = True
+    include_plan: bool = True
+    k: int = 5
+    max_chars: Optional[int] = None
+    per_section_max: Optional[int] = None
+    strategy: Optional[str] = None
+    semantic_k: int = 5
+    min_similarity: float = 0.1
+    include_ancestors: bool = False
+    include_siblings: bool = False
+    hierarchy_k: int = 3
+    manual: Optional[List[int]] = None
+
+
+class ExecuteWithEvaluationRequest(BaseModel):
+    max_iterations: int = 3
+    quality_threshold: float = 0.8
+    use_context: bool = False
+    context_options: Optional[ContextOptions] = None
+
+
+class MoveTaskRequest(BaseModel):
+    new_parent_id: Optional[int] = None
+
+
+class RerunSelectedTasksRequest(BaseModel):
+    task_ids: List[int]
+    use_context: bool = False
+    context_options: Optional[ContextOptions] = None
+
+
+class RerunTaskSubtreeRequest(BaseModel):
+    use_context: bool = False
+    context_options: Optional[ContextOptions] = None
+    include_parent: bool = True
+
+
+class TaskUpdate(BaseModel):
+    name: Optional[str] = None
     status: Optional[str] = None
-    config_json: Optional[Dict[str, Any]] = None
-
-
-class PlanSummary(BaseModel):
-    """计划汇总信息"""
-
-    id: int
-    title: str
-    description: Optional[str] = None
-    task_count: int
-    completed_count: int
-    status: str
-    progress: float
-    created_at: datetime
-
-
-class PlanWithTasks(BaseModel):
-    """完整计划包含所有关联任务"""
-
-    plan: Plan
-    tasks: List[PlanTask]
-    task_details: Optional[List[Dict[str, Any]]] = None
-
-
-# Chat System Models
-class Message(BaseModel):
-    id: int
-    conversation_id: int
-    sender: str
-    text: str
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class Conversation(BaseModel):
-    id: int
-    title: str
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class ConversationWithMessages(Conversation):
-    messages: List[Message] = []
-
-
-class ConversationCreate(BaseModel):
-    title: str
-
-
-class MessageCreate(BaseModel):
-    text: str
-    sender: str = "user"
-    plan_id: Optional[int] = None
-    confirmed: Optional[bool] = False
-
-
-class MessageUpdate(BaseModel):
-    text: str
-
-
-class MessageResend(BaseModel):
-    text: Optional[str] = None
-    plan_id: Optional[int] = None
-    confirmed: Optional[bool] = False
+    priority: Optional[int] = None

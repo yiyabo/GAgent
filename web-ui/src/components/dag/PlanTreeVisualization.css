@@ -1,0 +1,142 @@
+.plan-tree-visualization-container {
+  overflow-y: auto;
+  overflow-x: auto;
+  padding: 8px;
+  background: #fafafa;
+  border-radius: 6px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', 'Courier New', monospace;
+}
+
+.plan-tree-content {
+  min-width: fit-content;
+  padding: 6px;
+  background: white;
+  border-radius: 4px;
+}
+
+.plan-tree-node {
+  position: relative;
+  margin: 0;
+  padding: 0;
+}
+
+.plan-tree-node-content {
+  display: flex;
+  align-items: center;
+  padding: 4px 6px;
+  margin: 1px 0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-radius: 3px;
+  min-height: 28px;
+}
+
+.plan-tree-node-content:hover {
+  background: rgba(24, 144, 255, 0.08);
+  transform: translateX(2px);
+}
+
+.plan-tree-node-content.selected {
+  background: rgba(24, 144, 255, 0.15);
+  border-left: 3px solid #1890ff;
+}
+
+.plan-tree-node-content.task-type-root {
+  background: linear-gradient(90deg, rgba(114, 46, 209, 0.08) 0%, rgba(114, 46, 209, 0.03) 100%);
+  border-left: 3px solid #722ed1;
+  font-weight: bold;
+}
+
+.plan-tree-node-content.task-type-composite {
+  background: linear-gradient(90deg, rgba(24, 144, 255, 0.06) 0%, rgba(24, 144, 255, 0.02) 100%);
+  border-left: 2px solid #1890ff;
+}
+
+.plan-tree-node-content.task-type-atomic {
+  background: linear-gradient(90deg, rgba(82, 196, 26, 0.04) 0%, rgba(82, 196, 26, 0.01) 100%);
+  border-left: 2px solid #52c41a;
+}
+
+.plan-tree-connector {
+  color: #8c8c8c;
+  font-weight: normal;
+  white-space: pre;
+  user-select: none;
+  font-size: 11px;
+  line-height: 1;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+}
+
+.plan-tree-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin: 0 4px 0 2px;
+  font-size: 8px;
+  color: #1890ff;
+  background: rgba(24, 144, 255, 0.1);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.plan-tree-collapse-btn:hover {
+  background: rgba(24, 144, 255, 0.2);
+  transform: scale(1.1);
+}
+
+.plan-tree-node-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.plan-node-type-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.plan-node-status-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.plan-node-name {
+  font-size: 12px;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.plan-tree-node-content:hover .plan-node-name {
+  color: #1890ff !important;
+}
+
+.plan-tree-children {
+  margin: 0;
+  padding: 0;
+}
+
+/* 滚动条美化 */
+.plan-tree-visualization-container::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.plan-tree-visualization-container::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 3px;
+}
+
+.plan-tree-visualization-container::-webkit-scrollbar-thumb {
+  background: rgba(24, 144, 255, 0.3);
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+.plan-tree-visualization-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(24, 144, 255, 0.5);
+}
