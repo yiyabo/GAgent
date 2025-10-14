@@ -345,7 +345,7 @@ class PlanCommands(MultiCommand):
 
 
 # ------------ HTTP helpers ------------
-BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:9000")
 
 
 def _api_post(path: str, payload: Dict[str, Any], timeout: int = 300) -> Dict[str, Any]:

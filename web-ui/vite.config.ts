@@ -6,8 +6,8 @@ import path from 'path'
 export default defineConfig(({ mode }) => {
   // 加载环境变量
   const env = loadEnv(mode, process.cwd(), '');
-  const apiBaseUrl = env.VITE_API_BASE_URL || 'http://localhost:8000';
-  const wsBaseUrl = env.VITE_WS_BASE_URL || 'ws://localhost:8000';
+  const apiBaseUrl = env.VITE_API_BASE_URL || 'http://localhost:9000';
+  const wsBaseUrl = env.VITE_WS_BASE_URL || 'ws://localhost:9000';
   const devServerPort = Number(env.VITE_DEV_SERVER_PORT) || 3000;
 
   return {

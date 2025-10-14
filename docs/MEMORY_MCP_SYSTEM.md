@@ -29,7 +29,7 @@ Memory-MCP是一个集成到项目中的智能记忆管理系统，提供MCP（M
 
 ```bash
 # 基础URL
-http://localhost:8000/mcp
+http://localhost:9000/mcp
 ```
 
 ### 1. 保存记忆
@@ -153,7 +153,7 @@ import requests
 import json
 
 # 基础配置
-BASE_URL = "http://localhost:8000/mcp"
+BASE_URL = "http://localhost:9000/mcp"
 
 # 保存记忆
 def save_memory(content, memory_type="experience", importance="medium"):
@@ -195,7 +195,7 @@ if __name__ == "__main__":
 
 ```bash
 # 通过API保存记忆
-curl -X POST http://localhost:8000/mcp/save_memory \
+curl -X POST http://localhost:9000/mcp/save_memory \
   -H "Content-Type: application/json" \
   -d '{
     "content": "项目重构完成，所有测试通过",
@@ -205,7 +205,7 @@ curl -X POST http://localhost:8000/mcp/save_memory \
   }'
 
 # 查询记忆
-curl -X POST http://localhost:8000/mcp/query_memory \
+curl -X POST http://localhost:9000/mcp/query_memory \
   -H "Content-Type: application/json" \
   -d '{
     "search_text": "重构",
@@ -214,7 +214,7 @@ curl -X POST http://localhost:8000/mcp/query_memory \
   }'
 
 # 获取统计信息
-curl http://localhost:8000/mcp/memory/stats
+curl http://localhost:9000/mcp/memory/stats
 ```
 
 ## 数据库架构

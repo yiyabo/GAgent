@@ -7,7 +7,7 @@
         console.log('Testing frontend...');
         
         // 测试API连接
-        fetch('http://localhost:8000/health')
+        fetch('http://localhost:9000/health')
             .then(response => response.json())
             .then(data => {
                 console.log('Backend health:', data);

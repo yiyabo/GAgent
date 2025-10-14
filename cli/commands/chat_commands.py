@@ -206,7 +206,7 @@ class ChatCommands(BaseCommand):
         parser.add_argument("--debug", action="store_true", help="Enable debug logging for tool calls")
 
     def _execute_impl(self, args: Namespace) -> int:
-        self.base_url = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+        self.base_url = os.getenv("BASE_URL", "http://127.0.0.1:9000")
         self.debug_mode = getattr(args, "debug", False)
         self.console = Console()
 

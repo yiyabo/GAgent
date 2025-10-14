@@ -10,10 +10,10 @@
 export const ENV = {
   // ===== API 配置 =====
   /** 后端 API 基础地址 */
-  API_BASE_URL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
+  API_BASE_URL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000',
 
   /** WebSocket 基础地址 */
-  WS_BASE_URL: import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000',
+  WS_BASE_URL: import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:9000',
 
   // ===== 前端服务器配置 =====
   /** 前端开发服务器端口 */
