@@ -287,7 +287,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
             iterations: 200,
           },
           barnesHut: {
-            gravitationalConstant: -8000,
+            gravitationalConstant: -9000,
             centralGravity: 0.3,
             springLength: 150,
             springConstant: 0.04,

@@ -19,7 +19,7 @@ async def internal_api_handler(
     method: str = "POST",
     data: Optional[Dict[str, Any]] = None,
     timeout: float = 60.0,
-    base_url: str = "http://127.0.0.1:8000"
+    base_url: str = "http://127.0.0.1:9000"
 ) -> Dict[str, Any]:
     """
     Internal API call tool handler
@@ -140,7 +140,7 @@ internal_api_tool = {
             "base_url": {
                 "type": "string",
                 "description": "API基础URL",
-                "default": "http://127.0.0.1:8000"
+                "default": "http://127.0.0.1:9000"
             }
         },
         "required": ["endpoint"]

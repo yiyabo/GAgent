@@ -205,7 +205,7 @@ class ModernCLIApp(CLIApplication):
 
         try:
             import os, requests
-            base_url = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+            base_url = os.getenv("BASE_URL", "http://127.0.0.1:9000")
             response = requests.get(f"{base_url}/tasks/{task_id}/context/snapshots")
 
             if response.status_code == 200:
@@ -241,7 +241,7 @@ class ModernCLIApp(CLIApplication):
 
         try:
             import os, requests
-            base_url = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+            base_url = os.getenv("BASE_URL", "http://127.0.0.1:9000")
             response = requests.get(f"{base_url}/tasks/{task_id}/context/snapshots/{label}")
 
             if response.status_code == 200:

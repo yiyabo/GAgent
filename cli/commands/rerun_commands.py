@@ -100,7 +100,7 @@ class RerunCommands(MultiCommand):
             if context_options:
                 payload["context_options"] = context_options
 
-            response = requests.post(f"http://127.0.0.1:8000/tasks/{task_id}/rerun", json=payload, timeout=300)
+            response = requests.post(f"http://127.0.0.1:9000/tasks/{task_id}/rerun", json=payload, timeout=300)
 
             if response.status_code == 200:
                 result = response.json()
@@ -118,7 +118,7 @@ class RerunCommands(MultiCommand):
                 return 1
 
         except requests.exceptions.ConnectionError:
-            self.io.print_error("Cannot connect to server. Is it running on port 8000?")
+            self.io.print_error("Cannot connect to server. Is it running on port 9000?")
             return 1
         except Exception as e:
             self.io.print_error(f"Rerun failed: {e}")
@@ -138,7 +138,7 @@ class RerunCommands(MultiCommand):
                 payload["context_options"] = context_options
 
             response = requests.post(
-                f"http://127.0.0.1:8000/tasks/{task_id}/rerun-subtree",
+                f"http://127.0.0.1:9000/tasks/{task_id}/rerun-subtree",
                 json=payload,
                 timeout=600,  # Longer timeout for subtree operations
             )
@@ -159,7 +159,7 @@ class RerunCommands(MultiCommand):
                 return 1
 
         except requests.exceptions.ConnectionError:
-            self.io.print_error("Cannot connect to server. Is it running on port 8000?")
+            self.io.print_error("Cannot connect to server. Is it running on port 9000?")
             return 1
         except Exception as e:
             self.io.print_error(f"Subtree rerun failed: {e}")

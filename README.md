@@ -55,10 +55,10 @@ export GLM_API_KEY=your_key_here
 ./start_backend.sh
 
 # 或者手动指定参数（需配置真实 API Key）
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
 
 # 开发（可用 Mock）
-# LLM_MOCK=1 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+# LLM_MOCK=1 python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
 ```
 
 **说明**:
@@ -84,8 +84,8 @@ npm run dev
 **说明**:
 - 前端配置从 `web-ui/.env.development` 或 `.env.production` 读取
 - 开发环境默认端口 3000，可通过 `VITE_DEV_SERVER_PORT` 配置
-- API 地址通过 `VITE_API_BASE_URL` 配置（默认 http://localhost:8000）
-- WebSocket 地址通过 `VITE_WS_BASE_URL` 配置（默认 ws://localhost:8000）
+- API 地址通过 `VITE_API_BASE_URL` 配置（默认 http://localhost:9000）
+- WebSocket 地址通过 `VITE_WS_BASE_URL` 配置（默认 ws://localhost:9000）
 
 **Web UI 功能**:
 - 📊 记忆统计看板 (总数、连接数、嵌入覆盖率、进化次数)
@@ -100,15 +100,15 @@ npm run dev
 ### 🔧 分解与执行（推荐后序调度）
 ```bash
 # 单任务分解（标准/工具感知/带评估）
-curl -X POST http://localhost:8000/tasks/123/decompose \
+curl -X POST http://localhost:9000/tasks/123/decompose \
   -H "Content-Type: application/json" \
   -d '{"max_subtasks": 5, "force": false, "tool_aware": true}'
 
 # 计划级递归分解
-curl -X POST http://localhost:8000/plans/MyReport/decompose -H "Content-Type: application/json" -d '{"max_depth": 3}'
+curl -X POST http://localhost:9000/plans/MyReport/decompose -H "Content-Type: application/json" -d '{"max_depth": 3}'
 
 # 执行（自动分解 + 工具增强 + 评估）
-curl -X POST http://localhost:8000/run -H "Content-Type: application/json" -d '{
+curl -X POST http://localhost:9000/run -H "Content-Type: application/json" -d '{
   "title": "MyReport",
   "schedule": "postorder",
   "use_context": true,
@@ -118,7 +118,7 @@ curl -X POST http://localhost:8000/run -H "Content-Type: application/json" -d '{
   "enable_evaluation": true,
   "evaluation_mode": "llm",
   "evaluation_options": {"max_iterations": 3, "quality_threshold": 0.8},
-  "context_options": {"max_chars": 8000, "strategy": "sentence"}
+  "context_options": {"max_chars": 9000, "strategy": "sentence"}
 }'
 ```
 
@@ -266,17 +266,17 @@ app/services/
 ### 📊 API工作流程
 ```bash
 # 1. 提议计划
-curl -X POST http://127.0.0.1:8000/plans/propose \
+curl -X POST http://127.0.0.1:9000/plans/propose \
   -H "Content-Type: application/json" \
   -d '{"goal": "Write a technical whitepaper on gene editing"}'
 
 # 2. 批准计划
-curl -X POST http://127.0.0.1:8000/plans/approve \
+curl -X POST http://127.0.0.1:9000/plans/approve \
   -H "Content-Type: application/json" \
   --data-binary @plan.json
 
 # 3. 执行（启用上下文感知和评估）
-curl -X POST http://127.0.0.1:8000/run \
+curl -X POST http://127.0.0.1:9000/run \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Gene Editing Whitepaper",
