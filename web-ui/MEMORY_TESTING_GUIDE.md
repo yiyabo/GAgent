@@ -7,7 +7,7 @@
 ### 1. 环境检查
 ```bash
 # 1. 确认后端服务运行
-curl http://localhost:8000/health
+curl http://localhost:9000/health
 
 # 2. 确认前端开发服务器运行
 cd web-ui

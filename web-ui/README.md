@@ -16,7 +16,7 @@
 
 - Node.js >= 16.0.0
 - npm >= 8.0.0
-- 后端API服务运行在 http://localhost:8000
+- 后端API服务运行在 http://localhost:9000
 
 ### 安装依赖
 
@@ -105,8 +105,8 @@ Web UI通过Vite代理连接到后端API：
 // vite.config.ts
 server: {
   proxy: {
-    '/api': 'http://localhost:8000',
-    '/ws': 'ws://localhost:8000',
+    '/api': 'http://localhost:9000',
+    '/ws': 'ws://localhost:9000',
   },
 }
 ```
@@ -164,7 +164,7 @@ const antdTheme = {
 
 ## 🚨 注意事项
 
-1. **后端依赖**: 需要后端API服务运行在 http://localhost:8000
+1. **后端依赖**: 需要后端API服务运行在 http://localhost:9000
 2. **真实API**: 不支持Mock模式，所有调用都是真实API
 3. **WebSocket**: 实时功能需要WebSocket连接
 4. **浏览器兼容**: 支持现代浏览器 (Chrome 88+, Firefox 85+, Safari 14+)
@@ -176,7 +176,7 @@ const antdTheme = {
 **1. API连接失败**
 ```bash
 # 检查后端服务是否运行
-curl http://localhost:8000/health
+curl http://localhost:9000/health
 
 # 检查环境变量
 echo $GLM_API_KEY

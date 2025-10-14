@@ -20,7 +20,7 @@ class APIClient:
     """统一的API客户端"""
     
     def __init__(self, base_url: Optional[str] = None):
-        self.base_url = base_url or os.getenv("BASE_URL", "http://127.0.0.1:8000")
+        self.base_url = base_url or os.getenv("BASE_URL", "http://127.0.0.1:9000")
         self.timeout = 300  # 默认5分钟超时
     
     def get(self, endpoint: str, params: Optional[Dict] = None, **kwargs) -> Dict[str, Any]:

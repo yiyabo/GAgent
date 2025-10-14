@@ -306,7 +306,7 @@ npm run dev
 ### 环境变量
 ```env
 # .env
-VITE_API_BASE_URL=http://localhost:8000  # 后端API地址
+VITE_API_BASE_URL=http://localhost:9000  # 后端API地址
 VITE_API_TIMEOUT=30000                    # API超时时间(ms)
 ```
 

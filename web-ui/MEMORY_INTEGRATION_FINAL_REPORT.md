@@ -293,7 +293,7 @@ const handleSaveAsMemory = async () => {
 
 #### 查询记忆
 ```typescript
-POST http://localhost:8000/mcp/query_memory
+POST http://localhost:9000/mcp/query_memory
 {
   "search_text": "用户问题",
   "limit": 3,
@@ -303,7 +303,7 @@ POST http://localhost:8000/mcp/query_memory
 
 #### 保存记忆
 ```typescript
-POST http://localhost:8000/mcp/save_memory
+POST http://localhost:9000/mcp/save_memory
 {
   "content": "消息内容",
   "memory_type": "conversation",
@@ -378,7 +378,7 @@ npm run dev
 
 - **AI 对话**: http://localhost:3001/chat
 - **Memory 管理**: http://localhost:3001/memory
-- **后端 API**: http://localhost:8000
+- **后端 API**: http://localhost:9000
 
 ### 快速开始
 

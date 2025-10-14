@@ -7,15 +7,15 @@
 #### 1. 基础任务分解
 ```bash
 # 启动API服务
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn app.main:app --host 127.0.0.1 --port 9000 --reload
 
 # 创建任务
-curl -X POST http://localhost:8000/tasks \
+curl -X POST http://localhost:9000/tasks \
   -H "Content-Type: application/json" \
   -d '{"name": "开发智能客服系统", "task_type": "root"}'
 
 # 分解任务 (假设任务ID为123)
-curl -X POST http://localhost:8000/tasks/123/decompose \
+curl -X POST http://localhost:9000/tasks/123/decompose \
   -H "Content-Type: application/json" \
   -d '{"max_subtasks": 5, "force": false}'
 ```
@@ -23,15 +23,15 @@ curl -X POST http://localhost:8000/tasks/123/decompose \
 #### 2. 带质量评估的分解
 ```bash
 # 高质量智能分解
-curl -X POST http://localhost:8000/tasks/123/decompose/with-evaluation \
+curl -X POST http://localhost:9000/tasks/123/decompose/with-evaluation \
   -H "Content-Type: application/json" \
   -d '{"quality_threshold": 0.8, "max_iterations": 3}'
 
 # 获取分解建议
-curl http://localhost:8000/tasks/123/decomposition/recommendation
+curl http://localhost:9000/tasks/123/decomposition/recommendation
 
 # 评估任务复杂度
-curl http://localhost:8000/tasks/123/complexity
+curl http://localhost:9000/tasks/123/complexity
 ```
 
 ### 🎯 高级评估系统
@@ -111,7 +111,7 @@ conda run -n LLM python -m cli.main --benchmark \
   --benchmark-output results/抗菌素耐药/overview.md
 
 # 通过 REST API 触发
-curl -X POST http://127.0.0.1:8000/benchmark \
+curl -X POST http://127.0.0.1:9000/benchmark \
   -H "Content-Type: application/json" \
   -d '{
     "topic": "抗菌素耐药",

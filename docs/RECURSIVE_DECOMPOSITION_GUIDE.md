@@ -58,10 +58,10 @@ ATOMIC任务 (深度2)
 
 ```bash
 # 启动API服务
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn app.main:app --host 127.0.0.1 --port 9000 --reload
 
 # 创建一个根任务
-curl -X POST http://localhost:8000/tasks \
+curl -X POST http://localhost:9000/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "name": "开发智能客服系统", 
@@ -69,7 +69,7 @@ curl -X POST http://localhost:8000/tasks \
   }'
 
 # 分解任务 (假设任务ID为123)
-curl -X POST http://localhost:8000/tasks/123/decompose \
+curl -X POST http://localhost:9000/tasks/123/decompose \
   -H "Content-Type: application/json" \
   -d '{
     "max_subtasks": 5,
@@ -81,7 +81,7 @@ curl -X POST http://localhost:8000/tasks/123/decompose \
 
 ```bash
 # 带质量评估的分解
-curl -X POST http://localhost:8000/tasks/123/decompose/with-evaluation \
+curl -X POST http://localhost:9000/tasks/123/decompose/with-evaluation \
   -H "Content-Type: application/json" \
   -d '{
     "max_subtasks": 6,
@@ -90,10 +90,10 @@ curl -X POST http://localhost:8000/tasks/123/decompose/with-evaluation \
   }'
 
 # 获取分解建议
-curl -X GET "http://localhost:8000/tasks/123/decomposition/recommendation?min_complexity_score=0.6"
+curl -X GET "http://localhost:9000/tasks/123/decomposition/recommendation?min_complexity_score=0.6"
 
 # 评估任务复杂度
-curl -X GET http://localhost:8000/tasks/123/complexity
+curl -X GET http://localhost:9000/tasks/123/complexity
 ```
 
 ## 📋 配置参数

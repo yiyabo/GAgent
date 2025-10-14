@@ -768,7 +768,7 @@ def create_tool_enhanced_context_options(base_options: Optional[Dict[str, Any]] 
             "include_deps": True,  # Tools can benefit from dependency context
             "include_plan": True,  # Plan context helps tool selection
             "semantic_k": 3,  # Reduce semantic retrieval to save space for tool results
-            "max_chars": 8000,  # Increase limit to accommodate tool results
+            "max_chars": 9000,  # Increase limit to accommodate tool results
             "per_section_max": 1500,  # Allow larger sections for tool outputs
             "strategy": "sentence",  # Better summarization for tool integration
         }
