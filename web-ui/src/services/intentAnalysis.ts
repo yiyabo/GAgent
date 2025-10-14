@@ -1,6 +1,7 @@
 import { chatApi } from '@api/chat';
 import { SessionTaskSearch } from '@utils/taskSearch';
 import type { ChatSession } from '@/types';
+import { ENV } from '@/config/env';
 
 // 意图分析结果接口
 export interface IntentAnalysisResult {
@@ -209,7 +210,7 @@ async function executeTaskCreate(
     console.log('📤 传递原始用户输入给后端:', userInput);
     
     // 调用后端智能任务创建API - 后端会使用LLM提炼任务名称
-    const response = await fetch('http://localhost:8000/tasks/intelligent-create', {
+    const response = await fetch(`${ENV.API_BASE_URL}/tasks/intelligent-create`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -452,7 +453,7 @@ async function executeTaskDecompose(
     }
     
     // 查询当前会话的任务列表，找到最新的ROOT任务
-    const tasksResponse = await fetch(`http://localhost:8000/tasks?session_id=${sessionId}`);
+    const tasksResponse = await fetch(`${ENV.API_BASE_URL}/tasks?session_id=${sessionId}`);
     
     if (!tasksResponse.ok) {
       throw new Error(`任务查询失败: ${tasksResponse.status}`);
@@ -519,7 +520,7 @@ async function performRealTaskDecomposition(rootTask: any, userRequest: string, 
     console.log('🧠 开始真实任务拆分...', rootTask);
     
     // 调用后端任务分解API
-    const decompositionResponse = await fetch(`http://localhost:8000/tasks/${rootTask.id}/decompose`, {
+    const decompositionResponse = await fetch(`${ENV.API_BASE_URL}/tasks/${rootTask.id}/decompose`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

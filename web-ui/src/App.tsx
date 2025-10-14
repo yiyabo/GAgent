@@ -12,6 +12,7 @@ import Tasks from '@pages/Tasks';
 import Plans from '@pages/Plans';
 import Memory from '@pages/Memory';
 import System from '@pages/System';
+import { ENV } from '@/config/env';
 
 function App() {
   const { setSystemStatus, setApiConnected } = useSystemStore();
@@ -61,7 +62,7 @@ function App() {
           console.log('✅ GLM API Status:', healthData.llm_status);
         } else {
           console.error('❌ API connection failed');
-          message.error('❌ 后端服务连接失败！请检查后端是否运行在 http://localhost:8000', 10);
+          message.error(`❌ 后端服务连接失败！请检查后端是否运行在 ${ENV.API_BASE_URL}`, 10);
           setApiConnected(false);
         }
       } catch (error) {

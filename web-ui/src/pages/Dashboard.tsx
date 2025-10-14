@@ -15,6 +15,7 @@ import { tasksApi } from '@api/tasks';
 import { resolveScopeParams } from '@api/scope';
 import { useChatStore } from '@store/chat';
 import TreeVisualization from '@components/dag/TreeVisualization';
+import { ENV } from '@/config/env';
 
 const { Title, Text } = Typography;
 
@@ -36,6 +37,8 @@ const Dashboard: React.FC = () => {
       });
       return tasksApi.getTaskStats(scope);
     },
+    // 只在有 session_id 或 workflow_id 时才请求
+    enabled: !!(currentSession?.session_id || currentWorkflowId),
     refetchInterval: 10000, // 10秒刷新一次
   });
 
@@ -227,11 +230,11 @@ const Dashboard: React.FC = () => {
               title="🎯 任务编排图" 
               size="small"
               extra={
-                <Button 
+                <Button
                   onClick={async () => {
                     console.log('🔄 手动测试API连接...');
                     try {
-                      const response = await fetch('http://127.0.0.1:8000/tasks');
+                      const response = await fetch(`${ENV.API_BASE_URL}/tasks`);
                       const data = await response.json();
                       console.log('✅ 直接API测试结果:', data.length, '个任务');
                     } catch (error) {
