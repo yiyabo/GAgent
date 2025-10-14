@@ -1,13 +1,15 @@
-import React from 'react';
-import { Avatar, Typography, Space, Button, Tooltip } from 'antd';
-import { 
-  UserOutlined, 
-  RobotOutlined, 
+import React, { useState } from 'react';
+import { Avatar, Typography, Space, Button, Tooltip, message as antMessage } from 'antd';
+import {
+  UserOutlined,
+  RobotOutlined,
   InfoCircleOutlined,
   CopyOutlined,
   ReloadOutlined,
+  DatabaseOutlined,
 } from '@ant-design/icons';
 import { ChatMessage as ChatMessageType } from '@/types';
+import { useChatStore } from '@store/chat';
 import ReactMarkdown from 'markdown-to-jsx';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -20,10 +22,26 @@ interface ChatMessageProps {
 
 const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const { type, content, timestamp, metadata } = message;
+  const { saveMessageAsMemory } = useChatStore();
+  const [isSaving, setIsSaving] = useState(false);
 
   // 复制消息内容
   const handleCopy = () => {
     navigator.clipboard.writeText(content);
+  };
+
+  // 保存为记忆
+  const handleSaveAsMemory = async () => {
+    try {
+      setIsSaving(true);
+      await saveMessageAsMemory(message);
+      antMessage.success('✅ 已保存为记忆');
+    } catch (error) {
+      console.error('保存记忆失败:', error);
+      antMessage.error('❌ 保存失败');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // 格式化时间
@@ -190,7 +208,18 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
                     style={{ fontSize: 10, padding: '0 4px' }}
                   />
                 </Tooltip>
-                
+
+                <Tooltip title="保存为记忆">
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<DatabaseOutlined />}
+                    onClick={handleSaveAsMemory}
+                    loading={isSaving}
+                    style={{ fontSize: 10, padding: '0 4px' }}
+                  />
+                </Tooltip>
+
                 {type === 'assistant' && (
                   <Tooltip title="重新生成">
                     <Button

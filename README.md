@@ -52,11 +52,36 @@ export GLM_API_KEY=your_key_here
 ### 启动 API 服务
 ```bash
 # 生产（需配置真实 API Key）
-python -m --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 # 开发（可用 Mock）
 # LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
+
+### 🎨 启动 Web UI (可选)
+```bash
+# 进入web-ui目录
+cd web-ui
+
+# 安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
+
+# 浏览器访问 http://localhost:5173
+# 点击侧边栏"记忆管理"菜单查看Memory-MCP功能
+```
+
+**Web UI 功能**:
+- 📊 记忆统计看板 (总数、连接数、嵌入覆盖率、进化次数)
+- 🔍 智能搜索与多维过滤 (类型、重要性、关键词)
+- 📋 记忆列表视图 (排序、分页、详情查看)
+- 🗺️ 知识图谱可视化 (语义连接、3种布局、交互式探索)
+- 💾 记忆保存表单 (验证、标签、关键词)
+- 👁️ 记忆详情展示 (统计、连接、时间追踪)
+
+详见: `web-ui/MEMORY_MCP_README.md`
 
 ### 🔧 分解与执行（推荐后序调度）
 ```bash
@@ -218,6 +243,8 @@ app/services/
 - API 参考：`docs/API_REFERENCE.md`
 - 存储与缓存：`docs/Database_and_Cache_Management.md`
 - Memory‑MCP：`docs/MEMORY_MCP_SYSTEM.md`
+- **Web UI**：`web-ui/MEMORY_MCP_README.md` (Memory管理界面)
+- **测试指南**：`web-ui/MEMORY_TESTING_GUIDE.md` (功能测试)
 - 路线图：`docs/ROADMAP.md`
 
 ## 🎨 使用示例

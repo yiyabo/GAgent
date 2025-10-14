@@ -1,8 +1,17 @@
 import { useEffect } from 'react';
-import { message } from 'antd';
-import ChatLayout from '@components/layout/ChatLayout';
+import { Routes, Route, Navigate } from 'react-router-dom';
+import { message, Layout } from 'antd';
 import { useSystemStore } from '@store/system';
 import { checkApiHealth } from '@api/client';
+import AppHeader from '@components/layout/AppHeader';
+import AppSider from '@components/layout/AppSider';
+import ErrorBoundary from '@components/common/ErrorBoundary';
+import ChatLayout from '@components/layout/ChatLayout';
+import Dashboard from '@pages/Dashboard';
+import Tasks from '@pages/Tasks';
+import Plans from '@pages/Plans';
+import Memory from '@pages/Memory';
+import System from '@pages/System';
 
 function App() {
   const { setSystemStatus, setApiConnected } = useSystemStore();
@@ -25,15 +34,15 @@ function App() {
     const initializeApp = async () => {
       console.log('🚀 Initializing AI Task Orchestration System...');
       console.log('⚡ Running in PRODUCTION mode - using REAL APIs (No Mock)');
-      
+
       try {
         // 添加延迟确保组件完全挂载
         await new Promise(resolve => setTimeout(resolve, 500));
-        
+
         const healthData = await checkApiHealth();
-        
+
         console.log('🏥 Health check result:', healthData);
-        
+
         setApiConnected(healthData.api_connected);
         setSystemStatus({
           api_connected: healthData.api_connected,
@@ -79,9 +88,31 @@ function App() {
       window.removeEventListener('error', handleError);
       window.removeEventListener('unhandledrejection', handleRejection);
     };
-  }, []); // 移除store函数依赖，避免无限循环
+  }, []);
 
-  return <ChatLayout />;
+  return (
+    <ErrorBoundary>
+      <Layout style={{ minHeight: '100vh' }}>
+        <AppHeader />
+        <Layout>
+          <AppSider />
+          <Layout.Content style={{ padding: '24px', background: '#f0f2f5' }}>
+            <ErrorBoundary>
+              <Routes>
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/dashboard" element={<ErrorBoundary><Dashboard /></ErrorBoundary>} />
+                <Route path="/chat" element={<ErrorBoundary><ChatLayout /></ErrorBoundary>} />
+                <Route path="/tasks" element={<ErrorBoundary><Tasks /></ErrorBoundary>} />
+                <Route path="/plans" element={<ErrorBoundary><Plans /></ErrorBoundary>} />
+                <Route path="/memory" element={<ErrorBoundary><Memory /></ErrorBoundary>} />
+                <Route path="/system" element={<ErrorBoundary><System /></ErrorBoundary>} />
+              </Routes>
+            </ErrorBoundary>
+          </Layout.Content>
+        </Layout>
+      </Layout>
+    </ErrorBoundary>
+  );
 }
 
 export default App;
