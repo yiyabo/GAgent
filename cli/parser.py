@@ -1,9 +1,23 @@
 """Centralized argument parser for CLI application."""
 
 import argparse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .interfaces import ContextOptionsBuilder
+
+# Import for modular parser
+try:
+    from .params import (
+        ContextParamsHandler,
+        CoreParamsHandler,
+        DatabaseParamsHandler,
+        EvaluationParamsHandler,
+        PlanParamsHandler,
+        UtilityParamsHandler,
+    )
+    _HAS_MODULAR_PARAMS = True
+except ImportError:
+    _HAS_MODULAR_PARAMS = False
 
 
 class CLIParser:
@@ -286,3 +300,71 @@ class DefaultContextOptionsBuilder(ContextOptionsBuilder):
             options["label"] = str(args.label)
 
         return options if options else None
+
+
+class ModularCLIParser:
+    """
+    Refactored CLI parser with modular parameter handlers.
+
+    Only available if params module is present.
+    """
+
+    def __init__(self, prog_name: str = "agent_cli"):
+        if not _HAS_MODULAR_PARAMS:
+            raise ImportError("ModularCLIParser requires params module")
+
+        self.parser = argparse.ArgumentParser(
+            prog=prog_name,
+            description="GLM Agent CLI - Intelligent task management and execution",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+
+        # Initialize parameter handlers (follows DIP - depend on abstractions)
+        self.handlers = [
+            CoreParamsHandler(),
+            PlanParamsHandler(),
+            ContextParamsHandler(),
+            EvaluationParamsHandler(),
+            DatabaseParamsHandler(),
+            UtilityParamsHandler(),
+        ]
+
+        self._setup_arguments()
+
+    def _setup_arguments(self) -> None:
+        """Setup all argument groups using modular handlers."""
+        # Each handler adds its own arguments (follows SRP)
+        for handler in self.handlers:
+            handler.add_arguments(self.parser)
+
+    def parse_args(self, args: Optional[List[str]] = None) -> argparse.Namespace:
+        """Parse command line arguments."""
+        return self.parser.parse_args(args)
+
+    def extract_and_validate_params(self, args: argparse.Namespace) -> Tuple[Dict[str, Any], Optional[str]]:
+        """
+        Extract parameters from all handlers and validate them.
+
+        Returns:
+            Tuple of (extracted_params_dict, validation_error_message)
+        """
+        all_params = {}
+
+        # Extract parameters from each handler
+        for handler in self.handlers:
+            handler_params = handler.extract_values(args)
+            if handler_params:
+                # Use handler class name as namespace to avoid conflicts
+                handler_name = handler.__class__.__name__.replace("ParamsHandler", "").lower()
+                all_params[handler_name] = handler_params
+
+        # Validate parameters from each handler
+        for handler in self.handlers:
+            handler_name = handler.__class__.__name__.replace("ParamsHandler", "").lower()
+            handler_params = all_params.get(handler_name, {})
+
+            is_valid, error_msg = handler.validate_values(handler_params)
+            if not is_valid:
+                return all_params, f"{handler.__class__.__name__}: {error_msg}"
+
+        return all_params, None
