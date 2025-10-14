@@ -216,18 +216,18 @@ async def _search_perplexity(query: str) -> str:
         
         # 配置代理设置
         connector = None
-        proxy = None
+        proxy = None  # 🔧 禁用代理以避免 HTTPS-over-HTTPS TLS-in-TLS 问题
         
-        # 检查代理环境变量
-        https_proxy = os.getenv("https_proxy") or os.getenv("HTTPS_PROXY")
-        http_proxy = os.getenv("http_proxy") or os.getenv("HTTP_PROXY")
+        # 检查代理环境变量（已禁用以避免兼容性问题）
+        # https_proxy = os.getenv("https_proxy") or os.getenv("HTTPS_PROXY")
+        # http_proxy = os.getenv("http_proxy") or os.getenv("HTTP_PROXY")
         
-        if https_proxy:
-            proxy = https_proxy
-            logger.info(f"Using proxy for Perplexity API: {proxy}")
-        elif http_proxy:
-            proxy = http_proxy
-            logger.info(f"Using proxy for Perplexity API: {proxy}")
+        # if https_proxy:
+        #     proxy = https_proxy
+        #     logger.info(f"Using proxy for Perplexity API: {proxy}")
+        # elif http_proxy:
+        #     proxy = http_proxy
+        #     logger.info(f"Using proxy for Perplexity API: {proxy}")
 
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             async with session.post(api_url, headers=headers, json=payload, proxy=proxy) as response:
