@@ -1,10 +1,11 @@
 import axios, { AxiosInstance, AxiosError, AxiosResponse } from 'axios';
 import { ApiResponse } from '../types/index';
+import { ENV } from '@/config/env';
 
 // 创建axios实例
 const createApiClient = (): AxiosInstance => {
   const client = axios.create({
-    baseURL: 'http://localhost:8000',  // 直接连接后端API
+    baseURL: ENV.API_BASE_URL,  // 从环境变量读取后端API地址
     timeout: 120000,
     headers: {
       'Content-Type': 'application/json',
@@ -127,7 +128,7 @@ export const checkApiHealth = async (): Promise<{
   try {
     // 直接调用后端API，绕过代理问题
     console.log('🌐 Checking health endpoint...');
-    const healthResponse = await fetch('http://localhost:8000/health', {
+    const healthResponse = await fetch(`${ENV.API_BASE_URL}/health`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -141,7 +142,7 @@ export const checkApiHealth = async (): Promise<{
       console.log('✅ Health data:', healthData);
       
       console.log('🧠 Checking LLM endpoint...');
-      const llmResponse = await fetch('http://localhost:8000/health/llm?ping=true', {
+      const llmResponse = await fetch(`${ENV.API_BASE_URL}/health/llm?ping=true`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
