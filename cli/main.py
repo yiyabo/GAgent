@@ -4,13 +4,13 @@ import sys
 from typing import List, Optional
 
 from .commands import PlanCommands, RerunCommands
-from .commands.chat_commands_refactored import ChatCommandsRefactored
+from .commands.chat_commands import ChatCommands
 from .commands.database_commands import DatabaseCommands
-from .commands.evaluation_commands_refactored import EvaluationCommands as EvaluationCommandsRefactored
+from .commands.evaluation_commands import EvaluationCommands
 from .commands.memory_commands import MemoryCommands
-from .commands.task_commands_new import TaskCommands
+from .commands.task_commands import TaskCommands
 from .interfaces import CLIApplication, CLICommand
-from .parser_v2 import ModularCLIParser
+from .parser import ModularCLIParser
 from .utils import FileUtils, IOUtils
 
 try:
@@ -40,14 +40,14 @@ class ModernCLIApp(CLIApplication):
         """Register all built-in commands."""
         self.register_command(RerunCommands())
         self.register_command(PlanCommands())
-        # Use the refactored evaluation commands (API-driven)
-        self.register_command(EvaluationCommandsRefactored())
-        # Add new task management commands
+        # Use the API-driven evaluation commands
+        self.register_command(EvaluationCommands())
+        # Add task management commands
         self.register_command(TaskCommands())
         self.register_command(DatabaseCommands())
         self.register_command(MemoryCommands())
-        # Use the refactored chat commands (API-driven)
-        self.register_command(ChatCommandsRefactored())
+        # Use the API-driven chat commands
+        self.register_command(ChatCommands())
 
     def register_command(self, command: CLICommand) -> None:
         """Register a command with the application."""

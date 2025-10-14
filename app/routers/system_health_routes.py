@@ -12,7 +12,6 @@ import asyncio
 from datetime import datetime
 
 from ..services.storage.hybrid_vector_storage import get_hybrid_storage
-from ..services.embeddings.vector_adapter import get_vector_adapter
 
 router = APIRouter(prefix="/system", tags=["系统监控"])
 
@@ -54,12 +53,10 @@ async def comprehensive_health_check():
         resource_metrics = _get_system_resources()
         health_data["performance_metrics"] = resource_metrics
         
-        # 3. 检查向量适配器
-        adapter_health = await _check_vector_adapter_health()
-        health_data["components"]["vector_adapter"] = adapter_health
+        # 3.（已移除）向量适配器检查
         
         # 4. 生成建议
-        recommendations = _generate_recommendations(vector_health, resource_metrics, adapter_health)
+        recommendations = _generate_recommendations(vector_health, resource_metrics)
         health_data["recommendations"] = recommendations
         
         # 5. 确定总体状态
@@ -148,29 +145,9 @@ def _get_system_resources() -> Dict[str, Any]:
             "error": f"无法获取系统资源: {str(e)}"
         }
 
-async def _check_vector_adapter_health() -> Dict[str, Any]:
-    """检查向量适配器健康状态"""
-    try:
-        adapter = await get_vector_adapter()
-        
-        # 获取适配器统计
-        stats = await adapter.get_stats()
-        
-        return {
-            "status": "healthy",
-            "migration_mode": adapter.migration_mode,
-            "statistics": stats,
-            "last_check": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "last_check": datetime.now().isoformat()
-        }
+# 适配器相关功能已删除
 
-def _generate_recommendations(vector_health: Dict, resources: Dict, adapter_health: Dict) -> List[str]:
+def _generate_recommendations(vector_health: Dict, resources: Dict) -> List[str]:
     """生成系统优化建议"""
     recommendations = []
     
@@ -195,11 +172,7 @@ def _generate_recommendations(vector_health: Dict, resources: Dict, adapter_heal
         if search_time > 100:
             recommendations.append("向量搜索响应时间较长，建议优化索引配置")
         
-        # 适配器建议
-        adapter_stats = adapter_health.get("statistics", {})
-        hit_rate = adapter_stats.get("cache_hit_rate", 0)
-        if hit_rate < 0.7:
-            recommendations.append(f"缓存命中率较低({hit_rate:.1%})，建议预热缓存")
+        # 适配器建议已移除
         
         # 通用建议
         if not recommendations:
@@ -244,11 +217,9 @@ async def get_vector_metrics():
         storage = await get_hybrid_storage()
         
         # 获取统计信息
-        adapter_stats = await adapter.get_stats()
         storage_stats = await storage.get_storage_stats()
         
         return {
-            "adapter_metrics": adapter_stats,
             "storage_metrics": storage_stats,
             "timestamp": datetime.now().isoformat()
         }

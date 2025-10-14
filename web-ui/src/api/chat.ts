@@ -71,61 +71,6 @@ export class ChatApi extends BaseApi {
   }> => {
     return this.get('/chat/status');
   }
-
-  // 获取系统状态摘要  
-  getSystemStatus = async (): Promise<{
-    active_tasks: number;
-    pending_plans: number;
-    system_health: 'good' | 'warning' | 'critical';
-    recent_activity: string[];
-  }> => {
-    return this.get('/chat/system-status');
-  }
-
-  // 执行聊天命令
-  executeCommand = async (command: string, params?: Record<string, any>): Promise<{
-    success: boolean;
-    result: any;
-    message: string;
-  }> => {
-    return this.post('/chat/command', {
-      command,
-      params,
-    });
-  }
-
-  // 创建计划从聊天
-  createPlanFromChat = async (description: string): Promise<Plan> => {
-    return this.post('/chat/create-plan', {
-      description,
-    });
-  }
-
-  // 获取任务建议
-  getTaskSuggestions = async (goal: string): Promise<{
-    suggested_tasks: Array<{
-      name: string;
-      description: string;
-      estimated_time: string;
-      priority: 'high' | 'medium' | 'low';
-    }>;
-  }> => {
-    return this.post('/chat/task-suggestions', {
-      goal,
-    });
-  }
-
-  // 分析用户输入意图
-  analyzeIntent = async (message: string): Promise<{
-    intent: 'create_plan' | 'view_status' | 'execute_task' | 'general_chat' | 'help';
-    confidence: number;
-    entities: Record<string, any>;
-    suggestions: string[];
-  }> => {
-    return this.post('/chat/analyze-intent', {
-      message,
-    });
-  }
 }
 
 export const chatApi = new ChatApi();
