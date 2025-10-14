@@ -8,7 +8,7 @@ fi
 
 # 读取环境变量，提供默认值
 BACKEND_HOST=${BACKEND_HOST:-0.0.0.0}
-BACKEND_PORT=${BACKEND_PORT:-8000}
+BACKEND_PORT=${BACKEND_PORT:-9000}
 
 echo "🚀 Starting backend server..."
 echo "📍 Host: $BACKEND_HOST"
