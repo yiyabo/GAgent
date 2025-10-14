@@ -26,11 +26,9 @@ _ALIAS_MAP = {
     "thread_safe_cache": "app.services.embeddings.thread_safe_cache",
     "thread_safe_batch_processor": "app.services.embeddings.thread_safe_batch_processor",
     "thread_safe_async_manager": "app.services.embeddings.thread_safe_async_manager",
-    "embedding_batch_processor": "app.services.embeddings.embedding_batch_processor",
     "glm_api_client": "app.services.embeddings.glm_api_client",
     "cache": "app.services.embeddings.cache",
     "similarity_calculator": "app.services.embeddings.similarity_calculator",
-    "async_embedding_manager": "app.services.embeddings.async_embedding_manager",
 
     # context
     "context": "app.services.context.context",
