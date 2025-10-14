@@ -1,9 +1,10 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
-import { ChatMessage, ChatSession } from '@/types';
+import { ChatMessage, ChatSession, Memory } from '@/types';
 import { SessionStorage } from '@/utils/sessionStorage';
 import { useTasksStore } from '@store/tasks';
 import { analyzeUserIntent, executeToolBasedOnIntent } from '../services/intentAnalysis';
+import { memoryApi } from '@api/memory';
 
 interface ChatState {
   // 聊天数据
@@ -25,7 +26,11 @@ interface ChatState {
   // UI状态
   chatPanelVisible: boolean;
   chatPanelWidth: number;
-  
+
+  // Memory 相关状态
+  memoryEnabled: boolean;
+  relevantMemories: Memory[];
+
   // 操作方法
   setCurrentSession: (session: ChatSession | null) => void;
   addSession: (session: ChatSession) => void;
@@ -49,6 +54,12 @@ interface ChatState {
   setChatContext: (context: { planTitle?: string | null; taskId?: number | null; taskName?: string | null }) => void;
   clearChatContext: () => void;
   setCurrentWorkflowId: (workflowId: string | null) => void;
+
+  // Memory 操作
+  toggleMemory: () => void;
+  setMemoryEnabled: (enabled: boolean) => void;
+  setRelevantMemories: (memories: Memory[]) => void;
+  saveMessageAsMemory: (message: ChatMessage, memoryType?: string, importance?: string) => Promise<void>;
   
   // 快捷操作
   sendMessage: (content: string, metadata?: ChatMessage['metadata']) => Promise<void>;
@@ -73,6 +84,8 @@ export const useChatStore = create<ChatState>()(
     isProcessing: false,
     chatPanelVisible: true,
     chatPanelWidth: 400,
+    memoryEnabled: true, // 默认启用记忆功能
+    relevantMemories: [],
 
     // 设置当前会话
     setCurrentSession: (session) => {
@@ -259,7 +272,7 @@ export const useChatStore = create<ChatState>()(
 
     // 发送消息
     sendMessage: async (content, metadata) => {
-      const { currentPlanTitle, currentTaskId, currentTaskName, currentWorkflowId, currentSession } = get();
+      const { currentPlanTitle, currentTaskId, currentTaskName, currentWorkflowId, currentSession, memoryEnabled } = get();
       const mergedMetadata = {
         ...metadata,
         plan_title: metadata?.plan_title ?? currentPlanTitle ?? undefined,
@@ -267,7 +280,43 @@ export const useChatStore = create<ChatState>()(
         task_name: metadata?.task_name ?? currentTaskName ?? undefined,
         workflow_id: metadata?.workflow_id ?? currentWorkflowId ?? undefined,
       };
-      
+
+      // 🧠 方案 A: 自动 RAG - 查询相关记忆
+      let enhancedContent = content;
+      let memories: Memory[] = [];
+
+      if (memoryEnabled) {
+        try {
+          console.log('🧠 Memory RAG: 查询相关记忆...', { query: content });
+          const memoryResult = await memoryApi.queryMemory({
+            search_text: content,
+            limit: 3,
+            min_similarity: 0.6
+          });
+
+          memories = memoryResult.memories;
+          set({ relevantMemories: memories });
+
+          if (memories.length > 0) {
+            console.log(`✅ 找到 ${memories.length} 条相关记忆`);
+
+            // 构建记忆上下文
+            const memoryContext = memories
+              .map(m => `[记忆 ${(m.similarity! * 100).toFixed(0)}%] ${m.content}`)
+              .join('\n');
+
+            // 将记忆添加到用户消息的开头
+            enhancedContent = `相关记忆:\n${memoryContext}\n\n用户问题: ${content}`;
+            console.log('🎯 使用增强后的上下文:', { memoryCount: memories.length });
+          } else {
+            console.log('📭 未找到相关记忆');
+          }
+        } catch (error) {
+          console.error('❌ Memory RAG 查询失败:', error);
+          // 降级: 不使用记忆继续
+        }
+      }
+
       // 创建用户消息
       const userMessage: ChatMessage = {
         id: `msg_${Date.now()}_user`,
@@ -279,7 +328,7 @@ export const useChatStore = create<ChatState>()(
 
       // 添加用户消息
       get().addMessage(userMessage);
-      
+
       // 设置处理中状态
       set({ isProcessing: true, inputText: '' });
 
@@ -314,8 +363,9 @@ export const useChatStore = create<ChatState>()(
           mode: 'assistant' as const
         };
         console.log('📤 发送聊天请求:', chatRequest);
-        
-        const result = await chatApi.sendMessage(content, chatRequest);
+
+        // 使用增强后的内容(如果有记忆)
+        const result = await chatApi.sendMessage(enhancedContent, chatRequest);
         console.log('🎯 Chat result:', result);
         
         // 处理特殊操作
@@ -602,6 +652,33 @@ export const useChatStore = create<ChatState>()(
         }
       } catch (error) {
         console.error('加载聊天历史失败:', error);
+        throw error;
+      }
+    },
+
+    // Memory 操作方法
+    toggleMemory: () => set((state) => ({ memoryEnabled: !state.memoryEnabled })),
+
+    setMemoryEnabled: (enabled) => set({ memoryEnabled: enabled }),
+
+    setRelevantMemories: (memories) => set({ relevantMemories: memories }),
+
+    saveMessageAsMemory: async (message, memoryType = 'conversation', importance = 'medium') => {
+      try {
+        console.log('💾 保存消息为记忆:', { content: message.content.substring(0, 50) });
+
+        await memoryApi.saveMemory({
+          content: message.content,
+          memory_type: memoryType as any,
+          importance: importance as any,
+          tags: ['chat', 'manual_saved'],
+          context: `对话保存于 ${new Date().toLocaleString()}`,
+          related_task_id: message.metadata?.task_id
+        });
+
+        console.log('✅ 消息已保存为记忆');
+      } catch (error) {
+        console.error('❌ 保存记忆失败:', error);
         throw error;
       }
     },
