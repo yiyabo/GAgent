@@ -1,11 +1,12 @@
 import React, { useRef, useEffect } from 'react';
-import { Input, Button, Space, Typography, Avatar, Divider, Empty } from 'antd';
+import { Input, Button, Space, Typography, Avatar, Divider, Empty, Alert, Tag, Tooltip, Switch } from 'antd';
 import {
   SendOutlined,
   PaperClipOutlined,
   RobotOutlined,
   UserOutlined,
   MessageOutlined,
+  DatabaseOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
@@ -26,10 +27,13 @@ const ChatMainArea: React.FC = () => {
     currentSession,
     currentPlanTitle,
     currentTaskName,
+    memoryEnabled,
+    relevantMemories,
     setInputText,
     sendMessage,
     startNewSession,
     restoreSession,
+    toggleMemory,
   } = useChatStore();
 
   const { selectedTask, currentPlan } = useTasksStore();
@@ -133,57 +137,57 @@ const ChatMainArea: React.FC = () => {
       padding: '0 40px',
       textAlign: 'center',
     }}>
-      <Avatar 
-        size={80} 
-        icon={<RobotOutlined />} 
-        style={{ 
+      <Avatar
+        size={64}
+        icon={<RobotOutlined />}
+        style={{
           background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-          marginBottom: 24,
-        }} 
+          marginBottom: 16,
+        }}
       />
-      
-      <Title level={2} style={{ marginBottom: 16, color: '#1f2937' }}>
+
+      <Title level={3} style={{ marginBottom: 12, color: '#1f2937' }}>
         AI 智能任务编排助手
       </Title>
-      
-      <Text 
-        style={{ 
-          fontSize: 16, 
-          color: '#6b7280', 
-          marginBottom: 32,
-          lineHeight: 1.6,
+
+      <Text
+        style={{
+          fontSize: 14,
+          color: '#6b7280',
+          marginBottom: 24,
+          lineHeight: 1.5,
         }}
       >
         我可以帮你创建计划、分解任务、执行调度，让复杂的项目变得简单高效
       </Text>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 300 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 280 }}>
         {quickActions.map((action, index) => (
           <Button
             key={index}
-            size="large"
+            size="middle"
             style={{
-              height: 48,
-              borderRadius: 12,
+              height: 40,
+              borderRadius: 8,
               border: '1px solid #e5e7eb',
               background: 'white',
-              boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+              boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'flex-start',
-              paddingLeft: 20,
+              paddingLeft: 16,
             }}
             onClick={action.action}
           >
-            <MessageOutlined style={{ marginRight: 12, color: '#6366f1' }} />
-            <span style={{ color: '#374151', fontWeight: 500 }}>{action.text}</span>
+            <MessageOutlined style={{ marginRight: 10, color: '#6366f1', fontSize: 14 }} />
+            <span style={{ color: '#374151', fontWeight: 500, fontSize: 14 }}>{action.text}</span>
           </Button>
         ))}
       </div>
 
-      <Divider style={{ margin: '32px 0', width: '100%' }} />
-      
-      <Text type="secondary" style={{ fontSize: 14 }}>
+      <Divider style={{ margin: '24px 0', width: '100%' }} />
+
+      <Text type="secondary" style={{ fontSize: 13 }}>
         💡 你可以直接输入自然语言描述你的需求，我会智能理解并帮助执行
       </Text>
     </div>
@@ -198,7 +202,7 @@ const ChatMainArea: React.FC = () => {
     }}>
       {/* 头部信息 */}
       <div style={{
-        padding: '16px 24px',
+        padding: '12px 20px',
         borderBottom: '1px solid #f0f0f0',
         background: 'white',
         flexShrink: 0,
@@ -223,13 +227,29 @@ const ChatMainArea: React.FC = () => {
             </div>
           </div>
 
-          {/* 上下文信息 */}
-          {(selectedTask || currentPlan || currentPlanTitle || currentTaskName) && (
-            <div style={{ fontSize: 12, color: '#666', textAlign: 'right' }}>
-              {(currentPlan || currentPlanTitle) && <div>当前计划: {currentPlan || currentPlanTitle}</div>}
-              {(selectedTask || currentTaskName) && <div>选中任务: {selectedTask?.name || currentTaskName}</div>}
-            </div>
-          )}
+          {/* 上下文信息和Memory开关 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            {(selectedTask || currentPlan || currentPlanTitle || currentTaskName) && (
+              <div style={{ fontSize: 12, color: '#666', textAlign: 'right' }}>
+                {(currentPlan || currentPlanTitle) && <div>当前计划: {currentPlan || currentPlanTitle}</div>}
+                {(selectedTask || currentTaskName) && <div>选中任务: {selectedTask?.name || currentTaskName}</div>}
+              </div>
+            )}
+
+            {/* Memory 功能开关 */}
+            <Tooltip title={memoryEnabled ? "记忆增强已启用" : "记忆增强已禁用"}>
+              <Space size="small">
+                <DatabaseOutlined style={{ color: memoryEnabled ? '#52c41a' : '#d9d9d9', fontSize: 16 }} />
+                <Switch
+                  checked={memoryEnabled}
+                  onChange={toggleMemory}
+                  size="small"
+                  checkedChildren="记忆"
+                  unCheckedChildren="记忆"
+                />
+              </Space>
+            </Tooltip>
+          </div>
         </div>
       </div>
 
@@ -242,14 +262,34 @@ const ChatMainArea: React.FC = () => {
         {messages.length === 0 ? (
           renderWelcome()
         ) : (
-          <div style={{ 
-            padding: '24px',
+          <div style={{
+            padding: '16px 20px',
             maxWidth: 800,
             margin: '0 auto',
             width: '100%',
           }}>
+            {/* 相关记忆提示 */}
+            {relevantMemories.length > 0 && (
+              <Alert
+                message={`🧠 找到 ${relevantMemories.length} 条相关记忆`}
+                description={
+                  <Space wrap>
+                    {relevantMemories.map(m => (
+                      <Tag key={m.id} color="blue">
+                        {m.keywords.slice(0, 2).join(', ')} ({(m.similarity! * 100).toFixed(0)}%)
+                      </Tag>
+                    ))}
+                  </Space>
+                }
+                type="info"
+                closable
+                style={{ marginBottom: 16 }}
+                onClose={() => useChatStore.getState().setRelevantMemories([])}
+              />
+            )}
+
             {messages.map((message) => (
-              <div key={message.id} style={{ marginBottom: 24 }}>
+              <div key={message.id} style={{ marginBottom: 16 }}>
                 <ChatMessage message={message} />
               </div>
             ))}
@@ -260,7 +300,7 @@ const ChatMainArea: React.FC = () => {
                 display: 'flex',
                 alignItems: 'flex-start',
                 gap: 12,
-                marginBottom: 24,
+                marginBottom: 16,
               }}>
                 <Avatar 
                   size={32} 
@@ -293,7 +333,7 @@ const ChatMainArea: React.FC = () => {
 
       {/* 输入区域 */}
       <div style={{
-        padding: '16px 24px',
+        padding: '12px 20px',
         borderTop: '1px solid #f0f0f0',
         background: 'white',
         flexShrink: 0,

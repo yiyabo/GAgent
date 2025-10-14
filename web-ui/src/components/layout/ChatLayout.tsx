@@ -6,7 +6,11 @@ import DAGSidebar from './DAGSidebar';
 
 const ChatLayout: React.FC = () => {
   return (
-    <Layout style={{ height: '100vh', overflow: 'hidden' }}>
+    <Layout style={{
+      height: 'calc(100vh - 64px)', // 减去 header 高度
+      overflow: 'hidden',
+      margin: '-24px', // 抵消外层 Content 的 padding
+    }}>
       {/* 左侧对话列表 */}
       <Layout.Sider 
         width={280} 

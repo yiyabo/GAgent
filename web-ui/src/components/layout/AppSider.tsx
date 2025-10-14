@@ -9,6 +9,8 @@ import {
   BarChartOutlined,
   ToolOutlined,
   BookOutlined,
+  DatabaseOutlined,
+  MessageOutlined,
 } from '@ant-design/icons';
 
 const { Sider } = Layout;
@@ -28,6 +30,12 @@ const menuItems: MenuItem[] = [
     path: '/dashboard',
   },
   {
+    key: 'chat',
+    icon: <MessageOutlined />,
+    label: 'AI对话',
+    path: '/chat',
+  },
+  {
     key: 'tasks',
     icon: <NodeIndexOutlined />,
     label: '任务管理',
@@ -38,6 +46,12 @@ const menuItems: MenuItem[] = [
     icon: <ProjectOutlined />,
     label: '计划管理',
     path: '/plans',
+  },
+  {
+    key: 'memory',
+    icon: <DatabaseOutlined />,
+    label: '记忆管理',
+    path: '/memory',
   },
   {
     key: 'analytics',
