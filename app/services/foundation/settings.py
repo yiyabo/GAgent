@@ -58,7 +58,7 @@ if _USE_PYDANTIC:
         database_url: str = Field(default="sqlite:///./tasks.db", env="DATABASE_URL")
         
         # API服务配置
-        base_url: str = Field(default="http://127.0.0.1:8000", env="BASE_URL")
+        base_url: str = Field(default="http://127.0.0.1:9000", env="BASE_URL")
 
         # GLM / LLM 配置
         glm_api_key: Optional[str] = Field(default=None, env="GLM_API_KEY")
@@ -68,6 +68,7 @@ if _USE_PYDANTIC:
         )
         glm_model: str = Field(default="glm-4-flash", env="GLM_MODEL")
         glm_request_timeout: int = Field(default=60, env="GLM_REQUEST_TIMEOUT")
+        llm_request_timeout: int = Field(default=60, env="LLM_REQUEST_TIMEOUT")
         llm_mock: bool = Field(default=False, env="LLM_MOCK")
         llm_retries: int = Field(default=2, env="LLM_RETRIES")
         llm_backoff_base: float = Field(default=0.5, env="LLM_BACKOFF_BASE")
@@ -78,7 +79,7 @@ if _USE_PYDANTIC:
             default="https://api.perplexity.ai/chat/completions",
             env="PERPLEXITY_API_URL",
         )
-        perplexity_model: str = Field(default="llama-3.1-sonar-small-128k-online", env="PERPLEXITY_MODEL")
+        perplexity_model: str = Field(default="sonar-reasoning-pro", env="PERPLEXITY_MODEL")
 
         # QWEN API 配置
         qwen_api_key: Optional[str] = Field(default=None, env="QWEN_API_KEY")
@@ -120,7 +121,7 @@ if _USE_PYDANTIC:
 
         # 服务器配置
         backend_host: str = Field(default="0.0.0.0", env="BACKEND_HOST")
-        backend_port: int = Field(default=8000, env="BACKEND_PORT")
+        backend_port: int = Field(default=9000, env="BACKEND_PORT")
         cors_origins: str = Field(default="http://localhost:3000", env="CORS_ORIGINS")
 
         class Config:
@@ -149,6 +150,10 @@ else:
                 self.glm_request_timeout = int(os.getenv("GLM_REQUEST_TIMEOUT", "60"))
             except Exception:
                 self.glm_request_timeout = 60
+            try:
+                self.llm_request_timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", "60"))
+            except Exception:
+                self.llm_request_timeout = 60
             self.llm_mock = os.getenv("LLM_MOCK", "").strip().lower() in {"1", "true", "yes", "on"}
             
             # Perplexity API 配置
@@ -219,9 +224,9 @@ else:
             # 服务器配置
             self.backend_host = os.getenv("BACKEND_HOST", "0.0.0.0")
             try:
-                self.backend_port = int(os.getenv("BACKEND_PORT", "8000"))
+                self.backend_port = int(os.getenv("BACKEND_PORT", "9000"))
             except Exception:
-                self.backend_port = 8000
+                self.backend_port = 9000
             self.cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
 

@@ -211,3 +211,14 @@ def llm_health(ping: bool = False):
     else:
         info["ping_ok"] = None
     return info
+
+
+if __name__ == "__main__":
+    import uvicorn
+    settings = get_settings()
+    uvicorn.run(
+        "app.main:app",
+        host=settings.backend_host,
+        port=settings.backend_port,
+        reload=True
+    )
