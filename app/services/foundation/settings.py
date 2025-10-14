@@ -118,6 +118,11 @@ if _USE_PYDANTIC:
         anthropic_api_key: Optional[str] = Field(default=None, env=["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"])
         tavily_api_key: Optional[str] = Field(default=None, env="TAVILY_API_KEY")
 
+        # 服务器配置
+        backend_host: str = Field(default="0.0.0.0", env="BACKEND_HOST")
+        backend_port: int = Field(default=8000, env="BACKEND_PORT")
+        cors_origins: str = Field(default="http://localhost:3000", env="CORS_ORIGINS")
+
         class Config:
             env_file = ".env"
             case_sensitive = False
@@ -210,6 +215,14 @@ else:
             self.budget_debug = _truthy(os.getenv("BUDGET_DEBUG", ""))
             self.decomp_debug = _truthy(os.getenv("DECOMP_DEBUG", ""))
             self.global_index_path = os.getenv("GLOBAL_INDEX_PATH", "INDEX.md")
+
+            # 服务器配置
+            self.backend_host = os.getenv("BACKEND_HOST", "0.0.0.0")
+            try:
+                self.backend_port = int(os.getenv("BACKEND_PORT", "8000"))
+            except Exception:
+                self.backend_port = 8000
+            self.cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
 
 @lru_cache(maxsize=1)

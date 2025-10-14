@@ -51,12 +51,20 @@ export GLM_API_KEY=your_key_here
 
 ### 启动 API 服务
 ```bash
-# 生产（需配置真实 API Key）
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+# 推荐方式：使用启动脚本（自动读取 .env 配置）
+./start_backend.sh
+
+# 或者手动指定参数（需配置真实 API Key）
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 # 开发（可用 Mock）
-# LLM_MOCK=1 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+# LLM_MOCK=1 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+**说明**:
+- 后端配置从 `.env` 文件读取（`BACKEND_HOST`, `BACKEND_PORT`, `CORS_ORIGINS`）
+- 推荐使用 `./start_backend.sh` 启动，会自动加载环境变量
+- CORS 允许的前端地址可在 `.env` 中配置 `CORS_ORIGINS`
 
 ### 🎨 启动 Web UI (可选)
 ```bash
@@ -69,9 +77,15 @@ npm install
 # 启动开发服务器
 npm run dev
 
-# 浏览器访问 http://localhost:5173
+# 浏览器访问 http://localhost:3000
 # 点击侧边栏"记忆管理"菜单查看Memory-MCP功能
 ```
+
+**说明**:
+- 前端配置从 `web-ui/.env.development` 或 `.env.production` 读取
+- 开发环境默认端口 3000，可通过 `VITE_DEV_SERVER_PORT` 配置
+- API 地址通过 `VITE_API_BASE_URL` 配置（默认 http://localhost:8000）
+- WebSocket 地址通过 `VITE_WS_BASE_URL` 配置（默认 ws://localhost:8000）
 
 **Web UI 功能**:
 - 📊 记忆统计看板 (总数、连接数、嵌入覆盖率、进化次数)

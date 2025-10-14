@@ -5,6 +5,7 @@ import { SessionStorage } from '@/utils/sessionStorage';
 import { useTasksStore } from '@store/tasks';
 import { analyzeUserIntent, executeToolBasedOnIntent } from '../services/intentAnalysis';
 import { memoryApi } from '@api/memory';
+import { ENV } from '@/config/env';
 
 interface ChatState {
   // 聊天数据
@@ -598,7 +599,7 @@ export const useChatStore = create<ChatState>()(
     loadChatHistory: async (sessionId: string) => {
       try {
         console.log('📖 加载聊天历史:', sessionId);
-        const response = await fetch(`http://127.0.0.1:8000/chat/history/${sessionId}?limit=100`);
+        const response = await fetch(`${ENV.API_BASE_URL}/chat/history/${sessionId}?limit=100`);
         
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
