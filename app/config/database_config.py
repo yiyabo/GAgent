@@ -4,9 +4,12 @@
 统一管理所有数据库文件的路径和配置。
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class DatabaseConfig:
@@ -88,10 +91,10 @@ class DatabaseConfig:
                                 os.remove(wal_shm_file)
                                 cleaned.append(wal_shm_file)
                             except Exception as e:
-                                print(f"⚠️  无法删除 {wal_shm_file}: {e}")
+                                logger.warning(f"无法删除 {wal_shm_file}: {e}")
                     
                 except Exception as e:
-                    print(f"❌ 迁移失败 {old_path}: {e}")
+                    logger.error(f"迁移失败 {old_path}: {e}")
         
         # 清理剩余的WAL/SHM文件
         for pattern in ["*.db-wal", "*.db-shm"]:
@@ -100,20 +103,20 @@ class DatabaseConfig:
                     os.remove(wal_file)
                     cleaned.append(wal_file)
                 except Exception as e:
-                    print(f"⚠️  无法删除 {wal_file}: {e}")
+                    logger.warning(f"无法删除 {wal_file}: {e}")
         
         if migrated:
-            print("✅ 数据库迁移完成:")
+            logger.info("数据库迁移完成:")
             for migration in migrated:
-                print(f"   📁 {migration}")
-        
+                logger.info(f"   📁 {migration}")
+
         if cleaned:
-            print("✅ SQLite临时文件清理完成:")
+            logger.info("SQLite临时文件清理完成:")
             for cleaned_file in cleaned:
-                print(f"   🗑️  {cleaned_file}")
-        
+                logger.info(f"   🗑️  {cleaned_file}")
+
         if not migrated and not cleaned:
-            print("ℹ️  没有需要迁移或清理的文件")
+            logger.info("没有需要迁移或清理的文件")
     
     def get_database_info(self) -> dict:
         """获取数据库配置信息"""
