@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict, List, Optional
 
 from ...interfaces import LLMProvider, TaskRepository
@@ -5,6 +6,8 @@ from ...llm import get_default_client
 from ...prompts import prompt_manager
 from ...repository.tasks import default_repo
 from ...utils import parse_json_obj, plan_prefix, split_prefix
+
+logger = logging.getLogger(__name__)
 
 # parse_json_obj is centralized in app/utils.py
 
@@ -49,9 +52,9 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
     client = client or get_default_client()
     try:
         content = client.chat(prompt, force_real=True)
-        print(f"DEBUG: LLM response content: {content}")  # Debug output
+        logger.debug(f"LLM response content: {content}")
         obj = parse_json_obj(content) or {}
-        print(f"DEBUG: Parsed JSON object: {obj}")  # Debug output
+        logger.debug(f"Parsed JSON object: {obj}")
         if isinstance(obj, list):
             plan = {"title": title, "tasks": obj}
         elif isinstance(obj, dict):
@@ -62,7 +65,7 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
         else:
             plan = {"title": title, "tasks": []}
     except Exception as e:
-        print(f"DEBUG: Exception in plan generation: {e}")  # Debug output
+        logger.debug(f"Exception in plan generation: {e}")
         plan = {"title": title, "tasks": []}
 
     # Normalize tasks and compute priorities
