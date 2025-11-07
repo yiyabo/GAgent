@@ -1,16 +1,20 @@
-import { defineConfig, loadEnv } from 'vite'
-import react from '@vitejs/plugin-react'
-import path from 'path'
+import { defineConfig, loadEnv } from 'vite';
+import react from '@vitejs/plugin-react';
+import path from 'path';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
-  // 加载环境变量
-  const env = loadEnv(mode, process.cwd(), '');
+  // 统一从仓库根目录加载 .env（确保前后端共享同一份配置）
+  const projectRoot = path.resolve(__dirname, '..');
+  const env = loadEnv(mode, projectRoot, '');
+
   const apiBaseUrl = env.VITE_API_BASE_URL || 'http://localhost:9000';
   const wsBaseUrl = env.VITE_WS_BASE_URL || 'ws://localhost:9000';
   const devServerPort = Number(env.VITE_DEV_SERVER_PORT) || 3000;
+  const devServerHost = env.VITE_DEV_SERVER_HOST || '0.0.0.0';
 
   return {
+    envDir: projectRoot,
     plugins: [react()],
     resolve: {
       alias: {
@@ -25,7 +29,9 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      host: devServerHost,
       port: devServerPort,
+      strictPort: true,
       proxy: {
         '/api': {
           target: apiBaseUrl,

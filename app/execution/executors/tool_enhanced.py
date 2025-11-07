@@ -44,7 +44,7 @@ class ToolEnhancedExecutor:
         try:
             from tool_box import get_smart_router
 
-            # 重用全局router实例，避免重复创建
+            # Reuse the global router instance to avoid repeated initialisation
             if self.tool_router is None:
                 self.tool_router = await get_smart_router()
             self._initialized = True
@@ -63,7 +63,7 @@ class ToolEnhancedExecutor:
 
     def _default_report_path(self, task_name: str, fallback_filename: str = "report.md", task=None) -> str:
         """Build a path based on task hierarchy (ROOT → COMPOSITE → ATOMIC)"""
-        # 如果提供了task对象，使用层级路径生成器
+        # When a task object is provided, derive the hierarchical path
         if task:
             try:
                 from app.utils.task_path_generator import get_task_file_path, ensure_task_directory
@@ -155,13 +155,13 @@ class ToolEnhancedExecutor:
                 def _looks_like_doc_generation(name: str, prompt: str) -> bool:
                     text = f"{name}\n{prompt}".lower()
                     return any(k in text for k in [
-                        "report", "markdown", ".md", "write", "generate", "保存", "报告", "文档", "撰写", "生成"
+                        "report", "markdown", ".md", "write", "generate", "save", "document", "draft"
                     ])
 
                 force_save = bool((context_options or {}).get("force_save_output"))
                 custom_filename = (context_options or {}).get("output_filename")
                 
-                # 自动保存ATOMIC任务的输出到层级文件结构
+                # Auto-save ATOMIC task output into the hierarchical file structure
                 task_type = task.get("task_type") if isinstance(task, dict) else (task[7] if len(task) > 7 else "atomic")
                 is_atomic = task_type == "atomic"
                 
@@ -379,28 +379,28 @@ class ToolEnhancedExecutor:
                 if tool_name == "web_search":
                     # Format search results
                     if isinstance(result, dict) and result.get("results"):
-                        search_summary = f"搜索查询: {result.get('query', 'N/A')}\n"
-                        search_summary += f"找到 {len(result['results'])} 个结果:\n"
+                        search_summary = f"Search query: {result.get('query', 'N/A')}\n"
+                        search_summary += f"Found {len(result['results'])} results:\n"
 
                         for i, item in enumerate(result["results"][:3], 1):
                             search_summary += f"{i}. {item.get('title', 'No Title')}\n"
                             search_summary += f"   {item.get('snippet', 'No snippet')[:100]}...\n"
 
-                        tool_context_parts.append(f"## 网页搜索结果\n\n{search_summary}")
+                        tool_context_parts.append(f"## Web search results\n\n{search_summary}")
 
                 elif tool_name == "database_query":
                     # Format database results
                     if isinstance(result, dict) and result.get("success"):
-                        db_summary = f"数据库查询: {result.get('sql', 'N/A')}\n"
-                        db_summary += f"返回 {result.get('row_count', 0)} 行数据\n"
+                        db_summary = f"Database query: {result.get('sql', 'N/A')}\n"
+                        db_summary += f"Returned {result.get('row_count', 0)} rows\n"
 
                         rows = result.get("rows", [])
                         if rows:
-                            db_summary += "示例数据:\n"
+                            db_summary += "Sample data:\n"
                             for row in rows[:3]:
                                 db_summary += f"  {str(row)}\n"
 
-                        tool_context_parts.append(f"## 数据库查询结果\n\n{db_summary}")
+                        tool_context_parts.append(f"## Database query results\n\n{db_summary}")
 
                 elif tool_name == "file_operations":
                     # Format file operation results
@@ -410,11 +410,11 @@ class ToolEnhancedExecutor:
 
                         if op == "read":
                             content = result.get("content", "")[:500]  # Limit content length
-                            file_summary = f"文件读取 ({path}):\n{content}..."
+                            file_summary = f"File read ({path}):\n{content}..."
                         else:
-                            file_summary = f"文件操作 {op} 在 {path} 执行成功"
+                            file_summary = f"File operation {op} succeeded on {path}"
 
-                        tool_context_parts.append(f"## 文件操作结果\n\n{file_summary}")
+                        tool_context_parts.append(f"## File operation results\n\n{file_summary}")
 
         # Add tool context to existing context options
         if tool_context_parts:
@@ -535,7 +535,7 @@ class ToolEnhancedExecutor:
                             # Improve file path if needed: unify under results/reports/{plan-slug}/...
                             path_in = (parameters.get("path") or "").strip()
                             if not path_in or path_in in ["report.txt", "report.md", ""]:
-                                fallback = f"报告_{task_id}.md"
+                                fallback = f"report_{task_id}.md"
                                 parameters["path"] = self._default_report_path(task.get("name", "report"), fallback)
                             else:
                                 # If given a bare filename or relative simple path, prefix our unified directory
@@ -652,20 +652,20 @@ class ToolEnhancedExecutor:
             root_prompt = self.repo.get_task_input_prompt(root.get("id")) or ""
             
             # Build consistency check prompt
-            check_prompt = f"""请判断以下生成内容是否紧扣ROOT主题，并给出评分（0-10分）和简短理由。
+            check_prompt = f"""Evaluate whether the following content stays aligned with the ROOT topic. Provide a score (0-10) and a brief explanation.
 
-[ROOT主题] {root_name}
-[核心目标] {root_prompt[:500]}
+[ROOT TOPIC] {root_name}
+[Primary Goal] {root_prompt[:500]}
 
-[生成内容]
+[Generated Content]
 {content[:1500]}
 
-请以JSON格式回复：
+Respond in JSON:
 {{
-  "score": <0-10的整数>,
+  "score": <integer 0-10>,
   "on_topic": <true/false>,
-  "reasoning": "<简短理由>",
-  "suggestions": "<若偏题，给出纠正建议>"
+  "reasoning": "<brief explanation>",
+  "suggestions": "<correction advice if off-topic>"
 }}"""
             
             # Call LLM for consistency check
@@ -690,24 +690,24 @@ class ToolEnhancedExecutor:
                 suggestions = result.get("suggestions", "")
                 
                 # Build correction prompt
-                correction_prompt = f"""以下内容偏离了ROOT主题，请根据纠正建议重写，确保紧扣主题。
+                correction_prompt = f"""The content below drifts away from the ROOT topic. Rewrite it using the suggestions so it stays on topic.
 
-[ROOT主题] {root_name}
-[核心目标] {root_prompt[:500]}
+[ROOT TOPIC] {root_name}
+[Primary Goal] {root_prompt[:500]}
 
-[原内容]
+[Original Content]
 {content[:1500]}
 
-[纠正建议]
+[Suggestions]
 {suggestions}
 
-请重写内容，确保：
-1. 紧扣ROOT主题的关键词和核心目标
-2. 保持原有结构和格式
-3. 补充缺失的主题相关要点
-4. 删除无关内容
+When rewriting, make sure to:
+1. Anchor the narrative to the ROOT topic and primary goal.
+2. Keep the existing structure and format.
+3. Add any missing topic-relevant points.
+4. Remove unrelated content.
 
-重写后的内容："""
+Rewritten content:"""
                 
                 # Generate corrected content
                 corrected = await llm.generate_async(correction_prompt, temperature=0.3, max_tokens=2000)
@@ -868,8 +868,7 @@ async def execute_task_with_tools_and_evaluation(
     def _looks_like_doc_generation(name: str, prompt: str) -> bool:
         text = f"{name}\n{prompt}".lower()
         keywords = [
-            "report", "markdown", ".md", "write", "generate",
-            "报告", "文档", "撰写", "生成", "保存",
+            "report", "markdown", ".md", "write", "generate", "document", "save"
         ]
         return any(k in text for k in keywords)
 
@@ -878,7 +877,7 @@ async def execute_task_with_tools_and_evaluation(
         force_save = bool((context_options or {}).get("force_save_output"))
         custom_filename = (context_options or {}).get("output_filename")
         
-        # 自动保存ATOMIC任务
+        # Auto-save ATOMIC tasks
         task_type = task.get("task_type") if isinstance(task, dict) else (task[7] if len(task) > 7 else "atomic")
         is_atomic = task_type == "atomic"
         

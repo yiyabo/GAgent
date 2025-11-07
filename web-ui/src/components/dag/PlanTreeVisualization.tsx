@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Spin, Tooltip } from 'antd';
 import { PlanTaskNode } from '@/types';
 import './PlanTreeVisualization.css';
@@ -8,6 +8,7 @@ export interface PlanTreeVisualizationProps {
   loading?: boolean;
   height?: number | string;
   onSelectTask?: (task: PlanTaskNode | null) => void;
+  selectedTaskId?: number | null;
 }
 
 interface TreeNode {
@@ -15,14 +16,35 @@ interface TreeNode {
   children: TreeNode[];
 }
 
+const getOrderKey = (task: PlanTaskNode): number =>
+  typeof task.position === 'number' ? task.position : task.id;
+
+const compareTaskOrder = (a: PlanTaskNode, b: PlanTaskNode): number => {
+  const posDiff = getOrderKey(a) - getOrderKey(b);
+  if (posDiff !== 0) {
+    return posDiff;
+  }
+  return a.id - b.id;
+};
+
 const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   tasks,
   loading,
   height = '480px',
   onSelectTask,
+  selectedTaskId,
 }) => {
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [internalSelectedId, setInternalSelectedId] = useState<number | null>(null);
+
+  const effectiveSelectedId =
+    selectedTaskId !== undefined ? selectedTaskId ?? null : internalSelectedId;
+
+  useEffect(() => {
+    if (selectedTaskId !== undefined) {
+      setInternalSelectedId(selectedTaskId ?? null);
+    }
+  }, [selectedTaskId]);
 
   // 状态图标
   const getStatusIcon = (status: string) => {
@@ -75,15 +97,15 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   const buildTree = useMemo((): TreeNode[] => {
     if (!tasks || tasks.length === 0) return [];
 
-    const roots = tasks.filter(task => 
-      !task.parent_id || task.task_type?.toLowerCase() === 'root'
-    );
+    const roots = tasks
+      .filter(task => !task.parent_id || task.task_type?.toLowerCase() === 'root')
+      .sort(compareTaskOrder);
 
     const buildNode = (task: PlanTaskNode): TreeNode => {
       const children = tasks
         .filter(t => t.parent_id === task.id)
         .map(child => buildNode(child))
-        .sort((a, b) => a.task.id - b.task.id);
+        .sort((a, b) => compareTaskOrder(a.task, b.task));
 
       return { task, children };
     };
@@ -107,7 +129,9 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
 
   // 选择任务
   const handleSelectTask = (task: PlanTaskNode) => {
-    setSelectedId(task.id);
+    if (selectedTaskId === undefined) {
+      setInternalSelectedId(task.id);
+    }
     onSelectTask?.(task);
   };
 
@@ -121,7 +145,7 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
     const { task, children } = node;
     const hasChildren = children.length > 0;
     const isCollapsed = collapsed.has(task.id);
-    const isSelected = selectedId === task.id;
+    const isSelected = effectiveSelectedId === task.id;
     
     const cleanName = (task.short_name || task.name || '').replace(/^(ROOT|COMPOSITE|ATOMIC):\s*/i, '');
     const displayName = cleanName.length > 30 ? cleanName.substring(0, 30) + '...' : cleanName;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Row, Col, Card, Statistic, Progress, Space, Typography, Button } from 'antd';
+import { Row, Col, Card, Statistic, Progress, Space, Typography, Button, message } from 'antd';
 import {
   PlayCircleOutlined,
   CheckCircleOutlined,
@@ -8,11 +8,9 @@ import {
   RobotOutlined,
   DatabaseOutlined,
 } from '@ant-design/icons';
-import { useQuery } from '@tanstack/react-query';
 import { useSystemStore } from '@store/system';
 import { useTasksStore } from '@store/tasks';
-import { tasksApi } from '@api/tasks';
-import { resolveScopeParams } from '@api/scope';
+import { usePlanTasks } from '@hooks/usePlans';
 import { useChatStore } from '@store/chat';
 import TreeVisualization from '@components/dag/TreeVisualization';
 import { ENV } from '@/config/env';
@@ -22,25 +20,13 @@ const { Title, Text } = Typography;
 const Dashboard: React.FC = () => {
   const { systemStatus } = useSystemStore();
   const { tasks, getTaskStats } = useTasksStore();
-  const { currentWorkflowId, currentSession } = useChatStore((state) => ({
+  const { currentWorkflowId, currentSession, currentPlanId } = useChatStore((state) => ({
     currentWorkflowId: state.currentWorkflowId,
     currentSession: state.currentSession,
+    currentPlanId: state.currentPlanId,
   }));
 
-  // 获取任务统计数据
-  const { data: taskStats, isLoading: statsLoading } = useQuery({
-    queryKey: ['task-stats', currentWorkflowId, currentSession?.session_id],
-    queryFn: () => {
-      const scope = resolveScopeParams({
-        workflow_id: currentWorkflowId,
-        session_id: currentSession?.session_id ?? null,
-      });
-      return tasksApi.getTaskStats(scope);
-    },
-    // 只在有 session_id 或 workflow_id 时才请求
-    enabled: !!(currentSession?.session_id || currentWorkflowId),
-    refetchInterval: 10000, // 10秒刷新一次
-  });
+  const { data: planTasks = [] } = usePlanTasks({ planId: currentPlanId ?? undefined });
 
   // 处理统计数据格式差异
   const processStats = (rawStats: any) => {
@@ -67,7 +53,16 @@ const Dashboard: React.FC = () => {
     };
   };
 
-  const stats = processStats(taskStats || getTaskStats());
+  const statsSource = planTasks.length > 0
+    ? {
+        total: planTasks.length,
+        pending: planTasks.filter((task) => task.status === 'pending').length,
+        running: planTasks.filter((task) => task.status === 'running').length,
+        completed: planTasks.filter((task) => task.status === 'completed').length,
+        failed: planTasks.filter((task) => task.status === 'failed').length,
+      }
+    : getTaskStats();
+  const stats = processStats(statsSource);
 
   return (
     <div>
@@ -232,13 +227,21 @@ const Dashboard: React.FC = () => {
               extra={
                 <Button
                   onClick={async () => {
-                    console.log('🔄 手动测试API连接...');
+                    console.log('🔄 手动测试 PlanTree API...');
+                    if (!currentPlanId) {
+                      message.warning('当前尚未绑定计划，无法请求 PlanTree 数据。');
+                      return;
+                    }
                     try {
-                      const response = await fetch(`${ENV.API_BASE_URL}/tasks`);
+                      const response = await fetch(`${ENV.API_BASE_URL}/plans/${currentPlanId}/tree`);
+                      if (!response.ok) {
+                        throw new Error(`PlanTree 请求失败: ${response.status}`);
+                      }
                       const data = await response.json();
-                      console.log('✅ 直接API测试结果:', data.length, '个任务');
+                      console.log('✅ PlanTree 节点数:', Object.keys(data.nodes || {}).length);
                     } catch (error) {
-                      console.error('❌ 直接API测试失败:', error);
+                      console.error('❌ PlanTree API 调试失败:', error);
+                      message.error('PlanTree API 调试失败，请检查后端服务。');
                     }
                   }}
                 >

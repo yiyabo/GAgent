@@ -1,13 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
 import { Card, Spin, Button, Space, Select, Input, message, Badge } from 'antd';
 import { ReloadOutlined, ExpandOutlined } from '@ant-design/icons';
-import { tasksApi } from '@api/tasks';
-import { resolveScopeParams } from '@api/scope';
-import type { Task as TaskType } from '@/types';
+import { planTreeApi } from '@api/planTree';
+import { planTreeToTasks } from '@utils/planTree';
+import type { PlanSyncEventDetail, Task as TaskType } from '@/types';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
+import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 
 interface DAGVisualizationProps {
   onNodeClick?: (taskId: number, taskData: any) => void;
@@ -28,12 +29,10 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [stats, setStats] = useState<any>(null);
-  const currentWorkflowId = useChatStore((state) => state.currentWorkflowId);
-  const currentSession = useChatStore((state) => state.currentSession);
-  const { setTasks: updateStoreTasks, setTaskStats, setCurrentWorkflowId } = useTasksStore((state) => ({
+  const currentPlanId = useChatStore((state) => state.currentPlanId);
+  const { setTasks: updateStoreTasks, setTaskStats } = useTasksStore((state) => ({
     setTasks: state.setTasks,
     setTaskStats: state.setTaskStats,
-    setCurrentWorkflowId: state.setCurrentWorkflowId,
   }));
 
   // 状态颜色映射
@@ -104,116 +103,43 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   };
 
   // 加载任务数据
-  const loadTasks = async () => {
+  const loadTasks = useCallback(async () => {
     try {
       setLoading(true);
       console.log('🔄 Loading tasks for DAG visualization...');
 
-      // 允许在存在 session_id 或 workflow_id 其一时加载
-      if (!currentWorkflowId && !currentSession?.session_id) {
-        console.warn('⚠️ 当前无关联的工作流或会话，跳过任务加载');
+      if (!currentPlanId) {
+        console.warn('⚠️ 当前无绑定计划，跳过任务加载');
         setTasks([]);
         setStats(null);
         updateStoreTasks([]);
         setTaskStats(null);
-        setCurrentWorkflowId(null);
         return;
       }
 
-      const filters = resolveScopeParams({
-        workflow_id: currentWorkflowId,
-        session_id: currentSession?.session_id ?? null,
-      });
+      const tree = await planTreeApi.getPlanTree(currentPlanId);
+      const allTasks = planTreeToTasks(tree);
+      console.log('📊 PlanTree → tasks:', allTasks.length);
 
-      const [allTasks, taskStats] = await Promise.all([
-        tasksApi.getAllTasks(filters),
-        tasksApi.getTaskStats(filters),
-      ]);
-      
-      console.log('📊 Raw tasks data:', allTasks);
-      console.log('📈 Task stats:', taskStats);
-      console.log('📋 Tasks count:', allTasks.length);
-      
-      if (allTasks && allTasks.length > 0) {
-        console.log('✅ 前5个任务示例:', allTasks.slice(0, 5));
+      setTasks(allTasks);
+      updateStoreTasks(allTasks);
 
-        // 🔍 关键修改：只显示当前对话的ROOT任务及其子任务树（多级兜底）
-        const eq = (a?: string | number | null, b?: string | number | null) => String(a ?? '') === String(b ?? '');
-        const isRootType = (t: any) => (t?.task_type && String(t.task_type).toLowerCase() === 'root');
-        const typedRoots = allTasks.filter((t) => isRootType(t));
-        const roots = typedRoots.length > 0 ? typedRoots : allTasks.filter((t) => t.parent_id == null);
-
-        // 1) 优先按 session_id 匹配
-        let pickedRoot: any = roots.find((r) => eq(r.session_id, currentSession?.session_id));
-        // 2) 其次按 workflow_id 匹配
-        if (!pickedRoot) {
-          pickedRoot = roots.find((r) => eq(r.workflow_id, currentWorkflowId));
-        }
-        // 3) 若只有一个 ROOT，直接采用
-        if (!pickedRoot && roots.length === 1) {
-          pickedRoot = roots[0];
-        }
-        // 4) 兜底：选择最新的 ROOT（按id最大）
-        if (!pickedRoot && roots.length > 1) {
-          pickedRoot = roots.reduce((acc, cur) => (cur.id > acc.id ? cur : acc));
-        }
-
-        let filteredTasks: any[] = [];
-        if (pickedRoot) {
-          // 递归收集ROOT任务及其所有子任务
-          const collectTaskTree = (rootId: number): any[] => {
-            const rootTask = allTasks.find(task => task.id === rootId);
-            if (!rootTask) return [];
-
-            const children = allTasks
-              .filter(task => task.parent_id === rootId)
-              .flatMap(child => collectTaskTree(child.id));
-
-            return [rootTask, ...children];
-          };
-
-          filteredTasks = collectTaskTree(pickedRoot.id);
-          console.log(`🎯 过滤后显示 ${filteredTasks.length} 个任务（ROOT: ${pickedRoot.name}，id=${pickedRoot.id}）`);
-        } else {
-          console.warn('⚠️ 未选中ROOT任务。候选ROOT数量:', roots.length, {
-            session: currentSession?.session_id,
-            workflow: currentWorkflowId,
-          });
-          filteredTasks = [];
-        }
-
-        setTasks(filteredTasks);
-        updateStoreTasks(filteredTasks); // 使用过滤后的任务更新store
-        console.log(`✅ 最终显示 ${filteredTasks.length} 个任务`);
-      } else {
-        console.warn('⚠️ 未获取到任务数据或数据为空');
-        setTasks([]);
-        updateStoreTasks([]);
-      }
-      setStats(taskStats);
-      const normalizedStats = taskStats
-        ? {
-            total: taskStats.total || 0,
-            pending: taskStats.by_status?.pending || 0,
-            running: taskStats.by_status?.running || 0,
-            completed:
-              taskStats.by_status?.completed ||
-              taskStats.by_status?.done ||
-              taskStats.by_status?.finished ||
-              0,
-            failed: taskStats.by_status?.failed || 0,
-          }
-        : null;
+      const normalizedStats = {
+        total: allTasks.length,
+        pending: allTasks.filter((task) => task.status === 'pending').length,
+        running: allTasks.filter((task) => task.status === 'running').length,
+        completed: allTasks.filter((task) => task.status === 'completed').length,
+        failed: allTasks.filter((task) => task.status === 'failed').length,
+      };
+      setStats(normalizedStats);
       setTaskStats(normalizedStats);
-      setCurrentWorkflowId(currentWorkflowId);
     } catch (error: any) {
       console.error('❌ Failed to load tasks:', error);
-      console.error('❌ Error details:', error.response?.data || error.message);
       message.error(`加载任务数据失败: ${error.message}`);
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentPlanId, setTaskStats, updateStoreTasks]);
 
   // 构建网络图数据
   const buildNetworkData = () => {
@@ -476,22 +402,44 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   // 组件挂载及依赖变更时加载数据
   useEffect(() => {
     loadTasks();
-  }, [currentWorkflowId, currentSession?.session_id]);
+  }, [currentPlanId, loadTasks]);
 
   // 监听任务更新事件（从聊天系统等地方触发）
   useEffect(() => {
-    const handleTasksUpdated = (event: CustomEvent) => {
-      console.log('🔄 DAG收到任务更新事件:', event.detail);
-      // 自动刷新任务数据
+    const handleTasksUpdated = (event: CustomEvent<PlanSyncEventDetail>) => {
+      const detail = event.detail;
+      if (
+        detail?.type === 'plan_deleted' &&
+        detail.plan_id != null &&
+        detail.plan_id === (currentPlanId ?? null)
+      ) {
+        setTasks([]);
+        setStats(null);
+        updateStoreTasks([]);
+        setTaskStats(null);
+        return;
+      }
+      if (
+        !shouldHandlePlanSyncEvent(detail, currentPlanId ?? null, [
+          'task_changed',
+          'plan_jobs_completed',
+          'plan_updated',
+        ])
+      ) {
+        return;
+      }
       loadTasks();
+      window.setTimeout(() => {
+        loadTasks();
+      }, 800);
     };
 
     window.addEventListener('tasksUpdated', handleTasksUpdated as EventListener);
-    
+
     return () => {
       window.removeEventListener('tasksUpdated', handleTasksUpdated as EventListener);
     };
-  }, []);
+  }, [currentPlanId, loadTasks, setTaskStats, updateStoreTasks]);
 
   const handleRefresh = () => {
     loadTasks();

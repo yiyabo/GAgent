@@ -1,136 +1,553 @@
-"""
-聊天相关API端点
-提供自然语言对话功能，集成LLM进行智能回复
-"""
+"""Chat APIs that orchestrate structured LLM responses and action dispatch."""
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-from collections import Counter, defaultdict
+from __future__ import annotations
+
 import asyncio
+import hashlib
+import inspect
+import json
 import logging
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
+from uuid import uuid4
 
-from ..llm import get_default_client
-from ..utils import parse_json_obj
-from tool_box import execute_tool, list_available_tools, initialize_toolbox
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.config import get_graph_rag_settings, get_search_settings
+from app.config.decomposer_config import get_decomposer_settings
+from app.config.executor_config import get_executor_settings
+from app.repository.chat_action_runs import (
+    create_action_run,
+    fetch_action_run,
+    update_action_run,
+)
+from app.repository.plan_repository import PlanRepository
+from app.repository.plan_storage import (
+    append_action_log_entry,
+    record_decomposition_job,
+    update_decomposition_job_status,
+)
+from app.services.foundation.settings import get_settings
 from app.services.llm.llm_service import get_llm_service
-import re
+from app.services.llm.structured_response import (
+    LLMAction,
+    LLMStructuredResponse,
+    schema_as_json,
+)
+from app.services.plans.decomposition_jobs import (
+    get_current_job,
+    log_job_event,
+    plan_decomposition_jobs,
+    reset_current_job,
+    set_current_job,
+    start_decomposition_job_thread,
+)
+from app.services.plans.plan_decomposer import DecompositionResult, PlanDecomposer
+from app.services.plans.plan_executor import PlanExecutor
+from app.services.plans.plan_models import PlanTree
+from app.services.plans.plan_session import PlanSession
+from app.services.session_title_service import (
+    SessionNotFoundError,
+    SessionTitleService,
+)
+from tool_box import execute_tool
+
+from . import register_router
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
+plan_repository = PlanRepository()
+decomposer_settings = get_decomposer_settings()
+
+VALID_SEARCH_PROVIDERS = {"builtin", "perplexity"}
+plan_decomposer_service = PlanDecomposer(
+    repo=plan_repository,
+    settings=decomposer_settings,
+)
+plan_executor_service = PlanExecutor(repo=plan_repository)
+session_title_service = SessionTitleService()
+app_settings = get_settings()
+
+register_router(
+    namespace="chat",
+    version="v1",
+    path="/chat",
+    router=router,
+    tags=["chat"],
+    description="Primary entry point for chat and plan management (structured LLM dialog)",
+)
 
 
 class ChatMessage(BaseModel):
+    """Structure of an individual chat message."""
+
     role: str  # "user" | "assistant" | "system"
     content: str
     timestamp: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class ChatRequest(BaseModel):
+    """Chat request payload from the frontend."""
+
     message: str
     history: Optional[List[ChatMessage]] = None
     context: Optional[Dict[str, Any]] = None
-    mode: Optional[str] = "assistant"  # "assistant" | "planner" | "analyzer"
-    session_id: Optional[str] = None  # Chat session ID for task isolation
+    mode: Optional[str] = "assistant"
+    session_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
+    """Chat response returned to the frontend."""
+
     response: str
     suggestions: Optional[List[str]] = None
     actions: Optional[List[Dict[str, Any]]] = None
     metadata: Optional[Dict[str, Any]] = None
 
 
-def _ensure_session_exists(session_id: str, conn):
-    """Ensure session exists in chat_sessions table"""
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM chat_sessions WHERE id = ?", (session_id,))
-    if not cursor.fetchone():
-        # Create session if it doesn't exist
-        cursor.execute(
-            """INSERT INTO chat_sessions (id, name, created_at, updated_at, is_active)
-               VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)""",
-            (session_id, f"Session {session_id[:8]}")
+class ActionStatusResponse(BaseModel):
+    """Status envelope for background action execution."""
+
+    tracking_id: str
+    status: str
+    plan_id: Optional[int] = None
+    actions: Optional[List[Dict[str, Any]]] = None
+    result: Optional[Dict[str, Any]] = None
+    errors: Optional[List[str]] = None
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class ChatSessionSettings(BaseModel):
+    """Session-level customization settings."""
+
+    default_search_provider: Optional[Literal["builtin", "perplexity"]] = None
+
+
+class ChatSessionSummary(BaseModel):
+    """Summary row for a chat session list."""
+
+    id: str
+    name: Optional[str] = None
+    name_source: Optional[str] = None
+    is_user_named: Optional[bool] = None
+    plan_id: Optional[int] = None
+    plan_title: Optional[str] = None
+    current_task_id: Optional[int] = None
+    current_task_name: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    last_message_at: Optional[str] = None
+    is_active: bool
+    settings: Optional[ChatSessionSettings] = None
+
+
+class ChatSessionsResponse(BaseModel):
+    """Response wrapper for chat session listing."""
+
+    sessions: List[ChatSessionSummary]
+    total: int
+    limit: int
+    offset: int
+
+
+class ChatSessionUpdateRequest(BaseModel):
+    """Request to update core chat session attributes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = None
+    is_active: Optional[bool] = None
+    plan_id: Optional[int] = None
+    plan_title: Optional[str] = None
+    current_task_id: Optional[int] = None
+    current_task_name: Optional[str] = None
+    settings: Optional[ChatSessionSettings] = None
+
+
+class ChatSessionAutoTitleRequest(BaseModel):
+    """Request payload for automatic session titling."""
+
+    force: bool = False
+    strategy: Optional[str] = Field(default=None, description="Generation strategy (auto/heuristic/plan/llm/etc.)")
+
+
+class ChatSessionAutoTitleResult(BaseModel):
+    """Result returned after auto-titling a session."""
+
+    session_id: str
+    title: str
+    source: str
+    updated: bool = True
+    previous_title: Optional[str] = None
+    skipped_reason: Optional[str] = None
+
+
+class ChatSessionAutoTitleBulkRequest(ChatSessionAutoTitleRequest):
+    """Bulk auto-title request."""
+
+    session_ids: Optional[List[str]] = None
+    limit: Optional[int] = Field(default=20, ge=1, le=200)
+
+
+class ChatSessionAutoTitleBulkResponse(BaseModel):
+    """Response for bulk auto-title operations."""
+
+    results: List[ChatSessionAutoTitleResult]
+    processed: int
+
+
+class ChatStatusResponse(BaseModel):
+    """Status payload describing the chat service state."""
+
+    status: str
+    llm: Dict[str, Any]
+    decomposer: Dict[str, Any]
+    executor: Dict[str, Any]
+    features: Dict[str, Any]
+    warnings: List[str] = Field(default_factory=list)
+
+
+@router.get("/sessions", response_model=ChatSessionsResponse)
+async def list_chat_sessions(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    active: Optional[bool] = None,
+):
+    """List existing chat sessions."""
+    from ..database import get_db  # lazy import
+
+    try:
+        with get_db() as conn:
+            where_clauses: List[str] = []
+            params: List[Any] = []
+            if active is not None:
+                where_clauses.append("s.is_active = ?")
+                params.append(1 if active else 0)
+
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+            total_row = conn.execute(
+                f"SELECT COUNT(1) AS total FROM chat_sessions s {where_sql}",
+                params,
+            ).fetchone()
+            total = int(total_row["total"]) if total_row else 0
+
+            session_rows = conn.execute(
+                f"""
+                WITH session_with_last AS (
+                    SELECT
+                        s.id,
+                        s.name,
+                        s.name_source,
+                        s.is_user_named,
+                        s.metadata,
+                        s.plan_id,
+                        s.plan_title,
+                        s.current_task_id,
+                        s.current_task_name,
+                        s.created_at,
+                        s.updated_at,
+                        s.is_active,
+                        COALESCE(
+                            s.last_message_at,
+                            (
+                                SELECT MAX(m.created_at)
+                                FROM chat_messages m
+                                WHERE m.session_id = s.id
+                            )
+                        ) AS last_message_at
+                    FROM chat_sessions s
+                    {where_sql}
+                )
+                SELECT *
+                FROM session_with_last
+                ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC, id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, limit, offset),
+            ).fetchall()
+
+        sessions = [_row_to_session_info(row) for row in session_rows]
+        return ChatSessionsResponse(
+            sessions=[ChatSessionSummary(**session) for session in sessions],
+            total=total,
+            limit=limit,
+            offset=offset,
         )
-        logger.info(f"📝 Created new chat session: {session_id}")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to list chat sessions: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to load sessions") from exc
 
 
-def _save_chat_message(session_id: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None):
-    """Save a chat message to database"""
+@router.patch("/sessions/{session_id}", response_model=ChatSessionSummary)
+async def update_chat_session(
+    session_id: str, payload: ChatSessionUpdateRequest
+) -> ChatSessionSummary:
+    """Update the core attributes of a chat session."""
+    from ..database import get_db  # lazy import
+
+    updates = payload.model_dump(exclude_unset=True)
+    settings_update = updates.pop("settings", None)
+
+    if not updates and settings_update is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
     try:
-        from ..database import get_db
-        import json
-        
         with get_db() as conn:
-            # Ensure session exists first
-            _ensure_session_exists(session_id, conn)
-            
-            cursor = conn.cursor()
-            metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
-            cursor.execute(
-                """INSERT INTO chat_messages (session_id, role, content, metadata)
-                   VALUES (?, ?, ?, ?)""",
-                (session_id, role, content, metadata_json)
-            )
+            row = conn.execute(
+                "SELECT id FROM chat_sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            set_clauses: List[str] = []
+            params: List[Any] = []
+            if settings_update is not None:
+                metadata_dict = _load_session_metadata_dict(conn, session_id)
+                provider = settings_update.get("default_search_provider")
+                if provider is not None:
+                    normalized = _normalize_search_provider(provider)
+                    if normalized is None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail="Invalid default_search_provider value",
+                        )
+                    metadata_dict["default_search_provider"] = normalized
+                else:
+                    metadata_dict.pop("default_search_provider", None)
+                set_clauses.append("metadata=?")
+                params.append(_dump_metadata(metadata_dict))
+
+            if "name" in updates:
+                set_clauses.append("name=?")
+                params.append(updates["name"])
+                set_clauses.append("name_source=?")
+                params.append("user" if updates["name"] else "default")
+                set_clauses.append("is_user_named=?")
+                params.append(1 if updates["name"] else 0)
+
+            if "is_active" in updates:
+                set_clauses.append("is_active=?")
+                params.append(1 if updates["is_active"] else 0)
+
+            plan_title_sentinel = object()
+            plan_title_override = updates.get("plan_title", plan_title_sentinel)
+            if "plan_id" in updates:
+                plan_id_value = updates["plan_id"]
+                set_clauses.append("plan_id=?")
+                params.append(plan_id_value)
+
+                if plan_title_override is plan_title_sentinel:
+                    plan_title_override = _lookup_plan_title(conn, plan_id_value)
+
+            if plan_title_override is not plan_title_sentinel:
+                set_clauses.append("plan_title=?")
+                params.append(plan_title_override)
+
+            if "current_task_id" in updates:
+                set_clauses.append("current_task_id=?")
+                params.append(updates["current_task_id"])
+
+            if "current_task_name" in updates:
+                set_clauses.append("current_task_name=?")
+                params.append(updates["current_task_name"])
+
+            if not set_clauses:
+                raise HTTPException(status_code=400, detail="No valid fields to update")
+
+            set_clauses.append("updated_at=CURRENT_TIMESTAMP")
+            sql = f"UPDATE chat_sessions SET {', '.join(set_clauses)} WHERE id=?"
+            params.append(session_id)
+            conn.execute(sql, params)
             conn.commit()
-            logger.debug(f"💾 Saved {role} message for session {session_id}")
-    except Exception as e:
-        logger.warning(f"Failed to save chat message: {e}")
+
+            session_info = _fetch_session_info(conn, session_id)
+            if not session_info:
+                raise HTTPException(status_code=404, detail="Session not found")
+            return ChatSessionSummary(**session_info)
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to update chat session %s: %s", session_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to update session") from exc
 
 
-def _load_chat_history(session_id: str, limit: int = 50) -> List[ChatMessage]:
-    """Load chat history from database"""
+@router.post(
+    "/sessions/{session_id}/autotitle",
+    response_model=ChatSessionAutoTitleResult,
+)
+async def autotitle_chat_session(
+    session_id: str,
+    payload: ChatSessionAutoTitleRequest,
+) -> ChatSessionAutoTitleResult:
+    """Auto-generate a session title from context."""
     try:
-        from ..database import get_db
-        import json
-        from datetime import datetime
-        
+        result = session_title_service.generate_for_session(
+            session_id,
+            force=payload.force,
+            strategy=payload.strategy,
+        )
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to auto-title session %s: %s", session_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to generate title") from exc
+
+    return ChatSessionAutoTitleResult(
+        session_id=result.session_id,
+        title=result.title,
+        source=result.source,
+        updated=result.updated,
+        previous_title=result.previous_title,
+        skipped_reason=result.skipped_reason,
+    )
+
+
+@router.post(
+    "/sessions/autotitle/bulk",
+    response_model=ChatSessionAutoTitleBulkResponse,
+)
+async def bulk_autotitle_chat_sessions(
+    payload: ChatSessionAutoTitleBulkRequest,
+) -> ChatSessionAutoTitleBulkResponse:
+    """Bulk-generate session titles."""
+    try:
+        results = session_title_service.bulk_generate(
+            session_ids=payload.session_ids,
+            force=payload.force,
+            strategy=payload.strategy,
+            limit=payload.limit,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to bulk auto-title chat sessions: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to bulk auto-title sessions") from exc
+
+    response_items = [
+        ChatSessionAutoTitleResult(
+            session_id=item.session_id,
+            title=item.title,
+            source=item.source,
+            updated=item.updated,
+            previous_title=item.previous_title,
+            skipped_reason=item.skipped_reason,
+        )
+        for item in results
+    ]
+    return ChatSessionAutoTitleBulkResponse(
+        results=response_items,
+        processed=len(response_items),
+    )
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_chat_session(
+    session_id: str, archive: bool = Query(False)
+) -> Response:
+    """Delete or archive a chat session."""
+    from ..database import get_db  # lazy import
+
+    try:
         with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """SELECT role, content, metadata, created_at 
-                   FROM chat_messages 
-                   WHERE session_id = ? 
-                   ORDER BY created_at ASC 
-                   LIMIT ?""",
-                (session_id, limit)
-            )
-            rows = cursor.fetchall()
-            
-            messages = []
-            for role, content, metadata_json, created_at in rows:
-                messages.append(ChatMessage(
-                    role=role,
-                    content=content,
-                    timestamp=created_at
-                ))
-            
-            logger.info(f"📖 Loaded {len(messages)} messages for session {session_id}")
-            return messages
-    except Exception as e:
-        logger.warning(f"Failed to load chat history: {e}")
-        return []
+            row = conn.execute(
+                "SELECT id, is_active FROM chat_sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            if archive:
+                conn.execute(
+                    """
+                    UPDATE chat_sessions
+                    SET is_active=0,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    (session_id,),
+                )
+                logger.info("Archived chat session %s", session_id)
+            else:
+                conn.execute("DELETE FROM chat_sessions WHERE id=?", (session_id,))
+                logger.info("Deleted chat session %s", session_id)
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to delete chat session %s: %s", session_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to delete session") from exc
 
 
-def _save_assistant_response(session_id: Optional[str], response: ChatResponse) -> ChatResponse:
-    """Save assistant response and return it"""
-    if session_id and response.response:
-        _save_chat_message(session_id, "assistant", response.response, response.metadata)
-    return response
+@router.get("/status", response_model=ChatStatusResponse)
+async def chat_status() -> ChatStatusResponse:
+    """Return the chat system and LLM status."""
+    warnings: List[str] = []
+
+    llm_payload: Dict[str, Any] = {
+        "provider": None,
+        "model": None,
+        "api_url": None,
+        "has_api_key": False,
+        "mock_mode": False,
+    }
+
+    try:
+        llm_service = get_llm_service()
+        client = getattr(llm_service, "client", None)
+        if client is None:
+            warnings.append("LLM client unavailable")
+        else:
+            llm_payload.update({
+                "provider": getattr(client, "provider", None),
+                "model": getattr(client, "model", None),
+                "api_url": getattr(client, "url", None),
+                "has_api_key": bool(getattr(client, "api_key", None)),
+                "mock_mode": bool(getattr(client, "mock", False)),
+            })
+    except Exception as exc:  # pragma: no cover - defensive
+        warnings.append(f"LLM initialisation failed: {exc}")
+
+    decomposer_info = {
+        "provider": decomposer_settings.provider,
+        "model": decomposer_settings.model,
+        "auto_on_create": decomposer_settings.auto_on_create,
+        "max_depth": decomposer_settings.max_depth,
+        "total_node_budget": decomposer_settings.total_node_budget,
+    }
+
+    executor_settings = get_executor_settings()
+    executor_info = {
+        "provider": executor_settings.provider,
+        "model": executor_settings.model,
+        "serial": executor_settings.serial,
+        "use_context": executor_settings.use_context,
+        "max_tasks": executor_settings.max_tasks,
+    }
+
+    features = {
+        "auto_decompose": bool(decomposer_settings.auto_on_create),
+        "plan_executor": bool(executor_settings.model or executor_settings.provider),
+        "structured_actions": True,
+    }
+
+    status_value = "ready" if not warnings else "degraded"
+
+    return ChatStatusResponse(
+        status=status_value,
+        llm=llm_payload,
+        decomposer=decomposer_info,
+        executor=executor_info,
+        features=features,
+        warnings=warnings,
+    )
 
 
 @router.get("/history/{session_id}")
 async def get_chat_history(session_id: str, limit: int = 50):
-    """
-    获取指定会话的聊天历史
-    
-    Args:
-        session_id: 会话ID
-        limit: 返回的最大消息数量（默认50）
-    
-    Returns:
-        聊天历史消息列表
-    """
+    """Fetch history for a specific session."""
     try:
         messages = _load_chat_history(session_id, limit)
         return {
@@ -140,2566 +557,2669 @@ async def get_chat_history(session_id: str, limit: int = 50):
                 {
                     "role": msg.role,
                     "content": msg.content,
-                    "timestamp": msg.timestamp
+                    "timestamp": msg.timestamp,
+                    "metadata": msg.metadata,
                 }
                 for msg in messages
             ],
-            "total": len(messages)
+            "total": len(messages),
         }
-    except Exception as e:
-        logger.error(f"Failed to get chat history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to get chat history: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/message", response_model=ChatResponse)
-async def chat_message(request: ChatRequest):
-    """
-    处理聊天消息，提供智能回复
-    
-    支持不同模式:
-    - assistant: 通用AI助手对话，集成tool-box功能
-    - planner: 专注任务规划的对话
-    - analyzer: 专注分析和解答的对话
-    """
+async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
+    """Main chat entry: respond with LLM actions first, then execute in the background."""
     try:
-        # Save user message to database
+        context = dict(request.context or {})
+        incoming_plan_id = context.get("plan_id")
+        if incoming_plan_id is not None and not isinstance(incoming_plan_id, int):
+            try:
+                incoming_plan_id = int(str(incoming_plan_id).strip())
+            except (TypeError, ValueError):
+                incoming_plan_id = None
+
+        plan_id = _resolve_plan_binding(request.session_id, incoming_plan_id)
+        plan_session = PlanSession(repo=plan_repository, plan_id=plan_id)
+        try:
+            plan_session.refresh()
+        except ValueError as exc:
+            logger.warning("Plan binding failed, detaching session: %s", exc)
+            plan_session.detach()
+
+        logger.info(
+            "[CHAT][REQ] session=%s plan=%s mode=%s message=%s",
+            request.session_id or "<new>",
+            plan_session.plan_id,
+            request.mode or "assistant",
+            request.message,
+        )
+
+        if plan_session.plan_id is not None:
+            context["plan_id"] = plan_session.plan_id
+        else:
+            context.pop("plan_id", None)
+
+        converted_history = _convert_history_to_agent_format(request.history)
+
+        session_settings: Dict[str, Any] = {}
         if request.session_id:
             _save_chat_message(request.session_id, "user", request.message)
-        
-        # 构建带上下文的消息历史
-        context_messages = []
-        if request.history:
-            context_messages = [{"role": msg.role, "content": msg.content} for msg in request.history[-5:]]  # 保留最近5条
-        context_messages.append({"role": "user", "content": request.message})
-        # 快速预筛选：识别明显的非工具需求（问候语、感谢等）
-        if _is_simple_greeting(request.message):
-            logger.info("💬 识别为简单问候语，跳过复杂路由")
-            return _save_assistant_response(request.session_id, ChatResponse(
-                response=_get_simple_greeting_response(request.message),
-                suggestions=["告诉我你需要什么帮助", "我可以协助你完成任务"],
-                actions=[],
-                metadata={"routing_method": "simple_greeting", "skipped_tool_analysis": True}
-            ))
+            session_settings = _get_session_settings(request.session_id)
 
-        # 🔒 检查是否为内部分析请求，如果是则跳过工作流程创建  
-        is_internal_analysis = request.context and request.context.get('internal_analysis', False)
-        if is_internal_analysis:
-            logger.debug(f"🔒 内部分析请求，跳过工作流程创建: {request.context.get('original_user_input', 'unknown')}")
-        else:
-            # 检查是否为Agent工作流程触发请求 - 使用上下文感知判断
-            workflow_decision = await _should_create_new_workflow(
-                request.message, 
-                request.session_id, 
-                request.context,
-                context_messages
-            )
-            
-            # 🔍 DEBUG: 打印完整的意图判断结果
-            logger.info(f"🧠 LLM意图判断结果: {workflow_decision}")
-            logger.info(f"📝 用户消息: {request.message}")
-            logger.info(f"🆔 Session ID: {request.session_id}")
-            
-            if workflow_decision.get("create_new_root"):
-                logger.info(f"🤖 ====> 路由到: 创建新ROOT任务")
-                response = await _handle_agent_workflow_creation(request, context_messages)
-                return _save_assistant_response(request.session_id, response)
-            elif workflow_decision.get("add_to_existing"):
-                logger.info(f"📎 ====> 路由到: 在现有ROOT任务下添加子任务")
-                response = await _handle_add_subtask_to_existing(request, workflow_decision, context_messages)
-                return _save_assistant_response(request.session_id, response)
-            elif workflow_decision.get("decompose_task"):
-                logger.info(f"🔀 ====> 路由到: 拆分任务")
-                response = await _handle_task_decomposition(request, workflow_decision, context_messages)
-                return _save_assistant_response(request.session_id, response)
-            elif workflow_decision.get("execute_task"):
-                logger.info(f"▶️ ====> 路由到: 执行任务")
-                response = await _handle_task_execution(request, workflow_decision, context_messages)
-                return _save_assistant_response(request.session_id, response)
-            elif workflow_decision.get("re_execute_with_info"):
-                logger.info(f"🔄 ====> 路由到: 重新执行任务（附带补充信息）")
-                response = await _handle_re_execute_with_info(request, workflow_decision, context_messages)
-                return _save_assistant_response(request.session_id, response)
-            else:
-                logger.info(f"💬 ====> 路由到: 普通对话")
-                logger.debug(f"✅ 普通对话，无需创建任务: '{request.message}'")
-
-        # 智能路由处理已移至tool_box集成中
-        # 这里直接使用普通LLM处理，工具调用在后续流程中通过_pure_llm_intelligent_routing完成
-        
-        # 回退到普通LLM处理
-        llm_client = get_default_client()
-        
-        # 构建系统提示，根据模式调整
-        system_prompt = _get_system_prompt_with_tools(request.mode)
-        
-        # 构建包含上下文的完整prompt
-        full_prompt = f"{system_prompt}\n\n"
-        
-        # 添加对话历史上下文
-        if request.history and len(request.history) > 0:
-            full_prompt += "=== 对话历史 ===\n"
-            for msg in request.history[-10:]:  # 保留最近10条对话
-                role_name = "用户" if msg.role == "user" else "助手"
-                full_prompt += f"{role_name}: {msg.content}\n"
-            full_prompt += "\n=== 当前对话 ===\n"
-        
-        # 添加当前用户消息
-        full_prompt += f"用户: {request.message}\n\n请基于上述对话历史，以友好、专业的AI任务编排助手身份回复:"
-        
-        # 调用LLM
-        response = llm_client.chat(full_prompt, force_real=True)
-        
-        # 分析回复，提取建议和操作
-        suggestions, actions = _extract_suggestions_and_actions(response, request.message)
-        
-        return _save_assistant_response(request.session_id, ChatResponse(
-            response=response,
-            suggestions=suggestions,
-            actions=actions,
-            metadata={
-                "mode": request.mode,
-                "model": llm_client.model,
-                "provider": llm_client.provider,
-                "tool_box_response": False
-            }
-        ))
-        
-    except Exception as e:
-        logger.error(f"❌ Chat processing failed: {e}")
-        # 统一的错误消息，不使用关键词匹配
-        error_type = type(e).__name__
-        error_msg = f"⚠️ 处理请求时遇到问题: {error_type}。请稍后重试或联系管理员。"
-        
-        return _save_assistant_response(request.session_id, ChatResponse(
-            response=error_msg,
-            suggestions=["重新尝试", "简化问题", "检查网络连接"],
-            actions=[],
-            metadata={
-                "mode": request.mode,
-                "error": True,
-                "error_type": error_type
-            }
-        ))
-
-
-@router.get("/suggestions")
-async def get_chat_suggestions():
-    """获取聊天建议"""
-    return {
-        "quick_actions": [
-            "帮我创建一个学习计划",
-            "查看当前任务状态", 
-            "分析项目进度",
-            "制定工作安排"
-        ],
-        "conversation_starters": [
-            "你好，介绍一下你的功能",
-            "我想了解任务编排系统",
-            "如何提高工作效率？",
-            "帮我分解复杂任务"
-        ]
-    }
-
-
-def _get_system_prompt_with_tools(mode: str) -> str:
-    """根据模式获取系统提示（包含工具集成信息）"""
-    base_prompt = """你是一个专业的AI任务编排助手，具有以下特长：
-- 将复杂目标分解为可执行的任务计划
-- 智能调度任务执行顺序和依赖关系  
-- 提供高质量的工作流程建议
-- 支持自然语言交互和任务管理
-- 可以访问数据库查询待办任务、项目状态等信息
-- 具备联网搜索、信息检索等工具能力
-
-你应该：
-1. 以友好、专业的语气与用户对话
-2. 理解用户的真实需求和意图
-3. 提供实用、可操作的建议
-4. 当用户询问任务状态、待办事项时，主动说明可以查询具体信息
-5. 在适当时候引导用户使用系统功能
-6. 支持自由对话，不仅限于任务相关话题
-
-重要提示：如果用户询问"待办任务"、"任务状态"、"项目进度"等相关内容，
-请明确告知用户我可以查询具体的任务信息，而不是说"无法访问"。"""
-
-    mode_prompts = {
-        "planner": base_prompt + "\n\n特别专注于：任务规划、项目分解、工作流程优化。",
-        "analyzer": base_prompt + "\n\n特别专注于：数据分析、问题诊断、性能评估。", 
-        "assistant": base_prompt + "\n\n保持通用助手能力，支持各类对话和任务。"
-    }
-    
-    return mode_prompts.get(mode, mode_prompts["assistant"])
-
-
-def _get_system_prompt(mode: str) -> str:
-    """根据模式获取系统提示（向后兼容）"""
-    return _get_system_prompt_with_tools(mode)
-
-
-async def _is_task_query_request(message: str) -> bool:
-    """检测是否为任务查询请求"""
-    task_keywords = [
-        "任务", "待办", "清单", "列表", "未完成", "进度", "状态", 
-        "todo", "task", "完成", "项目", "计划", "工作"
-    ]
-    
-    query_keywords = [
-        "查看", "显示", "列出", "看看", "有什么", "多少", "统计",
-        "show", "list", "view", "get", "check"
-    ]
-    
-    message_lower = message.lower()
-    
-    # 检查是否同时包含任务关键词和查询关键词
-    has_task_keyword = any(keyword in message_lower for keyword in task_keywords)
-    has_query_keyword = any(keyword in message_lower for keyword in query_keywords)
-    
-    return has_task_keyword and has_query_keyword
-
-
-async def _handle_with_smart_router(message: str, context: Optional[Dict[str, Any]] = None, session_id: Optional[str] = None, context_messages: Optional[List[Dict[str, str]]] = None) -> Optional[Dict[str, Any]]:
-    """使用LLM驱动的智能工具路由"""
-    try:
-        from ..llm import get_default_client
-        
-        # 获取所有可用工具定义
-        tools_definition = await _get_tools_definition()
-        
-        # 检测是否需要专业知识搜索
-        professional_keywords = ["因果推断", "机器学习", "深度学习", "统计学", "数据科学", "算法", "编程", "框架"]
-        need_search = any(keyword in message for keyword in professional_keywords)
-        
-        # 如果是专业话题且LLM可能不确定，先搜索相关信息
-        if need_search:
-            logger.info(f"🔍 检测到专业话题，先搜索相关信息: {message}")
-            search_result = await execute_tool("web_search", query=message, max_results=3)
-            
-            # 将搜索结果添加到上下文
-            if search_result and search_result.get("success"):
-                search_content = search_result.get("response", "")
-                if search_content and not search_content.startswith("❌"):
-                    # 添加搜索信息到上下文消息
-                    if not context_messages:
-                        context_messages = []
-                    context_messages.insert(-1, {
-                        "role": "system", 
-                        "content": f"参考信息：{search_content[:1000]}"  # 限制长度
-                    })
-        
-        # 构建智能工具选择提示
-        system_prompt = await _get_smart_tool_selection_prompt(tools_definition)
-        
-        # 调用LLM进行工具选择和参数推理
-        llm_client = get_default_client()
-        
-        full_prompt = f"{system_prompt}\n\n用户请求: {message}\n\n请分析用户意图，选择最合适的工具并提供参数。"
-        
-        # 使用GLM的function calling能力
-        try:
-            # 让LLM直接基于工具定义做决策（移除不支持的tools参数）
-            response = llm_client.chat(
-                full_prompt, 
-                force_real=True
-            )
-            
-            # 解析LLM的工具选择结果
-            tool_result = await _parse_llm_tool_selection(response, message, tools_definition)
-            
-            if tool_result:
-                return tool_result
-                
-        except Exception as llm_error:
-            logger.warning(f"⚠️ LLM工具选择失败，使用备用路由: {llm_error}")
-            
-        # 科研项目要求：使用纯LLM智能路由替代正则匹配
-        fallback_result = await _pure_llm_intelligent_routing(message, tools_definition)
-        if fallback_result:
-            return fallback_result
-        
-        # 最后尝试直接语义解析
-        direct_result = await _direct_semantic_analysis(message, session_id)
-        if direct_result:
-            return direct_result
-            
-        return None
-        
-    except Exception as e:
-        logger.error(f"❌ 智能路由处理失败: {e}")
-        return None
-
-
-async def _get_tools_definition() -> List[Dict[str, Any]]:
-    """获取工具定义（集成Tool Box所有工具）"""
-    try:
-        # 获取Tool Box中的所有工具（tool-box已在main.py中初始化）
-        available_tools = await list_available_tools()
-        
-        tools_definition = [
-            # 意图路由工具（系统内置）
-            {
-                "type": "function",
-                "function": {
-                    "name": "intent_router",
-                    "description": "判定用户意图，仅返回执行建议，不直接执行任何动作。返回 {action, args, confidence}。action ∈ ['show_plan','show_tasks','show_plan_graph','execute_task','search','database_query','unknown']。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": [
-                                    "show_plan",
-                                    "show_tasks", 
-                                    "show_plan_graph",
-                                    "execute_task",
-                                    "search",
-                                    "database_query",
-                                    "unknown"
-                                ]
-                            },
-                            "args": {
-                                "type": "object",
-                                "properties": {
-                                    "title": {"type": "string"},
-                                    "task_id": {"type": "integer"},
-                                    "output_filename": {"type": "string"},
-                                    "query": {"type": "string"},
-                                    "max_results": {"type": "integer"},
-                                    "operation": {"type": "string"},
-                                    "table_name": {"type": "string"}
-                                }
-                            },
-                            "confidence": {"type": "number"}
-                        },
-                        "required": ["action"]
-                    }
-                }
-            }
-        ]
-        
-        # 添加Tool Box中的所有工具
-        for tool in available_tools:
-            tool_def = {
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "parameters": tool.get("parameters_schema", {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    })
-                }
-            }
-            tools_definition.append(tool_def)
-        
-        logger.info(f"✅ 加载了 {len(tools_definition)} 个工具定义 (包含Tool Box: {len(available_tools)}个)")
-        return tools_definition
-        
-    except Exception as e:
-        logger.error(f"❌ 获取工具定义失败: {e}")
-        # 返回基础工具定义作为备选
-        return [
-            {
-                "type": "function", 
-                "function": {
-                    "name": "intent_router",
-                    "description": "判定用户意图",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "action": {"type": "string", "enum": ["search", "database_query", "unknown"]},
-                            "args": {"type": "object"}
-                        },
-                        "required": ["action"]
-                    }
-                }
-            }
-        ]
-
-
-async def _get_smart_tool_selection_prompt(tools_definition: List[Dict[str, Any]]) -> str:
-    """构建LLM工具选择提示"""
-    
-    # 构建工具列表描述
-    tools_desc = []
-    for tool_def in tools_definition:
-        if tool_def.get("type") == "function":
-            func_info = tool_def.get("function", {})
-            name = func_info.get("name", "unknown")
-            desc = func_info.get("description", "无描述")
-            
-            # 获取参数信息
-            params = func_info.get("parameters", {}).get("properties", {})
-            param_list = []
-            for param_name, param_info in params.items():
-                param_type = param_info.get("type", "any")
-                param_desc = param_info.get("description", "")
-                param_list.append(f"{param_name}({param_type}): {param_desc}")
-            
-            tool_entry = f"🔧 **{name}**: {desc}"
-            if param_list:
-                tool_entry += f"\n   参数: {', '.join(param_list[:3])}" # 只显示前3个参数
-            
-            tools_desc.append(tool_entry)
-    
-    return f"""你是一个智能工具路由助手。你的任务是分析用户请求，然后选择最合适的工具来处理。
-
-📋 **可用工具列表**:
-{chr(10).join(tools_desc)}
-
-🎯 **智能工具选择规则**:
-- 🔍 **数据库查询**: 用户询问"任务/待办/工作/项目进度/完成情况"等 → `database_query`
-  示例: "查看任务"、"还有哪些工作没完成"、"项目进度如何"
-- 🌐 **网络搜索**: 用户询问"天气/新闻/最新信息/知识问答"等 → `web_search`  
-  示例: "北京天气"、"最新AI新闻"、"什么是量子计算"
-- 📁 **文件操作**: 用户要求"读取/保存/管理文件"等 → `file_operations`
-  示例: "保存报告"、"读取配置文件"
-- 💬 **直接对话**: 用户打招呼、咨询能力、闲聊等 → 直接文本回复
-
-🧠 **语义理解重点**:
-- 重点理解用户的**真实意图**，而不是表面词汇
-- "工作"、"事项"、"完成情况" = 任务查询
-- "怎么样"、"如何"、"什么" + 外部信息 = 搜索
-
-🤖 **响应策略**:
-1. 优先调用最匹配的工具函数
-2. 如果意图不明确，选择最可能的工具
-3. 对于纯对话性质的请求，直接文本回复
-
-请智能分析用户意图，选择最佳工具。"""
-
-
-def _get_smart_router_system_prompt() -> str:
-    """获取智能路由系统提示（参考CLI端）"""
-    return """你是GLM (General Language Model) by ZhipuAI, 一个工具驱动的助手。始终遵循这个决策协议：
-
-- Step 1: 调用 `intent_router` 来决定行动，行动类型包括 ['show_plan','show_tasks','show_plan_graph','execute_task','search','database_query','unknown']。
-- Step 2: 对于显示类行动 (show_* / search / database_query)，你可以直接调用相应的工具。
-- Step 3: 对于执行类行动 (execute_task)，不要直接执行，等待人类确认。
-- 永远不要绕过确认直接调用执行工具。
-
-重要工具选择指南:
-🔍 'database_query': 当用户询问任务、待办、清单、项目进度时 - 查询本地数据库
-🌐 'search': 当用户询问天气、新闻、最新信息时 - 联网搜索
-📋 'show_tasks': 显示任务列表
-📊 'show_plan': 显示计划详情
-⚡ 'execute_task': 执行特定任务（需确认）
-❓ 'unknown': 当意图不明确时
-
-请根据用户消息判断意图并执行相应操作。"""
-
-
-def _normalize_generation_output(
-    raw_text: str,
-    default_suggestions: List[str],
-    default_actions: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Parse LLM输出，确保返回结构完整。"""
-    parsed = parse_json_obj(raw_text) if raw_text else None
-
-    if isinstance(parsed, dict):
-        plan_text = str(parsed.get("plan") or parsed.get("content") or raw_text).strip()
-
-        suggestions_raw = parsed.get("suggestions")
-        if isinstance(suggestions_raw, list):
-            suggestions = [str(item).strip() for item in suggestions_raw if str(item).strip()]
-            if not suggestions:
-                suggestions = default_suggestions
-        else:
-            suggestions = default_suggestions
-
-        actions_raw = parsed.get("actions")
-        if isinstance(actions_raw, list):
-            actions = [item for item in actions_raw if isinstance(item, dict)]
-            if not actions:
-                actions = default_actions
-        else:
-            actions = default_actions
-    else:
-        plan_text = raw_text.strip()
-        suggestions = default_suggestions
-        actions = default_actions
-
-    return {
-        "plan": plan_text,
-        "suggestions": suggestions,
-        "actions": actions,
-    }
-
-
-async def _generate_learning_plan_with_llm(
-    topic: str,
-    user_message: str,
-    search_info: str,
-    plan_type: str,
-) -> Dict[str, Any]:
-    """调用LLM生成学习计划。"""
-    llm_service = get_llm_service()
-
-    detail_hint = "详细、分阶段的学习计划" if plan_type == "detailed" else "概览型学习计划"
-    reference_section = search_info.strip() if search_info else "（无外部参考资料，按最佳实践给出建议）"
-
-    prompt = (
-        "你是一名专业的学习规划顾问，需要为用户制定可执行的学习方案。请用中文回答。\n"
-        f"学习主题：{topic}\n"
-        f"用户原始需求：{user_message}\n"
-        f"计划颗粒度：{detail_hint}\n"
-        "--- 参考资料开始 ---\n"
-        f"{reference_section}\n"
-        "--- 参考资料结束 ---\n\n"
-        "请基于以上信息输出一个 JSON，包含以下字段：\n"
-        "{\n"
-        '  "plan": "使用 Markdown 写出的完整学习计划，至少包含阶段、目标和行动项",\n'
-        '  "suggestions": ["下一步建议1", "下一步建议2", ...],\n'
-        '  "actions": [{"type": "create_study_schedule", "label": "制定学习时间表", "data": {"topic": "<主题>"}}, ...]\n'
-        "}\n"
-        "如果参考资料不足，请结合通用最佳实践给出合理安排。严禁编造不存在的资源。"
-    )
-
-    raw_text = await llm_service.chat_async(prompt, force_real=True)
-
-    default_actions = [
-        {"type": "create_study_schedule", "label": "制定学习时间表", "data": {"topic": topic}},
-    ]
-    default_suggestions = [f"制定{topic}的学习时间表", "开始第一阶段学习", "根据反馈优化计划"]
-
-    return _normalize_generation_output(raw_text, default_suggestions, default_actions)
-
-
-async def _generate_task_breakdown_with_llm(
-    target: str,
-    user_message: str,
-    search_info: str,
-) -> Dict[str, Any]:
-    """调用LLM生成任务拆分建议。"""
-    llm_service = get_llm_service()
-
-    reference_section = search_info.strip() if search_info else "（无外部参考资料，结合经验拆分）"
-
-    prompt = (
-        "你是一名任务拆解专家，需要帮助用户将目标转化为可执行任务。请用中文回答。\n"
-        f"拆分目标：{target}\n"
-        f"用户原始需求：{user_message}\n"
-        "--- 参考资料开始 ---\n"
-        f"{reference_section}\n"
-        "--- 参考资料结束 ---\n\n"
-        "请输出一个 JSON，包含以下字段：\n"
-        "{\n"
-        '  "plan": "使用 Markdown 表达的任务拆分建议，按阶段或步骤列出任务",\n'
-        '  "suggestions": ["后续建议1", "后续建议2"],\n'
-        '  "actions": [{"type": "create_tasks", "label": "创建任务", "data": {"target": "<目标>"}}, ...]\n'
-        "}\n"
-        "任务要具体、可执行，并给出必要的资源或产出要求。"
-    )
-
-    raw_text = await llm_service.chat_async(prompt, force_real=True)
-
-    default_actions = [
-        {"type": "create_tasks", "label": "创建任务", "data": {"target": target}},
-    ]
-    default_suggestions = ["继续细化任务", "制定时间表", "收集所需资源"]
-
-    return _normalize_generation_output(raw_text, default_suggestions, default_actions)
-
-
-async def _parse_llm_tool_selection(llm_response: str, original_message: str, tools_definition: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """解析LLM的工具选择结果"""
-    try:
-        # 检查LLM是否进行了function calling
-        # 这里需要根据实际的LLM响应格式来解析
-        
-        # 🧠 完全基于LLM的智能路由分析 - 科研项目要求：零关键词匹配
-        return await _pure_llm_intelligent_routing(original_message, tools_definition)
-        
-    except Exception as e:
-        logger.error(f"❌ LLM工具选择解析失败: {e}")
-        # 科研项目要求：即使出错也使用智能路由，不降级到正则匹配
-        return await _pure_llm_intelligent_routing(original_message, tools_definition)
-
-
-async def _pure_llm_intelligent_routing(user_message: str, tools_definition: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """完全基于LLM的智能路由分析 - 科研项目专用，零妥协"""
-    try:
-        from tool_box import route_user_request
-        
-        logger.info("🧠 启用纯LLM智能路由分析")
-        
-        # 使用Tool-box的SmartRouter进行完全智能分析
-        routing_result = await route_user_request(user_message)
-        
-        if not routing_result or routing_result.get("confidence", 0.0) < 0.1:
-            logger.warning("⚠️ LLM路由置信度过低，但仍采用智能路由结果")
-            # 科研项目要求：即使置信度低也不降级，而是增强LLM分析
-            routing_result = await _enhanced_llm_routing(user_message, tools_definition)
-        
-        # 执行智能路由选择的工具
-        if routing_result and routing_result.get("tool_calls"):
-            return await _execute_intelligent_routing(routing_result, user_message)
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"❌ 纯LLM智能路由失败: {e}")
-        # 最后兜底：仍然尝试增强LLM分析
-        try:
-            return await _enhanced_llm_routing(user_message, tools_definition)
-        except:
-            return None
-
-
-async def _enhanced_llm_routing(user_message: str, tools_definition: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """增强的LLM路由分析 - 当基础路由失败时使用"""
-    try:
-        from tool_box.router import get_smart_router
-        
-        logger.info("🔬 启用增强LLM路由分析")
-        
-        # 获取智能路由器实例
-        router = await get_smart_router()
-        
-        # 构建更详细的上下文
-        enhanced_context = {
-            "available_tools": tools_definition,
-            "request_type": "scientific_research_routing",
-            "precision_required": True,
-            "user_intent_analysis": True
-        }
-        
-        # 执行增强路由分析
-        result = await router.route_request(user_message, context=enhanced_context)
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"❌ 增强LLM路由分析失败: {e}")
-        return None
-
-
-async def _execute_intelligent_routing(routing_result: Dict[str, Any], original_message: str) -> Optional[Dict[str, Any]]:
-    """执行智能路由结果"""
-    try:
-        tool_calls = routing_result.get("tool_calls", [])
-        
-        if not tool_calls:
-            logger.warning("智能路由未返回工具调用")
-            return None
-        
-        # 执行第一个推荐的工具
-        first_tool = tool_calls[0]
-        tool_name = first_tool.get("tool_name")
-        parameters = first_tool.get("parameters", {})
-        
-        logger.info(f"🛠️ 执行智能路由选择的工具: {tool_name}")
-        
-        if tool_name == "database_query":
-            return await _handle_database_tool_call(parameters, original_message)
-        elif tool_name == "web_search":
-            return await _handle_search_tool_call(parameters, original_message)
-        elif tool_name == "file_operations":
-            return await _handle_file_tool_call(parameters, original_message)
-        elif tool_name == "internal_api":
-            return await _handle_internal_api_tool_call(parameters, original_message)
-        else:
-            logger.warning(f"未知工具类型: {tool_name}")
-            return None
-            
-    except Exception as e:
-        logger.error(f"❌ 智能路由执行失败: {e}")
-        return None
-
-
-async def _handle_database_tool_call(parameters: Dict[str, Any], original_message: str) -> Dict[str, Any]:
-    """处理数据库工具调用"""
-    try:
-        result = await execute_tool("database_query", **parameters)
-        return await _format_database_result(result, "智能路由数据库查询")
-    except Exception as e:
-        logger.error(f"数据库工具调用失败: {e}")
-        return None
-
-
-async def _handle_search_tool_call(parameters: Dict[str, Any], original_message: str) -> Dict[str, Any]:
-    """处理搜索工具调用"""
-    try:
-        result = await execute_tool("web_search", **parameters)
-        return await _format_search_result(result, original_message)
-    except Exception as e:
-        logger.error(f"搜索工具调用失败: {e}")
-        return None
-
-
-async def _handle_file_tool_call(parameters: Dict[str, Any], original_message: str) -> Dict[str, Any]:
-    """处理文件工具调用"""
-    try:
-        result = await execute_tool("file_operations", **parameters)
-        return {"response": f"文件操作完成: {result}", "suggestions": ["查看结果", "继续操作"]}
-    except Exception as e:
-        logger.error(f"文件工具调用失败: {e}")
-        return None
-
-
-async def _handle_internal_api_tool_call(parameters: Dict[str, Any], original_message: str) -> Dict[str, Any]:
-    """处理内部API工具调用"""
-    try:
-        result = await execute_tool("internal_api", **parameters)
-        return {"response": f"内部API调用完成: {result}", "suggestions": ["查看结果", "继续操作"]}
-    except Exception as e:
-        logger.error(f"内部API工具调用失败: {e}")
-        return None
-
-
-async def _format_database_result(result: Dict[str, Any], description: str) -> Dict[str, Any]:
-    """格式化数据库查询结果"""
-    try:
-        logger.info(f"🔍 格式化数据库结果: {result}")
-        
-        if isinstance(result, dict) and result.get("success"):
-            # 统一处理数据库执行操作结果，不使用关键词匹配
-            if result.get("operation") == "execute":
-                rows_affected = result.get("rows_affected", 0)
-                if rows_affected > 0:
-                    response = f"✅ **{description}成功**：\n\n影响了 {rows_affected} 条记录"
-                else:
-                    response = f"📭 **{description}完成**：\n\n没有记录受到影响"
-            else:
-                # 查询操作 - Tool Box返回的数据在'rows'字段
-                data = result.get("rows", [])
-                if data:
-                    response = f"📊 {description}结果：\n\n"
-                    if isinstance(data, list) and len(data) > 0:
-                        response += f"找到 {len(data)} 条记录：\n"
-                        for i, item in enumerate(data[:10], 1):
-                            if isinstance(item, dict):
-                                name = item.get("name", f"记录{i}")
-                                status = item.get("status", "未知")
-                                # 清理任务名称，移除前缀
-                                if name.startswith(('ROOT:', 'COMPOSITE:', 'ATOMIC:')):
-                                    name = name.split(':', 1)[1].strip()
-                                response += f"{i}. {name} ({status})\n"
-                    else:
-                        response += str(data)
-                else:
-                    response = "📭 暂无相关数据"
-        else:
-            response = f"❌ 数据库查询失败: {result}"
-        
-        return {
-            "response": response,
-            "suggestions": ["查看详细信息", "刷新数据", "修改筛选条件"],
-            "actions": [{"type": "refresh_data", "label": "刷新数据", "data": {}}],
-            "action": "database_query",
-            "confidence": 0.95
-        }
-    except Exception as e:
-        return {
-            "response": f"❌ 结果格式化失败: {str(e)}",
-            "suggestions": ["重试查询"],
-            "actions": [],
-            "action": "database_query",
-            "confidence": 0.5
-        }
-
-
-async def _format_search_result(result: Dict[str, Any], query: str) -> Dict[str, Any]:
-    """格式化搜索结果"""
-    try:
-        if isinstance(result, dict) and result.get("success"):
-            search_engine = result.get("search_engine", "unknown")
-            
-            if search_engine == "perplexity":
-                # Perplexity返回智能回答
-                search_response = f"🧠 **智能搜索回答**：\n\n{result.get('response', '无搜索结果')}"
-            elif search_engine == "tavily_fallback":
-                # Perplexity fallback to Tavily
-                if "results" in result:
-                    results = result["results"]
-                    if results:
-                        search_response = f"🔍 **搜索结果** (Perplexity不可用，使用备用搜索，{len(results)}条)：\n\n"
-                        for i, item in enumerate(results[:5], 1):
-                            title = item.get("title", "无标题")
-                            snippet = item.get("snippet", "无内容摘要")
-                            source = item.get("source", "")
-                            search_response += f"**{i}. {title}**\n{snippet}\n来源: {source}\n\n"
-                    else:
-                        search_response = "📭 未找到相关搜索结果"
-                else:
-                    search_response = "❌ 备用搜索也失败了"
-            else:
-                # Tavily等返回搜索结果列表
-                if "results" in result:
-                    results = result["results"]
-                    if results:
-                        search_response = f"🔍 **搜索结果** ({len(results)}条)：\n\n"
-                        for i, item in enumerate(results[:5], 1):
-                            title = item.get("title", "无标题")
-                            snippet = item.get("snippet", "无内容摘要")
-                            source = item.get("source", "")
-                            search_response += f"**{i}. {title}**\n{snippet}\n来源: {source}\n\n"
-                    else:
-                        search_response = "📭 未找到相关搜索结果"
-                else:
-                    search_response = result.get("formatted_response", str(result))
-        else:
-            error_msg = result.get("error", "未知错误")
-            search_response = f"❌ 搜索失败：{error_msg}"
-        
-        return {
-            "response": search_response,
-            "suggestions": ["搜索更多", "相关信息", "继续对话"],
-            "actions": [{"type": "search_more", "label": "搜索更多", "data": {"query": query}}],
-            "action": "search",
-            "confidence": 0.9
-        }
-    except Exception as e:
-        return {
-            "response": f"❌ 搜索结果格式化失败: {str(e)}",
-            "suggestions": ["重试搜索"],
-            "actions": [],
-            "action": "search",
-            "confidence": 0.5
-        }
-
-
-async def _direct_semantic_analysis(message: str, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """直接语义分析 - 最后的备用方案"""
-    try:
-        message_lower = message.lower()
-        
-        # 任务查询的多种表达方式
-        task_patterns = [
-            # 直接询问
-            any(word in message_lower for word in ["任务", "待办", "todo", "清单"]),
-            # 工作相关
-            ("工作" in message_lower and any(word in message_lower for word in ["完成", "没完成", "未完成", "剩余", "还有", "哪些"])),
-            # 项目相关  
-            ("项目" in message_lower and any(word in message_lower for word in ["进度", "状态", "完成"])),
-            # 事项相关
-            ("事项" in message_lower and any(word in message_lower for word in ["还有", "剩余", "未完成"])),
-        ]
-        
-        # 删除动作词
-        delete_actions = any(word in message_lower for word in ["删除", "清除", "清空", "移除", "删掉", "去掉", "清理"])
-        
-        # 创建动作词
-        create_actions = any(word in message_lower for word in ["新建", "创建", "添加", "建立", "制定", "做个", "建个"])
-        
-        # 查询动作词
-        query_actions = any(word in message_lower for word in ["看", "查", "显示", "列出", "告诉", "帮我"])
-        
-        # 检查删除操作
-        if any(task_patterns) and delete_actions:
-            logger.info(f"🗑️ 直接语义分析识别为任务删除: {message}")
-            
-            # 调用数据库删除工具 - 添加session_id支持
-            session_filter = ""
-            if session_id:
-                session_filter = f" AND session_id = '{session_id}'"
-            else:
-                # 如果没有session_id，只删除没有session_id的任务（向后兼容）
-                session_filter = " AND session_id IS NULL"
-                
-            sql = f"DELETE FROM tasks WHERE status = 'pending'{session_filter}"
-            result = await execute_tool("database_query", 
-                                      database="data/databases/main/tasks.db",
-                                      sql=sql,
-                                      operation="execute")
-            
-            return await _format_database_result(result, "任务删除")
-        
-        # 检查创建操作
-        if any(task_patterns) and create_actions:
-            logger.info(f"➕ 直接语义分析识别为任务创建: {message}")
-            
-            # 提取任务名称 - 简单的文本处理
-            task_name = message
-            # 清理动作词，保留任务描述
-            for action_word in ["新建", "创建", "添加", "建立", "制定", "做个", "建个"]:
-                task_name = task_name.replace(action_word, "")
-            for task_word in ["任务", "待办", "清单", "事项"]:
-                task_name = task_name.replace(task_word, "")
-            
-            # 清理标点和多余空格
-            import re
-            task_name = re.sub(r'[，。！？,!?]', '', task_name).strip()
-            task_name = task_name.replace("，", "").replace("：", "").replace(":", "").strip()
-            
-            if not task_name:
-                task_name = "新任务"
-            
-            # 调用数据库插入工具
-            session_value = f"'{session_id}'" if session_id else "NULL"
-            sql = f"""INSERT INTO tasks (name, status, priority, session_id, task_type) 
-                     VALUES ('{task_name}', 'pending', 1, {session_value}, 'atomic')"""
-            
-            result = await execute_tool("database_query", 
-                                      database="data/databases/main/tasks.db",
-                                      sql=sql,
-                                      operation="execute")
-            
-            # 格式化创建结果
-            if isinstance(result, dict) and result.get("success"):
-                rows_affected = result.get("rows_affected", 0)
-                if rows_affected > 0:
-                    response = f"✅ **任务创建成功**：\n\n已添加任务：「{task_name}」"
-                else:
-                    response = f"❌ **任务创建失败**：\n\n无法添加任务"
-            else:
-                response = f"❌ **任务创建失败**：\n\n{result.get('error', '未知错误')}"
-                
-            return {
-                "response": response,
-                "suggestions": ["查看任务", "继续添加", "开始工作"],
-                "actions": [{"type": "view_tasks", "label": "查看任务", "data": {}}],
-                "action": "task_create",
-                "confidence": 0.9
-            }
-        
-        if any(task_patterns) and query_actions:
-            logger.info(f"🎯 直接语义分析识别为任务查询: {message}")
-            
-            # 强制会话隔离 - 数据库查询工具
-            if not session_id:
-                return {
-                    "response": "🔒 请先在当前对话中创建一个任务或计划，然后我就能显示当前工作空间的任务了。",
-                    "suggestions": ["创建新计划", "开始新对话"],
-                    "actions": [],
-                    "action": "database_query",
-                    "confidence": 1.0
-                }
-                
-            sql = f"SELECT * FROM tasks WHERE status = 'pending' AND session_id = '{session_id}' ORDER BY priority ASC, id DESC LIMIT 10"
-            result = await execute_tool("database_query", 
-                                      database="data/databases/main/tasks.db",
-                                      sql=sql,
-                                      operation="query")
-            
-            return await _format_database_result(result, f"当前工作空间待办任务 (会话: {session_id})")
-        
-        # 搜索查询检测
-        search_patterns = [
-            any(word in message_lower for word in ["天气", "新闻", "最新"]),
-            ("什么是" in message_lower or "如何" in message_lower or "怎么" in message_lower),
-            any(word in message_lower for word in ["搜索", "查找", "search"]),
-        ]
-        
-        if any(search_patterns):
-            logger.info(f"🎯 直接语义分析识别为搜索: {message}")
-            
-            result = await execute_tool("web_search", 
-                                      query=message,
-                                      max_results=5)
-            
-            return await _format_search_result(result, message)
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"❌ 直接语义分析失败: {e}")
-        return None
-
-
-async def _direct_semantic_analysis(original_message: str, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """直接语义分析 - 完全基于LLM的最终兜底方案"""
-    try:
-        logger.info("🔬 启用直接语义分析兜底方案")
-        
-        from tool_box.router import get_smart_router
-        
-        # 获取智能路由器并进行最后的分析尝试
-        router = await get_smart_router()
-        
-        # 使用更宽松的置信度阈值，但仍然是LLM分析
-        result = await router._enhanced_llm_routing(original_message, context={
-            "fallback_mode": True,
-            "min_confidence": 0.05,  # 极低阈值，但仍是LLM分析
-            "session_id": session_id
-        })
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"❌ 直接语义分析失败: {e}")
-        # 科研项目要求：即使最终兜底也不使用正则匹配
-        return {
-            "response": "抱歉，我暂时无法理解您的请求。请尝试重新表达或提供更多详细信息。",
-            "suggestions": ["重新表达请求", "提供更多上下文", "换个方式描述"],
-            "metadata": {"fallback_used": True, "routing_failed": True}
-        }
-
-
-async def _execute_routed_action(intent_result: Dict[str, Any], original_message: str, context: Optional[Dict[str, Any]] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
-    """执行路由的行动"""
-    action = intent_result.get("action")
-    args = intent_result.get("args", {})
-    confidence = intent_result.get("confidence", 0.5)
-    
-    try:
-        if action == "show_tasks":
-            # 显示任务列表 - 传递会话信息以支持专事专办
-            workflow_id = context.get("workflow_id") if context else None
-            task_response = await _handle_task_query(
-                original_message,
-                session_id=session_id,
-                workflow_id=workflow_id
-            )
-            return {
-                "response": task_response,
-                "suggestions": ["查看详细信息", "按优先级排序", "筛选特定状态"],
-                "actions": [{"type": "show_task_details", "label": "查看详情", "data": {}}],
-                "action": action,
-                "confidence": confidence
-            }
-        
-        elif action == "create_learning_plan":
-            # 学习计划生成
-            topic = args.get("topic", "学习计划")
-            plan_type = args.get("type", "detailed")
-            
-            search_info = ""
-            search_query = f"{topic} 学习计划 教材 课程 步骤"
-            search_result = await execute_tool("web_search", query=search_query, max_results=3)
-
-            if isinstance(search_result, dict) and search_result.get("success"):
-                search_content = search_result.get("response", "") or search_result.get("formatted_response", "")
-                if search_content and not str(search_content).startswith("❌"):
-                    search_info = str(search_content)[:1200]
-
-            generation = await _generate_learning_plan_with_llm(topic, original_message, search_info, plan_type)
-
-            return {
-                "response": generation["plan"],
-                "suggestions": generation["suggestions"],
-                "actions": generation["actions"],
-                "action": action,
-                "confidence": confidence
-            }
-
-        elif action == "task_breakdown":
-            # 任务拆分处理
-            target = args.get("target", "任务")
-            
-            # 先搜索相关信息
-            search_query = f"{target} 拆分 步骤 行动 建议"
-            search_result = await execute_tool("web_search", query=search_query, max_results=3)
-
-            search_info = ""
-            if isinstance(search_result, dict) and search_result.get("success"):
-                search_content = search_result.get("response", "") or search_result.get("formatted_response", "")
-                if search_content and not str(search_content).startswith("❌"):
-                    search_info = str(search_content)[:1000]
-
-            generation = await _generate_task_breakdown_with_llm(target, original_message, search_info)
-
-            return {
-                "response": generation["plan"],
-                "suggestions": generation["suggestions"],
-                "actions": generation["actions"],
-                "action": action,
-                "confidence": confidence
-            }
-        
-        elif action == "database_query":
-            # 执行数据库查询（使用Tool Box）
-            try:
-                operation = args.get("operation", "query")
-                sql_query = args.get("query", "")
-                description = args.get("description", "数据库查询")
-                
-                # 🔒 专事专办：强制在待办任务查询中添加session_id过滤
-                if ("tasks" in sql_query.lower() and "status" in sql_query.lower() and 
-                    "pending" in sql_query.lower() and "session_id" not in sql_query.lower() and 
-                    "SELECT" in sql_query.upper()):
-                    
-                    logger.warning(f"🚨 检测到LLM生成的无会话过滤SQL: {sql_query}")
-                    
-                    # 强制添加会话过滤
-                    if session_id:
-                        # 在WHERE子句中添加session_id过滤
-                        if "WHERE" in sql_query.upper():
-                            sql_query = sql_query.replace("WHERE", f"WHERE session_id = '{session_id}' AND", 1)
-                        else:
-                            # 如果没有WHERE子句，添加一个
-                            sql_query = sql_query.replace("FROM tasks", f"FROM tasks WHERE session_id = '{session_id}'")
-                        
-                        logger.info(f"✅ 已修正为带会话过滤的SQL: {sql_query}")
-                    else:
-                        # 没有session_id时，只返回全局任务
-                        if "WHERE" in sql_query.upper():
-                            sql_query = sql_query.replace("WHERE", "WHERE session_id IS NULL AND", 1)
-                        else:
-                            sql_query = sql_query.replace("FROM tasks", "FROM tasks WHERE session_id IS NULL")
-                        
-                        logger.info(f"🌐 已修正为全局任务SQL: {sql_query}")
-                
-                # 调用Tool Box的database_query工具（注意参数名是sql而不是query）
-                result = await execute_tool("database_query", 
-                                        database="data/databases/main/tasks.db",
-                                        sql=sql_query, 
-                                        operation=operation)
-                
-                if isinstance(result, dict) and result.get("success"):
-                    # 统一处理execute操作，不使用关键词匹配
-                    if operation == "execute":
-                        rows_affected = result.get("rows_affected", 0)
-                        if rows_affected > 0:
-                            response = f"✅ **{description}成功**：\n\n影响了 {rows_affected} 条记录"
-                        else:
-                            response = f"📭 **{description}完成**：\n\n没有记录受到影响"
-                    else:
-                        # 查询操作
-                        data = result.get("rows", [])
-                        if data:
-                            response = f"📊 {description}结果：\n\n"
-                            if isinstance(data, list) and len(data) > 0:
-                                response += f"找到 {len(data)} 条记录：\n"
-                                for i, item in enumerate(data[:10], 1):  # 最多显示10条
-                                    if isinstance(item, dict):
-                                        name = item.get("name", f"记录{i}")
-                                        status = item.get("status", "未知")
-                                        # 清理任务名称，移除前缀
-                                        if name.startswith(('ROOT:', 'COMPOSITE:', 'ATOMIC:')):
-                                            name = name.split(':', 1)[1].strip()
-                                        response += f"{i}. {name} ({status})\n"
-                            else:
-                                response += str(data)
-                        else:
-                            response = "📭 暂无相关数据"
-                else:
-                    response = f"❌ 数据库操作失败: {result}"
-                
-                return {
-                    "response": response,
-                    "suggestions": ["查看详细信息", "刷新数据", "修改筛选条件"],
-                    "actions": [{"type": "refresh_data", "label": "刷新数据", "data": {}}],
-                    "action": action,
-                    "confidence": confidence
-                }
-            except Exception as e:
-                logger.error(f"❌ 数据库查询执行失败: {e}")
-                return {
-                    "response": f"❌ 查询执行失败: {str(e)}",
-                    "suggestions": ["重试查询", "检查连接"],
-                    "actions": [],
-                    "action": action,
-                    "confidence": confidence
-                }
-        
-        elif action == "search":
-            # 执行网络搜索（使用Tool Box）
-            try:
-                query = args.get("query", original_message)
-                max_results = args.get("max_results", 5)
-                
-                # 调用Tool Box的web_search工具
-                result = await execute_tool("web_search", query=query, max_results=max_results)
-                
-                if isinstance(result, dict) and result.get("success"):
-                    search_response = result.get("formatted_response", str(result))
-                else:
-                    search_response = f"🔍 搜索结果：{str(result)}"
-                
-                return {
-                    "response": search_response,
-                    "suggestions": ["搜索更多", "相关信息", "继续对话"],
-                    "actions": [{"type": "search_more", "label": "搜索更多", "data": {"query": query}}],
-                    "action": action,
-                    "confidence": confidence
-                }
-            except Exception as e:
-                logger.error(f"❌ 网络搜索执行失败: {e}")
-                return {
-                    "response": f"❌ 搜索执行失败: {str(e)}",
-                    "suggestions": ["重试搜索", "修改查询"],
-                    "actions": [],
-                    "action": action,
-                    "confidence": confidence
-                }
-        
-        elif action == "show_plan":
-            # 显示计划 - 传递会话信息以支持专事专办
-            workflow_id = context.get("workflow_id") if context else None
-            plan_response = await _handle_plan_query(
-                args.get("title", ""),
-                session_id=session_id,
-                workflow_id=workflow_id
-            )
-            return {
-                "response": plan_response,
-                "suggestions": ["查看任务详情", "创建新计划", "修改计划"],
-                "actions": [{"type": "show_plan_details", "label": "计划详情", "data": {}}],
-                "action": action,
-                "confidence": confidence
-            }
-        
-        else:
-            # 未知意图，回退到普通处理
-            return None
-            
-    except Exception as e:
-        logger.error(f"❌ 执行路由行动失败: {e}")
-        return None
-
-
-async def _handle_web_search(query: str, max_results: int = 5) -> str:
-    """处理网络搜索请求"""
-    try:
-        from tool_box import execute_tool
-        
-        logger.info(f"🔍 执行网络搜索: {query}")
-        
-        # execute_tool返回包装的字典格式
-        search_results = await execute_tool(
-            "web_search", 
-            query=query, 
-            max_results=max_results,
-            search_engine="tavily"
+        explicit_provider = _normalize_search_provider(
+            context.get("default_search_provider")
         )
-        
-        # search_results是包装的字典格式: {'query': '...', 'results': [...], 'total_results': 3}
-        if search_results and isinstance(search_results, dict):
-            results = search_results.get("results", [])
-            total = search_results.get("total_results", 0)
-            
-            logger.info(f"🔍 搜索返回结果: {len(results)}条，总共{total}条")
-            
-            if results:
-                response = f"🔍 **搜索结果**: {query}\n\n"
-                
-                for i, result in enumerate(results[:max_results], 1):
-                    title = result.get("title", "无标题")
-                    snippet = result.get("snippet", "")
-                    url = result.get("url", "")
-                    source = result.get("source", "")
-                    
-                    response += f"**{i}. {title}**\n"
-                    if snippet:
-                        response += f"{snippet}\n"
-                    if url:
-                        response += f"🔗 {url}\n"
-                    if source and source != url:
-                        response += f"📍 来源: {source}\n"
-                    response += "\n"
-                
-                return response
-            else:
-                return f"🔍 **搜索结果**: 抱歉，没有找到关于 '{query}' 的相关信息。"
+        if explicit_provider:
+            context["default_search_provider"] = explicit_provider
         else:
-            return f"🔍 **搜索结果**: 抱歉，没有找到关于 '{query}' 的相关信息。"
-            
-    except Exception as e:
-        logger.error(f"❌ 网络搜索失败: {e}")
-        return f"⚠️ 抱歉，搜索功能暂时不可用: {str(e)}"
+            session_provider = session_settings.get("default_search_provider")
+            if session_provider:
+                context["default_search_provider"] = session_provider
 
-
-async def _handle_plan_query(title: str, session_id: str = None, workflow_id: str = None) -> str:
-    """处理计划查询请求 - 支持会话级隔离"""
-    try:
-        from ..repository.tasks import default_repo
-        from ..utils.route_helpers import resolve_scope_params
-        
-        # 直接查询数据库，支持会话隔离
-        try:
-            resolved_session, resolved_workflow = resolve_scope_params(
-                session_id, workflow_id, require_scope=True
-            )
-        except Exception:
-            # 如果没有会话信息，返回提示
-            return "🔒 请先创建一个任务或计划，然后我就能显示当前工作空间的内容了。"
-        
-        # 获取当前会话的所有任务
-        tasks = default_repo.list_all_tasks(session_id=resolved_session, workflow_id=resolved_workflow)
-        
-        # 找出ROOT任务（计划）
-        root_tasks = [t for t in tasks if t.get("task_type") == "root"]
-        
-        if not root_tasks:
-            return "📋 当前工作空间中没有计划。您可以通过聊天创建新的计划。"
-        
-        response_text = f"📊 **当前工作空间计划概览**\n\n📝 **计划数量**: {len(root_tasks)}\n\n"
-        
-        # 显示每个ROOT计划的详细信息
-        for i, plan in enumerate(root_tasks, 1):
-            plan_title = plan.get("name", "未命名计划")
-            status = plan.get("status", "pending")
-            plan_id = plan.get("id")
-            workflow = plan.get("workflow_id", "未知")
-            
-            # 获取这个计划下的子任务数量
-            subtasks = [t for t in tasks if t.get("root_id") == plan_id]
-            subtask_count = len(subtasks)
-            
-            status_emoji = {
-                "pending": "⏳",
-                "running": "🏃",
-                "completed": "✅",
-                "failed": "❌"
-            }.get(status, "📌")
-            
-            response_text += f"{i}. {status_emoji} **{plan_title}**\n"
-            response_text += f"   📋 计划ID: {plan_id}\n"
-            response_text += f"   🔄 工作流: {workflow}\n" 
-            response_text += f"   📊 状态: {status}\n"
-            response_text += f"   👥 子任务数: {subtask_count}\n\n"
-        
-        response_text += f"💡 这是您当前工作空间的专属计划，实现了真正的'专事专办'。"
-        return response_text
-        
-    except Exception as e:
-        logger.error(f"❌ 计划查询失败: {e}")
-        return f"📋 查询计划时出错: {str(e)}\n\n您可以通过聊天创建新的计划。"
-
-
-async def _handle_task_query(message: str, session_id: str = None, workflow_id: str = None) -> str:
-    """处理任务查询请求，支持会话级隔离"""
-    try:
-        from ..repository.tasks import default_repo
-        from ..utils.route_helpers import resolve_scope_params
-        
-        # 强制会话隔离
-        try:
-            resolved_session, resolved_workflow = resolve_scope_params(
-                session_id, workflow_id, require_scope=True
-            )
-        except Exception:
-            return "🔒 请先在当前对话中创建一个任务或计划，然后我就能显示当前工作空间的任务了。"
-        
-        # 获取当前会话的任务
-        all_tasks = default_repo.list_all_tasks(session_id=resolved_session, workflow_id=resolved_workflow)
-        
-        if not all_tasks:
-            return "📋 当前工作空间中没有任务。您可以通过聊天创建新的计划和任务。"
-        
-        # 统计任务状态
-        stats = {
-            "pending": 0,
-            "running": 0, 
-            "completed": 0,
-            "failed": 0
-        }
-        
-        incomplete_tasks = []
-        
-        for task in all_tasks:
-            status = task.get("status", "pending")
-            stats[status] = stats.get(status, 0) + 1
-            
-            if status != "completed":
-                incomplete_tasks.append(task)
-        
-        # 构建响应
-        response = f"""📊 **当前工作空间任务统计**
-        
-🔒 **会话**: {resolved_session}
-📝 **总任务数**: {len(all_tasks)}
-⏳ **待处理**: {stats.get('pending', 0)} 个
-🏃 **进行中**: {stats.get('running', 0)} 个  
-✅ **已完成**: {stats.get('completed', 0)} 个
-❌ **失败**: {stats.get('failed', 0)} 个
-
-📋 **未完成任务清单** (前10个):
-"""
-        
-        # 显示前10个未完成任务
-        for i, task in enumerate(incomplete_tasks[:10]):
-            task_name = task.get("name", "未命名任务")
-            task_status = task.get("status", "pending")
-            task_id = task.get("id", "N/A")
-            
-            status_emoji = {
-                "pending": "⏳",
-                "running": "🏃", 
-                "failed": "❌"
-            }.get(task_status, "📌")
-            
-            response += f"\n{i+1}. {status_emoji} **{task_name}** (ID: {task_id}, 状态: {task_status})"
-        
-        if len(incomplete_tasks) > 10:
-            response += f"\n\n💡 还有 {len(incomplete_tasks) - 10} 个未完成任务未显示。"
-            
-        response += f"\n\n💡 这是您当前工作空间的专属任务，实现了真正的'专事专办'。\n🎯 您可以询问特定任务的详情，或请求按优先级、类型筛选任务。"
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"❌ 任务查询失败: {e}")
-        return f"⚠️ 抱歉，查询任务时出现错误: {str(e)}。请稍后重试或联系管理员。"
-
-
-def _extract_suggestions_and_actions(response: str, user_message: str) -> tuple:
-    """从回复中提取建议和可能的操作"""
-    suggestions = []
-    actions = []
-    
-    # 基于回复内容和用户消息分析可能的后续操作
-    if any(keyword in user_message.lower() for keyword in ["计划", "规划", "安排"]):
-        suggestions.extend([
-            "创建详细计划",
-            "查看现有任务",
-            "设置提醒"
-        ])
-        actions.append({
-            "type": "suggest_plan_creation",
-            "label": "创建计划",
-            "data": {"goal": user_message}
-        })
-    
-    if any(keyword in user_message.lower() for keyword in ["状态", "进度", "完成"]):
-        suggestions.extend([
-            "查看任务统计",
-            "生成进度报告",
-            "分析效率"
-        ])
-        actions.append({
-            "type": "show_status",
-            "label": "查看状态", 
-            "data": {}
-        })
-    
-    return suggestions[:3], actions  # 最多返回3个建议
-
-
-@router.get("/status")
-async def get_chat_status():
-    """获取聊天服务状态"""
-    try:
-        llm_client = get_default_client()
-        return {
-            "status": "online",
-            "provider": llm_client.provider,
-            "model": llm_client.model,
-            "mock_mode": llm_client.mock,
-            "features": {
-                "free_chat": True,
-                "task_planning": True,
-                "context_awareness": True,
-                "multi_mode": True
-            }
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e)
-        }
-
-
-# ============ Agent工作流程处理函数 ============
-
-async def _should_create_new_workflow(
-    message: str, 
-    session_id: Optional[str], 
-    context: Optional[Dict[str, Any]],
-    context_messages: Optional[List[Dict[str, str]]] = None
-) -> Dict[str, Any]:
-    """
-    使用LLM智能判断用户意图
-    
-    Returns:
-        {
-            "create_new_root": bool,   # 是否创建新ROOT任务
-            "add_to_existing": bool,   # 是否在现有ROOT下添加子任务
-            "decompose_task": bool,    # 是否拆分现有任务
-            "execute_task": bool,      # 是否执行现有任务
-            "existing_root_id": int,   # 现有ROOT任务的ID
-            "task_id": int,           # 要操作的任务ID
-            "task_name": str,         # 要操作的任务名称
-            "reasoning": str          # LLM的推理过程
-        }
-    """
-    from ..repository.tasks import default_repo
-    
-    # 1. 检查session中是否已有ROOT任务
-    existing_root = None
-    # 查询当前session的任务
-    all_pending_tasks = []
-    if session_id:
-        try:
-            # 查询当前session的ROOT任务
-            from ..database import get_db
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT id, name, status FROM tasks WHERE session_id = ? AND task_type = 'root' ORDER BY created_at DESC LIMIT 1",
-                    (session_id,)
-                )
-                result = cursor.fetchone()
-                if result:
-                    existing_root = {"id": result[0], "name": result[1], "status": result[2]}
-                    logger.info(f"📋 发现现有ROOT任务: {existing_root['name']} (ID: {existing_root['id']})")
-                    
-                    # 查询所有pending任务，让LLM了解上下文
-                    cursor.execute(
-                        """SELECT id, name, task_type, parent_id 
-                           FROM tasks 
-                           WHERE session_id = ? AND status = 'pending' 
-                           ORDER BY id ASC
-                           LIMIT 20""",
-                        (session_id,)
-                    )
-                    all_pending_tasks = cursor.fetchall()
-                    logger.info(f"📋 当前session有 {len(all_pending_tasks)} 个pending任务")
-        except Exception as e:
-            logger.warning(f"查询ROOT任务失败: {e}")
-    
-    # 2. 使用LLM判断用户意图
-    from ..llm import get_default_client
-    llm_client = get_default_client()
-    
-    # 构建分析prompt
-    if existing_root:
-        # 构建任务列表文本
-        task_list_text = ""
-        if all_pending_tasks:
-            task_list_text = "\n**当前工作空间的任务列表**:\n"
-            for task_id, task_name, task_type, parent_id in all_pending_tasks[:10]:  # 最多显示10个
-                task_list_text += f"  • ID:{task_id} - {task_name} [{task_type.upper()}]\n"
-        
-        prompt = f"""你是一个智能任务规划助手。当前用户在一个对话session中已经有一个进行中的ROOT任务和子任务：
-
-**现有ROOT任务**: {existing_root['name']} (ID: {existing_root['id']})
-{task_list_text}
-
-**用户当前消息**: {message}
-
-**判断任务**:
-分析用户的消息，判断用户的意图是：
-A) 创建一个全新的、独立的ROOT任务（与现有任务完全无关的新项目）
-B) 在现有ROOT任务下添加相关的子任务或补充内容
-C) 拆分现有的任务为子任务（把一个任务分解成更小的子任务）
-D) 执行/完成现有的任务（开始运行某个已创建的任务）
-F) 提供补充信息并重新执行任务（用户在回答之前任务提出的问题，或要求重新执行某个任务并提供了新的约束条件）
-E) 普通对话，不需要创建或执行任务
-
-**判断标准**（重要！请仔细匹配）:
-1. **"拆分"、"分解"、"细化"、"拆成"关键词** → C（拆分任务）
-   例如："拆分第1个任务"、"帮我拆分任务"、"分解这个任务"
-   ⚠️ 注意：如果同时有"重新执行"或"重跑"，优先选F而不是C！
-   
-2. **"完成"、"执行"、"运行"、"开始做"、"帮我做"关键词** → D（执行任务）
-   例如："完成任务507"、"执行这个任务"、"帮我完成XXX"
-   ⚠️ 注意："完成XXX研究"如果XXX在任务列表中，选D而不是A！
-   
-3. **"重新执行"、"重跑"、"再执行"、"再来一次"关键词，或提供了编号答案（如"1: xx 2: xx"）** → F（重新执行+补充信息）
-   例如："重新执行任务697"、"重新执行识别并筛选潜在研究问题"、"1: 临床环境 2: 大肠杆菌"
-   ⚠️ 这是最高优先级！如果用户明确说"重新执行"，必须选F！
-   
-4. **"新的"、"另一个"、"不同的项目"、与现有任务完全不同的主题** → A（创建新ROOT）
-   例如："我想研究另一个主题"、"创建一个新项目"
-   
-5. **"相关的"、"这个"、"补充"、"添加"** → B（添加子任务）
-   
-6. **问问题、闲聊、查询信息** → E（普通对话）
-
-**特别注意**:
-- 如果用户消息中提到的任务名称在上面的任务列表中出现，优先判断为C（拆分）或D（执行）
-- "完成一下这个任务：XXX" → 检查XXX是否在任务列表中 → 如果在，选D；如果不在且是新主题，选A
-
-请以JSON格式回复：
-{{
-  "intent": "A" | "B" | "C" | "D" | "F" | "E",
-  "task_id": <任务ID，如果用户提到（支持#697或697格式）>,
-  "task_name": "<任务名称，如果用户提到（用于模糊匹配）>",
-  "reasoning": "你的分析理由",
-  "confidence": 0.0-1.0
-}}
-"""
-    else:
-        # 没有现有ROOT任务，判断是否需要创建新任务
-        prompt = f"""你是一个智能任务规划助手。分析用户消息，判断是否需要创建一个任务计划。
-
-**用户消息**: {message}
-
-**判断标准**:
-- 需要创建任务：用户想要学习、研究、开发、规划某个复杂主题或项目
-- 不需要创建：简单问答、闲聊、单一信息查询
-
-请以JSON格式回复：
-{{
-  "needs_task": true | false,
-  "reasoning": "你的分析理由",
-  "confidence": 0.0-1.0
-}}
-"""
-    
-    try:
-        response = llm_client.chat(prompt, force_real=True)
-        logger.info(f"🤖 LLM原始回复: {response[:200]}...")  # 只打印前200字符
-        
-        from ..utils import parse_json_obj
-        result = parse_json_obj(response)
-        logger.info(f"📊 解析后的结果: {result}")
-        
-        if existing_root:
-            intent = result.get("intent", "E")
-            if intent == "A":
-                return {
-                    "create_new_root": True,
-                    "add_to_existing": False,
-                    "decompose_task": False,
-                    "execute_task": False,
-                    "existing_root_id": None,
-                    "reasoning": result.get("reasoning", "")
-                }
-            elif intent == "B":
-                return {
-                    "create_new_root": False,
-                    "add_to_existing": True,
-                    "decompose_task": False,
-                    "execute_task": False,
-                    "existing_root_id": existing_root["id"],
-                    "existing_root_name": existing_root["name"],
-                    "reasoning": result.get("reasoning", "")
-                }
-            elif intent == "C":
-                # 拆分任务
-                return {
-                    "create_new_root": False,
-                    "add_to_existing": False,
-                    "decompose_task": True,
-                    "execute_task": False,
-                    "existing_root_id": existing_root["id"],
-                    "existing_root_name": existing_root["name"],
-                    "task_id": result.get("task_id"),
-                    "task_name": result.get("task_name"),
-                    "reasoning": result.get("reasoning", "")
-                }
-            elif intent == "D":
-                # 执行任务
-                return {
-                    "create_new_root": False,
-                    "add_to_existing": False,
-                    "decompose_task": False,
-                    "execute_task": True,
-                    "existing_root_id": existing_root["id"],
-                    "existing_root_name": existing_root["name"],
-                    "task_id": result.get("task_id"),
-                    "task_name": result.get("task_name"),
-                    "reasoning": result.get("reasoning", "")
-                }
-            elif intent == "F":
-                # 重新执行+补充信息
-                return {
-                    "create_new_root": False,
-                    "add_to_existing": False,
-                    "decompose_task": False,
-                    "execute_task": False,
-                    "re_execute_with_info": True,
-                    "existing_root_id": existing_root["id"],
-                    "existing_root_name": existing_root["name"],
-                    "task_id": result.get("task_id"),
-                    "task_name": result.get("task_name"),
-                    "additional_info": message,
-                    "reasoning": result.get("reasoning", "")
-                }
-            else:
-                # E - 普通对话
-                return {
-                    "create_new_root": False,
-                    "add_to_existing": False,
-                    "decompose_task": False,
-                    "execute_task": False,
-                    "existing_root_id": None,
-                    "reasoning": result.get("reasoning", "")
-                }
-        else:
-            needs_task = result.get("needs_task", False)
-            if needs_task:
-                return {
-                    "create_new_root": True,
-                    "add_to_existing": False,
-                    "decompose_task": False,
-                    "execute_task": False,
-                    "existing_root_id": None,
-                    "reasoning": result.get("reasoning", "")
-                }
-            else:
-                return {
-                    "create_new_root": False,
-                    "add_to_existing": False,
-                    "decompose_task": False,
-                    "execute_task": False,
-                    "existing_root_id": None,
-                    "reasoning": result.get("reasoning", "")
-                }
-    except Exception as e:
-        logger.error(f"LLM判断失败: {e}")
-        # Fallback
-        if existing_root:
-            # 检查关键词
-            decompose_keywords = ["拆分", "分解", "细化", "拆分第"]
-            execute_keywords = ["执行", "完成", "开始", "运行", "做", "帮我做"]
-            
-            if any(kw in message for kw in decompose_keywords):
-                return {
-                    "create_new_root": False,
-                    "add_to_existing": False,
-                    "decompose_task": True,
-                    "execute_task": False,
-                    "existing_root_id": existing_root["id"],
-                    "existing_root_name": existing_root["name"],
-                    "reasoning": "Fallback: 检测到拆分关键词"
-                }
-            elif any(kw in message for kw in execute_keywords):
-                return {
-                    "create_new_root": False,
-                    "add_to_existing": False,
-                    "decompose_task": False,
-                    "execute_task": True,
-                    "existing_root_id": existing_root["id"],
-                    "existing_root_name": existing_root["name"],
-                    "reasoning": "Fallback: 检测到执行关键词"
-                }
-            elif len(message) < 50:
-                return {
-                    "create_new_root": False,
-                    "add_to_existing": True,
-                    "decompose_task": False,
-                    "execute_task": False,
-                    "existing_root_id": existing_root["id"],
-                    "existing_root_name": existing_root["name"],
-                    "reasoning": "Fallback: 简短消息 + 现有ROOT"
-                }
-        return {
-            "create_new_root": False,
-            "add_to_existing": False,
-            "decompose_task": False,
-            "execute_task": False,
-            "existing_root_id": None,
-            "reasoning": "LLM分析失败，默认为普通对话"
-        }
-
-
-async def _handle_task_decomposition(
-    request: ChatRequest,
-    workflow_decision: Dict[str, Any],
-    context_messages: Optional[List[Dict[str, str]]] = None
-) -> ChatResponse:
-    """拆分现有任务为子任务"""
-    from ..repository.tasks import default_repo
-    from ..llm import get_default_client
-    
-    logger.info(f"🔀 进入任务拆分函数")
-    logger.info(f"📝 用户消息: {request.message}")
-    logger.info(f"🆔 Session ID: {request.session_id}")
-    
-    try:
-        # 1. 查询session中的任务
-        from ..database import get_db
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """SELECT id, name, status, task_type, parent_id, root_id 
-                   FROM tasks 
-                   WHERE session_id = ? AND status = 'pending' 
-                   ORDER BY id ASC""",
-                (request.session_id,)
-            )
-            all_tasks = cursor.fetchall()
-        
-        if not all_tasks:
-            return ChatResponse(
-                response="❌ 当前工作空间没有可拆分的任务。\n\n💡 请先创建一个ROOT任务。",
-                suggestions=["创建新任务"],
-                metadata={"error": "no_tasks"}
-            )
-        
-        # 2. 使用LLM匹配用户想拆分的任务
-        llm_client = get_default_client()
-        
-        # 构建任务列表
-        task_list = []
-        for i, task in enumerate(all_tasks):
-            task_id, name, status, task_type, parent_id, root_id = task
-            task_list.append(f"[{i+1}] ID: {task_id}, 名称: \"{name}\", 类型: {task_type}")
-        
-        prompt = f"""用户想要拆分一个任务。
-
-**用户消息**: {request.message}
-
-**可拆分任务列表**:
-{chr(10).join(task_list)}
-
-请分析用户最可能想要拆分哪个任务。
-
-**规则**:
-1. ROOT任务可以拆分为COMPOSITE任务
-2. COMPOSITE任务可以拆分为ATOMIC任务
-3. ATOMIC任务不能再拆分
-4. 如果用户说"第1个"、"第一个"，选择对应序号
-5. 如果用户提到任务名称，选择匹配度最高的
-6. 优先选择ROOT和COMPOSITE类型的任务
-
-返回JSON：
-{{
-  "task_id": <任务ID>,
-  "reasoning": "为什么选择这个任务"
-}}
-"""
-        
-        response = llm_client.chat(prompt, force_real=True)
-        from ..utils import parse_json_obj
-        result = parse_json_obj(response)
-        
-        task_id = result.get("task_id")
-        if not task_id:
-            task_id = all_tasks[0][0]  # 默认选第一个
-        
-        # 3. 检查任务是否存在和类型
-        task = default_repo.get_task_info(task_id)
-        if not task:
-            return ChatResponse(
-                response=f"❌ 任务 ID: {task_id} 不存在。",
-                metadata={"error": "task_not_found"}
-            )
-        
-        task_name = task.get("name", "")
-        task_type = task.get("task_type", "")
-        
-        # 4. 检查是否是ATOMIC任务
-        if task_type == "atomic":
-            return ChatResponse(
-                response=f"""❌ **无法拆分ATOMIC任务！**
-
-📋 **任务**: {task_name}
-🆔 **ID**: {task_id}
-📊 **类型**: atomic
-
-⚠️ ATOMIC任务是最小执行单元，不能再拆分。
-
-💡 你可以：
-• 直接执行这个ATOMIC任务："帮我完成任务{task_id}"
-• 拆分其他ROOT或COMPOSITE任务
-• 查看任务列表选择其他任务""",
-                suggestions=["执行ATOMIC任务", "查看任务列表"],
-                metadata={"error": "atomic_cannot_decompose", "task_id": task_id}
-            )
-        
-        logger.info(f"🔀 开始拆分任务: {task_name} (ID: {task_id}, Type: {task_type})")
-        
-        # 5. 调用拆分API
-        logger.info(f"🔧 准备调用拆分API: /tasks/{task_id}/decompose")
-        
-        api_result = await execute_tool(
-            "internal_api",
-            endpoint=f"/tasks/{task_id}/decompose",
-            method="POST",
-            data={"max_subtasks": 5, "force": False, "tool_aware": True},
-            timeout=60.0
-        )
-        
-        logger.info(f"📦 拆分API返回结果: {api_result}")
-        
-        if not api_result or not api_result.get("success"):
-            error_msg = api_result.get("error", "未知错误") if api_result else "API调用失败"
-            return ChatResponse(
-                response=f"❌ 拆分任务失败: {error_msg}",
-                metadata={"error": error_msg}
-            )
-        
-        # 6. 解析结果
-        decompose_data = api_result.get("data", {})
-        subtasks = decompose_data.get("subtasks", [])
-        child_type = "ATOMIC" if task_type == "composite" else "COMPOSITE"
-        
-        return ChatResponse(
-            response=f"""✅ **任务拆分完成！**
-
-📋 **原任务**: {task_name}
-🆔 **任务ID**: {task_id}
-📊 **类型**: {task_type}
-
-🔄 **已创建 {len(subtasks)} 个{child_type}子任务**:
-{chr(10).join([f"{i+1}. {st.get('name', '未命名')} (ID: {st.get('id')})" for i, st in enumerate(subtasks[:5])])}
-
-💡 下一步：
-• 继续拆分{child_type}任务为更小的单元
-• 开始执行ATOMIC任务
-• 查看完整任务结构""",
-            suggestions=["查看任务列表", "继续拆分", "开始执行"],
-            metadata={
-                "task_id": task_id,
-                "subtask_count": len(subtasks),
-                "child_type": child_type,
-                "action": "task_decomposed"
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"拆分任务失败: {e}")
-        return ChatResponse(
-            response=f"❌ 拆分任务时出错: {str(e)}",
-            metadata={"error": str(e)}
+        agent = StructuredChatAgent(
+            mode=request.mode,
+            plan_session=plan_session,
+            plan_decomposer=plan_decomposer_service,
+            plan_executor=plan_executor_service,
+            session_id=request.session_id,
+            conversation_id=_derive_conversation_id(request.session_id),
+            history=converted_history,
+            extra_context=context,
         )
 
+        structured = await agent.get_structured_response(request.message)
 
-async def _handle_task_execution(
-    request: ChatRequest,
-    workflow_decision: Dict[str, Any],
-    context_messages: Optional[List[Dict[str, str]]] = None
-) -> ChatResponse:
-    """执行现有任务"""
-    from ..repository.tasks import default_repo
-    from ..execution.executors.tool_enhanced import ToolEnhancedExecutor
-    from ..llm import get_default_client
-    
-    logger.info(f"▶️ 进入任务执行函数")
-    logger.info(f"📝 用户消息: {request.message}")
-    logger.info(f"🆔 Session ID: {request.session_id}")
-    
-    try:
-        # 1. 查询session中的ATOMIC任务
-        from ..database import get_db
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """SELECT id, name, status, task_type, parent_id, root_id 
-                   FROM tasks 
-                   WHERE session_id = ? AND status = 'pending' 
-                   ORDER BY task_type DESC, id ASC""",
-                (request.session_id,)
-            )
-            pending_tasks = cursor.fetchall()
-        
-        logger.info(f"📋 查询到 {len(pending_tasks)} 个pending任务")
-        if pending_tasks:
-            for task in pending_tasks[:5]:  # 只打印前5个
-                logger.info(f"   - ID: {task[0]}, 名称: {task[1]}, 类型: {task[3]}")
-        
-        if not pending_tasks:
-            return ChatResponse(
-                response="❌ 当前工作空间没有待执行的任务。\n\n💡 你可以先创建一个任务或说'查看任务列表'。",
-                suggestions=["创建新任务", "查看所有任务"],
-                metadata={"error": "no_pending_tasks"}
-            )
-        
-        # 2. 使用LLM匹配用户想要执行的任务
-        llm_client = get_default_client()
-        
-        # 构建任务列表
-        task_list = []
-        for i, task in enumerate(pending_tasks):
-            task_id, name, status, task_type, parent_id, root_id = task
-            task_list.append(f"[{i+1}] ID: {task_id}, 名称: \"{name}\", 类型: {task_type}")
-        
-        prompt = f"""用户想要执行一个任务。
-
-**用户消息**: {request.message}
-
-**可执行任务列表**:
-{chr(10).join(task_list)}
-
-请分析用户最可能想要执行哪个任务。
-
-优先级：
-1. ATOMIC任务（最小执行单元，可以直接执行）
-2. 如果用户明确提到任务ID，选择该ID
-3. 如果用户提到任务名称，选择匹配度最高的
-4. 如果用户说"第一个"、"第二个"，选择对应序号
-
-返回JSON：
-{{
-  "task_id": <任务ID>,
-  "reasoning": "为什么选择这个任务"
-}}
-"""
-        
-        response = llm_client.chat(prompt, force_real=True)
-        from ..utils import parse_json_obj
-        result = parse_json_obj(response)
-        
-        task_id = result.get("task_id")
-        if not task_id:
-            task_id = pending_tasks[0][0]  # 默认选第一个
-        
-        # 3. 执行任务
-        task = default_repo.get_task_info(task_id)
-        if not task:
-            return ChatResponse(
-                response=f"❌ 任务 ID: {task_id} 不存在。",
-                metadata={"error": "task_not_found"}
-            )
-        
-        task_name = task.get("name", "")
-        task_type = task.get("task_type", "")
-        
-        logger.info(f"▶️ 开始执行任务: {task_name} (ID: {task_id}, Type: {task_type})")
-        
-        # 执行任务
-        executor = ToolEnhancedExecutor(repo=default_repo)
-        status = await executor.execute_task(
-            task=task,
-            use_context=True,
-            context_options={"force_save_output": True}
-        )
-        
-        # 获取任务输出
-        output_content = default_repo.get_task_output_content(task_id)
-        
-        return ChatResponse(
-            response=f"""✅ **任务执行完成！**
-
-📋 **任务名称**: {task_name}
-🆔 **任务ID**: {task_id}
-📊 **类型**: {task_type}
-✨ **状态**: {status}
-
-**执行结果**:
-{output_content[:500] if output_content else '（无输出内容）'}
-{'...' if output_content and len(output_content) > 500 else ''}
-
-💾 完整输出已保存到 results/ 目录的层级结构中。
-
-💡 你可以继续执行其他任务，或查看任务列表。""",
-            suggestions=["查看任务列表", "执行下一个任务", "查看完整输出"],
-            metadata={
-                "task_id": task_id,
-                "status": status,
-                "has_output": bool(output_content),
-                "action": "task_executed"
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"执行任务失败: {e}")
-        return ChatResponse(
-            response=f"❌ 执行任务时出错: {str(e)}",
-            metadata={"error": str(e)}
-        )
-
-
-async def _handle_add_subtask_to_existing(
-    request: ChatRequest, 
-    workflow_decision: Dict[str, Any],
-    context_messages: Optional[List[Dict[str, str]]] = None
-) -> ChatResponse:
-    """在现有ROOT任务下添加子任务"""
-    from ..repository.tasks import default_repo
-    
-    existing_root_id = workflow_decision.get("existing_root_id")
-    existing_root_name = workflow_decision.get("existing_root_name", "现有项目")
-    
-    logger.info(f"📎 在ROOT任务 {existing_root_id} 下添加子任务: {request.message}")
-    
-    # 创建一个新的COMPOSITE或ATOMIC任务
-    try:
-        # 使用LLM生成任务描述
-        from ..llm import get_default_client
-        llm_client = get_default_client()
-        
-        prompt = f"""用户在项目"{existing_root_name}"下提出了新的需求：{request.message}
-
-请生成一个简洁的任务名称（不超过50字）："""
-        
-        task_name = llm_client.chat(prompt, force_real=True).strip()
-        # 清理任务名称
-        task_name = task_name.strip('"\'')
-        if len(task_name) > 50:
-            task_name = task_name[:50]
-        
-        # 创建子任务
-        task_id = default_repo.create_task(
-            name=f"COMPOSITE: {task_name}",
-            status="pending",
-            priority=1,
-            parent_id=existing_root_id,
-            root_id=existing_root_id,
-            task_type="composite",
-            session_id=request.session_id
-        )
-        
-        return ChatResponse(
-            response=f"""✅ **已在现有项目下添加子任务！**
-
-📋 **父任务**: {existing_root_name}
-📝 **新任务**: {task_name}
-🆔 **任务ID**: {task_id}
-📊 **状态**: pending
-
-🎯 该任务已加入您的项目计划中。系统会在执行时自动：
-• 在 `results/{existing_root_name}/` 目录下创建相应的文件结构
-• ATOMIC子任务会生成为 .md 文件
-
-💡 你可以继续补充更多需求，或者说"开始执行任务"来运行它们。""",
-            suggestions=["开始执行任务", "查看任务列表", "继续添加任务"],
-            metadata={
-                "task_id": task_id,
-                "parent_id": existing_root_id,
-                "root_name": existing_root_name,
-                "action": "subtask_added"
-            }
-        )
-    except Exception as e:
-        logger.error(f"创建子任务失败: {e}")
-        return ChatResponse(
-            response=f"❌ 创建子任务时出错: {str(e)}",
-            metadata={"error": str(e)}
-        )
-
-
-def _is_agent_workflow_intent(message: str) -> bool:
-    """检测是否为Agent工作流程创建意图 - 加强过滤，避免简单问候触发任务
-    
-    ⚠️ DEPRECATED: 此函数已被 _should_create_new_workflow 替代
-    """
-    
-    # 🚫 首先排除简单问候和常见对话
-    simple_excludes = [
-        # 问候语
-        "你好", "hi", "hello", "嗨", "在吗", "在不在", "早上好", "下午好", "晚上好",
-        # 简单询问  
-        "怎么样", "如何", "什么", "哪里", "为什么", "干嘛", "在干嘛",
-        # 状态询问
-        "最近", "现在", "目前", "当前",
-        # 简单回复
-        "好的", "可以", "不行", "没问题", "谢谢", "不客气"
-    ]
-    
-    message_clean = message.strip().lower()
-    
-    # 🔍 长度过滤：小于8个字符的消息通常不是复杂任务
-    if len(message_clean) < 8:
-        return False
-        
-    # 🔍 简单问候过滤  
-    if any(exclude in message_clean for exclude in simple_excludes):
-        # 如果包含问候词且长度<20，大概率是简单问候
-        if len(message_clean) < 20:
-            return False
-    
-    # 🔍 问号结尾的短句通常是询问，不是任务创建
-    if message_clean.endswith('?') or message_clean.endswith('？'):
-        if len(message_clean) < 30:
-            return False
-    
-    # 排除纯学习计划请求 - 优先级最高
-    learning_plan_indicators = [
-        "学习C++", "学习Python", "学习Java", "学习JavaScript", "学习因果推断",
-        "c++", "python", "java", "javascript",
-        "学习计划", "教程", "课程", "培训"
-    ]
-    
-    # 如果是纯学习计划请求，不触发Agent工作流程
-    if any(indicator.lower() in message.lower() for indicator in learning_plan_indicators):
-        # 进一步检查是否真的是纯学习请求
-        pure_learning_patterns = [
-            r"(学习|掌握).*(C\+\+|Python|Java|JavaScript|因果推断)",
-            r"(写|制定|制作).*(计划|教程|指南).*(学习|掌握)",
-            r"帮我.*(计划|规划).*(学习|教程)"
-        ]
-        if any(re.search(pattern, message, re.IGNORECASE) for pattern in pure_learning_patterns):
-            return False
-    
-    # 基础工作流程关键词 - 排除学习相关
-    workflow_keywords = [
-        "构建", "开发", "制作", "建立", "设计", "实现",
-        "项目", "应用", "平台", "工具", "框架", "系统",
-        "方案", "流程"
-    ]
-    
-    # 强意图检测模式 - 更精确
-    strong_patterns = [
-        # 软件开发相关
-        r"(构建|开发|创建|制作|建立).+(系统|项目|应用|平台|工具)",
-        r"(设计|实现).+(方案|流程|架构)",
-        r"我想要.+(做|建|写|开发).+(系统|项目|应用)",
-        # 复杂工作流程
-        r"(帮我|帮忙).*(制定|规划|设计).*(方案|流程|步骤)",
-        r"(整理|制定|规划).*(工作|项目|开发).*(流程|步骤)"
-    ]
-    
-    # 检查强模式
-    for pattern in strong_patterns:
-        if re.search(pattern, message):
-            return True
-    
-    # 检查基础关键词组合 - 需要至少2个工作流程关键词
-    keyword_count = sum(1 for keyword in workflow_keywords if keyword in message.lower())
-    return keyword_count >= 2
-
-
-
-
-def _format_dag_preview(dag_nodes: List[Dict[str, Any]]) -> str:
-    """将DAG节点渲染为文本树，方便在聊天窗口中快速预览。"""
-    if not dag_nodes:
-        return "（暂无DAG数据）"
-
-    by_parent = defaultdict(list)
-    for node in dag_nodes:
-        by_parent[node.get("parent_id")].append(node)
-
-    for siblings in by_parent.values():
-        siblings.sort(key=lambda n: (n.get("depth", 0), n.get("id", 0), str(n.get("name", ""))))
-
-    root_candidates = [n for n in dag_nodes if n.get("parent_id") is None]
-    root = root_candidates[0] if root_candidates else dag_nodes[0]
-
-    lines: List[str] = []
-
-    def render(node: Dict[str, Any], prefix: str = "", is_last: bool = True) -> None:
-        connector = "└──" if is_last else "├──"
-        name = node.get("name") or "未命名任务"
-        task_type = (node.get("task_type") or "unknown").upper()
-        label = f"{name} [{task_type}]"
-        if not prefix:
-            lines.append(label)
-        else:
-            lines.append(f"{prefix}{connector} {label}")
-
-        children = by_parent.get(node.get("id"), [])
-        child_prefix = prefix + ("    " if is_last else "│   ")
-        for idx, child in enumerate(children):
-            render(child, child_prefix, idx == len(children) - 1)
-
-    render(root)
-    return "\n".join(lines)
-
-
-def _format_execution_plan(execution_plan: List[Dict[str, Any]], max_steps: int = 5) -> str:
-    """格式化执行计划，突出最早需要关注的任务。"""
-    if not execution_plan:
-        return "暂无执行计划数据"
-
-    lines: List[str] = []
-    for index, step in enumerate(execution_plan[:max_steps]):
-        order = step.get("execution_order") or index + 1
-        try:
-            order_int = int(order)
-        except Exception:
-            order_int = index + 1
-        name = step.get("name") or f"步骤{order_int}"
-        prerequisites = step.get("prerequisites") or []
-        prereq_text = ", ".join(str(p) for p in prerequisites) if prerequisites else "无"
-        duration = step.get("estimated_duration") or "未估算"
-        lines.append(f"{order_int}. {name}（前置: {prereq_text}，预计: {duration}）")
-
-    if len(execution_plan) > max_steps:
-        lines.append("...（更多任务已生成，可在DAG面板查看）")
-
-    return "\n".join(lines)
-
-async def _handle_agent_workflow_creation(
-    request: ChatRequest,
-    context_messages: Optional[List[Dict[str, str]]] = None
-) -> ChatResponse:
-    """Handle agent workflow creation and save response"""
-    """处理Agent工作流程创建"""
-    try:
-        # 先搜索相关专业信息以提高规划质量
-        search_enhanced_goal = request.message
-        if any(keyword in request.message for keyword in ["学习", "计划", "指南"]):
-            logger.info(f"🔍 学习计划请求，先搜索相关信息: {request.message}")
-            search_result = None
-            try:
-                search_result = await execute_tool("web_search", query=request.message, max_results=3)
-            except Exception as e:
-                # 避免可选增强导致整体失败：网络/协议错误时直接跳过增强
-                logger.warning(f"web_search 调用失败，跳过增强: {e}")
-            if search_result and search_result.get("success"):
-                search_content = search_result.get("response", "")
-                if search_content and not search_content.startswith("❌"):
-                    search_enhanced_goal = f"{request.message}\n\n参考信息：{search_content[:800]}"
-        
-        # 🔧 通过tool-box调用Agent工作流程创建API
-        # 构建上下文信息（确保携带会话/工作流标识）
-        context_info = request.context or {}
-        # 强制补齐 session_id 与 workflow_id，避免后端创建到错误会话
-        try:
+        if not structured.actions:
+            agent_result = await agent.execute_structured(structured)
             if request.session_id:
-                context_info["session_id"] = request.session_id
-        except Exception:
-            pass
-        try:
-            # ChatRequest 可能不含 workflow_id 字段，做兼容处理
-            wf_id = getattr(request, "workflow_id", None) or context_info.get("workflow_id")
-            if wf_id:
-                context_info["workflow_id"] = wf_id
-        except Exception:
-            pass
-        if context_messages:
-            context_info["conversation_history"] = context_messages[-3:]  # 最近3条消息
-        
-        agent_request = {
-            "goal": search_enhanced_goal,
-            "context": context_info,
-            "user_preferences": {}
-        }
-        
-        # 使用tool-box的internal_api工具替代直接的httpx调用
-        api_result = await execute_tool(
-            "internal_api",
-            endpoint="/agent/create-workflow", 
-            method="POST",
-            data=agent_request,
-            timeout=60.0
-        )
-        
-        if api_result and api_result.get("success"):
-            workflow_data = api_result.get("data", {})
-            
-            # 构建用户友好的响应并动态摘要工作流结构
-            metadata = workflow_data.get('metadata') or {}
-            dag_nodes = workflow_data.get('dag_structure') or []
-            execution_plan = workflow_data.get('execution_plan') or []
-
-            task_counts = Counter(node.get('task_type', 'unknown') for node in dag_nodes)
-            total_tasks = metadata.get('total_tasks') or len(dag_nodes)
-            root_count = task_counts.get('root', 0)
-            composite_count = task_counts.get('composite', 0)
-            atomic_count = task_counts.get('atomic', 0)
-
-            dag_preview = _format_dag_preview(dag_nodes)
-            execution_summary = _format_execution_plan(execution_plan)
-            key_tasks = [node.get('name', '未命名任务') for node in dag_nodes if node.get('task_type') == 'composite'][:3]
-
-            goal_text = workflow_data.get('goal', request.message)
-            estimated_completion = metadata.get('estimated_completion') or '未提供'
-            created_at = metadata.get('created_at')
-
-            response_lines = [
-                "🤖 **Agent工作流程已创建！**",
-                "",
-                f"📋 **目标**: {goal_text}",
-                f"🔢 **任务总数**: {total_tasks} 个（ROOT {root_count}、COMPOSITE {composite_count}、ATOMIC {atomic_count}）",
-                f"⏱️ **预计完成时间**: {estimated_completion}",
-            ]
-            if created_at:
-                response_lines.append(f"🗓️ **创建时间戳**: {created_at}")
-            if key_tasks:
-                response_lines.append("")
-                response_lines.append("**📌 关键任务概览**:")
-                for name in key_tasks:
-                    response_lines.append(f"- {name}")
-            response_lines.append("")
-            response_lines.append("**🧭 执行计划（前若干步）**:")
-            response_lines.append(execution_summary)
-            response_lines.append("")
-
-            response_lines.append("**📊 DAG结构预览**:")
-            response_lines.append("```")
-            response_lines.append(dag_preview)
-            response_lines.append("```")
-            next_steps = [
-                "打开右侧DAG视图检查依赖关系",
-                "根据需要调整任务内容或顺序",
-                "确认执行前置任务后继续推进",
-            ]
-            if key_tasks:
-                next_steps.insert(0, f"细化任务：{key_tasks[0]}")
-            response_lines.append("")
-            response_lines.append("**🎯 下一步操作**:")
-            for idx, item in enumerate(next_steps, 1):
-                response_lines.append(f"{idx}. {item}")
-
-            response_text = "\n".join(response_lines)
-            suggestions = [
-                "查看DAG结构图",
-                "检查执行计划详情",
-                "调整任务或依赖关系",
-                "开始执行首个任务",
-            ]
-            if key_tasks:
-                suggestions.insert(0, f"聚焦任务：{key_tasks[0]}")
-
-            return ChatResponse(
-                response=response_text,
-                suggestions=suggestions,
-                actions=[
-                    {
-                        "type": "show_dag",
-                        "label": "显示DAG图",
-                        "data": {"workflow_id": workflow_data.get('workflow_id')}
-                    },
-                    {
-                        "type": "approve_workflow",
-                        "label": "确认并开始执行",
-                        "data": {"workflow_id": workflow_data.get('workflow_id')}
-                    }
-                ],
-                metadata={
-                    "mode": request.mode,
-                    "agent_workflow": True,
-                    "workflow_id": workflow_data.get('workflow_id'),
-                    "session_id": request.session_id,  # ⭐ 回传session，便于前端修正上下文
-                    "total_tasks": total_tasks,
-                    "task_counts": dict(task_counts),
-                    "dag_structure": dag_nodes,
-                    "dag_preview": dag_preview,
-                    "execution_plan": execution_plan,
-                    "execution_plan_summary": execution_summary
+                _set_session_plan_id(request.session_id, agent_result.bound_plan_id)
+            if agent_result.steps:
+                for step in agent_result.steps:
+                    logger.info(
+                        "[CHAT][SYNC] session=%s action=%s/%s success=%s message=%s",
+                        request.session_id or "<new>",
+                        step.action.kind,
+                        step.action.name,
+                        step.success,
+                        step.message,
+                    )
+            tool_results = [
+                {
+                    "name": step.action.name,
+                    "summary": step.details.get("summary"),
+                    "parameters": step.details.get("parameters"),
+                    "result": step.details.get("result"),
                 }
+                for step in agent_result.steps
+                if step.action.kind == "tool_operation"
+            ]
+            metadata_payload: Dict[str, Any] = {
+                "intent": agent_result.primary_intent,
+                "success": agent_result.success,
+                "errors": agent_result.errors,
+                "plan_id": agent_result.bound_plan_id,
+                "plan_outline": agent_result.plan_outline,
+                "plan_persisted": agent_result.plan_persisted,
+                "status": "completed",
+                "raw_actions": [
+                    step.action.model_dump() for step in agent_result.steps
+                ],
+            }
+            if tool_results:
+                metadata_payload["tool_results"] = [
+                    entry
+                    for entry in tool_results
+                    if entry and isinstance(entry.get("result"), dict)
+                ]
+            if agent_result.actions_summary:
+                metadata_payload["actions_summary"] = agent_result.actions_summary
+            if agent_result.job_id:
+                metadata_payload["job_id"] = agent_result.job_id
+                metadata_payload["job_type"] = agent_result.job_type or "chat_action"
+                metadata_payload["job_status"] = (
+                    "completed" if agent_result.success else "failed"
+                )
+            chat_response = ChatResponse(
+                response=agent_result.reply,
+                suggestions=agent_result.suggestions,
+                actions=[step.action_payload for step in agent_result.steps],
+                metadata=metadata_payload,
+            )
+            return _save_assistant_response(request.session_id, chat_response)
+
+        tracking_id = f"act_{uuid4().hex}"
+        job_metadata = {
+            "session_id": request.session_id,
+            "mode": request.mode,
+            "user_message": request.message,
+        }
+        job_params = {
+            key: value
+            for key, value in {
+                "mode": request.mode,
+                "session_id": request.session_id,
+                "plan_id": plan_session.plan_id,
+            }.items()
+            if value is not None
+        }
+        try:
+            plan_decomposition_jobs.create_job(
+                plan_id=plan_session.plan_id,
+                task_id=None,
+                mode=request.mode or "assistant",
+                job_type="chat_action",
+                params=job_params,
+                metadata=job_metadata,
+                job_id=tracking_id,
+            )
+        except ValueError:
+            pass
+
+        structured_json = structured.model_dump_json()
+        try:
+            create_action_run(
+                run_id=tracking_id,
+                session_id=request.session_id,
+                user_message=request.message,
+                mode=request.mode,
+                plan_id=plan_session.plan_id,
+                context=context,
+                history=converted_history,
+                structured_json=structured_json,
+            )
+        except Exception as exc:
+            logger.error("Failed to persist action run %s: %s", tracking_id, exc)
+            raise
+
+        pending_actions = [
+            {
+                "kind": action.kind,
+                "name": action.name,
+                "parameters": action.parameters,
+                "order": action.order,
+                "blocking": action.blocking,
+                "status": "pending",
+                "success": None,
+                "message": None,
+                "details": None,
+            }
+            for action in structured.sorted_actions()
+        ]
+        for action in structured.sorted_actions():
+            logger.info(
+                "[CHAT][ASYNC] session=%s tracking=%s queued action=%s/%s order=%s params=%s",
+                request.session_id or "<new>",
+                tracking_id,
+                action.kind,
+                action.name,
+                action.order,
+                action.parameters,
+            )
+            try:
+                append_action_log_entry(
+                    plan_id=plan_session.plan_id,
+                    job_id=tracking_id,
+                    job_type="chat_action",
+                    session_id=request.session_id,
+                    user_message=request.message,
+                    action_kind=action.kind,
+                    action_name=action.name or "",
+                    status="queued",
+                    success=None,
+                    message="Action queued for execution.",
+                    parameters=action.parameters,
+                    details=None,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Failed to persist queued action log: %s", exc)
+        suggestions = [
+            "Actions have been generated; execution is running in the background.",
+            "If it does not finish within two minutes, refresh the plan view or try again later.",
+        ]
+        plan_decomposition_jobs.append_log(
+            tracking_id,
+            "info",
+            "Background action submitted and awaiting execution.",
+            {
+                "session_id": request.session_id,
+                "plan_id": plan_session.plan_id,
+                "actions": [action.model_dump() for action in structured.actions],
+            },
+        )
+
+        job_snapshot = plan_decomposition_jobs.get_job_payload(tracking_id)
+        chat_response = ChatResponse(
+            response=structured.llm_reply.message,
+            suggestions=suggestions,
+            actions=pending_actions,
+            metadata={
+                "status": "pending",
+                "tracking_id": tracking_id,
+                "plan_id": plan_session.plan_id,
+                "raw_actions": [action.model_dump() for action in structured.actions],
+                "type": "job_log",
+                "job_id": tracking_id,
+                "job_type": (job_snapshot or {}).get("job_type", "chat_action"),
+                "job_status": (job_snapshot or {}).get("status", "queued"),
+                "job": job_snapshot,
+                "job_logs": (job_snapshot or {}).get("logs"),
+            },
+        )
+
+        background_tasks.add_task(_execute_action_run, tracking_id)
+
+        return _save_assistant_response(request.session_id, chat_response)
+
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Chat processing failed: %s", exc)
+        error_message = "⚠️ Something went wrong while processing the request. Try again later or rephrase."
+        fallback = ChatResponse(
+            response=error_message,
+            suggestions=["Retry", "Try another phrasing", "Contact the administrator"],
+            actions=[],
+            metadata={"error": True, "error_type": type(exc).__name__},
+        )
+        return _save_assistant_response(request.session_id, fallback)
+
+
+# ---------------------------------------------------------------------------
+# Data persistence and helper utilities
+# ---------------------------------------------------------------------------
+
+
+def _derive_conversation_id(session_id: Optional[str]) -> Optional[int]:
+    """Map session_id to a stable integer ID."""
+    if not session_id:
+        return None
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+    return int(digest, 16)
+
+
+def _convert_history_to_agent_format(
+    history: Optional[List[ChatMessage]],
+) -> List[Dict[str, Any]]:
+    """Transform frontend history messages into agent-ready format."""
+    if not history:
+        return []
+    return [{"role": msg.role, "content": msg.content} for msg in history]
+
+
+def _loads_metadata(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:  # pragma: no cover - best effort parsing
+        return None
+
+
+def _normalize_search_provider(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().lower()
+    if candidate in VALID_SEARCH_PROVIDERS:
+        return candidate
+    return None
+
+
+def _dump_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not metadata:
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    if not metadata:
+        return None
+    return json.dumps(metadata, ensure_ascii=False)
+
+
+def _extract_session_settings(
+    metadata: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not metadata:
+        return None
+    provider = _normalize_search_provider(metadata.get("default_search_provider"))
+    if not provider:
+        return None
+    return {"default_search_provider": provider}
+
+
+def _lookup_plan_title(conn, plan_id: Optional[int]) -> Optional[str]:
+    if plan_id is None:
+        return None
+    row = conn.execute("SELECT title FROM plans WHERE id=?", (plan_id,)).fetchone()
+    if not row:
+        return None
+    return row["title"]
+
+
+def _row_to_session_info(row) -> Dict[str, Any]:
+    """Convert a SQLite row into a session info dictionary."""
+    metadata = None
+    if isinstance(row, dict) or hasattr(row, "keys"):
+        try:
+            metadata = _loads_metadata(row["metadata"])
+        except Exception:
+            metadata = None
+    info = {
+        "id": row["id"],
+        "name": row["name"],
+        "name_source": row["name_source"] if "name_source" in row.keys() else None,
+        "is_user_named": (
+            bool(row["is_user_named"])
+            if "is_user_named" in row.keys() and row["is_user_named"] is not None
+            else None
+        ),
+        "plan_id": row["plan_id"],
+        "plan_title": row["plan_title"],
+        "current_task_id": row["current_task_id"],
+        "current_task_name": row["current_task_name"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "last_message_at": row["last_message_at"],
+        "is_active": bool(row["is_active"]) if row["is_active"] is not None else True,
+    }
+    settings = _extract_session_settings(metadata)
+    if settings:
+        info["settings"] = settings
+    else:
+        info["settings"] = None
+    return info
+
+
+def _fetch_session_info(conn, session_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve information for a specific session."""
+    row = conn.execute(
+        """
+        SELECT
+            s.id,
+            s.name,
+            s.name_source,
+            s.is_user_named,
+            s.metadata,
+            s.plan_id,
+            s.plan_title,
+            s.current_task_id,
+            s.current_task_name,
+            s.created_at,
+            s.updated_at,
+            s.is_active,
+            COALESCE(
+                s.last_message_at,
+                (
+                    SELECT MAX(m.created_at)
+                    FROM chat_messages m
+                    WHERE m.session_id = s.id
+                )
+            ) AS last_message_at
+        FROM chat_sessions s
+        WHERE s.id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return _row_to_session_info(row)
+
+
+def _load_session_metadata_dict(conn, session_id: str) -> Dict[str, Any]:
+    row = conn.execute(
+        "SELECT metadata FROM chat_sessions WHERE id=?", (session_id,)
+    ).fetchone()
+    if not row:
+        return {}
+    data = _loads_metadata(row["metadata"])
+    return data or {}
+
+
+def _get_session_settings(session_id: str) -> Dict[str, Any]:
+    from ..database import get_db  # lazy import to avoid cycles
+
+    with get_db() as conn:
+        metadata = _load_session_metadata_dict(conn, session_id)
+    settings = _extract_session_settings(metadata)
+    return settings or {}
+
+
+def _ensure_session_exists(
+    session_id: str, conn, plan_id: Optional[int] = None
+) -> Optional[int]:
+    """Ensure the chat_sessions table contains this session."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, plan_id FROM chat_sessions WHERE id = ?", (session_id,))
+    row = cursor.fetchone()
+    if not row:
+        plan_title = _lookup_plan_title(conn, plan_id)
+        cursor.execute(
+            """
+            INSERT INTO chat_sessions (
+                id,
+                name,
+                name_source,
+                is_user_named,
+                metadata,
+                plan_id,
+                plan_title,
+                last_message_at,
+                created_at,
+                updated_at,
+                is_active
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
+            )
+            """,
+            (
+                session_id,
+                f"Session {session_id[:8]}",
+                "default",
+                0,
+                None,
+                plan_id,
+                plan_title,
+            ),
+        )
+        logger.info("Created new chat session: %s (plan_id=%s)", session_id, plan_id)
+        return plan_id
+
+    current_plan_id = row["plan_id"]
+    if plan_id is not None and current_plan_id != plan_id:
+        plan_title = _lookup_plan_title(conn, plan_id)
+        cursor.execute(
+            """
+            UPDATE chat_sessions
+            SET plan_id=?,
+                plan_title=?,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (plan_id, plan_title, session_id),
+        )
+        logger.info(
+            "Updated chat session %s binding to plan %s (was %s)",
+            session_id,
+            plan_id,
+            current_plan_id,
+        )
+        return plan_id
+    return current_plan_id
+
+
+def _resolve_plan_binding(
+    session_id: Optional[str], requested_plan_id: Optional[int]
+) -> Optional[int]:
+    """Determine the final bound plan ID based on session state and request parameters."""
+    if not session_id:
+        return requested_plan_id
+
+    from ..database import get_db  # lazy import
+
+    with get_db() as conn:
+        current_plan_id = _ensure_session_exists(session_id, conn, requested_plan_id)
+        if current_plan_id is not None:
+            return current_plan_id
+    return requested_plan_id
+
+
+def _set_session_plan_id(session_id: str, plan_id: Optional[int]) -> None:
+    """Update the plan binding for the session."""
+    from ..database import get_db  # lazy import
+
+    with get_db() as conn:
+        _ensure_session_exists(session_id, conn)
+        plan_title = _lookup_plan_title(conn, plan_id)
+        conn.execute(
+            """
+            UPDATE chat_sessions
+            SET plan_id=?,
+                plan_title=?,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (plan_id, plan_title, session_id),
+        )
+        conn.commit()
+
+
+def _save_chat_message(
+    session_id: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None
+) -> None:
+    """Persist chat message."""
+    try:
+        from ..database import get_db  # lazy import to avoid circular deps
+
+        with get_db() as conn:
+            _ensure_session_exists(session_id, conn)
+            cursor = conn.cursor()
+            metadata_json = (
+                json.dumps(metadata, ensure_ascii=False) if metadata else None
+            )
+            logger.info(
+                "[CHAT][SAVE] session=%s role=%s content=%s metadata=%s",
+                session_id,
+                role,
+                content,
+                metadata,
+            )
+            cursor.execute(
+                """
+                INSERT INTO chat_messages (session_id, role, content, metadata)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session_id, role, content, metadata_json),
+            )
+            cursor.execute(
+                """
+                UPDATE chat_sessions
+                SET last_message_at=CURRENT_TIMESTAMP,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (session_id,),
+            )
+            conn.commit()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to save chat message: %s", exc)
+
+
+def _load_chat_history(session_id: str, limit: int = 50) -> List[ChatMessage]:
+    """Load session history."""
+    try:
+        from ..database import get_db  # lazy import
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT role, content, metadata, created_at
+                FROM chat_messages
+                WHERE session_id = ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            )
+            rows = cursor.fetchall()
+
+        return [
+            ChatMessage(
+                role=role,
+                content=content,
+                timestamp=created_at,
+                metadata=_loads_metadata(metadata_raw),
+            )
+            for role, content, metadata_raw, created_at in rows
+        ]
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to load history: %s", exc)
+        return []
+
+
+def _save_assistant_response(
+    session_id: Optional[str], response: ChatResponse
+) -> ChatResponse:
+    """Persist assistant response."""
+    if session_id and response.response:
+        _save_chat_message(
+            session_id,
+            "assistant",
+            response.response,
+            metadata=response.metadata,
+        )
+    return response
+
+
+def _update_message_metadata_by_tracking(
+    session_id: Optional[str],
+    tracking_id: Optional[str],
+    updater: Callable[[Dict[str, Any]], Dict[str, Any]],
+) -> None:
+    if not session_id or not tracking_id:
+        return
+    from ..database import get_db  # lazy import
+
+    pattern = f'%"tracking_id": "{tracking_id}"%'
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT id, metadata FROM chat_messages WHERE session_id=? AND metadata LIKE ? ORDER BY id DESC LIMIT 1",
+                (session_id, pattern),
+            ).fetchone()
+            if not row:
+                return
+            current = _loads_metadata(row["metadata"]) or {}
+            updated = updater(dict(current))
+            conn.execute(
+                "UPDATE chat_messages SET metadata=? WHERE id=?",
+                (json.dumps(updated, ensure_ascii=False), row["id"]),
+            )
+            conn.commit()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "Failed to update chat message metadata for %s: %s", tracking_id, exc
+        )
+
+
+def _merge_async_metadata(
+    existing: Optional[Dict[str, Any]],
+    *,
+    status: str,
+    tracking_id: str,
+    plan_id: Optional[int],
+    actions: List[Dict[str, Any]],
+    actions_summary: Optional[List[Dict[str, Any]]],
+    tool_results: List[Dict[str, Any]],
+    errors: List[str],
+    job_id: Optional[str] = None,
+    job_payload: Optional[Dict[str, Any]] = None,
+    job_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    metadata = dict(existing or {})
+    metadata["status"] = status
+    metadata["tracking_id"] = tracking_id
+    if plan_id is not None:
+        metadata["plan_id"] = plan_id
+    metadata["actions"] = actions
+    metadata["action_list"] = actions
+    if actions_summary:
+        metadata["actions_summary"] = actions_summary
+    elif "actions_summary" in metadata:
+        metadata.pop("actions_summary")
+    if tool_results:
+        metadata["tool_results"] = tool_results
+    elif "tool_results" in metadata:
+        metadata.pop("tool_results")
+    metadata["errors"] = errors or []
+    if "raw_actions" not in metadata and actions:
+        metadata["raw_actions"] = actions
+
+    if job_id:
+        metadata["type"] = "job_log"
+        metadata["job_id"] = job_id
+        metadata["job_type"] = job_type or metadata.get("job_type") or "chat_action"
+        if job_payload:
+            metadata["job"] = job_payload
+            metadata["job_status"] = job_payload.get("status")
+            metadata.setdefault("plan_id", job_payload.get("plan_id"))
+            if "logs" in job_payload:
+                metadata["job_logs"] = job_payload.get("logs")
+
+    for action in actions or []:
+        details = action.get("details") or {}
+        embedded_job = details.get("decomposition_job")
+        if embedded_job and "job_id" not in metadata:
+            metadata["type"] = "job_log"
+            metadata["job"] = embedded_job
+            metadata["job_id"] = embedded_job.get("job_id")
+            metadata["job_status"] = embedded_job.get("status")
+            if embedded_job.get("job_type"):
+                metadata["job_type"] = embedded_job.get("job_type")
+            metadata.setdefault("plan_id", embedded_job.get("plan_id"))
+            metadata["job_logs"] = embedded_job.get("logs")
+        if "target_task_name" not in metadata:
+            if "target_task_name" in details:
+                metadata["target_task_name"] = details["target_task_name"]
+            elif "title" in details:
+                metadata["target_task_name"] = details["title"]
+
+    return metadata
+
+
+async def _generate_tool_summary(
+    user_message: str,
+    tool_results: List[Dict[str, Any]],
+    session_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    让 LLM 基于工具执行结果生成自然语言总结。
+    
+    Args:
+        user_message: 用户的原始问题
+        tool_results: 工具执行结果列表
+        session_id: 会话 ID（用于日志）
+        
+    Returns:
+        LLM 生成的总结文本，如果失败则返回 None
+    """
+    try:
+        # 构建工具结果的描述
+        tools_description = []
+        for idx, tool_result in enumerate(tool_results, 1):
+            tool_name = tool_result.get("name", "unknown")
+            summary = tool_result.get("summary", "")
+            result_data = tool_result.get("result", {})
+            
+            # 提取关键信息
+            tool_desc = f"{idx}. 工具: {tool_name}"
+            if summary:
+                tool_desc += f"\n   执行摘要: {summary}"
+            
+            # 添加结果详情
+            if isinstance(result_data, dict):
+                # 提取有用的字段
+                useful_fields = ["output", "stdout", "stderr", "success", "error"]
+                for field in useful_fields:
+                    if field in result_data and result_data[field]:
+                        value = result_data[field]
+                        if isinstance(value, str) and len(value) > 500:
+                            value = value[:500] + "..."
+                        tool_desc += f"\n   {field}: {value}"
+            
+            tools_description.append(tool_desc)
+        
+        tools_text = "\n\n".join(tools_description)
+        
+        # 构建 prompt
+        prompt = f"""你是一个智能助手。你刚刚执行了一些工具来帮助用户完成任务。
+
+用户的问题：
+{user_message}
+
+你执行的工具及结果：
+{tools_text}
+
+请基于这些工具执行结果，用自然、友好的语言向用户总结并回答他们的问题。要求：
+1. 直接给出答案，不要重复用户的问题
+2. 如果有具体的数值或结果，明确指出
+3. 如果执行过程中有问题，说明情况
+4. 保持简洁，不要过度解释工具本身
+
+你的回复："""
+
+        # 调用 LLM
+        llm_service = get_llm_service()
+        summary = await llm_service.chat_async(prompt)
+        
+        return summary.strip() if summary else None
+        
+    except Exception as exc:
+        logger.error(
+            "[CHAT][SUMMARY] Failed to generate summary for session=%s: %s",
+            session_id,
+            exc,
+        )
+        return None
+
+
+async def _execute_action_run(run_id: str) -> None:
+    record = fetch_action_run(run_id)
+    if not record:
+        logger.warning("Action run %s not found when executing", run_id)
+        return
+
+    try:
+        update_action_run(run_id, status="running")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to mark action run %s as running: %s", run_id, exc)
+
+    logger.info(
+        "[CHAT][ASYNC][START] tracking=%s session=%s plan=%s",
+        run_id,
+        record.get("session_id"),
+        record.get("plan_id"),
+    )
+
+    plan_session = PlanSession(repo=plan_repository, plan_id=record.get("plan_id"))
+    try:
+        plan_session.refresh()
+    except ValueError:
+        plan_session.detach()
+
+    job_plan_id = plan_session.plan_id
+    job_metadata = {
+        "session_id": record.get("session_id"),
+        "mode": record.get("mode"),
+        "user_message": record.get("user_message"),
+    }
+    job_params = {
+        key: value
+        for key, value in {
+            "mode": record.get("mode"),
+            "session_id": record.get("session_id"),
+            "plan_id": job_plan_id,
+        }.items()
+        if value is not None
+    }
+
+    try:
+        job = plan_decomposition_jobs.create_job(
+            plan_id=job_plan_id,
+            task_id=None,
+            mode=record.get("mode") or "assistant",
+            job_type="chat_action",
+            params=job_params,
+            metadata=job_metadata,
+            job_id=run_id,
+        )
+    except ValueError:
+        job = plan_decomposition_jobs.get_job(run_id)
+        if job is None:
+            job = plan_decomposition_jobs.create_job(
+                plan_id=job_plan_id,
+                task_id=None,
+                mode=record.get("mode") or "assistant",
+                job_type="chat_action",
+                params=job_params,
+                metadata=job_metadata,
+            )
+
+    job_token = set_current_job(job.job_id)
+    try:
+        if job_plan_id is not None:
+            plan_decomposition_jobs.attach_plan(job.job_id, job_plan_id)
+
+        plan_decomposition_jobs.append_log(
+            job.job_id,
+            "info",
+            "Background action enqueued and awaiting execution.",
+            {
+                "session_id": record.get("session_id"),
+                "plan_id": job_plan_id,
+                "mode": record.get("mode"),
+            },
+        )
+
+        context = dict(record.get("context") or {})
+        history = record.get("history") or []
+        provider_in_context = _normalize_search_provider(
+            context.get("default_search_provider")
+        )
+        if provider_in_context:
+            context["default_search_provider"] = provider_in_context
+        elif record.get("session_id"):
+            session_defaults = _get_session_settings(record["session_id"])
+            fallback_provider = session_defaults.get("default_search_provider")
+            if fallback_provider:
+                context["default_search_provider"] = fallback_provider
+
+        agent = StructuredChatAgent(
+            mode=record.get("mode"),
+            plan_session=plan_session,
+            plan_decomposer=plan_decomposer_service,
+            plan_executor=plan_executor_service,
+            session_id=record.get("session_id"),
+            conversation_id=_derive_conversation_id(record.get("session_id")),
+            history=history,
+            extra_context=context,
+        )
+
+        try:
+            structured = LLMStructuredResponse.model_validate_json(
+                record["structured_json"]
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Structured payload invalid for run %s: %s", run_id, exc)
+            plan_decomposition_jobs.append_log(
+                job.job_id,
+                "error",
+                "Failed to parse structured actions.",
+                {"error": str(exc)},
+            )
+            plan_decomposition_jobs.mark_failure(job.job_id, str(exc))
+            update_action_run(run_id, status="failed", errors=[str(exc)])
+            logger.info(
+                "[CHAT][ASYNC][DONE] tracking=%s status=failed errors=%s",
+                run_id,
+                exc,
+            )
+            return
+
+        sorted_actions = structured.sorted_actions()
+        primary_action = sorted_actions[0] if sorted_actions else None
+
+        plan_decomposition_jobs.mark_running(job.job_id)
+        plan_decomposition_jobs.append_log(
+            job.job_id,
+            "info",
+            "Starting structured action execution.",
+            {
+                "action_total": len(sorted_actions),
+                "first_action": primary_action.name if primary_action else None,
+            },
+        )
+
+        try:
+            result = await agent.execute_structured(structured)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Action run %s failed during execution: %s", run_id, exc)
+            plan_decomposition_jobs.append_log(
+                job.job_id,
+                "error",
+                "An exception occurred during execution.",
+                {"error": str(exc)},
+            )
+            current_plan_id = plan_session.plan_id
+            if current_plan_id is not None:
+                plan_decomposition_jobs.attach_plan(job.job_id, current_plan_id)
+            plan_decomposition_jobs.mark_failure(job.job_id, str(exc))
+            update_action_run(run_id, status="failed", errors=[str(exc)])
+            logger.info(
+                "[CHAT][ASYNC][DONE] tracking=%s status=failed errors=%s",
+                run_id,
+                exc,
+            )
+            return
+
+        status = "completed" if result.success else "failed"
+        result_dict = result.model_dump()
+        tool_results_payload: List[Dict[str, Any]] = []
+        for step in result.steps:
+            if step.action.kind != "tool_operation":
+                continue
+            details = step.details or {}
+            result_payload = details.get("result")
+            if isinstance(result_payload, dict):
+                tool_results_payload.append({
+                    "name": step.action.name,
+                    "summary": details.get("summary"),
+                    "parameters": details.get("parameters"),
+                    "result": result_payload,
+                })
+        if tool_results_payload:
+            result_dict["tool_results"] = tool_results_payload
+        
+        # Agent Loop: 让 LLM 基于工具结果生成最终总结
+        # 关键：必须在 update_action_run 之前完成，否则前端会停止轮询
+        final_summary = None
+        if result.success and tool_results_payload:
+            logger.info(
+                "[CHAT][SUMMARY] session=%s tracking=%s Starting summary generation...",
+                record.get("session_id"),
+                run_id,
+            )
+            try:
+                final_summary = await _generate_tool_summary(
+                    user_message=record.get("user_message", ""),
+                    tool_results=tool_results_payload,
+                    session_id=record.get("session_id"),
+                )
+                if final_summary:
+                    # 保存 LLM 的总结作为新的 assistant 消息
+                    _save_chat_message(
+                        session_id=record.get("session_id"),
+                        role="assistant",
+                        content=final_summary,
+                        metadata={
+                            "type": "tool_summary",
+                            "tracking_id": run_id,
+                            "tool_count": len(tool_results_payload),
+                        },
+                    )
+                    # 将总结添加到 result_dict 中，前端可以直接显示
+                    result_dict["final_summary"] = final_summary
+                    logger.info(
+                        "[CHAT][SUMMARY] session=%s tracking=%s Summary saved: %s",
+                        record.get("session_id"),
+                        run_id,
+                        final_summary[:100] if len(final_summary) > 100 else final_summary,
+                    )
+                else:
+                    logger.warning(
+                        "[CHAT][SUMMARY] session=%s tracking=%s Summary generation returned empty",
+                        record.get("session_id"),
+                        run_id,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "[CHAT][SUMMARY] session=%s tracking=%s Failed to generate summary: %s",
+                    record.get("session_id"),
+                    run_id,
+                    exc,
+                    exc_info=True,
+                )
+        
+        # 现在才更新状态为 completed，前端会在下次轮询时看到总结消息
+        update_kwargs: Dict[str, Any] = {
+            "status": status,
+            "result": result_dict,
+            "errors": result.errors,
+        }
+        if result.bound_plan_id is not None:
+            update_kwargs["plan_id"] = result.bound_plan_id
+        
+        logger.info(
+            "[CHAT][SUMMARY] session=%s tracking=%s Updating action status to %s",
+            record.get("session_id"),
+            run_id,
+            status,
+        )
+        update_action_run(run_id, **update_kwargs)
+
+        job_snapshot = plan_decomposition_jobs.get_job_payload(job.job_id)
+
+        _update_message_metadata_by_tracking(
+            record.get("session_id"),
+            run_id,
+            lambda existing: _merge_async_metadata(
+                existing,
+                status=status,
+                tracking_id=run_id,
+                plan_id=result.bound_plan_id,
+                actions=[step.action_payload for step in result.steps],
+                actions_summary=result.actions_summary,
+                tool_results=tool_results_payload,
+                errors=result.errors,
+                job_id=job.job_id,
+                job_payload=job_snapshot,
+                job_type=getattr(job, "job_type", None),
+            ),
+        )
+
+        if record.get("session_id"):
+            _set_session_plan_id(record["session_id"], result.bound_plan_id)
+
+        final_plan_id = result.bound_plan_id or plan_session.plan_id
+        if final_plan_id is not None:
+            plan_decomposition_jobs.attach_plan(job.job_id, final_plan_id)
+
+        stats_payload = {
+            "step_count": len(result.steps),
+            "success": result.success,
+            "error_count": len(result.errors),
+        }
+
+        if result.success:
+            plan_decomposition_jobs.append_log(
+                job.job_id,
+                "info",
+                "Structured action execution completed.",
+                stats_payload,
+            )
+            plan_decomposition_jobs.mark_success(
+                job.job_id,
+                result=result,
+                stats=stats_payload,
             )
         else:
-            # API调用失败的情况
-            api_error = api_result.get("error", "未知错误") if api_result else "API调用失败"
-            return ChatResponse(
-                response=f"❌ 工作流程创建失败: {api_error}",
-                suggestions=["重新尝试", "简化描述再试"],
-                metadata={"mode": request.mode, "error": True}
+            error_message = result.errors[0] if result.errors else "Some actions failed"
+            plan_decomposition_jobs.append_log(
+                job.job_id,
+                "error",
+                "Structured actions finished with failures in some steps.",
+                {**stats_payload, "errors": result.errors},
             )
-                
-    except Exception as e:
-        logger.error(f"❌ Agent工作流程创建失败: {e}")
-        return ChatResponse(
-            response=f"⚠️ 抱歉，工作流程创建遇到问题: {str(e)}\n\n请稍后重试，或者换个方式描述你的目标。",
-            suggestions=["重新描述目标", "联系技术支持"],
-            metadata={"mode": request.mode, "error": True}
+            plan_decomposition_jobs.mark_failure(
+                job.job_id,
+                error_message,
+                result=result,
+                stats=stats_payload,
+            )
+
+        logger.info(
+            "[CHAT][ASYNC][DONE] tracking=%s status=%s plan=%s errors=%s",
+            run_id,
+            status,
+            result.bound_plan_id,
+            result.errors,
         )
+    finally:
+        reset_current_job(job_token)
 
 
-def _is_simple_greeting(message: str) -> bool:
-    """快速识别简单问候语，避免过度分析"""
-    message_lower = message.lower().strip()
+@router.get("/actions/{tracking_id}", response_model=ActionStatusResponse)
+async def get_action_status(tracking_id: str):
+    """Query background action execution status."""
+    record = fetch_action_run(tracking_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Action run not found")
+
+    actions, tool_results = _build_action_status_payloads(record)
+
+    # 提取 final_summary 以便前端显示
+    result_data = record.get("result") or {}
+    final_summary = result_data.get("final_summary")
     
-    # 常见问候语模式
-    simple_greetings = [
-        "你好", "您好", "hi", "hello", "hey", "嗨",
-        "你好呀", "您好呀", "hello there", "hi there",
-        "好久不见", "最近怎么样", "怎么样", "在吗",
-        "早上好", "下午好", "晚上好", "晚安",
-        "good morning", "good afternoon", "good evening", "good night"
-    ]
+    metadata = {}
+    if tool_results:
+        metadata["tool_results"] = tool_results
+    if final_summary:
+        metadata["final_summary"] = final_summary
     
-    # 简单感谢语
-    simple_thanks = [
-        "谢谢", "感谢", "thanks", "thank you", "thx",
-        "多谢", "谢了", "非常感谢"
-    ]
-    
-    # 简单确认语  
-    simple_confirmations = [
-        "好的", "好", "ok", "okay", "行", "可以",
-        "明白了", "知道了", "了解", "收到"
-    ]
-    
-    all_simple_phrases = simple_greetings + simple_thanks + simple_confirmations
-    
-    # 检查是否完全匹配或非常接近
-    return any(phrase in message_lower for phrase in all_simple_phrases) and len(message) <= 15
+    return ActionStatusResponse(
+        tracking_id=tracking_id,
+        status=record["status"],
+        plan_id=record.get("plan_id"),
+        actions=actions,
+        result=record.get("result"),
+        errors=record.get("errors"),
+        created_at=record.get("created_at"),
+        started_at=record.get("started_at"),
+        finished_at=record.get("finished_at"),
+        metadata=metadata if metadata else None,
+    )
 
 
-def _get_simple_greeting_response(message: str) -> str:
-    """为简单问候语生成快速响应"""
-    message_lower = message.lower().strip()
-    
-    if any(greeting in message_lower for greeting in ["你好", "您好", "hi", "hello", "hey", "嗨"]):
-        return "你好！我是AI任务编排助手，很高兴为您服务。有什么我可以帮助您的吗？"
-    elif any(thanks in message_lower for thanks in ["谢谢", "感谢", "thanks", "thank you"]):
-        return "不客气！随时为您服务。还有其他需要帮助的地方吗？"
-    elif any(confirm in message_lower for confirm in ["好的", "好", "ok", "okay", "明白"]):
-        return "好的，请告诉我下一步需要做什么，我会全力协助您。"
-    elif "好久不见" in message_lower:
-        return "确实好久不见！我一直在这里等待为您提供帮助。今天有什么任务需要处理吗？"
-    else:
-        return "我收到了您的消息。作为您的AI助手，我随时准备帮助您处理各种任务。请告诉我您需要什么？"
+def _build_action_status_payloads(
+    record: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], Optional[List[Dict[str, Any]]]]:
+    """Build action payload list based on stored structured/result data."""
+    result = record.get("result") or {}
+    steps = result.get("steps") or []
+    tool_results: List[Dict[str, Any]] = []
+    if steps:
+        payloads: List[Dict[str, Any]] = []
+        for step in steps:
+            action = step.get("action") or {}
+            details = step.get("details") or {}
+            if isinstance(details, dict) and isinstance(details.get("result"), dict):
+                tool_results.append(details["result"])
+            payloads.append({
+                "kind": action.get("kind"),
+                "name": action.get("name"),
+                "parameters": action.get("parameters"),
+                "order": action.get("order"),
+                "blocking": action.get("blocking"),
+                "status": "completed" if step.get("success") else "failed",
+                "success": step.get("success"),
+                "message": step.get("message"),
+                "details": details,
+            })
+        return payloads, (tool_results or None)
 
-
-async def _handle_re_execute_with_info(
-    request: ChatRequest,
-    workflow_decision: Dict[str, Any],
-    context_messages: Optional[List[Dict[str, str]]] = None
-) -> ChatResponse:
-    """重新执行任务并附带补充信息"""
-    from ..repository.tasks import default_repo
-    from ..database import get_db
-    
-    logger.info(f"🔄 进入重新执行（附补充信息）函数")
-    logger.info(f"📝 用户消息: {request.message}")
-    logger.info(f"🆔 决策信息: task_id={workflow_decision.get('task_id')}, task_name={workflow_decision.get('task_name')}")
-    
     try:
-        # 1. 提取task_id（优先从LLM返回，否则从task_name查找）
-        task_id = workflow_decision.get("task_id")
-        task_name = workflow_decision.get("task_name")
-        
-        if not task_id and task_name:
-            # 从任务名称模糊匹配task_id
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """SELECT id, name FROM tasks 
-                       WHERE session_id = ? AND status IN ('pending', 'done')
-                       ORDER BY id DESC LIMIT 50""",
-                    (request.session_id,)
+        structured = LLMStructuredResponse.model_validate_json(
+            record["structured_json"]
+        )
+    except Exception:  # pragma: no cover - defensive
+        return [], None
+
+    payloads = [
+        {
+            "kind": action.kind,
+            "name": action.name,
+            "parameters": action.parameters,
+            "order": action.order,
+            "blocking": action.blocking,
+            "status": record.get("status", "pending"),
+            "success": None,
+        }
+        for action in structured.sorted_actions()
+    ]
+    return payloads, None
+
+
+class AgentStep(BaseModel):
+    """Single action record executed by the agent."""
+
+    action: LLMAction
+    success: bool
+    message: str
+    details: Dict[str, Any]
+
+    @property
+    def action_payload(self) -> Dict[str, Any]:
+        return {
+            "kind": self.action.kind,
+            "name": self.action.name,
+            "parameters": self.action.parameters,
+            "order": self.action.order,
+            "blocking": self.action.blocking,
+            "success": self.success,
+            "message": self.message,
+            "details": self.details,
+        }
+
+
+class AgentResult(BaseModel):
+    """Unified output from StructuredChatAgent."""
+
+    reply: str
+    steps: List[AgentStep]
+    suggestions: List[str]
+    primary_intent: Optional[str]
+    success: bool
+    bound_plan_id: Optional[int] = None
+    plan_outline: Optional[str] = None
+    plan_persisted: bool = False
+    job_id: Optional[str] = None
+    job_type: Optional[str] = None
+    actions_summary: List[Dict[str, Any]] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+
+
+class StructuredChatAgent:
+    """Plan conversation agent using a structured schema."""
+
+    MAX_HISTORY = 10
+
+    def __init__(
+        self,
+        *,
+        mode: Optional[str] = "assistant",
+        plan_session: Optional[PlanSession] = None,
+        plan_decomposer: Optional[PlanDecomposer] = None,
+        plan_executor: Optional[PlanExecutor] = None,
+        session_id: Optional[str] = None,
+        conversation_id: Optional[int] = None,
+        history: Optional[List[Dict[str, str]]] = None,
+        extra_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.mode = mode or "assistant"
+        self.session_id = session_id
+        self.conversation_id = conversation_id
+        self.history = history or []
+        self.extra_context = extra_context or {}
+        provider = _normalize_search_provider(
+            self.extra_context.get("default_search_provider")
+        )
+        if provider:
+            self.extra_context["default_search_provider"] = provider
+        elif "default_search_provider" in self.extra_context:
+            self.extra_context.pop("default_search_provider", None)
+        self.plan_session = plan_session or PlanSession(repo=plan_repository)
+        self.plan_tree = self.plan_session.current_tree()
+        self.schema_json = schema_as_json()
+        self.llm_service = get_llm_service()
+        self.plan_decomposer = plan_decomposer
+        self.plan_executor = plan_executor
+        self.decomposer_settings = decomposer_settings
+        self._last_decomposition: Optional[DecompositionResult] = None
+        self._decomposition_errors: List[str] = []
+        self._decomposition_notes: List[str] = []
+        self._dirty = False
+        self._sync_job_id: Optional[str] = None
+        self._current_user_message: Optional[str] = None
+        self._include_action_summary = getattr(
+            app_settings, "chat_include_action_summary", True
+        )
+
+    async def handle(self, user_message: str) -> AgentResult:
+        structured = await self._invoke_llm(user_message)
+        return await self.execute_structured(structured)
+
+    async def get_structured_response(self, user_message: str) -> LLMStructuredResponse:
+        """Return the raw structured response without executing actions."""
+        return await self._invoke_llm(user_message)
+
+    async def execute_structured(
+        self, structured: LLMStructuredResponse
+    ) -> AgentResult:
+        steps: List[AgentStep] = []
+        errors: List[str] = []
+        try:
+            job_id, job_type = self._resolve_job_meta()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed to resolve job metadata: %s", exc)
+            job_id = None
+            job_type = "chat_action"
+
+        for action in structured.sorted_actions():
+            try:
+                step = await self._execute_action(action)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.exception("Action execution failed: %s", exc)
+                errors.append(str(exc))
+                step = AgentStep(
+                    action=action,
+                    success=False,
+                    message=f"Action execution failed: {exc}",
+                    details={"exception": type(exc).__name__},
                 )
-                tasks = cursor.fetchall()
-                for tid, tname in tasks:
-                    if task_name in tname or tname in task_name:
-                        task_id = tid
-                        logger.info(f"✅ 通过任务名称匹配到 task_id={task_id}: {tname}")
-                        break
-        
-        if not task_id:
-            return ChatResponse(
-                response=f"❌ 无法找到要重新执行的任务。\n\n请提供任务ID（如：#697）或完整的任务名称。",
-                suggestions=["查看任务列表", "明确指定任务ID"],
-                metadata={"mode": request.mode, "error": True}
+            steps.append(step)
+
+        suggestions = self._build_suggestions(structured, steps)
+        success = all(step.success for step in steps) if steps else True
+        primary_intent = steps[-1].action.name if steps else None
+        plan_persisted = False
+        if self.plan_session.plan_id is not None:
+            try:
+                plan_persisted = self._persist_if_dirty()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.exception("Failed to persist plan state: %s", exc)
+                errors.append(f"Failed to save plan updates: {exc}")
+        outline = None
+        if self.plan_session.plan_id is not None:
+            try:
+                outline = self.plan_session.outline(max_depth=4, max_nodes=80)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Failed to build plan outline: %s", exc)
+
+        if self._decomposition_errors:
+            errors.extend(self._decomposition_errors)
+
+        actions_summary = self._build_actions_summary(steps)
+        reply_text = structured.llm_reply.message or ""
+        if self._include_action_summary and actions_summary:
+            reply_text = self._append_summary_to_reply(reply_text, actions_summary)
+
+        result = AgentResult(
+            reply=reply_text,
+            steps=steps,
+            suggestions=suggestions,
+            primary_intent=primary_intent,
+            success=success,
+            bound_plan_id=self.plan_session.plan_id,
+            plan_outline=outline,
+            plan_persisted=plan_persisted,
+            job_id=job_id,
+            job_type=job_type,
+            actions_summary=actions_summary,
+            errors=errors,
+        )
+
+        if get_current_job() is None:
+            self._sync_job_id = None
+            if job_id:
+                try:
+                    update_decomposition_job_status(
+                        self.plan_session.plan_id,
+                        job_id=job_id,
+                        status="succeeded" if success else "failed",
+                        finished_at=datetime.utcnow(),
+                        stats={
+                            "step_count": len(steps),
+                            "success": success,
+                            "error_count": len(errors),
+                        },
+                        result=result.model_dump(),
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("Failed to update sync job status: %s", exc)
+        self._current_user_message = None
+
+        return result
+
+    async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
+        self._current_user_message = user_message
+        prompt = self._build_prompt(user_message)
+        raw = await self.llm_service.chat_async(prompt, force_real=True)
+        cleaned = self._strip_code_fence(raw)
+        return LLMStructuredResponse.model_validate_json(cleaned)
+
+    def _build_prompt(self, user_message: str) -> str:
+        plan_bound = self.plan_session.plan_id is not None
+        history_text = self._format_history()
+        context_text = json.dumps(self.extra_context, ensure_ascii=False, indent=2)
+        plan_outline = self.plan_session.outline(max_depth=4, max_nodes=60)
+        plan_status = self._compose_plan_status(plan_bound)
+        plan_catalog = self._compose_plan_catalog(plan_bound)
+        actions_catalog = self._compose_action_catalog(plan_bound)
+        guidelines = self._compose_guidelines(plan_bound)
+
+        prompt_parts = [
+            "You are an AI assistant that manages research plans represented as task trees.",
+            f"Current mode: {self.mode}",
+            f"Conversation ID: {self.conversation_id or 'N/A'}",
+            f"Session binding: {plan_status}",
+            f"Extra context:\n{context_text}",
+            f"History (latest {self.MAX_HISTORY} messages):\n{history_text}",
+            "\n=== Plan Overview ===",
+            plan_outline,
+        ]
+        if plan_catalog:
+            prompt_parts.append(plan_catalog)
+        prompt_parts.extend([
+            "\nReturn a JSON object that matches the following schema exactly:",
+            self.schema_json,
+            "\nAction catalog:",
+            actions_catalog,
+            "\nGuidelines:",
+            guidelines,
+            f"\nUser message: {user_message}",
+            "Respond with the JSON object now.",
+        ])
+        return "\n".join(prompt_parts)
+
+    def _compose_plan_status(self, plan_bound: bool) -> str:
+        if plan_bound:
+            assert self.plan_session.plan_id is not None
+            return f"Currently bound Plan ID: {self.plan_session.plan_id}"
+        return (
+            "This session is not bound to any plan. Continue clarifying requirements, "
+            "sharing suggestions, or using tools to assist the discussion. Only trigger "
+            "plan-related actions when the user explicitly requests a new plan or wants "
+            "to take over an existing one."
+        )
+
+    def _compose_plan_catalog(self, plan_bound: bool) -> str:
+        if plan_bound:
+            return ""
+        summaries = self.plan_session.summaries_for_prompt(limit=10)
+        return (
+            "Available plans (up to 10, for reference):\n"
+            f"{summaries}\n"
+            "If the user wants to work with one of them, ask for the specific plan ID; otherwise keep clarifying needs."
+        )
+
+    def _compose_action_catalog(self, plan_bound: bool) -> str:
+        base_actions = [
+            "- system_operation: help",
+            "- tool_operation: web_search (use for live web information; requires `query`, optional provider/max_results)",
+            "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities)",
+            "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs)",
+        ]
+        if plan_bound:
+            plan_actions = [
+                "- plan_operation: create_plan, list_plans, execute_plan, delete_plan",
+                "- task_operation: create_task, update_task, update_task_instruction, move_task, delete_task, decompose_task, show_tasks, query_status, rerun_task",
+                "- context_request: request_subgraph (request additional task context; this response must not include other actions)",
+            ]
+        else:
+            plan_actions = [
+                "- plan_operation: create_plan  # only when the user explicitly asks to create a plan",
+                "- plan_operation: list_plans  # list candidates; do not execute or mutate tasks while unbound",
+            ]
+        return "\n".join(base_actions + plan_actions)
+
+    def _compose_guidelines(self, plan_bound: bool) -> str:
+        common_rules = [
+            "Return only a JSON object that matches the schema above—no code fences or additional commentary.",
+            "`llm_reply.message` must be natural language directed to the user.",
+            "Fill `actions` in execution order (`order` starts at 1); use an empty array if no actions are required.",
+            "Use the `kind`/`name` pairs from the action catalog without inventing new values.",
+            "A `request_subgraph` reply may contain only that action.",
+            "Plan nodes do not provide a `priority` field; avoid fabricating it. `status` reflects progress and may be referenced when helpful.",
+            "When the user explicitly asks to execute, run, or rerun a task or the plan, include the matching action or explain why it cannot proceed.",
+        ]
+        if plan_bound:
+            scenario_rules = [
+                "Verify that dependencies and prerequisite tasks are satisfied before executing a plan or task.",
+                "When the user wants to run the entire plan, call `plan_operation.execute_plan` and provide a summary if appropriate.",
+                "When the user targets a specific task (for example, \"run the first task\" or \"rerun task 42\"), call `task_operation.show_tasks` first if the ID is unclear, then `task_operation.rerun_task` with a concrete `task_id`.",
+                "Use `web_search` or `graph_rag` only when the user explicitly asks for web data or knowledge-graph lookup; otherwise rely on available context or ask clarifying questions.",
+                "When `web_search` is used, craft a clear query and summarize results with sources. When `graph_rag` is used, describe phage-related insights and cite triples when helpful.",
+                "After gathering supporting information, continue scheduling or executing the requested plan or tasks—do not stop at preparation only.",
+            ]
+        else:
+            scenario_rules = [
+                "Do not create, modify, or execute tasks while the session is unbound; instead clarify needs via dialogue or tools.",
+                "Feel free to ask follow-up questions, summarize, or retrieve information that helps the user decide whether a plan is needed.",
+                "Invoke `plan_operation` only when the user explicitly requests a plan or provides an existing plan ID.",
+                "Use `web_search` or `graph_rag` only when the user clearly asks for live search or knowledge-graph access; otherwise respond or confirm intent first.",
+            ]
+        all_rules = common_rules + scenario_rules
+        return "\n".join(
+            f"{idx}. {rule}" for idx, rule in enumerate(all_rules, start=1)
+        )
+
+    def _resolve_job_meta(self) -> Tuple[str, str]:
+        job_id = get_current_job()
+        job_type = "chat_action"
+        if job_id:
+            job = plan_decomposition_jobs.get_job(job_id)
+            if job is not None and getattr(job, "job_type", None):
+                job_type = job.job_type
+            return job_id, job_type
+        if self._sync_job_id is None:
+            prefix = (self.session_id or "session").replace(":", "_")
+            self._sync_job_id = f"sync_{prefix}_{uuid4().hex}"
+            try:
+                record_decomposition_job(
+                    self.plan_session.plan_id,
+                    job_id=self._sync_job_id,
+                    job_type="chat_action",
+                    mode=self.mode or "assistant",
+                    target_task_id=None,
+                    status="running",
+                    params={
+                        "session_id": self.session_id,
+                        "mode": self.mode,
+                    },
+                    metadata={
+                        "session_id": self.session_id,
+                        "conversation_id": self.conversation_id,
+                    },
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Failed to record sync job metadata: %s", exc)
+        return self._sync_job_id, job_type
+
+    def _log_action_event(
+        self,
+        action: LLMAction,
+        *,
+        status: str,
+        success: Optional[bool],
+        message: Optional[str],
+        parameters: Optional[Dict[str, Any]],
+        details: Optional[Dict[str, Any]],
+    ) -> None:
+        try:
+            job_id, job_type = self._resolve_job_meta()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed to resolve job metadata for logging: %s", exc)
+            return
+        try:
+            append_action_log_entry(
+                plan_id=self.plan_session.plan_id,
+                job_id=job_id,
+                job_type=job_type,
+                session_id=self.session_id,
+                user_message=self._current_user_message,
+                action_kind=action.kind or "",
+                action_name=action.name or "",
+                status=status,
+                success=success,
+                message=message,
+                parameters=parameters,
+                details=details,
             )
-        
-        # 2. 获取任务信息
-        task = default_repo.get_task_info(task_id)
-        if not task:
-            return ChatResponse(
-                response=f"❌ 任务 #{task_id} 不存在。",
-                suggestions=["检查任务ID", "查看任务列表"],
-                metadata={"mode": request.mode, "error": True}
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed to persist action log entry: %s", exc)
+
+    @staticmethod
+    def _truncate_summary_text(
+        value: Optional[str], *, limit: int = 160
+    ) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value)
+        if len(text) > limit:
+            return text[: limit - 3] + "..."
+        return text
+
+    def _build_actions_summary(self, steps: List[AgentStep]) -> List[Dict[str, Any]]:
+        summary: List[Dict[str, Any]] = []
+        for step in steps:
+            action = step.action
+            summary.append({
+                "order": action.order,
+                "kind": action.kind,
+                "name": action.name,
+                "success": step.success,
+                "message": self._truncate_summary_text(step.message),
+            })
+        return summary
+
+    def _append_summary_to_reply(
+        self, reply: str, summary: List[Dict[str, Any]]
+    ) -> str:
+        if not summary:
+            return reply
+        lines = ["Action summary:"]
+        for item in summary:
+            status_icon = "⏳"
+            if item["success"] is True:
+                status_icon = "✅"
+            elif item["success"] is False:
+                status_icon = "⚠️"
+            descriptor = (
+                f"{item['kind']}/{item['name']}" if item["name"] else item["kind"]
             )
-        
-        # 3. 获取原始输入并追加补充信息
-        original_prompt = default_repo.get_task_input_prompt(task_id) or ""
-        additional_info = workflow_decision.get("additional_info", request.message)
-        
-        # 构建增强提示
-        enhanced_prompt = f"""{original_prompt}
+            line = f"{status_icon} Step {item['order']}: {descriptor}"
+            if item.get("message"):
+                line += f" - {item['message']}"
+            lines.append(line)
+        reply = reply.rstrip()
+        return reply + "\n\n" + "\n".join(lines)
 
-【用户补充信息】
-{additional_info}
+    def _format_history(self) -> str:
+        if not self.history:
+            return "<empty>"
+        truncated = self.history[-self.MAX_HISTORY :]
+        return "\n".join(
+            f"{item.get('role', 'user')}: {item.get('content', '')}"
+            for item in truncated
+        )
 
-⚠️ 请根据以上补充信息重新执行任务，给出明确的结果而不是提问。"""
-        
-        # 4. 更新任务输入
-        default_repo.upsert_task_input(task_id, enhanced_prompt)
-        
-        # 5. 重置任务状态为pending
-        default_repo.update_task_status(task_id, "pending")
-        
-        logger.info(f"✅ 任务 #{task_id} 输入已更新并重置为pending")
-        
-        # 6. 调用执行器执行任务
-        from ..execution.executors.tool_enhanced import execute_task_with_tools
-        
-        status = await execute_task_with_tools(task, use_context=True)
-        
-        # 7. 返回执行结果
-        task_name_display = task.get("name", "未知任务")
-        output_content = default_repo.get_task_output_content(task_id) or "(暂无输出)"
-        
-        return ChatResponse(
-            response=f"""✅ 任务重新执行完成！
+    @staticmethod
+    def _strip_code_fence(raw: str) -> str:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+        return cleaned
 
-📋 任务名称: {task_name_display}
-🆔 任务ID: {task_id}
-📊 类型: {task.get("task_type", "unknown")}
-✨ 状态: {status}
+    async def _execute_action(self, action: LLMAction) -> AgentStep:
+        logger.info(
+            "[CHAT][ACTION] session=%s plan=%s executing %s/%s params=%s",
+            self.session_id,
+            self.plan_session.plan_id,
+            action.kind,
+            action.name,
+            action.parameters,
+        )
+        self._log_action_event(
+            action,
+            status="running",
+            success=None,
+            message="Action execution started.",
+            parameters=action.parameters,
+            details=None,
+        )
+        log_job_event(
+            "info",
+            "Preparing to execute the action.",
+            {
+                "kind": action.kind,
+                "name": action.name,
+                "order": action.order,
+                "blocking": action.blocking,
+                "parameters": action.parameters,
+            },
+        )
+        handler = {
+            "plan_operation": self._handle_plan_action,
+            "task_operation": self._handle_task_action,
+            "context_request": self._handle_context_request,
+            "system_operation": self._handle_system_action,
+            "tool_operation": self._handle_tool_action,
+        }.get(action.kind, self._handle_unknown_action)
+        try:
+            result = handler(action)
+            step = await result if inspect.isawaitable(result) else result
+        except Exception as exc:
+            log_job_event(
+                "error",
+                "An exception occurred while executing the action.",
+                {
+                    "kind": action.kind,
+                    "name": action.name,
+                    "error": str(exc),
+                },
+            )
+            self._log_action_event(
+                action,
+                status="failed",
+                success=False,
+                message=str(exc),
+                parameters=action.parameters,
+                details={"error": str(exc), "exception": type(exc).__name__},
+            )
+            raise
 
-**执行结果**:
-{output_content[:800]}{'...' if len(output_content) > 800 else ''}
+        self._log_action_event(
+            action,
+            status="completed" if step.success else "failed",
+            success=step.success,
+            message=step.message,
+            parameters=action.parameters,
+            details=step.details,
+        )
+        log_job_event(
+            "success" if step.success else "error",
+            "Action execution completed.",
+            {
+                "kind": action.kind,
+                "name": action.name,
+                "success": step.success,
+                "message": step.message,
+                "details": step.details,
+            },
+        )
+        logger.info(
+            "[CHAT][ACTION] session=%s plan=%s finished %s/%s success=%s message=%s",
+            self.session_id,
+            self.plan_session.plan_id,
+            action.kind,
+            action.name,
+            step.success,
+            step.message,
+        )
+        return step
 
-💾 完整输出已保存到 results/ 目录的层级结构中。""",
-            suggestions=["继续执行其他任务", "查看完整输出", "查看任务列表"],
-            metadata={
-                "mode": request.mode,
-                "task_id": task_id,
-                "task_name": task_name_display,
-                "task_type": task.get("task_type"),
-                "status": status,
-                "re_executed": True
+    async def _handle_tool_action(self, action: LLMAction) -> AgentStep:
+        tool_name = (action.name or "").strip()
+        if not tool_name:
+            return AgentStep(
+                action=action,
+                success=False,
+                message="Tool action is missing a name.",
+                details={"error": "missing_tool_name"},
+            )
+
+        params = dict(action.parameters or {})
+
+        if tool_name == "web_search":
+            query = params.get("query")
+            if not isinstance(query, str) or not query.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="web_search requires a non-empty query.",
+                    details={"error": "missing_query", "tool": tool_name},
+                )
+
+            provider_value = params.get("provider")
+            normalized_provider = _normalize_search_provider(provider_value)
+            if not normalized_provider:
+                session_provider = _normalize_search_provider(
+                    self.extra_context.get("default_search_provider")
+                )
+                if session_provider:
+                    normalized_provider = session_provider
+                else:
+                    settings_provider = _normalize_search_provider(
+                        get_search_settings().default_provider
+                    )
+                    normalized_provider = settings_provider or "builtin"
+            params["provider"] = normalized_provider
+
+        elif tool_name == "graph_rag":
+            query = params.get("query")
+            if not isinstance(query, str) or not query.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="graph_rag requires a non-empty query.",
+                    details={"error": "missing_query", "tool": tool_name},
+                )
+
+            rag_settings = get_graph_rag_settings()
+
+            def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    parsed = default
+                return max(minimum, min(parsed, maximum))
+
+            default_top_k = min(12, rag_settings.max_top_k)
+            default_hops = min(1, rag_settings.max_hops)
+
+            top_k = _safe_int(
+                params.get("top_k"),
+                default=default_top_k,
+                minimum=1,
+                maximum=rag_settings.max_top_k,
+            )
+            hops = _safe_int(
+                params.get("hops"),
+                default=default_hops,
+                minimum=0,
+                maximum=rag_settings.max_hops,
+            )
+            return_subgraph = params.get("return_subgraph")
+            if return_subgraph is None:
+                return_subgraph = True
+            else:
+                return_subgraph = bool(return_subgraph)
+
+            focus_raw = params.get("focus_entities")
+            focus_entities: List[str] = []
+            if isinstance(focus_raw, list):
+                for item in focus_raw:
+                    if isinstance(item, str) and item.strip():
+                        focus_entities.append(item.strip())
+
+            params = {
+                "query": query.strip(),
+                "top_k": top_k,
+                "hops": hops,
+                "return_subgraph": return_subgraph,
+                "focus_entities": focus_entities,
             }
+
+        elif tool_name == "claude_code":
+            # Claude Code CLI - requires task parameter
+            task_value = params.get("task")
+            if not isinstance(task_value, str) or not task_value.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="claude_code requires a non-empty `task` string.",
+                    details={"error": "invalid_task", "tool": tool_name},
+                )
+
+            # Optional: allowed_tools parameter
+            allowed_tools = params.get("allowed_tools")
+            if allowed_tools and not isinstance(allowed_tools, str):
+                allowed_tools = str(allowed_tools)
+
+            # Optional: add_dirs parameter
+            add_dirs_param = params.get("add_dirs")
+            add_dirs: Optional[str] = None
+            if add_dirs_param is not None:
+                if isinstance(add_dirs_param, list):
+                    add_dirs = ",".join(str(d) for d in add_dirs_param if d)
+                elif isinstance(add_dirs_param, str):
+                    add_dirs = add_dirs_param
+
+            # Build final params
+            params = {
+                "task": task_value.strip(),
+            }
+            if allowed_tools:
+                params["allowed_tools"] = allowed_tools
+            if add_dirs:
+                params["add_dirs"] = add_dirs
+
+        else:
+            return AgentStep(
+                action=action,
+                success=False,
+                message=f"Tool {tool_name} is not supported yet.",
+                details={"error": "unsupported_tool", "tool": tool_name},
+            )
+
+        try:
+            raw_result = await execute_tool(tool_name, **params)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception(
+                "Tool %s execution failed for session %s: %s",
+                tool_name,
+                self.session_id,
+                exc,
+            )
+            return AgentStep(
+                action=action,
+                success=False,
+                message=f"{tool_name} failed: {exc}",
+                details={"error": str(exc), "tool": tool_name},
+            )
+
+        sanitized = self._sanitize_tool_result(tool_name, raw_result)
+        summary = self._summarize_tool_result(tool_name, sanitized)
+        self._append_recent_tool_result(tool_name, summary, sanitized)
+
+        success = sanitized.get("success", True)
+        if success is False:
+            message = summary or f"{tool_name} failed to execute."
+        else:
+            message = summary or f"{tool_name} finished execution."
+
+        return AgentStep(
+            action=action,
+            success=bool(success),
+            message=message,
+            details={
+                "tool": tool_name,
+                "parameters": params,
+                "result": sanitized,
+                "summary": summary,
+            },
         )
+
+    async def _handle_plan_action(self, action: LLMAction) -> AgentStep:
+        params = action.parameters or {}
+        if action.name == "create_plan":
+            title = params.get("title")
+            goal = params.get("goal")
+            if not title:
+                if isinstance(goal, str) and goal.strip():
+                    title = goal.strip()[:80]
+                else:
+                    title = f"Plan-{self.conversation_id or 'new'}"
+            description = params.get("description")
+            owner = params.get("owner")
+            metadata = params.get("metadata")
+            if metadata is not None and not isinstance(metadata, dict):
+                metadata = {}
+            new_tree = self.plan_session.repo.create_plan(
+                title=title,
+                owner=owner,
+                description=description,
+                metadata=metadata,
+            )
+            self.plan_session.bind(new_tree.id)
+            self.plan_tree = new_tree
+            self.extra_context["plan_id"] = new_tree.id
+            message = f'Created and bound new plan #{new_tree.id} "{new_tree.title}".'
+            details = {
+                "plan_id": new_tree.id,
+                "title": new_tree.title,
+                "task_count": new_tree.node_count(),
+            }
+            self._dirty = True
+
+            decomposition_info = self._auto_decompose_plan(new_tree.id)
+            if decomposition_info:
+                job = decomposition_info.get("job")
+                summary = decomposition_info.get("result")
+                if job is not None:
+                    job_payload = job.to_payload()
+                    details["decomposition_job"] = job_payload
+                    details["target_task_name"] = new_tree.title
+                    message += " Automatic decomposition has been submitted for background execution."
+                elif summary is not None:
+                    created_count = len(summary.created_tasks)
+                    details["decomposition"] = {
+                        "created": [
+                            node.model_dump() for node in summary.created_tasks
+                        ],
+                        "failed_nodes": summary.failed_nodes,
+                        "stopped_reason": summary.stopped_reason,
+                        "stats": summary.stats,
+                    }
+                    if created_count:
+                        message += f" Automatic decomposition produced {created_count} tasks."
+                    else:
+                        message += " Automatic decomposition finished without creating new tasks."
+            elif self._decomposition_notes:
+                details["decomposition_notes"] = list(self._decomposition_notes)
+
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "list_plans":
+            plans = self.plan_session.list_plans()
+            details = {"plans": [plan.model_dump() for plan in plans]}
+            message = "Available plans have been listed." if plans else "No plans are currently available."
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "execute_plan":
+            tree = self._require_plan_bound()
+            if self.plan_executor is None:
+                raise ValueError("Plan executor is not enabled in this environment.")
+            summary = await asyncio.to_thread(self.plan_executor.execute_plan, tree.id)
+            executed_count = len(summary.executed_task_ids)
+            failed_count = len(summary.failed_task_ids)
+            skipped_count = len(summary.skipped_task_ids)
+            parts = [f"Plan #{tree.id} finished execution"]
+            parts.append(f"Succeeded tasks: {executed_count}")
+            if failed_count:
+                parts.append(f"Failed tasks: {failed_count}")
+            if skipped_count:
+                parts.append(f"Skipped tasks: {skipped_count}")
+            message = "，".join(parts) + "。"
+            details = summary.to_dict()
+            self._refresh_plan_tree(force_reload=True)
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "delete_plan":
+            plan_id_param = params.get("plan_id") or self.plan_session.plan_id
+            plan_id = self._coerce_int(plan_id_param, "plan_id")
+            self.plan_session.repo.delete_plan(plan_id)
+            detached = False
+            if self.plan_session.plan_id == plan_id:
+                self.plan_session.detach()
+                self.plan_tree = None
+                self.extra_context.pop("plan_id", None)
+                detached = True
+            self._dirty = False
+            message = f"Plan #{plan_id} has been deleted."
+            details = {"plan_id": plan_id, "detached": detached}
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        return self._handle_unknown_action(action)
+
+    def _handle_task_action(self, action: LLMAction) -> AgentStep:
+        params = action.parameters or {}
+        tree = self._require_plan_bound()
+
+        if action.name == "create_task":
+            name = params.get("task_name") or params.get("name") or params.get("title")
+            if not name:
+                raise ValueError("create_task requires a task_name.")
+            instruction = params.get("instruction")
+            parent_id = params.get("parent_id")
+            if parent_id is not None:
+                parent_id = self._coerce_int(parent_id, "parent_id")
+            metadata = (
+                params.get("metadata")
+                if isinstance(params.get("metadata"), dict)
+                else None
+            )
+            dependencies = self._normalize_dependencies(params.get("dependencies"))
+
+            raw_anchor_task_id = params.get("anchor_task_id")
+            anchor_task_id = None
+            if raw_anchor_task_id is not None:
+                anchor_task_id = self._coerce_int(raw_anchor_task_id, "anchor_task_id")
+
+            anchor_position = params.get("anchor_position")
+            if anchor_position is not None and not isinstance(anchor_position, str):
+                raise ValueError("anchor_position must be a string.")
+            if isinstance(anchor_position, str):
+                anchor_position = anchor_position.strip()
+                anchor_position = anchor_position.lower() if anchor_position else None
+
+            position_param = params.get("position")
+            position: Optional[int] = None
+            if position_param is not None:
+                if isinstance(position_param, str):
+                    position_str = position_param.strip()
+                    if position_str:
+                        parts = position_str.split(":", 1)
+                        keyword = parts[0].strip().lower()
+                        if keyword in {"before", "after"}:
+                            if len(parts) < 2 or not parts[1].strip():
+                                raise ValueError("position must follow the format 'before:<task_id>' or 'after:<task_id>'.")
+                            candidate_id = self._coerce_int(parts[1].strip(), f"position {keyword}")
+                            if anchor_task_id is not None and anchor_task_id != candidate_id:
+                                raise ValueError("anchor_task_id does not match the task referenced in position.")
+                            if anchor_position is not None and anchor_position != keyword:
+                                raise ValueError("anchor_position does not match the pattern specified in position.")
+                            anchor_task_id = candidate_id
+                            anchor_position = keyword
+                        elif keyword in {"first_child", "last_child"}:
+                            if anchor_position is not None and anchor_position != keyword:
+                                raise ValueError("anchor_position does not match the pattern specified in position.")
+                            anchor_position = keyword
+                        else:
+                            position = self._coerce_int(position_param, "position")
+                    else:
+                        position = None
+                else:
+                    position = self._coerce_int(position_param, "position")
+
+            if position is not None and position < 0:
+                raise ValueError("position cannot be negative.")
+
+            insert_before_val = params.get("insert_before")
+            insert_after_val = params.get("insert_after")
+            insert_before_id = (
+                self._coerce_int(insert_before_val, "insert_before")
+                if insert_before_val is not None
+                else None
+            )
+            insert_after_id = (
+                self._coerce_int(insert_after_val, "insert_after")
+                if insert_after_val is not None
+                else None
+            )
+
+            siblings_parent_key = parent_id if parent_id is not None else None
+            siblings = tree.children_ids(siblings_parent_key)
+
+            if insert_before_id is not None and insert_after_id is not None:
+                if insert_before_id == insert_after_id:
+                    raise ValueError("insert_before and insert_after cannot point to the same task.")
+                if insert_after_id not in siblings or insert_before_id not in siblings:
+                    raise ValueError("insert_before / The task referenced by insert_after does not belong to the target parent node.")
+                after_idx = siblings.index(insert_after_id)
+                before_idx = siblings.index(insert_before_id)
+                if after_idx > before_idx:
+                    raise ValueError("insert_after must appear before insert_before.")
+                if anchor_task_id is not None and anchor_task_id not in {
+                    insert_after_id,
+                    insert_before_id,
+                }:
+                    raise ValueError("anchor_task_id is inconsistent with insert_before/insert_after.")
+                anchor_task_id = insert_after_id
+                anchor_position = "after"
+            else:
+                if insert_before_id is not None:
+                    if anchor_task_id is not None and anchor_task_id != insert_before_id:
+                        raise ValueError("anchor_task_id points to a different task than insert_before.")
+                    if insert_before_id not in siblings:
+                        raise ValueError("The task referenced by insert_before does not belong to the target parent node.")
+                    anchor_task_id = insert_before_id
+                    anchor_position = "before"
+                if insert_after_id is not None:
+                    if anchor_task_id is not None and anchor_task_id != insert_after_id:
+                        raise ValueError("anchor_task_id points to a different task than insert_after.")
+                    if insert_after_id not in siblings:
+                        raise ValueError("The task referenced by insert_after does not belong to the target parent node.")
+                    anchor_task_id = insert_after_id
+                    anchor_position = "after"
+            if anchor_position is not None:
+                valid_anchor_positions = {
+                    "before",
+                    "after",
+                    "first_child",
+                    "last_child",
+                }
+                if anchor_position not in valid_anchor_positions:
+                    raise ValueError(
+                        f"Invalid anchor_position; only {', '.join(sorted(valid_anchor_positions))} are supported."
+                    )
+            node = self.plan_session.repo.create_task(
+                tree.id,
+                name=name,
+                instruction=instruction,
+                parent_id=parent_id,
+                metadata=metadata,
+                dependencies=dependencies,
+                position=position,
+                anchor_task_id=anchor_task_id,
+                anchor_position=anchor_position,
+            )
+            self._refresh_plan_tree()
+            message = f"Created task [{node.id}] {node.name}."
+            details = {"task": node.model_dump()}
+            self._dirty = True
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "update_task":
+            task_id = self._coerce_int(params.get("task_id"), "task_id")
+            name = params.get("name")
+            instruction = params.get("instruction")
+            metadata = (
+                params.get("metadata")
+                if isinstance(params.get("metadata"), dict)
+                else None
+            )
+            dependencies = self._normalize_dependencies(params.get("dependencies"))
+            node = self.plan_session.repo.update_task(
+                tree.id,
+                task_id,
+                name=name,
+                instruction=instruction,
+                metadata=metadata,
+                dependencies=dependencies,
+            )
+            self._refresh_plan_tree()
+            message = f"Task [{node.id}] information has been updated."
+            details = {"task": node.model_dump()}
+            self._dirty = True
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "update_task_instruction":
+            task_id = self._coerce_int(params.get("task_id"), "task_id")
+            instruction = params.get("instruction")
+            if not instruction:
+                raise ValueError("update_task_instruction requires an instruction.")
+            node = self.plan_session.repo.update_task(
+                tree.id,
+                task_id,
+                instruction=instruction,
+            )
+            self._refresh_plan_tree()
+            message = f"Task [{node.id}] instructions have been updated."
+            details = {"task": node.model_dump()}
+            self._dirty = True
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "move_task":
+            task_id = self._coerce_int(params.get("task_id"), "task_id")
+            new_parent_id = params.get("new_parent_id")
+            if new_parent_id is not None:
+                new_parent_id = self._coerce_int(new_parent_id, "new_parent_id")
+            new_position = params.get("new_position")
+            if new_position is not None:
+                new_position = self._coerce_int(new_position, "new_position")
+            node = self.plan_session.repo.move_task(
+                tree.id,
+                task_id,
+                new_parent_id=new_parent_id,
+                new_position=new_position,
+            )
+            self._refresh_plan_tree()
+            message = f"Task [{node.id}] has been moved to a new position."
+            details = {"task": node.model_dump()}
+            self._dirty = True
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "delete_task":
+            task_id = self._coerce_int(params.get("task_id"), "task_id")
+            self.plan_session.repo.delete_task(tree.id, task_id)
+            self._refresh_plan_tree()
+            message = f"Task [{task_id}] and its subtasks have been deleted."
+            details = {"task_id": task_id}
+            self._dirty = True
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "show_tasks":
+            self._refresh_plan_tree(force_reload=False)
+            outline = self.plan_session.outline(max_depth=6, max_nodes=120)
+            message = f"Here is the task overview for plan #{tree.id}."
+            details = {"plan_id": tree.id, "outline": outline}
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "query_status":
+            self._refresh_plan_tree(force_reload=False)
+            node_count = self.plan_tree.node_count() if self.plan_tree else 0
+            root_count = len(self.plan_tree.root_node_ids()) if self.plan_tree else 0
+            message = f"Plan #{tree.id} currently has {node_count} task nodes ({root_count} roots)."
+            details = {
+                "plan_id": tree.id,
+                "task_count": node_count,
+                "root_tasks": root_count,
+            }
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "rerun_task":
+            task_id_raw = params.get("task_id")
+            task_id = self._coerce_int(task_id_raw, "task_id")
+            if self.plan_executor is None:
+                raise ValueError("Plan executor is not enabled in this environment.")
+            result = self.plan_executor.execute_task(tree.id, task_id)
+            message = f"Task [{task_id}] execution status: {result.status}."
+            details = result.to_dict()
+            self._refresh_plan_tree(force_reload=True)
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        if action.name == "decompose_task":
+            if self.plan_decomposer is None:
+                raise ValueError("Task decomposition service is not enabled in this environment.")
+            if self.decomposer_settings.model is None:
+                raise ValueError("No decomposition model configured; cannot proceed.")
+
+            expand_depth_raw = params.get("expand_depth")
+            node_budget_raw = params.get("node_budget")
+            allow_existing_raw = params.get("allow_existing_children")
+
+            expand_depth = (
+                self._coerce_int(expand_depth_raw, "expand_depth")
+                if expand_depth_raw is not None
+                else None
+            )
+            node_budget = (
+                self._coerce_int(node_budget_raw, "node_budget")
+                if node_budget_raw is not None
+                else None
+            )
+            allow_existing_children = None
+            if allow_existing_raw is not None:
+                if isinstance(allow_existing_raw, bool):
+                    allow_existing_children = allow_existing_raw
+                else:
+                    allow_existing_children = str(
+                        allow_existing_raw
+                    ).strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "y",
+                    }
+
+            task_id_raw = params.get("task_id")
+            if task_id_raw is None:
+                result = self.plan_decomposer.run_plan(
+                    tree.id,
+                    max_depth=expand_depth,
+                    node_budget=node_budget,
+                )
+            else:
+                task_id = self._coerce_int(task_id_raw, "task_id")
+                result = self.plan_decomposer.decompose_node(
+                    tree.id,
+                    task_id,
+                    expand_depth=expand_depth,
+                    node_budget=node_budget,
+                    allow_existing_children=allow_existing_children,
+                )
+
+            self._last_decomposition = result
+            if result.created_tasks:
+                self._dirty = True
+            try:
+                self._refresh_plan_tree(force_reload=True)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed to refresh plan tree after decomposition: %s", exc
+                )
+                self._decomposition_errors.append(f"Failed to refresh plan after decomposition: {exc}")
+
+            created_count = len(result.created_tasks)
+            message = (
+                f"Generated {created_count} subtasks."
+                if created_count
+                else "No new subtasks were generated."
+            )
+            if result.stopped_reason:
+                message += f" Stop reason: {result.stopped_reason}."
+            details = {
+                "plan_id": tree.id,
+                "mode": result.mode,
+                "processed_nodes": result.processed_nodes,
+                "created": [node.model_dump() for node in result.created_tasks],
+                "failed_nodes": result.failed_nodes,
+                "stopped_reason": result.stopped_reason,
+                "stats": result.stats,
+            }
+            return AgentStep(
+                action=action, success=True, message=message, details=details
+            )
+
+        return self._handle_unknown_action(action)
+
+    def _handle_context_request(self, action: LLMAction) -> AgentStep:
+        if action.name != "request_subgraph":
+            return self._handle_unknown_action(action)
+        params = action.parameters or {}
+        tree = self._require_plan_bound()
+        node_id_value = params.get("logical_id") or params.get("task_id")
+        node_id = self._coerce_int(node_id_value, "task_id")
+        max_depth_raw = params.get("max_depth")
+        max_depth = (
+            self._coerce_int(max_depth_raw, "max_depth")
+            if max_depth_raw is not None
+            else 2
+        )
+        self._refresh_plan_tree(force_reload=False)
+        graph_tree = self.plan_tree or self.plan_session.ensure()
+        try:
+            nodes = graph_tree.subgraph_nodes(node_id, max_depth=max_depth)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        outline = graph_tree.subgraph_outline(node_id, max_depth=max_depth)
+        details = {
+            "plan_id": tree.id,
+            "root_node": node_id,
+            "max_depth": max_depth,
+            "outline": outline,
+            "nodes": [node.model_dump() for node in nodes],
+        }
+        message = f"Returned a subgraph preview for node {node_id}."
+        return AgentStep(action=action, success=True, message=message, details=details)
+
+    def _handle_system_action(self, action: LLMAction) -> AgentStep:
+        if action.name == "help":
+            message = (
+                "System help: you can create/list/delete plans or perform CRUD and restructuring actions on the current plan. "
+                "For subgraph queries and similar operations, bind a plan first by calling create_plan or list_plans."
+            )
+            return AgentStep(action=action, success=True, message=message, details={})
+        return self._handle_unknown_action(action)
+
+    def _handle_unknown_action(self, action: LLMAction) -> AgentStep:
+        message = f"Unrecognized action kind or name: {action.kind}/{action.name}."
+        return AgentStep(action=action, success=False, message=message, details={})
+
+    def _build_suggestions(
+        self, structured: LLMStructuredResponse, steps: List[AgentStep]
+    ) -> List[str]:
+        base_suggestions: List[str] = []
+        failures = [step for step in steps if not step.success]
+        if failures:
+            base_suggestions.append(
+                "Some actions failed; provide more specific parameters or try again later."
+            )
+        if not structured.actions:
+            base_suggestions.append("Continue describing the tasks or plans you want to handle.")
+            if self.plan_session.plan_id is None:
+                base_suggestions.append("I can create new plans or list existing ones.")
+        else:
+            base_suggestions.append("If you need to execute those actions, supply the required details and confirm.")
+        if structured.actions and structured.actions[0].kind == "context_request":
+            base_suggestions.append("After reviewing the returned subgraph, you may provide the next instruction.")
+        return base_suggestions
+
+    def _require_plan_bound(self) -> PlanTree:
+        if self.plan_session.plan_id is None:
+            raise ValueError("The session is not bound to any plan, so tasks or context actions cannot be executed.")
+        try:
+            return self.plan_session.ensure()
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    def _refresh_plan_tree(self, force_reload: bool = True) -> None:
+        if self.plan_session.plan_id is None:
+            self.plan_tree = None
+            return
+        if force_reload:
+            try:
+                self.plan_tree = self.plan_session.refresh()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Failed to refresh plan tree: %s", exc)
+                self.plan_tree = None
+        else:
+            self.plan_tree = self.plan_session.current_tree()
+
+    @staticmethod
+    def _coerce_int(value: Any, field: str) -> int:
+        if value is None:
+            raise ValueError(f"{field} is missing or empty.")
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise ValueError(f"{field} must be an integer; received {value!r}") from exc
+
+    def _auto_decompose_plan(self, plan_id: int) -> Optional[Dict[str, Any]]:
+        settings = self.decomposer_settings
+        if not settings.auto_on_create:
+            note = "Automatic decomposition is disabled."
+            if note not in self._decomposition_notes:
+                self._decomposition_notes.append(note)
+            return None
+        if self.plan_decomposer is None:
+            note = "The automatic decomposer is not initialised."
+            if note not in self._decomposition_notes:
+                self._decomposition_notes.append(note)
+            return None
+        if settings.model is None:
+            note = "Automatic decomposition was skipped: no decomposition model configured."
+            if note not in self._decomposition_notes:
+                self._decomposition_notes.append(note)
+            return None
+        try:
+            job = start_decomposition_job_thread(
+                self.plan_decomposer,
+                plan_id=plan_id,
+                mode="plan_bfs",
+                max_depth=settings.max_depth,
+                node_budget=settings.total_node_budget,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            message = f"Failed to submit automatic task decomposition: {exc}"
+            logger.exception(
+                "Auto decomposition enqueue failed for plan %s: %s", plan_id, exc
+            )
+            self._decomposition_errors.append(message)
+            return None
+
+        self._last_decomposition = None
+        note = "Automatic decomposition has been submitted for background execution."
+        if note not in self._decomposition_notes:
+            self._decomposition_notes.append(note)
+        return {"job": job}
+
+    def _persist_if_dirty(self) -> bool:
+        if not self._dirty or self.plan_session.plan_id is None:
+            return False
+        note = f"session:{self.session_id}" if self.session_id else None
+        self._refresh_plan_tree(force_reload=True)
+        self.plan_session.persist_current_tree(note=note)
+        self._dirty = False
+        return True
+
+    @staticmethod
+    def _normalize_dependencies(raw: Any) -> Optional[List[int]]:
+        if raw is None:
+            return None
+        if not isinstance(raw, list):
+            return None
+        deps: List[int] = []
+        for item in raw:
+            try:
+                deps.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return deps or None
+
+    def _sanitize_tool_result(self, tool_name: str, raw_result: Any) -> Dict[str, Any]:
+        if tool_name == "claude_code" and isinstance(raw_result, dict):
+            def _trim(text: str, limit: int = 800) -> str:
+                text = text.strip()
+                if len(text) > limit:
+                    return text[: limit - 3] + "..."
+                return text
+
+            sanitized: Dict[str, Any] = {
+                "tool": tool_name,
+                "code": raw_result.get("code"),
+                "owner": raw_result.get("owner"),
+                "language": raw_result.get("language", "python"),
+                "uploaded_files": raw_result.get("uploaded_files") or [],
+                "success": raw_result.get("success", False),
+            }
+
+            stdout_value = raw_result.get("stdout")
+            if isinstance(stdout_value, str) and stdout_value.strip():
+                sanitized["stdout"] = _trim(stdout_value)
+
+            stderr_value = raw_result.get("stderr")
+            if isinstance(stderr_value, str) and stderr_value.strip():
+                sanitized["stderr"] = _trim(stderr_value, limit=400)
+
+            output_value = raw_result.get("output")
+            if isinstance(output_value, str) and output_value.strip():
+                sanitized["output"] = _trim(output_value)
+
+            if "error" in raw_result:
+                sanitized["error"] = str(raw_result["error"])
+
+            tool_calls = raw_result.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                sanitized["tool_calls"] = tool_calls
+
+            return sanitized
+
+        if isinstance(raw_result, dict):
+            sanitized: Dict[str, Any] = {"tool": tool_name}
+            for key in (
+                "query",
+                "provider",
+                "success",
+                "response",
+                "answer",
+                "total_results",
+                "fallback_from",
+                "code",
+                "cache_hit",
+            ):
+                if key in raw_result:
+                    sanitized[key] = raw_result[key]
+            if "error" in raw_result:
+                sanitized["error"] = raw_result["error"]
+            results = raw_result.get("results")
+            if isinstance(results, list):
+                trimmed: List[Dict[str, Any]] = []
+                for item in results[:3]:
+                    if isinstance(item, dict):
+                        trimmed.append({
+                            "title": item.get("title"),
+                            "url": item.get("url"),
+                            "snippet": item.get("snippet"),
+                            "source": item.get("source"),
+                        })
+                if trimmed:
+                    sanitized["results"] = trimmed
+            result_block = raw_result.get("result")
+            if isinstance(result_block, dict):
+                if "prompt" in result_block and isinstance(result_block["prompt"], str):
+                    sanitized["prompt"] = result_block["prompt"]
+                triples = result_block.get("triples")
+                if isinstance(triples, list):
+                    sanitized["triples"] = triples
+                if "metadata" in result_block and isinstance(
+                    result_block["metadata"], dict
+                ):
+                    sanitized["metadata"] = result_block["metadata"]
+                if "subgraph" in result_block:
+                    sanitized["subgraph"] = result_block["subgraph"]
+                if "query" in result_block and "query" not in sanitized:
+                    sanitized["query"] = result_block["query"]
+            if "success" not in sanitized:
+                if "error" in sanitized:
+                    sanitized["success"] = False
+                else:
+                    sanitized["success"] = True
+            if tool_name == "graph_rag":
+                if not sanitized.get("success"):
+                    sanitized["empty_result"] = False
+                else:
+                    triples = sanitized.get("triples")
+                    sanitized["empty_result"] = not bool(triples)
+            return sanitized
+
+        if raw_result is None:
+            return {"tool": tool_name, "success": False, "error": "empty_result"}
+
+        if isinstance(raw_result, (list, tuple)):
+            preview = list(raw_result[:3])
+            return {"tool": tool_name, "items": preview, "success": True}
+
+        text = str(raw_result)
+        return {"tool": tool_name, "text": text, "success": True}
+
+    @staticmethod
+    def _summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
+        if tool_name == "web_search":
+            query = result.get("query") or ""
+            prefix = f"Web search“{query}”" if query else "Web search"
+            provider = result.get("provider")
+            if isinstance(provider, str) and provider:
+                provider_map = {
+                    "builtin": "builtin",
+                    "perplexity": "Perplexity",
+                }
+                label = provider_map.get(provider, provider)
+                prefix = f"{prefix}（{label}）"
+            if result.get("success") is False:
+                error = result.get("error") or "Execution failed"
+                return f"{prefix} failed: {error}"
+            results = result.get("results") or []
+            if isinstance(results, list) and results:
+                first = results[0]
+                source = first.get("source") or first.get("url") or "Unknown source"
+                title = first.get("title") or ""
+                if title:
+                    return f'{prefix} finished; the first result came from {source}: "{title}".'
+                return f"{prefix} finished; the first result came from {source}."
+            response = result.get("response") or result.get("answer")
+            if isinstance(response, str) and response.strip():
+                snippet = response.strip()
+                if len(snippet) > 120:
+                    snippet = snippet[:117] + "..."
+                return f"{prefix} finished. Summary: {snippet}"
+            total = result.get("total_results")
+            if isinstance(total, int) and total > 0:
+                return f"{prefix} finished with {total} results."
+            return f"{prefix} finished."
+        if tool_name == "graph_rag":
+            query = result.get("query") or ""
+            prefix = f"Knowledge-graph search“{query}”" if query else "Knowledge-graph search"
+            if result.get("success") is False:
+                error = result.get("error") or "Execution failed"
+                return f"{prefix} failed: {error}"
+            triples = result.get("triples") or []
+            count = len(triples) if isinstance(triples, list) else 0
+            if count:
+                return f"{prefix} finished, returning {count} triples."
+            if result.get("empty_result"):
+                return f"{prefix} finished, but no relevant results were found."
+            prompt = result.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                snippet = prompt.strip()
+                if len(snippet) > 120:
+                    snippet = snippet[:117] + "..."
+                return f"{prefix} finished. Prompt summary: {snippet}"
+            return f"{prefix} finished."
+        if tool_name == "claude_code":
+            if result.get("success") is False:
+                error = result.get("error") or "Code execution failed"
+                return f"Claude Code execution failed: {error}"
+            
+            uploaded = result.get("uploaded_files") or []
+            file_info = f" (with {len(uploaded)} file(s))" if uploaded else ""
+            
+            stdout_text = result.get("stdout") or result.get("output") or ""
+            if stdout_text.strip():
+                snippet = stdout_text.strip()
+                if len(snippet) > 150:
+                    snippet = snippet[:147] + "..."
+                return f"Claude Code execution{file_info} succeeded. Output: {snippet}"
+            
+            return f"Claude Code execution{file_info} succeeded."
         
-    except Exception as e:
-        logger.error(f"❌ 重新执行任务失败: {e}", exc_info=True)
-        return ChatResponse(
-            response=f"⚠️ 重新执行任务时遇到问题: {str(e)}\n\n请检查任务状态或稍后重试。",
-            suggestions=["查看任务详情", "重新尝试"],
-            metadata={"mode": request.mode, "error": True}
-        )
+        return f"{tool_name} finished execution."
+
+    def _append_recent_tool_result(
+        self, tool_name: str, summary: str, sanitized: Dict[str, Any]
+    ) -> None:
+        history = self.extra_context.setdefault("recent_tool_results", [])
+        if not isinstance(history, list):
+            history = []
+            self.extra_context["recent_tool_results"] = history
+        entry = {
+            "tool": tool_name,
+            "summary": summary,
+            "result": sanitized,
+        }
+        history.append(entry)
+        max_items = 5
+        if len(history) > max_items:
+            del history[:-max_items]

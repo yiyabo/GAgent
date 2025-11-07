@@ -19,7 +19,7 @@ async def internal_api_handler(
     method: str = "POST",
     data: Optional[Dict[str, Any]] = None,
     timeout: float = 60.0,
-    base_url: str = "http://127.0.0.1:9000"
+    base_url: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Internal API call tool handler
@@ -35,6 +35,13 @@ async def internal_api_handler(
         Dict containing API response
     """
     try:
+        if base_url is None:
+            try:
+                from app.services.foundation.settings import get_settings
+                base_url = get_settings().base_url
+            except Exception:
+                base_url = "http://127.0.0.1:9000"
+
         full_url = f"{base_url}{endpoint}"
         logger.info(f"🔗 Internal API call: {method} {full_url}")
         
@@ -139,8 +146,7 @@ internal_api_tool = {
             },
             "base_url": {
                 "type": "string",
-                "description": "API基础URL",
-                "default": "http://127.0.0.1:9000"
+                "description": "API基础URL"
             }
         },
         "required": ["endpoint"]

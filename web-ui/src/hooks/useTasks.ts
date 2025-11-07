@@ -1,115 +1,96 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import { tasksApi } from '@api/tasks';
+import { useQuery } from '@tanstack/react-query';
+import { planTreeApi } from '@api/planTree';
+import { planTreeToTasks } from '@utils/planTree';
 import { useTasksStore } from '@store/tasks';
-import { Task } from '../types/index';
+import type { Task } from '@/types';
 
-// 获取所有任务的Hook
-export const useAllTasks = (
-  filters?: { session_id?: string; workflow_id?: string },
-  refetchInterval?: number
-) => {
+interface UsePlanTreeOptions {
+  planId?: number | null;
+  enabled?: boolean;
+  refetchIntervalMs?: number;
+}
+
+const isValidPlanId = (value: number | null | undefined): value is number =>
+  typeof value === 'number' && value >= 0;
+
+/**
+ * 订阅完整的 PlanTree，并将任务同步到全局任务 store。
+ */
+export const usePlanTreeTasks = ({
+  planId,
+  enabled = true,
+  refetchIntervalMs,
+}: UsePlanTreeOptions) => {
   const { setTasks } = useTasksStore();
-  
+
   const query = useQuery({
-    queryKey: ['tasks', 'all', filters?.session_id, filters?.workflow_id],
-    queryFn: () => tasksApi.getAllTasks(filters),
-    refetchInterval: refetchInterval || 30000, // 默认30秒刷新
-    staleTime: 5000,
+    queryKey: ['planTree', 'full', planId ?? null],
+    enabled: enabled && isValidPlanId(planId),
+    queryFn: async () => {
+      if (!isValidPlanId(planId)) {
+        return [] as Task[];
+      }
+      const tree = await planTreeApi.getPlanTree(planId);
+      return planTreeToTasks(tree);
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
+    refetchInterval: refetchIntervalMs ?? false,
   });
 
-  // 更新store中的任务数据
   useEffect(() => {
     if (query.data) {
       setTasks(query.data);
+    } else if (query.isFetched && !query.isFetching) {
+      setTasks([]);
     }
-  }, [query.data]); // 移除setTasks依赖，避免无限循环
+  }, [query.data, query.isFetched, query.isFetching, setTasks]);
 
   return query;
 };
 
-// 获取任务层次结构的Hook
-export const useTaskHierarchy = (planTitle?: string) => {
-  const { setTasks } = useTasksStore();
-  
-  const query = useQuery({
-    queryKey: ['tasks', 'hierarchy', planTitle],
-    queryFn: () => tasksApi.getTaskHierarchy(planTitle),
-    enabled: !!planTitle, // 只有当planTitle存在时才执行查询
-    refetchInterval: 10000, // 10秒刷新
-  });
+interface UsePlanSubgraphOptions {
+  planId?: number | null;
+  nodeId?: number | null;
+  maxDepth?: number;
+  enabled?: boolean;
+}
 
-  useEffect(() => {
-    if (query.data) {
-      setTasks(query.data);
-    }
-  }, [query.data]); // 移除setTasks依赖，避免无限循环
-
-  return query;
-};
-
-// 获取任务详情的Hook
-export const useTask = (taskId: number) => {
+/**
+ * 获取计划子图（局部 PlanTree）。
+ */
+export const usePlanSubgraph = ({
+  planId,
+  nodeId,
+  maxDepth = 2,
+  enabled = true,
+}: UsePlanSubgraphOptions) => {
   return useQuery({
-    queryKey: ['tasks', 'detail', taskId],
-    queryFn: () => tasksApi.getTask(taskId),
-    enabled: !!taskId,
-  });
-};
-
-// 执行任务的Hook
-export const useExecuteTask = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: ({ taskId, options }: {
-      taskId: number;
-      options?: {
-        use_context?: boolean;
-        evaluation_mode?: string;
-        use_tools?: boolean;
-      };
-    }) => tasksApi.executeTask(taskId, options),
-    onSuccess: () => {
-      // 执行成功后刷新任务数据
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    queryKey: ['planTree', 'subgraph', planId ?? null, nodeId ?? null, maxDepth],
+    enabled: enabled && isValidPlanId(planId) && typeof nodeId === 'number',
+    queryFn: async () => {
+      if (!isValidPlanId(planId) || typeof nodeId !== 'number') {
+        return [] as Task[];
+      }
+      const subgraph = await planTreeApi.getPlanSubgraph(planId, nodeId, maxDepth);
+      const nodes = Array.isArray(subgraph.nodes) ? subgraph.nodes : [];
+      return nodes.map((node: any) => {
+        const hasChildren = nodes.some((candidate) => candidate.parent_id === node.id);
+        const taskType: Task['task_type'] =
+          node.parent_id == null ? 'root' : hasChildren ? 'composite' : 'atomic';
+        return {
+          id: Number(node.id),
+          name: node.name,
+          status: 'pending',
+          parent_id: node.parent_id ?? undefined,
+          depth: node.depth ?? 0,
+          path: node.path ?? undefined,
+          task_type: taskType,
+        } as Task;
+      });
     },
-  });
-};
-
-// 更新任务状态的Hook
-export const useUpdateTaskStatus = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: ({ taskId, status }: {
-      taskId: number;
-      status: Task['status'];
-    }) => tasksApi.updateTaskStatus(taskId, status),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-    },
-  });
-};
-
-// 搜索任务的Hook
-export const useSearchTasks = (query: string, filters?: {
-  status?: string;
-  task_type?: string;
-  plan_title?: string;
-}, scope?: { session_id?: string; workflow_id?: string }) => {
-  return useQuery({
-    queryKey: ['tasks', 'search', query, filters, scope?.session_id, scope?.workflow_id],
-    queryFn: () => tasksApi.searchTasks(query, filters, scope),
-    enabled: query.length > 2, // 至少输入3个字符才搜索
-  });
-};
-
-// 获取任务统计的Hook
-export const useTaskStats = (filters?: { session_id?: string; workflow_id?: string }) => {
-  return useQuery({
-    queryKey: ['tasks', 'stats', filters?.session_id, filters?.workflow_id],
-    queryFn: () => tasksApi.getTaskStats(filters),
-    refetchInterval: 15000, // 15秒刷新统计数据
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
   });
 };

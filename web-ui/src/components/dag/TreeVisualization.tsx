@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Card, Spin, Button, Space, Select, Input, message, Badge, Tooltip } from 'antd';
 import { ReloadOutlined, ExpandOutlined, CompressOutlined } from '@ant-design/icons';
-import { tasksApi } from '@api/tasks';
-import { resolveScopeParams } from '@api/scope';
-import type { Task as TaskType } from '@/types';
+import { planTreeApi } from '@api/planTree';
+import { planTreeToTasks } from '@utils/planTree';
+import type { PlanSyncEventDetail, Task as TaskType } from '@/types';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
+import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 import './TreeVisualization.css';
 
 interface TreeVisualizationProps {
@@ -18,6 +19,17 @@ interface TreeNode {
   children: TreeNode[];
 }
 
+const getOrderKey = (task: TaskType): number =>
+  typeof task.position === 'number' ? task.position : task.id;
+
+const compareTaskOrder = (a: TaskType, b: TaskType): number => {
+  const diff = getOrderKey(a) - getOrderKey(b);
+  if (diff !== 0) {
+    return diff;
+  }
+  return a.id - b.id;
+};
+
 const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   onNodeClick,
   onNodeDoubleClick,
@@ -28,12 +40,10 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [stats, setStats] = useState<any>(null);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
-  const currentWorkflowId = useChatStore((state) => state.currentWorkflowId);
-  const currentSession = useChatStore((state) => state.currentSession);
-  const { setTasks: updateStoreTasks, setTaskStats, setCurrentWorkflowId } = useTasksStore((state) => ({
+  const currentPlanId = useChatStore((state) => state.currentPlanId);
+  const { setTasks: updateStoreTasks, setTaskStats } = useTasksStore((state) => ({
     setTasks: state.setTasks,
     setTaskStats: state.setTaskStats,
-    setCurrentWorkflowId: state.setCurrentWorkflowId,
   }));
 
   // 状态图标映射
@@ -91,95 +101,43 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   };
 
   // 加载任务数据
-  const loadTasks = async () => {
+  const loadTasks = useCallback(async () => {
     try {
       setLoading(true);
       console.log('🔄 Loading tasks for Tree visualization...');
 
-      if (!currentWorkflowId && !currentSession?.session_id) {
-        console.warn('⚠️ 当前无关联的工作流或会话，跳过任务加载');
+      if (!currentPlanId) {
+        console.warn('⚠️ 当前无绑定计划，跳过任务加载');
         setTasks([]);
         setStats(null);
         updateStoreTasks([]);
         setTaskStats(null);
-        setCurrentWorkflowId(null);
         return;
       }
 
-      const filters = resolveScopeParams({
-        workflow_id: currentWorkflowId,
-        session_id: currentSession?.session_id ?? null,
-      });
-
-      const [allTasks, taskStats] = await Promise.all([
-        tasksApi.getAllTasks(filters),
-        tasksApi.getTaskStats(filters),
-      ]);
-      
+      const tree = await planTreeApi.getPlanTree(currentPlanId);
+      const allTasks = planTreeToTasks(tree);
       console.log('📊 Raw tasks data:', allTasks);
-      
-      if (allTasks && allTasks.length > 0) {
-        const eq = (a?: string | number | null, b?: string | number | null) => String(a ?? '') === String(b ?? '');
-        const isRootType = (t: any) => (t?.task_type && String(t.task_type).toLowerCase() === 'root');
-        const typedRoots = allTasks.filter((t) => isRootType(t));
-        const roots = typedRoots.length > 0 ? typedRoots : allTasks.filter((t) => t.parent_id == null);
 
-        let pickedRoot: any = roots.find((r) => eq(r.session_id, currentSession?.session_id));
-        if (!pickedRoot) {
-          pickedRoot = roots.find((r) => eq(r.workflow_id, currentWorkflowId));
-        }
-        if (!pickedRoot && roots.length === 1) {
-          pickedRoot = roots[0];
-        }
-        if (!pickedRoot && roots.length > 1) {
-          pickedRoot = roots.reduce((acc, cur) => (cur.id > acc.id ? cur : acc));
-        }
+      setTasks(allTasks);
+      updateStoreTasks(allTasks);
 
-        let filteredTasks: any[] = [];
-        if (pickedRoot) {
-          const collectTaskTree = (rootId: number): any[] => {
-            const rootTask = allTasks.find(task => task.id === rootId);
-            if (!rootTask) return [];
-
-            const children = allTasks
-              .filter(task => task.parent_id === rootId)
-              .flatMap(child => collectTaskTree(child.id));
-
-            return [rootTask, ...children];
-          };
-
-          filteredTasks = collectTaskTree(pickedRoot.id);
-          console.log(`🎯 过滤后显示 ${filteredTasks.length} 个任务（ROOT: ${pickedRoot.name}，id=${pickedRoot.id}）`);
-        } else {
-          filteredTasks = [];
-        }
-
-        setTasks(filteredTasks);
-        updateStoreTasks(filteredTasks);
-      } else {
-        setTasks([]);
-        updateStoreTasks([]);
-      }
-      
-      setStats(taskStats);
-      const normalizedStats = taskStats
-        ? {
-            total: taskStats.total || 0,
-            pending: taskStats.by_status?.pending || 0,
-            running: taskStats.by_status?.running || 0,
-            completed: taskStats.by_status?.completed || taskStats.by_status?.done || 0,
-            failed: taskStats.by_status?.failed || 0,
-          }
-        : null;
-      setTaskStats(normalizedStats);
-      setCurrentWorkflowId(currentWorkflowId);
+      const computedStats = {
+        total: allTasks.length,
+        pending: allTasks.filter((task) => task.status === 'pending').length,
+        running: allTasks.filter((task) => task.status === 'running').length,
+        completed: allTasks.filter((task) => task.status === 'completed').length,
+        failed: allTasks.filter((task) => task.status === 'failed').length,
+      };
+      setStats(computedStats);
+      setTaskStats(computedStats);
     } catch (error: any) {
       console.error('❌ Failed to load tasks:', error);
       message.error(`加载任务数据失败: ${error.message}`);
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentPlanId, setTaskStats, updateStoreTasks]);
 
   // 构建树形结构
   const buildTree = (): TreeNode[] => {
@@ -198,16 +156,16 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
     }
 
     // 找到ROOT任务
-    const roots = filteredTasks.filter(task => 
-      !task.parent_id || task.task_type?.toLowerCase() === 'root'
-    );
+    const roots = filteredTasks
+      .filter(task => !task.parent_id || task.task_type?.toLowerCase() === 'root')
+      .sort(compareTaskOrder);
 
     // 递归构建树
     const buildNode = (task: TaskType): TreeNode => {
       const children = filteredTasks
         .filter(t => t.parent_id === task.id)
         .map(child => buildNode(child))
-        .sort((a, b) => a.task.id - b.task.id); // 按ID排序
+        .sort((a, b) => compareTaskOrder(a.task, b.task));
 
       return { task, children };
     };
@@ -309,20 +267,43 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
 
   useEffect(() => {
     loadTasks();
-  }, [currentWorkflowId, currentSession?.session_id]);
+  }, [currentPlanId]);
 
   useEffect(() => {
-    const handleTasksUpdated = (event: CustomEvent) => {
-      console.log('🔄 Tree收到任务更新事件:', event.detail);
+    const handleTasksUpdated = (event: CustomEvent<PlanSyncEventDetail>) => {
+      const detail = event.detail;
+      if (
+        detail?.type === 'plan_deleted' &&
+        detail.plan_id != null &&
+        detail.plan_id === (currentPlanId ?? null)
+      ) {
+        setTasks([]);
+        updateStoreTasks([]);
+        setStats(null);
+        setCollapsed(new Set());
+        return;
+      }
+      if (
+        !shouldHandlePlanSyncEvent(detail, currentPlanId ?? null, [
+          'task_changed',
+          'plan_jobs_completed',
+          'plan_updated',
+        ])
+      ) {
+        return;
+      }
       loadTasks();
+      window.setTimeout(() => {
+        loadTasks();
+      }, 800);
     };
 
     window.addEventListener('tasksUpdated', handleTasksUpdated as EventListener);
-    
+
     return () => {
       window.removeEventListener('tasksUpdated', handleTasksUpdated as EventListener);
     };
-  }, []);
+  }, [currentPlanId, loadTasks, setTaskStats, updateStoreTasks]);
 
   const handleRefresh = () => {
     loadTasks();
@@ -368,7 +349,7 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
               { label: '全部', value: 'all' },
               { label: '待执行', value: 'pending' },
               { label: '执行中', value: 'running' },
-              { label: '已完成', value: 'done' },
+              { label: '已完成', value: 'completed' },
               { label: '失败', value: 'failed' },
             ]}
           />

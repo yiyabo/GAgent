@@ -14,33 +14,33 @@ logger = logging.getLogger(__name__)
 
 class DatabaseConfig:
     """数据库配置管理类"""
-    
+
     def __init__(self):
         # 数据库存储根目录
         self.db_root = os.getenv("DB_ROOT", "data/databases")
         self.ensure_db_directory()
-    
+
     def ensure_db_directory(self):
         """确保数据库目录存在"""
         Path(self.db_root).mkdir(parents=True, exist_ok=True)
-        
+
         # 创建子目录
-        subdirs = ["main", "cache", "temp", "backups"]
+        subdirs = ["main", "cache", "temp", "backups", "plans", "jobs"]
         for subdir in subdirs:
             Path(self.db_root, subdir).mkdir(parents=True, exist_ok=True)
-    
+
     def get_main_db_path(self) -> str:
         """获取主数据库路径"""
-        return os.path.join(self.db_root, "main", "tasks.db")
-    
+        return os.path.join(self.db_root, "main", "plan_registry.db")
+
     def get_cache_db_path(self, cache_type: str) -> str:
         """获取缓存数据库路径"""
         return os.path.join(self.db_root, "cache", f"{cache_type}_cache.db")
-    
+
     def get_temp_db_path(self, name: str) -> str:
         """获取临时数据库路径"""
         return os.path.join(self.db_root, "temp", f"{name}.db")
-    
+
     def get_backup_db_path(self, name: str, timestamp: Optional[str] = None) -> str:
         """获取备份数据库路径"""
         if timestamp:
@@ -48,13 +48,21 @@ class DatabaseConfig:
         else:
             filename = f"{name}_backup.db"
         return os.path.join(self.db_root, "backups", filename)
-    
+
+    def get_plan_store_dir(self) -> Path:
+        """返回 Plan 独立数据库文件的目录."""
+        return Path(self.db_root, "plans")
+
+    def get_system_jobs_db_path(self) -> Path:
+        """返回存放未绑定计划 Job 的数据库路径."""
+        return Path(self.db_root, "jobs", "system_jobs.sqlite")
+
     def migrate_existing_databases(self):
         """迁移现有数据库文件到新结构"""
-        import shutil
         import glob
+        import shutil
         from datetime import datetime
-        
+
         # 要迁移的数据库文件映射
         migrations = {
             "tasks.db": self.get_main_db_path(),
@@ -64,10 +72,10 @@ class DatabaseConfig:
             "medical_ai.db": self.get_temp_db_path("medical_ai"),
             "drug_research.db": self.get_temp_db_path("drug_research"),
         }
-        
+
         migrated = []
         cleaned = []
-        
+
         for old_path, new_path in migrations.items():
             if os.path.exists(old_path):
                 try:
@@ -77,11 +85,11 @@ class DatabaseConfig:
                         os.path.splitext(os.path.basename(old_path))[0], timestamp
                     )
                     shutil.copy2(old_path, backup_path)
-                    
+
                     # 移动到新位置
                     shutil.move(old_path, new_path)
                     migrated.append(f"{old_path} -> {new_path}")
-                    
+
                     # 处理相关的WAL和SHM文件
                     base_name = os.path.splitext(old_path)[0]
                     for ext in ["-wal", "-shm"]:
@@ -92,10 +100,10 @@ class DatabaseConfig:
                                 cleaned.append(wal_shm_file)
                             except Exception as e:
                                 logger.warning(f"无法删除 {wal_shm_file}: {e}")
-                    
+
                 except Exception as e:
                     logger.error(f"迁移失败 {old_path}: {e}")
-        
+
         # 清理剩余的WAL/SHM文件
         for pattern in ["*.db-wal", "*.db-shm"]:
             for wal_file in glob.glob(pattern):
@@ -104,7 +112,7 @@ class DatabaseConfig:
                     cleaned.append(wal_file)
                 except Exception as e:
                     logger.warning(f"无法删除 {wal_file}: {e}")
-        
+
         if migrated:
             logger.info("数据库迁移完成:")
             for migration in migrated:
@@ -117,7 +125,7 @@ class DatabaseConfig:
 
         if not migrated and not cleaned:
             logger.info("没有需要迁移或清理的文件")
-    
+
     def get_database_info(self) -> dict:
         """获取数据库配置信息"""
         return {
@@ -132,7 +140,8 @@ class DatabaseConfig:
                 "cache": os.path.join(self.db_root, "cache"),
                 "temp": os.path.join(self.db_root, "temp"),
                 "backups": os.path.join(self.db_root, "backups"),
-            }
+                "plans": str(self.get_plan_store_dir()),
+            },
         }
 
 

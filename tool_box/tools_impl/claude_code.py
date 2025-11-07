@@ -1,0 +1,209 @@
+"""
+Claude CLI Executor Tool
+
+Integrates Anthropic's Claude Code CLI for local code execution with full file access.
+Uses the official 'claude' command-line tool.
+"""
+
+import logging
+import subprocess
+import json
+import hashlib
+import re
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+# 项目根目录
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
+
+# Claude Code 运行时目录
+_RUNTIME_DIR = _PROJECT_ROOT / "runtime"
+
+
+def _generate_task_dir_name(task: str, max_keywords: int = 3) -> str:
+    """
+    Generate a directory name based on task description.
+    Format: {keywords}_{hash}
+    
+    Args:
+        task: Task description
+        max_keywords: Maximum number of keywords to extract
+        
+    Returns:
+        Directory name like "train_model_a3f2b1"
+    """
+    # 提取关键词（中英文）
+    # 移除标点符号，保留字母、数字、中文
+    cleaned = re.sub(r'[^\w\s\u4e00-\u9fff]', ' ', task.lower())
+    words = cleaned.split()
+    
+    # 过滤停用词和短词
+    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
+                  'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
+                  '的', '了', '和', '与', '或', '在', '是', '有', '这', '那', '个', '中'}
+    keywords = [w for w in words if len(w) > 2 and w not in stop_words][:max_keywords]
+    
+    # 如果没有提取到关键词，使用默认名称
+    if not keywords:
+        keywords = ['task']
+    
+    keyword_part = '_'.join(keywords)
+    
+    # 生成任务哈希（取前6位）
+    task_hash = hashlib.md5(task.encode('utf-8')).hexdigest()[:6]
+    
+    return f"{keyword_part}_{task_hash}"
+
+
+async def claude_code_handler(
+    task: str,
+    allowed_tools: Optional[str] = None,
+    add_dirs: Optional[str] = None,
+    skip_permissions: bool = True,
+    output_format: str = "json",
+) -> Dict[str, Any]:
+    """
+    Execute a task using Claude Code (official CLI) with local file access.
+    
+    Args:
+        task: Task description for Claude to complete
+        allowed_tools: Comma-separated list of allowed tools (e.g. "Bash Edit")
+        add_dirs: Comma-separated list of additional directories to allow access
+        skip_permissions: Skip permission checks (recommended for trusted environments)
+        output_format: Output format: "text" or "json"
+        
+    Returns:
+        Dict containing execution results
+    """
+    try:
+        # 确保 runtime 目录存在
+        _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # 为当前任务生成独立的工作目录
+        task_dir_name = _generate_task_dir_name(task)
+        task_work_dir = _RUNTIME_DIR / task_dir_name
+        task_work_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Created task directory: {task_work_dir}")
+        
+        # 在任务描述中明确工作目录和文件保存位置
+        enhanced_task = (
+            f"IMPORTANT: You are working in the '{task_dir_name}' directory under runtime/. "
+            f"All generated files (code, data, models, etc.) MUST be saved in the current directory. "
+            f"When accessing data files, use absolute paths starting from the project root. "
+            f"\n\nTask: {task}"
+        )
+        
+        # 构建命令
+        cmd = [
+            'claude',
+            '-p',  # Print mode (non-interactive)
+            enhanced_task,
+            '--output-format', output_format,
+        ]
+        
+        # 添加工具限制
+        if allowed_tools:
+            cmd.extend(['--allowed-tools', allowed_tools])
+        
+        # 添加目录访问权限（相对于项目根目录的路径）
+        if add_dirs:
+            for dir_path in add_dirs.split(','):
+                # 转换为绝对路径
+                abs_path = _PROJECT_ROOT / dir_path.strip()
+                cmd.extend(['--add-dir', str(abs_path)])
+        
+        # 跳过权限检查（科研环境）
+        if skip_permissions:
+            cmd.append('--dangerously-skip-permissions')
+        
+        logger.info(f"Executing Claude CLI in task directory: {task_work_dir}")
+        
+        # 在任务专属目录执行
+        result = subprocess.run(
+            cmd,
+            cwd=str(task_work_dir),
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5分钟超时（训练模型可能需要更长时间）
+        )
+        
+        success = result.returncode == 0
+        stdout = result.stdout
+        stderr = result.stderr
+        
+        # 解析输出
+        output_data = None
+        if output_format == "json" and stdout:
+            try:
+                output_data = json.loads(stdout)
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse JSON output, using raw text")
+                output_data = {"raw_output": stdout}
+        
+        # 构建返回结果
+        return {
+            "tool": "claude_code",
+            "task": task,
+            "task_directory": task_dir_name,
+            "success": success,
+            "stdout": stdout,
+            "stderr": stderr,
+            "output_data": output_data,
+            "exit_code": result.returncode,
+            "execution_mode": "claude_code_local",
+            "working_directory": str(task_work_dir),
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "error": "Claude CLI execution timed out (5 minutes limit)",
+            "task": task,
+        }
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "error": "Claude CLI not found. Please install it: npm install -g @anthropic-ai/claude-code",
+            "task": task,
+        }
+    except Exception as e:
+        logger.exception(f"Claude CLI execution failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "task": task,
+        }
+
+
+# ToolBox 工具定义
+claude_code_tool = {
+    "name": "claude_code",
+    "description": (
+        "**PRIMARY TOOL FOR COMPLEX CODING TASKS** - Execute tasks using Claude Code (Anthropic's official AI assistant) with full local file access. "
+        "Claude is an expert-level AI that excels at: analyzing codebases, writing production-quality code, training ML models, data analysis, debugging, and solving multi-step problems. "
+        "RECOMMENDED FOR: machine learning tasks, data science projects, complex file processing, code generation, and any task requiring deep understanding and reasoning. "
+        "Has access to Bash, Edit, file operations, and other advanced tools. Works directly in your project directory with full file system access."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": "Detailed task description for Claude to complete"
+            },
+            "allowed_tools": {
+                "type": "string",
+                "description": "Comma-separated list of allowed tools (e.g. 'Bash,Edit'). Leave empty to allow all."
+            },
+            "add_dirs": {
+                "type": "string",
+                "description": "Comma-separated list of additional directories to allow access (e.g. 'data/code_task,models')"
+            },
+        },
+        "required": ["task"]
+    },
+    "handler": claude_code_handler,
+}

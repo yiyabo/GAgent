@@ -6,7 +6,7 @@ import { ENV } from '@/config/env';
 const createApiClient = (): AxiosInstance => {
   const client = axios.create({
     baseURL: ENV.API_BASE_URL,  // 从环境变量读取后端API地址
-    timeout: 120000,
+    timeout: 1200000,
     headers: {
       'Content-Type': 'application/json',
     },
@@ -66,7 +66,7 @@ export class BaseApi {
   }
 
   protected async request<T>(
-    method: 'get' | 'post' | 'put' | 'delete',
+    method: 'get' | 'post' | 'put' | 'patch' | 'delete',
     url: string,
     data?: any,
     params?: Record<string, any>
@@ -113,8 +113,12 @@ export class BaseApi {
     return this.request<T>('put', url, data);
   }
 
-  protected async delete<T>(url: string): Promise<T> {
-    return this.request<T>('delete', url);
+  protected async patch<T>(url: string, data?: any): Promise<T> {
+    return this.request<T>('patch', url, data);
+  }
+
+  protected async delete<T>(url: string, params?: Record<string, any>): Promise<T> {
+    return this.request<T>('delete', url, undefined, params);
   }
 }
 

@@ -62,8 +62,7 @@ class IntegratedMemoryService:
                     retrieval_count INTEGER DEFAULT 0,
                     evolution_history TEXT,
                     embedding_generated BOOLEAN DEFAULT FALSE,
-                    embedding_model TEXT,
-                    FOREIGN KEY (related_task_id) REFERENCES tasks (id) ON DELETE SET NULL
+                    embedding_model TEXT
                 )
             """
             )
@@ -205,16 +204,16 @@ class IntegratedMemoryService:
         """使用LLM分析内容生成元数据"""
         try:
             prompt = f"""
-分析以下内容并提取关键信息：
+Analyze the following content and extract key information:
 
-内容：
+Content:
 {content}
 
-请以JSON格式返回分析结果：
+Return the analysis result in JSON format:
 {{
-    "keywords": ["关键词1", "关键词2", "关键词3"],
-    "context": "内容的主要上下文或领域",
-    "tags": ["标签1", "标签2", "标签3"]
+    "keywords": ["keyword1", "keyword2", "keyword3"],
+    "context": "Main context or domain of the content",
+    "tags": ["tag1", "tag2", "tag3"]
 }}
 """
 

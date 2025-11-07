@@ -1,9 +1,8 @@
 """Repository package for database access.
 
-Exports:
-- Submodule `tasks` containing the concrete `SqliteTaskRepository` and `default_repo`.
+Exports plan-related repositories.
 """
 
 __all__ = [
-    "tasks",
+    "PlanRepository",
 ]

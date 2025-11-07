@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { Card, Input, Button, Space, Typography, Avatar, Divider, Tooltip } from 'antd';
+import { App as AntdApp, Card, Input, Button, Space, Typography, Avatar, Divider, Tooltip, Select } from 'antd';
 import {
   SendOutlined,
   PaperClipOutlined,
@@ -17,6 +17,7 @@ const { TextArea } = Input;
 const { Title, Text } = Typography;
 
 const ChatPanel: React.FC = () => {
+  const { message } = AntdApp.useApp();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<any>(null);
 
@@ -31,6 +32,9 @@ const ChatPanel: React.FC = () => {
     clearMessages,
     retryLastMessage,
     currentSession,
+    defaultSearchProvider,
+    setDefaultSearchProvider,
+    isUpdatingProvider,
   } = useChatStore();
 
   const { selectedTask, currentPlan } = useTasksStore();
@@ -80,6 +84,22 @@ const ChatPanel: React.FC = () => {
       inputRef.current?.focus();
     }
   };
+
+  const handleProviderChange = async (value: string | undefined) => {
+    try {
+      await setDefaultSearchProvider((value as 'builtin' | 'perplexity') ?? null);
+    } catch (error) {
+      console.error('切换搜索来源失败:', error);
+      message.error('切换搜索来源失败，请稍后重试。');
+    }
+  };
+
+  const providerOptions = [
+    { label: '模型内置搜索', value: 'builtin' },
+    { label: 'Perplexity 搜索', value: 'perplexity' },
+  ];
+
+  const providerValue = defaultSearchProvider ?? undefined;
 
   if (!chatPanelVisible) {
     return null;
@@ -187,23 +207,18 @@ const ChatPanel: React.FC = () => {
       </div>
 
       {/* 上下文信息 */}
-      {(selectedTask || currentPlan) && (
+      {currentPlan && (
         <>
           <Divider style={{ margin: '8px 0' }} />
           <div style={{ padding: '0 16px 8px', fontSize: 12, color: '#666' }}>
-            {selectedTask && (
-              <div>当前任务: {selectedTask.name}</div>
-            )}
-            {currentPlan && (
-              <div>当前计划: {currentPlan}</div>
-            )}
+            当前计划: {currentPlan}
           </div>
         </>
       )}
 
       {/* 输入区域 */}
       <div className="chat-input-area">
-        <Space.Compact style={{ width: '100%' }}>
+        <div className="chat-input-main">
           <TextArea
             ref={inputRef}
             value={inputText}
@@ -212,15 +227,30 @@ const ChatPanel: React.FC = () => {
             placeholder="输入消息... (Shift+Enter换行，Enter发送)"
             autoSize={{ minRows: 1, maxRows: 4 }}
             disabled={isProcessing}
+            style={{ flex: 1 }}
           />
-          <Button
-            type="primary"
-            icon={<SendOutlined />}
-            onClick={handleSendMessage}
-            disabled={!inputText.trim() || isProcessing}
-            loading={isProcessing}
-          />
-        </Space.Compact>
+          <div className="chat-input-side">
+            <Select
+              size="small"
+              value={providerValue}
+              placeholder="选择网络搜索来源"
+              options={providerOptions}
+              allowClear
+              onChange={handleProviderChange}
+              disabled={!currentSession || isProcessing}
+              loading={isUpdatingProvider}
+              style={{ width: '100%' }}
+            />
+            <Button
+              type="primary"
+              icon={<SendOutlined />}
+              onClick={handleSendMessage}
+              disabled={!inputText.trim() || isProcessing}
+              loading={isProcessing}
+              style={{ width: '100%' }}
+            />
+          </div>
+        </div>
 
         <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between' }}>
           <Space size="small">
