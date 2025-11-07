@@ -6,6 +6,24 @@ import { ReloadOutlined, ExpandOutlined, FullscreenOutlined, SearchOutlined, Inb
 import { useMemoryStore } from '@store/memory';
 import type { Memory } from '@/types';
 
+type GraphNode = {
+  id: string;
+  label: string;
+  title: string;
+  shape: string;
+  size: number;
+  color: Record<string, any>;
+  font: Record<string, any>;
+  borderWidth: number;
+  shadow: Record<string, any>;
+  memoryData?: Memory;
+};
+
+interface NetworkData {
+  nodes: DataSet<GraphNode>;
+  edges: DataSet<Record<string, any>>;
+}
+
 interface MemoryGraphProps {
   onNodeClick?: (memory: Memory) => void;
   height?: string;
@@ -83,7 +101,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   };
 
   // 构建网络图数据
-  const buildNetworkData = useCallback(() => {
+  const buildNetworkData = useCallback<() => NetworkData>(() => {
     setLoading(true);
     setError(null);
 
@@ -94,8 +112,8 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
       if (filteredMemories.length === 0) {
         setLoading(false);
         return {
-          nodes: new DataSet([]),
-          edges: new DataSet([]),
+          nodes: new DataSet<GraphNode>([]),
+          edges: new DataSet<Record<string, any>>([]),
         };
       }
 
@@ -109,7 +127,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
       }
 
       // 构建节点
-      const nodes = filteredMemories.map(memory => {
+      const nodes: GraphNode[] = filteredMemories.map((memory) => {
         const size = getNodeSize(memory.importance, memory.retrieval_count);
         const colors = getNodeColor(memory.importance);
         const shape = getNodeShape(memory.memory_type);
@@ -205,16 +223,16 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
       });
 
       return {
-        nodes: new DataSet(nodes),
-        edges: new DataSet(edges),
+        nodes: new DataSet<GraphNode>(nodes),
+        edges: new DataSet<Record<string, any>>(edges),
       };
     } catch (err: any) {
       console.error('❌ Failed to build network data:', err);
       setError(err.message || '构建图谱数据失败');
       message.error(`构建图谱数据失败: ${err.message || '未知错误'}`);
       return {
-        nodes: new DataSet([]),
-        edges: new DataSet([]),
+        nodes: new DataSet<GraphNode>([]),
+        edges: new DataSet<Record<string, any>>([]),
       };
     } finally {
       setLoading(false);
@@ -318,7 +336,10 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
       networkInstance.current.on('click', (params) => {
         if (params.nodes.length > 0) {
           const nodeId = params.nodes[0];
-          const node = data.nodes.get(nodeId);
+          const rawNode = data.nodes.get(nodeId);
+          const node = Array.isArray(rawNode)
+            ? ((rawNode[0] as GraphNode | undefined) ?? null)
+            : ((rawNode as GraphNode | undefined) ?? null);
           const memory = node?.memoryData;
 
           if (memory && onNodeClick) {

@@ -17,11 +17,23 @@ from ..models_memory import (
     SaveMemoryResponse,
 )
 from ..services.memory.memory_service import get_memory_service
+from ..services.memory.memory_hooks import get_memory_hooks
+from ..services.memory.chat_memory_middleware import get_chat_memory_middleware
+from ..routers import register_router
 
 logger = logging.getLogger(__name__)
 
 # 创建记忆API路由器
 memory_router = APIRouter(prefix="/mcp", tags=["memory"])
+
+register_router(
+    namespace="memory",
+    version="v1",
+    path="/mcp",
+    router=memory_router,
+    tags=["memory"],
+    description="Memory MCP 兼容接口",
+)
 
 
 @memory_router.post("/save_memory", response_model=Dict[str, Any])
@@ -197,3 +209,79 @@ async def auto_save_task_memory(task_data: Dict[str, Any] = Body(...)):
     except Exception as e:
         logger.error(f"Failed to auto-save task memory: {e}")
         raise HTTPException(status_code=500, detail=f"自动保存失败: {str(e)}")
+
+
+@memory_router.get("/memory/hooks/stats")
+async def get_hooks_stats():
+    """获取记忆钩子统计信息"""
+    try:
+        hooks = get_memory_hooks()
+        return hooks.get_stats()
+    except Exception as e:
+        logger.error(f"Error getting hooks stats: {e}")
+        raise HTTPException(status_code=500, detail=f"获取钩子统计失败: {str(e)}")
+
+
+@memory_router.post("/memory/hooks/enable")
+async def enable_hooks():
+    """启用记忆钩子"""
+    try:
+        hooks = get_memory_hooks()
+        hooks.enable()
+        return {"success": True, "message": "记忆钩子已启用"}
+    except Exception as e:
+        logger.error(f"Error enabling hooks: {e}")
+        raise HTTPException(status_code=500, detail=f"启用钩子失败: {str(e)}")
+
+
+@memory_router.post("/memory/hooks/disable")
+async def disable_hooks():
+    """禁用记忆钩子"""
+    try:
+        hooks = get_memory_hooks()
+        hooks.disable()
+        return {"success": True, "message": "记忆钩子已禁用"}
+    except Exception as e:
+        logger.error(f"Error disabling hooks: {e}")
+        raise HTTPException(status_code=500, detail=f"禁用钩子失败: {str(e)}")
+
+
+@memory_router.post("/memory/chat/save")
+async def save_chat_message(message_data: Dict[str, Any] = Body(...)):
+    """
+    保存聊天消息为记忆
+    
+    智能判断消息重要性并自动保存
+    """
+    try:
+        content = message_data.get("content", "")
+        role = message_data.get("role", "user")
+        session_id = message_data.get("session_id")
+        force_save = message_data.get("force_save", False)
+        
+        if not content:
+            raise HTTPException(status_code=400, detail="content是必需的")
+        
+        middleware = get_chat_memory_middleware()
+        memory_id = await middleware.process_message(
+            content=content,
+            role=role,
+            session_id=session_id,
+            force_save=force_save,
+        )
+        
+        if memory_id:
+            return {
+                "success": True,
+                "memory_id": memory_id,
+                "message": "消息已保存为记忆"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "消息未达到保存阈值"
+            }
+    
+    except Exception as e:
+        logger.error(f"Failed to save chat message: {e}")
+        raise HTTPException(status_code=500, detail=f"保存失败: {str(e)}")

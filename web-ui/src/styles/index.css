@@ -164,6 +164,19 @@ body,
   background: white;
 }
 
+.chat-input-main {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.chat-input-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 200px;
+}
+
 /* 消息样式 */
 .message {
   display: flex;

@@ -89,7 +89,7 @@ class UnifiedCache:
         self,
         l1_size: int = 100,
         l2_size: int = 500,
-        db_path: str = "unified_cache.db",
+        db_path: str = "data/databases/cache/unified_cache.db",
         default_ttl: int = 3600,
         enable_disk: bool = True,
     ):

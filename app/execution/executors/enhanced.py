@@ -253,9 +253,9 @@ def execute_task_with_multi_expert_evaluation(*args, **kwargs):
     result.metadata.update(
         {
             "expert_evaluations": {
-                "content_expert": {"overall_score": 0.85, "confidence_level": 0.9, "expert_role": "内容专家"},
-                "technical_expert": {"overall_score": 0.82, "confidence_level": 0.88, "expert_role": "技术专家"},
-                "domain_expert": {"overall_score": 0.87, "confidence_level": 0.92, "expert_role": "领域专家"},
+                "content_expert": {"overall_score": 0.85, "confidence_level": 0.9, "expert_role": "content expert"},
+                "technical_expert": {"overall_score": 0.82, "confidence_level": 0.88, "expert_role": "technical expert"},
+                "domain_expert": {"overall_score": 0.87, "confidence_level": 0.92, "expert_role": "domain expert"},
             },
             "consensus_confidence": 0.89,
             "disagreements": [],

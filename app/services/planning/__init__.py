@@ -1,13 +1,12 @@
-"""Planning and decomposition services.
+"""Legacy planning services placeholder.
 
-This package exposes key planning functions at package level to avoid
-absolute submodule imports that may interfere with Python's import system
-in certain environments.
+All legacy plan-generation utilities depended on the old tasks table and are
+no longer compatible with the PlanTree dialogue workflow.  Importing this
+package now surfaces a descriptive runtime error to steer callers toward the
+new `/chat` JSON-action interface.
 """
 
-from .planning import propose_plan_service, approve_plan_service  # re-export
-
-__all__ = [
-    "propose_plan_service",
-    "approve_plan_service",
-]
+raise RuntimeError(
+    "Planning services have been retired. Use the structured chat pipeline "
+    "(PlanRepository + PlanTree) instead of the legacy propose/approve APIs."
+)

@@ -1,5 +1,19 @@
 import React, { useRef, useEffect } from 'react';
-import { Input, Button, Space, Typography, Avatar, Divider, Empty, Alert, Tag, Tooltip, Switch } from 'antd';
+import {
+  App as AntdApp,
+  Input,
+  Button,
+  Space,
+  Typography,
+  Avatar,
+  Divider,
+  Empty,
+  Alert,
+  Tag,
+  Tooltip,
+  Switch,
+  Select,
+} from 'antd';
 import {
   SendOutlined,
   PaperClipOutlined,
@@ -11,12 +25,12 @@ import {
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import ChatMessage from '@components/chat/ChatMessage';
-import { SessionStorage } from '@/utils/sessionStorage';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
 
 const ChatMainArea: React.FC = () => {
+  const { message } = AntdApp.useApp();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<any>(null);
 
@@ -32,8 +46,12 @@ const ChatMainArea: React.FC = () => {
     setInputText,
     sendMessage,
     startNewSession,
-    restoreSession,
+    loadSessions,
+    loadChatHistory,
     toggleMemory,
+    defaultSearchProvider,
+    setDefaultSearchProvider,
+    isUpdatingProvider,
   } = useChatStore();
 
   const { selectedTask, currentPlan } = useTasksStore();
@@ -43,59 +61,28 @@ const ChatMainArea: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 初始化会话 - 从 localStorage 恢复所有会话
+  // 初始化会话：优先从后端加载列表
   useEffect(() => {
-    if (!currentSession) {
-      (async () => {
-        try {
-          // 使用 SessionStorage 工具类恢复所有会话ID
-          const allSessionIds = SessionStorage.getAllSessionIds();
-          const currentSessionId = SessionStorage.getCurrentSessionId();
-          
-          if (allSessionIds.length > 0 && currentSessionId) {
-            console.log('🔄 [ChatMainArea] 恢复所有会话:', allSessionIds);
-            
-            // 恢复所有会话（但不加载历史，只恢复当前会话的历史）
-            for (const sessionId of allSessionIds) {
-              if (sessionId !== currentSessionId) {
-                // 其他会话只创建空壳，不加载历史
-                const session = {
-                  id: sessionId,
-                  title: `对话 ${sessionId.slice(-8)}`,
-                  messages: [],
-                  created_at: new Date(),
-                  updated_at: new Date(),
-                  workflow_id: null,
-                  session_id: sessionId,
-                };
-                // 手动添加到sessions（避免触发localStorage更新）
-                const { sessions } = useChatStore.getState();
-                if (!sessions.find(s => s.id === sessionId)) {
-                  useChatStore.setState({ sessions: [...sessions, session] });
-                }
-              }
-            }
-            
-            // 恢复当前会话并加载历史
-            await restoreSession(currentSessionId, 'AI 任务编排助手');
-          } else if (currentSessionId) {
-            // 只有当前会话ID，恢复它
-            console.log('🔄 [ChatMainArea] 恢复当前会话:', currentSessionId);
-            await restoreSession(currentSessionId, 'AI 任务编排助手');
-          } else {
-            // 首次访问，创建新会话
-            console.log('🆕 [ChatMainArea] 创建新会话');
-            const session = startNewSession('AI 任务编排助手');
-            SessionStorage.setCurrentSessionId(session.id);
-          }
-        } catch (err) {
-          console.warn('[ChatMainArea] 恢复会话失败，创建新会话:', err);
-          const session = startNewSession('AI 任务编排助手');
-          SessionStorage.setCurrentSessionId(session.id);
+    (async () => {
+      if (currentSession) {
+        return;
+      }
+      try {
+        await loadSessions();
+        const selected = useChatStore.getState().currentSession;
+        if (selected) {
+          await loadChatHistory(selected.id);
+          return;
         }
-      })();
-    }
-  }, [currentSession, restoreSession, startNewSession]);
+        const session = startNewSession('AI 任务编排助手');
+        await loadChatHistory(session.id);
+      } catch (err) {
+        console.warn('[ChatMainArea] 会话初始化失败，尝试创建新会话:', err);
+        const session = startNewSession('AI 任务编排助手');
+        await loadChatHistory(session.id);
+      }
+    })();
+  }, [currentSession, loadSessions, loadChatHistory, startNewSession]);
 
   // 处理发送消息
   const handleSendMessage = async () => {
@@ -110,6 +97,25 @@ const ChatMainArea: React.FC = () => {
     await sendMessage(inputText.trim(), metadata);
     inputRef.current?.focus();
   };
+
+  const handleProviderChange = async (value: string | undefined) => {
+    if (!currentSession) {
+      return;
+    }
+    try {
+      await setDefaultSearchProvider((value as 'builtin' | 'perplexity') ?? null);
+    } catch (err) {
+      console.error('[ChatMainArea] 切换搜索来源失败:', err);
+      message.error('切换搜索来源失败，请稍后重试。');
+    }
+  };
+
+  const providerOptions = [
+    { label: '模型内置搜索', value: 'builtin' },
+    { label: 'Perplexity 搜索', value: 'perplexity' },
+  ];
+
+  const providerValue = defaultSearchProvider ?? undefined;
 
   // 处理键盘事件
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -338,8 +344,14 @@ const ChatMainArea: React.FC = () => {
         background: 'white',
         flexShrink: 0,
       }}>
-        <div style={{ maxWidth: 800, margin: '0 auto' }}>
-          <Space.Compact style={{ width: '100%' }}>
+        <div style={{ maxWidth: 840, margin: '0 auto' }}>
+          <div
+            style={{
+              display: 'flex',
+              gap: 12,
+              alignItems: 'stretch',
+            }}
+          >
             <TextArea
               ref={inputRef}
               value={inputText}
@@ -350,26 +362,46 @@ const ChatMainArea: React.FC = () => {
               disabled={isProcessing}
               style={{
                 resize: 'none',
-                borderRadius: '12px 0 0 12px',
+                borderRadius: 12,
                 fontSize: 14,
+                flex: 1,
               }}
             />
-            <Button
-              type="primary"
-              icon={<SendOutlined />}
-              onClick={handleSendMessage}
-              disabled={!inputText.trim() || isProcessing}
-              loading={isProcessing}
+            <div
               style={{
-                height: 'auto',
-                borderRadius: '0 12px 12px 0',
-                paddingLeft: 16,
-                paddingRight: 16,
+                width: 220,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
               }}
             >
-              发送
-            </Button>
-          </Space.Compact>
+              <Select
+                size="small"
+                value={providerValue}
+                placeholder="选择网络搜索来源"
+                options={providerOptions}
+                allowClear
+                onChange={handleProviderChange}
+                disabled={!currentSession || isProcessing}
+                loading={isUpdatingProvider}
+              />
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                onClick={handleSendMessage}
+                disabled={!inputText.trim() || isProcessing}
+                loading={isProcessing}
+                style={{
+                  height: 'auto',
+                  borderRadius: 12,
+                  paddingLeft: 16,
+                  paddingRight: 16,
+                }}
+              >
+                发送
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

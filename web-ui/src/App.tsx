@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { message, Layout } from 'antd';
+import { App as AntdApp, Layout } from 'antd';
 import { useSystemStore } from '@store/system';
 import { checkApiHealth } from '@api/client';
 import AppHeader from '@components/layout/AppHeader';
@@ -15,6 +15,7 @@ import System from '@pages/System';
 import { ENV } from '@/config/env';
 
 function App() {
+  const { message } = AntdApp.useApp();
   const { setSystemStatus, setApiConnected } = useSystemStore();
 
   // 初始化系统状态检查

@@ -13,10 +13,11 @@ class TaskCreate(BaseModel):
 
 
 class Task(BaseModel):
+    """Legacy task model retained for backward compatibility."""
+
     id: int
     name: str
-    status: str
-    priority: Optional[int] = None
+    metadata: Dict[str, Any] = {}
     parent_id: Optional[int] = None
     path: Optional[str] = None
     depth: Optional[int] = None
@@ -30,8 +31,8 @@ class Task(BaseModel):
 
 class PlanTaskIn(BaseModel):
     name: str
-    prompt: Optional[str] = None
-    priority: Optional[int] = None
+    instruction: Optional[str] = None
+    metadata: Dict[str, Any] = {}
 
 
 class PlanIn(BaseModel):

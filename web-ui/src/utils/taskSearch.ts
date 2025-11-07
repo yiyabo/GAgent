@@ -1,4 +1,5 @@
-import { tasksApi } from '@api/tasks';
+import { planTreeApi } from '@api/planTree';
+import { planTreeToTasks } from '@utils/planTree';
 import type { Task } from '@/types';
 
 /**
@@ -12,7 +13,8 @@ export class SessionTaskSearch {
   static async searchCurrentSessionTasks(
     query: string,
     currentSession?: { session_id?: string | null },
-    currentWorkflowId?: string | null
+    currentWorkflowId?: string | null,
+    currentPlanId?: number | null
   ): Promise<{
     tasks: Task[];
     total: number;
@@ -34,21 +36,19 @@ export class SessionTaskSearch {
         是否有会话信息: !!(scope.session_id || scope.workflow_id)
       });
 
-      // 如果没有会话或工作流信息，返回空结果
-      if (!scope.session_id && !scope.workflow_id) {
-        console.warn('🔒 TaskSearch - 无会话或工作流信息，返回空结果');
+      if (!currentPlanId) {
+        console.warn('🔒 TaskSearch - 缺少 planId，返回空结果');
         return {
           tasks: [],
           total: 0,
-          summary: '🔒 当前会话未关联任务，无法搜索'
+          summary: '🔒 当前会话未绑定计划，无法搜索'
         };
       }
 
-      // 由于后端暂无搜索端点，使用getAllTasks然后本地过滤
-      const allTasks = await tasksApi.getAllTasks(scope);
+      const tree = await planTreeApi.getPlanTree(currentPlanId);
+      const allTasks = planTreeToTasks(tree);
       console.log('🔍 TaskSearch - 获取到的所有任务:', allTasks.length, '条');
-      console.log('🔍 TaskSearch - 前3个任务示例:', allTasks.slice(0, 3));
-      
+
       const tasks = allTasks.filter(task => 
         task.name.toLowerCase().includes(query.toLowerCase()) ||
         (task.task_type && task.task_type.toLowerCase().includes(query.toLowerCase()))
@@ -102,28 +102,23 @@ export class SessionTaskSearch {
    */
   static async getCurrentRootTask(
     currentSession?: { session_id?: string | null },
-    currentWorkflowId?: string | null
+    currentWorkflowId?: string | null,
+    currentPlanId?: number | null
   ): Promise<Task | null> {
     try {
-      const scope = {
-        session_id: currentSession?.session_id || undefined,
-        workflow_id: currentWorkflowId || undefined,
-      };
-
-      if (!scope.session_id && !scope.workflow_id) {
+      if (!currentPlanId) {
         return null;
       }
 
-      const allTasks = await tasksApi.getAllTasks(scope);
-      
-      // 优先查找有明确task_type为root的任务
-      const typedRoot = allTasks.find(t => t.task_type === 'root');
+      const tree = await planTreeApi.getPlanTree(currentPlanId);
+      const allTasks = planTreeToTasks(tree);
+
+      const typedRoot = allTasks.find((t) => t.task_type === 'root');
       if (typedRoot) return typedRoot;
-      
-      // 其次查找parent_id为null的顶层任务
-      const topLevelRoot = allTasks.find(t => t.parent_id == null);
+
+      const topLevelRoot = allTasks.find((t) => t.parent_id == null);
       return topLevelRoot || null;
-      
+
     } catch (error) {
       console.error('Get current root task failed:', error);
       return null;

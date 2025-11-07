@@ -69,7 +69,7 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
             x: 2,
             y: 2,
           },
-          title: `任务：${task.name}\n状态：${task.status}\n类型：${task.task_type}\n优先级：${task.priority ?? '未设定'}`,
+          title: `任务：${task.name}\n状态：${task.status}\n类型：${task.task_type}`,
         };
       })
     );

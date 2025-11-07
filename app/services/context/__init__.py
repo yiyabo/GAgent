@@ -1,5 +1,11 @@
-"""Context building and retrieval subpackage."""
+"""Legacy context utilities placeholder.
 
-from .context import gather_context  # noqa: F401
+The new workflow embeds PlanTree information directly in prompts, making the
+old context aggregation stack obsolete.  Importing this module now raises a
+runtime error to prevent accidental use of outdated logic.
+"""
 
-__all__ = ["gather_context"]
+raise RuntimeError(
+    "Context utilities have been retired. Use the PlanTree prompt embedding "
+    "workflow instead of legacy gather_context APIs."
+)
