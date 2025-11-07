@@ -17,6 +17,8 @@ interface State {
  * React错误边界组件
  * 捕获子组件树中的JavaScript错误,记录错误,并显示备用UI
  */
+const IS_DEV = import.meta.env.DEV;
+
 class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props);
@@ -86,7 +88,7 @@ class ErrorBoundary extends Component<Props, State> {
             ]}
           >
             {/* 开发环境下显示错误详情 */}
-            {process.env.NODE_ENV === 'development' && this.state.error && (
+            {IS_DEV && this.state.error && (
               <div
                 style={{
                   textAlign: 'left',

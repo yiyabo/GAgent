@@ -2,12 +2,21 @@
 export interface Task {
   id: number;
   name: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  priority?: number;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
   parent_id?: number;
   path?: string;
   depth?: number;
   task_type?: 'root' | 'composite' | 'atomic';
+  plan_id?: number;
+  instruction?: string | null;
+  dependencies?: number[];
+  position?: number;
+  metadata?: Record<string, any>;
+  context_combined?: string | null;
+  context_sections?: Array<Record<string, any>>;
+  context_meta?: Record<string, any>;
+  context_updated_at?: string | null;
+  execution_result?: string | null;
   created_at?: string;
   updated_at?: string;
   session_id?: string | null;
@@ -43,6 +52,99 @@ export interface PlanProposal {
   sections?: number;
   style?: string;
   notes?: string;
+}
+
+export interface PlanSummary {
+  id: number;
+  title: string;
+  description?: string | null;
+  task_count: number;
+  updated_at?: string | null;
+  metadata?: Record<string, any>;
+}
+
+export interface PlanNodeResponse {
+  id: number;
+  plan_id: number;
+  name: string;
+  status?: string;
+  instruction?: string | null;
+  parent_id?: number | null;
+  position?: number;
+  depth?: number;
+  path?: string;
+  metadata?: Record<string, any>;
+  dependencies?: number[];
+  context_combined?: string | null;
+  context_sections?: Array<Record<string, any>>;
+  context_meta?: Record<string, any>;
+  context_updated_at?: string | null;
+  execution_result?: string | null;
+}
+
+export interface PlanTreeResponse {
+  id: number;
+  title: string;
+  description?: string | null;
+  metadata?: Record<string, any>;
+  nodes: Record<string, PlanNodeResponse>;
+  adjacency: Record<string, number[]>;
+}
+
+export interface PlanResultItem {
+  task_id: number;
+  name?: string | null;
+  status?: Task['status'] | string | null;
+  content?: string | null;
+  notes?: string[];
+  metadata?: Record<string, any>;
+  raw?: Record<string, any> | null;
+}
+
+export interface PlanResultsResponse {
+  plan_id: number;
+  total: number;
+  items: PlanResultItem[];
+}
+
+export interface PlanExecutionSummary {
+  plan_id: number;
+  total_tasks: number;
+  completed: number;
+  failed: number;
+  skipped: number;
+  running: number;
+  pending: number;
+}
+
+export type WebSearchProvider = 'builtin' | 'perplexity';
+
+export interface ChatSessionSettings {
+  default_search_provider?: WebSearchProvider | null;
+}
+
+// 聊天会话摘要（来自后端）
+export interface ChatSessionSummary {
+  id: string;
+  name?: string | null;
+  name_source?: string | null;
+  is_user_named?: boolean | null;
+  plan_id?: number | null;
+  plan_title?: string | null;
+  current_task_id?: number | null;
+  current_task_name?: string | null;
+  last_message_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  is_active: boolean;
+  settings?: ChatSessionSettings | null;
+}
+
+export interface ChatSessionsResponse {
+  sessions: ChatSessionSummary[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 // 评估相关类型
@@ -85,6 +187,154 @@ export interface DAGEdge {
 }
 
 // 聊天相关类型
+export type ChatActionStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface ChatActionSummary {
+  kind?: string | null;
+  name?: string | null;
+  parameters?: Record<string, any> | null;
+  order?: number | null;
+  blocking?: boolean | null;
+  status?: ChatActionStatus | null;
+  success?: boolean | null;
+  message?: string | null;
+  details?: Record<string, any> | null;
+}
+
+export type PlanSyncEventType =
+  | 'plan_created'
+  | 'plan_deleted'
+  | 'plan_updated'
+  | 'task_changed'
+  | 'plan_jobs_completed'
+  | 'session_deleted'
+  | 'session_archived';
+
+export interface PlanSyncEventDetail {
+  type: PlanSyncEventType;
+  plan_id: number | null;
+  plan_title?: string | null;
+  job_id?: string | null;
+  job_type?: string | null;
+  status?: string | null;
+  session_id?: string | null;
+  tracking_id?: string | null;
+  source?: string | null;
+  triggered_at?: string;
+  raw?: unknown;
+}
+
+
+export interface ToolResultItem {
+  title?: string | null;
+  url?: string | null;
+  snippet?: string | null;
+  source?: string | null;
+}
+
+export interface JobLogEvent {
+  timestamp?: string | null;
+  level: string;
+  message: string;
+  metadata?: Record<string, any>;
+}
+
+export interface ActionLogEntry {
+  id?: number;
+  job_id?: string;
+  job_type?: string | null;
+  plan_id?: number | null;
+  sequence: number;
+  action_kind: string;
+  action_name: string;
+  status: string;
+  success?: boolean | null;
+  message?: string | null;
+  details?: Record<string, any> | null;
+  session_id?: string | null;
+  user_message?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface DecompositionJobStatus {
+  job_id: string;
+  status: string;
+  plan_id?: number | null;
+  task_id?: number | null;
+  mode?: string | null;
+  job_type?: string | null;
+  result?: Record<string, any> | null;
+  stats?: Record<string, any> | null;
+  params?: Record<string, any> | null;
+  metadata?: Record<string, any> | null;
+  error?: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  logs?: JobLogEvent[];
+  action_logs?: ActionLogEntry[];
+  action_cursor?: string | null;
+}
+
+export interface ToolResultPayload {
+  name?: string | null;
+  summary?: string | null;
+  parameters?: Record<string, any> | null;
+  result?: {
+    query?: string;
+    response?: string;
+    answer?: string;
+    results?: ToolResultItem[] | null;
+    error?: string;
+    success?: boolean;
+    search_engine?: string;
+    total_results?: number;
+    [key: string]: any;
+  } | null;
+}
+
+export interface ChatResponseMetadata {
+  status?: ChatActionStatus;
+  tracking_id?: string;
+  plan_id?: number | null;
+  plan_title?: string | null;
+  plan_outline?: string | null;
+  plan_persisted?: boolean;
+  success?: boolean;
+  errors?: string[];
+  raw_actions?: any[];
+  agent_workflow?: boolean;
+  total_tasks?: number;
+  dag_structure?: any;
+  finished_at?: string | null;
+  workflow_id?: string | null;
+  task_id?: number | null;
+  task_name?: string | null;
+  session_id?: string;
+  tool_results?: ToolResultPayload[] | null;
+  [key: string]: any;
+}
+
+export interface ChatResponsePayload {
+  response: string;
+  suggestions?: string[];
+  actions?: ChatActionSummary[];
+  metadata?: ChatResponseMetadata;
+}
+
+export interface ActionStatusResponse {
+  tracking_id: string;
+  status: ChatActionStatus;
+  plan_id?: number | null;
+  actions?: ChatActionSummary[];
+  result?: Record<string, any> | null;
+  errors?: string[];
+  created_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
 export interface ChatMessage {
   id: string;
   type: 'user' | 'assistant' | 'system';
@@ -92,22 +342,37 @@ export interface ChatMessage {
   timestamp: Date;
   metadata?: {
     task_id?: number;
-    plan_title?: string;
-    task_name?: string;
-    workflow_id?: string;
+    plan_title?: string | null;
+    task_name?: string | null;
+    workflow_id?: string | null;
     session_id?: string;
+    plan_id?: number | null;
+    status?: ChatActionStatus;
+    tracking_id?: string;
+    errors?: string[];
+    raw_actions?: any[];
+    actions?: ChatActionSummary[];
+    action_list?: ChatActionSummary[];
+    actions_summary?: Array<{
+      order?: number | null;
+      kind?: string | null;
+      name?: string | null;
+      success?: boolean | null;
+      message?: string | null;
+    }>;
     code_blocks?: string[];
     attachments?: string[];
-    actions?: Array<{
-      type: string;
-      data: any;
-    }>;
-    // 任务搜索相关
     task_search_result?: boolean;
     tasks_found?: number;
-    // 工具执行相关
     tool_executed?: boolean;
     tool_type?: string;
+    tool_results?: ToolResultPayload[] | null;
+    type?: string;
+    job?: DecompositionJobStatus | null;
+    job_id?: string;
+    job_status?: string;
+    job_logs?: JobLogEvent[];
+    [key: string]: any;
   };
 }
 
@@ -119,6 +384,39 @@ export interface ChatSession {
   updated_at: Date;
   workflow_id?: string | null;
   session_id?: string | null;
+  plan_id?: number | null;
+  plan_title?: string | null;
+  current_task_id?: number | null;
+  current_task_name?: string | null;
+  last_message_at?: Date | null;
+  is_active?: boolean;
+  defaultSearchProvider?: WebSearchProvider | null;
+  titleSource?: string | null;
+  isUserNamed?: boolean | null;
+}
+
+export interface ChatSessionUpdatePayload {
+  name?: string | null;
+  is_active?: boolean | null;
+  plan_id?: number | null;
+  plan_title?: string | null;
+  current_task_id?: number | null;
+  current_task_name?: string | null;
+  settings?: ChatSessionSettings | null;
+}
+
+export interface ChatSessionAutoTitleResult {
+  session_id: string;
+  title: string;
+  source: string;
+  updated: boolean;
+  previous_title?: string | null;
+  skipped_reason?: string | null;
+}
+
+export interface ChatSessionAutoTitleBulkResponse {
+  results: ChatSessionAutoTitleResult[];
+  processed: number;
 }
 
 // WebSocket 消息类型
@@ -147,6 +445,33 @@ export interface SystemStatus {
     memory: number;
     api_calls_per_minute: number;
   };
+}
+
+export interface ChatStatusResponse {
+  status: string;
+  llm: {
+    provider?: string | null;
+    model?: string | null;
+    api_url?: string | null;
+    has_api_key: boolean;
+    mock_mode: boolean;
+  };
+  decomposer: {
+    provider?: string | null;
+    model?: string | null;
+    auto_on_create: boolean;
+    max_depth: number;
+    total_node_budget: number;
+  };
+  executor: {
+    provider?: string | null;
+    model?: string | null;
+    serial: boolean;
+    use_context: boolean;
+    max_tasks?: number | null;
+  };
+  features: Record<string, any>;
+  warnings: string[];
 }
 
 // 工具调用相关类型

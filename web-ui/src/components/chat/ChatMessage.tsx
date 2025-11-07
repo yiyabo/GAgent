@@ -8,11 +8,14 @@ import {
   ReloadOutlined,
   DatabaseOutlined,
 } from '@ant-design/icons';
-import { ChatMessage as ChatMessageType } from '@/types';
+import { ChatMessage as ChatMessageType, ToolResultPayload } from '@/types';
 import { useChatStore } from '@store/chat';
 import ReactMarkdown from 'markdown-to-jsx';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import ToolResultCard from './ToolResultCard';
+import JobLogPanel from './JobLogPanel';
+import type { DecompositionJobStatus } from '@/types';
 
 const { Text } = Typography;
 
@@ -169,15 +172,94 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const renderMetadata = () => {
     if (!metadata) return null;
 
+    const planTitle = metadata.plan_title;
+    const planId = metadata.plan_id;
+    if (!planTitle && (planId === undefined || planId === null)) {
+      return null;
+    }
+
     return (
       <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
-        {metadata.task_id && (
-          <div>关联任务: #{metadata.task_id}</div>
-        )}
-        {metadata.plan_title && (
-          <div>关联计划: {metadata.plan_title}</div>
-        )}
+        <div>
+          关联计划:
+          {planTitle ? ` ${planTitle}` : ''}
+          {planId !== undefined && planId !== null ? ` (#${planId})` : ''}
+        </div>
       </div>
+    );
+  };
+
+  const renderToolResults = () => {
+    const toolResults = Array.isArray(metadata?.tool_results)
+      ? (metadata?.tool_results as ToolResultPayload[])
+      : [];
+    if (!toolResults.length) {
+      return null;
+    }
+    return (
+      <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 12 }}>
+        {toolResults.map((result, index) => (
+          <ToolResultCard key={`${result.name ?? 'tool'}_${index}`} payload={result} defaultOpen={index === 0} />
+        ))}
+      </Space>
+    );
+  };
+
+  const renderActionSummary = () => {
+    const summaryItems = Array.isArray(metadata?.actions_summary)
+      ? (metadata?.actions_summary as Array<Record<string, any>>)
+      : [];
+    if (!summaryItems.length) {
+      return null;
+    }
+    return (
+      <div style={{ marginTop: 12 }}>
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Text strong>动作摘要</Text>
+          <div>
+            {summaryItems.map((item, index) => {
+              const order = typeof item.order === 'number' ? item.order : index + 1;
+              const success = item.success;
+              const icon = success === true ? '✅' : success === false ? '⚠️' : '⏳';
+              const kind = typeof item.kind === 'string' ? item.kind : 'action';
+              const name = typeof item.name === 'string' && item.name ? `/${item.name}` : '';
+              const messageText =
+                typeof item.message === 'string' && item.message.trim().length > 0
+                  ? ` - ${item.message}`
+                  : '';
+              return (
+                <div key={`${order}_${kind}_${name}`} style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>
+                  <Text>
+                    {icon} 步骤 {order}: {kind}
+                    {name}
+                    {messageText}
+                  </Text>
+                </div>
+              );
+            })}
+          </div>
+        </Space>
+      </div>
+    );
+  };
+
+  const renderJobLogPanel = () => {
+    if (!metadata || metadata.type !== 'job_log') {
+      return null;
+    }
+    const jobMetadata = (metadata.job as DecompositionJobStatus | null) ?? null;
+    const jobId: string | undefined = metadata.job_id ?? jobMetadata?.job_id;
+    if (!jobId) {
+      return null;
+    }
+    return (
+      <JobLogPanel
+        jobId={jobId}
+        initialJob={jobMetadata}
+        targetTaskName={metadata.target_task_name ?? null}
+        planId={metadata.plan_id ?? null}
+        jobType={metadata.job_type ?? jobMetadata?.job_type ?? null}
+      />
     );
   };
 
@@ -188,6 +270,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
       <div className="message-content">
         <div className="message-bubble">
           {renderContent()}
+          {renderActionSummary()}
+          {renderToolResults()}
+          {renderJobLogPanel()}
           {renderMetadata()}
         </div>
         

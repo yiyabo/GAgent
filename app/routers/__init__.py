@@ -1,69 +1,35 @@
-"""
-API Router Module
+"""API router registration utilities."""
 
-This package contains all FastAPI route definitions, organized by functional modules:
-- task_routes: Task management endpoints
-- plan_routes: Plan management endpoints  
-- decomposition_routes: Recursive decomposition endpoints
-- evaluation_routes: Evaluation system endpoints
-- tool_routes: Tool integration endpoints
-- context_routes: Context management endpoints
-- execution_routes: Execution endpoints
-- async_execution_routes: Asynchronous execution endpoints
-- benchmark_routes: Benchmark endpoints
-- smart_assembly_routes: Smart assembly endpoints
-- vector_routes: Vector storage and search endpoints
-- system_health_routes: System monitoring and health check endpoints
-"""
+import importlib
+from typing import Iterable
 
-# Lazy import to avoid circular dependencies
+from .registry import RouterRegistry, register_router, routers_for_fastapi
+
+_DEFAULT_MODULES: Iterable[str] = (
+    "app.routers.chat_routes",
+    "app.routers.system_health_routes",
+    "app.routers.plan_routes",
+    "app.routers.job_routes",
+    "app.routers.execution_routes",
+)
+
+
+def _ensure_default_routes_loaded() -> None:
+    for module_name in _DEFAULT_MODULES:
+        importlib.import_module(module_name)
+
+
+_ensure_default_routes_loaded()
+
+
 def get_all_routers():
-    """Get all routers"""
-    from .task_routes import router as task_router
-    from .plan_routes import router as plan_router
-    from .decomposition_routes import router as decomposition_router
-    from .evaluation_routes import router as evaluation_router
-    from .tool_routes import router as tool_router
-    from .context_routes import router as context_router
-    from .execution_routes import router as execution_router
-    from .async_execution_routes import router as async_execution_router
-    from .benchmark_routes import router as benchmark_router
-    from .smart_assembly_routes import router as smart_assembly_router
-    from .vector_routes import router as vector_router
-    from .system_health_routes import router as system_health_router
-    from .chat_routes import router as chat_router
-    from .agent_routes import router as agent_router
-    from .session_routes import router as session_router
-    
-    return [
-        task_router,
-        plan_router,
-        decomposition_router,
-        evaluation_router,
-        tool_router,
-        context_router,
-        execution_router,
-        async_execution_router,
-        benchmark_router,
-        smart_assembly_router,
-        vector_router,
-        system_health_router,
-        chat_router,
-        agent_router,
-        session_router,
-    ]
+    """Backwards compatibility: returns registered routers."""
+    return routers_for_fastapi()
+
 
 __all__ = [
-    "task_router",
-    "plan_router", 
-    "decomposition_router",
-    "evaluation_router",
-    "tool_router",
-    "context_router",
-    "execution_router",
-    "async_execution_router",
-    "benchmark_router",
-    "smart_assembly_router",
-    "vector_router",
-    "system_health_router",
+    "RouterRegistry",
+    "register_router",
+    "routers_for_fastapi",
+    "get_all_routers",
 ]

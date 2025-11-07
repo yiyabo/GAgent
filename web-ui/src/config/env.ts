@@ -42,9 +42,9 @@ if (ENV.isDevelopment) {
 // 类型声明（为了 TypeScript 类型检查）
 declare global {
   interface ImportMetaEnv {
-    readonly VITE_API_BASE_URL: string;
-    readonly VITE_WS_BASE_URL: string;
-    readonly VITE_DEV_SERVER_PORT: number;
+    readonly VITE_API_BASE_URL?: string;
+    readonly VITE_WS_BASE_URL?: string;
+    readonly VITE_DEV_SERVER_PORT?: string;
   }
 
   interface ImportMeta {

@@ -1,8 +1,4 @@
-"""Abstract interfaces for the application layers.
-
-- LLMProvider: abstraction for LLM clients (chat, ping, config)
-- TaskRepository: abstraction for task persistence and queries
-"""
+"""Abstract interfaces for the application layers."""
 
 from __future__ import annotations
 
@@ -30,7 +26,18 @@ class LLMProvider(ABC):
 
 
 class TaskRepository(ABC):
-    """Abstract interface for task persistence and queries."""
+    """Deprecated legacy task repository interface.
+
+    The dialogue pipeline now relies on PlanTree persistence through
+    :class:`app.repository.plan_repository.PlanRepository`.  Instantiating this
+    class (or subclasses) raises ``RuntimeError`` to ensure legacy code migrates.
+    """
+
+    def __new__(cls, *args, **kwargs):  # pragma: no cover - defensive
+        raise RuntimeError(
+            "TaskRepository is deprecated. Use PlanRepository and PlanTree-based "
+            "APIs instead of the legacy tasks table."
+        )
 
     # --- mutations ---
     @abstractmethod

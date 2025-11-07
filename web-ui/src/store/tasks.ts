@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
-import { Task } from '@/types';
+import { PlanResultItem, PlanSyncEventDetail, Task } from '@/types';
+import { queryClient } from '@/queryClient';
+import { isPlanSyncEventDetail } from '@utils/planSyncEvents';
 
 // 临时类型定义，解决编译错误
 interface TaskStats {
@@ -29,9 +31,12 @@ interface TasksState {
   // 任务数据
   tasks: Task[];
   selectedTask: Task | null;
+  selectedTaskId: number | null;
   taskStats: TaskStats | null;
   currentPlan: string | null;
   currentWorkflowId: string | null;
+  isTaskDrawerOpen: boolean;
+  taskResultCache: Record<number, PlanResultItem | null>;
   
   // DAG可视化数据
   dagNodes: DAGNode[];
@@ -51,6 +56,11 @@ interface TasksState {
   updateTask: (id: number, updates: Partial<Task>) => void;
   removeTask: (id: number) => void;
   setSelectedTask: (task: Task | null) => void;
+  openTaskDrawer: (task: Task | null) => void;
+  openTaskDrawerById: (taskId: number) => void;
+  closeTaskDrawer: () => void;
+  setTaskResult: (taskId: number, result: PlanResultItem | null) => void;
+  clearTaskResultCache: (taskId?: number) => void;
   setCurrentPlan: (planTitle: string | null) => void;
   setCurrentWorkflowId: (workflowId: string | null) => void;
   setTaskStats: (stats: TaskStats | null) => void;
@@ -80,9 +90,12 @@ export const useTasksStore = create<TasksState>()(
     // 初始状态
     tasks: [],
     selectedTask: null,
+    selectedTaskId: null,
     taskStats: null,
     currentPlan: null,
     currentWorkflowId: null,
+    isTaskDrawerOpen: false,
+    taskResultCache: {},
     dagNodes: [],
     dagEdges: [],
     dagLayout: 'hierarchical',
@@ -97,11 +110,18 @@ export const useTasksStore = create<TasksState>()(
       set(() => {
         const { nodes, edges } = generateDagData(tasks);
         const rootTask = tasks.find((task) => task.task_type === 'root');
+        const selectedId = get().selectedTaskId;
+        const matchedSelection =
+          selectedId != null ? tasks.find((task) => task.id === selectedId) ?? null : null;
+        const nextSelectedTask = matchedSelection ?? null;
+        const nextSelectedId = matchedSelection ? selectedId : null;
         return {
           tasks,
           dagNodes: nodes,
           dagEdges: edges,
           currentPlan: rootTask?.name ?? null,
+          selectedTask: nextSelectedTask,
+          selectedTaskId: nextSelectedId,
         };
       });
     },
@@ -119,13 +139,14 @@ export const useTasksStore = create<TasksState>()(
         task.id === id ? { ...task, ...updates } : task
       );
       const { nodes, edges } = generateDagData(tasks);
+      const isSelected = state.selectedTaskId === id;
       return { 
         tasks, 
         dagNodes: nodes, 
         dagEdges: edges,
-        selectedTask: state.selectedTask?.id === id 
-          ? { ...state.selectedTask, ...updates } 
-          : state.selectedTask
+        selectedTask: isSelected && state.selectedTask
+          ? { ...state.selectedTask, ...updates }
+          : state.selectedTask,
       };
     }),
 
@@ -133,16 +154,83 @@ export const useTasksStore = create<TasksState>()(
     removeTask: (id) => set((state) => {
       const tasks = state.tasks.filter((task) => task.id !== id);
       const { nodes, edges } = generateDagData(tasks);
+      const removingSelected = state.selectedTaskId === id;
       return { 
         tasks, 
         dagNodes: nodes, 
         dagEdges: edges,
-        selectedTask: state.selectedTask?.id === id ? null : state.selectedTask
+        selectedTask: removingSelected ? null : state.selectedTask,
+        selectedTaskId: removingSelected ? null : state.selectedTaskId,
       };
     }),
 
     // 设置选中任务
-    setSelectedTask: (task) => set({ selectedTask: task }),
+    setSelectedTask: (task) =>
+      set({
+        selectedTask: task,
+        selectedTaskId: task?.id ?? null,
+      }),
+
+    openTaskDrawer: (task) =>
+      set((state) => {
+        if (!task) {
+          return {
+            isTaskDrawerOpen: false,
+            selectedTask: null,
+            selectedTaskId: null,
+          };
+        }
+        return {
+          isTaskDrawerOpen: true,
+          selectedTask: task,
+          selectedTaskId: task.id,
+        };
+      }),
+
+    openTaskDrawerById: (taskId) =>
+      set((state) => {
+        const task =
+          state.tasks.find((item) => item.id === taskId) ??
+          (state.selectedTask?.id === taskId ? state.selectedTask : null);
+        return {
+          isTaskDrawerOpen: true,
+          selectedTask: task ?? null,
+          selectedTaskId: taskId,
+        };
+      }),
+
+    closeTaskDrawer: () =>
+      set({
+        isTaskDrawerOpen: false,
+        selectedTaskId: null,
+      }),
+
+    setTaskResult: (taskId, result) =>
+      set((state) => {
+        const nextCache = { ...state.taskResultCache };
+        if (result == null) {
+          delete nextCache[taskId];
+        } else {
+          nextCache[taskId] = result;
+        }
+        return { taskResultCache: nextCache };
+      }),
+
+    clearTaskResultCache: (taskId) =>
+      set((state) => {
+        if (typeof taskId === 'number') {
+          if (!(taskId in state.taskResultCache)) {
+            return {};
+          }
+          const nextCache = { ...state.taskResultCache };
+          delete nextCache[taskId];
+          return { taskResultCache: nextCache };
+        }
+        if (Object.keys(state.taskResultCache).length === 0) {
+          return {};
+        }
+        return { taskResultCache: {} };
+      }),
 
     // 设置当前计划
     setCurrentPlan: (planTitle) => set({ currentPlan: planTitle }),
@@ -241,4 +329,102 @@ function generateDagData(tasks: Task[]): { nodes: DAGNode[]; edges: DAGEdge[] } 
   });
 
   return { nodes, edges };
+}
+
+const invalidatePlanCollections = () => {
+  queryClient.invalidateQueries({ queryKey: ['planTree', 'summaries'], exact: false });
+  queryClient.invalidateQueries({ queryKey: ['planTree', 'titles'], exact: false });
+  void queryClient.refetchQueries({
+    queryKey: ['planTree', 'summaries'],
+    exact: false,
+    type: 'active',
+  });
+  void queryClient.refetchQueries({
+    queryKey: ['planTree', 'titles'],
+    exact: false,
+    type: 'active',
+  });
+};
+
+const matchesPlanScopedKey = (queryKey: unknown, planId: number) => {
+  if (!Array.isArray(queryKey) || queryKey.length < 2) {
+    return false;
+  }
+  if (queryKey[0] !== 'planTree') {
+    return false;
+  }
+  const scope = queryKey[1];
+  switch (scope) {
+    case 'tasks':
+    case 'results':
+    case 'execution':
+    case 'taskResult':
+    case 'full':
+    case 'subgraph':
+      return queryKey[2] === planId;
+    default:
+      return false;
+  }
+};
+
+const invalidatePlanScopedQueries = (planId: number) => {
+  const predicate = ({ queryKey }: { queryKey: unknown }) =>
+    matchesPlanScopedKey(queryKey, planId);
+  queryClient.invalidateQueries({
+    predicate: ({ queryKey }) => matchesPlanScopedKey(queryKey, planId),
+  });
+  void queryClient.refetchQueries({
+    predicate,
+    type: 'active',
+  });
+};
+
+const removePlanScopedQueries = (planId: number) => {
+  queryClient.removeQueries({
+    predicate: ({ queryKey }) => matchesPlanScopedKey(queryKey, planId),
+  });
+};
+
+declare global {
+  interface Window {
+    __gaPlanSyncListenerRegistered__?: boolean;
+  }
+}
+
+if (typeof window !== 'undefined' && !window.__gaPlanSyncListenerRegistered__) {
+  const handlePlanSyncEvent = (event: CustomEvent<PlanSyncEventDetail>) => {
+    const detail = event.detail;
+    if (!isPlanSyncEventDetail(detail)) {
+      return;
+    }
+    switch (detail.type) {
+      case 'plan_created':
+      case 'plan_updated': {
+        invalidatePlanCollections();
+        if (detail.plan_id != null) {
+          invalidatePlanScopedQueries(detail.plan_id);
+        }
+        break;
+      }
+      case 'plan_deleted': {
+        invalidatePlanCollections();
+        if (detail.plan_id != null) {
+          removePlanScopedQueries(detail.plan_id);
+        }
+        break;
+      }
+      case 'task_changed':
+      case 'plan_jobs_completed': {
+        if (detail.plan_id != null) {
+          invalidatePlanScopedQueries(detail.plan_id);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  };
+
+  window.addEventListener('tasksUpdated', handlePlanSyncEvent as EventListener);
+  window.__gaPlanSyncListenerRegistered__ = true;
 }

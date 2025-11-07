@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Card, Typography, Button, Space, Badge, Tooltip, Divider, Select, Empty } from 'antd';
+import { Card, Typography, Button, Space, Badge, Tooltip, Select, Empty } from 'antd';
 import {
   NodeIndexOutlined,
   FullscreenOutlined,
@@ -8,84 +8,112 @@ import {
   EyeOutlined,
   EyeInvisibleOutlined,
 } from '@ant-design/icons';
-import { usePlanTitles, usePlanTasks } from '@hooks/usePlans';
+import { usePlanTasks } from '@hooks/usePlans';
 import PlanTreeVisualization from '@components/dag/PlanTreeVisualization';
-import type { PlanTaskNode } from '@/types';
+import type { PlanSyncEventDetail, PlanTaskNode } from '@/types';
 import { useTasksStore } from '@store/tasks';
 import { useChatStore } from '@store/chat';
+import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 
 const { Title, Text } = Typography;
 
 const DAGSidebar: React.FC = () => {
-  const { setCurrentPlan } = useTasksStore((state) => ({
+  const { setCurrentPlan, setTasks, openTaskDrawer, closeTaskDrawer, selectedTaskId } = useTasksStore((state) => ({
     setCurrentPlan: state.setCurrentPlan,
+    setTasks: state.setTasks,
+    openTaskDrawer: state.openTaskDrawer,
+    closeTaskDrawer: state.closeTaskDrawer,
+    selectedTaskId: state.selectedTaskId,
   }));
-  const { setChatContext, currentWorkflowId, currentSession } = useChatStore((state) => ({
-    setChatContext: state.setChatContext,
-    currentWorkflowId: state.currentWorkflowId,
-    currentSession: state.currentSession,
-  }));
-  const [selectedTask, setSelectedTask] = useState<PlanTaskNode | null>(null);
+  const { setChatContext, currentWorkflowId, currentSession, currentPlanId, currentPlanTitle } =
+    useChatStore((state) => ({
+      setChatContext: state.setChatContext,
+      currentWorkflowId: state.currentWorkflowId,
+      currentSession: state.currentSession,
+      currentPlanId: state.currentPlanId,
+      currentPlanTitle: state.currentPlanTitle,
+    }));
   const [dagVisible, setDagVisible] = useState(true);
+  const [rootTaskId, setRootTaskId] = useState<number | null>(null);
+  const [selectedPlanTitle, setSelectedPlanTitle] = useState<string | undefined>(
+    currentPlanTitle ?? undefined
+  );
 
   // 稳定化session_id以避免无限循环
   const sessionId = currentSession?.session_id;
   
-  const workflowFilters = useMemo(
-    () => ({
-      workflowId: currentWorkflowId || undefined,
-      sessionId: sessionId || undefined,
-    }),
-    [currentWorkflowId, sessionId]
-  );
-
-  // 不再需要planTitles，因为一个对话只对应一个ROOT任务
-  const [selectedPlan, setSelectedPlan] = useState<string | undefined>();
   const {
     data: planTasks = [],
     isFetching: planTasksLoading,
     refetch: refetchTasks,
-  } = usePlanTasks(workflowFilters);
+  } = usePlanTasks({ planId: currentPlanId ?? undefined });
 
   // 移除错误的useCallback包装
 
   // 监听全局任务更新事件，自动刷新侧栏DAG数据
   useEffect(() => {
-    const handleTasksUpdated = (event: CustomEvent) => {
-      console.log('📣 DAGSidebar 收到任务更新事件:', event.detail);
+    const handleTasksUpdated = (event: CustomEvent<PlanSyncEventDetail>) => {
+      const detail = event.detail;
+      if (
+        detail?.type === 'plan_deleted' &&
+        detail.plan_id != null &&
+        detail.plan_id === (currentPlanId ?? null)
+      ) {
+        setTasks([]);
+        closeTaskDrawer();
+        return;
+      }
+      if (
+        !shouldHandlePlanSyncEvent(detail, currentPlanId ?? null, [
+          'task_changed',
+          'plan_jobs_completed',
+          'plan_updated',
+        ])
+      ) {
+        return;
+      }
       refetchTasks();
+      window.setTimeout(() => {
+        refetchTasks();
+      }, 800);
     };
     window.addEventListener('tasksUpdated', handleTasksUpdated as EventListener);
     return () => window.removeEventListener('tasksUpdated', handleTasksUpdated as EventListener);
-  }, [refetchTasks]);
+  }, [closeTaskDrawer, currentPlanId, refetchTasks, setTasks]);
 
   useEffect(() => {
-    // 核心逻辑：一个对话只对应一个ROOT任务
+    setTasks(planTasks);
+  }, [planTasks, setTasks]);
+
+  useEffect(() => {
     if (planTasks.length > 0) {
-      // 查找当前会话的ROOT任务（应该只有一个）
       const rootTask = planTasks.find((task) => task.task_type === 'root');
-      if (rootTask && rootTask.name !== selectedTask?.name) {
-        // 设置为当前会话的唯一ROOT任务
-        setSelectedPlan(rootTask.name);
-        setSelectedTask(rootTask);
-        // 使用setTimeout异步调用，避免同步状态更新冲突
-        setTimeout(() => {
+      if (rootTask) {
+        if (rootTaskId !== rootTask.id) {
+          setRootTaskId(rootTask.id);
           setCurrentPlan(rootTask.name);
           setChatContext({
+            planId: currentPlanId ?? undefined,
             planTitle: rootTask.name,
             taskId: rootTask.id,
             taskName: rootTask.name,
           });
-        }, 0);
+        }
+        setSelectedPlanTitle(rootTask.name);
       }
-    } else if (selectedTask !== null) {
-      setSelectedTask(null);
-      setSelectedPlan(undefined);
-      setTimeout(() => {
-        setCurrentPlan(null);
-      }, 0);
+    } else if (rootTaskId !== null) {
+      setRootTaskId(null);
+      setSelectedPlanTitle(undefined);
+      setCurrentPlan(null);
+      setChatContext({
+        planId: null,
+        planTitle: null,
+        taskId: null,
+        taskName: null,
+      });
+      closeTaskDrawer();
     }
-  }, [planTasks, selectedTask]); // 只依赖planTasks，不再依赖planTitles
+  }, [planTasks, rootTaskId, setCurrentPlan, setChatContext, currentPlanId, closeTaskDrawer]);
 
   const stats = useMemo(() => {
     if (!planTasks || planTasks.length === 0) {
@@ -179,17 +207,17 @@ const DAGSidebar: React.FC = () => {
 
         <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 12 }}>
           <Text type="secondary" style={{ fontSize: 11 }}>当前ROOT任务：</Text>
-          <div 
+          <div
             style={{ 
               padding: '6px 12px',
               background: '#f5f5f5',
               border: '1px solid #d9d9d9',
               borderRadius: '6px',
               fontSize: '14px',
-              color: selectedPlan ? '#262626' : '#8c8c8c'
+              color: selectedPlanTitle ? '#262626' : '#8c8c8c'
             }}
           >
-            {selectedPlan || '暂无ROOT任务'}
+            {selectedPlanTitle || '暂无ROOT任务'}
           </div>
           <Text type="secondary" style={{ fontSize: 10, color: '#999' }}>
             💡 一个对话对应一个ROOT任务，所有子任务都从此展开
@@ -209,18 +237,23 @@ const DAGSidebar: React.FC = () => {
               tasks={planTasks}
               loading={planTasksLoading}
               onSelectTask={(task) => {
-                setSelectedTask(task);
                 if (task) {
-                  const rootName = selectedPlan || planTasks.find((t) => t.task_type === 'root')?.name || null;
+                  openTaskDrawer(task);
+                  const rootName =
+                    selectedPlanTitle ||
+                    planTasks.find((t) => t.task_type === 'root')?.name ||
+                    null;
                   setChatContext({
                     planTitle: rootName,
                     taskId: task.id,
                     taskName: task.name,
                   });
                 } else {
+                  closeTaskDrawer();
                   setChatContext({ taskId: null, taskName: null });
                 }
               }}
+              selectedTaskId={selectedTaskId ?? undefined}
               height="100%"
             />
           ) : (
@@ -236,45 +269,6 @@ const DAGSidebar: React.FC = () => {
             />
           )}
         </div>
-      )}
-
-      {/* 选中任务详情 */}
-      {selectedTask && (
-        <>
-          <Divider style={{ margin: '8px 0' }} />
-          <div style={{ 
-            padding: '12px 16px',
-            background: '#f8f9fa',
-            borderTop: '1px solid #f0f0f0',
-          }}>
-            <Text strong style={{ fontSize: 12, color: '#666' }}>
-              选中任务
-            </Text>
-            <div style={{ marginTop: 8 }}>
-              <Text style={{ fontSize: 13, display: 'block', marginBottom: 4 }}>
-                {selectedTask.name}
-              </Text>
-              <Space size={8}>
-                <Badge 
-                  status={
-                    selectedTask.status === 'completed' ? 'success' :
-                    selectedTask.status === 'running' ? 'processing' :
-                    selectedTask.status === 'failed' ? 'error' : 'default'
-                  }
-                  text={
-                    selectedTask.status === 'completed' ? '已完成' :
-                    selectedTask.status === 'running' ? '运行中' :
-                    selectedTask.status === 'failed' ? '失败' : '等待中'
-                  }
-                />
-                <Text type="secondary" style={{ fontSize: 11 }}>
-                  {selectedTask.task_type === 'root' ? '根任务' :
-                   selectedTask.task_type === 'composite' ? '复合任务' : '原子任务'}
-                </Text>
-              </Space>
-            </div>
-          </div>
-        </>
       )}
 
       {/* 底部操作 */}

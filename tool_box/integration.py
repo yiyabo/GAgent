@@ -11,7 +11,14 @@ from typing import Any, Dict, List, Optional
 
 from .client import MCPToolBoxClient
 from .tools import get_tool_registry, register_tool
-from .tools_impl import database_query_tool, file_operations_tool, internal_api_tool, web_search_tool
+from .tools_impl import (
+    claude_code_tool,
+    database_query_tool,
+    file_operations_tool,
+    graph_rag_tool,
+    internal_api_tool,
+    web_search_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +88,30 @@ class ToolBoxIntegration:
             handler=internal_api_tool["handler"],
             tags=internal_api_tool.get("tags", []),
             examples=internal_api_tool.get("examples", []),
+        )
+
+        register_tool(
+            name=graph_rag_tool["name"],
+            description=graph_rag_tool["description"],
+            category=graph_rag_tool["category"],
+            parameters_schema=graph_rag_tool["parameters_schema"],
+            handler=graph_rag_tool["handler"],
+            tags=graph_rag_tool.get("tags", []),
+            examples=graph_rag_tool.get("examples", []),
+        )
+
+        register_tool(
+            name=claude_code_tool["name"],
+            description=claude_code_tool["description"],
+            category="execution",
+            parameters_schema=claude_code_tool["parameters"],
+            handler=claude_code_tool["handler"],
+            tags=["code", "execution", "claude", "local"],
+            examples=[
+                "Train a machine learning model on data/code_task/train.csv",
+                "Analyze all files in data/code_task and provide a summary",
+                "Write and execute a Python script to process CSV files",
+            ],
         )
 
         logger.info("Built-in tools registered")

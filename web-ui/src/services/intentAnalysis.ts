@@ -1,7 +1,11 @@
 import { chatApi } from '@api/chat';
+import { planTreeApi } from '@api/planTree';
+import type { DecomposeTaskPayload } from '@api/planTree';
+import type { DecompositionJobStatus } from '@/types';
 import { SessionTaskSearch } from '@utils/taskSearch';
-import type { ChatSession } from '@/types';
+import { planTreeToTasks } from '@utils/planTree';
 import { ENV } from '@/config/env';
+import type { ChatSession, Task } from '@/types';
 
 // 意图分析结果接口
 export interface IntentAnalysisResult {
@@ -129,6 +133,7 @@ export async function executeToolBasedOnIntent(
   context: {
     currentSession?: ChatSession | null;
     currentWorkflowId?: string | null;
+    currentPlanId?: number | null;
     userInput: string;
   }
 ): Promise<ToolExecutionResult> {
@@ -169,13 +174,15 @@ async function executeTaskSearch(
   context: {
     currentSession?: ChatSession | null;
     currentWorkflowId?: string | null;
+    currentPlanId?: number | null;
   }
 ): Promise<ToolExecutionResult> {
-  
+
   const searchResult = await SessionTaskSearch.searchCurrentSessionTasks(
     userInput,
     context.currentSession,
-    context.currentWorkflowId
+    context.currentWorkflowId,
+    context.currentPlanId
   );
   
   const response = SessionTaskSearch.formatSearchResults(
@@ -201,90 +208,18 @@ async function executeTaskCreate(
   context: {
     currentSession?: ChatSession | null;
     currentWorkflowId?: string | null;
+    currentPlanId?: number | null;
   }
 ): Promise<ToolExecutionResult> {
-  
-  try {
-    // 🧠 前端不做任何文本处理，直接传递原始用户输入给后端
-    // 后端LLM服务会智能提炼任务名称
-    console.log('📤 传递原始用户输入给后端:', userInput);
-    
-    // 调用后端智能任务创建API - 后端会使用LLM提炼任务名称
-    const response = await fetch(`${ENV.API_BASE_URL}/tasks/intelligent-create`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        user_input: userInput,  // 传递原始输入
-        session_id: context.currentSession?.session_id || null,
-        workflow_id: context.currentWorkflowId || null
-      }),
-    });
-
-    const result = await response.json();
-    
-    // 调试信息
-    console.log('任务创建API响应:', {
-      status: response.status,
-      ok: response.ok, 
-      result: result
-    });
-    
-    if (response.ok && result.id) {
-      // 后端直接返回Task对象，包含id字段
-      return {
-        handled: true,
-        response: `✅ **任务创建成功！**\n\n📋 **任务详情:**\n• **名称**: ${result.name}\n• **ID**: ${result.id}\n• **状态**: ${result.status}\n• **优先级**: ${result.priority === 1 ? '高' : result.priority === 2 ? '中' : '低'}\n• **会话ID**: ${result.session_id || '无'}\n\n🎯 任务已加入您的待办列表，可以随时查看或管理。`,
-        metadata: {
-          action: 'create_task',
-          success: true,
-          task_id: result.id,
-          task_name: result.name
-        }
-      };
-    } else {
-      // 正确提取错误信息
-      let errorMsg = '未知错误';
-      if (result.error) {
-        if (typeof result.error === 'string') {
-          errorMsg = result.error;
-        } else if (typeof result.error === 'object' && result.error.message) {
-          errorMsg = result.error.message;
-        } else if (typeof result.error === 'object' && result.error.detail) {
-          errorMsg = result.error.detail;
-        } else {
-          errorMsg = JSON.stringify(result.error);
-        }
-      } else if (result.detail) {
-        errorMsg = result.detail;
-      } else if (result.message) {
-        errorMsg = result.message;
-      }
-      
-      return {
-        handled: true,
-        response: `❌ **任务创建失败**\n\n🚫 错误信息: ${errorMsg}\n\n💡 请检查输入格式或重试。`,
-        metadata: {
-          action: 'create_task',
-          success: false,
-          error: errorMsg
-        }
-      };
-    }
-    
-  } catch (error) {
-    console.error('任务创建失败:', error);
-    return {
-      handled: true,
-      response: `❌ **任务创建失败**\n\n🚫 网络或服务器错误: ${error}\n\n💡 请稍后重试或检查网络连接。`,
-      metadata: {
-        action: 'create_task',
-        success: false,
-        error: String(error)
-      }
-    };
-  }
+  return {
+    handled: true,
+    response:
+      'ℹ️ 目前请直接告诉助手要创建的任务或计划，我会通过对话流完成操作。',
+    metadata: {
+      action: 'create_task',
+      success: false,
+    },
+  };
 }
 
 /**
@@ -293,22 +228,23 @@ async function executeTaskCreate(
 async function executeSystemStatus(): Promise<ToolExecutionResult> {
   
   try {
-    const status = await chatApi.getSystemStatus();
-    
-    const response = `📊 **系统状态报告**
+    const response = await fetch(`${ENV.API_BASE_URL}/system/health`);
+    if (!response.ok) {
+      throw new Error(`system/health ${response.status}`);
+    }
+    const status = await response.json();
 
-🏥 **系统健康**: ${status.system_health === 'good' ? '✅ 良好' : 
-                   status.system_health === 'warning' ? '⚠️ 警告' : '❌ 异常'}
-
-📋 **活跃任务**: ${status.active_tasks} 个
-📑 **待处理计划**: ${status.pending_plans} 个`;
+    const summary = `📊 **系统状态报告**\n\n🏥 **系统健康**: ${status.overall_status === 'healthy' ? '✅ 良好' :
+      status.overall_status === 'degraded' ? '⚠️ 警告' : '❌ 异常'}\n\n` +
+      `📦 组件数: ${(status.components && Object.keys(status.components).length) || 0}\n` +
+      `💡 建议: ${(status.recommendations || []).join('；') || '暂无'}`;
 
     return {
       handled: true,
-      response,
+      response: summary,
       metadata: {
-        system_health: status.system_health,
-        active_tasks: status.active_tasks
+        system_health: status.overall_status,
+        components: status.components,
       }
     };
   } catch (error) {
@@ -325,7 +261,7 @@ async function executeSystemStatus(): Promise<ToolExecutionResult> {
 /**
  * 🧠 使用LLM智能选择目标任务 - 科研项目要求：完全基于语义理解
  */
-async function selectTargetTaskWithLLM(userInput: string, tasks: any[]): Promise<any | null> {
+async function selectTargetTaskWithLLM(userInput: string, tasks: Task[]): Promise<Task | null> {
   try {
     if (!tasks || tasks.length === 0) {
       return null;
@@ -398,7 +334,7 @@ ${taskDescriptions}
 /**
  * 默认任务选择策略（当LLM失败时的降级方案）
  */
-function selectDefaultTask(tasks: any[]): any | null {
+function selectDefaultTask(tasks: Task[]): Task | null {
   // 优先选择ROOT任务（如果没有子任务）
   const rootTasks = tasks.filter(t => t.task_type === 'root' && !t.parent_id);
   if (rootTasks.length > 0) {
@@ -431,151 +367,89 @@ async function executeTaskDecompose(
   context: {
     currentSession?: ChatSession | null;
     currentWorkflowId?: string | null;
+    currentPlanId?: number | null;
   },
   analysis: any
 ): Promise<ToolExecutionResult> {
-  
+  const planId = context.currentPlanId;
+  if (!planId) {
+    return {
+      handled: true,
+      response:
+        '❌ **任务拆分失败**\n\n🚫 当前会话尚未绑定具体的计划，无法定位要拆分的节点。',
+      metadata: {
+        action: 'task_decompose',
+        success: false,
+        error: 'missing_plan_id',
+      },
+    };
+  }
+
   try {
-    console.log('🔧 任务拆分请求:', userInput, context);
-    
-    // 获取当前会话的最新任务
-    const sessionId = context.currentSession?.session_id;
-    if (!sessionId) {
-      return {
-        handled: true,
-        response: `❌ **任务拆分失败**\n\n🚫 未找到当前会话信息，无法确定要拆分的任务。\n\n💡 请先创建一个ROOT任务，然后再进行拆分。`,
-        metadata: {
-          action: 'task_decompose',
-          success: false,
-          error: 'No session context'
-        }
-      };
-    }
-    
-    // 查询当前会话的任务列表，找到最新的ROOT任务
-    const tasksResponse = await fetch(`${ENV.API_BASE_URL}/tasks?session_id=${sessionId}`);
-    
-    if (!tasksResponse.ok) {
-      throw new Error(`任务查询失败: ${tasksResponse.status}`);
-    }
-    
-    const tasks = await tasksResponse.json();
-    console.log('🔍 当前会话任务列表:', tasks);
-    
-    // 🧠 使用LLM智能选择目标任务（科研项目要求：零关键词匹配）
+    const tree = await planTreeApi.getPlanTree(planId);
+    const tasks = planTreeToTasks(tree);
     const targetTask = await selectTargetTaskWithLLM(userInput, tasks);
-    
+
     if (!targetTask) {
       return {
         handled: true,
-        response: `❌ **任务拆分失败**\n\n🚫 当前会话中未找到可拆分的任务。\n\n💡 请先创建一个ROOT任务，或明确指定要拆分的任务。`,
+        response:
+          '❌ **任务拆分失败**\n\n🚫 未找到可拆分的目标任务。请先确认已有 ROOT 或 COMPOSITE 任务。',
         metadata: {
           action: 'task_decompose',
           success: false,
-          error: 'No suitable task found'
-        }
+          error: 'no_target_task',
+        },
       };
     }
-    
-    console.log('🎯 LLM选择的目标任务:', targetTask);
-    
-    // 调用后端的真实任务拆分服务
-    const decompositionResult = await performRealTaskDecomposition(targetTask, userInput, sessionId);
-    
+
+    const payload: DecomposeTaskPayload = {
+      plan_id: planId,
+      async_mode: true,
+    };
+
+    if (typeof analysis?.extractedParams?.expand_depth === 'number') {
+      payload.expand_depth = analysis.extractedParams.expand_depth;
+    }
+    if (typeof analysis?.extractedParams?.node_budget === 'number') {
+      payload.node_budget = analysis.extractedParams.node_budget;
+    }
+    if (typeof analysis?.extractedParams?.allow_existing_children === 'boolean') {
+      payload.allow_existing_children = analysis.extractedParams.allow_existing_children;
+    }
+
+    const decomposition = await planTreeApi.decomposeTask(targetTask.id, payload);
+
+    const jobInfo: DecompositionJobStatus | null = decomposition.job || null;
+    const jobId = jobInfo?.job_id ?? decomposition.result?.job_id ?? null;
+    const responseText = `🧠 **任务拆分已启动**\n\n📋 目标任务: ${targetTask.name} (ID: ${targetTask.id})\n⏱️ 已提交后台执行，正在生成子任务。\n请留意下方实时日志面板以获取最新进度。`;
+
     return {
       handled: true,
-      response: decompositionResult.response,
+      response: responseText,
       metadata: {
         action: 'task_decompose',
         success: true,
         target_task_id: targetTask.id,
         target_task_name: targetTask.name,
-        composite_tasks: decompositionResult.compositeTasks
-      }
+        plan_id: planId,
+        type: 'job_log',
+        job_id: jobId,
+        job_status: jobInfo?.status ?? 'queued',
+        job: jobInfo,
+        job_logs: jobInfo?.logs ?? [],
+      },
     };
-    
   } catch (error) {
     console.error('任务拆分失败:', error);
     return {
       handled: true,
-      response: `❌ **任务拆分失败**\n\n🚫 系统错误: ${error}\n\n💡 请稍后重试或检查网络连接。`,
+      response: `❌ **任务拆分失败**\n\n🚫 系统错误: ${error}`,
       metadata: {
         action: 'task_decompose',
         success: false,
-        error: String(error)
-      }
-    };
-  }
-}
-
-/**
- * 真实的任务拆分 - 调用后端LLM服务并创建实际的COMPOSITE任务
- */
-async function performRealTaskDecomposition(rootTask: any, userRequest: string, sessionId: string): Promise<{
-  response: string;
-  compositeTasks: any[];
-}> {
-  
-  try {
-    console.log('🧠 开始真实任务拆分...', rootTask);
-    
-    // 调用后端任务分解API
-    const decompositionResponse = await fetch(`${ENV.API_BASE_URL}/tasks/${rootTask.id}/decompose`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
+        error: String(error),
       },
-      body: JSON.stringify({
-        max_subtasks: 4,
-        force: false,
-        tool_aware: true
-      }),
-    });
-
-    if (!decompositionResponse.ok) {
-      throw new Error(`分解服务调用失败: ${decompositionResponse.status}`);
-    }
-
-    const decompositionData = await decompositionResponse.json();
-    console.log('🔄 分解服务响应:', decompositionData);
-
-    // 检查分解是否成功
-    if (!decompositionData.success) {
-      throw new Error(decompositionData.error || 'LLM分解服务返回失败状态');
-    }
-
-    // 后端已经创建了子任务，直接获取创建的任务信息
-    const createdTasks = decompositionData.subtasks || [];
-    
-    if (createdTasks.length === 0) {
-      throw new Error('LLM分解服务未创建任何子任务');
-    }
-
-    // 生成成功响应
-    const responseText = `🧠 **LLM智能任务拆分完成** 
-
-📋 **原ROOT任务**: ${rootTask.name} (ID: ${rootTask.id})
-
-🔄 **LLM已创建${createdTasks.length}个子任务**:
-${createdTasks.map((task, i) => `${i+1}. 📦 **${task.name}** (ID: ${task.id}) [${task.task_type?.toUpperCase()}]`).join('\n')}
-
-⚡ **任务已写入全局上下文**，形成完整的任务DAG:
-• 继续拆分COMPOSITE任务为ATOMIC任务
-• 查看任务层次结构和依赖关系
-• 开始执行具体的ATOMIC任务
-
-💡 试试说"拆分第1个COMPOSITE任务"进行进一步细化。`;
-
-    return {
-      response: responseText,
-      compositeTasks: createdTasks
     };
-
-  } catch (error) {
-    console.error('真实任务拆分失败:', error);
-    
-    // 科研项目要求：不允许任何回退机制，直接报告LLM服务失败
-    throw new Error(`LLM分解服务不可用: ${error}. 科研项目要求使用真实LLM服务，不接受简化方案。`);
   }
 }
-

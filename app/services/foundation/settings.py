@@ -12,6 +12,11 @@ import os
 from functools import lru_cache
 from typing import Optional
 
+try:
+    from pydantic import ConfigDict  # type: ignore
+except Exception:  # pragma: no cover - pydantic v1 fallback
+    ConfigDict = None  # type: ignore
+
 _USE_PYDANTIC = False
 _DOTENV_LOADED = False
 try:
@@ -58,7 +63,7 @@ if _USE_PYDANTIC:
         database_url: str = Field(default="sqlite:///./tasks.db", env="DATABASE_URL")
         
         # API服务配置
-        base_url: str = Field(default="http://127.0.0.1:9000", env="BASE_URL")
+        base_url: Optional[str] = Field(default=None, env="BASE_URL")
 
         # GLM / LLM 配置
         glm_api_key: Optional[str] = Field(default=None, env="GLM_API_KEY")
@@ -122,11 +127,27 @@ if _USE_PYDANTIC:
         # 服务器配置
         backend_host: str = Field(default="0.0.0.0", env="BACKEND_HOST")
         backend_port: int = Field(default=9000, env="BACKEND_PORT")
-        cors_origins: str = Field(default="http://localhost:3000", env="CORS_ORIGINS")
+        cors_origins: str = Field(
+            default="http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
+            env="CORS_ORIGINS"
+        )
+        chat_include_action_summary: bool = Field(
+            default=True, env="CHAT_INCLUDE_ACTION_SUMMARY"
+        )
+        job_log_retention_days: int = Field(
+            default=30, env="JOB_LOG_RETENTION_DAYS"
+        )
+        job_log_max_rows: int = Field(
+            default=10000, env="JOB_LOG_MAX_ROWS"
+        )
 
-        class Config:
-            env_file = ".env"
-            case_sensitive = False
+        if ConfigDict is not None:
+            model_config = ConfigDict(env_file=".env", extra="allow", case_sensitive=False)
+        else:
+            class Config:
+                env_file = ".env"
+                case_sensitive = False
+                extra = "allow"
 
 else:
 
@@ -143,6 +164,7 @@ else:
             self.log_level = os.getenv("LOG_LEVEL", "INFO")
             self.log_format = os.getenv("LOG_FORMAT", "json")
             self.database_url = os.getenv("DATABASE_URL", "sqlite:///./tasks.db")
+            self.base_url = os.getenv("BASE_URL")
             self.glm_api_key = os.getenv("GLM_API_KEY")
             self.glm_api_url = os.getenv("GLM_API_URL", "https://open.bigmodel.cn/api/paas/v4/chat/completions")
             self.glm_model = os.getenv("GLM_MODEL", "glm-4-flash")
@@ -227,10 +249,36 @@ else:
                 self.backend_port = int(os.getenv("BACKEND_PORT", "9000"))
             except Exception:
                 self.backend_port = 9000
-            self.cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+            self.cors_origins = os.getenv(
+                "CORS_ORIGINS",
+                "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
+            )
+            self.chat_include_action_summary = os.getenv("CHAT_INCLUDE_ACTION_SUMMARY", "1").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            try:
+                self.job_log_retention_days = int(os.getenv("JOB_LOG_RETENTION_DAYS", "30"))
+            except Exception:
+                self.job_log_retention_days = 30
+            try:
+                self.job_log_max_rows = int(os.getenv("JOB_LOG_MAX_ROWS", "10000"))
+            except Exception:
+                self.job_log_max_rows = 10000
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> AppSettings:
     """获取全局应用配置（带缓存）"""
-    return AppSettings()  # 自动从环境变量与 .env 读取
+    settings = AppSettings()  # 自动从环境变量与 .env 读取
+
+    # Ensure BASE_URL fallback stays in sync with BACKEND_HOST/BACKEND_PORT
+    base_url = getattr(settings, "base_url", None)
+    if not base_url:
+        host = getattr(settings, "backend_host", "0.0.0.0")
+        port = getattr(settings, "backend_port", 9000)
+        settings.base_url = f"http://{host}:{port}"
+
+    return settings

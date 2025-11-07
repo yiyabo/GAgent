@@ -56,23 +56,23 @@ class SmartToolRouter:
                 
                 # Validate response quality
                 if self._validate_api_response(content):
-                    logger.info(f"✅ {provider.upper()} API成功 (尝试 {attempt + 1}/{max_retries})")
+                    logger.info(f"✅ {provider.upper()} API succeeded (attempt {attempt + 1}/{max_retries})")
                     return content
                 else:
-                    logger.warning(f"⚠️ {provider.upper()} API响应质量不佳 (尝试 {attempt + 1})")
+                    logger.warning(f"⚠️ {provider.upper()} API returned low quality data (attempt {attempt + 1})")
                     
             except asyncio.TimeoutError:
-                logger.warning(f"⏱️ LLM API超时 (尝试 {attempt + 1}/{max_retries})")
+                logger.warning(f"⏱️ LLM API timeout (attempt {attempt + 1}/{max_retries})")
                 last_error = "Request timeout"
             except Exception as e:
-                logger.error(f"LLM API调用失败 (尝试 {attempt + 1}): {e}")
+                logger.error(f"LLM API call failed (attempt {attempt + 1}): {e}")
                 last_error = str(e)
                 
                 # Brief delay before retry
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
 
-        logger.error(f"❌ LLM API所有重试失败: {last_error}")
+        logger.error(f"❌ All LLM API retries failed: {last_error}")
         return ""
         
     def _validate_api_response(self, content: str) -> bool:
@@ -111,17 +111,17 @@ class SmartToolRouter:
 
         if not routing_result:
             logger.error("LLM routing returned no result")
-            # 科研项目要求：即使失败也不放弃，尝试简化分析
+            # Research requirement: never give up—fall back to a simplified analysis
             routing_result = await self._simplified_llm_routing(user_request, context)
             
         if not routing_result:
             raise ValueError("Complete LLM routing failure - all analysis methods exhausted")
             
-        # 科研项目要求：接受更低的置信度，但记录详细信息
+        # Research requirement: accept lower confidence but record detailed context
         confidence = routing_result.get("confidence", 0.0)
         if confidence < 0.1:
-            logger.warning(f"⚠️ 极低置信度路由: {confidence}, 但科研项目要求继续处理")
-            # 增强置信度评估
+            logger.warning(f"⚠️ Very low confidence routing: {confidence}, but project requirements say to continue")
+            # Confidence enhancement analysis
             routing_result = await self._enhance_confidence(routing_result, user_request)
 
         return {
@@ -154,42 +154,42 @@ class SmartToolRouter:
             # Build comprehensive LLM prompt
             context_str = ""
             if context:
-                context_str = f"\n上下文信息:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
+                context_str = f"\nContext:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
 
             prompt = f"""
-你是一个高级AI工具路由器，专门为智能agent系统设计。你需要分析用户请求并生成完整的工具执行计划。
+You are an advanced AI tool router for an intelligent agent. Analyse the user request and produce a complete tool execution plan.
 
-可用工具详细信息:
+Available tools:
 {json.dumps(tool_details, ensure_ascii=False, indent=2)}
 
-用户请求: {request}{context_str}
+User request: {request}{context_str}
 
-请进行深度分析并返回完整的路由决策。注意:
-1. 仔细分析用户的真实意图
-2. 选择最合适的工具组合
-3. 为每个工具提取准确的参数
-4. 考虑工具执行的先后顺序
-5. 如果需要多个工具协作，请规划好依赖关系
+Perform a thorough analysis and return your routing decision. Follow these guidelines:
+1. Identify the user's true intent.
+2. Choose the most appropriate tool or tool combination.
+3. Derive precise parameters for each tool call.
+4. Consider the order in which tools should execute.
+5. When multiple tools cooperate, describe dependencies clearly.
 
-返回JSON格式:
+Return JSON only:
 {{
-    "intent": "详细的用户意图分析",
+    "intent": "Detailed analysis of user intent",
     "complexity": "simple|medium|complex",
     "tool_calls": [
         {{
-            "tool_name": "具体工具名",
-            "parameters": {{"参数名": "参数值"}},
-            "reasoning": "选择此工具和参数的详细理由",
+            "tool_name": "specific tool name",
+            "parameters": {{"parameter name": "parameter value"}},
+            "reasoning": "Detailed reasoning for choosing this tool and parameters",
             "execution_order": 1
         }}
     ],
-    "execution_plan": "整体执行计划描述",
-    "estimated_time": "预估执行时间",
-    "confidence": 0.0到1.0之间的置信度,
-    "reasoning": "完整的分析推理过程"
+    "execution_plan": "Overall execution plan description",
+    "estimated_time": "estimated execution time",
+    "confidence": <float between 0 and 1>,
+    "reasoning": "Comprehensive reasoning process"
 }}
 
-只返回JSON，不要其他内容。确保参数完整且符合工具的schema要求。
+Return JSON only—no additional commentary. Ensure parameters are complete and comply with each tool's schema.
 """
 
             # Call GLM API
@@ -233,27 +233,27 @@ class SmartToolRouter:
             return {"confidence": 0.0, "error": str(e)}
 
     async def _simplified_llm_routing(self, request: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """简化的LLM路由 - 当标准路由失败时使用"""
+        """Simplified LLM routing fallback when the primary flow fails"""
         try:
-            logger.info("🔄 启用简化LLM路由分析")
+            logger.info("🔄 Running simplified LLM routing analysis")
             
             tools = self.tool_registry.list_tools()
             tool_names = [tool.name for tool in tools]
             
-            # 简化的提示，专注于工具选择
+            # Minimal prompt focused on tool selection
             prompt = f"""
-用户请求: {request}
+User request: {request}
 
-可用工具: {', '.join(tool_names)}
+Available tools: {', '.join(tool_names)}
 
-请简单分析用户意图并选择最合适的工具。返回JSON:
+Briefly analyse the request and choose the best tool. Return JSON:
 {{
-    "intent": "用户意图简述",
-    "tool_calls": [{{"tool_name": "选择的工具", "parameters": {{}}, "reasoning": "选择理由"}}],
-    "confidence": 置信度(0-1)
+    "intent": "Brief user intent summary",
+    "tool_calls": [{{"tool_name": "selected tool", "parameters": {{}}, "reasoning": "selection reasoning"}}],
+    "confidence": <float between 0 and 1>
 }}
 
-只返回JSON，不要其他内容。
+Return JSON only.
 """
             
             llm_response = await self._call_llm_api(prompt)
@@ -270,52 +270,52 @@ class SmartToolRouter:
                 cleaned_response = cleaned_response.strip()
 
                 analysis = json.loads(cleaned_response)
-                analysis["confidence"] = max(analysis.get("confidence", 0.0), 0.1)  # 最低保证置信度
+                analysis["confidence"] = max(analysis.get("confidence", 0.0), 0.1)  # enforce a minimum confidence floor
                 
                 return analysis
                 
             except json.JSONDecodeError as e:
-                logger.error(f"简化路由JSON解析失败: {e}")
+                logger.error(f"Failed to parse JSON from simplified routing: {e}")
                 return {"confidence": 0.0, "error": "JSON parse failed in simplified routing"}
                 
         except Exception as e:
-            logger.error(f"简化LLM路由失败: {e}")
+            logger.error(f"Simplified LLM routing failed: {e}")
             return {"confidence": 0.0, "error": str(e)}
 
     async def _enhance_confidence(self, routing_result: Dict[str, Any], user_request: str) -> Dict[str, Any]:
-        """增强置信度评估"""
+        """Confidence enhancement analysis"""
         try:
-            logger.info("🔬 启用置信度增强分析")
+            logger.info("🔬 Running confidence enhancement analysis")
             
-            # 基于多个因素重新评估置信度
+            # Re-evaluate confidence using multiple factors
             confidence_factors = []
-            
-            # 因素1: 工具调用明确性
+
+            # Factor 1: clarity of tool calls
             tool_calls = routing_result.get("tool_calls", [])
             if tool_calls and len(tool_calls) > 0:
                 confidence_factors.append(0.3)
-                
-            # 因素2: 意图描述详细程度
+
+            # Factor 2: richness of the intent description
             intent = routing_result.get("intent", "")
             if intent and len(intent) > 20:
                 confidence_factors.append(0.2)
-                
-            # 因素3: 执行计划存在性
+
+            # Factor 3: presence of an execution plan
             execution_plan = routing_result.get("execution_plan", "")
             if execution_plan:
                 confidence_factors.append(0.2)
-                
-            # 因素4: 推理过程存在性
+
+            # Factor 4: presence of detailed reasoning
             reasoning = routing_result.get("reasoning", "")
             if reasoning and len(reasoning) > 30:
                 confidence_factors.append(0.2)
-                
-            # 因素5: 用户请求复杂度适配
+
+            # Factor 5: match between request complexity and response
             request_complexity = len(user_request.split())
-            if request_complexity <= 10:  # 简单请求更容易理解
+            if request_complexity <= 10:  # simpler requests are easier to interpret
                 confidence_factors.append(0.1)
-                
-            # 计算增强后的置信度
+
+            # Compute the enhanced confidence
             base_confidence = routing_result.get("confidence", 0.0)
             enhancement_boost = sum(confidence_factors)
             new_confidence = min(base_confidence + enhancement_boost, 0.95)
@@ -327,13 +327,13 @@ class SmartToolRouter:
                 "enhanced": new_confidence
             }
             
-            logger.info(f"🎯 置信度增强: {base_confidence:.2f} → {new_confidence:.2f}")
+            logger.info(f"🎯 Confidence adjusted: {base_confidence:.2f} → {new_confidence:.2f}")
             
             return routing_result
             
         except Exception as e:
-            logger.error(f"置信度增强失败: {e}")
-            # 返回原始结果
+            logger.error(f"Confidence enhancement failed: {e}")
+            # Fall back to the original result
             return routing_result
 
 
