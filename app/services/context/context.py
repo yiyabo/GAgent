@@ -443,7 +443,54 @@ def gather_context(
         except Exception as e:
             _CTX_LOGGER.warning(f"GLM semantic retrieval failed: {e}")
 
-    # 6) Normalize ordering by priority groups even if no budget is applied
+    # 7) Memory system retrieval - query relevant memories
+    try:
+        from ...services.memory.memory_service import get_memory_service
+        from ...models_memory import QueryMemoryRequest
+        
+        memory_service = get_memory_service()
+        
+        # Query memories using the same query text
+        memory_request = QueryMemoryRequest(
+            search_text=query_text,
+            limit=3,  # Limit to top 3 memories
+            min_similarity=0.5,  # Higher threshold for memories
+        )
+        
+        # Run async query synchronously
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        memory_response = loop.run_until_complete(memory_service.query_memory(memory_request))
+        
+        # Add memories as context sections
+        for mem in memory_response.memories:
+            sections.append({
+                "kind": "memory",
+                "name": f"Memory: {mem.memory_type}",
+                "short_name": f"Mem-{mem.id[:8]}",
+                "content": f"**Type**: {mem.memory_type}\n**Importance**: {mem.importance}\n\n{mem.content}",
+                "memory_id": mem.id,
+                "retrieval_score": mem.similarity or 0.0,
+                "retrieval_method": "memory",
+            })
+        
+        if _debug_on() and memory_response.memories:
+            _CTX_LOGGER.debug(
+                {
+                    "event": "gather_context.memory_retrieval_done",
+                    "task_id": task_id,
+                    "retrieved": len(memory_response.memories),
+                }
+            )
+    except Exception as e:
+        _CTX_LOGGER.warning(f"Memory retrieval failed: {e}")
+
+    # 8) Normalize ordering by priority groups even if no budget is applied
     sections = sorted(sections, key=_priority_key_local)
 
     if _debug_on():

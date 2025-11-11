@@ -16,6 +16,7 @@ from app.services.embeddings.cache import get_embedding_cache
 from app.services.foundation.config import get_config
 from app.services.embeddings.embedding_batch_processor import EmbeddingBatchProcessor
 from app.services.embeddings.glm_api_client import GLMApiClient
+from app.services.embeddings.local_embedding_client import LocalEmbeddingClient
 from app.services.embeddings.similarity_calculator import SimilarityCalculator
 
 logger = logging.getLogger(__name__)
@@ -29,13 +30,19 @@ class GLMEmbeddingsService:
         self.config = get_config()
         self.cache = get_embedding_cache()
 
-        # Initialize specialized components
-        self.api_client = GLMApiClient(self.config)
+        # Choose between local or remote API client
+        if self.config.use_local_embedding:
+            logger.info("Using local embedding model")
+            self.api_client = LocalEmbeddingClient(self.config)
+        else:
+            logger.info("Using GLM API for embeddings")
+            self.api_client = GLMApiClient(self.config)
+        
         self.batch_processor = EmbeddingBatchProcessor(self.config, self.api_client, self.cache)
         self.async_manager = AsyncEmbeddingManager(self.batch_processor)
         self.similarity_calculator = SimilarityCalculator()
 
-        logger.info(f"GLM Embeddings service initialized with refactored architecture")
+        logger.info(f"Embeddings service initialized - Type: {'Local' if self.config.use_local_embedding else 'GLM API'}")
 
     # Core embedding methods - delegated to BatchProcessor
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:

@@ -14,6 +14,7 @@ from tool_box import execute_tool
 from .assemblers import AssemblyStrategy, CompositeAssembler, RootAssembler
 from ..repository.tasks import default_repo
 from ..services.llm.llm_service import get_llm_service
+from ..services.memory.memory_hooks import get_memory_hooks
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class AtomicExecutor:
         self.llm_service = llm_service or get_llm_service()
         self.retry_attempts = max(int(retry_attempts), 0)
         self.retry_backoff = max(float(retry_backoff), 0.0)
+        self.memory_hooks = get_memory_hooks()
 
     def _parse_context_refs(self, raw_refs: Optional[str]) -> List[Dict[str, Any]]:
         if not raw_refs:
@@ -269,62 +271,96 @@ class AtomicExecutor:
         task = self.repo.get_task_info(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
+        
+        task_name = task.get("name", "Unnamed Task")
+        task_content = task.get("content", "")
+        
+        try:
+            context_refs = self._parse_context_refs(task.get("context_refs"))
+            dependency_outputs = self._load_dependency_outputs(context_refs)
+            tool_results = self._execute_tool_calls(context_refs)
+            for tool_result in tool_results:
+                label = tool_result["label"] or tool_result["tool_name"]
+                prefix = "Tool:" + label
+                if not tool_result.get("success"):
+                    prefix += " (failed)"
+                dependency_outputs[prefix] = {
+                    "content": tool_result.get("content", ""),
+                    "metadata": {
+                        "tool_name": tool_result.get("tool_name"),
+                        "success": tool_result.get("success", False),
+                    },
+                }
 
-        context_refs = self._parse_context_refs(task.get("context_refs"))
-        dependency_outputs = self._load_dependency_outputs(context_refs)
-        tool_results = self._execute_tool_calls(context_refs)
-        for tool_result in tool_results:
-            label = tool_result["label"] or tool_result["tool_name"]
-            prefix = "Tool:" + label
-            if not tool_result.get("success"):
-                prefix += " (failed)"
-            dependency_outputs[prefix] = {
-                "content": tool_result.get("content", ""),
-                "metadata": {
-                    "tool_name": tool_result.get("tool_name"),
-                    "success": tool_result.get("success", False),
-                },
+            prompt = self._build_prompt(task, dependency_outputs)
+
+            logger.info("Executing atomic task %s with %d context refs", task_id, len(context_refs))
+            llm_result = self._call_llm_with_retries(prompt, force_real=force_real)
+            response = llm_result["response"]
+
+            self.repo.upsert_task_output(task_id, response)
+            self.repo.update_task_status(task_id, "completed")
+
+            assemblies = self._auto_assemble_upstream(task, force_real=force_real)
+
+            log_metadata = {
+                "prompt": prompt,
+                "references": context_refs,
+                "dependencies": list(dependency_outputs.keys()),
+                "tool_calls": tool_results,
+                "retry_attempts": llm_result.get("attempts"),
+                "assemblies": assemblies,
             }
+            workflow_id = task.get("workflow_id") if isinstance(task, dict) else None
+            log_id = self.repo.append_execution_log(
+                task_id,
+                workflow_id=workflow_id,
+                step_type="atomic_execution",
+                content=response,
+                metadata=log_metadata,
+            )
 
-        prompt = self._build_prompt(task, dependency_outputs)
-
-        logger.info("Executing atomic task %s with %d context refs", task_id, len(context_refs))
-        llm_result = self._call_llm_with_retries(prompt, force_real=force_real)
-        response = llm_result["response"]
-
-        self.repo.upsert_task_output(task_id, response)
-        self.repo.update_task_status(task_id, "completed")
-
-        assemblies = self._auto_assemble_upstream(task, force_real=force_real)
-
-        log_metadata = {
-            "prompt": prompt,
-            "references": context_refs,
-            "dependencies": list(dependency_outputs.keys()),
-            "tool_calls": tool_results,
-            "retry_attempts": llm_result.get("attempts"),
-            "assemblies": assemblies,
-        }
-        workflow_id = task.get("workflow_id") if isinstance(task, dict) else None
-        log_id = self.repo.append_execution_log(
-            task_id,
-            workflow_id=workflow_id,
-            step_type="atomic_execution",
-            content=response,
-            metadata=log_metadata,
-        )
-
-        logger.debug("Atomic execution complete for task %s (log_id=%s)", task_id, log_id)
-        return {
-            "task_id": task_id,
-            "output": response,
-            "log_id": log_id,
-            "workflow_id": workflow_id,
-            "context_refs": context_refs,
-            "tool_calls": tool_results,
-            "retry_attempts": llm_result.get("attempts"),
-            "assemblies": assemblies,
-        }
+            logger.debug("Atomic execution complete for task %s (log_id=%s)", task_id, log_id)
+            
+            # Save task completion memory
+            try:
+                self._run_async(
+                    self.memory_hooks.on_task_complete(
+                        task_id=task_id,
+                        task_name=task_name,
+                        task_content=task_content,
+                        task_result=response,
+                        success=True
+                    )
+                )
+            except Exception as mem_err:
+                logger.warning("Failed to save task completion memory: %s", mem_err)
+            
+            return {
+                "task_id": task_id,
+                "output": response,
+                "log_id": log_id,
+                "workflow_id": workflow_id,
+                "context_refs": context_refs,
+                "tool_calls": tool_results,
+                "retry_attempts": llm_result.get("attempts"),
+                "assemblies": assemblies,
+            }
+        except Exception as exc:
+            # Save error memory
+            try:
+                self._run_async(
+                    self.memory_hooks.on_error_occurred(
+                        error_message=str(exc),
+                        error_type=type(exc).__name__,
+                        context={"task_name": task_name, "task_content": task_content},
+                        task_id=task_id
+                    )
+                )
+            except Exception as mem_err:
+                logger.warning("Failed to save error memory: %s", mem_err)
+            # Re-raise the original exception
+            raise
 
 
 def execute_atomic_task(task_id: int, *, force_real: bool = True) -> Dict[str, Any]:

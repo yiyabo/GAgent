@@ -24,6 +24,10 @@ class GLMConfig:
     embedding_model: str
     embedding_dimension: int
     max_batch_size: int
+    
+    # Local embedding配置
+    use_local_embedding: bool
+    local_embedding_model: str
 
     # 检索配置
     default_semantic_k: int
@@ -56,6 +60,10 @@ class GLMConfig:
 
         api_url = s.glm_embeddings_api_url or _derive_embeddings_url(s.glm_api_url)
 
+        # 获取本地embedding配置
+        use_local = getattr(s, "use_local_embedding", True)  # 默认使用本地
+        local_model = getattr(s, "local_embedding_model", "sentence-transformers/all-mpnet-base-v2")
+        
         return cls(
             # API配置
             api_key=s.glm_api_key,
@@ -64,6 +72,9 @@ class GLMConfig:
             embedding_model=s.glm_embedding_model,
             embedding_dimension=int(s.glm_embedding_dimension),
             max_batch_size=int(s.glm_batch_size),
+            # Local embedding配置
+            use_local_embedding=use_local,
+            local_embedding_model=local_model,
             # 检索配置
             default_semantic_k=int(s.semantic_default_k),
             min_similarity_threshold=float(s.semantic_min_similarity),
