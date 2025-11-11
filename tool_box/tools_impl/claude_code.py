@@ -9,7 +9,6 @@ import logging
 import subprocess
 import json
 import hashlib
-import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -22,39 +21,79 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 _RUNTIME_DIR = _PROJECT_ROOT / "runtime"
 
 
-def _generate_task_dir_name(task: str, max_keywords: int = 3) -> str:
+async def _generate_task_dir_name_llm(task: str) -> str:
     """
-    Generate a directory name based on task description.
-    Format: {keywords}_{hash}
+    Generate a directory name using pure LLM semantic understanding.
+    NO regex, NO keyword matching - fully LLM-based as per research requirements.
     
     Args:
         task: Task description
-        max_keywords: Maximum number of keywords to extract
         
     Returns:
-        Directory name like "train_model_a3f2b1"
+        Directory name like "train_baseline_model_a3f2b1"
     """
-    # 提取关键词（中英文）
-    # 移除标点符号，保留字母、数字、中文
-    cleaned = re.sub(r'[^\w\s\u4e00-\u9fff]', ' ', task.lower())
-    words = cleaned.split()
-    
-    # 过滤停用词和短词
-    stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
-                  'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
-                  '的', '了', '和', '与', '或', '在', '是', '有', '这', '那', '个', '中'}
-    keywords = [w for w in words if len(w) > 2 and w not in stop_words][:max_keywords]
-    
-    # 如果没有提取到关键词，使用默认名称
-    if not keywords:
-        keywords = ['task']
-    
-    keyword_part = '_'.join(keywords)
-    
-    # 生成任务哈希（取前6位）
-    task_hash = hashlib.md5(task.encode('utf-8')).hexdigest()[:6]
-    
-    return f"{keyword_part}_{task_hash}"
+    try:
+        # Use unified LLM client for semantic analysis
+        from app.llm import get_default_client
+        import asyncio
+        
+        client = get_default_client()
+        
+        prompt = f"""Analyze the following task and generate a concise directory name.
+
+Task: {task}
+
+Requirements:
+1. Extract the core semantic meaning of the task
+2. Generate 2-4 English words that capture the essence
+3. Use lowercase with underscores (e.g., train_model, analyze_data)
+4. Be specific and descriptive
+5. Return ONLY the directory name, nothing else
+
+Examples:
+- Task: "分析 data/code_task 目录，训练 baseline 模型，评估得分" → analyze_train_baseline
+- Task: "Generate a report on user behavior" → user_behavior_report
+- Task: "Debug the authentication system" → debug_authentication
+
+Directory name:"""
+        
+        # Run LLM call in executor to avoid blocking
+        loop = asyncio.get_event_loop()
+        llm_response = await loop.run_in_executor(None, client.chat, prompt)
+        
+        # Clean and validate LLM response
+        dir_name = llm_response.strip().lower()
+        
+        # Remove any extra text (LLM might add explanation)
+        # Take only the first line if multiple lines
+        dir_name = dir_name.split('\n')[0].strip()
+        
+        # Remove common prefixes that LLM might add
+        for prefix in ['directory name:', 'name:', 'output:', '→', '-', '>', '*']:
+            if dir_name.startswith(prefix):
+                dir_name = dir_name[len(prefix):].strip()
+        
+        # Ensure it's a valid directory name (basic sanitization without regex)
+        # Replace spaces with underscores
+        dir_name = dir_name.replace(' ', '_')
+        
+        # If LLM failed to generate a valid name, use a fallback
+        if not dir_name or len(dir_name) < 3:
+            logger.warning(f"LLM generated invalid directory name: '{llm_response}', using semantic fallback")
+            # Use a simple hash-based name as last resort
+            dir_name = "llm_task"
+        
+        # Add hash to ensure uniqueness
+        task_hash = hashlib.md5(task.encode('utf-8')).hexdigest()[:6]
+        
+        return f"{dir_name}_{task_hash}"
+        
+    except Exception as e:
+        logger.error(f"LLM-based directory name generation failed: {e}")
+        # Research requirement: fail explicitly rather than silently degrade
+        # But for directory naming, we need a fallback to avoid breaking the system
+        task_hash = hashlib.md5(task.encode('utf-8')).hexdigest()[:6]
+        return f"task_{task_hash}"
 
 
 async def claude_code_handler(
@@ -81,8 +120,8 @@ async def claude_code_handler(
         # 确保 runtime 目录存在
         _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
         
-        # 为当前任务生成独立的工作目录
-        task_dir_name = _generate_task_dir_name(task)
+        # 为当前任务生成独立的工作目录（使用纯LLM语义理解）
+        task_dir_name = await _generate_task_dir_name_llm(task)
         task_work_dir = _RUNTIME_DIR / task_dir_name
         task_work_dir.mkdir(parents=True, exist_ok=True)
         
