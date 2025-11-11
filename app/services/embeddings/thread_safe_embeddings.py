@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from app.services.foundation.config import get_config
 from app.services.embeddings.glm_api_client import GLMApiClient
+from app.services.embeddings.local_embedding_client import LocalEmbeddingClient
 from app.services.embeddings.similarity_calculator import SimilarityCalculator
 from app.services.embeddings.thread_safe_async_manager import ThreadSafeAsyncManager
 from app.services.embeddings.thread_safe_batch_processor import ThreadSafeBatchProcessor
@@ -24,15 +25,21 @@ logger = logging.getLogger(__name__)
 
 
 class ThreadSafeEmbeddingsService:
-    """线程安全的GLM嵌入向量服务类"""
+    """线程安全的嵌入向量服务类（支持本地和远程模型）"""
 
     def __init__(self):
         """初始化线程安全的服务组件"""
         self.config = get_config()
         self.cache = get_thread_safe_embedding_cache()
 
-        # 初始化线程安全的专用组件
-        self.api_client = GLMApiClient(self.config)
+        # 根据配置选择本地或远程API客户端
+        if self.config.use_local_embedding:
+            logger.info("Using local embedding model (thread-safe)")
+            self.api_client = LocalEmbeddingClient(self.config)
+        else:
+            logger.info("Using GLM API for embeddings (thread-safe)")
+            self.api_client = GLMApiClient(self.config)
+        
         self.batch_processor = ThreadSafeBatchProcessor(self.config, self.api_client, self.cache)
         self.async_manager = ThreadSafeAsyncManager(self.batch_processor)
         self.similarity_calculator = SimilarityCalculator()
@@ -40,7 +47,7 @@ class ThreadSafeEmbeddingsService:
         # 服务级别的锁
         self._service_lock = threading.RLock()
 
-        logger.info("Thread-safe GLM embeddings service initialized")
+        logger.info(f"Thread-safe embeddings service initialized - Type: {'Local' if self.config.use_local_embedding else 'GLM API'}")
 
     # 核心嵌入方法 - 委托给线程安全批处理器
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:

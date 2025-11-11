@@ -135,13 +135,16 @@ Return your judgment in JSON format:
 
 Only return JSON, no other content."""
 
-                response = await self.llm_client.chat(
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,  # 降低温度以获得更稳定的判断
+                # 注意：llm_client.chat() 是同步方法，需要用 run_in_executor
+                import asyncio
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.llm_client.chat(prompt, temperature=0.3)
                 )
                 
                 # 解析LLM响应
-                response_text = response.get("content", "").strip()
+                response_text = response.strip() if isinstance(response, str) else response.get("content", "").strip()
                 
                 # 尝试提取JSON
                 if "```json" in response_text:

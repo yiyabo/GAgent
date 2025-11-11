@@ -299,6 +299,9 @@ async def update_chat_session(
 
     try:
         with get_db() as conn:
+            # 确保session存在，如果不存在则自动创建
+            _ensure_session_exists(session_id, conn)
+            
             row = conn.execute(
                 "SELECT id FROM chat_sessions WHERE id=?", (session_id,)
             ).fetchone()
@@ -1111,6 +1114,22 @@ def _save_chat_message(
                 """,
                 (session_id, role, content, metadata_json),
             )
+            
+            # Process message through chat memory middleware
+            try:
+                from ..services.memory.chat_memory_middleware import get_chat_memory_middleware
+                
+                middleware = get_chat_memory_middleware()
+                # Run async middleware in background (fire and forget)
+                asyncio.create_task(
+                    middleware.process_message(
+                        content=content,
+                        role=role,
+                        session_id=session_id
+                    )
+                )
+            except Exception as mem_err:
+                logger.warning(f"Failed to process chat memory: {mem_err}")
             cursor.execute(
                 """
                 UPDATE chat_sessions
@@ -1506,11 +1525,41 @@ async def _execute_action_run(run_id: str) -> None:
         status = "completed" if result.success else "failed"
         result_dict = result.model_dump()
         tool_results_payload: List[Dict[str, Any]] = []
+        
+        # 诊断日志：记录所有步骤
+        logger.info(
+            "[CHAT][TOOL_RESULTS] session=%s tracking=%s total_steps=%d success=%s",
+            record.get("session_id"),
+            run_id,
+            len(result.steps),
+            result.success,
+        )
+        
         for step in result.steps:
+            logger.info(
+                "[CHAT][TOOL_RESULTS] session=%s tracking=%s step_kind=%s step_name=%s step_success=%s",
+                record.get("session_id"),
+                run_id,
+                step.action.kind,
+                step.action.name,
+                step.success,
+            )
+            
             if step.action.kind != "tool_operation":
                 continue
             details = step.details or {}
             result_payload = details.get("result")
+            
+            # 诊断日志：记录result类型
+            logger.info(
+                "[CHAT][TOOL_RESULTS] session=%s tracking=%s tool=%s result_type=%s has_result=%s",
+                record.get("session_id"),
+                run_id,
+                step.action.name,
+                type(result_payload).__name__,
+                result_payload is not None,
+            )
+            
             if isinstance(result_payload, dict):
                 tool_results_payload.append({
                     "name": step.action.name,
@@ -1518,8 +1567,29 @@ async def _execute_action_run(run_id: str) -> None:
                     "parameters": details.get("parameters"),
                     "result": result_payload,
                 })
+            else:
+                # 如果不是dict，尝试包装一下
+                logger.warning(
+                    "[CHAT][TOOL_RESULTS] session=%s tracking=%s tool=%s result is not dict, wrapping it",
+                    record.get("session_id"),
+                    run_id,
+                    step.action.name,
+                )
+                tool_results_payload.append({
+                    "name": step.action.name,
+                    "summary": details.get("summary"),
+                    "parameters": details.get("parameters"),
+                    "result": {"output": str(result_payload)} if result_payload is not None else {},
+                })
+        
         if tool_results_payload:
             result_dict["tool_results"] = tool_results_payload
+            logger.info(
+                "[CHAT][TOOL_RESULTS] session=%s tracking=%s collected %d tool results",
+                record.get("session_id"),
+                run_id,
+                len(tool_results_payload),
+            )
         
         # Agent Loop: 让 LLM 基于工具结果生成最终总结
         # 关键：必须在 update_action_run 之前完成，否则前端会停止轮询
