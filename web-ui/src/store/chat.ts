@@ -1029,6 +1029,16 @@ export const useChatStore = create<ChatState>()(
               } catch (patchError) {
                 console.warn('同步会话信息失败:', patchError);
               }
+              
+              // 刷新聊天历史以显示工具执行后的总结消息
+              if (status.status === 'completed') {
+                try {
+                  await get().loadChatHistory(sessionAfter.session_id ?? sessionAfter.id);
+                  console.log('✅ 工具执行完成，已刷新聊天历史');
+                } catch (refreshError) {
+                  console.warn('刷新聊天历史失败:', refreshError);
+                }
+              }
             }
           })();
         }

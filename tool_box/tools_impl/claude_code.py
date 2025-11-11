@@ -160,13 +160,13 @@ async def claude_code_handler(
         
         logger.info(f"Executing Claude CLI in task directory: {task_work_dir}")
         
-        # 在任务专属目录执行
+        # 在任务专属目录执行（无超时限制，允许长时间运行）
         result = subprocess.run(
             cmd,
             cwd=str(task_work_dir),
             capture_output=True,
             text=True,
-            timeout=300,  # 5分钟超时（训练模型可能需要更长时间）
+            timeout=None,  # 无超时限制，支持长时间任务（如模型训练）
         )
         
         success = result.returncode == 0
@@ -197,9 +197,10 @@ async def claude_code_handler(
         }
         
     except subprocess.TimeoutExpired:
+        # 理论上不会触发，因为timeout=None，但保留以防万一
         return {
             "success": False,
-            "error": "Claude CLI execution timed out (5 minutes limit)",
+            "error": "Claude CLI execution was interrupted unexpectedly",
             "task": task,
         }
     except FileNotFoundError:

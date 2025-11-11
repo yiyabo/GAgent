@@ -217,7 +217,8 @@ Return the analysis result in JSON format:
 }}
 """
 
-            response = self.llm_client.chat([{"role": "user", "content": prompt}])
+            # 使用正确的chat方法调用
+            response = self.llm_client.chat(prompt)
 
             # 处理响应格式
             if isinstance(response, dict):
