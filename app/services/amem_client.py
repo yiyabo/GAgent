@@ -48,7 +48,14 @@ class AMemClient:
     async def _get_client(self) -> httpx.AsyncClient:
         """获取或创建HTTP客户端"""
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self.timeout)
+            # 使用自定义transport避免连接问题
+            transport = httpx.AsyncHTTPTransport(retries=0)
+            self._client = httpx.AsyncClient(
+                transport=transport,
+                timeout=self.timeout,
+                http2=False,  # 禁用HTTP/2，使用HTTP/1.1
+                limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+            )
         return self._client
     
     async def close(self):
