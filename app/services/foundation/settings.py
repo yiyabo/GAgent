@@ -141,6 +141,14 @@ if _USE_PYDANTIC:
             default=10000, env="JOB_LOG_MAX_ROWS"
         )
 
+        # A-mem (Agentic Memory) 配置
+        amem_enabled: bool = Field(
+            default=False, env="AMEM_ENABLED"
+        )
+        amem_url: str = Field(
+            default="http://localhost:8001", env="AMEM_URL"
+        )
+
         if ConfigDict is not None:
             model_config = ConfigDict(env_file=".env", extra="allow", case_sensitive=False)
         else:
