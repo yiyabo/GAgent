@@ -2428,6 +2428,33 @@ class StructuredChatAgent:
                     details={"error": "invalid_task", "tool": tool_name},
                 )
 
+            # 🔍 A-mem集成：查询历史执行经验
+            original_task = task_value.strip()
+            enhanced_task = original_task
+            amem_experiences = []
+            
+            try:
+                from ..services.amem_client import get_amem_client
+                amem_client = get_amem_client()
+                
+                if amem_client.enabled:
+                    # 查询相似的历史执行经验
+                    amem_experiences = await amem_client.query_experiences(
+                        query=original_task,
+                        top_k=3
+                    )
+                    
+                    if amem_experiences:
+                        # 格式化经验供LLM参考
+                        experience_context = amem_client.format_experiences_for_llm(amem_experiences)
+                        enhanced_task = f"{original_task}\n\n{experience_context}"
+                        logger.info(
+                            f"[AMEM] Enhanced task with {len(amem_experiences)} historical experiences"
+                        )
+            except Exception as amem_err:
+                logger.warning(f"[AMEM] Failed to query experiences: {amem_err}")
+                # 继续执行，不影响主流程
+
             # Optional: allowed_tools parameter
             allowed_tools = params.get("allowed_tools")
             if allowed_tools and not isinstance(allowed_tools, str):
@@ -2442,9 +2469,9 @@ class StructuredChatAgent:
                 elif isinstance(add_dirs_param, str):
                     add_dirs = add_dirs_param
 
-            # Build final params
+            # Build final params (使用增强后的任务描述)
             params = {
-                "task": task_value.strip(),
+                "task": enhanced_task,
             }
             if allowed_tools:
                 params["allowed_tools"] = allowed_tools
@@ -2484,6 +2511,28 @@ class StructuredChatAgent:
             message = summary or f"{tool_name} failed to execute."
         else:
             message = summary or f"{tool_name} finished execution."
+
+        # 💾 A-mem集成：保存执行结果（异步，不阻塞主流程）
+        if tool_name == "claude_code":
+            try:
+                from ..services.amem_client import get_amem_client
+                amem_client = get_amem_client()
+                
+                if amem_client.enabled:
+                    # 异步保存到A-mem
+                    asyncio.create_task(
+                        amem_client.save_execution(
+                            task=original_task,  # 使用原始任务描述
+                            result=sanitized,
+                            session_id=self.session_id,
+                            plan_id=self.plan_session.plan_id,
+                            key_findings=summary  # 将总结作为关键发现
+                        )
+                    )
+                    logger.info("[AMEM] Scheduled execution result save")
+            except Exception as amem_err:
+                logger.warning(f"[AMEM] Failed to schedule save: {amem_err}")
+                # 不影响主流程
 
         return AgentStep(
             action=action,
