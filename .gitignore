@@ -8,6 +8,5 @@ example/
 web-ui/.env
 web-ui/.env.development
 web-ui/node_modules
-scripts/*
 runtime/*
 .spec-workflow
