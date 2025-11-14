@@ -1331,22 +1331,30 @@ async def _generate_tool_summary(
         
         tools_text = "\n\n".join(tools_description)
         
-        # 构建 prompt
-        prompt = f"""你是一个智能助手。你刚刚执行了一些工具来帮助用户完成任务。
+        # Use prompt manager for internationalized prompts
+        from app.prompts import prompt_manager
+        
+        intro = prompt_manager.get("chat.tool_summary.intro")
+        user_q_label = prompt_manager.get("chat.tool_summary.user_question")
+        tools_label = prompt_manager.get("chat.tool_summary.tools_executed")
+        instruction = prompt_manager.get("chat.tool_summary.instruction")
+        requirements = prompt_manager.get_category("chat")["tool_summary"]["requirements"]
+        response_label = prompt_manager.get("chat.tool_summary.response_prompt")
+        
+        requirements_text = "\n".join(requirements)
+        
+        prompt = f"""{intro}
 
-用户的问题：
+{user_q_label}
 {user_message}
 
-你执行的工具及结果：
+{tools_label}
 {tools_text}
 
-请基于这些工具执行结果，用自然、友好的语言向用户总结并回答他们的问题。要求：
-1. 直接给出答案，不要重复用户的问题
-2. 如果有具体的数值或结果，明确指出
-3. 如果执行过程中有问题，说明情况
-4. 保持简洁，不要过度解释工具本身
+{instruction}
+{requirements_text}
 
-你的回复："""
+{response_label}"""
 
         # 调用 LLM
         llm_service = get_llm_service()
