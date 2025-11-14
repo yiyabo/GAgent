@@ -297,4 +297,49 @@ PROMPTS_EN_US = {
             "loaded_from_cache": "Loaded from cache",
         },
     },
+    # ============== Chat Summarization ==============
+    "chat": {
+        "tool_summary": {
+            "intro": "You are an intelligent assistant. You have just executed some tools to help the user complete their task.",
+            "user_question": "User's Question:",
+            "tools_executed": "Tools Executed and Results:",
+            "instruction": "Based on these tool execution results, summarize and answer the user's question in natural, friendly language. Requirements:",
+            "requirements": [
+                "1. Provide direct answers without repeating the user's question",
+                "2. If there are specific values or results, clearly state them",
+                "3. If there were issues during execution, explain the situation",
+                "4. Keep it concise and don't over-explain the tools themselves",
+            ],
+            "response_prompt": "Your Response:",
+        },
+    },
+    # ============== Task Decomposition ==============
+    "decomposition": {
+        "root_task": {
+            "intro": "Please decompose the following root task into {min_tasks}-{max_tasks} main functional modules or phases:",
+            "task_name": "Task Name:",
+            "task_description": "Task Description:",
+            "principles": "Decomposition Principles:",
+            "principles_list": [
+                "1. Each subtask should be a relatively independent functional module or implementation phase",
+                "2. Subtasks should have clear boundaries and responsibility divisions",
+                "3. Priority should reflect the implementation sequence and importance",
+                "4. Each subtask name should be concise and clear, with detailed descriptions",
+            ],
+            "format_instruction": "Please return the decomposition results in the following format:",
+        },
+        "composite_task": {
+            "intro": "Please further decompose the following composite task into {min_tasks}-{max_tasks} specific implementation steps:",
+            "task_name": "Task Name:",
+            "task_description": "Task Description:",
+            "principles": "Decomposition Principles:",
+            "principles_list": [
+                "1. Each subtask should be a specific implementation step or technical task",
+                "2. Subtasks should be directly executable atomic operations",
+                "3. Priority should reflect execution dependencies and importance",
+                "4. Each subtask should have clear inputs, outputs, and acceptance criteria",
+            ],
+            "format_instruction": "Please return the decomposition results in the following format:",
+        },
+    },
 }
