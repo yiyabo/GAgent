@@ -372,35 +372,54 @@ def _build_decomposition_prompt(task_name: str, task_prompt: str, task_type: Tas
     Returns:
         分解提示字符串
     """
+    # Use prompt manager for internationalized prompts
+    from app.prompts import prompt_manager
+    
     if task_type == TaskType.ROOT:
+        intro = prompt_manager.get("decomposition.root_task.intro", 
+                                   min_tasks=MIN_ATOMIC_TASKS, 
+                                   max_tasks=max_subtasks)
+        task_name_label = prompt_manager.get("decomposition.root_task.task_name")
+        task_desc_label = prompt_manager.get("decomposition.root_task.task_description")
+        principles_label = prompt_manager.get("decomposition.root_task.principles")
+        principles_list = prompt_manager.get_category("decomposition")["root_task"]["principles_list"]
+        format_instruction = prompt_manager.get("decomposition.root_task.format_instruction")
+        
+        principles_text = "\n".join(principles_list)
+        
         decomp_instruction = f"""
-请将以下根任务分解为 {MIN_ATOMIC_TASKS}-{max_subtasks} 个主要的功能模块或阶段：
+{intro}
 
-任务名称：{task_name}
-任务描述：{task_prompt}
+{task_name_label} {task_name}
+{task_desc_label} {task_prompt}
 
-分解原则：
-1. 每个子任务应该是一个相对独立的功能模块或实现阶段
-2. 子任务之间应该有清晰的边界和职责划分
-3. 优先级应该反映实现的先后顺序和重要性
-4. 每个子任务的名称应该简洁明确，描述应该详细具体
+{principles_label}
+{principles_text}
 
-请按照以下格式返回分解结果：
+{format_instruction}
 """
     elif task_type == TaskType.COMPOSITE:
+        intro = prompt_manager.get("decomposition.composite_task.intro", 
+                                   min_tasks=MIN_ATOMIC_TASKS, 
+                                   max_tasks=max_subtasks)
+        task_name_label = prompt_manager.get("decomposition.composite_task.task_name")
+        task_desc_label = prompt_manager.get("decomposition.composite_task.task_description")
+        principles_label = prompt_manager.get("decomposition.composite_task.principles")
+        principles_list = prompt_manager.get_category("decomposition")["composite_task"]["principles_list"]
+        format_instruction = prompt_manager.get("decomposition.composite_task.format_instruction")
+        
+        principles_text = "\n".join(principles_list)
+        
         decomp_instruction = f"""
-请将以下复合任务进一步分解为 {MIN_ATOMIC_TASKS}-{max_subtasks} 个具体的实现步骤：
+{intro}
 
-任务名称：{task_name}
-任务描述：{task_prompt}
+{task_name_label} {task_name}
+{task_desc_label} {task_prompt}
 
-分解原则：
-1. 每个子任务应该是一个具体的实现步骤或技术任务
-2. 子任务应该是可以直接执行的原子操作
-3. 优先级应该反映执行的依赖关系和重要性
-4. 每个子任务应该有明确的输入、输出和验收标准
+{principles_label}
+{principles_text}
 
-请按照以下格式返回分解结果：
+{format_instruction}
 """
     else:
         # 原子任务不应该被分解，返回空提示
