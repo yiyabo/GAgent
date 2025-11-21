@@ -294,6 +294,17 @@ export interface ToolResultPayload {
   } | null;
 }
 
+// 上传文件相关类型
+export interface UploadedFile {
+  file_id: string;
+  file_path: string;
+  file_name: string;
+  original_name: string;
+  file_size: string;
+  file_type: string;
+  uploaded_at: string;
+}
+
 export interface ChatResponseMetadata {
   status?: ChatActionStatus;
   tracking_id?: string;
@@ -361,7 +372,11 @@ export interface ChatMessage {
       message?: string | null;
     }>;
     code_blocks?: string[];
-    attachments?: string[];
+    attachments?: Array<{
+      type: 'pdf' | 'image';
+      path: string;
+      name: string;
+    }>;
     task_search_result?: boolean;
     tasks_found?: number;
     tool_executed?: boolean;

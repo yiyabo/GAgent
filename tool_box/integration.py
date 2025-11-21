@@ -18,6 +18,7 @@ from .tools_impl import (
     graph_rag_tool,
     internal_api_tool,
     web_search_tool,
+    document_reader_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,17 @@ class ToolBoxIntegration:
             handler=internal_api_tool["handler"],
             tags=internal_api_tool.get("tags", []),
             examples=internal_api_tool.get("examples", []),
+        )
+
+        # Register document reader tool
+        register_tool(
+            name=document_reader_tool["name"],
+            description=document_reader_tool["description"],
+            category=document_reader_tool["category"],
+            parameters_schema=document_reader_tool["parameters_schema"],
+            handler=document_reader_tool["handler"],
+            tags=document_reader_tool.get("tags", []),
+            examples=document_reader_tool.get("examples", []),
         )
 
         register_tool(
