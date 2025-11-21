@@ -25,6 +25,8 @@ import {
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import ChatMessage from '@components/chat/ChatMessage';
+import FileUploadButton from '@components/chat/FileUploadButton';
+import UploadedFilesList from '@components/chat/UploadedFilesList';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
@@ -345,6 +347,9 @@ const ChatMainArea: React.FC = () => {
         flexShrink: 0,
       }}>
         <div style={{ maxWidth: 840, margin: '0 auto' }}>
+          {/* 上传文件列表 */}
+          <UploadedFilesList />
+          
           <div
             style={{
               display: 'flex',
@@ -352,13 +357,19 @@ const ChatMainArea: React.FC = () => {
               alignItems: 'stretch',
             }}
           >
+            {/* 左侧上传按钮组 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, justifyContent: 'center' }}>
+              <FileUploadButton type="file" size="middle" />
+              <FileUploadButton type="image" size="middle" />
+            </div>
+
             <TextArea
               ref={inputRef}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyPress={handleKeyPress}
               placeholder="输入你的需求... (Shift+Enter换行，Enter发送)"
-              autoSize={{ minRows: 1, maxRows: 4 }}
+              autoSize={{ minRows: 2, maxRows: 6 }}
               disabled={isProcessing}
               style={{
                 resize: 'none',
@@ -376,7 +387,7 @@ const ChatMainArea: React.FC = () => {
               }}
             >
               <Select
-                size="small"
+                size="middle"
                 value={providerValue}
                 placeholder="选择网络搜索来源"
                 options={providerOptions}
@@ -396,6 +407,7 @@ const ChatMainArea: React.FC = () => {
                   borderRadius: 12,
                   paddingLeft: 16,
                   paddingRight: 16,
+                  flex: 1,
                 }}
               >
                 发送

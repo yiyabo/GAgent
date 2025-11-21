@@ -600,6 +600,20 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             request.message,
         )
 
+        # 处理附件：如果context中有attachments，自动附加到消息中
+        message_to_send = request.message
+        attachments = context.get("attachments", [])
+        if attachments and isinstance(attachments, list):
+            attachment_info = "\n\n📎 用户当前上传的附件（请优先关注并使用document_reader读取这些文件）：\n"
+            for att in attachments:
+                if isinstance(att, dict):
+                    att_type = att.get("type", "file")
+                    att_name = att.get("name", "未知文件")
+                    att_path = att.get("path", "")
+                    attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
+            message_to_send = request.message + attachment_info
+            logger.info("[CHAT][ATTACHMENTS] session=%s count=%d", request.session_id, len(attachments))
+
         if plan_session.plan_id is not None:
             context["plan_id"] = plan_session.plan_id
         else:
@@ -633,7 +647,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             extra_context=context,
         )
 
-        structured = await agent.get_structured_response(request.message)
+        structured = await agent.get_structured_response(message_to_send)
 
         if not structured.actions:
             agent_result = await agent.execute_structured(structured)
@@ -2068,6 +2082,7 @@ class StructuredChatAgent:
             "- tool_operation: web_search (use for live web information; requires `query`, optional provider/max_results)",
             "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities)",
             "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs)",
+            "- tool_operation: document_reader (read and analyze files; requires `operation`='read_pdf'/'read_image'/'analyze_image', `file_path`, optional `use_ocr`/`prompt`)",
         ]
         if plan_bound:
             plan_actions = [
@@ -2091,6 +2106,7 @@ class StructuredChatAgent:
             "A `request_subgraph` reply may contain only that action.",
             "Plan nodes do not provide a `priority` field; avoid fabricating it. `status` reflects progress and may be referenced when helpful.",
             "When the user explicitly asks to execute, run, or rerun a task or the plan, include the matching action or explain why it cannot proceed.",
+            "When file attachments are present in the context or message, use `document_reader` to read them if the user asks about their content.",
         ]
         if plan_bound:
             scenario_rules = [
@@ -2485,6 +2501,34 @@ class StructuredChatAgent:
                 params["allowed_tools"] = allowed_tools
             if add_dirs:
                 params["add_dirs"] = add_dirs
+
+        elif tool_name == "document_reader":
+            operation = params.get("operation")
+            file_path = params.get("file_path")
+            
+            if not operation or not file_path:
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="document_reader requires `operation` and `file_path`.",
+                    details={"error": "missing_params", "tool": tool_name},
+                )
+            
+            # 验证操作类型
+            if operation not in ["read_pdf", "read_image", "analyze_image"]:
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message=f"Unsupported operation: {operation}",
+                    details={"error": "invalid_operation", "tool": tool_name},
+                )
+
+            params = {
+                "operation": operation,
+                "file_path": file_path,
+                "use_ocr": params.get("use_ocr", False),
+                "prompt": params.get("prompt"),
+            }
 
         else:
             return AgentStep(
@@ -3206,6 +3250,13 @@ class StructuredChatAgent:
                 "fallback_from",
                 "code",
                 "cache_hit",
+                "text",
+                "page_count",
+                "file_path",
+                "file_type",
+                "base64",
+                "width",
+                "height",
             ):
                 if key in raw_result:
                     sanitized[key] = raw_result[key]
@@ -3331,6 +3382,23 @@ class StructuredChatAgent:
                 return f"Claude Code execution{file_info} succeeded. Output: {snippet}"
             
             return f"Claude Code execution{file_info} succeeded."
+        
+        if tool_name == "document_reader":
+            if result.get("success") is False:
+                error = result.get("error") or "Document reading failed"
+                return f"Document reader failed: {error}"
+            
+            text = result.get("text") or ""
+            page_count = result.get("page_count")
+            
+            if text.strip():
+                snippet = text.strip()
+                if len(snippet) > 200:
+                    snippet = snippet[:197] + "..."
+                page_info = f" ({page_count} pages)" if page_count else ""
+                return f"Document reader{page_info} succeeded. Content preview: {snippet}"
+            
+            return "Document reader succeeded, but no text content was extracted."
         
         return f"{tool_name} finished execution."
 

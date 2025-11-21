@@ -12,6 +12,8 @@ import {
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import ChatMessage from './ChatMessage';
+import FileUploadButton from './FileUploadButton';
+import UploadedFilesList from './UploadedFilesList';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
@@ -218,22 +220,33 @@ const ChatPanel: React.FC = () => {
 
       {/* 输入区域 */}
       <div className="chat-input-area">
+        {/* 上传文件列表 */}
+        <UploadedFilesList />
+        
         <div className="chat-input-main">
+          {/* 调试用：红框区域 */}
+          <div style={{ border: '2px solid red', padding: 4, marginRight: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <FileUploadButton type="file" size="middle" />
+              <FileUploadButton type="image" size="middle" />
+            </div>
+          </div>
+
           <TextArea
             ref={inputRef}
             value={inputText}
             onChange={handleInputChange}
             onKeyPress={handleKeyPress}
             placeholder="输入消息... (Shift+Enter换行，Enter发送)"
-            autoSize={{ minRows: 1, maxRows: 4 }}
+            autoSize={{ minRows: 2, maxRows: 6 }}
             disabled={isProcessing}
             style={{ flex: 1 }}
           />
           <div className="chat-input-side">
             <Select
-              size="small"
+              size="middle"
               value={providerValue}
-              placeholder="选择网络搜索来源"
+              placeholder="选择搜索来源"
               options={providerOptions}
               allowClear
               onChange={handleProviderChange}
@@ -247,23 +260,14 @@ const ChatPanel: React.FC = () => {
               onClick={handleSendMessage}
               disabled={!inputText.trim() || isProcessing}
               loading={isProcessing}
-              style={{ width: '100%' }}
-            />
+              style={{ width: '100%', flex: 1 }}
+            >
+              发送
+            </Button>
           </div>
         </div>
 
-        <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between' }}>
-          <Space size="small">
-            <Tooltip title="附件">
-              <Button 
-                type="text" 
-                size="small" 
-                icon={<PaperClipOutlined />}
-                disabled
-              />
-            </Tooltip>
-          </Space>
-
+        <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
           <Space size="small">
             <Tooltip title="重试">
               <Button

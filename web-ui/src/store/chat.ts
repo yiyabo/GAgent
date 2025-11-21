@@ -13,12 +13,14 @@ import {
   Memory,
   PlanSyncEventDetail,
   ToolResultPayload,
+  UploadedFile,
   WebSearchProvider,
 } from '@/types';
 import { SessionStorage } from '@/utils/sessionStorage';
 import { useTasksStore } from '@store/tasks';
 import { memoryApi } from '@api/memory';
 import { chatApi } from '@api/chat';
+import { uploadApi } from '@api/upload';
 import { ENV } from '@/config/env';
 import {
   collectToolResultsFromActions,
@@ -152,6 +154,10 @@ interface ChatState {
   memoryEnabled: boolean;
   relevantMemories: Memory[];
 
+  // 文件上传相关状态
+  uploadedFiles: UploadedFile[];
+  uploadingFiles: Array<{ file: File; progress: number }>;
+
   // 操作方法
   setCurrentSession: (session: ChatSession | null) => void;
   addSession: (session: ChatSession) => void;
@@ -196,6 +202,12 @@ interface ChatState {
   restoreSession: (sessionId: string, title?: string) => Promise<ChatSession>;
   loadChatHistory: (sessionId: string) => Promise<void>;
   setDefaultSearchProvider: (provider: WebSearchProvider | null) => Promise<void>;
+  
+  // 文件上传操作
+  uploadFile: (file: File) => Promise<UploadedFile>;
+  uploadImage: (file: File) => Promise<UploadedFile>;
+  removeUploadedFile: (fileId: string) => Promise<void>;
+  clearUploadedFiles: () => void;
 }
 
 export const useChatStore = create<ChatState>()(
@@ -218,6 +230,8 @@ export const useChatStore = create<ChatState>()(
     chatPanelWidth: 400,
     memoryEnabled: true, // 默认启用记忆功能
     relevantMemories: [],
+    uploadedFiles: [],
+    uploadingFiles: [],
 
     // 设置当前会话
     setCurrentSession: (session) => {
@@ -547,7 +561,17 @@ export const useChatStore = create<ChatState>()(
         currentSession,
         memoryEnabled,
         defaultSearchProvider,
+        uploadedFiles,
       } = get();
+      // 如果有上传的文件，添加到metadata中
+      const attachments = uploadedFiles.length > 0
+        ? uploadedFiles.map((f) => ({
+            type: (f.file_type.startsWith('image/') ? 'image' : 'pdf') as 'pdf' | 'image',
+            path: f.file_path,
+            name: f.original_name,
+          }))
+        : undefined;
+
       const mergedMetadata = {
         ...metadata,
         plan_id: metadata?.plan_id ?? currentPlanId ?? undefined,
@@ -555,6 +579,7 @@ export const useChatStore = create<ChatState>()(
         task_id: metadata?.task_id ?? currentTaskId ?? undefined,
         task_name: metadata?.task_name ?? currentTaskName ?? undefined,
         workflow_id: metadata?.workflow_id ?? currentWorkflowId ?? undefined,
+        attachments,
       };
 
       const userMessage: ChatMessage = {
@@ -611,7 +636,10 @@ export const useChatStore = create<ChatState>()(
           history: recentMessages,
           mode: 'assistant' as const,
           default_search_provider: providerToUse ?? undefined,
-          metadata: providerToUse ? { default_search_provider: providerToUse } : undefined,
+          metadata: {
+            ...(providerToUse ? { default_search_provider: providerToUse } : {}),
+            ...(attachments ? { attachments } : {}),
+          },
         };
 
         const result: ChatResponsePayload = await chatApi.sendMessage(
@@ -1469,6 +1497,86 @@ export const useChatStore = create<ChatState>()(
         console.error('加载会话列表失败:', error);
         throw error;
       }
+    },
+
+    // 文件上传方法
+    uploadFile: async (file: File) => {
+      const session = get().currentSession;
+      if (!session) {
+        throw new Error('请先创建或选择一个会话');
+      }
+
+      try {
+        const response = await uploadApi.uploadFile(file, session.id);
+        const uploadedFile: UploadedFile = {
+          file_id: response.file_path.split('/').pop()?.split('_')[0] || '',
+          file_path: response.file_path,
+          file_name: response.file_name,
+          original_name: response.original_name,
+          file_size: response.file_size,
+          file_type: response.file_type,
+          uploaded_at: response.uploaded_at,
+        };
+
+        set((state) => ({
+          uploadedFiles: [...state.uploadedFiles, uploadedFile],
+        }));
+
+        return uploadedFile;
+      } catch (error) {
+        console.error('上传文件失败:', error);
+        throw error;
+      }
+    },
+
+    uploadImage: async (file: File) => {
+      const session = get().currentSession;
+      if (!session) {
+        throw new Error('请先创建或选择一个会话');
+      }
+
+      try {
+        const response = await uploadApi.uploadImage(file, session.id);
+        const uploadedFile: UploadedFile = {
+          file_id: response.file_path.split('/').pop()?.split('_')[0] || '',
+          file_path: response.file_path,
+          file_name: response.file_name,
+          original_name: response.original_name,
+          file_size: response.file_size,
+          file_type: response.file_type,
+          uploaded_at: response.uploaded_at,
+        };
+
+        set((state) => ({
+          uploadedFiles: [...state.uploadedFiles, uploadedFile],
+        }));
+
+        return uploadedFile;
+      } catch (error) {
+        console.error('上传图片失败:', error);
+        throw error;
+      }
+    },
+
+    removeUploadedFile: async (fileId: string) => {
+      const session = get().currentSession;
+      if (!session) {
+        return;
+      }
+
+      try {
+        await uploadApi.deleteFile(fileId, session.id);
+        set((state) => ({
+          uploadedFiles: state.uploadedFiles.filter((f) => f.file_id !== fileId),
+        }));
+      } catch (error) {
+        console.error('删除文件失败:', error);
+        throw error;
+      }
+    },
+
+    clearUploadedFiles: () => {
+      set({ uploadedFiles: [] });
     },
   }))
 );
