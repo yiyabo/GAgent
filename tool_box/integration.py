@@ -19,6 +19,7 @@ from .tools_impl import (
     internal_api_tool,
     web_search_tool,
     document_reader_tool,
+    vision_reader_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,17 @@ class ToolBoxIntegration:
             handler=document_reader_tool["handler"],
             tags=document_reader_tool.get("tags", []),
             examples=document_reader_tool.get("examples", []),
+        )
+
+        # Register vision reader tool (vision-based OCR/figure/equation reader)
+        register_tool(
+            name=vision_reader_tool["name"],
+            description=vision_reader_tool["description"],
+            category=vision_reader_tool["category"],
+            parameters_schema=vision_reader_tool["parameters_schema"],
+            handler=vision_reader_tool["handler"],
+            tags=vision_reader_tool.get("tags", []),
+            examples=vision_reader_tool.get("examples", []),
         )
 
         register_tool(

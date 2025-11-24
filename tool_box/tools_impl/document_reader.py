@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .vision_reader import _call_qwen_vision_api
+
 logger = logging.getLogger(__name__)
 
 
@@ -219,47 +221,24 @@ async def analyze_image_with_llm(file_path: str, prompt: Optional[str] = None) -
         # 获取base64编码
         image_base64 = image_result["base64_full"]
         
-        # 使用GLM-4V或其他支持视觉的模型
-        from app.llm import get_default_client
-        
-        llm_client = get_default_client()
-        
-        # 构建消息
+        # 构建分析提示词
         if prompt is None:
             prompt = "请详细描述这张图片的内容，包括主要对象、场景、颜色、布局等信息。"
-        
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_base64}"
-                        }
-                    }
-                ]
-            }
-        ]
-        
-        # 调用LLM（假设支持视觉输入）
+
+        # 使用与 vision_reader 相同的 Qwen 视觉接口，构造符合 OpenAI 兼容格式的请求
         try:
-            response = await llm_client.chat(messages, model="glm-4v")
-            
+            analysis_text = await _call_qwen_vision_api(prompt, image_result["file_path"])
+
             return {
                 "success": True,
                 "file_path": image_result["file_path"],
                 "file_name": image_result["file_name"],
                 "image_info": image_result["image_info"],
-                "analysis": response,
+                "text": analysis_text,
                 "prompt": prompt,
                 "summary": f"成功使用LLM分析图片: {image_result['file_name']}"
             }
-            
+
         except Exception as llm_error:
             return {
                 "success": False,

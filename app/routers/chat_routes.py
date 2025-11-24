@@ -2083,6 +2083,7 @@ class StructuredChatAgent:
             "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities)",
             "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs)",
             "- tool_operation: document_reader (read and analyze files; requires `operation`='read_pdf'/'read_image'/'analyze_image', `file_path`, optional `use_ocr`/`prompt`)",
+            "- tool_operation: vision_reader (vision-based OCR and figure/equation reading for images or scanned pages; requires `operation` and `image_path`, optional page_number/region/question/language)",
         ]
         if plan_bound:
             plan_actions = [
@@ -2106,7 +2107,7 @@ class StructuredChatAgent:
             "A `request_subgraph` reply may contain only that action.",
             "Plan nodes do not provide a `priority` field; avoid fabricating it. `status` reflects progress and may be referenced when helpful.",
             "When the user explicitly asks to execute, run, or rerun a task or the plan, include the matching action or explain why it cannot proceed.",
-            "When file attachments are present in the context or message, use `document_reader` to read them if the user asks about their content.",
+            "When file attachments are present in the context or message, use `document_reader` for text-based PDFs/images and `vision_reader` when the content is primarily image-based (scanned pages, screenshots, figures, or equation images).",
         ]
         if plan_bound:
             scenario_rules = [
@@ -2529,6 +2530,38 @@ class StructuredChatAgent:
                 "use_ocr": params.get("use_ocr", False),
                 "prompt": params.get("prompt"),
             }
+
+        elif tool_name == "vision_reader":
+            operation = params.get("operation")
+            image_path = params.get("image_path")
+
+            if not operation or not image_path:
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="vision_reader requires `operation` and `image_path`.",
+                    details={"error": "missing_params", "tool": tool_name},
+                )
+
+            page_number = params.get("page_number")
+            region = params.get("region")
+            question = params.get("question")
+            language = params.get("language")
+
+            clean_params: Dict[str, Any] = {
+                "operation": operation,
+                "image_path": image_path,
+            }
+            if isinstance(page_number, int):
+                clean_params["page_number"] = page_number
+            if isinstance(region, dict):
+                clean_params["region"] = region
+            if isinstance(question, str):
+                clean_params["question"] = question
+            if isinstance(language, str):
+                clean_params["language"] = language
+
+            params = clean_params
 
         else:
             return AgentStep(
@@ -3257,6 +3290,10 @@ class StructuredChatAgent:
                 "base64",
                 "width",
                 "height",
+                "operation",
+                "image_path",
+                "page_number",
+                "language",
             ):
                 if key in raw_result:
                     sanitized[key] = raw_result[key]
@@ -3383,6 +3420,21 @@ class StructuredChatAgent:
             
             return f"Claude Code execution{file_info} succeeded."
         
+        if tool_name == "vision_reader":
+            if result.get("success") is False:
+                error = result.get("error") or "Vision reader execution failed"
+                return f"Vision reader failed: {error}"
+
+            op = result.get("operation") or "vision task"
+            text = result.get("text") or ""
+            if isinstance(text, str) and text.strip():
+                snippet = text.strip()
+                if len(snippet) > 200:
+                    snippet = snippet[:197] + "..."
+                return f"Vision reader ({op}) succeeded. Content preview: {snippet}"
+
+            return "Vision reader succeeded, but no textual content was extracted."
+
         if tool_name == "document_reader":
             if result.get("success") is False:
                 error = result.get("error") or "Document reading failed"
