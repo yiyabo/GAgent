@@ -12,6 +12,7 @@ from .graph_rag import graph_rag_tool
 from .web_search import web_search_tool
 from .claude_code import claude_code_tool
 from .document_reader import document_reader_tool
+from .vision_reader import vision_reader_tool
 
 __all__ = [
     "web_search_tool",
@@ -21,4 +22,5 @@ __all__ = [
     "graph_rag_tool",
     "claude_code_tool",
     "document_reader_tool",
+    "vision_reader_tool",
 ]

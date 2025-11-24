@@ -107,7 +107,7 @@ async def example_4_llm_analysis():
     else:
         print(f"❌ 失败: {result['error']}")
         if "不支持视觉输入" in result.get('error', ''):
-            print("\n💡 提示: 需要使用支持视觉的模型（如GLM-4V）")
+            print("\n💡 提示: 需要使用支持视觉的模型（如qwen3-vl-plus）")
 
 
 async def example_5_batch_processing():
