@@ -20,6 +20,7 @@ from .tools_impl import (
     web_search_tool,
     document_reader_tool,
     vision_reader_tool,
+    paper_replication_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,17 @@ class ToolBoxIntegration:
             handler=vision_reader_tool["handler"],
             tags=vision_reader_tool.get("tags", []),
             examples=vision_reader_tool.get("examples", []),
+        )
+
+        # Register paper replication tool (ExperimentCard loader for replication targets)
+        register_tool(
+            name=paper_replication_tool["name"],
+            description=paper_replication_tool["description"],
+            category=paper_replication_tool["category"],
+            parameters_schema=paper_replication_tool["parameters_schema"],
+            handler=paper_replication_tool["handler"],
+            tags=paper_replication_tool.get("tags", []),
+            examples=paper_replication_tool.get("examples", []),
         )
 
         register_tool(

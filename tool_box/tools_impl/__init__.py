@@ -13,6 +13,7 @@ from .web_search import web_search_tool
 from .claude_code import claude_code_tool
 from .document_reader import document_reader_tool
 from .vision_reader import vision_reader_tool
+from .paper_replication import paper_replication_tool
 
 __all__ = [
     "web_search_tool",
@@ -23,4 +24,5 @@ __all__ = [
     "claude_code_tool",
     "document_reader_tool",
     "vision_reader_tool",
+    "paper_replication_tool",
 ]
