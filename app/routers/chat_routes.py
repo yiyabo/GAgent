@@ -622,9 +622,28 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
         converted_history = _convert_history_to_agent_format(request.history)
 
         session_settings: Dict[str, Any] = {}
+        
+        # 🔄 任务状态同步：优先使用前端传入的 task_id
+        # 这个逻辑必须在 session_id 检查之前执行，确保 task_id 总是被处理
+        if "task_id" in context and "current_task_id" not in context:
+            context["current_task_id"] = context["task_id"]
+            logger.info(
+                "[CHAT][TASK_SYNC] Using task_id from context: %s",
+                context["current_task_id"],
+            )
+        
         if request.session_id:
             _save_chat_message(request.session_id, "user", request.message)
             session_settings = _get_session_settings(request.session_id)
+            # 如果 context 中没有 current_task_id，尝试从 session 加载
+            if "current_task_id" not in context:
+                current_task_id = _get_session_current_task(request.session_id)
+                if current_task_id is not None:
+                    context["current_task_id"] = current_task_id
+                    logger.info(
+                        "[CHAT][TASK_SYNC] Using current_task_id from session: %s",
+                        current_task_id,
+                    )
 
         explicit_provider = _normalize_search_provider(
             context.get("default_search_provider")
@@ -999,6 +1018,25 @@ def _get_session_settings(session_id: str) -> Dict[str, Any]:
         metadata = _load_session_metadata_dict(conn, session_id)
     settings = _extract_session_settings(metadata)
     return settings or {}
+
+
+def _get_session_current_task(session_id: str) -> Optional[int]:
+    """Get the current_task_id from session if set."""
+    from ..database import get_db  # lazy import to avoid cycles
+
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT current_task_id FROM chat_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+    if not row:
+        return None
+    task_id = row["current_task_id"]
+    if task_id is not None:
+        try:
+            return int(task_id)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _ensure_session_exists(
@@ -1475,6 +1513,23 @@ async def _execute_action_run(run_id: str) -> None:
             fallback_provider = session_defaults.get("default_search_provider")
             if fallback_provider:
                 context["default_search_provider"] = fallback_provider
+
+        # 🔄 任务状态同步：优先使用 context 中的 task_id
+        if "task_id" in context and "current_task_id" not in context:
+            context["current_task_id"] = context["task_id"]
+            logger.info(
+                "[CHAT][ASYNC][TASK_SYNC] Using task_id from context: %s",
+                context["current_task_id"],
+            )
+        # 如果 context 中没有，尝试从 session 加载
+        if "current_task_id" not in context and record.get("session_id"):
+            current_task_id = _get_session_current_task(record["session_id"])
+            if current_task_id is not None:
+                context["current_task_id"] = current_task_id
+                logger.info(
+                    "[CHAT][ASYNC][TASK_SYNC] Using current_task_id from session: %s",
+                    current_task_id,
+                )
 
         agent = StructuredChatAgent(
             mode=record.get("mode"),
@@ -2024,6 +2079,11 @@ class StructuredChatAgent:
     def _build_prompt(self, user_message: str) -> str:
         plan_bound = self.plan_session.plan_id is not None
         history_text = self._format_history()
+        
+        # 从 extra_context 中提取记忆，单独格式化
+        memories = self.extra_context.pop("memories", None)
+        memory_section = self._format_memories(memories) if memories else ""
+        
         context_text = json.dumps(self.extra_context, ensure_ascii=False, indent=2)
         plan_outline = self.plan_session.outline(max_depth=4, max_nodes=60)
         plan_status = self._compose_plan_status(plan_bound)
@@ -2037,10 +2097,17 @@ class StructuredChatAgent:
             f"Conversation ID: {self.conversation_id or 'N/A'}",
             f"Session binding: {plan_status}",
             f"Extra context:\n{context_text}",
+        ]
+        
+        # 如果有相关记忆，添加到 prompt 中
+        if memory_section:
+            prompt_parts.append(memory_section)
+        
+        prompt_parts.extend([
             f"History (latest {self.MAX_HISTORY} messages):\n{history_text}",
             "\n=== Plan Overview ===",
             plan_outline,
-        ]
+        ])
         if plan_catalog:
             prompt_parts.append(plan_catalog)
         prompt_parts.extend([
@@ -2054,6 +2121,22 @@ class StructuredChatAgent:
             "Respond with the JSON object now.",
         ])
         return "\n".join(prompt_parts)
+
+    def _format_memories(self, memories: List[Dict[str, Any]]) -> str:
+        """格式化记忆列表为 prompt 中的文本"""
+        if not memories:
+            return ""
+        
+        lines = ["\n=== Relevant Memories (from previous conversations) ==="]
+        for mem in memories:
+            content = mem.get("content", "")
+            similarity = mem.get("similarity", 0)
+            mem_type = mem.get("memory_type", "unknown")
+            similarity_pct = int(similarity * 100) if similarity else 0
+            lines.append(f"- [{similarity_pct}% match, type: {mem_type}] {content}")
+        
+        lines.append("(Use these memories as context to provide more relevant responses)")
+        return "\n".join(lines)
 
     def _compose_plan_status(self, plan_bound: bool) -> str:
         if plan_bound:
@@ -2079,50 +2162,57 @@ class StructuredChatAgent:
     def _compose_action_catalog(self, plan_bound: bool) -> str:
         base_actions = [
             "- system_operation: help",
-            "- tool_operation: web_search (use for live web information; requires `query`, optional provider/max_results)",
-            "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities)",
-            "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs)",
-            "- tool_operation: document_reader (read and analyze files; requires `operation`='read_pdf'/'read_image'/'analyze_image', `file_path`, optional `use_ocr`/`prompt`)",
-            "- tool_operation: vision_reader (vision-based OCR and figure/equation reading for images or scanned pages; requires `operation` and `image_path`, optional page_number/region/question/language)",
+            "- tool_operation: web_search (use for live web information; requires `query`, optional provider/max_results/target_task_id)",
+            "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities/target_task_id)",
+            "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs/target_task_id)",
+            "- tool_operation: document_reader (read and analyze files; requires `operation`='read_pdf'/'read_image'/'analyze_image', `file_path`, optional `use_ocr`/`prompt`/target_task_id)",
+            "- tool_operation: vision_reader (vision-based OCR and figure/equation reading for images or scanned pages; requires `operation` and `image_path`, optional page_number/region/question/language/target_task_id)",
+            "- tool_operation: paper_replication (load a structured ExperimentCard for phage-related paper replication experiments; optional `experiment_id`/target_task_id, currently supports 'experiment_1')",
+            "  NOTE: All tool_operation actions accept an optional `target_task_id` parameter. When executing a tool for a specific plan task, include `target_task_id` to automatically update that task's status to 'completed' or 'failed' based on the tool result.",
         ]
         if plan_bound:
             plan_actions = [
-                "- plan_operation: create_plan, list_plans, execute_plan, delete_plan",
-                "- task_operation: create_task, update_task, update_task_instruction, move_task, delete_task, decompose_task, show_tasks, query_status, rerun_task",
+                "- plan_operation: create_plan, list_plans, execute_plan, delete_plan (manage the lifecycle of the current plan; treat this as the primary coordination mechanism for multi-step work)",
+                "- task_operation: create_task, update_task (can modify both `name` and `instruction` together), update_task_instruction, move_task, delete_task, decompose_task, show_tasks, query_status, rerun_task (modify the current plan structure at any time based on the dialogue: create/edit/move/delete/decompose/rerun tasks)",
                 "- context_request: request_subgraph (request additional task context; this response must not include other actions)",
             ]
         else:
             plan_actions = [
-                "- plan_operation: create_plan  # only when the user explicitly asks to create a plan",
-                "- plan_operation: list_plans  # list candidates; do not execute or mutate tasks while unbound",
+                "- plan_operation: create_plan  # when the user agrees to organize a non-trivial goal as a plan or explicitly asks to create one",
+                "- plan_operation: list_plans  # show existing plans so the user can choose one to bind; do not execute or mutate tasks while unbound",
             ]
         return "\n".join(base_actions + plan_actions)
 
     def _compose_guidelines(self, plan_bound: bool) -> str:
         common_rules = [
-            "Return only a JSON object that matches the schema above—no code fences or additional commentary.",
+            "Return only a JSON object that matches the schema aboveno code fences or additional commentary.",
             "`llm_reply.message` must be natural language directed to the user.",
             "Fill `actions` in execution order (`order` starts at 1); use an empty array if no actions are required.",
             "Use the `kind`/`name` pairs from the action catalog without inventing new values.",
+            "Before invoking heavy tools such as `claude_code`, consider whether the user's request should first be organized as a structured plan; when appropriate, propose or refine a plan and obtain user confirmation on the updated tasks before execution.",
             "A `request_subgraph` reply may contain only that action.",
             "Plan nodes do not provide a `priority` field; avoid fabricating it. `status` reflects progress and may be referenced when helpful.",
             "When the user explicitly asks to execute, run, or rerun a task or the plan, include the matching action or explain why it cannot proceed.",
             "When file attachments are present in the context or message, use `document_reader` for text-based PDFs/images and `vision_reader` when the content is primarily image-based (scanned pages, screenshots, figures, or equation images).",
+            "When the user explicitly asks to replicate a scientific paper or run a bacteriophage experiment baseline such as 'experiment_1', first call `paper_replication` to load an ExperimentCard, then use `claude_code` with details from the card (targets, code root, constraints).",
         ]
         if plan_bound:
             scenario_rules = [
                 "Verify that dependencies and prerequisite tasks are satisfied before executing a plan or task.",
                 "When the user wants to run the entire plan, call `plan_operation.execute_plan` and provide a summary if appropriate.",
                 "When the user targets a specific task (for example, \"run the first task\" or \"rerun task 42\"), call `task_operation.show_tasks` first if the ID is unclear, then `task_operation.rerun_task` with a concrete `task_id`.",
+                "When the user wants to adjust the workflow (rename a step, change its instructions, reorder tasks, add or remove steps), prefer `task_operation` actions: use `task_operation.show_tasks` to identify the task, then apply `update_task`, `update_task_instruction`, `move_task`, `create_task`, or `delete_task` as needed. IMPORTANT: When renaming or modifying a task's content, use `update_task` with both `name` and `instruction` parameters to ensure the task title and description stay consistent.",
+                "For complex coding or experiment work, expand or refine the plan via `task_operation.decompose_task` or `create_task`, then call `tool_operation.claude_code` from within the relevant task context instead of invoking it ad-hoc.",
                 "Use `web_search` or `graph_rag` only when the user explicitly asks for web data or knowledge-graph lookup; otherwise rely on available context or ask clarifying questions.",
                 "When `web_search` is used, craft a clear query and summarize results with sources. When `graph_rag` is used, describe phage-related insights and cite triples when helpful.",
-                "After gathering supporting information, continue scheduling or executing the requested plan or tasks—do not stop at preparation only.",
+                "After gathering supporting information, continue scheduling or executing the requested plan or tasksdo not stop at preparation only.",
             ]
         else:
             scenario_rules = [
                 "Do not create, modify, or execute tasks while the session is unbound; instead clarify needs via dialogue or tools.",
+                "When the user describes a multi-step project, experiment, or long-running workflow, suggest creating a plan and, after they agree, call `plan_operation.create_plan` and then build or decompose tasks.",
                 "Feel free to ask follow-up questions, summarize, or retrieve information that helps the user decide whether a plan is needed.",
-                "Invoke `plan_operation` only when the user explicitly requests a plan or provides an existing plan ID.",
+                "Invoke `plan_operation` when the user explicitly requests a plan, provides an existing plan ID, or clearly agrees to organize their goal as a plan.",
                 "Use `web_search` or `graph_rag` only when the user clearly asks for live search or knowledge-graph access; otherwise respond or confirm intent first.",
             ]
         all_rules = common_rules + scenario_rules
@@ -2362,6 +2452,14 @@ class StructuredChatAgent:
 
         params = dict(action.parameters or {})
 
+        # 🔄 如果 LLM 指定了 target_task_id，优先使用它来更新任务状态
+        target_task_id = params.pop("target_task_id", None)
+        if target_task_id is not None:
+            try:
+                self.extra_context["current_task_id"] = int(target_task_id)
+            except (TypeError, ValueError):
+                pass
+
         if tool_name == "web_search":
             query = params.get("query")
             if not isinstance(query, str) or not query.strip():
@@ -2563,6 +2661,19 @@ class StructuredChatAgent:
 
             params = clean_params
 
+        elif tool_name == "paper_replication":
+            # Paper replication ExperimentCard loader
+            exp_id = params.get("experiment_id")
+            if exp_id is None:
+                exp_id = "experiment_1"
+            elif not isinstance(exp_id, str):
+                try:
+                    exp_id = str(exp_id)
+                except Exception:
+                    exp_id = "experiment_1"
+
+            params = {"experiment_id": exp_id}
+
         else:
             return AgentStep(
                 action=action,
@@ -2619,6 +2730,51 @@ class StructuredChatAgent:
                 logger.warning(f"[AMEM] Failed to schedule save: {amem_err}")
                 # 不影响主流程
 
+        # 🔄 任务状态同步：如果有关联的 current_task_id，更新任务状态
+        current_task_id = self.extra_context.get("current_task_id")
+        if current_task_id is not None and self.plan_session.plan_id is not None:
+            try:
+                new_status = "completed" if success else "failed"
+                task_id_int = int(current_task_id)
+                
+                # 更新当前任务状态
+                self.plan_session.repo.update_task(
+                    self.plan_session.plan_id,
+                    task_id_int,
+                    status=new_status,
+                    execution_result=summary or message,
+                )
+                logger.info(
+                    "[TASK_SYNC] Updated task %s status to %s after tool %s execution",
+                    current_task_id,
+                    new_status,
+                    tool_name,
+                )
+                
+                # 🔄 级联更新：如果是 root 任务完成，也更新所有子任务
+                if new_status == "completed":
+                    cascade_result = f"Completed as part of parent task #{task_id_int}"
+                    descendants_updated = self.plan_session.repo.cascade_update_descendants_status(
+                        self.plan_session.plan_id,
+                        task_id_int,
+                        status=new_status,
+                        execution_result=cascade_result,
+                    )
+                    if descendants_updated > 0:
+                        logger.info(
+                            "[TASK_SYNC] Cascade updated %d descendant tasks to %s",
+                            descendants_updated,
+                            new_status,
+                        )
+                
+                self._dirty = True
+            except Exception as sync_err:
+                logger.warning(
+                    "[TASK_SYNC] Failed to update task %s status: %s",
+                    current_task_id,
+                    sync_err,
+                )
+
         return AgentStep(
             action=action,
             success=bool(success),
@@ -2646,21 +2802,102 @@ class StructuredChatAgent:
             metadata = params.get("metadata")
             if metadata is not None and not isinstance(metadata, dict):
                 metadata = {}
+            # First create an empty plan record
             new_tree = self.plan_session.repo.create_plan(
                 title=title,
                 owner=owner,
                 description=description,
                 metadata=metadata,
             )
+            # If the caller provided an explicit task list, materialize it immediately
+            created_seed_tasks: List[Any] = []
+            raw_tasks = params.get("tasks")
+            if isinstance(raw_tasks, list) and raw_tasks:
+                for idx, t in enumerate(raw_tasks):
+                    if not isinstance(t, dict):
+                        continue
+                    instr_raw = t.get("instruction") or t.get("description") or ""
+                    try:
+                        instruction = str(instr_raw).strip()
+                    except Exception:
+                        instruction = ""
+                    name_raw = t.get("name") or t.get("title")
+                    name: str
+                    if isinstance(name_raw, str) and name_raw.strip():
+                        name = name_raw.strip()
+                    else:
+                        # Derive a short step name from the instruction when no explicit name is given
+                        base = instruction.strip()
+                        if "。" in base:
+                            base = base.split("。", 1)[0]
+                        elif "." in base:
+                            base = base.split(".", 1)[0]
+                        elif "\n" in base:
+                            base = base.split("\n", 1)[0]
+                        base = base[:40] if base else f"Step {idx + 1}"
+                        name = f"Step {idx + 1}: {base}" if base else f"Step {idx + 1}"
+
+                    status_raw = t.get("status") or "pending"
+                    if not isinstance(status_raw, str):
+                        status = str(status_raw).strip() or "pending"
+                    else:
+                        status = status_raw.strip() or "pending"
+
+                    parent_id_raw = t.get("parent_id")
+                    parent_id = None
+                    if parent_id_raw is not None:
+                        try:
+                            parent_id = int(parent_id_raw)
+                        except (TypeError, ValueError):
+                            parent_id = None
+
+                    deps_raw = t.get("dependencies")
+                    deps: Optional[List[int]] = None
+                    if isinstance(deps_raw, list):
+                        tmp: List[int] = []
+                        for d in deps_raw:
+                            try:
+                                tmp.append(int(d))
+                            except (TypeError, ValueError):
+                                continue
+                        deps = tmp or None
+
+                    meta_raw = t.get("metadata")
+                    meta = meta_raw if isinstance(meta_raw, dict) else None
+
+                    try:
+                        node = self.plan_session.repo.create_task(
+                            new_tree.id,
+                            name=name,
+                            status=status,
+                            instruction=instruction or None,
+                            parent_id=parent_id,
+                            metadata=meta,
+                            dependencies=deps,
+                        )
+                        created_seed_tasks.append(node)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.warning(
+                            "Failed to create seed task for plan %s: %s", new_tree.id, exc
+                        )
+
+            # Bind session to the new plan and refresh the in-memory tree so that
+            # any seed tasks are immediately visible to the caller and UI.
             self.plan_session.bind(new_tree.id)
-            self.plan_tree = new_tree
-            self.extra_context["plan_id"] = new_tree.id
-            message = f'Created and bound new plan #{new_tree.id} "{new_tree.title}".'
+            self._refresh_plan_tree(force_reload=True)
+            effective_tree = self.plan_tree or new_tree
+            self.plan_tree = effective_tree
+            self.extra_context["plan_id"] = effective_tree.id
+            message = f'Created and bound new plan #{effective_tree.id} "{effective_tree.title}".'
+            if created_seed_tasks:
+                message += f" Seeded with {len(created_seed_tasks)} top-level task(s) from the proposed plan."
             details = {
-                "plan_id": new_tree.id,
-                "title": new_tree.title,
-                "task_count": new_tree.node_count(),
+                "plan_id": effective_tree.id,
+                "title": effective_tree.title,
+                "task_count": effective_tree.node_count(),
             }
+            if created_seed_tasks:
+                details["seed_tasks"] = [node.model_dump() for node in created_seed_tasks]
             self._dirty = True
 
             decomposition_info = self._auto_decompose_plan(new_tree.id)
@@ -3294,6 +3531,8 @@ class StructuredChatAgent:
                 "image_path",
                 "page_number",
                 "language",
+                "experiment_id",
+                "card",
             ):
                 if key in raw_result:
                     sanitized[key] = raw_result[key]
@@ -3420,6 +3659,23 @@ class StructuredChatAgent:
             
             return f"Claude Code execution{file_info} succeeded."
         
+        if tool_name == "paper_replication":
+            if result.get("success") is False:
+                error = result.get("error") or "Paper replication tool failed"
+                return f"Paper replication tool failed: {error}"
+
+            exp_id = result.get("experiment_id") or "unknown_experiment"
+            card = result.get("card") or {}
+            paper = {}
+            if isinstance(card, dict):
+                paper = card.get("paper") or {}
+            title = ""
+            if isinstance(paper, dict):
+                title = paper.get("title") or ""
+            if title:
+                return f"Loaded replication spec for {exp_id} (paper: {title})."
+            return f"Loaded replication spec for {exp_id}."
+
         if tool_name == "vision_reader":
             if result.get("success") is False:
                 error = result.get("error") or "Vision reader execution failed"

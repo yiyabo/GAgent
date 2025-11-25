@@ -592,7 +592,7 @@ export const useChatStore = create<ChatState>()(
       get().addMessage(userMessage);
       set({ isProcessing: true, inputText: '' });
 
-      let enhancedContent = content;
+      // 方案A：不拼接记忆到消息内容，改为通过 context 传递
       let memories: Memory[] = [];
 
       if (memoryEnabled) {
@@ -604,12 +604,6 @@ export const useChatStore = create<ChatState>()(
           });
           memories = memoryResult.memories;
           set({ relevantMemories: memories });
-          if (memories.length > 0) {
-            const memoryContext = memories
-              .map((m) => `[记忆 ${(m.similarity! * 100).toFixed(0)}%] ${m.content}`)
-              .join('\n');
-            enhancedContent = `相关记忆:\n${memoryContext}\n\n用户问题: ${content}`;
-          }
         } catch (error) {
           console.error('Memory RAG 查询失败:', error);
         }
@@ -627,6 +621,15 @@ export const useChatStore = create<ChatState>()(
           timestamp: msg.timestamp.toISOString(),
         }));
 
+        // 将记忆作为 context 传递，而不是拼接到消息内容
+        const memoryContext = memories.length > 0 
+          ? memories.map((m) => ({
+              content: m.content,
+              similarity: m.similarity,
+              memory_type: m.memory_type,
+            }))
+          : undefined;
+
         const chatRequest = {
           task_id: mergedMetadata.task_id,
           plan_title: mergedMetadata.plan_title,
@@ -639,11 +642,12 @@ export const useChatStore = create<ChatState>()(
           metadata: {
             ...(providerToUse ? { default_search_provider: providerToUse } : {}),
             ...(attachments ? { attachments } : {}),
+            ...(memoryContext ? { memories: memoryContext } : {}),
           },
         };
 
         const result: ChatResponsePayload = await chatApi.sendMessage(
-          enhancedContent,
+          content,  // 发送原始内容，不拼接记忆
           chatRequest
         );
         const stateSnapshot = get();

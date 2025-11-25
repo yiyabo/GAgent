@@ -242,6 +242,53 @@ class PlanRepository:
         self._touch_plan(plan_id)
         return self.get_node(plan_id, task_id)
 
+    def cascade_update_descendants_status(
+        self,
+        plan_id: int,
+        task_id: int,
+        status: str,
+        execution_result: Optional[str] = None,
+    ) -> int:
+        """
+        级联更新任务及其所有子任务的状态。
+        当 root 任务完成时，所有子任务也应该被标记为完成。
+        返回更新的任务数量。
+        """
+        with plan_db_connection(get_plan_db_path(plan_id)) as conn:
+            self._ensure_task_columns(conn, plan_id)
+            # 获取任务的 path
+            row = conn.execute(
+                "SELECT path FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError(f"Task {task_id} not found in plan {plan_id}")
+            path = row["path"] or f"/{task_id}"
+            
+            # 更新所有子任务（path 以当前任务 path 开头的任务）
+            if execution_result is not None:
+                updated = conn.execute(
+                    """
+                    UPDATE tasks 
+                    SET status=?, execution_result=?, updated_at=CURRENT_TIMESTAMP 
+                    WHERE path LIKE ? AND status != ?
+                    """,
+                    (status, execution_result, f"{path}/%", status),
+                ).rowcount
+            else:
+                updated = conn.execute(
+                    """
+                    UPDATE tasks 
+                    SET status=?, updated_at=CURRENT_TIMESTAMP 
+                    WHERE path LIKE ? AND status != ?
+                    """,
+                    (status, f"{path}/%", status),
+                ).rowcount
+        
+        if updated > 0:
+            self._touch_plan(plan_id)
+        return updated
+
     def delete_task(self, plan_id: int, task_id: int) -> None:
         with plan_db_connection(get_plan_db_path(plan_id)) as conn:
             row = conn.execute(

@@ -81,17 +81,37 @@ class PlanTree(BaseModel):
             adjacency.setdefault(node.parent_id, []).append(node.id)
         self.adjacency = adjacency
 
-    def to_outline(self, max_depth: int = 3, max_nodes: int = 40) -> str:
-        """Render the plan as a compact outline for prompts."""
+    def to_outline(self, max_depth: int = 3, max_nodes: int = 40, include_results: bool = True) -> str:
+        """Render the plan as a compact outline for prompts.
+        
+        Args:
+            max_depth: Maximum depth to render
+            max_nodes: Maximum number of nodes to render
+            include_results: Whether to include execution_result for completed tasks
+        """
 
         def _render(node_id: int, depth: int, lines: List[str], counter: List[int]) -> None:
             if depth > max_depth or counter[0] >= max_nodes:
                 return
             node = self.nodes[node_id]
             indent = "  " * depth
+            status_marker = f"[{node.status}]" if node.status != "pending" else ""
             instruction = node.instruction.strip() if node.instruction else ""
             snippet = instruction[:90] + ("..." if instruction and len(instruction) > 90 else "")
-            lines.append(f"{indent}- [{node.id}] {node.display_name()}{f' :: {snippet}' if snippet else ''}")
+            
+            # 构建基本行
+            line = f"{indent}- [{node.id}] {node.display_name()} {status_marker}"
+            if snippet:
+                line += f" :: {snippet}"
+            lines.append(line)
+            
+            # 如果任务已完成且有执行结果，显示结果摘要
+            if include_results and node.status == "completed" and node.execution_result:
+                result_snippet = node.execution_result.strip()[:200]
+                if len(node.execution_result) > 200:
+                    result_snippet += "..."
+                lines.append(f"{indent}  └─ Result: {result_snippet}")
+            
             counter[0] += 1
             for child_id in self.children_ids(node_id):
                 _render(child_id, depth + 1, lines, counter)

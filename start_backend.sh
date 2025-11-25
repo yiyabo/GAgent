@@ -16,7 +16,12 @@ echo "🔌 Port: $BACKEND_PORT"
 echo "🌐 CORS Origins: $CORS_ORIGINS"
 
 # 启动 FastAPI 应用
+# 排除 runtime/ 目录，避免 Claude Code 生成的文件触发热重载
 python -m uvicorn app.main:app \
     --host "$BACKEND_HOST" \
     --port "$BACKEND_PORT" \
-    --reload
+    --reload \
+    --reload-exclude "runtime/*" \
+    --reload-exclude "*.db" \
+    --reload-exclude "*.sqlite" \
+    --reload-exclude "data/*"
