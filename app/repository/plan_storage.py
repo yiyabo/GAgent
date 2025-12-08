@@ -726,3 +726,77 @@ def cleanup_action_logs(
                     f"DELETE FROM plan_action_logs WHERE id IN ({placeholders})",
                     ids_to_delete,
                 )
+
+
+def fix_stale_jobs_on_startup() -> int:
+    """
+    修复启动时卡住的 job。
+    
+    当后端异常退出时，正在运行的 job 状态可能没有正确更新。
+    此函数在启动时将所有 running/queued 状态的 job 标记为 failed，
+    因为它们在后端重启后无法继续执行。
+    
+    Returns:
+        修复的 job 数量
+    """
+    fixed_count = 0
+    now = datetime.utcnow().isoformat()
+    
+    # 1. 修复 system_jobs.sqlite 中的 decomposition_jobs
+    system_db = get_system_job_db_path()
+    if system_db.exists():
+        try:
+            with plan_db_connection(system_db) as conn:
+                _ensure_decomposition_tables(conn)
+                result = conn.execute(
+                    """
+                    UPDATE decomposition_jobs 
+                    SET status='failed', error='Job interrupted by server restart', finished_at=?
+                    WHERE status IN ('running', 'queued')
+                    """,
+                    (now,),
+                )
+                fixed_count += result.rowcount
+        except Exception as e:
+            logger.warning("Failed to fix stale jobs in system db: %s", e)
+    
+    # 2. 修复所有 plan_X.sqlite 中的 decomposition_jobs
+    plan_store_dir = get_database_config().get_plan_store_dir()
+    if plan_store_dir.exists():
+        for plan_db in plan_store_dir.glob("plan_*.sqlite"):
+            try:
+                with plan_db_connection(plan_db) as conn:
+                    _ensure_decomposition_tables(conn)
+                    result = conn.execute(
+                        """
+                        UPDATE decomposition_jobs 
+                        SET status='failed', error='Job interrupted by server restart', finished_at=?
+                        WHERE status IN ('running', 'queued')
+                        """,
+                        (now,),
+                    )
+                    fixed_count += result.rowcount
+            except Exception as e:
+                logger.warning("Failed to fix stale jobs in %s: %s", plan_db, e)
+    
+    # 3. 修复 plan_action_logs 中的卡住记录（这些是详细的 action 日志）
+    # 注意：plan_action_logs 存储在 system_jobs.sqlite 中
+    if system_db.exists():
+        try:
+            with plan_db_connection(system_db) as conn:
+                _ensure_action_log_tables(conn)
+                result = conn.execute(
+                    """
+                    UPDATE plan_action_logs 
+                    SET status='failed', success=0, message='Action interrupted by server restart'
+                    WHERE status IN ('running', 'queued')
+                    """,
+                )
+                # 不计入 fixed_count，因为这些是 action 级别的日志
+        except Exception as e:
+            logger.warning("Failed to fix stale action logs: %s", e)
+    
+    if fixed_count > 0:
+        logger.info("Fixed %d stale jobs on startup", fixed_count)
+    
+    return fixed_count
