@@ -33,6 +33,7 @@ from .llm import get_default_client
 
 # Import router function
 from .routers import get_all_routers
+from .repository.plan_storage import fix_stale_jobs_on_startup
 from .services.foundation.logging_config import setup_logging
 from .services.foundation.settings import get_settings
 from .utils.route_helpers import parse_bool
@@ -77,6 +78,16 @@ async def lifespan(_fastapi_app: FastAPI):
         )
     except (ValueError, TypeError) as e:
         logging.getLogger("app.main").warning("Tool Box initialization failed: %s", e)
+
+    # Fix any stale jobs from previous server runs
+    try:
+        fixed_count = fix_stale_jobs_on_startup()
+        if fixed_count > 0:
+            logging.getLogger("app.main").info(
+                "Fixed %d stale jobs from previous server run", fixed_count
+            )
+    except Exception as e:
+        logging.getLogger("app.main").warning("Failed to fix stale jobs: %s", e)
 
     yield
 
