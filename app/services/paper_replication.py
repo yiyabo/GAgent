@@ -1,29 +1,34 @@
-"""Paper replication experiment metadata structures.
+"""Paper replication experiment metadata structures and registry.
 
-This module defines ExperimentCard and helpers for describing
-reproducible experiments, with a first baseline instance for
-``data/experiment_1`` (BacteriophageHostPrediction).
+This module defines ExperimentCard, YAML-based loading/saving, and a registry
+that scans ``data/<experiment_id>/card.yaml`` instead of hardcoding cards in
+code. Use ``generate_experiment_card`` (tool) to create new cards from papers.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+import logging
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
+
+logger = logging.getLogger(__name__)
 
 # Project root and data directory
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 _DATA_DIR = _PROJECT_ROOT / "data"
+_CARD_FILENAME = "card.yaml"
+
+# In-memory caches for loaded cards/paths
+_CARD_CACHE: Dict[str, "ExperimentCard"] = {}
+_CARD_PATH_CACHE: Dict[str, Path] = {}
 
 
 @dataclass
 class ExperimentMetric:
-    """Single evaluation metric for an experiment.
-
-    This is intentionally generic and can be used for ML metrics
-    (e.g. PR-AUC) or wet-lab readouts (e.g. log10 reduction, PFU/mL).
-    """
+    """Single evaluation metric for an experiment."""
 
     name: str
     type: str = "scalar"
@@ -63,11 +68,7 @@ class HostInfo:
 
 @dataclass
 class PhageSystem:
-    """Combined description of phage and host.
-
-    This is intentionally coarse-grained; detailed protocol-level
-    parameters belong in the Assay section.
-    """
+    """Combined description of phage and host."""
 
     phage: PhageInfo = field(default_factory=PhageInfo)
     host: HostInfo = field(default_factory=HostInfo)
@@ -75,12 +76,7 @@ class PhageSystem:
 
 @dataclass
 class Assay:
-    """Assay or experiment type and key protocol descriptors.
-
-    For wet-lab experiments this may describe MOI, incubation
-    conditions, sampling schedule, etc. For in-silico experiments
-    this can describe the main computational pipeline.
-    """
+    """Assay or experiment type and key protocol descriptors."""
 
     type: str
     description: str
@@ -90,12 +86,7 @@ class Assay:
 
 @dataclass
 class ExperimentCard:
-    """Machine-readable description of a single experiment.
-
-    The card is intentionally flexible: most fields are dictionaries
-    so that upstream LLMs can populate them incrementally. For
-    logging or exporting, use ``to_dict()``.
-    """
+    """Machine-readable description of a single experiment."""
 
     paper: Dict[str, Any]
     experiment: Dict[str, Any]
@@ -111,125 +102,161 @@ class ExperimentCard:
     notes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert the card to a plain dict suitable for JSON logging."""
-
         return asdict(self)
 
 
-def get_experiment_1_baseline() -> ExperimentCard:
-    """Return a baseline ExperimentCard for ``data/experiment_1``.
+def _validate_card_dict(card_dict: Dict[str, Any]) -> List[str]:
+    """Validate minimal required fields for a card."""
+    errors: List[str] = []
 
-    This describes the paper:
-      "Predicting bacteriophage hosts based on sequences of annotated
-      receptor-binding proteins" (Scientific Reports, 2021)
-    and its main machine-learning host prediction experiment.
-    """
+    def _require(path: Tuple[str, ...]) -> None:
+        cursor: Any = card_dict
+        for key in path:
+            if not isinstance(cursor, dict) or key not in cursor or cursor[key] in (None, ""):
+                errors.append(f"Missing required field: {'/'.join(path)}")
+                return
+            cursor = cursor[key]
 
-    exp_root = _DATA_DIR / "experiment_1"
-    pdf_path = exp_root / "paper.pdf"
-    repo_root = exp_root / "BacteriophageHostPrediction"
+    _require(("paper", "title"))
+    _require(("experiment", "id"))
+    _require(("experiment", "name"))
+    _require(("task", "description"))
 
-    paper = {
-        "title": "Predicting bacteriophage hosts based on sequences of annotated receptor-binding proteins",
-        "venue": "Scientific Reports",
-        "year": 2021,
-        "doi": "10.1038/s41598-021-81063-4",
-        "pdf_path": str(pdf_path),
-    }
+    return errors
 
-    experiment = {
-        "id": "exp1_main_ml_vs_blast",
-        "type": "figure",
-        "name": "RBP-based host prediction performance vs BLASTp",
-        "goal": (
-            "Reproduce the precisionrecall performance of the machine-learning host "
-            "prediction model based on receptor-binding proteins and compare it to BLASTp."
-        ),
-        "source_location": {
-            "page_hint": 1,
-            "section_hint": "Results",
-        },
-    }
 
-    task = {
-        "problem_type": "phage_host_prediction",
-        "description": (
-            "Predict bacterial hosts from receptor-binding protein sequences using "
-            "machine learning and compare performance to BLASTp."
-        ),
-        "input_modality": ["protein_sequence"],
-        "output_modality": ["host_label"],
-    }
-
-    phage_system = PhageSystem(
-        phage=PhageInfo(
-            notes=[
-                "RBP database focused on ESKAPE pathogens, Escherichia coli, "
-                "Salmonella enterica and Clostridium difficile.",
-            ],
-        ),
-        host=HostInfo(
-            species="multiple bacterial species",
-        ),
-    )
-
-    assay = Assay(
-        type="in_silico_host_prediction",
-        description=(
-            "Train and evaluate a supervised machine learning model on RBP features, "
-            "reporting precisionrecall AUC for different sequence similarity regimes."
-        ),
-        moi=None,
-        details={
-            "code_root": str(repo_root),
-            "notebook": "RBP_host_prediction.ipynb",
-            "database_csv": "RBP_database.csv",
-        },
-    )
-
-    metrics = [
-        ExperimentMetric(
-            name="PR_AUC",
-            type="scalar",
-            higher_is_better=True,
-            paper_value=None,  # To be filled from paper/figures using readers
-            unit="percent",
-            tolerance=1.0,
-            reported_location=None,
+def _dict_to_card(card_dict: Dict[str, Any]) -> ExperimentCard:
+    """Convert a validated dict into an ExperimentCard instance."""
+    metrics_raw = card_dict.get("metrics", [])
+    metrics: List[ExperimentMetric] = []
+    for item in metrics_raw or []:
+        if not isinstance(item, dict):
+            continue
+        metrics.append(
+            ExperimentMetric(
+                name=item.get("name", ""),
+                type=item.get("type", "scalar"),
+                higher_is_better=item.get("higher_is_better"),
+                paper_value=item.get("paper_value"),
+                unit=item.get("unit"),
+                tolerance=item.get("tolerance"),
+                reported_location=item.get("reported_location"),
+                extra=item.get("extra") or {},
+            )
         )
-    ]
 
-    artifacts = {
-        "target_figures": [],
-        "target_tables": [],
-        "comparison_points": [
-            "overall PR-AUC of ML model",
-            "PR-AUC of BLASTp baseline",
-        ],
-    }
+    phage_system = None
+    phage_system_raw = card_dict.get("phage_system")
+    if isinstance(phage_system_raw, dict):
+        phage_system = PhageSystem(
+            phage=PhageInfo(**(phage_system_raw.get("phage") or {})),
+            host=HostInfo(**(phage_system_raw.get("host") or {})),
+        )
 
-    constraints = {
-        "max_runtime_minutes": 240,
-        "max_gpus": 0,
-        "must_match_implementation_details": True,
-    }
-
-    notes = [
-        "Baseline configuration for data/experiment_1 BacteriophageHostPrediction repository.",
-        "Specific numeric target values (PR-AUC per similarity regime) should be extracted "
-        "from the paper and figures using document_reader and vision_reader.",
-    ]
+    assay = None
+    assay_raw = card_dict.get("assay")
+    if isinstance(assay_raw, dict):
+        try:
+            assay = Assay(
+                type=assay_raw.get("type", "unspecified"),
+                description=assay_raw.get("description", ""),
+                moi=assay_raw.get("moi"),
+                details=assay_raw.get("details") or {},
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to hydrate assay section: %s", exc)
 
     return ExperimentCard(
-        paper=paper,
-        experiment=experiment,
-        task=task,
+        paper=card_dict.get("paper", {}),
+        experiment=card_dict.get("experiment", {}),
+        task=card_dict.get("task", {}),
         phage_system=phage_system,
         assay=assay,
-        dataset={},
-        model={},
+        dataset=card_dict.get("dataset", {}) or {},
+        model=card_dict.get("model", {}) or {},
         metrics=metrics,
-        artifacts=artifacts,
-        constraints=constraints,
-        notes=notes,
+        artifacts=card_dict.get("artifacts", {}) or {},
+        constraints=card_dict.get("constraints", {}) or {},
+        notes=card_dict.get("notes", []) or [],
     )
+
+
+def _load_card_yaml(path: Path) -> Dict[str, Any]:
+    content = path.read_text(encoding="utf-8")
+    return yaml.safe_load(content) or {}
+
+
+def discover_experiments(data_dir: Path = _DATA_DIR) -> List[str]:
+    """Return experiment IDs that contain a card.yaml."""
+    if not data_dir.exists():
+        return []
+    ids: List[str] = []
+    for entry in data_dir.iterdir():
+        if entry.is_dir() and (entry / _CARD_FILENAME).exists():
+            ids.append(entry.name)
+    return sorted(ids)
+
+
+def list_experiment_cards(reload: bool = False) -> List[Dict[str, Any]]:
+    """List available experiment cards with basic metadata."""
+    result: List[Dict[str, Any]] = []
+    for exp_id in discover_experiments():
+        try:
+            card = load_experiment_card(exp_id, reload=reload)
+            result.append(
+                {
+                    "id": exp_id,
+                    "title": card.paper.get("title"),
+                    "path": str(_CARD_PATH_CACHE.get(exp_id, _DATA_DIR / exp_id / _CARD_FILENAME)),
+                }
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to load card for %s: %s", exp_id, exc)
+    return result
+
+
+def load_experiment_card(experiment_id: str, reload: bool = False) -> ExperimentCard:
+    """Load an ExperimentCard from data/<experiment_id>/card.yaml."""
+    if not experiment_id:
+        raise ValueError("experiment_id is required")
+
+    if experiment_id in _CARD_CACHE and not reload:
+        return _CARD_CACHE[experiment_id]
+
+    card_path = _DATA_DIR / experiment_id / _CARD_FILENAME
+    if not card_path.exists():
+        raise FileNotFoundError(f"Card not found for experiment_id '{experiment_id}'. Expected at {card_path}")
+    try:
+        if card_path.stat().st_size == 0:
+            raise ValueError(f"Card file is empty: {card_path}")
+    except OSError:
+        raise FileNotFoundError(f"Unable to access card for experiment_id '{experiment_id}' at {card_path}")
+
+    card_dict = _load_card_yaml(card_path)
+    errors = _validate_card_dict(card_dict)
+    if errors:
+        raise ValueError(f"Card validation failed for '{experiment_id}': {errors}")
+
+    card = _dict_to_card(card_dict)
+    _CARD_CACHE[experiment_id] = card
+    _CARD_PATH_CACHE[experiment_id] = card_path
+    return card
+
+
+def save_experiment_card(experiment_id: str, card: ExperimentCard, overwrite: bool = False) -> Path:
+    """Persist an ExperimentCard to data/<experiment_id>/card.yaml."""
+    if not experiment_id:
+        raise ValueError("experiment_id is required")
+
+    exp_dir = _DATA_DIR / experiment_id
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    card_path = exp_dir / _CARD_FILENAME
+    if card_path.exists() and not overwrite:
+        raise FileExistsError(f"Card already exists at {card_path}. Use overwrite=True to replace.")
+
+    with card_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(card.to_dict(), f, sort_keys=False, allow_unicode=True)
+
+    _CARD_CACHE[experiment_id] = card
+    _CARD_PATH_CACHE[experiment_id] = card_path
+    return card_path
