@@ -15,6 +15,7 @@ from .tools_impl import (
     claude_code_tool,
     database_query_tool,
     file_operations_tool,
+    generate_experiment_card_tool,
     graph_rag_tool,
     internal_api_tool,
     web_search_tool,
@@ -124,6 +125,17 @@ class ToolBoxIntegration:
             handler=paper_replication_tool["handler"],
             tags=paper_replication_tool.get("tags", []),
             examples=paper_replication_tool.get("examples", []),
+        )
+
+        # Register experiment card generator
+        register_tool(
+            name=generate_experiment_card_tool["name"],
+            description=generate_experiment_card_tool["description"],
+            category=generate_experiment_card_tool["category"],
+            parameters_schema=generate_experiment_card_tool["parameters_schema"],
+            handler=generate_experiment_card_tool["handler"],
+            tags=generate_experiment_card_tool.get("tags", []),
+            examples=generate_experiment_card_tool.get("examples", []),
         )
 
         register_tool(

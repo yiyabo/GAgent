@@ -32,8 +32,8 @@ from app.services.foundation.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
-async def _call_qwen_vision_api(prompt: str, image_path: str) -> str:
-    """Call a Qwen vision-capable model (e.g., qwen3-vl-plus) with an image.
+async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
+    """Call a Qwen vision-capable model (e.g., qwen3-vl-plus) with an image or PDF.
 
     The API is assumed to be OpenAI-compatible chat completions with
     `messages: [{role: "user", content: [{type: "text"}, {type: "image_url"}]}]`.
@@ -64,19 +64,19 @@ async def _call_qwen_vision_api(prompt: str, image_path: str) -> str:
         os.getenv("QWEN_VL_MODEL")
         or os.getenv("QWEN_MODEL")
         or settings.qwen_model
-        or "qwen-vl-plus"
+        or "qwen3-vl-plus-2025-09-23"
     )
 
-    abs_path = Path(image_path).resolve()
+    abs_path = Path(file_path).resolve()
     if not abs_path.exists():
-        raise FileNotFoundError(f"Image file not found: {image_path}")
+        raise FileNotFoundError(f"File not found: {file_path}")
 
-    # Encode image as data URL
+    # Encode file as data URL
     with abs_path.open("rb") as f:
         data = f.read()
     mime, _ = mimetypes.guess_type(abs_path.name)
     if not mime:
-        mime = "image/png"
+        mime = "application/octet-stream"
     b64 = base64.b64encode(data).decode("utf-8")
     data_url = f"data:{mime};base64,{b64}"
 

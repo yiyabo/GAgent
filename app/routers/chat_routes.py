@@ -2164,6 +2164,7 @@ class StructuredChatAgent:
             "- system_operation: help",
             "- tool_operation: web_search (use for live web information; requires `query`, optional provider/max_results/target_task_id)",
             "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities/target_task_id)",
+            "- tool_operation: generate_experiment_card (create data/<experiment_id>/card.yaml from a PDF; if pdf_path/experiment_id are omitted, uses the latest uploaded PDF and derives an id)",
             "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs/target_task_id)",
             "- tool_operation: document_reader (read and analyze files; requires `operation`='read_pdf'/'read_image'/'analyze_image', `file_path`, optional `use_ocr`/`prompt`/target_task_id)",
             "- tool_operation: vision_reader (vision-based OCR and figure/equation reading for images or scanned pages; requires `operation` and `image_path`, optional page_number/region/question/language/target_task_id)",
@@ -2194,7 +2195,7 @@ class StructuredChatAgent:
             "Plan nodes do not provide a `priority` field; avoid fabricating it. `status` reflects progress and may be referenced when helpful.",
             "When the user explicitly asks to execute, run, or rerun a task or the plan, include the matching action or explain why it cannot proceed.",
             "When file attachments are present in the context or message, use `document_reader` for text-based PDFs/images and `vision_reader` when the content is primarily image-based (scanned pages, screenshots, figures, or equation images).",
-            "When the user explicitly asks to replicate a scientific paper or run a bacteriophage experiment baseline such as 'experiment_1', first call `paper_replication` to load an ExperimentCard, then use `claude_code` with details from the card (targets, code root, constraints).",
+            "When the user explicitly asks to replicate a scientific paper or run a bacteriophage experiment baseline such as 'experiment_1', first obtain an ExperimentCard (call `generate_experiment_card` if needed; it can infer the latest uploaded PDF and derive an id), then call `paper_replication` to load it, and finally use `claude_code` with details from the card (targets, code root, constraints).",
         ]
         if plan_bound:
             scenario_rules = [
@@ -2673,6 +2674,34 @@ class StructuredChatAgent:
                     exp_id = "experiment_1"
 
             params = {"experiment_id": exp_id}
+
+        elif tool_name == "generate_experiment_card":
+            exp_id = params.get("experiment_id")
+            if exp_id is not None and not isinstance(exp_id, str):
+                exp_id = str(exp_id)
+            pdf_path = params.get("pdf_path")
+            if pdf_path is not None and not isinstance(pdf_path, str):
+                pdf_path = str(pdf_path)
+            code_root = params.get("code_root")
+            if code_root is not None and not isinstance(code_root, str):
+                code_root = str(code_root)
+            notes_val = params.get("notes")
+            if notes_val is not None and not isinstance(notes_val, str):
+                notes_val = str(notes_val)
+            overwrite_val = params.get("overwrite")
+            overwrite = False
+            if isinstance(overwrite_val, bool):
+                overwrite = overwrite_val
+            elif isinstance(overwrite_val, str):
+                overwrite = overwrite_val.strip().lower() in {"1", "true", "yes", "y"}
+
+            params = {
+                "experiment_id": exp_id,
+                "pdf_path": pdf_path,
+                "code_root": code_root,
+                "notes": notes_val,
+                "overwrite": overwrite,
+            }
 
         else:
             return AgentStep(
@@ -3685,8 +3714,8 @@ class StructuredChatAgent:
             text = result.get("text") or ""
             if isinstance(text, str) and text.strip():
                 snippet = text.strip()
-                if len(snippet) > 200:
-                    snippet = snippet[:197] + "..."
+                if len(snippet) > 12000:
+                    snippet = snippet[:11997] + "..."
                 return f"Vision reader ({op}) succeeded. Content preview: {snippet}"
 
             return "Vision reader succeeded, but no textual content was extracted."
@@ -3701,8 +3730,8 @@ class StructuredChatAgent:
             
             if text.strip():
                 snippet = text.strip()
-                if len(snippet) > 200:
-                    snippet = snippet[:197] + "..."
+                if len(snippet) > 12000:
+                    snippet = snippet[:11997] + "..."
                 page_info = f" ({page_count} pages)" if page_count else ""
                 return f"Document reader{page_info} succeeded. Content preview: {snippet}"
             

@@ -1,43 +1,60 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
-from app.services.paper_replication import ExperimentCard, get_experiment_1_baseline
+from app.services.paper_replication import (
+    ExperimentCard,
+    list_experiment_cards,
+    load_experiment_card,
+)
 
 
 async def paper_replication_handler(experiment_id: str = "experiment_1") -> Dict[str, Any]:
-    """Load a structured ExperimentCard for a known paper experiment.
-
-    This tool provides a machine-readable specification of a replication
-    target. For now it only supports ``experiment_1`` (the
-    BacteriophageHostPrediction study in ``data/experiment_1``).
-    """
-
-    if experiment_id == "experiment_1":
-        card: ExperimentCard = get_experiment_1_baseline()
+    """Load a structured ExperimentCard for a known paper experiment."""
+    try:
+        card: ExperimentCard = load_experiment_card(experiment_id)
         return {
             "tool": "paper_replication",
             "success": True,
             "experiment_id": experiment_id,
             "card": card.to_dict(),
         }
-
-    return {
-        "tool": "paper_replication",
-        "success": False,
-        "experiment_id": experiment_id,
-        "error": "Unknown experiment_id. Currently only 'experiment_1' is supported.",
-        "code": "unknown_experiment",
-    }
+    except FileNotFoundError:
+        available: List[Dict[str, Any]] = list_experiment_cards()
+        return {
+            "tool": "paper_replication",
+            "success": False,
+            "experiment_id": experiment_id,
+            "error": f"Card not found for experiment_id '{experiment_id}'. Use generate_experiment_card or add data/{experiment_id}/card.yaml.",
+            "code": "card_missing",
+            "available_experiments": available,
+        }
+    except ValueError as exc:
+        return {
+            "tool": "paper_replication",
+            "success": False,
+            "experiment_id": experiment_id,
+            "error": f"Card validation failed: {exc}",
+            "code": "card_invalid",
+        }
+    except Exception as exc:  # pragma: no cover - defensive
+        return {
+            "tool": "paper_replication",
+            "success": False,
+            "experiment_id": experiment_id,
+            "error": f"Unexpected error loading card: {exc}",
+            "code": "card_error",
+        }
 
 
 paper_replication_tool: Dict[str, Any] = {
     "name": "paper_replication",
     "description": (
         "Load structured metadata (ExperimentCard) for a specific paper replication "
-        "experiment. Currently supports 'experiment_1' (bacteriophage host prediction "
-        "based on RBP sequences). Use this before calling claude_code so that the "
-        "code assistant receives a precise, machine-readable experiment spec."
+        "experiment. Cards are stored at data/<experiment_id>/card.yaml. "
+        "Use this before calling claude_code so that the code assistant receives a "
+        "precise, machine-readable experiment spec. If the card is missing, generate "
+        "it with generate_experiment_card."
     ),
     "category": "paper_replication",
     "parameters_schema": {
