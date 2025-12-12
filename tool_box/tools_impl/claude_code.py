@@ -9,6 +9,7 @@ import logging
 import subprocess
 import json
 import hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -102,6 +103,9 @@ async def claude_code_handler(
     add_dirs: Optional[str] = None,
     skip_permissions: bool = True,
     output_format: str = "json",
+    session_id: Optional[str] = None,
+    plan_id: Optional[int] = None,
+    task_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Execute a task using Claude Code (official CLI) with local file access.
@@ -119,10 +123,32 @@ async def claude_code_handler(
     try:
         # 确保 runtime 目录存在
         _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-        
-        # 为当前任务生成独立的工作目录（使用纯LLM语义理解）
+
+        # 会话级目录 + 共享输入目录
+        session_label = f"session_{session_id}" if session_id else "session_adhoc"
+        session_dir = _RUNTIME_DIR / session_label
+        shared_dir = session_dir / "shared"
+        shared_dir.mkdir(parents=True, exist_ok=True)
+
+        # 按日期归档的任务目录
         task_dir_name = await _generate_task_dir_name_llm(task)
-        task_work_dir = _RUNTIME_DIR / task_dir_name
+        date_prefix = datetime.utcnow().strftime("%Y-%m-%d")
+        task_parent = session_dir / "tasks" / date_prefix
+        task_parent.mkdir(parents=True, exist_ok=True)
+
+        # 任务子目录：语义名 + 短时间戳，避免重名
+        time_suffix = datetime.utcnow().strftime("%H%M%S")
+        task_dir_base = f"{task_dir_name}_{time_suffix}"
+        if task_id is not None:
+            task_dir_base = f"task{task_id}_{task_dir_base}"
+        if plan_id is not None:
+            task_dir_base = f"plan{plan_id}_{task_dir_base}"
+
+        task_work_dir = task_parent / task_dir_base
+        idx = 1
+        while task_work_dir.exists():
+            task_work_dir = task_parent / f"{task_dir_base}_{idx}"
+            idx += 1
         task_work_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info(f"Created task directory: {task_work_dir}")
@@ -154,7 +180,7 @@ async def claude_code_handler(
             "key hyperparameters and whether they come from the paper or from you, and provide example commands for "
             "running the code. Clearly distinguish actual expected outputs from purely illustrative examples, and "
             "label illustrative results as such.\n\n"
-            f"You are working in the dedicated task directory 'runtime/{task_dir_name}'. All newly generated files "
+            f"You are working in the dedicated task directory '{task_work_dir.relative_to(_PROJECT_ROOT)}'. All newly generated files "
             "(code, logs, models, processed datasets, etc.) must be saved inside this directory or its subdirectories. "
             "Do not overwrite original raw datasets; if preprocessing is needed, write new processed files and explain "
             "how they were produced. When reading existing project data, use paths that are consistent and "
@@ -222,7 +248,10 @@ async def claude_code_handler(
         return {
             "tool": "claude_code",
             "task": task,
-            "task_directory": task_dir_name,
+            "task_directory": task_dir_base,
+            "task_directory_full": str(task_work_dir),
+            "session_directory": str(session_dir),
+            "shared_directory": str(shared_dir),
             "success": success,
             "stdout": stdout,
             "stderr": stderr,
