@@ -1839,6 +1839,122 @@ async def get_action_status(tracking_id: str):
     )
 
 
+@router.post("/actions/{tracking_id}/retry", response_model=ActionStatusResponse)
+async def retry_action_run(tracking_id: str, background_tasks: BackgroundTasks):
+    """Retry a previous action run by cloning its structured actions."""
+    original = fetch_action_run(tracking_id)
+    if not original:
+        raise HTTPException(status_code=404, detail="Action run not found")
+
+    try:
+        structured = LLMStructuredResponse.model_validate_json(original["structured_json"])
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid structured payload: {exc}")
+
+    # reuse session/plan/context/history/user_message
+    new_tracking = f"act_{uuid4().hex}"
+
+    plan_session = PlanSession(repo=plan_repository, plan_id=original.get("plan_id"))
+    try:
+        plan_session.refresh()
+    except ValueError:
+        plan_session.detach()
+
+    context = original.get("context") or {}
+    history = original.get("history") or []
+
+    # Persist new action run
+    create_action_run(
+        run_id=new_tracking,
+        session_id=original.get("session_id"),
+        user_message=original.get("user_message", ""),
+        mode=original.get("mode"),
+        plan_id=plan_session.plan_id,
+        context=context,
+        history=history,
+        structured_json=original["structured_json"],
+    )
+
+    # Plan jobs for visibility
+    job_metadata = {
+        "session_id": original.get("session_id"),
+        "mode": original.get("mode"),
+        "user_message": original.get("user_message"),
+    }
+    job_params = {
+        key: value
+        for key, value in {
+            "mode": original.get("mode"),
+            "session_id": original.get("session_id"),
+            "plan_id": plan_session.plan_id,
+        }.items()
+        if value is not None
+    }
+
+    try:
+        plan_decomposition_jobs.create_job(
+            plan_id=plan_session.plan_id,
+            task_id=None,
+            mode=original.get("mode") or "assistant",
+            job_type="chat_action",
+            params=job_params,
+            metadata=job_metadata,
+            job_id=new_tracking,
+        )
+    except ValueError:
+        pass
+
+    pending_actions = [
+        {
+            "kind": action.kind,
+            "name": action.name,
+            "parameters": action.parameters,
+            "order": action.order,
+            "blocking": action.blocking,
+            "status": "pending",
+            "success": None,
+            "message": None,
+            "details": None,
+        }
+        for action in structured.sorted_actions()
+    ]
+
+    # 记录动作日志为 queued
+    for action in structured.sorted_actions():
+        try:
+            append_action_log_entry(
+                plan_id=plan_session.plan_id,
+                job_id=new_tracking,
+                job_type="chat_action",
+                session_id=original.get("session_id"),
+                user_message=original.get("user_message", ""),
+                action_kind=action.kind,
+                action_name=action.name or "",
+                status="queued",
+                success=None,
+                message="Action queued for execution (retry).",
+                parameters=action.parameters,
+                details=None,
+            )
+        except Exception:
+            logger.debug("Failed to persist queued action log on retry", exc_info=True)
+
+    background_tasks.add_task(_execute_action_run, new_tracking)
+
+    return ActionStatusResponse(
+        tracking_id=new_tracking,
+        status="pending",
+        plan_id=plan_session.plan_id,
+        actions=pending_actions,
+        result=None,
+        errors=None,
+        created_at=None,
+        started_at=None,
+        finished_at=None,
+        metadata={"retry_of": tracking_id},
+    )
+
+
 def _build_action_status_payloads(
     record: Dict[str, Any],
 ) -> Tuple[List[Dict[str, Any]], Optional[List[Dict[str, Any]]]]:
@@ -2186,11 +2302,23 @@ class StructuredChatAgent:
 
     def _compose_guidelines(self, plan_bound: bool) -> str:
         common_rules = [
-            "Return only a JSON object that matches the schema aboveno code fences or additional commentary.",
+            "Return only a JSON object that matches the schema above\u0014no code fences or additional commentary.",
             "`llm_reply.message` must be natural language directed to the user.",
             "Fill `actions` in execution order (`order` starts at 1); use an empty array if no actions are required.",
             "Use the `kind`/`name` pairs from the action catalog without inventing new values.",
             "Before invoking heavy tools such as `claude_code`, consider whether the user's request should first be organized as a structured plan; when appropriate, propose or refine a plan and obtain user confirmation on the updated tasks before execution.",
+            "When you need to look up library/API usage or code snippets, prefer the MCP server `context7` for code search first, then continue coding.",
+            "When results are unexpected, do not over-apologize; briefly explain the issue or uncertainty and propose a next step instead of apologizing.",
+            "Do not fabricate facts, data, or citations. If unsure, state the uncertainty or ask the user for clarification rather than inventing information.",
+            "When reading files, prefer `document_reader` with `read_any` to auto-detect type; set `use_ocr` if content is likely image/scanned.",
+            "For Claude Code tasks, reuse shared inputs under `runtime/session_<id>/shared` when possible; task directories should hold only incremental outputs.",
+            "Avoid repetitive confirmations or small talk; provide conclusions and the next executable step directly.",
+            "Cite sources or note uncertainty when referring to external data; do not guess.",
+            "Before potentially destructive or long-running actions (file writes, deletes, network, heavy compute), briefly state intent/impact and seek confirmation when appropriate.",
+            "If a request fails, suggest a concrete fix or retry parameters (e.g., correct path, permissions, model/file limits) rather than only reporting failure.",
+            "Warn about large files or long runtimes up front and propose split/compress/step-by-step options when relevant.",
+            "In summaries, use concise bullet points; include an optional 'Next steps' or command snippet when execution is needed.",
+            "Separate verified facts from hypotheses; clearly label any speculation or uncertainty.",
             "A `request_subgraph` reply may contain only that action.",
             "Plan nodes do not provide a `priority` field; avoid fabricating it. `status` reflects progress and may be referenced when helpful.",
             "When the user explicitly asks to execute, run, or rerun a task or the plan, include the matching action or explain why it cannot proceed.",
@@ -2601,6 +2729,16 @@ class StructuredChatAgent:
                 params["allowed_tools"] = allowed_tools
             if add_dirs:
                 params["add_dirs"] = add_dirs
+
+            # 会话/任务上下文信息，便于 runtime 归档与溯源
+            params["session_id"] = self.session_id
+            if self.plan_session.plan_id is not None:
+                params["plan_id"] = self.plan_session.plan_id
+            if self.extra_context.get("current_task_id") is not None:
+                try:
+                    params["task_id"] = int(self.extra_context.get("current_task_id"))
+                except (TypeError, ValueError):
+                    pass
 
         elif tool_name == "document_reader":
             operation = params.get("operation")

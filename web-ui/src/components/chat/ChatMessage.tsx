@@ -1,5 +1,15 @@
-import React, { useState } from 'react';
-import { Avatar, Typography, Space, Button, Tooltip, message as antMessage } from 'antd';
+import React, { useMemo, useState } from 'react';
+import {
+  Avatar,
+  Typography,
+  Space,
+  Button,
+  Tooltip,
+  message as antMessage,
+  Drawer,
+  Tag,
+  Divider,
+} from 'antd';
 import {
   UserOutlined,
   RobotOutlined,
@@ -27,6 +37,24 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const { type, content, timestamp, metadata } = message;
   const { saveMessageAsMemory } = useChatStore();
   const [isSaving, setIsSaving] = useState(false);
+  const [toolDrawerOpen, setToolDrawerOpen] = useState(false);
+  const [pendingDetailOpen, setPendingDetailOpen] = useState(false);
+
+  const toolResults: ToolResultPayload[] = useMemo(
+    () =>
+      Array.isArray(metadata?.tool_results)
+        ? (metadata?.tool_results as ToolResultPayload[])
+        : [],
+    [metadata?.tool_results],
+  );
+  const hasFooterDivider =
+    toolResults.length > 0 ||
+    (!!metadata && (metadata.type === 'job_log' || metadata.plan_id !== undefined || metadata.plan_title));
+  const isPendingAction =
+    type === 'assistant' &&
+    metadata?.status === 'pending' &&
+    Array.isArray(metadata?.raw_actions) &&
+    metadata.raw_actions.length > 0;
 
   // 复制消息内容
   const handleCopy = () => {
@@ -112,6 +140,66 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     );
   };
 
+  const renderPendingActions = () => {
+    if (!isPendingAction) return null;
+    const actions = Array.isArray(metadata?.raw_actions) ? metadata?.raw_actions : [];
+    const visible = pendingDetailOpen ? actions : actions.slice(0, 3);
+
+    return (
+      <div
+        style={{
+          marginTop: 8,
+          padding: '12px 12px',
+          borderRadius: 8,
+          border: '1px dashed #d9d9d9',
+          background: '#fafafa',
+          opacity: 0.85,
+        }}
+      >
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Space align="center" size={8}>
+            <div
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 10,
+                background: '#1890ff',
+                boxShadow: '0 0 0 6px rgba(24,144,255,0.15)',
+              }}
+            />
+            <Text type="secondary" italic style={{ opacity: 0.9 }}>
+              正在规划并准备调用 {actions.length} 个工具（后台执行中）…
+            </Text>
+          </Space>
+          <div style={{ fontSize: 12, color: '#666' }}>
+            {visible.map((act: any, idx: number) => {
+              const kind = typeof act?.kind === 'string' ? act.kind : 'action';
+              const name = typeof act?.name === 'string' ? act.name : '';
+              const order = typeof act?.order === 'number' ? act.order : idx + 1;
+              return (
+                <div key={`${order}_${kind}_${name}`} style={{ marginBottom: 4 }}>
+                  • 步骤 {order}: {kind}
+                  {name ? ` / ${name}` : ''}
+                </div>
+              );
+            })}
+            {actions.length > 3 && !pendingDetailOpen && <Text type="secondary">…</Text>}
+          </div>
+          {actions.length > 3 && (
+            <Button
+              type="link"
+              size="small"
+              onClick={() => setPendingDetailOpen((v) => !v)}
+              style={{ padding: 0 }}
+            >
+              {pendingDetailOpen ? '收起计划' : '展开全部计划'}
+            </Button>
+          )}
+        </Space>
+      </div>
+    );
+  };
+
   // 渲染消息内容
   const renderContent = () => {
     if (type === 'system') {
@@ -120,6 +208,11 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           {content}
         </Text>
       );
+    }
+
+    // Pending 工具规划，采用幽灵样式提示，不展示正文内容
+    if (isPendingAction) {
+      return renderPendingActions();
     }
 
     return (
@@ -189,22 +282,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     );
   };
 
-  const renderToolResults = () => {
-    const toolResults = Array.isArray(metadata?.tool_results)
-      ? (metadata?.tool_results as ToolResultPayload[])
-      : [];
-    if (!toolResults.length) {
-      return null;
-    }
-    return (
-      <Space direction="vertical" size="middle" style={{ width: '100%', marginTop: 12 }}>
-        {toolResults.map((result, index) => (
-          <ToolResultCard key={`${result.name ?? 'tool'}_${index}`} payload={result} defaultOpen={index === 0} />
-        ))}
-      </Space>
-    );
-  };
-
   const renderActionSummary = () => {
     const summaryItems = Array.isArray(metadata?.actions_summary)
       ? (metadata?.actions_summary as Array<Record<string, any>>)
@@ -243,6 +320,86 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     );
   };
 
+  const renderToolStatusBar = () => {
+    if (isPendingAction) {
+      return null;
+    }
+    if (!toolResults.length) {
+      return null;
+    }
+
+    const successCount = toolResults.filter((item) => item.result?.success !== false).length;
+    const failCount = toolResults.length - successCount;
+    const statusTag = failCount > 0 ? (
+      <Tag color="red">部分失败</Tag>
+    ) : (
+      <Tag color="green">全部成功</Tag>
+    );
+
+    const toolTags = toolResults.slice(0, 3).map((item, index) => (
+      <Tag key={`${item.name ?? 'tool'}_${index}`} color="blue">
+        {item.name ?? 'tool'}
+      </Tag>
+    ));
+
+    return (
+      <div
+        style={{
+          marginTop: 12,
+          padding: '8px 12px',
+          borderRadius: 8,
+          background: '#f5f5f5',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          flexWrap: 'wrap',
+        }}
+      >
+        <Space size={8} wrap align="center">
+          <Text strong>工具调用</Text>
+          {statusTag}
+          <Space size={[4, 4]} wrap>
+            {toolTags}
+            {toolResults.length > 3 && (
+              <Text type="secondary">+{toolResults.length - 3} 更多</Text>
+            )}
+          </Space>
+          <Text type="secondary">
+            {failCount > 0 ? `失败 ${failCount} · 成功 ${successCount}` : `成功 ${successCount}`}
+          </Text>
+        </Space>
+        <Button type="link" size="small" onClick={() => setToolDrawerOpen(true)} style={{ padding: 0 }}>
+          查看调用流程
+        </Button>
+      </div>
+    );
+  };
+
+  const renderToolDrawer = () => {
+    if (!toolResults.length) return null;
+    return (
+      <Drawer
+        title="工具调用详情"
+        placement="right"
+        width={640}
+        open={toolDrawerOpen}
+        onClose={() => setToolDrawerOpen(false)}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          {renderActionSummary()}
+          {toolResults.map((result, index) => (
+            <ToolResultCard
+              key={`${result.name ?? 'tool'}_${index}`}
+              payload={result}
+              defaultOpen={index === 0}
+            />
+          ))}
+        </Space>
+      </Drawer>
+    );
+  };
+
   const renderJobLogPanel = () => {
     if (!metadata || metadata.type !== 'job_log') {
       return null;
@@ -270,9 +427,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
       <div className="message-content">
         <div className="message-bubble">
           {renderContent()}
-          {renderActionSummary()}
-          {renderToolResults()}
-          {renderJobLogPanel()}
+          {!isPendingAction && renderToolStatusBar()}
+          {hasFooterDivider && !isPendingAction && <Divider style={{ margin: '12px 0' }} dashed />}
+          {!isPendingAction && renderJobLogPanel()}
           {renderMetadata()}
         </div>
         
@@ -320,6 +477,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           </Space>
         </div>
       </div>
+      {!isPendingAction && renderToolDrawer()}
     </div>
   );
 };
