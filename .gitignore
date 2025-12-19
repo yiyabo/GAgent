@@ -10,3 +10,4 @@ web-ui/.env.development
 web-ui/node_modules
 runtime/*
 .spec-workflow
+examples

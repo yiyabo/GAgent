@@ -99,6 +99,10 @@ export class ChatApi extends BaseApi {
     return this.get(`/chat/actions/${trackingId}`);
   };
 
+  retryActionRun = async (trackingId: string): Promise<ActionStatusResponse> => {
+    return this.post(`/chat/actions/${trackingId}/retry`, {});
+  };
+
   autotitleSession = async (
     sessionId: string,
     payload?: { force?: boolean; strategy?: string | null }

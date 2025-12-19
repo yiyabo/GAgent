@@ -236,11 +236,83 @@ class PlanRepository:
                 updated = conn.execute(sql, params).rowcount
                 if updated == 0:
                     raise ValueError(f"Task {task_id} not found in plan {plan_id}")
+                # If a leaf/task completes, auto-complete its ancestors when all siblings are completed.
+                # We intentionally do NOT auto-mark parents as failed/running; parents represent grouping
+                # nodes in many chat-driven plans and should become completed only when fully done.
+                if status is not None:
+                    try:
+                        self._maybe_autocomplete_ancestors(conn, task_id)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.warning(
+                            "Failed to auto-complete ancestors for plan %s task %s: %s",
+                            plan_id,
+                            task_id,
+                            exc,
+                        )
             if deps is not None:
                 self._replace_dependencies(conn, task_id, _sanitize_dependencies(deps))
 
         self._touch_plan(plan_id)
         return self.get_node(plan_id, task_id)
+
+    def _maybe_autocomplete_ancestors(self, conn, task_id: int) -> int:
+        """Mark ancestor nodes as completed if all their direct children are completed/skipped.
+
+        This is a lightweight roll-up to keep root/group tasks in sync when only leaf tasks are executed
+        via tools (e.g. claude_code) without explicitly executing the parent nodes themselves.
+        """
+
+        completed_like = {"completed", "skipped"}
+
+        row = conn.execute(
+            "SELECT parent_id FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        parent_id = row["parent_id"] if row else None
+        updated = 0
+        guard = 0
+
+        while parent_id is not None and guard < 200:
+            guard += 1
+
+            child_rows = conn.execute(
+                "SELECT status FROM tasks WHERE parent_id=?",
+                (parent_id,),
+            ).fetchall()
+            if not child_rows:
+                break
+
+            child_statuses = []
+            for r in child_rows:
+                raw = r["status"]
+                s = str(raw).strip().lower() if raw is not None else "pending"
+                child_statuses.append(s)
+
+            if not all(s in completed_like for s in child_statuses):
+                break
+
+            parent_row = conn.execute(
+                "SELECT status, parent_id FROM tasks WHERE id=?",
+                (parent_id,),
+            ).fetchone()
+            if not parent_row:
+                break
+
+            current_status = (
+                str(parent_row["status"]).strip().lower()
+                if parent_row["status"] is not None
+                else "pending"
+            )
+            if current_status != "completed":
+                conn.execute(
+                    "UPDATE tasks SET status='completed', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (parent_id,),
+                )
+                updated += 1
+
+            parent_id = parent_row["parent_id"]
+
+        return updated
 
     def cascade_update_descendants_status(
         self,

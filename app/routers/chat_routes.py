@@ -2753,7 +2753,15 @@ class StructuredChatAgent:
                 )
             
             # 验证操作类型
-            if operation not in ["read_pdf", "read_image", "analyze_image"]:
+            if operation not in [
+                "read_pdf",
+                "read_image",
+                "read_text",
+                "read_any",
+                "read_file",
+                "auto",
+                "analyze_image",
+            ]:
                 return AgentStep(
                     action=action,
                     success=False,
@@ -3182,24 +3190,37 @@ class StructuredChatAgent:
                 if isinstance(position_param, str):
                     position_str = position_param.strip()
                     if position_str:
-                        parts = position_str.split(":", 1)
-                        keyword = parts[0].strip().lower()
-                        if keyword in {"before", "after"}:
-                            if len(parts) < 2 or not parts[1].strip():
-                                raise ValueError("position must follow the format 'before:<task_id>' or 'after:<task_id>'.")
-                            candidate_id = self._coerce_int(parts[1].strip(), f"position {keyword}")
-                            if anchor_task_id is not None and anchor_task_id != candidate_id:
-                                raise ValueError("anchor_task_id does not match the task referenced in position.")
-                            if anchor_position is not None and anchor_position != keyword:
-                                raise ValueError("anchor_position does not match the pattern specified in position.")
-                            anchor_task_id = candidate_id
-                            anchor_position = keyword
-                        elif keyword in {"first_child", "last_child"}:
-                            if anchor_position is not None and anchor_position != keyword:
-                                raise ValueError("anchor_position does not match the pattern specified in position.")
-                            anchor_position = keyword
-                        else:
-                            position = self._coerce_int(position_param, "position")
+	                        parts = position_str.split(":", 1)
+	                        keyword = parts[0].strip().lower()
+	                        if keyword in {"before", "after"}:
+	                            if len(parts) < 2 or not parts[1].strip():
+	                                # Support shorthand "before"/"after":
+	                                # - If anchor_task_id is provided separately, treat as relative to it.
+	                                # - Otherwise, map to inserting as first/last child.
+	                                derived_position = keyword
+	                                if anchor_task_id is None:
+	                                    derived_position = (
+	                                        "first_child" if keyword == "before" else "last_child"
+	                                    )
+	                                if anchor_position is not None and anchor_position != derived_position:
+	                                    raise ValueError(
+	                                        "anchor_position does not match the pattern specified in position."
+	                                    )
+	                                anchor_position = derived_position
+	                            else:
+	                                candidate_id = self._coerce_int(parts[1].strip(), f"position {keyword}")
+	                                if anchor_task_id is not None and anchor_task_id != candidate_id:
+	                                    raise ValueError("anchor_task_id does not match the task referenced in position.")
+	                                if anchor_position is not None and anchor_position != keyword:
+	                                    raise ValueError("anchor_position does not match the pattern specified in position.")
+	                                anchor_task_id = candidate_id
+	                                anchor_position = keyword
+	                        elif keyword in {"first_child", "last_child"}:
+	                            if anchor_position is not None and anchor_position != keyword:
+	                                raise ValueError("anchor_position does not match the pattern specified in position.")
+	                            anchor_position = keyword
+	                        else:
+	                            position = self._coerce_int(position_param, "position")
                     else:
                         position = None
                 else:
@@ -3629,13 +3650,20 @@ class StructuredChatAgent:
             return None
         if not isinstance(raw, list):
             return None
+        if len(raw) == 0:
+            # Explicit empty list means "clear dependencies".
+            return []
         deps: List[int] = []
         for item in raw:
             try:
                 deps.append(int(item))
             except (TypeError, ValueError):
                 continue
-        return deps or None
+        # If user/LLM provided a non-empty list but all items were invalid,
+        # treat as "no change" rather than clearing.
+        if not deps:
+            return None
+        return deps
 
     def _sanitize_tool_result(self, tool_name: str, raw_result: Any) -> Dict[str, Any]:
         if tool_name == "claude_code" and isinstance(raw_result, dict):

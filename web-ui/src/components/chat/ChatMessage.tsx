@@ -35,7 +35,7 @@ interface ChatMessageProps {
 
 const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const { type, content, timestamp, metadata } = message;
-  const { saveMessageAsMemory } = useChatStore();
+  const { saveMessageAsMemory, retryActionRun, retryLastMessage, isProcessing } = useChatStore();
   const [isSaving, setIsSaving] = useState(false);
   const [toolDrawerOpen, setToolDrawerOpen] = useState(false);
   const [pendingDetailOpen, setPendingDetailOpen] = useState(false);
@@ -468,6 +468,15 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
                       type="text"
                       size="small"
                       icon={<ReloadOutlined />}
+                      onClick={() => {
+                        const trackingId = (metadata as any)?.tracking_id;
+                        if (typeof trackingId === 'string' && trackingId) {
+                          void retryActionRun(trackingId, ((metadata as any)?.raw_actions as any[]) ?? []);
+                        } else {
+                          void retryLastMessage();
+                        }
+                      }}
+                      disabled={isProcessing}
                       style={{ fontSize: 10, padding: '0 4px' }}
                     />
                   </Tooltip>

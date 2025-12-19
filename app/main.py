@@ -249,11 +249,36 @@ def llm_health(ping: bool = False):
 
 if __name__ == "__main__":
     import uvicorn
+    from pathlib import Path
 
     settings = get_settings()
-    uvicorn.run(
-        "app.main:app",
-        host=settings.backend_host,
-        port=settings.backend_port,
-        reload=True,
-    )
+    project_root = Path(__file__).parent.parent.resolve()
+    reload_enabled = parse_bool(os.getenv("BACKEND_RELOAD"), default=False)
+
+    run_kwargs = {
+        "host": settings.backend_host,
+        "port": settings.backend_port,
+        "reload": reload_enabled,
+    }
+
+    if reload_enabled:
+        run_kwargs.update(
+            {
+                "reload_dirs": [
+                    str(project_root / "app"),
+                    str(project_root / "tool_box"),
+                ],
+                "reload_includes": [
+                    "app/**/*.py",
+                    "tool_box/**/*.py",
+                ],
+                "reload_excludes": [
+                    "runtime/**",
+                    "*.db",
+                    "*.sqlite",
+                    "data/*",
+                ],
+            }
+        )
+
+    uvicorn.run("app.main:app", **run_kwargs)
