@@ -205,6 +205,29 @@ async def document_reader_handler(
     use_ocr: bool = False,
     prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
+    # Normalize path early and handle directory listing
+    abs_path = Path(file_path).expanduser()
+    if not abs_path.is_absolute():
+        abs_path = Path.cwd() / abs_path
+    if abs_path.is_dir():
+        try:
+            entries = []
+            for child in sorted(abs_path.iterdir()):
+                kind = "dir" if child.is_dir() else child.suffix.lstrip(".") or "file"
+                entries.append({"name": child.name, "kind": kind})
+            return {
+                "success": True,
+                "is_directory": True,
+                "file_path": str(abs_path),
+                "entries": entries,
+                "summary": f"路径是目录，包含 {len(entries)} 项。可用 claude_code 递归分析，或指定具体文件路径。",
+            }
+        except Exception as e:
+            logger.error("列目录失败: %s", e)
+            return {"success": False, "error": f"读取目录失败: {e}"}
+    # For downstream handlers, use normalized absolute path
+    file_path = str(abs_path)
+
     try:
         if operation == "read_pdf":
             kind, _ = _detect_type(file_path)

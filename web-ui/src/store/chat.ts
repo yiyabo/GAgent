@@ -198,6 +198,7 @@ interface ChatState {
   // 快捷操作
   sendMessage: (content: string, metadata?: ChatMessage['metadata']) => Promise<void>;
   retryLastMessage: () => Promise<void>;
+  retryActionRun: (trackingId: string, rawActions?: any[]) => Promise<void>;
   startNewSession: (title?: string) => ChatSession;
   restoreSession: (sessionId: string, title?: string) => Promise<ChatSession>;
   loadChatHistory: (sessionId: string) => Promise<void>;
@@ -1087,13 +1088,115 @@ export const useChatStore = create<ChatState>()(
         get().addMessage(errorMessage);
       }
     },
-    // 重试最后一条消息
+    // 重试最后一条消息 / 最近一次失败的后台动作
     retryLastMessage: async () => {
-      const { messages } = get();
-      const lastUserMessage = [...messages].reverse().find(msg => msg.type === 'user');
-      
+      const { messages, isProcessing } = get();
+      if (isProcessing) return;
+
+      const lastFailedActionMsg = [...messages]
+        .reverse()
+        .find((msg) => {
+          if (msg.type !== 'assistant') return false;
+          const meta = msg.metadata as any;
+          return meta && typeof meta.tracking_id === 'string' && meta.status === 'failed';
+        });
+
+      if (lastFailedActionMsg) {
+        const meta = lastFailedActionMsg.metadata as any;
+        const oldTrackingId = meta.tracking_id as string;
+        await get().retryActionRun(oldTrackingId, meta.raw_actions ?? []);
+        return;
+      }
+
+      const lastUserMessage = [...messages].reverse().find((msg) => msg.type === 'user');
       if (lastUserMessage) {
         await get().sendMessage(lastUserMessage.content, lastUserMessage.metadata);
+      }
+    },
+
+    // 重试指定 tracking_id 的后台动作（用于消息内的重新执行按钮）
+    retryActionRun: async (oldTrackingId: string, rawActionsOverride: any[] = []) => {
+      const { currentSession, messages, isProcessing } = get();
+      if (!oldTrackingId || isProcessing) return;
+
+      try {
+        set({ isProcessing: true });
+
+        const retryStatus = await chatApi.retryActionRun(oldTrackingId);
+        const newTrackingId = retryStatus.tracking_id;
+
+        const rawActions = Array.isArray(retryStatus.actions)
+          ? retryStatus.actions.map((a: any, idx: number) => ({
+              kind: a.kind,
+              name: a.name,
+              parameters: a.parameters,
+              order: a.order ?? idx + 1,
+              blocking: a.blocking ?? true,
+            }))
+          : rawActionsOverride;
+
+        const pendingAssistantId = `msg_${Date.now()}_assistant_retry`;
+        const pendingAssistant: ChatMessage = {
+          id: pendingAssistantId,
+          type: 'assistant',
+          content: '正在重新执行该动作…',
+          timestamp: new Date(),
+          metadata: {
+            status: 'pending',
+            tracking_id: newTrackingId,
+            plan_id: retryStatus.plan_id ?? null,
+            raw_actions: rawActions,
+            retry_of: oldTrackingId,
+          },
+        };
+        get().addMessage(pendingAssistant);
+
+        const timeoutMs = 120_000;
+        const intervalMs = 2_500;
+        const start = Date.now();
+        let lastStatus: ActionStatusResponse | null = null;
+
+        while (Date.now() - start < timeoutMs) {
+          try {
+            const status = await chatApi.getActionStatus(newTrackingId);
+            lastStatus = status;
+            if (status.status === 'completed' || status.status === 'failed') {
+              break;
+            }
+          } catch (pollError) {
+            console.warn('轮询重试动作状态失败:', pollError);
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
+
+        if (lastStatus) {
+          get().updateMessage(pendingAssistantId, {
+            metadata: {
+              ...(pendingAssistant.metadata as any),
+              status: lastStatus.status,
+              actions: lastStatus.actions ?? [],
+              tool_results: lastStatus.metadata?.tool_results,
+              errors: lastStatus.errors ?? undefined,
+            },
+          });
+
+          if (lastStatus.status === 'completed' && currentSession) {
+            try {
+              await get().loadChatHistory(currentSession.session_id ?? currentSession.id);
+            } catch (refreshError) {
+              console.warn('刷新聊天历史失败:', refreshError);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Retry action run failed:', error);
+        const lastUserMessage = [...messages].reverse().find((msg) => msg.type === 'user');
+        if (lastUserMessage) {
+          await get().sendMessage(lastUserMessage.content, lastUserMessage.metadata);
+        }
+      } finally {
+        set({ isProcessing: false });
       }
     },
 

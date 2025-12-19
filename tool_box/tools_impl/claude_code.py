@@ -12,6 +12,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -124,30 +125,24 @@ async def claude_code_handler(
         # 确保 runtime 目录存在
         _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
-        # 会话级目录 + 共享输入目录
+        # 会话级目录：不再分层 tasks/YYYY-MM-DD，所有任务都放在 session_<id>/ 下
         session_label = f"session_{session_id}" if session_id else "session_adhoc"
         session_dir = _RUNTIME_DIR / session_label
-        shared_dir = session_dir / "shared"
-        shared_dir.mkdir(parents=True, exist_ok=True)
+        session_dir.mkdir(parents=True, exist_ok=True)
 
-        # 按日期归档的任务目录
+        # 为每次调用创建一个子目录，避免文件冲突
         task_dir_name = await _generate_task_dir_name_llm(task)
-        date_prefix = datetime.utcnow().strftime("%Y-%m-%d")
-        task_parent = session_dir / "tasks" / date_prefix
-        task_parent.mkdir(parents=True, exist_ok=True)
-
-        # 任务子目录：语义名 + 短时间戳，避免重名
-        time_suffix = datetime.utcnow().strftime("%H%M%S")
+        time_suffix = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         task_dir_base = f"{task_dir_name}_{time_suffix}"
-        if task_id is not None:
-            task_dir_base = f"task{task_id}_{task_dir_base}"
         if plan_id is not None:
             task_dir_base = f"plan{plan_id}_{task_dir_base}"
+        if task_id is not None:
+            task_dir_base = f"task{task_id}_{task_dir_base}"
 
-        task_work_dir = task_parent / task_dir_base
+        task_work_dir = session_dir / task_dir_base
         idx = 1
         while task_work_dir.exists():
-            task_work_dir = task_parent / f"{task_dir_base}_{idx}"
+            task_work_dir = session_dir / f"{task_dir_base}_{idx}"
             idx += 1
         task_work_dir.mkdir(parents=True, exist_ok=True)
         
@@ -159,6 +154,8 @@ async def claude_code_handler(
             "Your primary objective is to faithfully reproduce and critically analyze published research, "
             "including implementing methods as described in papers, reproducing figures and tables, "
             "explaining numerical results, and producing transparent, reproducible code and analysis.\n\n"
+            "Workspace rule: your working root is the session directory; first list its contents to see what is already provided, "
+            "then work inside the dedicated task subdirectory. Keep the folder structure flat; do not create deep nested trees.\n\n"
             "When working with papers, treat every numerical value as important scientific evidence. "
             "For each important number (metrics, coefficients, hyperparameters, table entries, figure annotations), "
             "explain what it represents, its units or scale when applicable, how it is computed or derived, "
@@ -223,7 +220,9 @@ async def claude_code_handler(
         logger.info(f"Executing Claude CLI in task directory: {task_work_dir}")
         
         # 在任务专属目录执行（无超时限制，允许长时间运行）
-        result = subprocess.run(
+        # IMPORTANT: run subprocess in a worker thread to avoid blocking FastAPI event loop.
+        result = await asyncio.to_thread(
+            subprocess.run,
             cmd,
             cwd=str(task_work_dir),
             capture_output=True,
@@ -251,7 +250,6 @@ async def claude_code_handler(
             "task_directory": task_dir_base,
             "task_directory_full": str(task_work_dir),
             "session_directory": str(session_dir),
-            "shared_directory": str(shared_dir),
             "success": success,
             "stdout": stdout,
             "stderr": stderr,

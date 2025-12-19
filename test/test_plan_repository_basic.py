@@ -125,3 +125,18 @@ def test_plan_tree_snapshot(plan_repo: PlanRepository):
     with sqlite3.connect(plan_path) as conn:
         count = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
     assert count >= 1
+
+
+def test_parent_auto_completes_when_children_completed(plan_repo: PlanRepository):
+    plan = plan_repo.create_plan("Rollup")
+    plan_id = plan.id
+
+    root = plan_repo.create_task(plan_id, name="Root")
+    child_a = plan_repo.create_task(plan_id, name="Child A", parent_id=root.id)
+    child_b = plan_repo.create_task(plan_id, name="Child B", parent_id=root.id)
+
+    plan_repo.update_task(plan_id, child_a.id, status="completed")
+    assert plan_repo.get_node(plan_id, root.id).status == "pending"
+
+    plan_repo.update_task(plan_id, child_b.id, status="completed")
+    assert plan_repo.get_node(plan_id, root.id).status == "completed"
