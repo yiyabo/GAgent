@@ -3,6 +3,15 @@
 
 echo "🧠 Starting A-mem (Agentic Memory) Service..."
 
+# Load repo .env if present to provide API keys/base URLs.
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$ROOT_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ROOT_DIR/.env"
+    set +a
+fi
+
 # 进入A-mem目录
 cd "$(dirname "$0")/../execute_memory/A-mem-main" || exit 1
 

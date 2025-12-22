@@ -19,7 +19,19 @@ class OpenAIController(BaseLLMController):
                 api_key = os.getenv('OPENAI_API_KEY')
             if api_key is None:
                 raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY environment variable.")
-            self.client = OpenAI(api_key=api_key)
+            base_url = (
+                os.getenv("AMEM_BASE_URL")
+                or os.getenv("QWEN_API_BASE")
+                or os.getenv("QWEN_API_URL")
+                or os.getenv("OPENAI_BASE_URL")
+                or os.getenv("OPENAI_API_BASE")
+            )
+            if base_url and base_url.endswith("/chat/completions"):
+                base_url = base_url[: -len("/chat/completions")]
+            if base_url:
+                self.client = OpenAI(api_key=api_key, base_url=base_url)
+            else:
+                self.client = OpenAI(api_key=api_key)
         except ImportError:
             raise ImportError("OpenAI package not found. Install it with: pip install openai")
     
