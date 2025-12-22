@@ -35,22 +35,22 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
     setTaskStats: state.setTaskStats,
   }));
 
-  // 状态颜色映射
+  // 状态颜色映射 - 使用 CSS 变量主题色
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'completed':
       case 'done':
-        return '#52c41a'; // 绿色
+        return '#22c55e'; // 绿色 - success-color
       case 'running':
       case 'executing':
-        return '#1890ff'; // 蓝色
+        return '#3b82f6'; // 蓝色 - info-color
       case 'pending':
-        return '#faad14'; // 橙色
+        return '#f59e0b'; // 橙色 - warning-color
       case 'failed':
       case 'error':
-        return '#ff4d4f'; // 红色
+        return '#ef4444'; // 红色 - error-color
       default:
-        return '#d9d9d9'; // 灰色
+        return 'var(--text-tertiary)';
     }
   };
 
@@ -172,15 +172,15 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
           : cleanName;
       }
       
-      // 根据任务类型设置不同的边框颜色 (安全处理undefined)
+      // 根据任务类型设置不同的边框颜色 (使用主题色)
       const getBorderColor = (taskType?: string) => {
-        if (!taskType) return '#d9d9d9'; // 默认灰色
+        if (!taskType) return 'var(--text-tertiary)';
         
         switch (taskType.toUpperCase()) {
-          case 'ROOT': return '#722ed1';     // 紫色 - ROOT
-          case 'COMPOSITE': return '#1890ff'; // 蓝色 - COMPOSITE  
-          case 'ATOMIC': return '#52c41a';    // 绿色 - ATOMIC
-          default: return '#d9d9d9';
+          case 'ROOT': return 'var(--primary-color)';     // 主色调 - ROOT
+          case 'COMPOSITE': return '#3b82f6'; // 蓝色 - COMPOSITE
+          case 'ATOMIC': return '#22c55e';    // 绿色 - ATOMIC
+          default: return 'var(--text-tertiary)';
         }
       };
       
@@ -225,24 +225,24 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
           const getEdgeStyle = (fromType: string, toType: string) => {
             if (fromType.toUpperCase() === 'ROOT' && toType.toUpperCase() === 'COMPOSITE') {
               return {
-                color: { color: '#722ed1', highlight: '#9254de', hover: '#9254de' },  // 紫色渐变 - ROOT到COMPOSITE
+                color: { color: 'var(--primary-color)', highlight: 'var(--primary-color)', hover: 'var(--primary-color)' },
                 width: 4,
                 dashes: false,
-                shadow: { enabled: true, color: 'rgba(114, 46, 209, 0.3)', size: 8 }
+                shadow: { enabled: true, color: 'rgba(201, 100, 66, 0.3)', size: 8 }
               };
             } else if (fromType.toUpperCase() === 'COMPOSITE' && toType.toUpperCase() === 'ATOMIC') {
               return {
-                color: { color: '#1890ff', highlight: '#40a9ff', hover: '#40a9ff' },  // 蓝色渐变 - COMPOSITE到ATOMIC  
+                color: { color: '#3b82f6', highlight: '#3b82f6', hover: '#3b82f6' },
                 width: 3,
                 dashes: false,
-                shadow: { enabled: true, color: 'rgba(24, 144, 255, 0.3)', size: 6 }
+                shadow: { enabled: true, color: 'rgba(59, 130, 246, 0.3)', size: 6 }
               };
             } else {
               return {
-                color: { color: '#52c41a', highlight: '#73d13d', hover: '#73d13d' },  // 绿色渐变 - 其他关系
+                color: { color: '#22c55e', highlight: '#22c55e', hover: '#22c55e' },
                 width: 2,
                 dashes: false,
-                shadow: { enabled: true, color: 'rgba(82, 196, 26, 0.3)', size: 4 }
+                shadow: { enabled: true, color: 'rgba(34, 197, 94, 0.3)', size: 4 }
               };
             }
           };
@@ -266,7 +266,7 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
               roundness: 0.4
             },
             label: `${parentTask.task_type} → ${task.task_type}`,
-            font: { size: 10, color: '#666', strokeWidth: 0 },
+            font: { size: 10, color: 'var(--text-secondary)', strokeWidth: 0 },
             labelHighlightBold: false,
           });
         }
@@ -451,102 +451,51 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
 
   // Agent工作流程图例组件
   const AgentLegend = () => (
-    <div style={{ 
-      position: 'absolute', 
-      top: 10, 
-      left: 10, 
-      background: 'rgba(255,255,255,0.95)', 
-      padding: '12px', 
+    <div style={{
+      position: 'absolute',
+      top: 10,
+      left: 10,
+      background: 'var(--bg-secondary)',
+      padding: '12px',
       borderRadius: '8px',
-      border: '1px solid #d9d9d9',
+      border: '1px solid var(--border-color)',
       fontSize: '12px',
       zIndex: 1000,
       maxWidth: '200px'
     }}>
-      <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#1890ff' }}>
+      <div style={{ fontWeight: 'bold', marginBottom: '8px', color: 'var(--primary-color)' }}>
         🤖 Agent工作流程图例
       </div>
       <div style={{ marginBottom: '4px' }}>
-        <span style={{ color: '#722ed1' }}>⭐</span> ROOT - 目标任务
+        <span style={{ color: 'var(--primary-color)' }}>⭐</span> ROOT - 目标任务
       </div>
       <div style={{ marginBottom: '4px' }}>
-        <span style={{ color: '#1890ff' }}>📦</span> COMPOSITE - 复合任务
+        <span style={{ color: '#3b82f6' }}>📦</span> COMPOSITE - 复合任务
       </div>
       <div style={{ marginBottom: '4px' }}>
-        <span style={{ color: '#52c41a' }}>⚪</span> ATOMIC - 原子任务
+        <span style={{ color: '#22c55e' }}>⚪</span> ATOMIC - 原子任务
       </div>
-      <div style={{ fontSize: '10px', color: '#666', marginTop: '6px' }}>
+      <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '6px' }}>
         💡 点击节点查看详情
       </div>
     </div>
   );
 
   return (
-    <Card 
-      title={
-        <Space>
-          <span>🤖 Agent任务依赖图</span>
-          {stats && (
-            <Badge count={stats.total} style={{ backgroundColor: '#52c41a' }} />
-          )}
-        </Space>
-      }
-      style={{ height: '100%', position: 'relative' }}
-      extra={
-        <Space wrap>
-          <Input.Search
-            placeholder="搜索任务"
-            style={{ width: 200 }}
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            onSearch={(value) => setSearchText(value)}
-            allowClear
-          />
-          <Select
-            placeholder="状态筛选"
-            style={{ width: 120 }}
-            value={statusFilter}
-            onChange={setStatusFilter}
-            options={[
-              { label: '全部', value: 'all' },
-              { label: '待执行', value: 'pending' },
-              { label: '执行中', value: 'running' },
-              { label: '已完成', value: 'done' },
-              { label: '失败', value: 'failed' },
-            ]}
-          />
-          <Button 
-            icon={<ExpandOutlined />} 
-            onClick={handleFitView}
-            title="适应视图"
-          />
-          <Button 
-            icon={<ReloadOutlined />} 
-            onClick={handleRefresh}
-            loading={loading}
-          >
-            刷新
-          </Button>
-        </Space>
-      }
-    >
-      <Spin spinning={loading} tip="加载任务数据中...">
-        <div style={{ position: 'relative' }}>
-          <div 
-            ref={networkRef} 
-            style={{ 
-              height: 'calc(100vh - 200px)', 
-              width: '100%',
-              border: '1px solid #d9d9d9',
-              borderRadius: '6px',
-              backgroundColor: '#fafafa',
-            }} 
-          />
-          {/* Agent工作流程图例 */}
-          <AgentLegend />
-        </div>
-      </Spin>
-    </Card>
+    <div style={{ height: '100%', position: 'relative', background: 'var(--bg-secondary)' }}>
+      <div
+        ref={networkRef}
+        style={{
+          height: '100%',
+          width: '100%',
+          border: '1px solid var(--border-color)',
+          borderRadius: 'var(--radius-md)',
+          backgroundColor: 'var(--bg-tertiary)',
+        }}
+      />
+      {/* Agent工作流程图例 */}
+      <AgentLegend />
+    </div>
   );
 };
 

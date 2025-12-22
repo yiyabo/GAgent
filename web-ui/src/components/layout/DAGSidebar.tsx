@@ -146,13 +146,13 @@ const DAGSidebar: React.FC = () => {
 
   const renderPlanPanel = () => (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0', background: 'white' }}>
+      <div style={{ padding: '16px', borderBottom: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}>
         <div
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <NodeIndexOutlined style={{ color: '#1890ff', fontSize: 18 }} />
-            <Title level={5} style={{ margin: 0 }}>
+            <NodeIndexOutlined style={{ color: 'var(--primary-color)', fontSize: 18 }} />
+            <Title level={5} style={{ margin: 0, color: 'var(--text-primary)' }}>
               任务图谱
             </Title>
           </div>
@@ -214,16 +214,16 @@ const DAGSidebar: React.FC = () => {
           <div
             style={{
               padding: '6px 12px',
-              background: '#f5f5f5',
-              border: '1px solid #d9d9d9',
+              background: 'var(--bg-tertiary)',
+              border: '1px solid var(--border-color)',
               borderRadius: '6px',
               fontSize: '14px',
-              color: selectedPlanTitle ? '#262626' : '#8c8c8c',
+              color: selectedPlanTitle ? 'var(--text-primary)' : 'var(--text-tertiary)',
             }}
           >
             {selectedPlanTitle || '暂无ROOT任务'}
           </div>
-          <Text type="secondary" style={{ fontSize: 10, color: '#999' }}>
+          <Text type="secondary" style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
             💡 一个对话对应一个ROOT任务，所有子任务都从此展开
           </Text>
         </Space>
@@ -268,7 +268,7 @@ const DAGSidebar: React.FC = () => {
         </div>
       )}
 
-      <div style={{ padding: '12px 16px', borderTop: '1px solid #f0f0f0', background: '#fafafa' }}>
+      <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border-color)', background: 'var(--bg-tertiary)' }}>
         <Space size={8} wrap style={{ width: '100%', justifyContent: 'center' }}>
           <Button size="small" icon={<ReloadOutlined />} onClick={handleRefresh} loading={planTasksLoading}>
             刷新
@@ -292,7 +292,7 @@ const DAGSidebar: React.FC = () => {
   );
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'white' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)' }}>
       <Tabs
         activeKey={activeTab}
         onChange={setActiveTab}

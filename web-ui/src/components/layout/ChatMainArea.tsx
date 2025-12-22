@@ -202,62 +202,67 @@ const ChatMainArea: React.FC = () => {
   );
 
   return (
-    <div style={{ 
-      height: '100%', 
-      display: 'flex', 
+    <div style={{
+      height: '100%',
+      display: 'flex',
       flexDirection: 'column',
-      background: 'white',
+      background: 'var(--bg-primary)',
     }}>
-      {/* 头部信息 */}
+      {/* 头部信息 - 极简设计 */}
       <div style={{
         padding: '12px 20px',
-        borderBottom: '1px solid #f0f0f0',
-        background: 'white',
+        borderBottom: '1px solid var(--border-color)',
+        background: 'var(--bg-primary)',
         flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Avatar size={32} icon={<RobotOutlined />} style={{ background: '#52c41a' }} />
-            <div>
-              <Text strong style={{ fontSize: 16 }}>
-                {currentSession?.title || 'AI 任务编排助手'}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Avatar
+            size={28}
+            icon={<RobotOutlined />}
+            style={{
+              background: 'var(--primary-gradient)',
+              borderRadius: 6,
+            }}
+          />
+          <div>
+            <Text strong style={{ fontSize: 14, color: 'var(--text-primary)' }}>
+              {currentSession?.title || 'AI 任务编排助手'}
+            </Text>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+              <Text type="secondary" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                {isProcessing ? '思考中...' : '在线'}
               </Text>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 2 }}>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {isProcessing ? '正在思考...' : '在线'}
-                </Text>
-                {messages.length > 0 && (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    共 {messages.length} 条消息
-                  </Text>
-                )}
-              </div>
             </div>
           </div>
+        </div>
 
-          {/* 上下文信息和Memory开关 */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            {(selectedTask || currentPlan || currentPlanTitle || currentTaskName) && (
-              <div style={{ fontSize: 12, color: '#666', textAlign: 'right' }}>
-                {(currentPlan || currentPlanTitle) && <div>当前计划: {currentPlan || currentPlanTitle}</div>}
-                {(selectedTask || currentTaskName) && <div>选中任务: {selectedTask?.name || currentTaskName}</div>}
-              </div>
-            )}
-
-            {/* Memory 功能开关 */}
-            <Tooltip title={memoryEnabled ? "记忆增强已启用" : "记忆增强已禁用"}>
-              <Space size="small">
-                <DatabaseOutlined style={{ color: memoryEnabled ? '#52c41a' : '#d9d9d9', fontSize: 16 }} />
-                <Switch
-                  checked={memoryEnabled}
-                  onChange={toggleMemory}
-                  size="small"
-                  checkedChildren="记忆"
-                  unCheckedChildren="记忆"
-                />
-              </Space>
-            </Tooltip>
-          </div>
+        {/* 简化操作区 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {/* 搜索提供商选择器 */}
+          <Select
+            size="small"
+            value={providerValue}
+            onChange={handleProviderChange}
+            options={providerOptions}
+            style={{ width: 130 }}
+            placeholder="搜索来源"
+            disabled={isUpdatingProvider}
+          />
+          
+          {/* Memory 开关 */}
+          <Tooltip title={memoryEnabled ? "记忆已启用" : "记忆已禁用"}>
+            <Switch
+              checked={memoryEnabled}
+              onChange={toggleMemory}
+              size="small"
+              style={{
+                background: memoryEnabled ? 'var(--primary-color)' : undefined,
+              }}
+            />
+          </Tooltip>
         </div>
       </div>
 
@@ -265,35 +270,31 @@ const ChatMainArea: React.FC = () => {
       <div style={{
         flex: 1,
         overflow: 'auto',
-        background: '#fafbfc',
+        background: 'var(--bg-primary)',
+        padding: '16px 0',
       }}>
         {messages.length === 0 ? (
           renderWelcome()
         ) : (
           <div style={{
-            padding: '16px 20px',
-            maxWidth: 800,
+            padding: '0 24px',
+            maxWidth: 900,
             margin: '0 auto',
             width: '100%',
           }}>
-            {/* 相关记忆提示 */}
+            {/* 相关记忆提示 - 极简风格 */}
             {relevantMemories.length > 0 && (
-              <Alert
-                message={`🧠 找到 ${relevantMemories.length} 条相关记忆`}
-                description={
-                  <Space wrap>
-                    {relevantMemories.map(m => (
-                      <Tag key={m.id} color="blue">
-                        {m.keywords.slice(0, 2).join(', ')} ({(m.similarity! * 100).toFixed(0)}%)
-                      </Tag>
-                    ))}
-                  </Space>
-                }
-                type="info"
-                closable
-                style={{ marginBottom: 16 }}
-                onClose={() => useChatStore.getState().setRelevantMemories([])}
-              />
+              <div style={{
+                marginBottom: 16,
+                padding: '10px 14px',
+                background: 'var(--bg-tertiary)',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: 12,
+                color: 'var(--text-secondary)',
+              }}>
+                <span style={{ color: 'var(--primary-color)' }}>🧠</span>
+                {relevantMemories.length} 条相关记忆
+              </div>
             )}
 
             {messages.map((message) => (
@@ -309,26 +310,36 @@ const ChatMainArea: React.FC = () => {
                 alignItems: 'flex-start',
                 gap: 12,
                 marginBottom: 16,
+                animation: 'messageIn 0.3s ease-out',
               }}>
-                <Avatar 
-                  size={32} 
-                  icon={<RobotOutlined />} 
-                  style={{ background: '#52c41a' }} 
+                <Avatar
+                  size={40}
+                  icon={<RobotOutlined />}
+                  style={{
+                    background: 'linear-gradient(135deg, #42A5F5 0%, #66BB6A 100%)',
+                    boxShadow: 'var(--shadow-md)',
+                  }}
                 />
                 <div style={{
-                  background: 'white',
-                  padding: '12px 16px',
-                  borderRadius: '12px 12px 12px 4px',
-                  border: '1px solid #e5e7eb',
-                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+                  background: 'var(--bg-secondary)',
+                  padding: '16px 20px',
+                  borderRadius: 'var(--radius-xl)',
+                  border: '1px solid var(--border-light)',
+                  boxShadow: 'var(--shadow-sm)',
                 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <div className="typing-indicator">
-                      <span></span>
-                      <span></span>
-                      <span></span>
+                      <span style={{
+                        background: 'linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%)'
+                      }}></span>
+                      <span style={{
+                        background: 'linear-gradient(135deg, #FF8E53 0%, #FFA726 100%)'
+                      }}></span>
+                      <span style={{
+                        background: 'linear-gradient(135deg, #FFA726 0%, #FFB74D 100%)'
+                      }}></span>
                     </div>
-                    <Text type="secondary">正在思考中...</Text>
+                    <Text type="secondary" style={{ fontSize: 13 }}>正在思考中...</Text>
                   </div>
                 </div>
               </div>
@@ -339,14 +350,14 @@ const ChatMainArea: React.FC = () => {
         )}
       </div>
 
-      {/* 输入区域 */}
+      {/* 输入区域 - Claude 风格 */}
       <div style={{
-        padding: '12px 20px',
-        borderTop: '1px solid #f0f0f0',
-        background: 'white',
+        padding: '16px 24px 20px',
+        background: 'var(--bg-primary)',
+        borderTop: '1px solid var(--border-color)',
         flexShrink: 0,
       }}>
-        <div style={{ maxWidth: 840, margin: '0 auto' }}>
+        <div style={{ maxWidth: 920, margin: '0 auto' }}>
           {/* 上传文件列表 */}
           <UploadedFilesList />
           
@@ -358,43 +369,49 @@ const ChatMainArea: React.FC = () => {
             }}
           >
             {/* 左侧上传按钮组 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, justifyContent: 'center' }}>
-              <FileUploadButton type="file" size="middle" />
-              <FileUploadButton type="image" size="middle" />
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              justifyContent: 'center',
+              background: 'var(--bg-tertiary)',
+              padding: '6px 10px',
+              borderRadius: 'var(--radius-md)',
+            }}>
+              <FileUploadButton type="file" size="small" />
+              <FileUploadButton type="image" size="small" />
             </div>
 
-            <TextArea
-              ref={inputRef}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="输入你的需求... (Shift+Enter换行，Enter发送)"
-              autoSize={{ minRows: 2, maxRows: 6 }}
-              disabled={isProcessing}
-              style={{
-                resize: 'none',
-                borderRadius: 12,
-                fontSize: 14,
-                flex: 1,
-              }}
-            />
-            <div
-              style={{
-                width: 220,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 8,
-              }}
-            >
-              <Select
-                size="middle"
-                value={providerValue}
-                placeholder="选择网络搜索来源"
-                options={providerOptions}
-                allowClear
-                onChange={handleProviderChange}
-                disabled={!currentSession || isProcessing}
-                loading={isUpdatingProvider}
+            {/* 输入框 - Claude 风格 */}
+            <div style={{
+              flex: 1,
+              background: '#FFFFFF',
+              borderRadius: 'var(--radius-xl)',
+              padding: '6px',
+              display: 'flex',
+              alignItems: 'flex-end',
+              border: '2px solid var(--border-color)',
+              boxShadow: '0 8px 32px -12px rgba(0, 0, 0, 0.03)',
+              transition: 'var(--transition-normal)',
+            }}>
+              <TextArea
+                ref={inputRef}
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyPress={handleKeyPress}
+                placeholder="输入你的需求，让我来帮你完成..."
+                autoSize={{ minRows: 1, maxRows: 5 }}
+                disabled={isProcessing}
+                style={{
+                  resize: 'none',
+                  border: 'none',
+                  background: 'transparent',
+                  fontSize: 15,
+                  lineHeight: 1.7,
+                  letterSpacing: '0.018em',
+                  outline: 'none',
+                  boxShadow: 'none',
+                }}
               />
               <Button
                 type="primary"
@@ -403,11 +420,11 @@ const ChatMainArea: React.FC = () => {
                 disabled={!inputText.trim() || isProcessing}
                 loading={isProcessing}
                 style={{
-                  height: 'auto',
-                  borderRadius: 12,
-                  paddingLeft: 16,
-                  paddingRight: 16,
-                  flex: 1,
+                  height: 36,
+                  borderRadius: 'var(--radius-md)',
+                  minWidth: 80,
+                  background: 'var(--primary-color)',
+                  border: 'none',
                 }}
               >
                 发送

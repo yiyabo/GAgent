@@ -214,7 +214,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0' }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-color)' }}>
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           <Space style={{ width: '100%', justifyContent: 'space-between' }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
@@ -248,7 +248,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
       </div>
 
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-        <div style={{ width: 240, borderRight: '1px solid #f0f0f0', overflow: 'auto' }}>
+        <div style={{ width: 240, borderRight: '1px solid var(--border-color)', overflow: 'auto' }}>
           {isLoading ? (
             <div style={{ padding: 16 }}>
               <Text type="secondary">加载中...</Text>
@@ -310,17 +310,17 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                 <img
                   src={buildArtifactFileUrl(sessionId, selectedItem.path)}
                   alt={selectedItem.name}
-                  style={{ width: '100%', borderRadius: 8, border: '1px solid #f0f0f0' }}
+                  style={{ width: '100%', borderRadius: 8, border: '1px solid var(--border-color)' }}
                 />
               )}
 
               {isText && (
                 <div
                   style={{
-                    border: '1px solid #e5e7eb',
+                    border: '1px solid var(--border-color)',
                     borderRadius: 8,
                     padding: 12,
-                    background: '#fafafa',
+                    background: 'var(--bg-tertiary)',
                     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
                     fontSize: 12,
                     whiteSpace: 'pre-wrap',

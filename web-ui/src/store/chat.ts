@@ -301,12 +301,32 @@ export const useChatStore = create<ChatState>()(
 
     deleteSession: async (sessionId, options) => {
       const archive = options?.archive ?? false;
+      
       try {
+        // 先检查会话是否在后端存在
+        const checkResponse = await fetch(`${ENV.API_BASE_URL}/chat/sessions/${sessionId}`, {
+          method: 'HEAD',
+        });
+        
+        // 如果会话在后端不存在，直接从本地移除，不报错
+        if (!checkResponse.ok) {
+          console.warn(`会话 ${sessionId} 在后端不存在，从本地移除`);
+          get().removeSession(sessionId);
+          return;
+        }
+        
+        // 会话存在，调用后端删除
         await chatApi.deleteSession(
           sessionId,
           archive ? { archive: true } : undefined
         );
       } catch (error) {
+        // 网络错误或其他错误，如果是因为会话不存在，直接移除本地
+        if (error instanceof Error && error.message.includes('404')) {
+          console.warn(`会话 ${sessionId} 不存在，从本地移除`);
+          get().removeSession(sessionId);
+          return;
+        }
         console.error('删除会话失败:', error);
         throw error;
       }
@@ -1176,7 +1196,7 @@ export const useChatStore = create<ChatState>()(
               ...(pendingAssistant.metadata as any),
               status: lastStatus.status,
               actions: lastStatus.actions ?? [],
-              tool_results: lastStatus.metadata?.tool_results,
+              tool_results: (lastStatus as any).metadata?.tool_results,
               errors: lastStatus.errors ?? undefined,
             },
           });

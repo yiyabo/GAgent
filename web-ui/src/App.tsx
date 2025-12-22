@@ -4,7 +4,6 @@ import { App as AntdApp, Layout } from 'antd';
 import { useSystemStore } from '@store/system';
 import { checkApiHealth } from '@api/client';
 import AppHeader from '@components/layout/AppHeader';
-import AppSider from '@components/layout/AppSider';
 import ErrorBoundary from '@components/common/ErrorBoundary';
 import ChatLayout from '@components/layout/ChatLayout';
 import Dashboard from '@pages/Dashboard';
@@ -97,11 +96,10 @@ function App() {
       <Layout style={{ minHeight: '100vh' }}>
         <AppHeader />
         <Layout>
-          <AppSider />
           <Layout.Content style={{ padding: '24px', background: '#f0f2f5' }}>
             <ErrorBoundary>
               <Routes>
-                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/" element={<Navigate to="/chat" replace />} />
                 <Route path="/dashboard" element={<ErrorBoundary><Dashboard /></ErrorBoundary>} />
                 <Route path="/chat" element={<ErrorBoundary><ChatLayout /></ErrorBoundary>} />
                 <Route path="/tasks" element={<ErrorBoundary><Tasks /></ErrorBoundary>} />

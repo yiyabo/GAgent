@@ -123,7 +123,16 @@ const ChatPanel: React.FC = () => {
           </div>
         </Space>
 
-        <Space>
+        <Space size="small">
+          <Select
+            size="small"
+            value={providerValue}
+            onChange={handleProviderChange}
+            options={providerOptions}
+            style={{ width: 140 }}
+            placeholder="选择搜索来源"
+            disabled={isUpdatingProvider}
+          />
           <Tooltip title="清空对话">
             <Button
               type="text"
@@ -138,10 +147,10 @@ const ChatPanel: React.FC = () => {
       {/* 消息列表 */}
       <div className="chat-messages">
         {messages.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '40px 20px', color: '#999' }}>
-            <MessageOutlined style={{ fontSize: 32, marginBottom: 16 }} />
+          <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-tertiary)' }}>
+            <MessageOutlined style={{ fontSize: 32, marginBottom: 16, color: 'var(--primary-color)' }} />
             <div>
-              <Text>你好！我是AI任务编排助手</Text>
+              <Text style={{ color: 'var(--text-primary)' }}>你好！我是AI任务编排助手</Text>
             </div>
             <div style={{ marginTop: 8 }}>
               <Text type="secondary" style={{ fontSize: 12 }}>
@@ -212,7 +221,7 @@ const ChatPanel: React.FC = () => {
       {currentPlan && (
         <>
           <Divider style={{ margin: '8px 0' }} />
-          <div style={{ padding: '0 16px 8px', fontSize: 12, color: '#666' }}>
+          <div style={{ padding: '0 16px 8px', fontSize: 12, color: 'var(--text-secondary)' }}>
             当前计划: {currentPlan}
           </div>
         </>
@@ -223,13 +232,11 @@ const ChatPanel: React.FC = () => {
         {/* 上传文件列表 */}
         <UploadedFilesList />
         
-        <div className="chat-input-main">
-          {/* 调试用：红框区域 */}
-          <div style={{ border: '2px solid red', padding: 4, marginRight: 8 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <FileUploadButton type="file" size="middle" />
-              <FileUploadButton type="image" size="middle" />
-            </div>
+        <div className="chat-input-main" style={{ alignItems: 'stretch' }}>
+          {/* 上传按钮 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, justifyContent: 'center', padding: '6px 8px' }}>
+            <FileUploadButton type="file" size="small" />
+            <FileUploadButton type="image" size="small" />
           </div>
 
           <TextArea
@@ -238,47 +245,22 @@ const ChatPanel: React.FC = () => {
             onChange={handleInputChange}
             onKeyPress={handleKeyPress}
             placeholder="输入消息... (Shift+Enter换行，Enter发送)"
-            autoSize={{ minRows: 2, maxRows: 6 }}
+            autoSize={{ minRows: 1, maxRows: 4 }}
             disabled={isProcessing}
-            style={{ flex: 1 }}
+            style={{ flex: 1, margin: 0 }}
           />
-          <div className="chat-input-side">
-            <Select
-              size="middle"
-              value={providerValue}
-              placeholder="选择搜索来源"
-              options={providerOptions}
-              allowClear
-              onChange={handleProviderChange}
-              disabled={!currentSession || isProcessing}
-              loading={isUpdatingProvider}
-              style={{ width: '100%' }}
-            />
-            <Button
-              type="primary"
-              icon={<SendOutlined />}
-              onClick={handleSendMessage}
-              disabled={!inputText.trim() || isProcessing}
-              loading={isProcessing}
-              style={{ width: '100%', flex: 1 }}
-            >
-              发送
-            </Button>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
-          <Space size="small">
-            <Tooltip title="重试">
-              <Button
-                type="text"
-                size="small"
-                icon={<ReloadOutlined />}
-                onClick={retryLastMessage}
-                disabled={isProcessing || messages.length === 0}
-              />
-            </Tooltip>
-          </Space>
+          
+          {/* 发送按钮 */}
+          <Button
+            type="primary"
+            icon={<SendOutlined />}
+            onClick={handleSendMessage}
+            disabled={!inputText.trim() || isProcessing}
+            loading={isProcessing}
+            style={{ height: 'auto', minHeight: 36, alignSelf: 'center' }}
+          >
+            发送
+          </Button>
         </div>
       </div>
     </div>
