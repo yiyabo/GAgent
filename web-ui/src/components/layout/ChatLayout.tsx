@@ -24,8 +24,8 @@ const ChatLayout: React.FC = () => {
 
   const chatSidebarStyle = useMemo(
     () => ({
-      background: '#f8f9fa',
-      borderRight: chatListVisible ? '1px solid #e5e7eb' : 'none',
+      background: 'var(--bg-primary)',
+      borderRight: chatListVisible ? '1px solid var(--border-color)' : 'none',
     }),
     [chatListVisible]
   );
@@ -132,12 +132,12 @@ const ChatLayout: React.FC = () => {
         )}
 
         {/* 中间聊天主区域 */}
-        <Layout.Content 
-          style={{ 
-            background: 'white',
+        <Layout.Content
+          style={{
+            background: 'var(--bg-primary)',
             display: dagSidebarFullscreen ? 'none' : 'flex',
             flexDirection: 'column',
-            minWidth: 0 // 防止flex子元素溢出
+            minWidth: 0, // 防止flex子元素溢出
           }}
         >
           <ChatMainArea />
@@ -151,11 +151,11 @@ const ChatLayout: React.FC = () => {
         )}
 
         {/* 右侧DAG可视化 */}
-        <Layout.Sider 
+        <Layout.Sider
           width={calculatedDagWidth}
-          style={{ 
-            background: 'white',
-            borderLeft: '1px solid #e5e7eb'
+          style={{
+            background: 'var(--bg-secondary)',
+            borderLeft: '1px solid var(--border-color)'
           }}
           reverseArrow
         >

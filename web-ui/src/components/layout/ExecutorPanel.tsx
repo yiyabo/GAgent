@@ -76,7 +76,7 @@ const ExecutorPanel: React.FC = () => {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0' }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-color)' }}>
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
             选择执行记录

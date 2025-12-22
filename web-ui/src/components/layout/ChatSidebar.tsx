@@ -218,16 +218,17 @@ const ChatSidebar: React.FC = () => {
   };
 
   return (
-    <div style={{ 
-      height: '100%', 
-      display: 'flex', 
+    <div style={{
+      height: '100%',
+      display: 'flex',
       flexDirection: 'column',
-      padding: '16px 12px'
+      padding: '16px 12px',
+      background: 'var(--bg-primary)',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <MessageOutlined style={{ color: '#1890ff' }} />
-          <Text strong style={{ fontSize: 13 }}>
+          <MessageOutlined style={{ color: 'var(--primary-color)' }} />
+          <Text strong style={{ fontSize: 13, color: 'var(--text-primary)' }}>
             对话列表
           </Text>
         </div>
@@ -291,59 +292,59 @@ const ChatSidebar: React.FC = () => {
                   padding: '8px 12px',
                   margin: '4px 0',
                   borderRadius: 8,
-                  background: currentSession?.id === session.id ? '#e3f2fd' : 'transparent',
-                border: currentSession?.id === session.id ? '1px solid #2196f3' : '1px solid transparent',
-                cursor: 'pointer',
-                transition: 'all 0.2s ease',
-              }}
-              onClick={() => handleSelectSession(session)}
-              onMouseEnter={(e) => {
-                if (currentSession?.id !== session.id) {
-                  e.currentTarget.style.background = '#f5f5f5';
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (currentSession?.id !== session.id) {
-                  e.currentTarget.style.background = 'transparent';
-                }
-              }}
-            >
-              <div
-                style={{ width: '100%', display: 'flex', alignItems: 'flex-start', gap: 12 }}
+                  background: currentSession?.id === session.id ? 'var(--bg-tertiary)' : 'transparent',
+                  border: currentSession?.id === session.id ? '1px solid var(--border-color)' : '1px solid transparent',
+                  cursor: 'pointer',
+                  transition: 'all var(--transition-normal)',
+                }}
+                onClick={() => handleSelectSession(session)}
+                onMouseEnter={(e) => {
+                  if (currentSession?.id !== session.id) {
+                    e.currentTarget.style.background = 'var(--bg-tertiary)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (currentSession?.id !== session.id) {
+                    e.currentTarget.style.background = 'transparent';
+                  }
+                }}
               >
-                <Avatar 
-                  size={32} 
-                  icon={<MessageOutlined />} 
-                  style={{ 
-                    background: currentSession?.id === session.id ? '#2196f3' : '#f0f0f0',
-                    color: currentSession?.id === session.id ? 'white' : '#999',
-                    flexShrink: 0,
-                  }}
-                />
-                
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
+                <div
+                  style={{ width: '100%', display: 'flex', alignItems: 'flex-start', gap: 12 }}
+                >
+                  <Avatar
+                    size={32}
+                    icon={<MessageOutlined />}
                     style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      marginBottom: 4,
-                      gap: 8,
+                      background: currentSession?.id === session.id ? 'var(--primary-color)' : 'var(--bg-tertiary)',
+                      color: currentSession?.id === session.id ? 'white' : 'var(--text-tertiary)',
+                      flexShrink: 0,
                     }}
-                  >
-                    <Tooltip title={titleHint} placement="topLeft">
-                      <Text
-                        strong={currentSession?.id === session.id}
-                        ellipsis
-                        style={{
-                          fontSize: 14,
-                          color: currentSession?.id === session.id ? '#1976d2' : '#333',
-                          flex: 1,
-                        }}
-                      >
-                        {session.title || `会话 ${session.id.slice(-8)}`}
-                      </Text>
-                    </Tooltip>
+                  />
+                  
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: 4,
+                        gap: 8,
+                      }}
+                    >
+                      <Tooltip title={titleHint} placement="topLeft">
+                        <Text
+                          strong={currentSession?.id === session.id}
+                          ellipsis
+                          style={{
+                            fontSize: 14,
+                            color: currentSession?.id === session.id ? 'var(--primary-color)' : 'var(--text-primary)',
+                            flex: 1,
+                          }}
+                        >
+                          {session.title || `会话 ${session.id.slice(-8)}`}
+                        </Text>
+                      </Tooltip>
                     
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {formatTime(lastTimestamp)}
@@ -384,7 +385,7 @@ const ChatSidebar: React.FC = () => {
                     <Text
                       type="secondary"
                       ellipsis
-                      style={{ fontSize: 12, color: '#6b7280', flex: 1 }}
+                      style={{ fontSize: 12, color: 'var(--text-secondary)', flex: 1 }}
                     >
                       {session.plan_title || '未绑定计划'}
                     </Text>
@@ -400,10 +401,10 @@ const ChatSidebar: React.FC = () => {
 
       {/* 底部统计信息 */}
       {sessions.length > 0 && (
-        <div style={{ 
-          marginTop: 16, 
+        <div style={{
+          marginTop: 16,
           padding: '12px 16px',
-          background: '#f8f9fa',
+          background: 'var(--bg-tertiary)',
           borderRadius: 8,
           textAlign: 'center'
         }}>

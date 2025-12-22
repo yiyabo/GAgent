@@ -83,36 +83,47 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     });
   };
 
-  // 渲染头像
+  // 渲染头像 - Claude Code 风格
   const renderAvatar = () => {
     const avatarProps = {
-      size: 32 as const,
+      size: 28 as const,
       style: { flexShrink: 0 },
     };
 
     switch (type) {
       case 'user':
         return (
-          <Avatar 
+          <Avatar
             {...avatarProps}
             icon={<UserOutlined />}
-            style={{ ...avatarProps.style, backgroundColor: '#1890ff' }}
+            style={{
+              ...avatarProps.style,
+              background: 'var(--bg-tertiary)',
+              borderRadius: 4,
+            }}
           />
         );
       case 'assistant':
         return (
-          <Avatar 
+          <Avatar
             {...avatarProps}
             icon={<RobotOutlined />}
-            style={{ ...avatarProps.style, backgroundColor: '#52c41a' }}
+            style={{
+              ...avatarProps.style,
+              background: 'var(--primary-gradient)',
+              borderRadius: 6,
+            }}
           />
         );
       case 'system':
         return (
-          <Avatar 
+          <Avatar
             {...avatarProps}
             icon={<InfoCircleOutlined />}
-            style={{ ...avatarProps.style, backgroundColor: '#faad14' }}
+            style={{
+              ...avatarProps.style,
+              background: 'var(--bg-tertiary)',
+            }}
           />
         );
       default:
@@ -148,30 +159,29 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     return (
       <div
         style={{
-          marginTop: 8,
-          padding: '12px 12px',
-          borderRadius: 8,
-          border: '1px dashed #d9d9d9',
-          background: '#fafafa',
-          opacity: 0.85,
+          marginTop: 10,
+          padding: '10px 12px',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px dashed var(--border-color)',
+          background: 'var(--bg-tertiary)',
+          fontSize: 12,
         }}
       >
         <Space direction="vertical" size={6} style={{ width: '100%' }}>
           <Space align="center" size={8}>
             <div
               style={{
-                width: 8,
-                height: 8,
-                borderRadius: 10,
-                background: '#1890ff',
-                boxShadow: '0 0 0 6px rgba(24,144,255,0.15)',
+                width: 6,
+                height: 6,
+                borderRadius: 6,
+                background: 'var(--primary-color)',
               }}
             />
-            <Text type="secondary" italic style={{ opacity: 0.9 }}>
-              正在规划并准备调用 {actions.length} 个工具（后台执行中）…
+            <Text type="secondary" style={{ opacity: 0.8, fontSize: 12 }}>
+              正在规划 {actions.length} 个工具...
             </Text>
           </Space>
-          <div style={{ fontSize: 12, color: '#666' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
             {visible.map((act: any, idx: number) => {
               const kind = typeof act?.kind === 'string' ? act.kind : 'action';
               const name = typeof act?.name === 'string' ? act.name : '';
@@ -290,9 +300,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
       return null;
     }
     return (
-      <div style={{ marginTop: 12 }}>
+      <div style={{ marginTop: 10 }}>
         <Space direction="vertical" size={4} style={{ width: '100%' }}>
-          <Text strong>动作摘要</Text>
+          <Text strong style={{ color: 'var(--text-primary)', fontSize: 12 }}>动作摘要</Text>
           <div>
             {summaryItems.map((item, index) => {
               const order = typeof item.order === 'number' ? item.order : index + 1;
@@ -305,7 +315,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
                   ? ` - ${item.message}`
                   : '';
               return (
-                <div key={`${order}_${kind}_${name}`} style={{ fontSize: 12, color: '#555', marginBottom: 4 }}>
+                <div key={`${order}_${kind}_${name}`} style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 2 }}>
                   <Text>
                     {icon} 步骤 {order}: {kind}
                     {name}
@@ -345,19 +355,20 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     return (
       <div
         style={{
-          marginTop: 12,
+          marginTop: 10,
           padding: '8px 12px',
-          borderRadius: 8,
-          background: '#f5f5f5',
+          borderRadius: 'var(--radius-sm)',
+          background: 'var(--bg-tertiary)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: 12,
+          gap: 8,
           flexWrap: 'wrap',
+          fontSize: 11,
         }}
       >
-        <Space size={8} wrap align="center">
-          <Text strong>工具调用</Text>
+        <Space size={6} wrap align="center">
+          <Text strong style={{ fontSize: 11 }}>工具</Text>
           {statusTag}
           <Space size={[4, 4]} wrap>
             {toolTags}
@@ -422,9 +433,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 
   return (
     <div className={`message ${type}`}>
-      {renderAvatar()}
-      
       <div className="message-content">
+        {type === 'assistant' && renderAvatar()}
+        
         <div className="message-bubble">
           {renderContent()}
           {!isPendingAction && renderToolStatusBar()}
@@ -432,59 +443,59 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           {!isPendingAction && renderJobLogPanel()}
           {renderMetadata()}
         </div>
-        
-        <div className="message-time">
-          <Space size="small">
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {formatTime(timestamp)}
-            </Text>
-            
-            {type !== 'system' && (
-              <Space size={4}>
-                <Tooltip title="复制">
+      </div>
+      
+      <div className="message-time">
+        <Space size="small">
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {formatTime(timestamp)}
+          </Text>
+          
+          {type !== 'system' && (
+            <Space size={4}>
+              <Tooltip title="复制">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<CopyOutlined />}
+                  onClick={handleCopy}
+                  style={{ fontSize: 10, padding: '0 4px' }}
+                />
+              </Tooltip>
+
+              <Tooltip title="保存为记忆">
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<DatabaseOutlined />}
+                  onClick={handleSaveAsMemory}
+                  loading={isSaving}
+                  style={{ fontSize: 10, padding: '0 4px' }}
+                />
+              </Tooltip>
+
+              {type === 'assistant' && (
+                <Tooltip title="重新生成">
                   <Button
                     type="text"
                     size="small"
-                    icon={<CopyOutlined />}
-                    onClick={handleCopy}
+                    icon={<ReloadOutlined />}
+                    onClick={() => {
+                      const trackingId = (metadata as any)?.tracking_id;
+                      if (typeof trackingId === 'string' && trackingId) {
+                        void retryActionRun(trackingId, ((metadata as any)?.raw_actions as any[]) ?? []);
+                      } else {
+                        void retryLastMessage();
+                      }
+                    }}
+                    disabled={isProcessing}
                     style={{ fontSize: 10, padding: '0 4px' }}
                   />
                 </Tooltip>
-
-                <Tooltip title="保存为记忆">
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<DatabaseOutlined />}
-                    onClick={handleSaveAsMemory}
-                    loading={isSaving}
-                    style={{ fontSize: 10, padding: '0 4px' }}
-                  />
-                </Tooltip>
-
-                {type === 'assistant' && (
-                  <Tooltip title="重新生成">
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<ReloadOutlined />}
-                      onClick={() => {
-                        const trackingId = (metadata as any)?.tracking_id;
-                        if (typeof trackingId === 'string' && trackingId) {
-                          void retryActionRun(trackingId, ((metadata as any)?.raw_actions as any[]) ?? []);
-                        } else {
-                          void retryLastMessage();
-                        }
-                      }}
-                      disabled={isProcessing}
-                      style={{ fontSize: 10, padding: '0 4px' }}
-                    />
-                  </Tooltip>
-                )}
-              </Space>
-            )}
-          </Space>
-        </div>
+              )}
+            </Space>
+          )}
+        </Space>
       </div>
       {!isPendingAction && renderToolDrawer()}
     </div>

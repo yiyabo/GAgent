@@ -68,73 +68,119 @@ const Dashboard: React.FC = () => {
     <div>
       {/* 页面标题 */}
       <div className="content-header">
-        <Title level={3} style={{ margin: 0 }}>
-          📊 控制台
+        <Title level={3} style={{ margin: 0, fontSize: 18, color: 'var(--text-primary)' }}>
+          控制台
         </Title>
-        <Text type="secondary">
-          AI 智能任务编排系统 - 实时监控和管理
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          系统概览
         </Text>
       </div>
 
       <div className="content-body">
-        {/* 系统状态卡片 */}
-        <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        {/* 系统状态卡片 - 简洁设计 */}
+        <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
           <Col xs={24} sm={12} md={6}>
-            <Card>
-              <Statistic
-                title="任务总数"
-                value={stats.total}
-                prefix={<DatabaseOutlined />}
-                valueStyle={{ color: '#1890ff' }}
-              />
-            </Card>
-          </Col>
-          
-          <Col xs={24} sm={12} md={6}>
-            <Card>
-              <Statistic
-                title="等待执行"
-                value={stats.pending}
-                prefix={<ClockCircleOutlined />}
-                valueStyle={{ color: '#faad14' }}
-              />
-            </Card>
-          </Col>
-          
-          <Col xs={24} sm={12} md={6}>
-            <Card>
-              <Statistic
-                title="正在执行"
-                value={stats.running}
-                prefix={<PlayCircleOutlined />}
-                valueStyle={{ color: '#52c41a' }}
-              />
-            </Card>
-          </Col>
-          
-          <Col xs={24} sm={12} md={6}>
-            <Card>
-              <Statistic
-                title="已完成"
-                value={stats.completed}
-                prefix={<CheckCircleOutlined />}
-                valueStyle={{ color: '#52c41a' }}
-              />
-              {stats.failed > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <Text type="danger">
-                    <ExclamationCircleOutlined /> {stats.failed} 个失败
-                  </Text>
+            <Card
+              size="small"
+              style={{
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--border-color)',
+              }}
+              bodyStyle={{ padding: '14px 16px' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <DatabaseOutlined style={{ color: 'var(--text-secondary)', fontSize: 16 }} />
+                <div>
+                  <Text type="secondary" style={{ fontSize: 11 }}>任务</Text>
+                  <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--text-primary)' }}>
+                    {stats.total}
+                  </div>
                 </div>
-              )}
+              </div>
+            </Card>
+          </Col>
+          
+          <Col xs={24} sm={12} md={6}>
+            <Card
+              size="small"
+              style={{
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--border-color)',
+              }}
+              bodyStyle={{ padding: '14px 16px' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <ClockCircleOutlined style={{ color: 'var(--warning-color)', fontSize: 16 }} />
+                <div>
+                  <Text type="secondary" style={{ fontSize: 11 }}>等待</Text>
+                  <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--warning-color)' }}>
+                    {stats.pending}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </Col>
+          
+          <Col xs={24} sm={12} md={6}>
+            <Card
+              size="small"
+              style={{
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--border-color)',
+              }}
+              bodyStyle={{ padding: '14px 16px' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <PlayCircleOutlined style={{ color: 'var(--info-color)', fontSize: 16 }} />
+                <div>
+                  <Text type="secondary" style={{ fontSize: 11 }}>进行中</Text>
+                  <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--info-color)' }}>
+                    {stats.running}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </Col>
+          
+          <Col xs={24} sm={12} md={6}>
+            <Card
+              size="small"
+              style={{
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--border-color)',
+              }}
+              bodyStyle={{ padding: '14px 16px' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <CheckCircleOutlined style={{ color: 'var(--success-color)', fontSize: 16 }} />
+                <div>
+                  <Text type="secondary" style={{ fontSize: 11 }}>完成</Text>
+                  <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--success-color)' }}>
+                    {stats.completed}
+                  </div>
+                  {stats.failed > 0 && (
+                    <Text type="danger" style={{ fontSize: 11, marginTop: 2 }}>
+                      {stats.failed} 失败
+                    </Text>
+                  )}
+                </div>
+              </div>
             </Card>
           </Col>
         </Row>
 
         {/* 系统监控 */}
-        <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
           <Col xs={24} lg={12}>
-            <Card title="🔥 系统状态" size="small">
+            <Card
+              title="系统状态"
+              size="small"
+              style={{
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--border-color)',
+              }}
+              bodyStyle={{ padding: '16px' }}
+            >
               <Space direction="vertical" style={{ width: '100%' }} size="middle">
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
@@ -187,7 +233,29 @@ const Dashboard: React.FC = () => {
           </Col>
 
           <Col xs={24} lg={12}>
-            <Card title="📈 API 调用统计" size="small">
+            <Card
+              title={
+                <span style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontSize: 15,
+                }}>
+                  <span>📈</span>
+                  <span style={{
+                    background: 'var(--primary-gradient)',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                  }}>API 调用统计</span>
+                </span>
+              }
+              size="small"
+              style={{
+                borderRadius: 'var(--radius-lg)',
+                border: '1px solid var(--border-light)',
+              }}
+              bodyStyle={{ padding: '20px' }}
+            >
               <Space direction="vertical" style={{ width: '100%' }} size="middle">
                 <Statistic
                   title="每分钟调用次数"
@@ -219,11 +287,30 @@ const Dashboard: React.FC = () => {
         </Row>
 
         {/* DAG 可视化 */}
-        <Row gutter={[16, 16]}>
+        <Row gutter={[20, 20]}>
           <Col span={24}>
-            <Card 
-              title="🎯 任务编排图" 
+            <Card
+              title={
+                <span style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontSize: 15,
+                }}>
+                  <span>🎯</span>
+                  <span style={{
+                    background: 'var(--primary-gradient)',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                  }}>任务编排图</span>
+                </span>
+              }
               size="small"
+              style={{
+                borderRadius: 'var(--radius-lg)',
+                border: '1px solid var(--border-light)',
+              }}
+              bodyStyle={{ padding: 0 }}
               extra={
                 <Button
                   onClick={async () => {
