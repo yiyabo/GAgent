@@ -137,11 +137,13 @@ class ChromaRetriever:
             # only attempt to convert strings
             if not isinstance(value, str):
                 continue
-            else:
-                try:
-                    metadata[key] = ast.literal_eval(value)
-                except Exception:
-                    pass
+            if key in {"timestamp", "last_accessed"}:
+                # Preserve timestamp strings to avoid numeric coercion.
+                continue
+            try:
+                metadata[key] = ast.literal_eval(value)
+            except Exception:
+                pass
 
 
 class PersistentChromaRetriever(ChromaRetriever):
