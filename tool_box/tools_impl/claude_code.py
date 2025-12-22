@@ -161,6 +161,13 @@ async def claude_code_handler(
 
         logger.info(f"Using task workspace: {task_work_dir}")
         
+        # 处理额外允许访问的目录，转换为绝对路径列表
+        allowed_dirs = []
+        if add_dirs:
+            for dir_path in add_dirs.split(','):
+                abs_path = _PROJECT_ROOT / dir_path.strip()
+                allowed_dirs.append(str(abs_path))
+        
         # 在任务描述中明确工作目录、文件保存位置，并注入研究任务专用 system prompt
         enhanced_task = (
             "You are an AI research assistant focused on rigorous scientific work. "
@@ -228,11 +235,20 @@ async def claude_code_handler(
             cmd.extend(['--allowed-tools', allowed_tools])
         
         # 添加目录访问权限（相对于项目根目录的路径）
-        if add_dirs:
-            for dir_path in add_dirs.split(','):
-                # 转换为绝对路径
-                abs_path = _PROJECT_ROOT / dir_path.strip()
-                cmd.extend(['--add-dir', str(abs_path)])
+        for abs_path in allowed_dirs:
+            cmd.extend(['--add-dir', abs_path])
+        
+        # 明确告诉 Claude 可以访问的绝对路径
+        allowed_dirs_info = ""
+        if allowed_dirs:
+            allowed_dirs_info = (
+                f"\n\nIMPORTANT: You have access to these additional directories (use ABSOLUTE paths):\n"
+                + "\n".join(f"  - {d}" for d in allowed_dirs)
+            )
+        
+        # 修改任务描述，在最后追加目录访问信息
+        if allowed_dirs_info and not enhanced_task.endswith(allowed_dirs_info):
+            enhanced_task += allowed_dirs_info
         
         # 跳过权限检查（科研环境）
         if skip_permissions:
