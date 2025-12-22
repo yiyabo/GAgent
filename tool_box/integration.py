@@ -22,6 +22,7 @@ from .tools_impl import (
     document_reader_tool,
     vision_reader_tool,
     paper_replication_tool,
+    manuscript_writer_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -160,6 +161,16 @@ class ToolBoxIntegration:
                 "Analyze all files in data/code_task and provide a summary",
                 "Write and execute a Python script to process CSV files",
             ],
+        )
+
+        register_tool(
+            name=manuscript_writer_tool["name"],
+            description=manuscript_writer_tool["description"],
+            category=manuscript_writer_tool["category"],
+            parameters_schema=manuscript_writer_tool["parameters_schema"],
+            handler=manuscript_writer_tool["handler"],
+            tags=manuscript_writer_tool.get("tags", []),
+            examples=manuscript_writer_tool.get("examples", []),
         )
 
         logger.info("Built-in tools registered")

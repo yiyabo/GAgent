@@ -23,8 +23,10 @@ import {
   ExclamationCircleOutlined,
   InboxOutlined,
   ReloadOutlined,
+  MenuFoldOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
+import { useLayoutStore } from '@store/layout';
 import { ChatSession } from '@/types';
 
 const { Text } = Typography;
@@ -50,6 +52,7 @@ const ChatSidebar: React.FC = () => {
     loadChatHistory,
     autotitleSession,
   } = useChatStore();
+  const { toggleChatList } = useLayoutStore();
 
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -221,6 +224,23 @@ const ChatSidebar: React.FC = () => {
       flexDirection: 'column',
       padding: '16px 12px'
     }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <MessageOutlined style={{ color: '#1890ff' }} />
+          <Text strong style={{ fontSize: 13 }}>
+            对话列表
+          </Text>
+        </div>
+        <Tooltip title="隐藏对话列表">
+          <Button
+            type="text"
+            size="small"
+            icon={<MenuFoldOutlined />}
+            onClick={toggleChatList}
+          />
+        </Tooltip>
+      </div>
+
       {/* 头部 - 新建对话 */}
       <div style={{ marginBottom: 16 }}>
         <Button

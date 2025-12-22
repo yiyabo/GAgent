@@ -277,6 +277,28 @@ export interface DecompositionJobStatus {
   action_cursor?: string | null;
 }
 
+export interface ArtifactItem {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  size?: number;
+  modified_at?: string | null;
+  extension?: string | null;
+}
+
+export interface ArtifactListResponse {
+  session_id: string;
+  root_path: string;
+  items: ArtifactItem[];
+  count: number;
+}
+
+export interface ArtifactTextResponse {
+  path: string;
+  content: string;
+  truncated: boolean;
+}
+
 export interface ToolResultPayload {
   name?: string | null;
   summary?: string | null;

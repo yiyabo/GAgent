@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Card, Typography, Button, Space, Badge, Tooltip, Select, Empty } from 'antd';
+import { Typography, Button, Space, Badge, Tooltip, Empty, Tabs } from 'antd';
 import {
   NodeIndexOutlined,
   FullscreenOutlined,
+  FullscreenExitOutlined,
   SettingOutlined,
   ReloadOutlined,
   EyeOutlined,
@@ -13,7 +14,10 @@ import PlanTreeVisualization from '@components/dag/PlanTreeVisualization';
 import type { PlanSyncEventDetail, PlanTaskNode } from '@/types';
 import { useTasksStore } from '@store/tasks';
 import { useChatStore } from '@store/chat';
+import { useLayoutStore } from '@store/layout';
 import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
+import ExecutorPanel from './ExecutorPanel';
+import ArtifactsPanel from './ArtifactsPanel';
 
 const { Title, Text } = Typography;
 
@@ -33,11 +37,13 @@ const DAGSidebar: React.FC = () => {
       currentPlanId: state.currentPlanId,
       currentPlanTitle: state.currentPlanTitle,
     }));
+  const { dagSidebarFullscreen, toggleDagSidebarFullscreen } = useLayoutStore();
   const [dagVisible, setDagVisible] = useState(true);
   const [rootTaskId, setRootTaskId] = useState<number | null>(null);
   const [selectedPlanTitle, setSelectedPlanTitle] = useState<string | undefined>(
     currentPlanTitle ?? undefined
   );
+  const [activeTab, setActiveTab] = useState<string>('plan');
 
   // 稳定化session_id以避免无限循环
   const sessionId = currentSession?.session_id;
@@ -138,27 +144,19 @@ const DAGSidebar: React.FC = () => {
     refetchTasks();
   };
 
-  return (
-    <div style={{ 
-      height: '100%', 
-      display: 'flex', 
-      flexDirection: 'column',
-      background: 'white',
-    }}>
-      {/* 头部 */}
-      <div style={{ 
-        padding: '16px',
-        borderBottom: '1px solid #f0f0f0',
-        background: 'white',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+  const renderPlanPanel = () => (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '16px', borderBottom: '1px solid #f0f0f0', background: 'white' }}>
+        <div
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}
+        >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <NodeIndexOutlined style={{ color: '#1890ff', fontSize: 18 }} />
             <Title level={5} style={{ margin: 0 }}>
               任务图谱
             </Title>
           </div>
-          
+
           <Space size={4}>
             <Tooltip title={dagVisible ? '隐藏图谱' : '显示图谱'}>
               <Button
@@ -168,53 +166,59 @@ const DAGSidebar: React.FC = () => {
                 onClick={() => setDagVisible(!dagVisible)}
               />
             </Tooltip>
-            
+
             <Tooltip title="全屏查看">
               <Button
                 type="text"
                 size="small"
-                icon={<FullscreenOutlined />}
+                icon={dagSidebarFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                onClick={toggleDagSidebarFullscreen}
               />
             </Tooltip>
-            
+
             <Tooltip title="设置">
-              <Button
-                type="text"
-                size="small"
-                icon={<SettingOutlined />}
-              />
+              <Button type="text" size="small" icon={<SettingOutlined />} />
             </Tooltip>
           </Space>
         </div>
 
-        {/* 统计信息 */}
         <Space size={16} wrap>
           <Badge count={stats.total} size="small" offset={[8, -2]}>
-            <Text type="secondary" style={{ fontSize: 12 }}>总任务</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              总任务
+            </Text>
           </Badge>
           <Badge count={stats.running} size="small" color="blue" offset={[8, -2]}>
-            <Text type="secondary" style={{ fontSize: 12 }}>运行中</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              运行中
+            </Text>
           </Badge>
           <Badge count={stats.completed} size="small" color="green" offset={[8, -2]}>
-            <Text type="secondary" style={{ fontSize: 12 }}>已完成</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              已完成
+            </Text>
           </Badge>
           {stats.failed > 0 && (
             <Badge count={stats.failed} size="small" color="red" offset={[8, -2]}>
-              <Text type="secondary" style={{ fontSize: 12 }}>失败</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                失败
+              </Text>
             </Badge>
           )}
         </Space>
 
         <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 12 }}>
-          <Text type="secondary" style={{ fontSize: 11 }}>当前ROOT任务：</Text>
+          <Text type="secondary" style={{ fontSize: 11 }}>
+            当前ROOT任务：
+          </Text>
           <div
-            style={{ 
+            style={{
               padding: '6px 12px',
               background: '#f5f5f5',
               border: '1px solid #d9d9d9',
               borderRadius: '6px',
               fontSize: '14px',
-              color: selectedPlanTitle ? '#262626' : '#8c8c8c'
+              color: selectedPlanTitle ? '#262626' : '#8c8c8c',
             }}
           >
             {selectedPlanTitle || '暂无ROOT任务'}
@@ -225,13 +229,8 @@ const DAGSidebar: React.FC = () => {
         </Space>
       </div>
 
-      {/* DAG可视化区域 */}
       {dagVisible && (
-        <div style={{ 
-          flex: 1,
-          padding: '8px',
-          overflow: 'hidden',
-        }}>
+        <div style={{ flex: 1, padding: '8px', overflow: 'hidden' }}>
           {planTasks && planTasks.length > 0 ? (
             <PlanTreeVisualization
               tasks={planTasks}
@@ -240,9 +239,7 @@ const DAGSidebar: React.FC = () => {
                 if (task) {
                   openTaskDrawer(task);
                   const rootName =
-                    selectedPlanTitle ||
-                    planTasks.find((t) => t.task_type === 'root')?.name ||
-                    null;
+                    selectedPlanTitle || planTasks.find((t) => t.task_type === 'root')?.name || null;
                   setChatContext({
                     planTitle: rootName,
                     taskId: task.id,
@@ -262,7 +259,7 @@ const DAGSidebar: React.FC = () => {
               description={
                 planTasksLoading
                   ? '加载任务中...'
-                  : (currentWorkflowId || currentSession?.session_id)
+                  : currentWorkflowId || currentSession?.session_id
                     ? '当前会话尚无任务'
                     : '请先开始一个对话或创建工作流'
               }
@@ -271,32 +268,63 @@ const DAGSidebar: React.FC = () => {
         </div>
       )}
 
-      {/* 底部操作 */}
-      <div style={{ 
-        padding: '12px 16px',
-        borderTop: '1px solid #f0f0f0',
-        background: '#fafafa',
-      }}>
+      <div style={{ padding: '12px 16px', borderTop: '1px solid #f0f0f0', background: '#fafafa' }}>
         <Space size={8} wrap style={{ width: '100%', justifyContent: 'center' }}>
-          <Button 
-            size="small" 
-            icon={<ReloadOutlined />}
-            onClick={handleRefresh}
-            loading={planTasksLoading}
-          >
+          <Button size="small" icon={<ReloadOutlined />} onClick={handleRefresh} loading={planTasksLoading}>
             刷新
           </Button>
-          <Button size="small" icon={<FullscreenOutlined />}>
-            全屏
+          <Button
+            size="small"
+            icon={dagSidebarFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+            onClick={toggleDagSidebarFullscreen}
+          >
+            {dagSidebarFullscreen ? '退出全屏' : '全屏'}
           </Button>
         </Space>
-        
+
         <div style={{ textAlign: 'center', marginTop: 8 }}>
           <Text type="secondary" style={{ fontSize: 11 }}>
             实时任务可视化
           </Text>
         </div>
       </div>
+    </div>
+  );
+
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'white' }}>
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={[
+          {
+            key: 'plan',
+            label: '计划树',
+            children: <div style={{ height: '100%' }}>{renderPlanPanel()}</div>,
+          },
+          {
+            key: 'executor',
+            label: '执行器状态',
+            children: (
+              <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <ExecutorPanel />
+              </div>
+            ),
+          },
+          {
+            key: 'artifacts',
+            label: '生成文件',
+            children: (
+              <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <ArtifactsPanel sessionId={currentSession?.session_id ?? null} />
+              </div>
+            ),
+          },
+        ]}
+        className="dag-sidebar-tabs"
+        style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+        tabBarStyle={{ margin: 0 }}
+      />
     </div>
   );
 };

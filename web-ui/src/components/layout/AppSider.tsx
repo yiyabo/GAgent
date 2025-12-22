@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, Menu } from 'antd';
+import { Layout, Menu, Button, Tooltip } from 'antd';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   DashboardOutlined,
@@ -11,7 +11,10 @@ import {
   BookOutlined,
   DatabaseOutlined,
   MessageOutlined,
+  MenuUnfoldOutlined,
+  MenuFoldOutlined,
 } from '@ant-design/icons';
+import { useLayoutStore } from '@store/layout';
 
 const { Sider } = Layout;
 
@@ -82,6 +85,7 @@ const menuItems: MenuItem[] = [
 const AppSider: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { appSiderVisible, toggleAppSider } = useLayoutStore();
 
   // 根据当前路径确定选中的菜单项
   const selectedKeys = [location.pathname.slice(1) || 'dashboard'];
@@ -94,19 +98,55 @@ const AppSider: React.FC = () => {
   };
 
   return (
-    <Sider width={200} className="app-sider">
-      <Menu
-        mode="inline"
-        selectedKeys={selectedKeys}
-        className="sider-menu"
-        theme="dark"
-        onClick={handleMenuClick}
-        items={menuItems.map(item => ({
-          key: item.key,
-          icon: item.icon,
-          label: item.label,
-        }))}
-      />
+    <Sider
+      width={200}
+      collapsed={!appSiderVisible}
+      collapsedWidth={24}
+      trigger={null}
+      className="app-sider"
+      style={{ overflow: 'hidden' }}
+    >
+      {appSiderVisible ? (
+        <>
+          <div className="sider-header">
+            <Tooltip title="隐藏主导航" placement="right">
+              <Button
+                type="text"
+                size="small"
+                icon={<MenuFoldOutlined />}
+                className="sider-collapse-button"
+                onClick={toggleAppSider}
+              />
+            </Tooltip>
+          </div>
+          <Menu
+            mode="inline"
+            selectedKeys={selectedKeys}
+            className="sider-menu"
+            theme="dark"
+            onClick={handleMenuClick}
+            items={menuItems.map(item => ({
+              key: item.key,
+              icon: item.icon,
+              label: item.label,
+            }))}
+          />
+        </>
+      ) : (
+        <div className="sider-collapsed">
+          <Tooltip title="展开主导航" placement="right">
+            <Button
+              type="text"
+              size="small"
+              icon={<MenuUnfoldOutlined />}
+              className="sider-collapse-button sider-handle-vertical"
+              onClick={toggleAppSider}
+            >
+              <span className="sider-handle-text">主导航</span>
+            </Button>
+          </Tooltip>
+        </div>
+      )}
     </Sider>
   );
 };

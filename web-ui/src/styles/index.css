@@ -103,6 +103,90 @@ body,
   border: none;
 }
 
+.sider-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 8px 0;
+}
+
+.sider-collapsed {
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12px;
+}
+
+.sider-collapse-button {
+  color: #ffffff;
+}
+
+.sider-handle-vertical {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.sider-handle-text {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.sider-collapse-button:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.chatlist-collapsed {
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12px;
+}
+
+.chatlist-collapse-button {
+  color: #111827;
+}
+
+.chatlist-handle-vertical {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.chatlist-handle-text {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.chatlist-collapse-button:hover {
+  color: #111827;
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* 可拖拽分割条 */
+.layout-resizer {
+  width: 6px;
+  background: transparent;
+  cursor: col-resize;
+  flex: 0 0 auto;
+  transition: background 0.2s ease;
+}
+
+.layout-resizer:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
 /* 主内容区域 */
 .app-content {
   display: flex;
@@ -175,6 +259,31 @@ body,
   flex-direction: column;
   gap: 8px;
   width: 200px;
+}
+
+/* 右侧任务面板 Tabs 布局与滚动 */
+.dag-sidebar-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.dag-sidebar-tabs .ant-tabs-nav {
+  margin: 0;
+}
+
+.dag-sidebar-tabs .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+}
+
+.dag-sidebar-tabs .ant-tabs-content {
+  height: 100%;
+}
+
+.dag-sidebar-tabs .ant-tabs-tabpane {
+  height: 100%;
+  min-height: 0;
 }
 
 /* 消息样式 */

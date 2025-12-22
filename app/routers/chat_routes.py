@@ -2091,11 +2091,62 @@ class StructuredChatAgent:
 
     async def handle(self, user_message: str) -> AgentResult:
         structured = await self._invoke_llm(user_message)
+        structured = await self._apply_experiment_fallback(structured)
         return await self.execute_structured(structured)
 
     async def get_structured_response(self, user_message: str) -> LLMStructuredResponse:
         """Return the raw structured response without executing actions."""
-        return await self._invoke_llm(user_message)
+        structured = await self._invoke_llm(user_message)
+        return await self._apply_experiment_fallback(structured)
+
+    async def _apply_experiment_fallback(
+        self, structured: LLMStructuredResponse
+    ) -> LLMStructuredResponse:
+        """
+        Hard fallback: if the user is explicitly asking for experiment analysis
+        and manuscript_writer is selected without sections, force sections=['experiments'].
+        Uses a lightweight LLM intent check (no regex/rule engine).
+        """
+        user_message = self._current_user_message or ""
+        if not user_message.strip():
+            return structured
+
+        manuscript_actions = [
+            action
+            for action in structured.actions
+            if action.kind == "tool_operation" and action.name == "manuscript_writer"
+        ]
+        if not manuscript_actions:
+            return structured
+
+        # If sections already specified, respect explicit parameters.
+        for action in manuscript_actions:
+            if isinstance(action.parameters, dict) and action.parameters.get("sections"):
+                return structured
+
+        intent_prompt = (
+            "Classify whether the user's request is primarily asking for an EXPERIMENT analysis section, "
+            "not a full paper draft. Return JSON only.\n\n"
+            "User message:\n"
+            f"{user_message}\n\n"
+            "Return JSON:\n"
+            '{"experiment_analysis": true/false}\n'
+        )
+
+        try:
+            intent_raw = await self.llm_service.chat_async(intent_prompt)
+            intent_json = self.llm_service.parse_json_response(intent_raw or "")
+            experiment_flag = False
+            if isinstance(intent_json, dict):
+                experiment_flag = bool(intent_json.get("experiment_analysis"))
+            if experiment_flag:
+                for action in manuscript_actions:
+                    action.parameters = dict(action.parameters or {})
+                    action.parameters.setdefault("sections", ["experiments"])
+        except Exception as exc:
+            logger.debug("Experiment fallback intent check failed: %s", exc)
+
+        return structured
 
     async def execute_structured(
         self, structured: LLMStructuredResponse
@@ -2282,6 +2333,7 @@ class StructuredChatAgent:
             "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities/target_task_id)",
             "- tool_operation: generate_experiment_card (create data/<experiment_id>/card.yaml from a PDF; if pdf_path/experiment_id are omitted, uses the latest uploaded PDF and derives an id)",
             "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs/target_task_id)",
+            "- tool_operation: manuscript_writer (write a research manuscript using the default LLM; requires `task` and `output_path`, optional context_paths/analysis_path/max_context_bytes/target_task_id)",
             "- tool_operation: document_reader (read and analyze files; requires `operation`='read_pdf'/'read_image'/'analyze_image', `file_path`, optional `use_ocr`/`prompt`/target_task_id)",
             "- tool_operation: vision_reader (vision-based OCR and figure/equation reading for images or scanned pages; requires `operation` and `image_path`, optional page_number/region/question/language/target_task_id)",
             "- tool_operation: paper_replication (load a structured ExperimentCard for phage-related paper replication experiments; optional `experiment_id`/target_task_id, currently supports 'experiment_1')",
@@ -2312,6 +2364,8 @@ class StructuredChatAgent:
             "Do not fabricate facts, data, or citations. If unsure, state the uncertainty or ask the user for clarification rather than inventing information.",
             "When reading files, prefer `document_reader` with `read_any` to auto-detect type; set `use_ocr` if content is likely image/scanned.",
             "For Claude Code tasks, reuse shared inputs under `runtime/session_<id>/shared` when possible; task directories should hold only incremental outputs.",
+            "For manuscript or paper drafting/editing requests, prefer `manuscript_writer` with QWEN and avoid `claude_code` unless the user explicitly asks for Claude Code.",
+            "When the user explicitly asks for experiment analysis only (not a full paper), call `manuscript_writer` with `sections` set to ['experiments'].",
             "Avoid repetitive confirmations or small talk; provide conclusions and the next executable step directly.",
             "Cite sources or note uncertainty when referring to external data; do not guess.",
             "Before potentially destructive or long-running actions (file writes, deletes, network, heavy compute), briefly state intent/impact and seek confirmation when appropriate.",
@@ -2740,6 +2794,26 @@ class StructuredChatAgent:
                 except (TypeError, ValueError):
                     pass
 
+            # 🚀 实时日志回调注入
+            # 获取当前上下文中的 job_id (在 _execute_action 中已经 set_current_job)
+            current_job_id = get_current_job()
+            # 如果没有找到 (例如同步调用)，尝试使用 sync_job_id
+            if not current_job_id:
+                current_job_id, _ = self._resolve_job_meta()
+            
+            if current_job_id:
+                async def log_stream_callback(line: str):
+                    """将 stdout/stderr 实时写入 job logs"""
+                    plan_decomposition_jobs.append_log(
+                        current_job_id,
+                        "stdout", # 使用 stdout 类型，前端可以特殊渲染
+                        line,
+                        {}
+                    )
+                
+                params["on_stdout"] = log_stream_callback
+                params["on_stderr"] = log_stream_callback
+
         elif tool_name == "document_reader":
             operation = params.get("operation")
             file_path = params.get("file_path")
@@ -2849,6 +2923,92 @@ class StructuredChatAgent:
                 "overwrite": overwrite,
             }
 
+        elif tool_name == "manuscript_writer":
+            task_value = params.get("task")
+            output_path = params.get("output_path")
+            if not isinstance(task_value, str) or not task_value.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="manuscript_writer requires a non-empty `task` string.",
+                    details={"error": "invalid_task", "tool": tool_name},
+                )
+            if not isinstance(output_path, str) or not output_path.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="manuscript_writer requires a non-empty `output_path` string.",
+                    details={"error": "missing_output_path", "tool": tool_name},
+                )
+
+            context_paths = params.get("context_paths") or []
+            if isinstance(context_paths, str):
+                context_paths = [context_paths]
+            if not isinstance(context_paths, list):
+                context_paths = []
+
+            analysis_path = params.get("analysis_path")
+            if analysis_path is not None and not isinstance(analysis_path, str):
+                analysis_path = str(analysis_path)
+
+            max_context_bytes = params.get("max_context_bytes")
+            if max_context_bytes is not None:
+                try:
+                    max_context_bytes = int(max_context_bytes)
+                except (TypeError, ValueError):
+                    max_context_bytes = None
+
+            params = {
+                "task": task_value,
+                "output_path": output_path,
+                "context_paths": context_paths,
+            }
+            if analysis_path:
+                params["analysis_path"] = analysis_path
+            if max_context_bytes:
+                params["max_context_bytes"] = max_context_bytes
+            if params.get("context_paths") is None:
+                params["context_paths"] = []
+
+            sections = params.get("sections")
+            if sections is None:
+                sections = action.parameters.get("sections")
+            if isinstance(sections, str):
+                sections = [sections]
+            if isinstance(sections, list):
+                params["sections"] = sections
+
+            max_revisions = action.parameters.get("max_revisions")
+            if max_revisions is not None:
+                params["max_revisions"] = max_revisions
+
+            evaluation_threshold = action.parameters.get("evaluation_threshold")
+            if evaluation_threshold is not None:
+                params["evaluation_threshold"] = evaluation_threshold
+
+            generation_model = action.parameters.get("generation_model")
+            if generation_model is not None:
+                params["generation_model"] = generation_model
+            evaluation_model = action.parameters.get("evaluation_model")
+            if evaluation_model is not None:
+                params["evaluation_model"] = evaluation_model
+            merge_model = action.parameters.get("merge_model")
+            if merge_model is not None:
+                params["merge_model"] = merge_model
+
+            generation_provider = action.parameters.get("generation_provider")
+            if generation_provider is not None:
+                params["generation_provider"] = generation_provider
+            evaluation_provider = action.parameters.get("evaluation_provider")
+            if evaluation_provider is not None:
+                params["evaluation_provider"] = evaluation_provider
+            merge_provider = action.parameters.get("merge_provider")
+            if merge_provider is not None:
+                params["merge_provider"] = merge_provider
+
+            if self.session_id:
+                params["session_id"] = self.session_id
+
         else:
             return AgentStep(
                 action=action,
@@ -2956,7 +3116,7 @@ class StructuredChatAgent:
             message=message,
             details={
                 "tool": tool_name,
-                "parameters": params,
+                "parameters": self._drop_callables(params),
                 "result": sanitized,
                 "summary": summary,
             },
@@ -3190,37 +3350,43 @@ class StructuredChatAgent:
                 if isinstance(position_param, str):
                     position_str = position_param.strip()
                     if position_str:
-	                        parts = position_str.split(":", 1)
-	                        keyword = parts[0].strip().lower()
-	                        if keyword in {"before", "after"}:
-	                            if len(parts) < 2 or not parts[1].strip():
-	                                # Support shorthand "before"/"after":
-	                                # - If anchor_task_id is provided separately, treat as relative to it.
-	                                # - Otherwise, map to inserting as first/last child.
-	                                derived_position = keyword
-	                                if anchor_task_id is None:
-	                                    derived_position = (
-	                                        "first_child" if keyword == "before" else "last_child"
-	                                    )
-	                                if anchor_position is not None and anchor_position != derived_position:
-	                                    raise ValueError(
-	                                        "anchor_position does not match the pattern specified in position."
-	                                    )
-	                                anchor_position = derived_position
-	                            else:
-	                                candidate_id = self._coerce_int(parts[1].strip(), f"position {keyword}")
-	                                if anchor_task_id is not None and anchor_task_id != candidate_id:
-	                                    raise ValueError("anchor_task_id does not match the task referenced in position.")
-	                                if anchor_position is not None and anchor_position != keyword:
-	                                    raise ValueError("anchor_position does not match the pattern specified in position.")
-	                                anchor_task_id = candidate_id
-	                                anchor_position = keyword
-	                        elif keyword in {"first_child", "last_child"}:
-	                            if anchor_position is not None and anchor_position != keyword:
-	                                raise ValueError("anchor_position does not match the pattern specified in position.")
-	                            anchor_position = keyword
-	                        else:
-	                            position = self._coerce_int(position_param, "position")
+                        parts = position_str.split(":", 1)
+                        keyword = parts[0].strip().lower()
+                        if keyword in {"before", "after"}:
+                            if len(parts) < 2 or not parts[1].strip():
+                                # Support shorthand "before"/"after":
+                                # - If anchor_task_id is provided separately, treat as relative to it.
+                                # - Otherwise, map to inserting as first/last child.
+                                derived_position = keyword
+                                if anchor_task_id is None:
+                                    derived_position = (
+                                        "first_child" if keyword == "before" else "last_child"
+                                    )
+                                if anchor_position is not None and anchor_position != derived_position:
+                                    raise ValueError(
+                                        "anchor_position does not match the pattern specified in position."
+                                    )
+                                anchor_position = derived_position
+                            else:
+                                candidate_id = self._coerce_int(parts[1].strip(), f"position {keyword}")
+                                if anchor_task_id is not None and anchor_task_id != candidate_id:
+                                    raise ValueError(
+                                        "anchor_task_id does not match the task referenced in position."
+                                    )
+                                if anchor_position is not None and anchor_position != keyword:
+                                    raise ValueError(
+                                        "anchor_position does not match the pattern specified in position."
+                                    )
+                                anchor_task_id = candidate_id
+                                anchor_position = keyword
+                        elif keyword in {"first_child", "last_child"}:
+                            if anchor_position is not None and anchor_position != keyword:
+                                raise ValueError(
+                                    "anchor_position does not match the pattern specified in position."
+                                )
+                            anchor_position = keyword
+                        else:
+                            position = self._coerce_int(position_param, "position")
                     else:
                         position = None
                 else:
@@ -3785,6 +3951,33 @@ class StructuredChatAgent:
         return {"tool": tool_name, "text": text, "success": True}
 
     @staticmethod
+    def _drop_callables(value: Any) -> Any:
+        if callable(value):
+            return None
+        if isinstance(value, dict):
+            cleaned: Dict[str, Any] = {}
+            for key, item in value.items():
+                if callable(item):
+                    continue
+                cleaned[key] = StructuredChatAgent._drop_callables(item)
+            return cleaned
+        if isinstance(value, list):
+            cleaned_list: List[Any] = []
+            for item in value:
+                if callable(item):
+                    continue
+                cleaned_list.append(StructuredChatAgent._drop_callables(item))
+            return cleaned_list
+        if isinstance(value, tuple):
+            cleaned_tuple: List[Any] = []
+            for item in value:
+                if callable(item):
+                    continue
+                cleaned_tuple.append(StructuredChatAgent._drop_callables(item))
+            return cleaned_tuple
+        return value
+
+    @staticmethod
     def _summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
         if tool_name == "web_search":
             query = result.get("query") or ""
@@ -3853,6 +4046,21 @@ class StructuredChatAgent:
                 return f"Claude Code execution{file_info} succeeded. Output: {snippet}"
             
             return f"Claude Code execution{file_info} succeeded."
+
+        if tool_name == "manuscript_writer":
+            if result.get("success") is False:
+                error = result.get("error") or "Manuscript writing failed"
+                return f"Manuscript writer failed: {error}"
+            output_path = result.get("output_path") or ""
+            analysis_path = result.get("analysis_path") or ""
+            if output_path and analysis_path:
+                return (
+                    "Manuscript writer succeeded. Draft: "
+                    f"{output_path}; analysis memo: {analysis_path}."
+                )
+            if output_path:
+                return f"Manuscript writer succeeded. Draft: {output_path}."
+            return "Manuscript writer succeeded."
         
         if tool_name == "paper_replication":
             if result.get("success") is False:

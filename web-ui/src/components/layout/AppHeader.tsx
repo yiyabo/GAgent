@@ -7,9 +7,14 @@ import {
   BellOutlined,
   SettingOutlined,
   MessageOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  UnorderedListOutlined,
 } from '@ant-design/icons';
 import { useSystemStore } from '@store/system';
 import { useChatStore } from '@store/chat';
+import { useLayoutStore } from '@store/layout';
+import { useLocation } from 'react-router-dom';
 
 const { Header } = Layout;
 const { Text } = Typography;
@@ -17,6 +22,9 @@ const { Text } = Typography;
 const AppHeader: React.FC = () => {
   const { systemStatus, apiConnected } = useSystemStore();
   const { toggleChatPanel, chatPanelVisible } = useChatStore();
+  const { appSiderVisible, chatListVisible, toggleAppSider, toggleChatList } = useLayoutStore();
+  const location = useLocation();
+  const isChatRoute = location.pathname.startsWith('/chat');
 
   return (
     <Header className="app-header">
@@ -70,6 +78,26 @@ const AppHeader: React.FC = () => {
 
         {/* 操作按钮 */}
         <Space>
+          <Tooltip title={appSiderVisible ? '隐藏主导航' : '显示主导航'}>
+            <Button
+              type="text"
+              icon={appSiderVisible ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
+              style={{ color: 'white' }}
+              onClick={toggleAppSider}
+            />
+          </Tooltip>
+
+          {isChatRoute && !chatListVisible && (
+            <Tooltip title="显示对话列表">
+              <Button
+                type="text"
+                icon={<UnorderedListOutlined />}
+                style={{ color: 'white' }}
+                onClick={toggleChatList}
+              />
+            </Tooltip>
+          )}
+
           <Tooltip title="通知">
             <Badge count={0} size="small">
               <Button 
