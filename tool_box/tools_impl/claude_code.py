@@ -11,7 +11,7 @@ import json
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Callable, Awaitable
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -107,6 +107,8 @@ async def claude_code_handler(
     session_id: Optional[str] = None,
     plan_id: Optional[int] = None,
     task_id: Optional[int] = None,
+    on_stdout: Optional[Callable[[str], Awaitable[None]]] = None,
+    on_stderr: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
     """
     Execute a task using Claude Code (official CLI) with local file access.
@@ -117,6 +119,11 @@ async def claude_code_handler(
         add_dirs: Comma-separated list of additional directories to allow access
         skip_permissions: Skip permission checks (recommended for trusted environments)
         output_format: Output format: "text" or "json"
+        session_id: Session ID for workspace isolation
+        plan_id: Plan ID for workspace isolation
+        task_id: Task ID for workspace isolation
+        on_stdout: Async callback for stdout lines
+        on_stderr: Async callback for stderr lines
         
     Returns:
         Dict containing execution results
@@ -130,23 +137,29 @@ async def claude_code_handler(
         session_dir = _RUNTIME_DIR / session_label
         session_dir.mkdir(parents=True, exist_ok=True)
 
-        # 为每次调用创建一个子目录，避免文件冲突
-        task_dir_name = await _generate_task_dir_name_llm(task)
-        time_suffix = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        task_dir_base = f"{task_dir_name}_{time_suffix}"
-        if plan_id is not None:
-            task_dir_base = f"plan{plan_id}_{task_dir_base}"
+        # 任务级目录：每个 task 一个目录，目录内仅保留 result/code/data/docs 四类产物
+        run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        task_dir_base = None
         if task_id is not None:
-            task_dir_base = f"task{task_id}_{task_dir_base}"
+            task_dir_base = f"task{task_id}"
+            if plan_id is not None:
+                task_dir_base = f"plan{plan_id}_{task_dir_base}"
+        else:
+            task_dir_name = await _generate_task_dir_name_llm(task)
+            if plan_id is not None:
+                task_dir_name = f"plan{plan_id}_{task_dir_name}"
+            task_dir_base = f"{task_dir_name}_{run_id}"
 
         task_work_dir = session_dir / task_dir_base
-        idx = 1
-        while task_work_dir.exists():
-            task_work_dir = session_dir / f"{task_dir_base}_{idx}"
-            idx += 1
         task_work_dir.mkdir(parents=True, exist_ok=True)
-        
-        logger.info(f"Created task directory: {task_work_dir}")
+
+        task_subdirs = ["result", "code", "data", "docs"]
+        for subdir in task_subdirs:
+            (task_work_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+        file_prefix = f"run_{run_id}"
+
+        logger.info(f"Using task workspace: {task_work_dir}")
         
         # 在任务描述中明确工作目录、文件保存位置，并注入研究任务专用 system prompt
         enhanced_task = (
@@ -154,8 +167,10 @@ async def claude_code_handler(
             "Your primary objective is to faithfully reproduce and critically analyze published research, "
             "including implementing methods as described in papers, reproducing figures and tables, "
             "explaining numerical results, and producing transparent, reproducible code and analysis.\n\n"
-            "Workspace rule: your working root is the session directory; first list its contents to see what is already provided, "
-            "then work inside the dedicated task subdirectory. Keep the folder structure flat; do not create deep nested trees.\n\n"
+            "Workspace rule: your working root is the task directory; first list its contents to see what is already provided. "
+            "Store outputs ONLY in the four subfolders: result/, code/, data/, docs/. Do not create any other directories.\n\n"
+            "Folder usage: result/ for figures and final outputs; code/ for scripts; data/ for derived tables; "
+            "docs/ for reports and narratives.\n\n"
             "When working with papers, treat every numerical value as important scientific evidence. "
             "For each important number (metrics, coefficients, hyperparameters, table entries, figure annotations), "
             "explain what it represents, its units or scale when applicable, how it is computed or derived, "
@@ -177,14 +192,20 @@ async def claude_code_handler(
             "key hyperparameters and whether they come from the paper or from you, and provide example commands for "
             "running the code. Clearly distinguish actual expected outputs from purely illustrative examples, and "
             "label illustrative results as such.\n\n"
-            f"You are working in the dedicated task directory '{task_work_dir.relative_to(_PROJECT_ROOT)}'. All newly generated files "
-            "(code, logs, models, processed datasets, etc.) must be saved inside this directory or its subdirectories. "
+            f"You are working in the task directory '{task_work_dir.relative_to(_PROJECT_ROOT)}'. All newly generated files "
+            "must be saved under result/, code/, data/, or docs/ within this directory. "
+            f"Use the file prefix '{file_prefix}' for new artifacts to avoid overwriting earlier runs. "
             "Do not overwrite original raw datasets; if preprocessing is needed, write new processed files and explain "
             "how they were produced. When reading existing project data, use paths that are consistent and "
             "reproducible from the project root.\n\n"
             "Maintain scientific integrity: do not fabricate real experimental data, real published papers, or "
             "citations. Clearly distinguish statements supported by the given paper or data from your own hypotheses, "
             "and label hypotheses as such.\n\n"
+            "When the task requests a manuscript, article draft, or paper-like report, write in a mature, expert "
+            "academic style with cohesive paragraphs (avoid short, fragmented sentences). Provide rigorous analysis "
+            "of the obtained results and connect them to scientific implications. The manuscript must include at "
+            "least Abstract, Introduction, Methods, Experiments, Results, and References. The Methods and Experiments "
+            "sections should be highly detailed, at a Nature-level of methodological clarity and completeness.\n\n"
             "If the task description or the paper is ambiguous or under-specified, ask clarifying questions before "
             "committing to a specific implementation. Structure your responses for researchers: start with a concise "
             "high-level summary, then list concrete steps or code, and finally provide explanations and caveats. "
@@ -217,22 +238,48 @@ async def claude_code_handler(
         if skip_permissions:
             cmd.append('--dangerously-skip-permissions')
         
-        logger.info(f"Executing Claude CLI in task directory: {task_work_dir}")
+        logger.info(f"Executing Claude CLI in task workspace: {task_work_dir}")
         
-        # 在任务专属目录执行（无超时限制，允许长时间运行）
-        # IMPORTANT: run subprocess in a worker thread to avoid blocking FastAPI event loop.
-        result = await asyncio.to_thread(
-            subprocess.run,
-            cmd,
+        # Use asyncio.create_subprocess_exec for non-blocking stream handling
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
             cwd=str(task_work_dir),
-            capture_output=True,
-            text=True,
-            timeout=None,  # 无超时限制，支持长时间任务（如模型训练）
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            # No timeout limit for long-running tasks
         )
-        
-        success = result.returncode == 0
-        stdout = result.stdout
-        stderr = result.stderr
+
+        stdout_lines = []
+        stderr_lines = []
+
+        async def read_stream(stream, lines, callback):
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                decoded_line = line.decode().rstrip()
+                lines.append(decoded_line)
+                if callback:
+                    try:
+                        await callback(decoded_line)
+                    except Exception as e:
+                        logger.error(f"Error in stream callback: {e}")
+
+        # Create tasks to read stdout and stderr concurrently
+        stdout_task = asyncio.create_task(
+            read_stream(process.stdout, stdout_lines, on_stdout)
+        )
+        stderr_task = asyncio.create_task(
+            read_stream(process.stderr, stderr_lines, on_stderr)
+        )
+
+        # Wait for process to finish and streams to close
+        await asyncio.wait([stdout_task, stderr_task])
+        return_code = await process.wait()
+
+        success = return_code == 0
+        stdout = "\n".join(stdout_lines)
+        stderr = "\n".join(stderr_lines)
         
         # 解析输出
         output_data = None
@@ -249,12 +296,14 @@ async def claude_code_handler(
             "task": task,
             "task_directory": task_dir_base,
             "task_directory_full": str(task_work_dir),
+            "task_subdirectories": task_subdirs,
+            "file_prefix": file_prefix,
             "session_directory": str(session_dir),
             "success": success,
             "stdout": stdout,
             "stderr": stderr,
             "output_data": output_data,
-            "exit_code": result.returncode,
+            "exit_code": return_code,
             "execution_mode": "claude_code_local",
             "working_directory": str(task_work_dir),
         }
