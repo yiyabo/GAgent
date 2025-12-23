@@ -26,7 +26,9 @@ def init_default_providers() -> None:
         return
     from .builtin import search as builtin_search
     from .perplexity import search as perplexity_search
+    from .tavily_rest import search as tavily_search
 
     register_provider("builtin", builtin_search)
     register_provider("perplexity", perplexity_search)
+    register_provider("tavily", tavily_search)
     _INITIALIZED = True

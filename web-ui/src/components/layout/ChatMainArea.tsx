@@ -54,6 +54,9 @@ const ChatMainArea: React.FC = () => {
     defaultSearchProvider,
     setDefaultSearchProvider,
     isUpdatingProvider,
+    defaultBaseModel,
+    setDefaultBaseModel,
+    isUpdatingBaseModel,
   } = useChatStore();
 
   const { selectedTask, currentPlan } = useTasksStore();
@@ -105,19 +108,43 @@ const ChatMainArea: React.FC = () => {
       return;
     }
     try {
-      await setDefaultSearchProvider((value as 'builtin' | 'perplexity') ?? null);
+      await setDefaultSearchProvider(
+        (value as 'builtin' | 'perplexity' | 'tavily') ?? null
+      );
     } catch (err) {
       console.error('[ChatMainArea] 切换搜索来源失败:', err);
       message.error('切换搜索来源失败，请稍后重试。');
     }
   };
 
+  const handleBaseModelChange = async (value: string | undefined) => {
+    if (!currentSession) {
+      return;
+    }
+    try {
+      await setDefaultBaseModel(
+        (value as 'qwen3-max' | 'glm-4.6' | 'kimi-k2-thinking') ?? null
+      );
+    } catch (err) {
+      console.error('[ChatMainArea] 切换基座模型失败:', err);
+      message.error('切换基座模型失败，请稍后重试。');
+    }
+  };
+
   const providerOptions = [
     { label: '模型内置搜索', value: 'builtin' },
     { label: 'Perplexity 搜索', value: 'perplexity' },
+    { label: 'Tavily MCP 搜索', value: 'tavily' },
   ];
 
   const providerValue = defaultSearchProvider ?? undefined;
+  const baseModelValue = defaultBaseModel ?? undefined;
+
+  const baseModelOptions = [
+    { label: 'Qwen3-Max', value: 'qwen3-max' },
+    { label: 'GLM-4.6', value: 'glm-4.6' },
+    { label: 'Kimi K2 Thinking', value: 'kimi-k2-thinking' },
+  ];
 
   // 处理键盘事件
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -250,6 +277,16 @@ const ChatMainArea: React.FC = () => {
             style={{ width: 130 }}
             placeholder="搜索来源"
             disabled={isUpdatingProvider}
+          />
+
+          <Select
+            size="small"
+            value={baseModelValue}
+            onChange={handleBaseModelChange}
+            options={baseModelOptions}
+            style={{ width: 140 }}
+            placeholder="基座模型"
+            disabled={isUpdatingBaseModel}
           />
           
           {/* Memory 开关 */}

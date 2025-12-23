@@ -37,6 +37,9 @@ const ChatPanel: React.FC = () => {
     defaultSearchProvider,
     setDefaultSearchProvider,
     isUpdatingProvider,
+    defaultBaseModel,
+    setDefaultBaseModel,
+    isUpdatingBaseModel,
   } = useChatStore();
 
   const { selectedTask, currentPlan } = useTasksStore();
@@ -89,19 +92,40 @@ const ChatPanel: React.FC = () => {
 
   const handleProviderChange = async (value: string | undefined) => {
     try {
-      await setDefaultSearchProvider((value as 'builtin' | 'perplexity') ?? null);
+      await setDefaultSearchProvider(
+        (value as 'builtin' | 'perplexity' | 'tavily') ?? null
+      );
     } catch (error) {
       console.error('切换搜索来源失败:', error);
       message.error('切换搜索来源失败，请稍后重试。');
     }
   };
 
+  const handleBaseModelChange = async (value: string | undefined) => {
+    try {
+      await setDefaultBaseModel(
+        (value as 'qwen3-max' | 'glm-4.6' | 'kimi-k2-thinking') ?? null
+      );
+    } catch (error) {
+      console.error('切换基座模型失败:', error);
+      message.error('切换基座模型失败，请稍后重试。');
+    }
+  };
+
   const providerOptions = [
     { label: '模型内置搜索', value: 'builtin' },
     { label: 'Perplexity 搜索', value: 'perplexity' },
+    { label: 'Tavily MCP 搜索', value: 'tavily' },
   ];
 
   const providerValue = defaultSearchProvider ?? undefined;
+  const baseModelValue = defaultBaseModel ?? undefined;
+
+  const baseModelOptions = [
+    { label: 'Qwen3-Max', value: 'qwen3-max' },
+    { label: 'GLM-4.6', value: 'glm-4.6' },
+    { label: 'Kimi K2 Thinking', value: 'kimi-k2-thinking' },
+  ];
 
   if (!chatPanelVisible) {
     return null;
@@ -132,6 +156,15 @@ const ChatPanel: React.FC = () => {
             style={{ width: 140 }}
             placeholder="选择搜索来源"
             disabled={isUpdatingProvider}
+          />
+          <Select
+            size="small"
+            value={baseModelValue}
+            onChange={handleBaseModelChange}
+            options={baseModelOptions}
+            style={{ width: 140 }}
+            placeholder="基座模型"
+            disabled={isUpdatingBaseModel}
           />
           <Tooltip title="清空对话">
             <Button

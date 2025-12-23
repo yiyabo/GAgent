@@ -14,6 +14,7 @@ import {
   PlanSyncEventDetail,
   ToolResultPayload,
   UploadedFile,
+  BaseModelOption,
   WebSearchProvider,
 } from '@/types';
 import { SessionStorage } from '@/utils/sessionStorage';
@@ -52,6 +53,48 @@ const parseDate = (value?: string | null): Date | null => {
   return new Date(timestamp);
 };
 
+const hasToolSummaryForTracking = (
+  messages: ChatMessage[],
+  trackingId: string
+): boolean => {
+  return messages.some((msg) => {
+    if (msg.type !== 'assistant') {
+      return false;
+    }
+    const metadata = msg.metadata as Record<string, any> | undefined;
+    if (!metadata) {
+      return false;
+    }
+    if (metadata.tracking_id !== trackingId) {
+      return false;
+    }
+    return metadata.type === 'tool_summary';
+  });
+};
+
+const normalizeActionStatus = (status?: string | null): ChatActionStatus | null => {
+  if (!status) {
+    return null;
+  }
+  if (status === 'succeeded') {
+    return 'completed';
+  }
+  return isActionStatus(status) ? status : null;
+};
+
+const parseJobStreamPayload = (raw: MessageEvent<any>): Record<string, any> | null => {
+  try {
+    const payload = JSON.parse(raw.data);
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    return payload as Record<string, any>;
+  } catch (error) {
+    console.warn('无法解析动作 SSE 消息:', error);
+    return null;
+  }
+};
+
 const summaryToChatSession = (summary: ChatSessionSummary): ChatSession => {
   const rawName = summary.name?.trim();
   const title =
@@ -84,6 +127,7 @@ const summaryToChatSession = (summary: ChatSessionSummary): ChatSession => {
     last_message_at: lastMessageAt,
     is_active: summary.is_active,
     defaultSearchProvider: summary.settings?.default_search_provider ?? null,
+    defaultBaseModel: summary.settings?.default_base_model ?? null,
     titleSource,
     isUserNamed,
   };
@@ -123,6 +167,78 @@ const derivePlanContextFromMessages = (
   return { planId, planTitle };
 };
 
+const refreshHistoryUntilToolSummary = async (
+  sessionId: string,
+  trackingId: string,
+  loadHistory: (sessionId: string) => Promise<void>,
+  getMessages: () => ChatMessage[],
+  attempts: number = 6,
+  delayMs: number = 1200
+): Promise<void> => {
+  let currentDelay = delayMs;
+  for (let idx = 0; idx < attempts; idx += 1) {
+    await loadHistory(sessionId);
+    if (hasToolSummaryForTracking(getMessages(), trackingId)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, currentDelay));
+    currentDelay = Math.min(currentDelay * 1.6, 6000);
+  }
+};
+
+const waitForActionCompletionViaStream = async (
+  trackingId: string,
+  timeoutMs: number = 120_000
+): Promise<ActionStatusResponse | null> => {
+  if (typeof EventSource === 'undefined') {
+    return null;
+  }
+
+  return new Promise((resolve) => {
+    let finished = false;
+    const streamUrl = `${ENV.API_BASE_URL}/jobs/${trackingId}/stream`;
+    const source = new EventSource(streamUrl);
+
+    const finalize = async () => {
+      if (finished) return;
+      finished = true;
+      source.close();
+      try {
+        const status = await chatApi.getActionStatus(trackingId);
+        resolve(status);
+      } catch (error) {
+        console.warn('动作 SSE 获取最终状态失败:', error);
+        resolve(null);
+      }
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      source.close();
+      resolve(null);
+    }, timeoutMs);
+
+    source.onmessage = (event) => {
+      const payload = parseJobStreamPayload(event);
+      if (!payload) return;
+      const status = normalizeActionStatus(payload.status ?? payload.job?.status);
+      if (status && (status === 'completed' || status === 'failed')) {
+        window.clearTimeout(timeoutId);
+        void finalize();
+      }
+    };
+
+    source.onerror = () => {
+      if (finished) return;
+      window.clearTimeout(timeoutId);
+      finished = true;
+      source.close();
+      resolve(null);
+    };
+  });
+};
+
 const pendingAutotitleSessions = new Set<string>();
 const autoTitleHistory = new Map<string, { planId: number | null }>();
 
@@ -139,12 +255,14 @@ interface ChatState {
   currentTaskId: number | null;
   currentTaskName: string | null;
   defaultSearchProvider: WebSearchProvider | null;
+  defaultBaseModel: BaseModelOption | null;
   
   // 输入状态
   inputText: string;
   isTyping: boolean;
   isProcessing: boolean;
   isUpdatingProvider: boolean;
+  isUpdatingBaseModel: boolean;
   
   // UI状态
   chatPanelVisible: boolean;
@@ -203,6 +321,7 @@ interface ChatState {
   restoreSession: (sessionId: string, title?: string) => Promise<ChatSession>;
   loadChatHistory: (sessionId: string) => Promise<void>;
   setDefaultSearchProvider: (provider: WebSearchProvider | null) => Promise<void>;
+  setDefaultBaseModel: (model: BaseModelOption | null) => Promise<void>;
   
   // 文件上传操作
   uploadFile: (file: File) => Promise<UploadedFile>;
@@ -223,10 +342,12 @@ export const useChatStore = create<ChatState>()(
     currentTaskId: null,
     currentTaskName: null,
     defaultSearchProvider: null,
+    defaultBaseModel: null,
     inputText: '',
     isTyping: false,
     isProcessing: false,
     isUpdatingProvider: false,
+    isUpdatingBaseModel: false,
     chatPanelVisible: true,
     chatPanelWidth: 400,
     memoryEnabled: true, // 默认启用记忆功能
@@ -241,6 +362,7 @@ export const useChatStore = create<ChatState>()(
       const sessionTaskId = session?.current_task_id ?? null;
       const sessionTaskName = session?.current_task_name ?? null;
       const provider = session?.defaultSearchProvider ?? null;
+      const baseModel = session?.defaultBaseModel ?? null;
 
       set({
         currentSession: session,
@@ -251,6 +373,7 @@ export const useChatStore = create<ChatState>()(
         currentTaskId: sessionTaskId,
         currentTaskName: sessionTaskName,
         defaultSearchProvider: provider,
+        defaultBaseModel: baseModel,
       });
       
       if (session) {
@@ -265,6 +388,7 @@ export const useChatStore = create<ChatState>()(
       const normalized: ChatSession = {
         ...session,
         defaultSearchProvider: session.defaultSearchProvider ?? null,
+        defaultBaseModel: session.defaultBaseModel ?? null,
       };
       set((state) => {
         const exists = state.sessions.some((s) => s.id === normalized.id);
@@ -295,6 +419,8 @@ export const useChatStore = create<ChatState>()(
           messages: state.currentSession?.id === sessionId ? [] : state.messages,
           defaultSearchProvider:
             state.currentSession?.id === sessionId ? null : state.defaultSearchProvider,
+          defaultBaseModel:
+            state.currentSession?.id === sessionId ? null : state.defaultBaseModel,
         };
       });
     },
@@ -582,6 +708,7 @@ export const useChatStore = create<ChatState>()(
         currentSession,
         memoryEnabled,
         defaultSearchProvider,
+        defaultBaseModel,
         uploadedFiles,
       } = get();
       // 如果有上传的文件，添加到metadata中
@@ -635,6 +762,10 @@ export const useChatStore = create<ChatState>()(
           defaultSearchProvider ??
           currentSession?.defaultSearchProvider ??
           null;
+        const baseModelToUse =
+          defaultBaseModel ??
+          currentSession?.defaultBaseModel ??
+          null;
         const messages = get().messages;
         const recentMessages = messages.slice(-10).map((msg) => ({
           role: msg.type,
@@ -660,8 +791,10 @@ export const useChatStore = create<ChatState>()(
           history: recentMessages,
           mode: 'assistant' as const,
           default_search_provider: providerToUse ?? undefined,
+          default_base_model: baseModelToUse ?? undefined,
           metadata: {
             ...(providerToUse ? { default_search_provider: providerToUse } : {}),
+            ...(baseModelToUse ? { default_base_model: baseModelToUse } : {}),
             ...(attachments ? { attachments } : {}),
             ...(memoryContext ? { memories: memoryContext } : {}),
           },
@@ -898,6 +1031,11 @@ export const useChatStore = create<ChatState>()(
           const intervalMs = 2_500;
           const start = Date.now();
           let lastStatus: ActionStatusResponse | null = null;
+
+          const streamStatus = await waitForActionCompletionViaStream(trackingId, timeoutMs);
+          if (streamStatus) {
+            return streamStatus;
+          }
           while (Date.now() - start < timeoutMs) {
             try {
               const status = await chatApi.getActionStatus(trackingId);
@@ -1084,10 +1222,15 @@ export const useChatStore = create<ChatState>()(
               }
               
               // 刷新聊天历史以显示工具执行后的总结消息
-              if (status.status === 'completed') {
+              if (status.status === 'completed' && trackingId) {
                 try {
-                  await get().loadChatHistory(sessionAfter.session_id ?? sessionAfter.id);
-                  console.log('✅ 工具执行完成，已刷新聊天历史');
+                  await refreshHistoryUntilToolSummary(
+                    sessionAfter.session_id ?? sessionAfter.id,
+                    trackingId,
+                    get().loadChatHistory,
+                    () => get().messages
+                  );
+                  console.log('✅ 工具执行完成，已尝试刷新聊天历史');
                 } catch (refreshError) {
                   console.warn('刷新聊天历史失败:', refreshError);
                 }
@@ -1172,22 +1315,25 @@ export const useChatStore = create<ChatState>()(
         get().addMessage(pendingAssistant);
 
         const timeoutMs = 120_000;
-        const intervalMs = 2_500;
-        const start = Date.now();
-        let lastStatus: ActionStatusResponse | null = null;
+        let lastStatus: ActionStatusResponse | null =
+          await waitForActionCompletionViaStream(newTrackingId, timeoutMs);
 
-        while (Date.now() - start < timeoutMs) {
-          try {
-            const status = await chatApi.getActionStatus(newTrackingId);
-            lastStatus = status;
-            if (status.status === 'completed' || status.status === 'failed') {
+        if (!lastStatus) {
+          const intervalMs = 2_500;
+          const start = Date.now();
+          while (Date.now() - start < timeoutMs) {
+            try {
+              const status = await chatApi.getActionStatus(newTrackingId);
+              lastStatus = status;
+              if (status.status === 'completed' || status.status === 'failed') {
+                break;
+              }
+            } catch (pollError) {
+              console.warn('轮询重试动作状态失败:', pollError);
               break;
             }
-          } catch (pollError) {
-            console.warn('轮询重试动作状态失败:', pollError);
-            break;
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
           }
-          await new Promise((resolve) => setTimeout(resolve, intervalMs));
         }
 
         if (lastStatus) {
@@ -1203,7 +1349,12 @@ export const useChatStore = create<ChatState>()(
 
           if (lastStatus.status === 'completed' && currentSession) {
             try {
-              await get().loadChatHistory(currentSession.session_id ?? currentSession.id);
+              await refreshHistoryUntilToolSummary(
+                currentSession.session_id ?? currentSession.id,
+                newTrackingId,
+                get().loadChatHistory,
+                () => get().messages
+              );
             } catch (refreshError) {
               console.warn('刷新聊天历史失败:', refreshError);
             }
@@ -1224,6 +1375,7 @@ export const useChatStore = create<ChatState>()(
     startNewSession: (title) => {
       const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const providerPreference = get().defaultSearchProvider ?? null;
+      const baseModelPreference = get().defaultBaseModel ?? null;
       autoTitleHistory.delete(sessionId);
       const session: ChatSession = {
         id: sessionId,
@@ -1240,6 +1392,7 @@ export const useChatStore = create<ChatState>()(
         last_message_at: null,
         is_active: true,
         defaultSearchProvider: providerPreference,
+        defaultBaseModel: baseModelPreference,
         titleSource: 'local',
         isUserNamed: false,
       };
@@ -1271,6 +1424,7 @@ export const useChatStore = create<ChatState>()(
 
       if (!session) {
         const providerPreference = get().defaultSearchProvider ?? null;
+        const baseModelPreference = get().defaultBaseModel ?? null;
         autoTitleHistory.delete(sessionId);
         session = {
           id: sessionId,
@@ -1287,6 +1441,7 @@ export const useChatStore = create<ChatState>()(
           last_message_at: null,
           is_active: true,
           defaultSearchProvider: providerPreference,
+          defaultBaseModel: baseModelPreference,
           titleSource: 'local',
           isUserNamed: false,
         };
@@ -1489,6 +1644,76 @@ export const useChatStore = create<ChatState>()(
       }));
     },
 
+    setDefaultBaseModel: async (model) => {
+      const normalized: BaseModelOption | null = model ?? null;
+      const prevModel = get().defaultBaseModel ?? null;
+      if (normalized === prevModel) {
+        return;
+      }
+
+      const currentSession = get().currentSession;
+      const sessionKey = currentSession?.session_id ?? currentSession?.id ?? null;
+
+      set((state) => ({
+        defaultBaseModel: normalized,
+        isUpdatingBaseModel: currentSession ? true : false,
+        currentSession: currentSession
+          ? { ...currentSession, defaultBaseModel: normalized }
+          : currentSession,
+        sessions: currentSession
+          ? state.sessions.map((session) =>
+              session.id === sessionKey
+                ? { ...session, defaultBaseModel: normalized }
+                : session
+            )
+          : state.sessions,
+      }));
+
+      if (!currentSession) {
+        set({ isUpdatingBaseModel: false });
+        return;
+      }
+
+      try {
+        if (!sessionKey) {
+          set({ isUpdatingBaseModel: false });
+          return;
+        }
+
+        await chatApi.updateSession(sessionKey, {
+          settings: { default_base_model: normalized },
+        });
+      } catch (error) {
+        console.error('更新默认基座模型失败:', error);
+        set((state) => ({
+          defaultBaseModel: prevModel,
+          isUpdatingBaseModel: false,
+          currentSession: state.currentSession
+            ? { ...state.currentSession, defaultBaseModel: prevModel }
+            : state.currentSession,
+          sessions: state.sessions.map((session) =>
+            session.id === sessionKey
+              ? { ...session, defaultBaseModel: prevModel }
+              : session
+          ),
+        }));
+        throw error;
+      }
+
+      set((state) => ({
+        isUpdatingBaseModel: false,
+        defaultBaseModel: normalized,
+        currentSession: state.currentSession
+          ? { ...state.currentSession, defaultBaseModel: normalized }
+          : state.currentSession,
+        sessions: state.sessions.map((session) =>
+          session.id === sessionKey
+            ? { ...session, defaultBaseModel: normalized }
+            : session
+        ),
+      }));
+    },
+
     autotitleSession: async (sessionId, options = {}) => {
       const sessionKey = sessionId?.trim();
       if (!sessionKey) {
@@ -1617,6 +1842,7 @@ export const useChatStore = create<ChatState>()(
             currentTaskName: null,
             currentWorkflowId: null,
             defaultSearchProvider: null,
+            defaultBaseModel: null,
           });
           SessionStorage.clearCurrentSessionId();
         }

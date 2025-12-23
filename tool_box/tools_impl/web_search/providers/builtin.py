@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = (
     "You are an AI assistant with built-in web search capabilities. "
     "Given a user query you must look up the most recent information on the internet, "
-    "summarise the findings, and provide concise references. "
+    "summarise the findings, and provide references. "
     "Respond with a JSON object containing the keys 'answer' (string) and "
     "'references' (array of objects with 'title', 'url', 'snippet'). "
-    "Keep the snippets short (<=200 characters) and ensure URLs are valid."
+    "Ensure URLs are valid."
 )
 
 
@@ -66,13 +66,15 @@ def _parse_content(content: Any, max_results: int) -> Tuple[str, List[Dict[str, 
                 continue
             title = str(ref.get("title") or ref.get("name") or "").strip() or "Reference"
             url = str(ref.get("url") or ref.get("link") or "").strip()
-            snippet = str(ref.get("snippet") or ref.get("summary") or ref.get("content") or "").strip()
+            snippet = str(
+                ref.get("snippet") or ref.get("summary") or ref.get("content") or ""
+            ).strip()
             source = urlparse(url).netloc if url else ref.get("source") or "web"
             references.append(
                 {
                     "title": title,
                     "url": url,
-                    "snippet": snippet[:200],
+                    "snippet": snippet,
                     "source": source,
                 }
             )

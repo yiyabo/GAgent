@@ -117,10 +117,12 @@ export interface PlanExecutionSummary {
   pending: number;
 }
 
-export type WebSearchProvider = 'builtin' | 'perplexity';
+export type WebSearchProvider = 'builtin' | 'perplexity' | 'tavily';
+export type BaseModelOption = 'qwen3-max' | 'glm-4.6' | 'kimi-k2-thinking';
 
 export interface ChatSessionSettings {
   default_search_provider?: WebSearchProvider | null;
+  default_base_model?: BaseModelOption | null;
 }
 
 // 聊天会话摘要（来自后端）
@@ -428,6 +430,7 @@ export interface ChatSession {
   last_message_at?: Date | null;
   is_active?: boolean;
   defaultSearchProvider?: WebSearchProvider | null;
+  defaultBaseModel?: BaseModelOption | null;
   titleSource?: string | null;
   isUserNamed?: boolean | null;
 }

@@ -60,7 +60,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 plan_repository = PlanRepository()
 decomposer_settings = get_decomposer_settings()
 
-VALID_SEARCH_PROVIDERS = {"builtin", "perplexity"}
+VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
+VALID_BASE_MODELS = {"qwen3-max", "glm-4.6", "kimi-k2-thinking"}
 plan_decomposer_service = PlanDecomposer(
     repo=plan_repository,
     settings=decomposer_settings,
@@ -125,7 +126,10 @@ class ActionStatusResponse(BaseModel):
 class ChatSessionSettings(BaseModel):
     """Session-level customization settings."""
 
-    default_search_provider: Optional[Literal["builtin", "perplexity"]] = None
+    default_search_provider: Optional[Literal["builtin", "perplexity", "tavily"]] = None
+    default_base_model: Optional[
+        Literal["qwen3-max", "glm-4.6", "kimi-k2-thinking"]
+    ] = None
 
 
 class ChatSessionSummary(BaseModel):
@@ -312,17 +316,30 @@ async def update_chat_session(
             params: List[Any] = []
             if settings_update is not None:
                 metadata_dict = _load_session_metadata_dict(conn, session_id)
-                provider = settings_update.get("default_search_provider")
-                if provider is not None:
-                    normalized = _normalize_search_provider(provider)
-                    if normalized is None:
-                        raise HTTPException(
-                            status_code=422,
-                            detail="Invalid default_search_provider value",
-                        )
-                    metadata_dict["default_search_provider"] = normalized
-                else:
-                    metadata_dict.pop("default_search_provider", None)
+                if "default_search_provider" in settings_update:
+                    provider = settings_update.get("default_search_provider")
+                    if provider is not None:
+                        normalized = _normalize_search_provider(provider)
+                        if normalized is None:
+                            raise HTTPException(
+                                status_code=422,
+                                detail="Invalid default_search_provider value",
+                            )
+                        metadata_dict["default_search_provider"] = normalized
+                    else:
+                        metadata_dict.pop("default_search_provider", None)
+                if "default_base_model" in settings_update:
+                    base_model = settings_update.get("default_base_model")
+                    if base_model is not None:
+                        normalized = _normalize_base_model(base_model)
+                        if normalized is None:
+                            raise HTTPException(
+                                status_code=422,
+                                detail="Invalid default_base_model value",
+                            )
+                        metadata_dict["default_base_model"] = normalized
+                    else:
+                        metadata_dict.pop("default_base_model", None)
                 set_clauses.append("metadata=?")
                 params.append(_dump_metadata(metadata_dict))
 
@@ -655,6 +672,16 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             if session_provider:
                 context["default_search_provider"] = session_provider
 
+        explicit_base_model = _normalize_base_model(
+            context.get("default_base_model")
+        )
+        if explicit_base_model:
+            context["default_base_model"] = explicit_base_model
+        else:
+            session_base_model = session_settings.get("default_base_model")
+            if session_base_model:
+                context["default_base_model"] = session_base_model
+
         agent = StructuredChatAgent(
             mode=request.mode,
             plan_session=plan_session,
@@ -902,6 +929,15 @@ def _normalize_search_provider(value: Any) -> Optional[str]:
     return None
 
 
+def _normalize_base_model(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if candidate in VALID_BASE_MODELS:
+        return candidate
+    return None
+
+
 def _dump_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
     if not metadata:
         return None
@@ -917,10 +953,14 @@ def _extract_session_settings(
 ) -> Optional[Dict[str, Any]]:
     if not metadata:
         return None
+    settings: Dict[str, Any] = {}
     provider = _normalize_search_provider(metadata.get("default_search_provider"))
-    if not provider:
-        return None
-    return {"default_search_provider": provider}
+    if provider:
+        settings["default_search_provider"] = provider
+    base_model = _normalize_base_model(metadata.get("default_base_model"))
+    if base_model:
+        settings["default_base_model"] = base_model
+    return settings or None
 
 
 def _lookup_plan_title(conn, plan_id: Optional[int]) -> Optional[str]:
@@ -1358,6 +1398,7 @@ async def _generate_tool_summary(
     try:
         # 构建工具结果的描述
         tools_description = []
+        web_search_items: List[Dict[str, str]] = []
         for idx, tool_result in enumerate(tool_results, 1):
             tool_name = tool_result.get("name", "unknown")
             summary = tool_result.get("summary", "")
@@ -1378,6 +1419,28 @@ async def _generate_tool_summary(
                         if isinstance(value, str) and len(value) > 500:
                             value = value[:500] + "..."
                         tool_desc += f"\n   {field}: {value}"
+                if tool_name == "web_search":
+                    results = result_data.get("results")
+                    if isinstance(results, list) and results:
+                        tool_desc += "\n   results:"
+                        for item in results:
+                            if not isinstance(item, dict):
+                                continue
+                            title = str(item.get("title") or "").strip()
+                            url = str(item.get("url") or "").strip()
+                            snippet = str(item.get("snippet") or "").strip()
+                            if len(snippet) > 300:
+                                snippet = snippet[:300] + "..."
+                            tool_desc += f"\n   - title: {title}"
+                            tool_desc += f"\n     url: {url}"
+                            if snippet:
+                                tool_desc += f"\n     snippet: {snippet}"
+                            web_search_items.append(
+                                {
+                                    "title": title,
+                                    "url": url,
+                                }
+                            )
             
             tools_description.append(tool_desc)
         
@@ -1395,7 +1458,19 @@ async def _generate_tool_summary(
         
         requirements_text = "\n".join(requirements)
         
-        prompt = f"""{intro}
+        extra_requirements: List[str] = []
+        if web_search_items:
+            extra_requirements.extend(
+                [
+                    "5. For web_search, list every returned result in order; do not omit any",
+                    "6. Include each result's title and URL exactly once",
+                    "7. Do not invent extra sources beyond the provided results",
+                ]
+            )
+
+        requirements_text = "\n".join(requirements + extra_requirements)
+
+        base_prompt = f"""{intro}
 
 {user_q_label}
 {user_message}
@@ -1407,11 +1482,47 @@ async def _generate_tool_summary(
 {requirements_text}
 
 {response_label}"""
-
-        # 调用 LLM
         llm_service = get_llm_service()
-        summary = await llm_service.chat_async(prompt)
-        
+
+        def _normalize_token(text: str) -> str:
+            return "".join(text.lower().split())
+
+        def _missing_search_items(text: str) -> List[Dict[str, str]]:
+            if not web_search_items:
+                return []
+            normalized = _normalize_token(text)
+            missing: List[Dict[str, str]] = []
+            for item in web_search_items:
+                title = _normalize_token(item.get("title", ""))
+                url = _normalize_token(item.get("url", ""))
+                if title and title in normalized:
+                    continue
+                if url and url in normalized:
+                    continue
+                missing.append(item)
+            return missing
+
+        summary: Optional[str] = None
+        max_attempts = 3 if web_search_items else 1
+        for attempt in range(1, max_attempts + 1):
+            extra = ""
+            if attempt > 1 and summary:
+                missing_items = _missing_search_items(summary)
+                missing_labels = ", ".join(
+                    item.get("title") or item.get("url") or "(unknown)" for item in missing_items
+                )
+                extra = (
+                    "\n\nPrevious response missed some web_search results. "
+                    "You must list every result with title + URL. "
+                    f"Missing: {missing_labels}\n"
+                )
+            prompt = base_prompt + extra
+            summary = await llm_service.chat_async(prompt)
+            if not summary:
+                continue
+            if not _missing_search_items(summary):
+                break
+
         return summary.strip() if summary else None
         
     except Exception as exc:
@@ -1513,6 +1624,16 @@ async def _execute_action_run(run_id: str) -> None:
             fallback_provider = session_defaults.get("default_search_provider")
             if fallback_provider:
                 context["default_search_provider"] = fallback_provider
+        base_model_in_context = _normalize_base_model(
+            context.get("default_base_model")
+        )
+        if base_model_in_context:
+            context["default_base_model"] = base_model_in_context
+        elif record.get("session_id"):
+            session_defaults = _get_session_settings(record["session_id"])
+            fallback_base_model = session_defaults.get("default_base_model")
+            if fallback_base_model:
+                context["default_base_model"] = fallback_base_model
 
         # 🔄 任务状态同步：优先使用 context 中的 task_id
         if "task_id" in context and "current_task_id" not in context:
@@ -2072,6 +2193,13 @@ class StructuredChatAgent:
             self.extra_context["default_search_provider"] = provider
         elif "default_search_provider" in self.extra_context:
             self.extra_context.pop("default_search_provider", None)
+        base_model = _normalize_base_model(
+            self.extra_context.get("default_base_model")
+        )
+        if base_model:
+            self.extra_context["default_base_model"] = base_model
+        elif "default_base_model" in self.extra_context:
+            self.extra_context.pop("default_base_model", None)
         self.plan_session = plan_session or PlanSession(repo=plan_repository)
         self.plan_tree = self.plan_session.current_tree()
         self.schema_json = schema_as_json()
@@ -2239,7 +2367,10 @@ class StructuredChatAgent:
     async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
         self._current_user_message = user_message
         prompt = self._build_prompt(user_message)
-        raw = await self.llm_service.chat_async(prompt, force_real=True)
+        model_override = self.extra_context.get("default_base_model")
+        raw = await self.llm_service.chat_async(
+            prompt, force_real=True, model=model_override
+        )
         cleaned = self._strip_code_fence(raw)
         return LLMStructuredResponse.model_validate_json(cleaned)
 
@@ -2469,15 +2600,10 @@ class StructuredChatAgent:
             logger.debug("Failed to persist action log entry: %s", exc)
 
     @staticmethod
-    def _truncate_summary_text(
-        value: Optional[str], *, limit: int = 160
-    ) -> Optional[str]:
+    def _truncate_summary_text(value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
-        text = str(value)
-        if len(text) > limit:
-            return text[: limit - 3] + "..."
-        return text
+        return str(value)
 
     def _build_actions_summary(self, steps: List[AgentStep]) -> List[Dict[str, Any]]:
         summary: List[Dict[str, Any]] = []
@@ -3944,8 +4070,8 @@ class StructuredChatAgent:
             return {"tool": tool_name, "success": False, "error": "empty_result"}
 
         if isinstance(raw_result, (list, tuple)):
-            preview = list(raw_result[:3])
-            return {"tool": tool_name, "items": preview, "success": True}
+            items = list(raw_result)
+            return {"tool": tool_name, "items": items, "success": True}
 
         text = str(raw_result)
         return {"tool": tool_name, "text": text, "success": True}
@@ -4004,8 +4130,6 @@ class StructuredChatAgent:
             response = result.get("response") or result.get("answer")
             if isinstance(response, str) and response.strip():
                 snippet = response.strip()
-                if len(snippet) > 120:
-                    snippet = snippet[:117] + "..."
                 return f"{prefix} finished. Summary: {snippet}"
             total = result.get("total_results")
             if isinstance(total, int) and total > 0:
@@ -4026,8 +4150,6 @@ class StructuredChatAgent:
             prompt = result.get("prompt")
             if isinstance(prompt, str) and prompt.strip():
                 snippet = prompt.strip()
-                if len(snippet) > 120:
-                    snippet = snippet[:117] + "..."
                 return f"{prefix} finished. Prompt summary: {snippet}"
             return f"{prefix} finished."
         if tool_name == "claude_code":
@@ -4041,8 +4163,6 @@ class StructuredChatAgent:
             stdout_text = result.get("stdout") or result.get("output") or ""
             if stdout_text.strip():
                 snippet = stdout_text.strip()
-                if len(snippet) > 150:
-                    snippet = snippet[:147] + "..."
                 return f"Claude Code execution{file_info} succeeded. Output: {snippet}"
             
             return f"Claude Code execution{file_info} succeeded."
@@ -4088,8 +4208,6 @@ class StructuredChatAgent:
             text = result.get("text") or ""
             if isinstance(text, str) and text.strip():
                 snippet = text.strip()
-                if len(snippet) > 12000:
-                    snippet = snippet[:11997] + "..."
                 return f"Vision reader ({op}) succeeded. Content preview: {snippet}"
 
             return "Vision reader succeeded, but no textual content was extracted."
@@ -4103,11 +4221,8 @@ class StructuredChatAgent:
             page_count = result.get("page_count")
             
             if text.strip():
-                snippet = text.strip()
-                if len(snippet) > 12000:
-                    snippet = snippet[:11997] + "..."
                 page_info = f" ({page_count} pages)" if page_count else ""
-                return f"Document reader{page_info} succeeded. Content preview: {snippet}"
+                return f"Document reader{page_info} succeeded. Content preview: {text.strip()}"
             
             return "Document reader succeeded, but no text content was extracted."
         

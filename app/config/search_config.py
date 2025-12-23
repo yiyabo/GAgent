@@ -35,6 +35,19 @@ class SearchSettings:
     perplexity_model: str = "sonar-pro"
     perplexity_timeout: float = 30.0
 
+    # 外部 Provider：Tavily MCP
+    tavily_api_key: Optional[str] = None
+    tavily_api_url: str = "https://api.tavily.com/search"
+    tavily_mcp_url: str = "https://mcp.tavily.com/mcp/"
+    tavily_timeout: float = 30.0
+    tavily_tool_name: Optional[str] = None
+    tavily_search_depth: str = "advanced"
+    tavily_topic: str = "general"
+    tavily_time_range: Optional[str] = None
+    tavily_include_answer: bool = False
+    tavily_include_raw_content: bool = False
+    tavily_auto_parameters: bool = False
+
 
 def _env(key: str, default: Optional[str] = None) -> Optional[str]:
     value = os.getenv(key)
@@ -63,6 +76,17 @@ def get_search_settings() -> SearchSettings:
     perplexity_api_url = _env("PERPLEXITY_API_URL", "https://api.perplexity.ai/chat/completions")
     perplexity_model = _env("PERPLEXITY_MODEL", "sonar-pro")
 
+    tavily_api_key = _env("TAVILY_API_KEY")
+    tavily_api_url = _env("TAVILY_API_URL", "https://api.tavily.com/search")
+    tavily_mcp_url = _env("TAVILY_MCP_URL", "https://mcp.tavily.com/mcp/")
+    tavily_tool_name = _env("TAVILY_MCP_TOOL")
+    tavily_search_depth = _env("TAVILY_SEARCH_DEPTH", "advanced")
+    tavily_topic = _env("TAVILY_TOPIC", "general")
+    tavily_time_range = _env("TAVILY_TIME_RANGE")
+    tavily_include_answer = _env("TAVILY_INCLUDE_ANSWER", "false")
+    tavily_include_raw = _env("TAVILY_INCLUDE_RAW_CONTENT", "false")
+    tavily_auto_parameters = _env("TAVILY_AUTO_PARAMETERS", "false")
+
     try:
         builtin_timeout = float(_env("WEB_SEARCH_BUILTIN_TIMEOUT", "40.0"))
     except Exception:
@@ -72,6 +96,11 @@ def get_search_settings() -> SearchSettings:
         perplexity_timeout = float(_env("WEB_SEARCH_PERPLEXITY_TIMEOUT", "30.0"))
     except Exception:
         perplexity_timeout = 30.0
+
+    try:
+        tavily_timeout = float(_env("WEB_SEARCH_TAVILY_TIMEOUT", "30.0"))
+    except Exception:
+        tavily_timeout = 30.0
 
     return SearchSettings(
         default_provider=default_provider or "builtin",
@@ -87,6 +116,17 @@ def get_search_settings() -> SearchSettings:
         perplexity_api_url=perplexity_api_url or "https://api.perplexity.ai/chat/completions",
         perplexity_model=perplexity_model or "sonar-pro",
         perplexity_timeout=perplexity_timeout,
+        tavily_api_key=tavily_api_key,
+        tavily_api_url=tavily_api_url or "https://api.tavily.com/search",
+        tavily_mcp_url=tavily_mcp_url or "https://mcp.tavily.com/mcp/",
+        tavily_timeout=tavily_timeout,
+        tavily_tool_name=tavily_tool_name,
+        tavily_search_depth=(tavily_search_depth or "advanced"),
+        tavily_topic=(tavily_topic or "general"),
+        tavily_time_range=tavily_time_range,
+        tavily_include_answer=(str(tavily_include_answer).lower() in {"1", "true", "yes", "advanced", "basic"}),
+        tavily_include_raw_content=(str(tavily_include_raw).lower() in {"1", "true", "yes", "markdown", "text"}),
+        tavily_auto_parameters=(str(tavily_auto_parameters).lower() in {"1", "true", "yes"}),
     )
 
 
