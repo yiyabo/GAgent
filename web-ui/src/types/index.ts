@@ -368,6 +368,11 @@ export interface ActionStatusResponse {
   created_at?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
+  metadata?: {
+    tool_results?: ToolResultPayload[] | null;
+    final_summary?: string;
+    [key: string]: any;
+  } | null;
 }
 
 export interface ChatMessage {

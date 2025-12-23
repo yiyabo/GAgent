@@ -8,10 +8,11 @@ import inspect
 import json
 import logging
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, AsyncIterator, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import get_graph_rag_settings, get_search_settings
@@ -78,6 +79,110 @@ register_router(
     tags=["chat"],
     description="Primary entry point for chat and plan management (structured LLM dialog)",
 )
+
+
+def _sse_message(payload: Dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+class StructuredReplyStreamParser:
+    def __init__(self) -> None:
+        self._state = "search_llm_reply"
+        self._scan_buffer = ""
+        self._seen_colon = False
+        self._escape = False
+        self._unicode_escape: Optional[str] = None
+        self._emit_buffer: List[str] = []
+        self._full_parts: List[str] = []
+        self._done = False
+
+    def feed(self, text: str) -> List[str]:
+        self._full_parts.append(text)
+        deltas: List[str] = []
+        for ch in text:
+            if self._done:
+                continue
+            if self._state == "search_llm_reply":
+                self._scan_buffer = (self._scan_buffer + ch)[-64:]
+                if '"llm_reply"' in self._scan_buffer:
+                    self._state = "search_message_key"
+                    self._scan_buffer = ""
+                continue
+            if self._state == "search_message_key":
+                self._scan_buffer = (self._scan_buffer + ch)[-64:]
+                if '"message"' in self._scan_buffer:
+                    self._state = "search_message_value"
+                    self._scan_buffer = ""
+                    self._seen_colon = False
+                continue
+            if self._state == "search_message_value":
+                if ch == ":":
+                    self._seen_colon = True
+                elif self._seen_colon and ch == '"':
+                    self._state = "in_message"
+                    self._escape = False
+                    self._unicode_escape = None
+                continue
+
+            if self._state == "in_message":
+                self._consume_message_char(ch)
+                if self._emit_buffer and len(self._emit_buffer) >= 16:
+                    deltas.append("".join(self._emit_buffer))
+                    self._emit_buffer = []
+        if self._emit_buffer:
+            deltas.append("".join(self._emit_buffer))
+            self._emit_buffer = []
+        return deltas
+
+    def full_text(self) -> str:
+        return "".join(self._full_parts)
+
+    def _emit(self, value: str) -> None:
+        if value:
+            self._emit_buffer.append(value)
+
+    def _consume_message_char(self, ch: str) -> None:
+        if self._unicode_escape is not None:
+            if ch.lower() in "0123456789abcdef":
+                self._unicode_escape += ch
+                if len(self._unicode_escape) == 4:
+                    try:
+                        self._emit(chr(int(self._unicode_escape, 16)))
+                    except ValueError:
+                        self._emit("\\u" + self._unicode_escape)
+                    self._unicode_escape = None
+                    self._escape = False
+            else:
+                self._emit("\\u" + self._unicode_escape + ch)
+                self._unicode_escape = None
+                self._escape = False
+            return
+
+        if self._escape:
+            mapping = {
+                '"': '"',
+                "\\": "\\",
+                "/": "/",
+                "b": "\b",
+                "f": "\f",
+                "n": "\n",
+                "r": "\r",
+                "t": "\t",
+            }
+            if ch == "u":
+                self._unicode_escape = ""
+            else:
+                self._emit(mapping.get(ch, ch))
+                self._escape = False
+            return
+
+        if ch == "\\":
+            self._escape = True
+            return
+        if ch == '"':
+            self._done = True
+            return
+        self._emit(ch)
 
 
 class ChatMessage(BaseModel):
@@ -860,6 +965,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             actions=pending_actions,
             metadata={
                 "status": "pending",
+                "unified_stream": True,
                 "tracking_id": tracking_id,
                 "plan_id": plan_session.plan_id,
                 "raw_actions": [action.model_dump() for action in structured.actions],
@@ -886,6 +992,352 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             metadata={"error": True, "error_type": type(exc).__name__},
         )
         return _save_assistant_response(request.session_id, fallback)
+
+
+@router.post("/stream")
+async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
+    async def event_generator() -> AsyncIterator[str]:
+        try:
+            context = dict(request.context or {})
+            incoming_plan_id = context.get("plan_id")
+            if incoming_plan_id is not None and not isinstance(incoming_plan_id, int):
+                try:
+                    incoming_plan_id = int(str(incoming_plan_id).strip())
+                except (TypeError, ValueError):
+                    incoming_plan_id = None
+
+            plan_id = _resolve_plan_binding(request.session_id, incoming_plan_id)
+            plan_session = PlanSession(repo=plan_repository, plan_id=plan_id)
+            try:
+                plan_session.refresh()
+            except ValueError as exc:
+                logger.warning("Plan binding failed, detaching session: %s", exc)
+                plan_session.detach()
+
+            logger.info(
+                "[CHAT][STREAM][REQ] session=%s plan=%s mode=%s message=%s",
+                request.session_id or "<new>",
+                plan_session.plan_id,
+                request.mode or "assistant",
+                request.message,
+            )
+
+            message_to_send = request.message
+            attachments = context.get("attachments", [])
+            if attachments and isinstance(attachments, list):
+                attachment_info = "\n\n📎 用户当前上传的附件（请优先关注并使用document_reader读取这些文件）：\n"
+                for att in attachments:
+                    if isinstance(att, dict):
+                        att_type = att.get("type", "file")
+                        att_name = att.get("name", "未知文件")
+                        att_path = att.get("path", "")
+                        attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
+                message_to_send = request.message + attachment_info
+                logger.info(
+                    "[CHAT][STREAM][ATTACHMENTS] session=%s count=%d",
+                    request.session_id,
+                    len(attachments),
+                )
+
+            if plan_session.plan_id is not None:
+                context["plan_id"] = plan_session.plan_id
+            else:
+                context.pop("plan_id", None)
+
+            converted_history = _convert_history_to_agent_format(request.history)
+            session_settings: Dict[str, Any] = {}
+
+            if "task_id" in context and "current_task_id" not in context:
+                context["current_task_id"] = context["task_id"]
+                logger.info(
+                    "[CHAT][STREAM][TASK_SYNC] Using task_id from context: %s",
+                    context["current_task_id"],
+                )
+
+            if request.session_id:
+                _save_chat_message(request.session_id, "user", request.message)
+                session_settings = _get_session_settings(request.session_id)
+                if "current_task_id" not in context:
+                    current_task_id = _get_session_current_task(request.session_id)
+                    if current_task_id is not None:
+                        context["current_task_id"] = current_task_id
+                        logger.info(
+                            "[CHAT][STREAM][TASK_SYNC] Using current_task_id from session: %s",
+                            current_task_id,
+                        )
+
+            explicit_provider = _normalize_search_provider(
+                context.get("default_search_provider")
+            )
+            if explicit_provider:
+                context["default_search_provider"] = explicit_provider
+            else:
+                session_provider = session_settings.get("default_search_provider")
+                if session_provider:
+                    context["default_search_provider"] = session_provider
+
+            explicit_base_model = _normalize_base_model(
+                context.get("default_base_model")
+            )
+            if explicit_base_model:
+                context["default_base_model"] = explicit_base_model
+            else:
+                session_base_model = session_settings.get("default_base_model")
+                if session_base_model:
+                    context["default_base_model"] = session_base_model
+
+            agent = StructuredChatAgent(
+                mode=request.mode,
+                plan_session=plan_session,
+                plan_decomposer=plan_decomposer_service,
+                plan_executor=plan_executor_service,
+                session_id=request.session_id,
+                conversation_id=_derive_conversation_id(request.session_id),
+                history=converted_history,
+                extra_context=context,
+            )
+
+            yield _sse_message({"type": "start"})
+
+            agent._current_user_message = message_to_send
+            prompt = agent._build_prompt(message_to_send)
+            model_override = agent.extra_context.get("default_base_model")
+
+            parser = StructuredReplyStreamParser()
+            async for chunk in agent.llm_service.stream_chat_async(
+                prompt, force_real=True, model=model_override
+            ):
+                for delta in parser.feed(chunk):
+                    if delta:
+                        yield _sse_message({"type": "delta", "content": delta})
+
+            raw = parser.full_text()
+            cleaned = agent._strip_code_fence(raw)
+            structured = LLMStructuredResponse.model_validate_json(cleaned)
+            structured = await agent._apply_experiment_fallback(structured)
+            agent._current_user_message = None
+
+            if not structured.actions:
+                agent_result = await agent.execute_structured(structured)
+                if request.session_id:
+                    _set_session_plan_id(request.session_id, agent_result.bound_plan_id)
+                tool_results = [
+                    {
+                        "name": step.action.name,
+                        "summary": step.details.get("summary"),
+                        "parameters": step.details.get("parameters"),
+                        "result": step.details.get("result"),
+                    }
+                    for step in agent_result.steps
+                    if step.action.kind == "tool_operation"
+                ]
+                metadata_payload: Dict[str, Any] = {
+                    "intent": agent_result.primary_intent,
+                    "success": agent_result.success,
+                    "errors": agent_result.errors,
+                    "plan_id": agent_result.bound_plan_id,
+                    "plan_outline": agent_result.plan_outline,
+                    "plan_persisted": agent_result.plan_persisted,
+                    "status": "completed",
+                    "raw_actions": [
+                        step.action.model_dump() for step in agent_result.steps
+                    ],
+                }
+                if tool_results:
+                    metadata_payload["tool_results"] = [
+                        entry
+                        for entry in tool_results
+                        if entry and isinstance(entry.get("result"), dict)
+                    ]
+                if agent_result.actions_summary:
+                    metadata_payload["actions_summary"] = agent_result.actions_summary
+                if agent_result.job_id:
+                    metadata_payload["job_id"] = agent_result.job_id
+                    metadata_payload["job_type"] = agent_result.job_type or "chat_action"
+                    metadata_payload["job_status"] = (
+                        "completed" if agent_result.success else "failed"
+                    )
+                chat_response = ChatResponse(
+                    response=agent_result.reply,
+                    suggestions=agent_result.suggestions,
+                    actions=[step.action_payload for step in agent_result.steps],
+                    metadata=metadata_payload,
+                )
+                saved = _save_assistant_response(request.session_id, chat_response)
+                yield _sse_message({"type": "final", "payload": saved.model_dump()})
+                return
+
+            tracking_id = f"act_{uuid4().hex}"
+            job_metadata = {
+                "session_id": request.session_id,
+                "mode": request.mode,
+                "user_message": request.message,
+            }
+            job_params = {
+                key: value
+                for key, value in {
+                    "mode": request.mode,
+                    "session_id": request.session_id,
+                    "plan_id": plan_session.plan_id,
+                }.items()
+                if value is not None
+            }
+            try:
+                plan_decomposition_jobs.create_job(
+                    plan_id=plan_session.plan_id,
+                    task_id=None,
+                    mode=request.mode or "assistant",
+                    job_type="chat_action",
+                    params=job_params,
+                    metadata=job_metadata,
+                    job_id=tracking_id,
+                )
+            except ValueError:
+                pass
+
+            structured_json = structured.model_dump_json()
+            create_action_run(
+                run_id=tracking_id,
+                session_id=request.session_id,
+                user_message=request.message,
+                mode=request.mode,
+                plan_id=plan_session.plan_id,
+                context=context,
+                history=converted_history,
+                structured_json=structured_json,
+            )
+
+            pending_actions = [
+                {
+                    "kind": action.kind,
+                    "name": action.name,
+                    "parameters": action.parameters,
+                    "order": action.order,
+                    "blocking": action.blocking,
+                    "status": "pending",
+                    "success": None,
+                    "message": None,
+                    "details": None,
+                }
+                for action in structured.sorted_actions()
+            ]
+            for action in structured.sorted_actions():
+                logger.info(
+                    "[CHAT][STREAM][ASYNC] session=%s tracking=%s queued action=%s/%s order=%s params=%s",
+                    request.session_id or "<new>",
+                    tracking_id,
+                    action.kind,
+                    action.name,
+                    action.order,
+                    action.parameters,
+                )
+                try:
+                    append_action_log_entry(
+                        plan_id=plan_session.plan_id,
+                        job_id=tracking_id,
+                        job_type="chat_action",
+                        session_id=request.session_id,
+                        user_message=request.message,
+                        action_kind=action.kind,
+                        action_name=action.name or "",
+                        status="queued",
+                        success=None,
+                        message="Action queued for execution.",
+                        parameters=action.parameters,
+                        details=None,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("Failed to persist queued action log: %s", exc)
+
+            suggestions = [
+                "Actions have been generated; execution is running in the background.",
+                "If it does not finish within two minutes, refresh the plan view or try again later.",
+            ]
+            plan_decomposition_jobs.append_log(
+                tracking_id,
+                "info",
+                "Background action submitted and awaiting execution.",
+                {
+                    "session_id": request.session_id,
+                    "plan_id": plan_session.plan_id,
+                    "actions": [action.model_dump() for action in structured.actions],
+                },
+            )
+
+            job_snapshot = plan_decomposition_jobs.get_job_payload(tracking_id)
+            chat_response = ChatResponse(
+                response=structured.llm_reply.message,
+                suggestions=suggestions,
+                actions=pending_actions,
+                metadata={
+                    "status": "pending",
+                    "unified_stream": True,
+                    "tracking_id": tracking_id,
+                    "plan_id": plan_session.plan_id,
+                    "raw_actions": [action.model_dump() for action in structured.actions],
+                    "type": "job_log",
+                    "job_id": tracking_id,
+                    "job_type": (job_snapshot or {}).get("job_type", "chat_action"),
+                    "job_status": (job_snapshot or {}).get("status", "queued"),
+                    "job": job_snapshot,
+                    "job_logs": (job_snapshot or {}).get("logs"),
+                },
+            )
+
+            loop = asyncio.get_running_loop()
+            queue = plan_decomposition_jobs.register_subscriber(tracking_id, loop)
+            asyncio.create_task(_execute_action_run(tracking_id))
+
+            saved = _save_assistant_response(request.session_id, chat_response)
+            yield _sse_message({"type": "final", "payload": saved.model_dump()})
+
+            if queue is None:
+                return
+
+            try:
+                snapshot = plan_decomposition_jobs.get_job_payload(
+                    tracking_id, include_logs=False
+                )
+                if snapshot is not None:
+                    yield _sse_message(
+                        {"type": "job_update", "payload": snapshot}
+                    )
+                while True:
+                    try:
+                        message = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        heartbeat = plan_decomposition_jobs.get_job_payload(
+                            tracking_id, include_logs=False
+                        )
+                        if heartbeat is None:
+                            break
+                        yield _sse_message(
+                            {"type": "job_update", "payload": heartbeat}
+                        )
+                        continue
+                    message.setdefault("job_id", tracking_id)
+                    yield _sse_message({"type": "job_update", "payload": message})
+                    if message.get("status") in {"succeeded", "failed"}:
+                        break
+            finally:
+                plan_decomposition_jobs.unregister_subscriber(tracking_id, queue)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Chat streaming failed: %s", exc)
+            yield _sse_message(
+                {
+                    "type": "error",
+                    "message": "⚠️ Streaming request failed. Please try again.",
+                    "error_type": type(exc).__name__,
+                }
+            )
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(
+        event_generator(), media_type="text/event-stream", headers=headers
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1311,6 +1763,34 @@ def _update_message_metadata_by_tracking(
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug(
             "Failed to update chat message metadata for %s: %s", tracking_id, exc
+        )
+
+def _update_message_content_by_tracking(
+    session_id: Optional[str],
+    tracking_id: Optional[str],
+    content: str,
+) -> None:
+    if not session_id or not tracking_id:
+        return
+    from ..database import get_db  # lazy import
+
+    pattern = f'%"tracking_id": "{tracking_id}"%'
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT id FROM chat_messages WHERE session_id=? AND metadata LIKE ? ORDER BY id DESC LIMIT 1",
+                (session_id, pattern),
+            ).fetchone()
+            if not row:
+                return
+            conn.execute(
+                "UPDATE chat_messages SET content=? WHERE id=?",
+                (content, row["id"]),
+            )
+            conn.commit()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "Failed to update chat message content for %s: %s", tracking_id, exc
         )
 
 
@@ -1805,19 +2285,17 @@ async def _execute_action_run(run_id: str) -> None:
                     session_id=record.get("session_id"),
                 )
                 if final_summary:
-                    # 保存 LLM 的总结作为新的 assistant 消息
-                    _save_chat_message(
-                        session_id=record.get("session_id"),
-                        role="assistant",
-                        content=final_summary,
-                        metadata={
-                            "type": "tool_summary",
-                            "tracking_id": run_id,
-                            "tool_count": len(tool_results_payload),
-                        },
-                    )
-                    # 将总结添加到 result_dict 中，前端可以直接显示
+                    # 将总结添加到 result_dict / job result 中，前端可直接用同一条消息气泡展示
                     result_dict["final_summary"] = final_summary
+                    try:
+                        result.final_summary = final_summary
+                    except Exception:
+                        pass
+                    _update_message_content_by_tracking(
+                        record.get("session_id"),
+                        run_id,
+                        final_summary,
+                    )
                     logger.info(
                         "[CHAT][SUMMARY] session=%s tracking=%s Summary saved: %s",
                         record.get("session_id"),
@@ -2162,6 +2640,7 @@ class AgentResult(BaseModel):
     job_type: Optional[str] = None
     actions_summary: List[Dict[str, Any]] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
+    final_summary: Optional[str] = None
 
 
 class StructuredChatAgent:
@@ -2487,6 +2966,7 @@ class StructuredChatAgent:
         common_rules = [
             "Return only a JSON object that matches the schema above\u0014no code fences or additional commentary.",
             "`llm_reply.message` must be natural language directed to the user.",
+            "IMPORTANT UX: If you include any actions, `llm_reply.message` must be a short tool-plan preface (1-2 sentences) describing what tools you will use next; do NOT provide the final answer until tools have run.",
             "Fill `actions` in execution order (`order` starts at 1); use an empty array if no actions are required.",
             "Use the `kind`/`name` pairs from the action catalog without inventing new values.",
             "Before invoking heavy tools such as `claude_code`, consider whether the user's request should first be organized as a structured plan; when appropriate, propose or refine a plan and obtain user confirmation on the updated tasks before execution.",

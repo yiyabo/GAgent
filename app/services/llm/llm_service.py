@@ -10,7 +10,7 @@ import functools
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 from ...llm import get_default_client
 from ...interfaces import LLMProvider
@@ -95,6 +95,19 @@ class LLMService:
         
         # This should never be reached
         raise RuntimeError("Unexpected error in async LLM chat")
+
+    async def stream_chat_async(self, prompt: str, **kwargs) -> AsyncIterator[str]:
+        stream_fn = getattr(self.client, "stream_chat_async", None)
+        if callable(stream_fn):
+            async for chunk in stream_fn(prompt, **kwargs):
+                yield chunk
+            return
+        stream_sync = getattr(self.client, "stream_chat", None)
+        if callable(stream_sync):
+            for chunk in stream_sync(prompt, **kwargs):
+                yield chunk
+            return
+        raise RuntimeError("LLM client does not support streaming")
     
     def _execute_chat(self, prompt: str, **kwargs) -> str:
         """

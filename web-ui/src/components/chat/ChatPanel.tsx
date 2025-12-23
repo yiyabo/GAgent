@@ -142,7 +142,7 @@ const ChatPanel: React.FC = () => {
               AI 任务编排助手
             </Title>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              {isProcessing ? '正在思考...' : isTyping ? '正在输入...' : '在线'}
+              在线
             </Text>
           </div>
         </Space>
@@ -231,19 +231,7 @@ const ChatPanel: React.FC = () => {
               <ChatMessage key={message.id} message={message} />
             ))}
             
-            {/* 正在处理指示器 */}
-            {isProcessing && (
-              <div className="message assistant">
-                <div className="message-avatar assistant">
-                  <RobotOutlined />
-                </div>
-                <div className="message-content">
-                  <div className="message-bubble">
-                    <Text>正在思考中...</Text>
-                  </div>
-                </div>
-              </div>
-            )}
+           
           </>
         )}
         
