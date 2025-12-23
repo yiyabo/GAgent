@@ -16,6 +16,7 @@ import {
   UploadedFile,
   BaseModelOption,
   WebSearchProvider,
+  LLMProviderOption,
 } from '@/types';
 import { SessionStorage } from '@/utils/sessionStorage';
 import { useTasksStore } from '@store/tasks';
@@ -194,6 +195,98 @@ const formatToolPlanPreface = (actions: ChatActionSummary[]): string => {
   return `我将先调用工具（${label}${suffix}）获取最新信息，然后给出基于结果的回答。`;
 };
 
+const summarizeSteps = (steps: Array<Record<string, any>>): string | null => {
+  if (!Array.isArray(steps) || steps.length === 0) return null;
+  const lines: string[] = [];
+  steps.forEach((step, idx) => {
+    const order = typeof step?.action?.order === 'number' ? step.action.order : idx + 1;
+    const action = step?.action ?? {};
+    const labelParts: string[] = [];
+    if (typeof action?.kind === 'string') labelParts.push(action.kind);
+    if (typeof action?.name === 'string') labelParts.push(action.name);
+    const header = labelParts.length ? labelParts.join('/') : `步骤 ${order}`;
+
+    const detail =
+      (typeof step?.summary === 'string' && step.summary) ||
+      (typeof (step as any)?.message === 'string' && (step as any).message) ||
+      (step?.details && typeof step.details?.summary === 'string' ? step.details.summary : null);
+
+    const subtasks =
+      (step?.details && Array.isArray((step.details as any).subtasks)
+        ? ((step.details as any).subtasks as any[])
+        : []) ||
+      (step?.details &&
+        (step.details as any).result &&
+        Array.isArray((step.details as any).result?.subtasks)
+        ? ((step.details as any).result.subtasks as any[])
+        : []);
+
+    if (detail) {
+      lines.push(`- ${header}: ${detail}`);
+    } else {
+      lines.push(`- ${header}`);
+    }
+    if (subtasks && subtasks.length > 0) {
+      subtasks.forEach((st: any) => {
+        const name =
+          (st && typeof st.name === 'string' && st.name) ||
+          (st && typeof st.title === 'string' && st.title) ||
+          null;
+        if (name) {
+          lines.push(`  - 子任务: ${name}`);
+        }
+      });
+    }
+  });
+  return lines.length ? lines.join('\n') : null;
+};
+
+const convertRawActionToSummary = (act: any): ChatActionSummary => {
+  return {
+    kind: typeof act?.kind === 'string' ? act.kind : null,
+    name: typeof act?.name === 'string' ? act.name : null,
+    parameters: act?.parameters ?? null,
+    order: typeof act?.order === 'number' ? act.order : null,
+    blocking: typeof act?.blocking === 'boolean' ? act.blocking : null,
+    status: null,
+    success: null,
+    message: typeof act?.message === 'string' ? act.message : null,
+    details: act?.details ?? null,
+  };
+};
+
+const summarizeActions = (actions: ChatActionSummary[] | null | undefined): string | null => {
+  if (!actions || actions.length === 0) return null;
+  const lines: string[] = [];
+  actions.forEach((act, idx) => {
+    const order = typeof act.order === 'number' ? act.order : idx + 1;
+    const labelParts: string[] = [];
+    if (typeof act.kind === 'string') labelParts.push(act.kind);
+    if (typeof act.name === 'string') labelParts.push(act.name);
+    const header = labelParts.length ? labelParts.join('/') : `步骤 ${order}`;
+
+    const params = (act.parameters ?? {}) as Record<string, any>;
+    const hasMsg = typeof act.message === 'string' && act.message.trim().length > 0;
+    const nameDetail = typeof params?.name === 'string' ? params.name : null;
+    const instructionDetail =
+      typeof params?.instruction === 'string' ? params.instruction : null;
+    const detail = hasMsg
+      ? act.message
+      : instructionDetail
+        ? nameDetail
+          ? `${nameDetail}: ${instructionDetail}`
+          : instructionDetail
+        : nameDetail;
+
+    if (detail) {
+      lines.push(`- ${header}: ${detail}`);
+    } else {
+      lines.push(`- ${header}`);
+    }
+  });
+  return lines.length ? lines.join('\n') : null;
+};
+
 const summaryToChatSession = (summary: ChatSessionSummary): ChatSession => {
   const rawName = summary.name?.trim();
   const title =
@@ -227,6 +320,7 @@ const summaryToChatSession = (summary: ChatSessionSummary): ChatSession => {
     is_active: summary.is_active,
     defaultSearchProvider: summary.settings?.default_search_provider ?? null,
     defaultBaseModel: summary.settings?.default_base_model ?? null,
+    defaultLLMProvider: summary.settings?.default_llm_provider ?? null,
     titleSource,
     isUserNamed,
   };
@@ -361,6 +455,7 @@ interface ChatState {
   currentTaskName: string | null;
   defaultSearchProvider: WebSearchProvider | null;
   defaultBaseModel: BaseModelOption | null;
+  defaultLLMProvider: LLMProviderOption | null;
   
   // 输入状态
   inputText: string;
@@ -368,6 +463,7 @@ interface ChatState {
   isProcessing: boolean;
   isUpdatingProvider: boolean;
   isUpdatingBaseModel: boolean;
+  isUpdatingLLMProvider: boolean;
   
   // UI状态
   chatPanelVisible: boolean;
@@ -427,6 +523,7 @@ interface ChatState {
   loadChatHistory: (sessionId: string) => Promise<void>;
   setDefaultSearchProvider: (provider: WebSearchProvider | null) => Promise<void>;
   setDefaultBaseModel: (model: BaseModelOption | null) => Promise<void>;
+  setDefaultLLMProvider: (provider: LLMProviderOption | null) => Promise<void>;
   
   // 文件上传操作
   uploadFile: (file: File) => Promise<UploadedFile>;
@@ -448,11 +545,13 @@ export const useChatStore = create<ChatState>()(
     currentTaskName: null,
     defaultSearchProvider: null,
     defaultBaseModel: null,
+    defaultLLMProvider: null,
     inputText: '',
     isTyping: false,
     isProcessing: false,
     isUpdatingProvider: false,
     isUpdatingBaseModel: false,
+    isUpdatingLLMProvider: false,
     chatPanelVisible: true,
     chatPanelWidth: 400,
     memoryEnabled: true, // 默认启用记忆功能
@@ -468,6 +567,7 @@ export const useChatStore = create<ChatState>()(
       const sessionTaskName = session?.current_task_name ?? null;
       const provider = session?.defaultSearchProvider ?? null;
       const baseModel = session?.defaultBaseModel ?? null;
+      const llmProvider = session?.defaultLLMProvider ?? null;
 
       set({
         currentSession: session,
@@ -479,6 +579,7 @@ export const useChatStore = create<ChatState>()(
         currentTaskName: sessionTaskName,
         defaultSearchProvider: provider,
         defaultBaseModel: baseModel,
+        defaultLLMProvider: llmProvider,
       });
       
       if (session) {
@@ -494,6 +595,7 @@ export const useChatStore = create<ChatState>()(
         ...session,
         defaultSearchProvider: session.defaultSearchProvider ?? null,
         defaultBaseModel: session.defaultBaseModel ?? null,
+        defaultLLMProvider: session.defaultLLMProvider ?? null,
       };
       set((state) => {
         const exists = state.sessions.some((s) => s.id === normalized.id);
@@ -526,6 +628,8 @@ export const useChatStore = create<ChatState>()(
             state.currentSession?.id === sessionId ? null : state.defaultSearchProvider,
           defaultBaseModel:
             state.currentSession?.id === sessionId ? null : state.defaultBaseModel,
+          defaultLLMProvider:
+            state.currentSession?.id === sessionId ? null : state.defaultLLMProvider,
         };
       });
     },
@@ -814,6 +918,7 @@ export const useChatStore = create<ChatState>()(
         memoryEnabled,
         defaultSearchProvider,
         defaultBaseModel,
+        defaultLLMProvider,
         uploadedFiles,
       } = get();
       // 如果有上传的文件，添加到metadata中
@@ -874,6 +979,10 @@ export const useChatStore = create<ChatState>()(
           defaultBaseModel ??
           currentSession?.defaultBaseModel ??
           null;
+        const llmProviderToUse =
+          defaultLLMProvider ??
+          currentSession?.defaultLLMProvider ??
+          null;
         const messages = get().messages;
         const recentMessages = messages.slice(-10).map((msg) => ({
           role: msg.type,
@@ -900,9 +1009,11 @@ export const useChatStore = create<ChatState>()(
           mode: 'assistant' as const,
           default_search_provider: providerToUse ?? undefined,
           default_base_model: baseModelToUse ?? undefined,
+          default_llm_provider: llmProviderToUse ?? undefined,
           metadata: {
             ...(providerToUse ? { default_search_provider: providerToUse } : {}),
             ...(baseModelToUse ? { default_base_model: baseModelToUse } : {}),
+            ...(llmProviderToUse ? { default_llm_provider: llmProviderToUse } : {}),
             ...(attachments ? { attachments } : {}),
             ...(memoryContext ? { memories: memoryContext } : {}),
             ...(metadata ?? {}),
@@ -926,6 +1037,7 @@ export const useChatStore = create<ChatState>()(
         const {
           default_search_provider: _ignoredProvider,
           default_base_model: _ignoredBaseModel,
+          default_llm_provider: _ignoredLLMProvider,
           ...restMetadata
         } = chatRequest.metadata ?? {};
         const streamRequest = {
@@ -940,31 +1052,53 @@ export const useChatStore = create<ChatState>()(
             workflow_id: chatRequest.workflow_id,
             default_search_provider: chatRequest.default_search_provider,
             default_base_model: chatRequest.default_base_model,
+            default_llm_provider: chatRequest.default_llm_provider,
             ...restMetadata,
           },
         };
 
         let streamedContent = '';
+        let lastFlushedContent = '';
+        let flushTimer: number | null = null;
         let finalPayload: ChatResponsePayload | null = null;
         let jobFinalized = false;
+
+        const flushAnalysisText = (force: boolean = false) => {
+          if (!force && streamedContent === lastFlushedContent) {
+            return;
+          }
+          const currentMessages = get().messages;
+          const targetMessage = currentMessages.find((msg) => msg.id === assistantMessageId);
+          if (!targetMessage) {
+            return;
+          }
+          const existingMetadata: ChatResponseMetadata = {
+            ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}),
+          };
+          get().updateMessage(assistantMessageId, {
+            metadata: {
+              ...existingMetadata,
+              analysis_text: streamedContent,
+            },
+          });
+          lastFlushedContent = streamedContent;
+        };
+
+        const scheduleFlush = () => {
+          if (flushTimer !== null) {
+            return;
+          }
+          flushTimer = window.setTimeout(() => {
+            flushTimer = null;
+            flushAnalysisText();
+          }, 60);
+        };
 
         for await (const event of streamChatEvents(streamRequest)) {
           if (event.type === 'delta') {
             streamedContent += event.content ?? '';
-            // 实时记录分析文本，便于同气泡展示
-            const currentMessages = get().messages;
-            const targetMessage = currentMessages.find((msg) => msg.id === assistantMessageId);
-            if (targetMessage) {
-              const existingMetadata: ChatResponseMetadata = {
-                ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}),
-              };
-              get().updateMessage(assistantMessageId, {
-                metadata: {
-                  ...existingMetadata,
-                  analysis_text: streamedContent,
-                },
-              });
-            }
+            // Throttle streaming updates to avoid UI jank.
+            scheduleFlush();
             continue;
           }
           if (event.type === 'job_update') {
@@ -1012,6 +1146,15 @@ export const useChatStore = create<ChatState>()(
             }
             if (typeof existingMetadata.analysis_text === 'string' && existingMetadata.analysis_text.length > 0) {
               updatedMetadata.analysis_text = existingMetadata.analysis_text;
+            }
+            const analysisFromPayload =
+              typeof payload.result?.analysis_text === 'string'
+                ? (payload.result.analysis_text as string)
+                : typeof payload.metadata?.analysis_text === 'string'
+                  ? (payload.metadata.analysis_text as string)
+                  : null;
+            if (analysisFromPayload && analysisFromPayload.trim().length > 0) {
+              updatedMetadata.analysis_text = analysisFromPayload;
             }
             if (payload.job_id && !updatedMetadata.tracking_id) {
               updatedMetadata.tracking_id = payload.job_id;
@@ -1073,18 +1216,56 @@ export const useChatStore = create<ChatState>()(
               updatedMetadata.plan_title ??
               null;
 
-            const finalSummary =
+            const actionsSourceFromSteps =
+              actionsFromSteps.length > 0
+                ? actionsFromSteps
+                : (Array.isArray(updatedMetadata.actions)
+                    ? (updatedMetadata.actions as ChatActionSummary[])
+                    : []);
+            const rawActions =
+              Array.isArray((updatedMetadata as any).raw_actions)
+                ? (updatedMetadata as any).raw_actions.map((act: any) =>
+                    convertRawActionToSummary(act)
+                  )
+                : [];
+            const actionsForSummary =
+              actionsSourceFromSteps.length > 0
+                ? actionsSourceFromSteps
+                : rawActions;
+            const summaryFromActions = summarizeActions(actionsForSummary);
+
+            const finalSummaryCandidate =
               typeof payload.result?.final_summary === 'string'
                 ? (payload.result.final_summary as string)
                 : typeof payload.metadata?.final_summary === 'string'
                   ? (payload.metadata.final_summary as string)
-                  : null;
+                  : typeof payload.result?.response === 'string'
+                    ? (payload.result.response as string)
+                    : typeof payload.result?.message === 'string'
+                      ? (payload.result.message as string)
+                      : typeof payload.result?.text === 'string'
+                        ? (payload.result.text as string)
+                        : summarizeSteps(stepList) ??
+                          summaryFromActions;
+            const analysisCandidate =
+              typeof payload.result?.analysis_text === 'string'
+                ? (payload.result.analysis_text as string)
+                : typeof payload.metadata?.analysis_text === 'string'
+                  ? (payload.metadata.analysis_text as string)
+                  : updatedMetadata.analysis_text ??
+                    (typeof existingMetadata.analysis_text === 'string'
+                      ? existingMetadata.analysis_text
+                      : null);
+
             const fallbackSummary =
               normalizedFinalStatus === 'succeeded' && mergedToolResults.length > 0
                 ? '工具已完成，请查看结果。'
                 : targetMessage.content;
             const contentWithStatus =
-              finalSummary ??
+              (analysisCandidate && analysisCandidate.trim().length > 0
+                ? analysisCandidate
+                : null) ??
+              finalSummaryCandidate ??
               (normalizedFinalStatus === 'failed' && updatedMetadata.errors?.length
                 ? `${targetMessage.content}\n\n⚠️ 后台执行失败：${updatedMetadata.errors.join('; ')}`
                 : fallbackSummary);
@@ -1100,8 +1281,8 @@ export const useChatStore = create<ChatState>()(
                   normalizedFinalStatus === 'succeeded'
                     ? (updatedMetadata as any).plan_message
                     : (updatedMetadata as any).plan_message,
-                final_summary: finalSummary ?? undefined,
-                analysis_text: updatedMetadata.analysis_text,
+                final_summary: finalSummaryCandidate ?? undefined,
+                analysis_text: analysisCandidate ?? updatedMetadata.analysis_text,
               },
             });
 
@@ -1171,6 +1352,11 @@ export const useChatStore = create<ChatState>()(
 
               // unified_stream：总结会写回同一条消息，不需要强制刷新历史
             }
+            if (flushTimer !== null) {
+              window.clearTimeout(flushTimer);
+              flushTimer = null;
+            }
+            flushAnalysisText(true);
             continue;
           }
           if (event.type === 'final') {
@@ -1181,6 +1367,12 @@ export const useChatStore = create<ChatState>()(
             throw new Error(event.message || 'Stream error');
           }
         }
+
+        if (flushTimer !== null) {
+          window.clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        flushAnalysisText(true);
 
         if (!finalPayload && !jobFinalized) {
           throw new Error('No final response received');
@@ -1256,7 +1448,13 @@ export const useChatStore = create<ChatState>()(
           actions,
           action_list: actions,
           status: initialStatus,
-          analysis_text: streamedContent || (result.response ?? ''),
+          analysis_text:
+            result.metadata?.analysis_text !== undefined
+              ? (result.metadata?.analysis_text as string | null)
+              : streamedContent || '',
+          final_summary:
+            (result.metadata?.final_summary as string | undefined) ??
+            (result.response ?? streamedContent ?? ''),
         };
         if (initialStatus === 'pending' || initialStatus === 'running') {
           (assistantMetadata as any).unified_stream = true;
@@ -1272,7 +1470,9 @@ export const useChatStore = create<ChatState>()(
         get().updateMessage(assistantMessageId, {
           content:
             (assistantMetadata as any).unified_stream === true
-              ? ((assistantMetadata as any).plan_message as string)
+              ? (assistantMetadata.analysis_text && assistantMetadata.analysis_text.trim().length > 0
+                ? assistantMetadata.analysis_text
+                : ((assistantMetadata as any).plan_message as string) || assistantMetadata.final_summary || '')
               : (result.response ?? streamedContent),
           metadata: assistantMetadata,
         });
@@ -1573,6 +1773,7 @@ export const useChatStore = create<ChatState>()(
       const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const providerPreference = get().defaultSearchProvider ?? null;
       const baseModelPreference = get().defaultBaseModel ?? null;
+      const llmProviderPreference = get().defaultLLMProvider ?? null;
       autoTitleHistory.delete(sessionId);
       const session: ChatSession = {
         id: sessionId,
@@ -1590,6 +1791,7 @@ export const useChatStore = create<ChatState>()(
         is_active: true,
         defaultSearchProvider: providerPreference,
         defaultBaseModel: baseModelPreference,
+        defaultLLMProvider: llmProviderPreference,
         titleSource: 'local',
         isUserNamed: false,
       };
@@ -1622,6 +1824,7 @@ export const useChatStore = create<ChatState>()(
       if (!session) {
         const providerPreference = get().defaultSearchProvider ?? null;
         const baseModelPreference = get().defaultBaseModel ?? null;
+        const llmProviderPreference = get().defaultLLMProvider ?? null;
         autoTitleHistory.delete(sessionId);
         session = {
           id: sessionId,
@@ -1639,6 +1842,7 @@ export const useChatStore = create<ChatState>()(
           is_active: true,
           defaultSearchProvider: providerPreference,
           defaultBaseModel: baseModelPreference,
+          defaultLLMProvider: llmProviderPreference,
           titleSource: 'local',
           isUserNamed: false,
         };
@@ -1912,6 +2116,76 @@ export const useChatStore = create<ChatState>()(
         sessions: state.sessions.map((session) =>
           session.id === sessionKey
             ? { ...session, defaultBaseModel: normalized }
+            : session
+        ),
+      }));
+    },
+
+    setDefaultLLMProvider: async (provider) => {
+      const normalized: LLMProviderOption | null = provider ?? null;
+      const prevProvider = get().defaultLLMProvider ?? null;
+      if (normalized === prevProvider) {
+        return;
+      }
+
+      const currentSession = get().currentSession;
+      const sessionKey = currentSession?.session_id ?? currentSession?.id ?? null;
+
+      set((state) => ({
+        defaultLLMProvider: normalized,
+        isUpdatingLLMProvider: currentSession ? true : false,
+        currentSession: currentSession
+          ? { ...currentSession, defaultLLMProvider: normalized }
+          : currentSession,
+        sessions: currentSession
+          ? state.sessions.map((session) =>
+              session.id === sessionKey
+                ? { ...session, defaultLLMProvider: normalized }
+                : session
+            )
+          : state.sessions,
+      }));
+
+      if (!currentSession) {
+        set({ isUpdatingLLMProvider: false });
+        return;
+      }
+
+      try {
+        if (!sessionKey) {
+          set({ isUpdatingLLMProvider: false });
+          return;
+        }
+
+        await chatApi.updateSession(sessionKey, {
+          settings: { default_llm_provider: normalized },
+        });
+      } catch (error) {
+        console.error('更新默认LLM提供商失败:', error);
+        set((state) => ({
+          defaultLLMProvider: prevProvider,
+          isUpdatingLLMProvider: false,
+          currentSession: state.currentSession
+            ? { ...state.currentSession, defaultLLMProvider: prevProvider }
+            : state.currentSession,
+          sessions: state.sessions.map((session) =>
+            session.id === sessionKey
+              ? { ...session, defaultLLMProvider: prevProvider }
+              : session
+          ),
+        }));
+        throw error;
+      }
+
+      set((state) => ({
+        isUpdatingLLMProvider: false,
+        defaultLLMProvider: normalized,
+        currentSession: state.currentSession
+          ? { ...state.currentSession, defaultLLMProvider: normalized }
+          : state.currentSession,
+        sessions: state.sessions.map((session) =>
+          session.id === sessionKey
+            ? { ...session, defaultLLMProvider: normalized }
             : session
         ),
       }));

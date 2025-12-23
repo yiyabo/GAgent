@@ -40,14 +40,19 @@ const ChatPanel: React.FC = () => {
     defaultBaseModel,
     setDefaultBaseModel,
     isUpdatingBaseModel,
+    defaultLLMProvider,
+    setDefaultLLMProvider,
+    isUpdatingLLMProvider,
   } = useChatStore();
 
   const { selectedTask, currentPlan } = useTasksStore();
 
   // 自动滚动到底部
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    messagesEndRef.current?.scrollIntoView({
+      behavior: isProcessing ? 'auto' : 'smooth',
+    });
+  }, [messages, isProcessing]);
 
   // 处理发送消息
   const handleSendMessage = async () => {
@@ -104,11 +109,22 @@ const ChatPanel: React.FC = () => {
   const handleBaseModelChange = async (value: string | undefined) => {
     try {
       await setDefaultBaseModel(
-        (value as 'qwen3-max' | 'glm-4.6' | 'kimi-k2-thinking') ?? null
+        (value as 'qwen3-max' | 'glm-4.6' | 'kimi-k2-thinking' | 'gpt-5.2-2025-12-11') ?? null
       );
     } catch (error) {
       console.error('切换基座模型失败:', error);
       message.error('切换基座模型失败，请稍后重试。');
+    }
+  };
+
+  const handleLLMProviderChange = async (value: string | undefined) => {
+    try {
+      await setDefaultLLMProvider(
+        (value as 'glm' | 'qwen' | 'openai' | 'perplexity') ?? null
+      );
+    } catch (error) {
+      console.error('切换LLM提供商失败:', error);
+      message.error('切换LLM提供商失败，请稍后重试。');
     }
   };
 
@@ -120,11 +136,20 @@ const ChatPanel: React.FC = () => {
 
   const providerValue = defaultSearchProvider ?? undefined;
   const baseModelValue = defaultBaseModel ?? undefined;
+  const llmProviderValue = defaultLLMProvider ?? undefined;
+
+  const llmProviderOptions = [
+    { label: 'GLM', value: 'glm' },
+    { label: 'Qwen', value: 'qwen' },
+    { label: 'OpenAI', value: 'openai' },
+    { label: 'Perplexity', value: 'perplexity' },
+  ];
 
   const baseModelOptions = [
     { label: 'Qwen3-Max', value: 'qwen3-max' },
     { label: 'GLM-4.6', value: 'glm-4.6' },
     { label: 'Kimi K2 Thinking', value: 'kimi-k2-thinking' },
+    { label: 'GPT-5.2', value: 'gpt-5.2-2025-12-11' },
   ];
 
   if (!chatPanelVisible) {
@@ -156,6 +181,15 @@ const ChatPanel: React.FC = () => {
             style={{ width: 140 }}
             placeholder="选择搜索来源"
             disabled={isUpdatingProvider}
+          />
+          <Select
+            size="small"
+            value={llmProviderValue}
+            onChange={handleLLMProviderChange}
+            options={llmProviderOptions}
+            style={{ width: 120 }}
+            placeholder="LLM 提供商"
+            disabled={isUpdatingLLMProvider}
           />
           <Select
             size="small"

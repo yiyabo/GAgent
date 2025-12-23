@@ -41,21 +41,32 @@ class LLMClient(LLMProvider):
         # 确定使用的提供商
         self.provider = provider or os.getenv("LLM_PROVIDER") or settings.llm_provider or "glm"
         
+        provider_name = self.provider.lower()
+
         # 根据提供商配置API参数
-        if self.provider.lower() == "perplexity":
+        if provider_name == "perplexity":
             env_api_key = os.getenv("PERPLEXITY_API_KEY")
             env_url = os.getenv("PERPLEXITY_API_URL")
             env_model = os.getenv("PERPLEXITY_MODEL")
             self.api_key = api_key or env_api_key or settings.perplexity_api_key
             self.url = url or env_url or settings.perplexity_api_url
             self.model = model or env_model or settings.perplexity_model
-        elif self.provider.lower() == "qwen":
+        elif provider_name == "qwen":
             env_api_key = os.getenv("QWEN_API_KEY")
             env_url = os.getenv("QWEN_API_URL")
             env_model = os.getenv("QWEN_MODEL")
             self.api_key = api_key or env_api_key or settings.qwen_api_key
             self.url = url or env_url or settings.qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
             self.model = model or env_model or settings.qwen_model or "qwen-turbo"
+        elif provider_name == "openai":
+            env_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API")
+            env_url = os.getenv("OPENAI_URL")
+            env_model = os.getenv("OPENAI_MODEL")
+            self.api_key = api_key or env_api_key or settings.openai_api_key
+            self.url = url or env_url or "https://api.openai.com/v1/chat/completions"
+            self.model = model or env_model or "gpt-4o-mini"
+            self.openai_project = os.getenv("OPENAI_PROJECT")
+            self.openai_org = os.getenv("OPENAI_ORG") or os.getenv("OPENAI_ORGANIZATION")
         else:  # 默认GLM
             env_api_key = os.getenv("GLM_API_KEY")
             env_url = os.getenv("GLM_API_URL")
@@ -95,10 +106,7 @@ class LLMClient(LLMProvider):
             "model": model or self.model,
             "messages": [{"role": "user", "content": prompt}],
         }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
+        headers = self._build_headers()
         data = json.dumps(payload).encode("utf-8")
         req = request.Request(self.url, data=data, headers=headers, method="POST")
 
@@ -154,10 +162,7 @@ class LLMClient(LLMProvider):
             "messages": [{"role": "user", "content": prompt}],
             "stream": True,
         }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
+        headers = self._build_headers()
 
         timeout = httpx.Timeout(self.timeout)
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -202,6 +207,20 @@ class LLMClient(LLMProvider):
         if isinstance(data, str):
             return data
         return None
+
+    def _build_headers(self) -> Dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        if self.provider.lower() == "openai":
+            project = getattr(self, "openai_project", None)
+            org = getattr(self, "openai_org", None)
+            if project:
+                headers["OpenAI-Project"] = project
+            if org:
+                headers["OpenAI-Organization"] = org
+        return headers
 
     def ping(self) -> bool:
         if self.mock:
