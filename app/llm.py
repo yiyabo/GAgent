@@ -2,8 +2,10 @@ import json
 import os
 import random
 import time
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 from urllib import error, request
+
+import httpx
 
 from .interfaces import LLMProvider
 from .services.foundation.settings import get_settings
@@ -132,6 +134,74 @@ class LLMClient(LLMProvider):
                     last_err = e
                     continue
                 raise RuntimeError(f"LLM request failed: {e}")
+
+    async def stream_chat_async(
+        self,
+        prompt: str,
+        force_real: bool = False,
+        model: Optional[str] = None,
+        **_: Any,
+    ) -> AsyncIterator[str]:
+        if self.mock and not force_real:
+            yield "This is a mock completion."
+            return
+
+        if not self.api_key:
+            raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
+
+        payload = {
+            "model": model or self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+        timeout = httpx.Timeout(self.timeout)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST", self.url, headers=headers, json=payload
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if not data:
+                        continue
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = self._extract_stream_delta(obj)
+                    if delta:
+                        yield delta
+
+    def _extract_stream_delta(self, payload: Dict[str, Any]) -> Optional[str]:
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            choice = choices[0] if isinstance(choices[0], dict) else None
+            if choice:
+                delta = choice.get("delta")
+                if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                    return delta.get("content")
+                message = choice.get("message")
+                if isinstance(message, dict) and isinstance(message.get("content"), str):
+                    return message.get("content")
+                if isinstance(choice.get("text"), str):
+                    return choice.get("text")
+                if isinstance(choice.get("content"), str):
+                    return choice.get("content")
+        data = payload.get("data")
+        if isinstance(data, str):
+            return data
+        return None
 
     def ping(self) -> bool:
         if self.mock:

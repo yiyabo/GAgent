@@ -53,25 +53,6 @@ const parseDate = (value?: string | null): Date | null => {
   return new Date(timestamp);
 };
 
-const hasToolSummaryForTracking = (
-  messages: ChatMessage[],
-  trackingId: string
-): boolean => {
-  return messages.some((msg) => {
-    if (msg.type !== 'assistant') {
-      return false;
-    }
-    const metadata = msg.metadata as Record<string, any> | undefined;
-    if (!metadata) {
-      return false;
-    }
-    if (metadata.tracking_id !== trackingId) {
-      return false;
-    }
-    return metadata.type === 'tool_summary';
-  });
-};
-
 const normalizeActionStatus = (status?: string | null): ChatActionStatus | null => {
   if (!status) {
     return null;
@@ -93,6 +74,124 @@ const parseJobStreamPayload = (raw: MessageEvent<any>): Record<string, any> | nu
     console.warn('无法解析动作 SSE 消息:', error);
     return null;
   }
+};
+
+type ChatStreamEvent =
+  | { type: 'start' }
+  | { type: 'delta'; content: string }
+  | { type: 'final'; payload: ChatResponsePayload }
+  | { type: 'job_update'; payload: Record<string, any> }
+  | { type: 'error'; message?: string; error_type?: string };
+
+const parseChatStreamEvent = (raw: string): ChatStreamEvent | null => {
+  const lines = raw.split('\n');
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+  if (dataLines.length === 0) {
+    return null;
+  }
+  const payload = dataLines.join('\n');
+  try {
+    return JSON.parse(payload) as ChatStreamEvent;
+  } catch (error) {
+    console.warn('无法解析 SSE payload:', error);
+    return { type: 'error', message: 'SSE payload parse failed' };
+  }
+};
+
+const streamChatEvents = async function* (
+  request: Record<string, any>
+): AsyncGenerator<ChatStreamEvent> {
+  const response = await fetch(`${ENV.API_BASE_URL}/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  if (!response.body) {
+    throw new Error('Empty stream body');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary !== -1) {
+      const rawEvent = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const event = parseChatStreamEvent(rawEvent);
+      if (event) {
+        yield event;
+      }
+      boundary = buffer.indexOf('\n\n');
+    }
+  }
+
+  if (buffer.trim().length > 0) {
+    const event = parseChatStreamEvent(buffer);
+    if (event) {
+      yield event;
+    }
+  }
+};
+
+const mapJobStatusToChatStatus = (value?: string | null): ChatActionStatus | null => {
+  if (!value) return null;
+  if (value === 'completed') return 'completed';
+  if (value === 'queued') return 'pending';
+  if (value === 'running') return 'running';
+  if (value === 'succeeded') return 'completed';
+  if (value === 'failed') return 'failed';
+  return null;
+};
+
+const buildActionsFromSteps = (steps: Array<Record<string, any>>): ChatActionSummary[] => {
+  if (!Array.isArray(steps)) {
+    return [];
+  }
+  return steps.map((step) => {
+    const action = step?.action ?? {};
+    const success = step?.success;
+    const status =
+      success === true ? 'completed' : success === false ? 'failed' : null;
+    return {
+      kind: action?.kind ?? null,
+      name: action?.name ?? null,
+      parameters: action?.parameters ?? null,
+      order: action?.order ?? null,
+      blocking: action?.blocking ?? null,
+      status,
+      success: success ?? null,
+      message: step?.message ?? null,
+      details: step?.details ?? null,
+    };
+  });
+};
+
+const formatToolPlanPreface = (actions: ChatActionSummary[]): string => {
+  const toolActions = (actions ?? []).filter((a) => a?.kind === 'tool_operation');
+  if (!toolActions.length) {
+    return '我将先调用工具获取信息，然后给出基于结果的回答。';
+  }
+  const names = toolActions
+    .map((a) => (typeof a?.name === 'string' ? a.name : null))
+    .filter(Boolean) as string[];
+  const uniqueNames = Array.from(new Set(names));
+  const label = uniqueNames.slice(0, 3).join(', ');
+  const suffix = uniqueNames.length > 3 ? ` 等 ${uniqueNames.length} 个工具` : '';
+  return `我将先调用工具（${label}${suffix}）获取最新信息，然后给出基于结果的回答。`;
 };
 
 const summaryToChatSession = (summary: ChatSessionSummary): ChatSession => {
@@ -167,23 +266,29 @@ const derivePlanContextFromMessages = (
   return { planId, planTitle };
 };
 
-const refreshHistoryUntilToolSummary = async (
-  sessionId: string,
-  trackingId: string,
-  loadHistory: (sessionId: string) => Promise<void>,
-  getMessages: () => ChatMessage[],
-  attempts: number = 6,
-  delayMs: number = 1200
-): Promise<void> => {
-  let currentDelay = delayMs;
-  for (let idx = 0; idx < attempts; idx += 1) {
-    await loadHistory(sessionId);
-    if (hasToolSummaryForTracking(getMessages(), trackingId)) {
-      return;
+const buildToolResultsCache = (
+  messages: ChatMessage[]
+): Map<string, ToolResultPayload[]> => {
+  const cache = new Map<string, ToolResultPayload[]>();
+  for (const msg of messages) {
+    if (msg.type !== 'assistant') {
+      continue;
     }
-    await new Promise((resolve) => setTimeout(resolve, currentDelay));
-    currentDelay = Math.min(currentDelay * 1.6, 6000);
+    const metadata = msg.metadata as Record<string, any> | undefined;
+    if (!metadata) {
+      continue;
+    }
+    const trackingId =
+      typeof metadata.tracking_id === 'string' ? metadata.tracking_id : null;
+    if (!trackingId) {
+      continue;
+    }
+    const toolResults = collectToolResultsFromMetadata(metadata.tool_results);
+    if (toolResults.length > 0) {
+      cache.set(trackingId, toolResults);
+    }
   }
+  return cache;
 };
 
 const waitForActionCompletionViaStream = async (
@@ -196,7 +301,7 @@ const waitForActionCompletionViaStream = async (
 
   return new Promise((resolve) => {
     let finished = false;
-    const streamUrl = `${ENV.API_BASE_URL}/jobs/${trackingId}/stream`;
+    const streamUrl = `${ENV.API_BASE_URL}/tasks/decompose/jobs/${trackingId}/stream`;
     const source = new EventSource(streamUrl);
 
     const finalize = async () => {
@@ -757,6 +862,9 @@ export const useChatStore = create<ChatState>()(
         }
       }
 
+      const assistantMessageId = `msg_${Date.now()}_assistant`;
+      let assistantMessageAdded = false;
+
       try {
         const providerToUse =
           defaultSearchProvider ??
@@ -797,13 +905,295 @@ export const useChatStore = create<ChatState>()(
             ...(baseModelToUse ? { default_base_model: baseModelToUse } : {}),
             ...(attachments ? { attachments } : {}),
             ...(memoryContext ? { memories: memoryContext } : {}),
+            ...(metadata ?? {}),
           },
         };
 
-        const result: ChatResponsePayload = await chatApi.sendMessage(
-          content,  // 发送原始内容，不拼接记忆
-          chatRequest
-        );
+        const assistantMessage: ChatMessage = {
+          id: assistantMessageId,
+          type: 'assistant',
+          content: '',
+          timestamp: new Date(),
+          metadata: {
+            status: 'pending',
+            unified_stream: true,
+            plan_message: null,
+          },
+        };
+        get().addMessage(assistantMessage);
+        assistantMessageAdded = true;
+
+        const {
+          default_search_provider: _ignoredProvider,
+          default_base_model: _ignoredBaseModel,
+          ...restMetadata
+        } = chatRequest.metadata ?? {};
+        const streamRequest = {
+          message: content,
+          mode: chatRequest.mode,
+          history: chatRequest.history,
+          session_id: chatRequest.session_id,
+          context: {
+            plan_id: chatRequest.plan_id,
+            task_id: chatRequest.task_id,
+            plan_title: chatRequest.plan_title,
+            workflow_id: chatRequest.workflow_id,
+            default_search_provider: chatRequest.default_search_provider,
+            default_base_model: chatRequest.default_base_model,
+            ...restMetadata,
+          },
+        };
+
+        let streamedContent = '';
+        let finalPayload: ChatResponsePayload | null = null;
+        let jobFinalized = false;
+
+        for await (const event of streamChatEvents(streamRequest)) {
+          if (event.type === 'delta') {
+            streamedContent += event.content ?? '';
+            // 实时记录分析文本，便于同气泡展示
+            const currentMessages = get().messages;
+            const targetMessage = currentMessages.find((msg) => msg.id === assistantMessageId);
+            if (targetMessage) {
+              const existingMetadata: ChatResponseMetadata = {
+                ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}),
+              };
+              get().updateMessage(assistantMessageId, {
+                metadata: {
+                  ...existingMetadata,
+                  analysis_text: streamedContent,
+                },
+              });
+            }
+            continue;
+          }
+          if (event.type === 'job_update') {
+            const payload = event.payload ?? {};
+            const currentMessages = get().messages;
+            const targetMessage = currentMessages.find((msg) => msg.id === assistantMessageId);
+            if (!targetMessage) {
+              continue;
+            }
+
+            const existingMetadata: ChatResponseMetadata = {
+              ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}),
+            };
+            const jobStatus = mapJobStatusToChatStatus(payload.status);
+            const stepList = Array.isArray(payload.result?.steps)
+              ? (payload.result?.steps as Array<Record<string, any>>)
+              : [];
+            const actionsFromSteps = buildActionsFromSteps(stepList);
+
+            const toolResultsFromExisting = collectToolResultsFromMetadata(
+              existingMetadata.tool_results
+            );
+            const toolResultsFromResult = collectToolResultsFromMetadata(
+              payload.result?.tool_results
+            );
+            const toolResultsFromSteps = collectToolResultsFromSteps(stepList);
+            const mergedToolResults = mergeToolResults(
+              toolResultsFromExisting,
+              mergeToolResults(toolResultsFromResult, toolResultsFromSteps)
+            );
+
+            const updatedMetadata: ChatResponseMetadata = {
+              ...existingMetadata,
+              status: jobStatus ?? existingMetadata.status,
+            };
+            (updatedMetadata as any).unified_stream = true;
+            const existingPlanMessage = (updatedMetadata as any).plan_message;
+            if (!existingPlanMessage || existingPlanMessage === '') {
+              if (actionsFromSteps.length > 0) {
+                const planPreface = formatToolPlanPreface(actionsFromSteps);
+                (updatedMetadata as any).plan_message = planPreface;
+              } else {
+                (updatedMetadata as any).plan_message = targetMessage.content || null;
+              }
+            }
+            if (typeof existingMetadata.analysis_text === 'string' && existingMetadata.analysis_text.length > 0) {
+              updatedMetadata.analysis_text = existingMetadata.analysis_text;
+            }
+            if (payload.job_id && !updatedMetadata.tracking_id) {
+              updatedMetadata.tracking_id = payload.job_id;
+            }
+            if (actionsFromSteps.length > 0) {
+              updatedMetadata.actions = actionsFromSteps;
+              updatedMetadata.action_list = actionsFromSteps;
+            }
+            if (mergedToolResults.length > 0) {
+              updatedMetadata.tool_results = mergedToolResults;
+            } else if ('tool_results' in updatedMetadata) {
+              delete updatedMetadata.tool_results;
+            }
+            if (payload.error) {
+              updatedMetadata.errors = [...(updatedMetadata.errors ?? []), payload.error];
+            }
+
+            get().updateMessage(assistantMessageId, {
+              metadata: updatedMetadata,
+            });
+
+            if (jobFinalized) {
+              continue;
+            }
+            if (payload.status !== 'succeeded' && payload.status !== 'failed' && payload.status !== 'completed') {
+              continue;
+            }
+            jobFinalized = true;
+
+            const normalizedFinalStatus =
+              payload.status === 'completed' ? 'succeeded' : payload.status;
+            const finalActions = actionsFromSteps.length > 0
+              ? actionsFromSteps
+              : (updatedMetadata.actions ?? []);
+
+            const finalPlanIdCandidate =
+              coercePlanId(payload.result?.bound_plan_id) ??
+              extractPlanIdFromActions(finalActions) ??
+              updatedMetadata.plan_id ??
+              null;
+
+            let planTitleFromSteps: string | null | undefined;
+            for (const step of stepList) {
+              const details = step?.details;
+              if (!details || typeof details !== 'object') {
+                continue;
+              }
+              const candidate =
+                coercePlanTitle((details as any).title) ??
+                coercePlanTitle((details as any).plan_title);
+              if (candidate !== undefined) {
+                planTitleFromSteps = candidate ?? null;
+                break;
+              }
+            }
+            const finalPlanTitle =
+              planTitleFromSteps ??
+              coercePlanTitle(payload.result?.plan_title) ??
+              updatedMetadata.plan_title ??
+              null;
+
+            const finalSummary =
+              typeof payload.result?.final_summary === 'string'
+                ? (payload.result.final_summary as string)
+                : typeof payload.metadata?.final_summary === 'string'
+                  ? (payload.metadata.final_summary as string)
+                  : null;
+            const fallbackSummary =
+              normalizedFinalStatus === 'succeeded' && mergedToolResults.length > 0
+                ? '工具已完成，请查看结果。'
+                : targetMessage.content;
+            const contentWithStatus =
+              finalSummary ??
+              (normalizedFinalStatus === 'failed' && updatedMetadata.errors?.length
+                ? `${targetMessage.content}\n\n⚠️ 后台执行失败：${updatedMetadata.errors.join('; ')}`
+                : fallbackSummary);
+
+            get().updateMessage(assistantMessageId, {
+              content: contentWithStatus,
+              metadata: {
+                ...updatedMetadata,
+                status: normalizedFinalStatus === 'succeeded' ? 'completed' : 'failed',
+                plan_id: finalPlanIdCandidate ?? null,
+                plan_title: finalPlanTitle ?? null,
+                plan_message:
+                  normalizedFinalStatus === 'succeeded'
+                    ? (updatedMetadata as any).plan_message
+                    : (updatedMetadata as any).plan_message,
+                final_summary: finalSummary ?? undefined,
+                analysis_text: updatedMetadata.analysis_text,
+              },
+            });
+
+            set((state) => {
+              const planIdValue = finalPlanIdCandidate ?? state.currentPlanId ?? null;
+              const planTitleValue = finalPlanTitle ?? state.currentPlanTitle ?? null;
+              const updatedSession = state.currentSession
+                ? {
+                    ...state.currentSession,
+                    plan_id: planIdValue,
+                    plan_title: planTitleValue,
+                  }
+                : null;
+              const updatedSessions = updatedSession
+                ? state.sessions.map((session) =>
+                    session.id === updatedSession.id ? updatedSession : session
+                  )
+                : state.sessions;
+
+              return {
+                currentPlanId: planIdValue,
+                currentPlanTitle: planTitleValue,
+                currentSession: updatedSession,
+                sessions: updatedSessions,
+              };
+            });
+
+            const sessionAfter = get().currentSession;
+            const asyncEvents = derivePlanSyncEventsFromActions(finalActions, {
+              fallbackPlanId: finalPlanIdCandidate ?? sessionAfter?.plan_id ?? null,
+              fallbackPlanTitle: finalPlanTitle ?? sessionAfter?.plan_title ?? null,
+            });
+            const eventsToDispatch =
+              asyncEvents.length > 0
+                ? asyncEvents
+                : finalPlanIdCandidate != null
+                ? [
+                    {
+                      type: 'task_changed',
+                      plan_id: finalPlanIdCandidate,
+                      plan_title: finalPlanTitle ?? sessionAfter?.plan_title ?? null,
+                    } as PlanSyncEventDetail,
+                  ]
+                : [];
+
+            if (eventsToDispatch.length > 0) {
+              for (const eventDetail of eventsToDispatch) {
+                dispatchPlanSyncEvent(eventDetail, {
+                  trackingId: updatedMetadata.tracking_id ?? null,
+                  source: 'chat.stream',
+                  status: normalizedFinalStatus,
+                  sessionId: sessionAfter?.session_id ?? null,
+                });
+              }
+            }
+
+            if (sessionAfter) {
+              try {
+                await chatApi.updateSession(sessionAfter.session_id ?? sessionAfter.id, {
+                  plan_id: finalPlanIdCandidate ?? null,
+                  plan_title: finalPlanTitle ?? null,
+                  is_active: normalizedFinalStatus === 'succeeded',
+                });
+              } catch (patchError) {
+                console.warn('同步会话信息失败:', patchError);
+              }
+
+              // unified_stream：总结会写回同一条消息，不需要强制刷新历史
+            }
+            continue;
+          }
+          if (event.type === 'final') {
+            finalPayload = event.payload;
+            continue;
+          }
+          if (event.type === 'error') {
+            throw new Error(event.message || 'Stream error');
+          }
+        }
+
+        if (!finalPayload && !jobFinalized) {
+          throw new Error('No final response received');
+        }
+        if (jobFinalized) {
+          set({ isProcessing: false });
+          return;
+        }
+        if (!finalPayload) {
+          throw new Error('No final response received');
+        }
+
+        const result: ChatResponsePayload = finalPayload;
         const stateSnapshot = get();
         const actions = (result.actions ?? []) as ChatActionSummary[];
 
@@ -857,7 +1247,6 @@ export const useChatStore = create<ChatState>()(
           ? (result.metadata?.status as ChatActionStatus)
           : (actions.length > 0 ? 'pending' : 'completed');
 
-        const assistantMessageId = `msg_${Date.now()}_assistant`;
         const assistantMetadata: ChatResponseMetadata = {
           ...(result.metadata ?? {}),
           plan_id: resolvedPlanId ?? null,
@@ -867,22 +1256,26 @@ export const useChatStore = create<ChatState>()(
           actions,
           action_list: actions,
           status: initialStatus,
+          analysis_text: streamedContent || (result.response ?? ''),
         };
+        if (initialStatus === 'pending' || initialStatus === 'running') {
+          (assistantMetadata as any).unified_stream = true;
+          const planPreface = formatToolPlanPreface(actions);
+          (assistantMetadata as any).plan_message = planPreface;
+        }
 
         const initialToolResults = collectToolResultsFromMetadata(result.metadata?.tool_results);
         if (initialToolResults.length > 0) {
           assistantMetadata.tool_results = initialToolResults;
         }
 
-        const assistantMessage: ChatMessage = {
-          id: assistantMessageId,
-          type: 'assistant',
-          content: result.response,
-          timestamp: new Date(),
+        get().updateMessage(assistantMessageId, {
+          content:
+            (assistantMetadata as any).unified_stream === true
+              ? ((assistantMetadata as any).plan_message as string)
+              : (result.response ?? streamedContent),
           metadata: assistantMetadata,
-        };
-
-        get().addMessage(assistantMessage);
+        });
         set({ isProcessing: false });
 
         set((state) => {
@@ -1024,231 +1417,28 @@ export const useChatStore = create<ChatState>()(
           })();
         }
 
-        const waitForActionCompletion = async (
-          trackingId: string
-        ): Promise<ActionStatusResponse | null> => {
-          const timeoutMs = 120_000;
-          const intervalMs = 2_500;
-          const start = Date.now();
-          let lastStatus: ActionStatusResponse | null = null;
-
-          const streamStatus = await waitForActionCompletionViaStream(trackingId, timeoutMs);
-          if (streamStatus) {
-            return streamStatus;
-          }
-          while (Date.now() - start < timeoutMs) {
-            try {
-              const status = await chatApi.getActionStatus(trackingId);
-              lastStatus = status;
-              if (status.status === 'completed' || status.status === 'failed') {
-                return status;
-              }
-            } catch (pollError) {
-              console.warn('轮询动作状态失败:', pollError);
-              break;
-            }
-            await new Promise((resolve) => setTimeout(resolve, intervalMs));
-          }
-          return lastStatus;
-        };
-
-        if (trackingId) {
-          void (async () => {
-            const status = await waitForActionCompletion(trackingId);
-            const currentMessages = get().messages;
-            const messageAtUpdate =
-              currentMessages.find((msg) => msg.id === assistantMessageId) ??
-              assistantMessage;
-            const existingMetadata: ChatResponseMetadata = {
-              ...((messageAtUpdate.metadata as ChatResponseMetadata | undefined) ?? assistantMetadata ?? {}),
-            };
-
-            if (!status || (status.status !== 'completed' && status.status !== 'failed')) {
-              const timeoutErrors = [
-                ...(existingMetadata.errors ?? []),
-                '后台动作在 120 秒内未完成，请稍后在计划视图刷新。',
-              ];
-              get().updateMessage(assistantMessageId, {
-                metadata: {
-                  ...existingMetadata,
-                  status: 'failed',
-                  errors: timeoutErrors,
-                },
-              });
-              return;
-            }
-
-            const finalActions = status.actions ?? existingMetadata.actions ?? [];
-            const finalPlanIdCandidate =
-              coercePlanId(status.plan_id) ??
-              coercePlanId(status.result?.bound_plan_id) ??
-              extractPlanIdFromActions(finalActions) ??
-              resolvedPlanId ??
-              null;
-
-            const stepList = Array.isArray(status.result?.steps)
-              ? (status.result?.steps as Array<Record<string, any>>)
-              : [];
-            let planTitleFromSteps: string | null | undefined;
-            for (const step of stepList) {
-              const details = step?.details;
-              if (!details || typeof details !== 'object') {
-                continue;
-              }
-              const candidate =
-                coercePlanTitle((details as any).title) ??
-                coercePlanTitle((details as any).plan_title);
-              if (candidate !== undefined) {
-                planTitleFromSteps = candidate ?? null;
-                break;
-              }
-            }
-            const finalPlanTitle =
-              planTitleFromSteps ??
-              coercePlanTitle(status.result?.plan_title) ??
-              resolvedPlanTitle ??
-              null;
-
-            const finalErrors = status.errors ?? [];
-            const updatedMetadata: ChatResponseMetadata = {
-              ...existingMetadata,
-              status: status.status,
-              plan_id: finalPlanIdCandidate ?? null,
-              plan_title: finalPlanTitle ?? null,
-              tracking_id: trackingId,
-              actions: finalActions,
-              action_list: finalActions,
-              errors: finalErrors,
-              result: status.result,
-              finished_at: status.finished_at ?? existingMetadata.finished_at,
-            };
-
-            const toolResultsFromExisting = collectToolResultsFromMetadata(
-              existingMetadata.tool_results
-            );
-            const toolResultsFromResult = collectToolResultsFromMetadata(
-              status.result?.tool_results
-            );
-            const toolResultsFromSteps = collectToolResultsFromSteps(stepList);
-            const toolResultsFromActions = collectToolResultsFromActions(finalActions);
-            const mergedToolResults = mergeToolResults(
-              mergeToolResults(toolResultsFromExisting, toolResultsFromResult),
-              mergeToolResults(toolResultsFromSteps, toolResultsFromActions)
-            );
-            if (mergedToolResults.length > 0) {
-              updatedMetadata.tool_results = mergedToolResults;
-            } else {
-              delete updatedMetadata.tool_results;
-            }
-
-            const contentWithStatus =
-              status.status === 'failed' && finalErrors.length
-                ? `${messageAtUpdate.content}\n\n⚠️ 后台执行失败：${finalErrors.join('; ')}`
-                : messageAtUpdate.content;
-
-            get().updateMessage(assistantMessageId, {
-              content: contentWithStatus,
-              metadata: updatedMetadata,
-            });
-
-            set((state) => {
-              const planIdValue = finalPlanIdCandidate ?? state.currentPlanId ?? null;
-              const planTitleValue = finalPlanTitle ?? state.currentPlanTitle ?? null;
-              const updatedSession = state.currentSession
-                ? {
-                    ...state.currentSession,
-                    plan_id: planIdValue,
-                    plan_title: planTitleValue,
-                  }
-                : null;
-              const updatedSessions = updatedSession
-                ? state.sessions.map((session) =>
-                    session.id === updatedSession.id ? updatedSession : session
-                  )
-                : state.sessions;
-
-              return {
-                currentPlanId: planIdValue,
-                currentPlanTitle: planTitleValue,
-                currentSession: updatedSession,
-                sessions: updatedSessions,
-              };
-            });
-
-            const sessionAfter = get().currentSession ?? stateSnapshot.currentSession ?? null;
-
-            const asyncEvents = derivePlanSyncEventsFromActions(finalActions, {
-              fallbackPlanId: finalPlanIdCandidate ?? sessionAfter?.plan_id ?? null,
-              fallbackPlanTitle: finalPlanTitle ?? sessionAfter?.plan_title ?? null,
-            });
-
-            const eventsToDispatch =
-              asyncEvents.length > 0
-                ? asyncEvents
-                : finalPlanIdCandidate != null
-                ? [
-                    {
-                      type: 'task_changed',
-                      plan_id: finalPlanIdCandidate,
-                      plan_title: finalPlanTitle ?? sessionAfter?.plan_title ?? null,
-                    } as PlanSyncEventDetail,
-                  ]
-                : [];
-
-            if (eventsToDispatch.length > 0) {
-              for (const eventDetail of eventsToDispatch) {
-                dispatchPlanSyncEvent(eventDetail, {
-                  trackingId,
-                  source: 'chat.async',
-                  status: status.status,
-                  sessionId:
-                    assistantMetadata.session_id ??
-                    sessionAfter?.session_id ??
-                    currentSession?.session_id ??
-                    null,
-                });
-              }
-            }
-
-            if (sessionAfter) {
-              try {
-                await chatApi.updateSession(sessionAfter.session_id ?? sessionAfter.id, {
-                  plan_id: finalPlanIdCandidate ?? null,
-                  plan_title: finalPlanTitle ?? null,
-                  is_active: status.status === 'completed',
-                });
-              } catch (patchError) {
-                console.warn('同步会话信息失败:', patchError);
-              }
-              
-              // 刷新聊天历史以显示工具执行后的总结消息
-              if (status.status === 'completed' && trackingId) {
-                try {
-                  await refreshHistoryUntilToolSummary(
-                    sessionAfter.session_id ?? sessionAfter.id,
-                    trackingId,
-                    get().loadChatHistory,
-                    () => get().messages
-                  );
-                  console.log('✅ 工具执行完成，已尝试刷新聊天历史');
-                } catch (refreshError) {
-                  console.warn('刷新聊天历史失败:', refreshError);
-                }
-              }
-            }
-          })();
-        }
       } catch (error) {
         console.error('Failed to send message:', error);
         set({ isProcessing: false });
-        const errorMessage: ChatMessage = {
-          id: `msg_${Date.now()}_assistant`,
-          type: 'assistant',
-          content:
-            '抱歉，我暂时无法处理你的请求。可能的原因：\n\n1. 后端服务未完全启动\n2. LLM API 未配置\n3. 网络连接问题\n\n请检查后端服务状态，或稍后重试。',
-          timestamp: new Date(),
-        };
-        get().addMessage(errorMessage);
+        const errorContent =
+          '抱歉，我暂时无法处理你的请求。可能的原因：\n\n1. 后端服务未完全启动\n2. LLM API 未配置\n3. 网络连接问题\n\n请检查后端服务状态，或稍后重试。';
+        if (assistantMessageAdded) {
+          get().updateMessage(assistantMessageId, {
+            content: errorContent,
+            metadata: {
+              status: 'failed',
+              errors: [error instanceof Error ? error.message : String(error)],
+            },
+          });
+        } else {
+          const errorMessage: ChatMessage = {
+            id: `msg_${Date.now()}_assistant`,
+            type: 'assistant',
+            content: errorContent,
+            timestamp: new Date(),
+          };
+          get().addMessage(errorMessage);
+        }
       }
     },
     // 重试最后一条消息 / 最近一次失败的后台动作
@@ -1306,6 +1496,8 @@ export const useChatStore = create<ChatState>()(
           timestamp: new Date(),
           metadata: {
             status: 'pending',
+            unified_stream: true,
+            plan_message: '正在重新执行该动作…',
             tracking_id: newTrackingId,
             plan_id: retryStatus.plan_id ?? null,
             raw_actions: rawActions,
@@ -1337,28 +1529,33 @@ export const useChatStore = create<ChatState>()(
         }
 
         if (lastStatus) {
+          const finalSummary =
+            typeof lastStatus.result?.final_summary === 'string'
+              ? (lastStatus.result.final_summary as string)
+              : typeof lastStatus.metadata?.final_summary === 'string'
+                ? (lastStatus.metadata.final_summary as string)
+                : null;
+          const completionContent =
+            finalSummary ??
+            (lastStatus.status === 'completed'
+              ? '工具已完成，但未生成最终总结，请查看工具结果。'
+              : '执行失败，请查看错误信息。');
+          const toolResultsFromRetry = mergeToolResults(
+            collectToolResultsFromMetadata(lastStatus.result?.tool_results),
+            collectToolResultsFromMetadata(lastStatus.metadata?.tool_results)
+          );
           get().updateMessage(pendingAssistantId, {
+            content: completionContent,
             metadata: {
               ...(pendingAssistant.metadata as any),
               status: lastStatus.status,
+              unified_stream: true,
+              plan_message: (pendingAssistant.metadata as any)?.plan_message ?? null,
               actions: lastStatus.actions ?? [],
-              tool_results: (lastStatus as any).metadata?.tool_results,
+              tool_results: toolResultsFromRetry.length > 0 ? toolResultsFromRetry : undefined,
               errors: lastStatus.errors ?? undefined,
             },
           });
-
-          if (lastStatus.status === 'completed' && currentSession) {
-            try {
-              await refreshHistoryUntilToolSummary(
-                currentSession.session_id ?? currentSession.id,
-                newTrackingId,
-                get().loadChatHistory,
-                () => get().messages
-              );
-            } catch (refreshError) {
-              console.warn('刷新聊天历史失败:', refreshError);
-            }
-          }
         }
       } catch (error) {
         console.error('Retry action run failed:', error);
@@ -1477,20 +1674,26 @@ export const useChatStore = create<ChatState>()(
           console.log(`✅ 加载了 ${data.messages.length} 条历史消息`);
           
           // 转换后端消息格式为前端格式
-      const messages: ChatMessage[] = data.messages.map((msg: any, index: number) => {
-        const metadata =
-          msg.metadata && typeof msg.metadata === 'object'
-            ? (msg.metadata as Record<string, any>)
-            : {};
-        const toolResults = collectToolResultsFromMetadata(metadata.tool_results);
-        if (toolResults.length > 0) {
-          metadata.tool_results = toolResults;
-        }
-        return {
-          id: `${sessionId}_${index}`,
-          type: (msg.role || 'assistant') as 'user' | 'assistant' | 'system',
-          content: msg.content,
-          timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+          const existingToolResults = buildToolResultsCache(get().messages);
+          const messages: ChatMessage[] = data.messages.map((msg: any, index: number) => {
+            const metadata =
+              msg.metadata && typeof msg.metadata === 'object'
+                ? { ...(msg.metadata as Record<string, any>) }
+                : {};
+            const trackingId =
+              typeof metadata.tracking_id === 'string' ? metadata.tracking_id : null;
+            let toolResults = collectToolResultsFromMetadata(metadata.tool_results);
+            if (toolResults.length === 0 && trackingId && existingToolResults.has(trackingId)) {
+              toolResults = existingToolResults.get(trackingId) ?? [];
+            }
+            if (toolResults.length > 0) {
+              metadata.tool_results = toolResults;
+            }
+            return {
+              id: `${sessionId}_${index}`,
+              type: (msg.role || 'assistant') as 'user' | 'assistant' | 'system',
+              content: msg.content,
+              timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
               metadata,
             };
           });

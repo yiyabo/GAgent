@@ -16,6 +16,64 @@ interface JobEntry {
   initialJob?: DecompositionJobStatus | null;
 }
 
+const formatActionLabel = (action: any): string => {
+  if (!action || typeof action !== 'object') return '执行动作';
+  const kind = typeof action.kind === 'string' ? action.kind : '';
+  const name = typeof action.name === 'string' ? action.name : '';
+  const params = action.parameters && typeof action.parameters === 'object' ? action.parameters : {};
+  const query = typeof params.query === 'string' ? params.query.trim() : '';
+
+  if (kind === 'tool_operation') {
+    if (name && query) {
+      return `调用 ${name} 搜索“${query}”`;
+    }
+    if (name) {
+      return `调用 ${name}`;
+    }
+    return '调用工具';
+  }
+  if (kind === 'plan_operation') {
+    const title =
+      typeof params.plan_title === 'string'
+        ? params.plan_title
+        : typeof params.title === 'string'
+          ? params.title
+          : '';
+    return title ? `执行计划：${title}` : `执行计划操作${name ? ` ${name}` : ''}`;
+  }
+  if (kind === 'task_operation') {
+    const taskName =
+      typeof params.task_name === 'string'
+        ? params.task_name
+        : typeof params.title === 'string'
+          ? params.title
+          : '';
+    return taskName ? `执行任务：${taskName}` : `执行任务操作${name ? ` ${name}` : ''}`;
+  }
+  if (kind === 'context_request') {
+    return `获取上下文${name ? `：${name}` : ''}`;
+  }
+  if (kind === 'system_operation') {
+    return `系统操作${name ? `：${name}` : ''}`;
+  }
+  return `${kind || 'action'}${name ? `/${name}` : ''}`;
+};
+
+const formatJobLabel = (metadata: any, jobType?: string | null, jobId?: string) => {
+  const actions =
+    (Array.isArray(metadata?.actions) ? metadata?.actions : null) ??
+    (Array.isArray(metadata?.raw_actions) ? metadata?.raw_actions : []);
+  if (actions.length > 0) {
+    const primary = formatActionLabel(actions[0]);
+    const suffix = actions.length > 1 ? ` 等 ${actions.length} 项` : '';
+    return `${primary}${suffix}${jobId ? ` · ${jobId.slice(0, 8)}` : ''}`;
+  }
+  if (metadata?.target_task_name) {
+    return `执行任务：${metadata.target_task_name}${jobId ? ` · ${jobId.slice(0, 8)}` : ''}`;
+  }
+  return `${jobType || 'job'}${jobId ? ` · ${jobId.slice(0, 8)}` : ''}`;
+};
+
 const ExecutorPanel: React.FC = () => {
   const messages = useChatStore((state) => state.messages);
 
@@ -40,7 +98,7 @@ const ExecutorPanel: React.FC = () => {
 
       entries.push({
         jobId,
-        label: `${jobType || 'job'} · ${jobId.slice(0, 8)}`,
+        label: formatJobLabel(metadata, jobType, jobId),
         timestamp: message.timestamp ?? new Date(),
         jobType,
         planId,

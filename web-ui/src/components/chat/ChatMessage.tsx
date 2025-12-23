@@ -39,6 +39,21 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const [isSaving, setIsSaving] = useState(false);
   const [toolDrawerOpen, setToolDrawerOpen] = useState(false);
   const [pendingDetailOpen, setPendingDetailOpen] = useState(false);
+  const [processOpen, setProcessOpen] = useState(false);
+  const [toolOpen, setToolOpen] = useState(false);
+  const unifiedStream = Boolean(metadata && (metadata as any).unified_stream);
+  const planMessage =
+    unifiedStream && typeof (metadata as any)?.plan_message === 'string'
+      ? ((metadata as any).plan_message as string)
+      : null;
+  const shouldAutoOpenProcess =
+    unifiedStream && (metadata?.status === 'pending' || metadata?.status === 'running');
+
+  React.useEffect(() => {
+    if (shouldAutoOpenProcess) {
+      setProcessOpen(true);
+    }
+  }, [shouldAutoOpenProcess]);
 
   const toolResults: ToolResultPayload[] = useMemo(
     () =>
@@ -47,14 +62,46 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
         : [],
     [metadata?.tool_results],
   );
+  const analysisText =
+    typeof (metadata as any)?.analysis_text === 'string'
+      ? ((metadata as any)?.analysis_text as string)
+      : '';
+  const finalSummary =
+    typeof (metadata as any)?.final_summary === 'string'
+      ? ((metadata as any)?.final_summary as string)
+      : (content && content.trim().length > 0 ? content : null);
+
+  // 如果是统一流且处于初始 pending 阶段、没有前置文案和动作，则不渲染气泡（避免空白占位）
+  if (
+    unifiedStream &&
+    metadata?.status === 'pending' &&
+    !planMessage &&
+    !(metadata as any)?.raw_actions?.length &&
+    !(metadata as any)?.actions?.length &&
+    (content?.trim?.() ?? '') === '' &&
+    !analysisText
+  ) {
+    return null;
+  }
   const hasFooterDivider =
-    toolResults.length > 0 ||
-    (!!metadata && (metadata.type === 'job_log' || metadata.plan_id !== undefined || metadata.plan_title));
+    !unifiedStream &&
+    (toolResults.length > 0 ||
+      (!!metadata &&
+        (metadata.type === 'job_log' ||
+          metadata.plan_id !== undefined ||
+          metadata.plan_title)));
   const isPendingAction =
     type === 'assistant' &&
     metadata?.status === 'pending' &&
     Array.isArray(metadata?.raw_actions) &&
     metadata.raw_actions.length > 0;
+
+  const ghostTextStyle: React.CSSProperties = {
+    color: 'var(--text-secondary)',
+    opacity: 0.72,
+    fontSize: 12,
+    lineHeight: 1.5,
+  };
 
   // 复制消息内容
   const handleCopy = () => {
@@ -153,6 +200,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 
   const renderPendingActions = () => {
     if (!isPendingAction) return null;
+    if (unifiedStream) return null;
     const actions = Array.isArray(metadata?.raw_actions) ? metadata?.raw_actions : [];
     const visible = pendingDetailOpen ? actions : actions.slice(0, 3);
 
@@ -210,8 +258,204 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     );
   };
 
+  const formatToolActionLabel = (action: any) => {
+    const kind = typeof action?.kind === 'string' ? action.kind : '';
+    const name = typeof action?.name === 'string' ? action.name : '';
+    const params = action?.parameters && typeof action.parameters === 'object' ? action.parameters : {};
+    const query = typeof params.query === 'string' ? params.query.trim() : '';
+
+    if (kind === 'tool_operation') {
+      if (name && query) {
+        return `调用 ${name} 搜索“${query}”`;
+      }
+      if (name) {
+        return `调用 ${name}`;
+      }
+      return '调用工具';
+    }
+    if (kind === 'plan_operation') {
+      const title =
+        typeof params.plan_title === 'string'
+          ? params.plan_title
+          : typeof params.title === 'string'
+            ? params.title
+            : '';
+      return title ? `执行计划：${title}` : `执行计划操作${name ? ` ${name}` : ''}`;
+    }
+    if (kind === 'task_operation') {
+      const taskName =
+        typeof params.task_name === 'string'
+          ? params.task_name
+          : typeof params.title === 'string'
+            ? params.title
+            : '';
+      return taskName ? `执行任务：${taskName}` : `执行任务操作${name ? ` ${name}` : ''}`;
+    }
+    if (kind === 'context_request') {
+      return `获取上下文${name ? `：${name}` : ''}`;
+    }
+    if (kind === 'system_operation') {
+      return `系统操作${name ? `：${name}` : ''}`;
+    }
+    return `${kind || 'action'}${name ? `/${name}` : ''}`;
+  };
+
+  const deriveToolActionStatusIcon = (action: any) => {
+    if (action?.status === 'completed' || action?.success === true) return '✅';
+    if (action?.status === 'failed' || action?.success === false) return '⚠️';
+    if (metadata?.status === 'completed') return '✅';
+    if (metadata?.status === 'failed') return '⚠️';
+    return '⏳';
+  };
+
+  const renderAnalysis = () => {
+    if (!analysisText) return null;
+    return (
+      <div style={{ marginBottom: 10 }}>
+        <Text style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.6 }}>
+          {analysisText}
+        </Text>
+      </div>
+    );
+  };
+
+  const renderToolProgress = () => {
+    if (!unifiedStream) return null;
+    const actions =
+      (Array.isArray(metadata?.actions) ? metadata?.actions : null) ??
+      (Array.isArray(metadata?.raw_actions) ? metadata?.raw_actions : []);
+    if (!actions || actions.length === 0) return null;
+    const toolActions = actions.filter((act: any) => act?.kind === 'tool_operation');
+    if (toolActions.length === 0) return null;
+
+    const status = metadata?.status;
+    const statusLabel =
+      status === 'completed'
+        ? '已完成'
+        : status === 'failed'
+          ? '已失败'
+          : '执行中';
+    const statusColor =
+      status === 'completed'
+        ? 'green'
+        : status === 'failed'
+          ? 'red'
+          : 'blue';
+
+    const summary =
+      toolActions.length > 0
+        ? `工具调用：${toolActions
+            .map((act: any) => (typeof act?.name === 'string' ? act.name : null))
+            .filter(Boolean)
+            .slice(0, 3)
+            .join(', ')}${toolActions.length > 3 ? ` 等 ${toolActions.length} 个` : ''}`
+        : '工具调用';
+
+    return (
+      <div
+        style={{
+          marginBottom: 10,
+          padding: '10px 12px',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--border-color)',
+          background: 'var(--bg-tertiary)',
+          fontSize: 12,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Space size={8} align="center">
+            <Tag color={statusColor} style={{ margin: 0 }}>
+              {statusLabel}
+            </Tag>
+            <Text style={{ color: 'var(--text-secondary)' }}>{summary}</Text>
+          </Space>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => setToolOpen((v) => !v)}
+            style={{ padding: 0, fontSize: 12 }}
+          >
+            {toolOpen ? '收起' : '查看过程'}
+          </Button>
+        </div>
+        {toolOpen && (
+          <div style={{ marginTop: 8 }}>
+            {toolActions.map((action: any, index: number) => {
+              const label = formatToolActionLabel(action);
+              const order = typeof action?.order === 'number' ? action.order : index + 1;
+              const statusIcon = deriveToolActionStatusIcon(action);
+              return (
+                <div
+                  key={`${order}_${action?.name ?? 'tool'}`}
+                  style={{ color: 'var(--text-secondary)', marginBottom: 4, fontSize: 12 }}
+                >
+                  {statusIcon} 步骤 {order}: {label}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderSummary = () => {
+    if (!finalSummary) return null;
+    return (
+      <div style={{ marginTop: 4 }}>
+        <ReactMarkdown
+          options={{
+            overrides: {
+              code: {
+                component: CodeBlock,
+              },
+              pre: {
+                component: ({ children }: { children: React.ReactNode }) => (
+                  <div>{children}</div>
+                ),
+              },
+              p: {
+                props: {
+                  style: { margin: '0 0 8px 0', lineHeight: 1.6 },
+                },
+              },
+              ul: {
+                props: {
+                  style: { margin: '8px 0', paddingLeft: '20px' },
+                },
+              },
+              ol: {
+                props: {
+                  style: { margin: '8px 0', paddingLeft: '20px' },
+                },
+              },
+              blockquote: {
+                props: {
+                  style: {
+                    borderLeft: '4px solid #d9d9d9',
+                    paddingLeft: '12px',
+                    margin: '8px 0',
+                    color: '#666',
+                    fontStyle: 'italic',
+                  },
+                },
+              },
+            },
+          }}
+        >
+          {finalSummary}
+        </ReactMarkdown>
+      </div>
+    );
+  };
+
+  const renderUnifiedStatusLine = () => {
+    return null;
+  };
+
   // 渲染消息内容
   const renderContent = () => {
+    // 主体内容现在用 renderSummary 渲染，普通消息仍用 Markdown
     if (type === 'system') {
       return (
         <Text type="secondary" style={{ fontStyle: 'italic' }}>
@@ -219,12 +463,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
         </Text>
       );
     }
-
-    // Pending 工具规划，采用幽灵样式提示，不展示正文内容
-    if (isPendingAction) {
-      return renderPendingActions();
+    if (unifiedStream) {
+      return null;
     }
-
     return (
       <ReactMarkdown
         options={{
@@ -334,6 +575,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     if (isPendingAction) {
       return null;
     }
+    if (unifiedStream) {
+      return null;
+    }
     if (!toolResults.length) {
       return null;
     }
@@ -389,6 +633,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 
   const renderToolDrawer = () => {
     if (!toolResults.length) return null;
+    if (unifiedStream) return null;
     return (
       <Drawer
         title="工具调用详情"
@@ -415,6 +660,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     if (!metadata || metadata.type !== 'job_log') {
       return null;
     }
+    if (unifiedStream) {
+      return null;
+    }
     const jobMetadata = (metadata.job as DecompositionJobStatus | null) ?? null;
     const jobId: string | undefined = metadata.job_id ?? jobMetadata?.job_id;
     if (!jobId) {
@@ -434,14 +682,26 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   return (
     <div className={`message ${type}`}>
       <div className="message-content">
-        {type === 'assistant' && renderAvatar()}
+          {type === 'assistant' && renderAvatar()}
         
         <div className="message-bubble">
-          {renderContent()}
-          {!isPendingAction && renderToolStatusBar()}
-          {hasFooterDivider && !isPendingAction && <Divider style={{ margin: '12px 0' }} dashed />}
-          {!isPendingAction && renderJobLogPanel()}
-          {renderMetadata()}
+          {unifiedStream ? (
+            <>
+              {renderAnalysis()}
+              {renderToolProgress()}
+              {renderSummary()}
+            </>
+          ) : (
+            <>
+              {renderContent()}
+              {renderPendingActions()}
+              {!isPendingAction && renderUnifiedStatusLine()}
+              {!isPendingAction && renderToolStatusBar()}
+              {hasFooterDivider && !isPendingAction && <Divider style={{ margin: '12px 0' }} dashed />}
+              {!isPendingAction && renderJobLogPanel()}
+              {renderMetadata()}
+            </>
+          )}
         </div>
       </div>
       

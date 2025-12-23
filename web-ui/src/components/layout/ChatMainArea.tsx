@@ -260,7 +260,7 @@ const ChatMainArea: React.FC = () => {
             </Text>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
               <Text type="secondary" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                {isProcessing ? '思考中...' : '在线'}
+                在线
               </Text>
             </div>
           </div>
@@ -339,48 +339,6 @@ const ChatMainArea: React.FC = () => {
                 <ChatMessage message={message} />
               </div>
             ))}
-            
-            {/* 正在处理指示器 */}
-            {isProcessing && (
-              <div style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: 12,
-                marginBottom: 16,
-                animation: 'messageIn 0.3s ease-out',
-              }}>
-                <Avatar
-                  size={40}
-                  icon={<RobotOutlined />}
-                  style={{
-                    background: 'linear-gradient(135deg, #42A5F5 0%, #66BB6A 100%)',
-                    boxShadow: 'var(--shadow-md)',
-                  }}
-                />
-                <div style={{
-                  background: 'var(--bg-secondary)',
-                  padding: '16px 20px',
-                  borderRadius: 'var(--radius-xl)',
-                  border: '1px solid var(--border-light)',
-                  boxShadow: 'var(--shadow-sm)',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div className="typing-indicator">
-                      <span style={{
-                        background: 'linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%)'
-                      }}></span>
-                      <span style={{
-                        background: 'linear-gradient(135deg, #FF8E53 0%, #FFA726 100%)'
-                      }}></span>
-                      <span style={{
-                        background: 'linear-gradient(135deg, #FFA726 0%, #FFB74D 100%)'
-                      }}></span>
-                    </div>
-                    <Text type="secondary" style={{ fontSize: 13 }}>正在思考中...</Text>
-                  </div>
-                </div>
-              </div>
-            )}
             
             <div ref={messagesEndRef} />
           </div>
