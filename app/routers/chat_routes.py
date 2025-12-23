@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 import logging
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, AsyncIterator, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
 from uuid import uuid4
@@ -30,12 +31,14 @@ from app.repository.plan_storage import (
     update_decomposition_job_status,
 )
 from app.services.foundation.settings import get_settings
-from app.services.llm.llm_service import get_llm_service
+from app.llm import LLMClient
+from app.services.llm.llm_service import LLMService, get_llm_service
 from app.services.llm.structured_response import (
     LLMAction,
     LLMStructuredResponse,
     schema_as_json,
 )
+from app.services.llm.decomposer_service import PlanDecomposerLLMService
 from app.services.plans.decomposition_jobs import (
     get_current_job,
     log_job_event,
@@ -45,7 +48,7 @@ from app.services.plans.decomposition_jobs import (
     start_decomposition_job_thread,
 )
 from app.services.plans.plan_decomposer import DecompositionResult, PlanDecomposer
-from app.services.plans.plan_executor import PlanExecutor
+from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService
 from app.services.plans.plan_models import PlanTree
 from app.services.plans.plan_session import PlanSession
 from app.services.session_title_service import (
@@ -62,7 +65,8 @@ plan_repository = PlanRepository()
 decomposer_settings = get_decomposer_settings()
 
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
-VALID_BASE_MODELS = {"qwen3-max", "glm-4.6", "kimi-k2-thinking"}
+VALID_BASE_MODELS = {"qwen3-max", "glm-4.6", "kimi-k2-thinking", "gpt-5.2-2025-12-11"}
+VALID_LLM_PROVIDERS = {"glm", "qwen", "openai", "perplexity"}
 plan_decomposer_service = PlanDecomposer(
     repo=plan_repository,
     settings=decomposer_settings,
@@ -233,7 +237,10 @@ class ChatSessionSettings(BaseModel):
 
     default_search_provider: Optional[Literal["builtin", "perplexity", "tavily"]] = None
     default_base_model: Optional[
-        Literal["qwen3-max", "glm-4.6", "kimi-k2-thinking"]
+        Literal["qwen3-max", "glm-4.6", "kimi-k2-thinking", "gpt-5.2-2025-12-11"]
+    ] = None
+    default_llm_provider: Optional[
+        Literal["glm", "qwen", "openai", "perplexity"]
     ] = None
 
 
@@ -445,6 +452,18 @@ async def update_chat_session(
                         metadata_dict["default_base_model"] = normalized
                     else:
                         metadata_dict.pop("default_base_model", None)
+                if "default_llm_provider" in settings_update:
+                    llm_provider = settings_update.get("default_llm_provider")
+                    if llm_provider is not None:
+                        normalized = _normalize_llm_provider(llm_provider)
+                        if normalized is None:
+                            raise HTTPException(
+                                status_code=422,
+                                detail="Invalid default_llm_provider value",
+                            )
+                        metadata_dict["default_llm_provider"] = normalized
+                    else:
+                        metadata_dict.pop("default_llm_provider", None)
                 set_clauses.append("metadata=?")
                 params.append(_dump_metadata(metadata_dict))
 
@@ -787,6 +806,16 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             if session_base_model:
                 context["default_base_model"] = session_base_model
 
+        explicit_llm_provider = _normalize_llm_provider(
+            context.get("default_llm_provider")
+        )
+        if explicit_llm_provider:
+            context["default_llm_provider"] = explicit_llm_provider
+        else:
+            session_llm_provider = session_settings.get("default_llm_provider")
+            if session_llm_provider:
+                context["default_llm_provider"] = session_llm_provider
+
         agent = StructuredChatAgent(
             mode=request.mode,
             plan_session=plan_session,
@@ -1086,6 +1115,16 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                 if session_base_model:
                     context["default_base_model"] = session_base_model
 
+            explicit_llm_provider = _normalize_llm_provider(
+                context.get("default_llm_provider")
+            )
+            if explicit_llm_provider:
+                context["default_llm_provider"] = explicit_llm_provider
+            else:
+                session_llm_provider = session_settings.get("default_llm_provider")
+                if session_llm_provider:
+                    context["default_llm_provider"] = session_llm_provider
+
             agent = StructuredChatAgent(
                 mode=request.mode,
                 plan_session=plan_session,
@@ -1131,6 +1170,22 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                     for step in agent_result.steps
                     if step.action.kind == "tool_operation"
                 ]
+
+                actions_for_display = [
+                    {
+                        "kind": step.action.kind,
+                        "name": step.action.name,
+                        "parameters": step.action.parameters,
+                        "order": step.action.order,
+                        "blocking": step.action.blocking,
+                        "status": "completed" if step.success else "failed",
+                        "success": step.success,
+                        "message": step.message,
+                        "details": step.details,
+                    }
+                    for step in agent_result.steps
+                ]
+
                 metadata_payload: Dict[str, Any] = {
                     "intent": agent_result.primary_intent,
                     "success": agent_result.success,
@@ -1139,6 +1194,11 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                     "plan_outline": agent_result.plan_outline,
                     "plan_persisted": agent_result.plan_persisted,
                     "status": "completed",
+                    "unified_stream": True,
+                    # 无动作场景直接使用完整回复作为正文分析
+                    "analysis_text": agent_result.reply or request.message,
+                    "final_summary": None,
+                    "actions": actions_for_display,
                     "raw_actions": [
                         step.action.model_dump() for step in agent_result.steps
                     ],
@@ -1160,7 +1220,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                 chat_response = ChatResponse(
                     response=agent_result.reply,
                     suggestions=agent_result.suggestions,
-                    actions=[step.action_payload for step in agent_result.steps],
+                    actions=actions_for_display,
                     metadata=metadata_payload,
                 )
                 saved = _save_assistant_response(request.session_id, chat_response)
@@ -1390,6 +1450,15 @@ def _normalize_base_model(value: Any) -> Optional[str]:
     return None
 
 
+def _normalize_llm_provider(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().lower()
+    if candidate in VALID_LLM_PROVIDERS:
+        return candidate
+    return None
+
+
 def _dump_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
     if not metadata:
         return None
@@ -1412,6 +1481,9 @@ def _extract_session_settings(
     base_model = _normalize_base_model(metadata.get("default_base_model"))
     if base_model:
         settings["default_base_model"] = base_model
+    llm_provider = _normalize_llm_provider(metadata.get("default_llm_provider"))
+    if llm_provider:
+        settings["default_llm_provider"] = llm_provider
     return settings or None
 
 
@@ -1807,6 +1879,8 @@ def _merge_async_metadata(
     job_id: Optional[str] = None,
     job_payload: Optional[Dict[str, Any]] = None,
     job_type: Optional[str] = None,
+    final_summary: Optional[str] = None,
+    analysis_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     metadata = dict(existing or {})
     metadata["status"] = status
@@ -1826,6 +1900,10 @@ def _merge_async_metadata(
     metadata["errors"] = errors or []
     if "raw_actions" not in metadata and actions:
         metadata["raw_actions"] = actions
+    if final_summary:
+        metadata["final_summary"] = final_summary
+    if analysis_text:
+        metadata["analysis_text"] = analysis_text
 
     if job_id:
         metadata["type"] = "job_log"
@@ -1859,13 +1937,21 @@ def _merge_async_metadata(
     return metadata
 
 
-async def _generate_tool_summary(
+def _get_llm_service_for_provider(provider: Optional[str]) -> LLMService:
+    normalized = _normalize_llm_provider(provider)
+    if normalized:
+        return LLMService(LLMClient(provider=normalized))
+    return get_llm_service()
+
+
+async def _generate_tool_analysis(
     user_message: str,
     tool_results: List[Dict[str, Any]],
     session_id: Optional[str] = None,
+    llm_provider: Optional[str] = None,
 ) -> Optional[str]:
     """
-    让 LLM 基于工具执行结果生成自然语言总结。
+    让 LLM 基于工具执行结果生成详细分析。
     
     Args:
         user_message: 用户的原始问题
@@ -1896,8 +1982,6 @@ async def _generate_tool_summary(
                 for field in useful_fields:
                     if field in result_data and result_data[field]:
                         value = result_data[field]
-                        if isinstance(value, str) and len(value) > 500:
-                            value = value[:500] + "..."
                         tool_desc += f"\n   {field}: {value}"
                 if tool_name == "web_search":
                     results = result_data.get("results")
@@ -1909,8 +1993,6 @@ async def _generate_tool_summary(
                             title = str(item.get("title") or "").strip()
                             url = str(item.get("url") or "").strip()
                             snippet = str(item.get("snippet") or "").strip()
-                            if len(snippet) > 300:
-                                snippet = snippet[:300] + "..."
                             tool_desc += f"\n   - title: {title}"
                             tool_desc += f"\n     url: {url}"
                             if snippet:
@@ -1926,92 +2008,155 @@ async def _generate_tool_summary(
         
         tools_text = "\n\n".join(tools_description)
         
-        # Use prompt manager for internationalized prompts
-        from app.prompts import prompt_manager
-        
-        intro = prompt_manager.get("chat.tool_summary.intro")
-        user_q_label = prompt_manager.get("chat.tool_summary.user_question")
-        tools_label = prompt_manager.get("chat.tool_summary.tools_executed")
-        instruction = prompt_manager.get("chat.tool_summary.instruction")
-        requirements = prompt_manager.get_category("chat")["tool_summary"]["requirements"]
-        response_label = prompt_manager.get("chat.tool_summary.response_prompt")
-        
-        requirements_text = "\n".join(requirements)
-        
-        extra_requirements: List[str] = []
-        if web_search_items:
-            extra_requirements.extend(
-                [
-                    "5. For web_search, list every returned result in order; do not omit any",
-                    "6. Include each result's title and URL exactly once",
-                    "7. Do not invent extra sources beyond the provided results",
-                ]
-            )
+        analysis_requirements = [
+            "1. 给出完整、深入的分析，不要重复用户问题",
+            "2. 明确区分结论、依据、注意事项/风险",
+            "3. 若涉及 web_search，请逐条列出所有结果并说明价值",
+            "4. 若有错误或不确定性，说明原因并给出下一步建议",
+            "5. 输出不少于 6 条要点或 3 个自然段",
+        ]
 
-        requirements_text = "\n".join(requirements + extra_requirements)
+        base_prompt = (
+            "你是资深分析助手。以下是用户问题与工具执行结果。\n"
+            "请输出详细分析正文，务必可直接作为最终回答展示。\n\n"
+            f"用户问题：{user_message}\n\n"
+            "工具执行结果：\n"
+            f"{tools_text}\n\n"
+            "要求：\n"
+            + "\n".join(analysis_requirements)
+            + "\n\n输出分析："
+        )
+        llm_service = _get_llm_service_for_provider(llm_provider)
 
-        base_prompt = f"""{intro}
-
-{user_q_label}
-{user_message}
-
-{tools_label}
-{tools_text}
-
-{instruction}
-{requirements_text}
-
-{response_label}"""
-        llm_service = get_llm_service()
-
-        def _normalize_token(text: str) -> str:
-            return "".join(text.lower().split())
-
-        def _missing_search_items(text: str) -> List[Dict[str, str]]:
-            if not web_search_items:
-                return []
-            normalized = _normalize_token(text)
-            missing: List[Dict[str, str]] = []
-            for item in web_search_items:
-                title = _normalize_token(item.get("title", ""))
-                url = _normalize_token(item.get("url", ""))
-                if title and title in normalized:
-                    continue
-                if url and url in normalized:
-                    continue
-                missing.append(item)
-            return missing
-
-        summary: Optional[str] = None
-        max_attempts = 3 if web_search_items else 1
-        for attempt in range(1, max_attempts + 1):
-            extra = ""
-            if attempt > 1 and summary:
-                missing_items = _missing_search_items(summary)
-                missing_labels = ", ".join(
-                    item.get("title") or item.get("url") or "(unknown)" for item in missing_items
-                )
-                extra = (
-                    "\n\nPrevious response missed some web_search results. "
-                    "You must list every result with title + URL. "
-                    f"Missing: {missing_labels}\n"
-                )
-            prompt = base_prompt + extra
-            summary = await llm_service.chat_async(prompt)
-            if not summary:
-                continue
-            if not _missing_search_items(summary):
-                break
-
-        return summary.strip() if summary else None
+        analysis = await llm_service.chat_async(base_prompt)
+        return analysis.strip() if analysis else None
         
     except Exception as exc:
+        logger.error("[CHAT][SUMMARY] Failed to generate analysis for session=%s: %s", session_id, exc)
+        return None
+
+
+async def _generate_tool_summary(
+    user_message: str,
+    tool_results: List[Dict[str, Any]],
+    session_id: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+) -> Optional[str]:
+    """
+    让 LLM 基于工具执行结果生成简短摘要（用于过程面板）。
+    """
+    try:
+        tools_description = []
+        for idx, tool_result in enumerate(tool_results, 1):
+            tool_name = tool_result.get("name", "unknown")
+            summary = tool_result.get("summary", "")
+            tool_desc = f"{idx}. {tool_name}"
+            if summary:
+                tool_desc += f" - {summary}"
+            tools_description.append(tool_desc)
+
+        tools_text = "\n".join(tools_description)
+        prompt = (
+            "你是项目助理，请根据工具执行情况给出简短摘要（1-3 句话）。\n"
+            f"用户问题：{user_message}\n"
+            f"工具执行概览：\n{tools_text}\n"
+            "输出摘要："
+        )
+        llm_service = _get_llm_service_for_provider(llm_provider)
+        summary = await llm_service.chat_async(prompt)
+        return summary.strip() if summary else None
+    except Exception as exc:
+        logger.error("[CHAT][SUMMARY] Failed to generate brief summary for session=%s: %s", session_id, exc)
+        return None
+
+
+def _collect_created_tasks_from_steps(steps: List["AgentStep"]) -> List[Dict[str, Any]]:
+    created: List[Dict[str, Any]] = []
+    for step in steps:
+        details = step.details or {}
+        created_nodes = details.get("created")
+        if isinstance(created_nodes, list):
+            for node in created_nodes:
+                if isinstance(node, dict):
+                    created.append(node)
+        task_node = details.get("task")
+        if isinstance(task_node, dict):
+            created.append(task_node)
+    return created
+
+
+async def _generate_action_analysis(
+    user_message: str,
+    steps: List["AgentStep"],
+    session_id: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+) -> Optional[str]:
+    created_tasks = _collect_created_tasks_from_steps(steps)
+    if not created_tasks:
+        return None
+
+    lines: List[str] = []
+    for idx, task in enumerate(created_tasks, 1):
+        name = str(task.get("name") or task.get("title") or "").strip()
+        instruction = str(task.get("instruction") or "").strip()
+        if name:
+            lines.append(f"{idx}. {name}")
+        if instruction:
+            lines.append(f"   - 说明: {instruction}")
+    tasks_text = "\n".join(lines)
+
+    prompt = (
+        "你是项目分析助手。用户要求对任务拆解结果进行详细分析。"
+        "请基于拆解结果给出深入分析：覆盖范围是否充分、任务之间关系、"
+        "是否有遗漏、可进一步细化的方向（如有）。不要复述“生成了X个子任务”这类总结，"
+        "直接给出专业分析正文。\n"
+        "要求：至少 6 条要点或 3 个自然段；要点清晰、具体可执行。\n\n"
+        f"用户问题：{user_message}\n\n"
+        "拆解结果：\n"
+        f"{tasks_text}\n\n"
+        "请输出分析："
+    )
+    try:
+        llm_service = _get_llm_service_for_provider(llm_provider)
+        analysis = await llm_service.chat_async(prompt)
+        return analysis.strip() if analysis else None
+    except Exception as exc:
         logger.error(
-            "[CHAT][SUMMARY] Failed to generate summary for session=%s: %s",
+            "[CHAT][SUMMARY] Failed to generate action analysis for session=%s: %s",
             session_id,
             exc,
         )
         return None
+
+
+def _build_brief_action_summary(steps: List["AgentStep"]) -> Optional[str]:
+    if not steps:
+        return None
+    if len(steps) == 1:
+        step = steps[0]
+        if step.message:
+            return step.message
+        if step.action.name:
+            return f"已完成动作：{step.action.name}"
+        if step.action.kind:
+            return f"已完成动作：{step.action.kind}"
+        return None
+
+    names: List[str] = []
+    for step in steps:
+        if step.action.name:
+            names.append(step.action.name)
+        elif step.action.kind:
+            names.append(step.action.kind)
+    if not names:
+        return f"已完成 {len(steps)} 个动作。"
+    unique = []
+    for name in names:
+        if name not in unique:
+            unique.append(name)
+    preview = "、".join(unique[:3])
+    suffix = " 等" if len(unique) > 3 else ""
+    return f"已完成 {len(steps)} 个动作：{preview}{suffix}。"
 
 
 async def _execute_action_run(run_id: str) -> None:
@@ -2114,6 +2259,16 @@ async def _execute_action_run(run_id: str) -> None:
             fallback_base_model = session_defaults.get("default_base_model")
             if fallback_base_model:
                 context["default_base_model"] = fallback_base_model
+        llm_provider_in_context = _normalize_llm_provider(
+            context.get("default_llm_provider")
+        )
+        if llm_provider_in_context:
+            context["default_llm_provider"] = llm_provider_in_context
+        elif record.get("session_id"):
+            session_defaults = _get_session_settings(record["session_id"])
+            fallback_llm_provider = session_defaults.get("default_llm_provider")
+            if fallback_llm_provider:
+                context["default_llm_provider"] = fallback_llm_provider
 
         # 🔄 任务状态同步：优先使用 context 中的 task_id
         if "task_id" in context and "current_task_id" not in context:
@@ -2269,53 +2424,66 @@ async def _execute_action_run(run_id: str) -> None:
                 len(tool_results_payload),
             )
         
-        # Agent Loop: 让 LLM 基于工具结果生成最终总结
-        # 关键：必须在 update_action_run 之前完成，否则前端会停止轮询
-        final_summary = None
+        # Agent Loop: 生成正文分析 + 过程摘要
+        analysis_text: Optional[str] = None
+        summary_text: Optional[str] = None
+        llm_provider = _normalize_llm_provider(
+            (context or {}).get("default_llm_provider")
+        )
         if result.success and tool_results_payload:
             logger.info(
-                "[CHAT][SUMMARY] session=%s tracking=%s Starting summary generation...",
+                "[CHAT][SUMMARY] session=%s tracking=%s Starting analysis generation...",
                 record.get("session_id"),
                 run_id,
             )
             try:
-                final_summary = await _generate_tool_summary(
+                analysis_text = await _generate_tool_analysis(
                     user_message=record.get("user_message", ""),
                     tool_results=tool_results_payload,
                     session_id=record.get("session_id"),
+                    llm_provider=llm_provider,
                 )
-                if final_summary:
-                    # 将总结添加到 result_dict / job result 中，前端可直接用同一条消息气泡展示
-                    result_dict["final_summary"] = final_summary
-                    try:
-                        result.final_summary = final_summary
-                    except Exception:
-                        pass
-                    _update_message_content_by_tracking(
-                        record.get("session_id"),
-                        run_id,
-                        final_summary,
-                    )
-                    logger.info(
-                        "[CHAT][SUMMARY] session=%s tracking=%s Summary saved: %s",
-                        record.get("session_id"),
-                        run_id,
-                        final_summary[:100] if len(final_summary) > 100 else final_summary,
-                    )
-                else:
-                    logger.warning(
-                        "[CHAT][SUMMARY] session=%s tracking=%s Summary generation returned empty",
-                        record.get("session_id"),
-                        run_id,
-                    )
             except Exception as exc:
                 logger.error(
-                    "[CHAT][SUMMARY] session=%s tracking=%s Failed to generate summary: %s",
+                    "[CHAT][SUMMARY] session=%s tracking=%s Failed to generate analysis: %s",
                     record.get("session_id"),
                     run_id,
                     exc,
                     exc_info=True,
                 )
+        if not analysis_text:
+            analysis_text = await _generate_action_analysis(
+                record.get("user_message", ""),
+                result.steps,
+                record.get("session_id"),
+                llm_provider,
+            )
+        if not analysis_text:
+            analysis_text = result.reply or result.summarize_steps()
+
+        summary_text = _build_brief_action_summary(result.steps) or result.summarize_steps()
+
+        if analysis_text:
+            result_dict["analysis_text"] = analysis_text
+        if summary_text:
+            result_dict["final_summary"] = summary_text
+            try:
+                result.final_summary = summary_text
+            except Exception:
+                pass
+        content_for_message = analysis_text or summary_text
+        if content_for_message:
+            _update_message_content_by_tracking(
+                record.get("session_id"),
+                run_id,
+                content_for_message,
+            )
+            logger.info(
+                "[CHAT][SUMMARY] session=%s tracking=%s Analysis saved: %s",
+                record.get("session_id"),
+                run_id,
+                content_for_message[:100] if len(content_for_message) > 100 else content_for_message,
+            )
         
         # 现在才更新状态为 completed，前端会在下次轮询时看到总结消息
         update_kwargs: Dict[str, Any] = {
@@ -2351,6 +2519,8 @@ async def _execute_action_run(run_id: str) -> None:
                 job_id=job.job_id,
                 job_payload=job_snapshot,
                 job_type=getattr(job, "job_type", None),
+                final_summary=summary_text,
+                analysis_text=analysis_text,
             ),
         )
 
@@ -2376,7 +2546,7 @@ async def _execute_action_run(run_id: str) -> None:
             )
             plan_decomposition_jobs.mark_success(
                 job.job_id,
-                result=result,
+                result=result_dict,
                 stats=stats_payload,
             )
         else:
@@ -2390,7 +2560,7 @@ async def _execute_action_run(run_id: str) -> None:
             plan_decomposition_jobs.mark_failure(
                 job.job_id,
                 error_message,
-                result=result,
+                result=result_dict,
                 stats=stats_payload,
             )
 
@@ -2641,6 +2811,40 @@ class AgentResult(BaseModel):
     actions_summary: List[Dict[str, Any]] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
     final_summary: Optional[str] = None
+    def summarize_steps(self) -> Optional[str]:
+        lines: List[str] = []
+        for idx, step in enumerate(self.steps):
+            action = step.action
+            label_parts = []
+            if action.kind:
+                label_parts.append(action.kind)
+            if action.name:
+                label_parts.append(action.name)
+            header = "/".join(label_parts) if label_parts else f"步骤 {idx + 1}"
+            params = action.parameters or {}
+            detail = (
+                params.get("instruction")
+                or params.get("name")
+                or params.get("title")
+                or step.message
+            )
+            lines.append(f"- {header}: {detail or '已完成'}")
+            subtasks = params.get("subtasks")
+            if isinstance(subtasks, list):
+                for st in subtasks:
+                    st_name = (
+                        (isinstance(st, dict) and (st.get("name") or st.get("title")))
+                        or None
+                    )
+                    st_instr = (
+                        (isinstance(st, dict) and st.get("instruction"))
+                        or None
+                    )
+                    if st_name:
+                        lines.append(f"  - 子任务: {st_name}")
+                    if st_instr:
+                        lines.append(f"    · 说明: {st_instr}")
+        return "\n".join(lines) if lines else None
 
 
 class StructuredChatAgent:
@@ -2679,12 +2883,53 @@ class StructuredChatAgent:
             self.extra_context["default_base_model"] = base_model
         elif "default_base_model" in self.extra_context:
             self.extra_context.pop("default_base_model", None)
+        llm_provider = _normalize_llm_provider(
+            self.extra_context.get("default_llm_provider")
+        )
+        if llm_provider:
+            self.extra_context["default_llm_provider"] = llm_provider
+        elif "default_llm_provider" in self.extra_context:
+            self.extra_context.pop("default_llm_provider", None)
+
+        override_llm_service: Optional[LLMService] = None
+        if llm_provider:
+            override_llm_service = LLMService(LLMClient(provider=llm_provider))
+
         self.plan_session = plan_session or PlanSession(repo=plan_repository)
         self.plan_tree = self.plan_session.current_tree()
         self.schema_json = schema_as_json()
-        self.llm_service = get_llm_service()
-        self.plan_decomposer = plan_decomposer
-        self.plan_executor = plan_executor
+        self.llm_service = override_llm_service or get_llm_service()
+
+        if override_llm_service:
+            override_decomposer_settings = decomposer_settings
+            if base_model:
+                override_decomposer_settings = replace(
+                    override_decomposer_settings, model=base_model
+                )
+            override_executor_settings = get_executor_settings()
+            if base_model:
+                override_executor_settings = replace(
+                    override_executor_settings, model=base_model
+                )
+            decomposer_llm = PlanDecomposerLLMService(
+                llm=override_llm_service, settings=override_decomposer_settings
+            )
+            self.plan_decomposer = PlanDecomposer(
+                repo=self.plan_session.repo,
+                llm_service=decomposer_llm,
+                settings=override_decomposer_settings,
+            )
+            executor_llm = PlanExecutorLLMService(
+                llm=override_llm_service, settings=override_executor_settings
+            )
+            self.plan_executor = PlanExecutor(
+                repo=self.plan_session.repo,
+                llm_service=executor_llm,
+                settings=override_executor_settings,
+            )
+        else:
+            self.plan_decomposer = plan_decomposer
+            self.plan_executor = plan_executor
         self.decomposer_settings = decomposer_settings
         self._last_decomposition: Optional[DecompositionResult] = None
         self._decomposition_errors: List[str] = []

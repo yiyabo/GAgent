@@ -70,6 +70,17 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     typeof (metadata as any)?.final_summary === 'string'
       ? ((metadata as any)?.final_summary as string)
       : (content && content.trim().length > 0 ? content : null);
+  const displayText =
+    analysisText && analysisText.trim().length > 0 ? analysisText : finalSummary;
+  const processSummary =
+    finalSummary &&
+    displayText &&
+    finalSummary.trim().length > 0 &&
+    finalSummary.trim() !== displayText.trim()
+      ? finalSummary
+      : null;
+  const status = metadata?.status;
+  const isCompleted = status === 'completed' || status === 'failed';
 
   // 如果是统一流且处于初始 pending 阶段、没有前置文案和动作，则不渲染气泡（避免空白占位）
   if (
@@ -308,16 +319,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     return '⏳';
   };
 
-  const renderAnalysis = () => {
-    if (!analysisText) return null;
-    return (
-      <div style={{ marginBottom: 10 }}>
-        <Text style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.6 }}>
-          {analysisText}
-        </Text>
-      </div>
-    );
-  };
+  const renderAnalysis = () => null;
 
   const renderToolProgress = () => {
     if (!unifiedStream) return null;
@@ -325,10 +327,10 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
       (Array.isArray(metadata?.actions) ? metadata?.actions : null) ??
       (Array.isArray(metadata?.raw_actions) ? metadata?.raw_actions : []);
     if (!actions || actions.length === 0) return null;
-    const toolActions = actions.filter((act: any) => act?.kind === 'tool_operation');
-    if (toolActions.length === 0) return null;
+    const visibleActions = actions;
+    if (visibleActions.length === 0) return null;
+    const toolActions = visibleActions.filter((act: any) => act?.kind === 'tool_operation');
 
-    const status = metadata?.status;
     const statusLabel =
       status === 'completed'
         ? '已完成'
@@ -344,12 +346,12 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 
     const summary =
       toolActions.length > 0
-        ? `工具调用：${toolActions
+        ? `工具：${toolActions
             .map((act: any) => (typeof act?.name === 'string' ? act.name : null))
             .filter(Boolean)
             .slice(0, 3)
             .join(', ')}${toolActions.length > 3 ? ` 等 ${toolActions.length} 个` : ''}`
-        : '工具调用';
+        : `动作：${visibleActions.length} 个`;
 
     return (
       <div
@@ -378,18 +380,61 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             {toolOpen ? '收起' : '查看过程'}
           </Button>
         </div>
+        {processSummary && (
+          <div style={{ marginTop: 8 }}>
+            <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+              摘要：{processSummary}
+            </Text>
+          </div>
+        )}
         {toolOpen && (
           <div style={{ marginTop: 8 }}>
-            {toolActions.map((action: any, index: number) => {
+            {visibleActions.map((action: any, index: number) => {
               const label = formatToolActionLabel(action);
               const order = typeof action?.order === 'number' ? action.order : index + 1;
               const statusIcon = deriveToolActionStatusIcon(action);
+              const createdTasks = Array.isArray(action?.details?.created)
+                ? (action.details.created as Array<Record<string, any>>)
+                : [];
+              const singleTask = action?.details?.task && typeof action.details.task === 'object'
+                ? (action.details.task as Record<string, any>)
+                : null;
               return (
                 <div
-                  key={`${order}_${action?.name ?? 'tool'}`}
+                  key={`${order}_${action?.name ?? 'action'}`}
                   style={{ color: 'var(--text-secondary)', marginBottom: 4, fontSize: 12 }}
                 >
                   {statusIcon} 步骤 {order}: {label}
+                  {singleTask && (
+                    <div style={{ marginTop: 6, paddingLeft: 18 }}>
+                      {typeof singleTask.name === 'string' && (
+                        <div>子任务: {singleTask.name}</div>
+                      )}
+                      {typeof singleTask.instruction === 'string' && singleTask.instruction.trim().length > 0 && (
+                        <div>说明: {singleTask.instruction}</div>
+                      )}
+                    </div>
+                  )}
+                  {createdTasks.length > 0 && (
+                    <div style={{ marginTop: 6, paddingLeft: 18 }}>
+                      {createdTasks.map((task, idx) => {
+                        const name =
+                          typeof task?.name === 'string'
+                            ? task.name
+                            : typeof task?.title === 'string'
+                              ? task.title
+                              : '';
+                        const instruction =
+                          typeof task?.instruction === 'string' ? task.instruction : '';
+                        return (
+                          <div key={`${order}_created_${idx}`} style={{ marginBottom: 6 }}>
+                            {name ? <div>子任务: {name}</div> : null}
+                            {instruction ? <div>说明: {instruction}</div> : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -400,7 +445,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   };
 
   const renderSummary = () => {
-    if (!finalSummary) return null;
+    if (!displayText) return null;
     return (
       <div style={{ marginTop: 4 }}>
         <ReactMarkdown
@@ -443,7 +488,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             },
           }}
         >
-          {finalSummary}
+          {displayText}
         </ReactMarkdown>
       </div>
     );
@@ -685,23 +730,29 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           {type === 'assistant' && renderAvatar()}
         
         <div className="message-bubble">
-          {unifiedStream ? (
-            <>
-              {renderAnalysis()}
-              {renderToolProgress()}
-              {renderSummary()}
-            </>
-          ) : (
-            <>
-              {renderContent()}
-              {renderPendingActions()}
-              {!isPendingAction && renderUnifiedStatusLine()}
-              {!isPendingAction && renderToolStatusBar()}
-              {hasFooterDivider && !isPendingAction && <Divider style={{ margin: '12px 0' }} dashed />}
-              {!isPendingAction && renderJobLogPanel()}
-              {renderMetadata()}
-            </>
-          )}
+          {(() => {
+            // 统一摘要块，在非 unifiedStream 时也优先使用
+            const summaryBlock = renderSummary();
+            if (unifiedStream) {
+              return (
+                <>
+                  {renderToolProgress()}
+                  {summaryBlock}
+                </>
+              );
+            }
+            return (
+              <>
+                {summaryBlock ?? renderContent()}
+                {renderPendingActions()}
+                {!isPendingAction && renderUnifiedStatusLine()}
+                {!isPendingAction && renderToolStatusBar()}
+                {hasFooterDivider && !isPendingAction && <Divider style={{ margin: '12px 0' }} dashed />}
+                {!isPendingAction && renderJobLogPanel()}
+                {renderMetadata()}
+              </>
+            );
+          })()}
         </div>
       </div>
       

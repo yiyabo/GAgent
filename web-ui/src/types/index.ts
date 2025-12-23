@@ -118,11 +118,13 @@ export interface PlanExecutionSummary {
 }
 
 export type WebSearchProvider = 'builtin' | 'perplexity' | 'tavily';
-export type BaseModelOption = 'qwen3-max' | 'glm-4.6' | 'kimi-k2-thinking';
+export type LLMProviderOption = 'glm' | 'qwen' | 'openai' | 'perplexity';
+export type BaseModelOption = 'qwen3-max' | 'glm-4.6' | 'kimi-k2-thinking' | 'gpt-5.2-2025-12-11';
 
 export interface ChatSessionSettings {
   default_search_provider?: WebSearchProvider | null;
   default_base_model?: BaseModelOption | null;
+  default_llm_provider?: LLMProviderOption | null;
 }
 
 // 聊天会话摘要（来自后端）
@@ -436,6 +438,7 @@ export interface ChatSession {
   is_active?: boolean;
   defaultSearchProvider?: WebSearchProvider | null;
   defaultBaseModel?: BaseModelOption | null;
+  defaultLLMProvider?: LLMProviderOption | null;
   titleSource?: string | null;
   isUserNamed?: boolean | null;
 }

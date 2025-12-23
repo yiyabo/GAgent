@@ -10,6 +10,7 @@ import type {
   ChatSessionAutoTitleBulkResponse,
   BaseModelOption,
   WebSearchProvider,
+  LLMProviderOption,
 } from '@/types';
 
 interface ChatMessage {
@@ -39,6 +40,7 @@ export class ChatApi extends BaseApi {
     metadata?: Record<string, any>;
     default_search_provider?: WebSearchProvider | null;
     default_base_model?: BaseModelOption | null;
+    default_llm_provider?: LLMProviderOption | null;
   }): Promise<ChatResponsePayload> => {
     const request: ChatRequest = {
       message,
@@ -56,6 +58,9 @@ export class ChatApi extends BaseApi {
         default_base_model:
           context?.default_base_model ??
           context?.metadata?.default_base_model,
+        default_llm_provider:
+          context?.default_llm_provider ??
+          context?.metadata?.default_llm_provider,
       }
     };
 
@@ -63,6 +68,7 @@ export class ChatApi extends BaseApi {
       const {
         default_search_provider: _ignoredProvider,
         default_base_model: _ignoredBaseModel,
+        default_llm_provider: _ignoredLLMProvider,
         ...restMetadata
       } = context.metadata;
       request.context = {
