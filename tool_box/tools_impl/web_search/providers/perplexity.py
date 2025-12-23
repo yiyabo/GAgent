@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from typing import Any, Dict, List
 
 import aiohttp
@@ -24,7 +25,7 @@ def _format_results(answer: str) -> List[Dict[str, Any]]:
         {
             "title": "Perplexity Answer",
             "url": "",
-            "snippet": answer[:500],
+            "snippet": answer,
             "source": "Perplexity",
         }
     ]
@@ -65,9 +66,27 @@ async def search(
         "stream": False,
     }
 
+    proxy = (
+        os.getenv("HTTPS_PROXY")
+        or os.getenv("https_proxy")
+        or os.getenv("ALL_PROXY")
+        or os.getenv("all_proxy")
+        or os.getenv("HTTP_PROXY")
+        or os.getenv("http_proxy")
+    )
+    if proxy and proxy.lower().startswith("socks"):
+        logger.warning(
+            "Perplexity proxy uses SOCKS scheme (%s). aiohttp does not support SOCKS "
+            "without extra dependencies; skipping proxy.",
+            proxy,
+        )
+        proxy = None
+
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(api_url, headers=headers, json=payload) as response:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with session.post(
+                api_url, headers=headers, json=payload, proxy=proxy
+            ) as response:
                 text = await response.text()
                 if response.status != 200:
                     raise WebSearchError(

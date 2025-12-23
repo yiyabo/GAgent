@@ -8,6 +8,7 @@ import type {
   ChatSessionUpdatePayload,
   ChatSessionAutoTitleResult,
   ChatSessionAutoTitleBulkResponse,
+  BaseModelOption,
   WebSearchProvider,
 } from '@/types';
 
@@ -37,6 +38,7 @@ export class ChatApi extends BaseApi {
     session_id?: string;
     metadata?: Record<string, any>;
     default_search_provider?: WebSearchProvider | null;
+    default_base_model?: BaseModelOption | null;
   }): Promise<ChatResponsePayload> => {
     const request: ChatRequest = {
       message,
@@ -51,11 +53,18 @@ export class ChatApi extends BaseApi {
         default_search_provider:
           context?.default_search_provider ??
           context?.metadata?.default_search_provider,
+        default_base_model:
+          context?.default_base_model ??
+          context?.metadata?.default_base_model,
       }
     };
 
     if (context?.metadata) {
-      const { default_search_provider: _ignored, ...restMetadata } = context.metadata;
+      const {
+        default_search_provider: _ignoredProvider,
+        default_base_model: _ignoredBaseModel,
+        ...restMetadata
+      } = context.metadata;
       request.context = {
         ...request.context,
         ...restMetadata,

@@ -61,6 +61,8 @@ def _validate_command(args: Sequence[str]) -> None:
 
 
 def _truncate_output(data: bytes) -> tuple[str, bool]:
+    if _MAX_OUTPUT_BYTES <= 0:
+        return data.decode("utf-8", errors="replace"), False
     if len(data) <= _MAX_OUTPUT_BYTES:
         return data.decode("utf-8", errors="replace"), False
     truncated = data[: _MAX_OUTPUT_BYTES]

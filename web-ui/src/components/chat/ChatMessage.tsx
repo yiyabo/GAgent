@@ -403,7 +403,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             <ToolResultCard
               key={`${result.name ?? 'tool'}_${index}`}
               payload={result}
-              defaultOpen={index === 0}
+              defaultOpen={false}
             />
           ))}
         </Space>
