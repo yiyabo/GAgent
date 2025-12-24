@@ -3235,7 +3235,7 @@ class StructuredChatAgent:
         common_rules = [
             "Return only a JSON object that matches the schema above\u0014no code fences or additional commentary.",
             "`llm_reply.message` must be natural language directed to the user.",
-            "IMPORTANT UX: If you include any actions, `llm_reply.message` must be a short tool-plan preface (1-2 sentences) describing what tools you will use next; do NOT provide the final answer until tools have run.",
+            "IMPORTANT UX: Two distinct modes—(1) With actions: brief preface (1-2 sentences) of what tools will do. (2) Without actions: complete, detailed answer (200-500 words typical) with specific examples and insights. NEVER give just a framework or preface when no actions are planned.",
             "Fill `actions` in execution order (`order` starts at 1); use an empty array if no actions are required.",
             "Use the `kind`/`name` pairs from the action catalog without inventing new values.",
             "Before invoking heavy tools such as `claude_code`, consider whether the user's request should first be organized as a structured plan; when appropriate, propose or refine a plan and obtain user confirmation on the updated tasks before execution.",
