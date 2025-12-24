@@ -39,13 +39,26 @@ interface ChatMessageListProps {
   relevantMemories: Memory[];
   isProcessing: boolean;
   listHeight: number;
+  onReachTop?: () => void;
+  canLoadMore?: boolean;
+  isHistoryLoading?: boolean;
 }
 
 type ChatListItem = ChatMessageType | { id: string; kind: 'memory_notice'; count: number };
 
 const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
-  ({ messages, relevantMemories, isProcessing, listHeight }) => {
+  ({
+    messages,
+    relevantMemories,
+    isProcessing,
+    listHeight,
+    onReachTop,
+    canLoadMore = false,
+    isHistoryLoading = false,
+  }) => {
     const listRef = useRef<ListRef>(null);
+    const pendingAdjustRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+    const loadMoreLockRef = useRef(false);
     const listData = useMemo<ChatListItem[]>(() => {
       if (relevantMemories.length === 0) {
         return messages;
@@ -85,10 +98,48 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
       if (!listRef.current || listData.length === 0) {
         return;
       }
+      if (pendingAdjustRef.current || isHistoryLoading) {
+        return;
+      }
       listRef.current.scrollTo({ index: listData.length - 1, align: 'bottom' });
-    }, [listData, isProcessing]);
+    }, [listData, isProcessing, isHistoryLoading]);
+
+    useEffect(() => {
+      if (isHistoryLoading) {
+        return;
+      }
+      loadMoreLockRef.current = false;
+      if (!pendingAdjustRef.current || !listRef.current) {
+        return;
+      }
+      const container = listRef.current.nativeElement;
+      const delta = container.scrollHeight - pendingAdjustRef.current.scrollHeight;
+      if (delta > 0) {
+        listRef.current.scrollTo(pendingAdjustRef.current.scrollTop + delta);
+      }
+      pendingAdjustRef.current = null;
+    }, [isHistoryLoading, listData.length]);
 
     const resolvedHeight = listHeight > 0 ? listHeight : 360;
+    const handleScroll = useCallback(
+      (event: React.UIEvent<HTMLElement>) => {
+        if (!onReachTop || !canLoadMore || isHistoryLoading || loadMoreLockRef.current) {
+          return;
+        }
+        const target = event.currentTarget;
+        if (target.scrollTop <= 80) {
+          if (listRef.current) {
+            pendingAdjustRef.current = {
+              scrollTop: target.scrollTop,
+              scrollHeight: target.scrollHeight,
+            };
+          }
+          loadMoreLockRef.current = true;
+          onReachTop();
+        }
+      },
+      [onReachTop, canLoadMore, isHistoryLoading]
+    );
 
     return (
       <VirtualList
@@ -97,6 +148,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
         height={resolvedHeight}
         itemHeight={120}
         itemKey="id"
+        onScroll={handleScroll}
         style={{
           padding: '0 24px',
           maxWidth: 900,
@@ -138,6 +190,9 @@ const ChatMainArea: React.FC = () => {
     defaultLLMProvider,
     setDefaultLLMProvider,
     isUpdatingLLMProvider,
+    historyHasMore,
+    historyBeforeId,
+    historyLoading,
   } = useChatStore(
     (state) => ({
       messages: state.messages,
@@ -161,6 +216,9 @@ const ChatMainArea: React.FC = () => {
       defaultLLMProvider: state.defaultLLMProvider,
       setDefaultLLMProvider: state.setDefaultLLMProvider,
       isUpdatingLLMProvider: state.isUpdatingLLMProvider,
+      historyHasMore: state.historyHasMore,
+      historyBeforeId: state.historyBeforeId,
+      historyLoading: state.historyLoading,
     }),
     shallow
   );
@@ -293,6 +351,14 @@ const ChatMainArea: React.FC = () => {
       handleSendMessage();
     }
   };
+
+  const handleLoadMoreHistory = useCallback(async () => {
+    if (!currentSession || !historyHasMore || historyLoading) {
+      return;
+    }
+    const sessionId = currentSession.session_id ?? currentSession.id;
+    await loadChatHistory(sessionId, { beforeId: historyBeforeId, append: true });
+  }, [currentSession, historyHasMore, historyLoading, historyBeforeId, loadChatHistory]);
 
   // 快捷操作
   const quickActions = [
@@ -471,6 +537,9 @@ const ChatMainArea: React.FC = () => {
             relevantMemories={relevantMemories}
             isProcessing={isProcessing}
             listHeight={messageAreaHeight}
+            onReachTop={handleLoadMoreHistory}
+            canLoadMore={historyHasMore}
+            isHistoryLoading={historyLoading}
           />
         )}
       </div>
