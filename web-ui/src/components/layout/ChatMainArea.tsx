@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import {
   App as AntdApp,
   Input,
@@ -27,25 +27,103 @@ import { useTasksStore } from '@store/tasks';
 import ChatMessage from '@components/chat/ChatMessage';
 import FileUploadButton from '@components/chat/FileUploadButton';
 import UploadedFilesList from '@components/chat/UploadedFilesList';
+import { shallow } from 'zustand/shallow';
+import type { ChatMessage as ChatMessageType, Memory } from '@/types';
+import VirtualList, { ListRef } from 'rc-virtual-list';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
 
+interface ChatMessageListProps {
+  messages: ChatMessageType[];
+  relevantMemories: Memory[];
+  isProcessing: boolean;
+  listHeight: number;
+}
+
+type ChatListItem = ChatMessageType | { id: string; kind: 'memory_notice'; count: number };
+
+const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
+  ({ messages, relevantMemories, isProcessing, listHeight }) => {
+    const listRef = useRef<ListRef>(null);
+    const listData = useMemo<ChatListItem[]>(() => {
+      if (relevantMemories.length === 0) {
+        return messages;
+      }
+      return [
+        { id: '__memory_notice__', kind: 'memory_notice', count: relevantMemories.length },
+        ...messages,
+      ];
+    }, [messages, relevantMemories.length]);
+
+    const renderItem = useCallback((item: ChatListItem) => {
+      if ('kind' in item && item.kind === 'memory_notice') {
+        return (
+          <div
+            style={{
+              marginBottom: 16,
+              padding: '10px 14px',
+              background: 'var(--bg-tertiary)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: 12,
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <span style={{ color: 'var(--primary-color)' }}>🧠</span>
+            {item.count} 条相关记忆
+          </div>
+        );
+      }
+      return (
+        <div style={{ marginBottom: 16 }}>
+          <ChatMessage message={item} />
+        </div>
+      );
+    }, []);
+
+    useEffect(() => {
+      if (!listRef.current || listData.length === 0) {
+        return;
+      }
+      listRef.current.scrollTo({ index: listData.length - 1, align: 'bottom' });
+    }, [listData, isProcessing]);
+
+    const resolvedHeight = listHeight > 0 ? listHeight : 360;
+
+    return (
+      <VirtualList
+        ref={listRef}
+        data={listData}
+        height={resolvedHeight}
+        itemHeight={120}
+        itemKey="id"
+        style={{
+          padding: '0 24px',
+          maxWidth: 900,
+          margin: '0 auto',
+          width: '100%',
+        }}
+      >
+        {(item) => renderItem(item as ChatListItem)}
+      </VirtualList>
+    );
+  }
+);
+
 const ChatMainArea: React.FC = () => {
   const { message } = AntdApp.useApp();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<any>(null);
+  const messageContainerRef = useRef<HTMLDivElement>(null);
+  const [messageAreaHeight, setMessageAreaHeight] = useState(0);
 
   const {
     messages,
-    inputText,
     isProcessing,
     currentSession,
     currentPlanTitle,
     currentTaskName,
     memoryEnabled,
     relevantMemories,
-    setInputText,
     sendMessage,
     startNewSession,
     loadSessions,
@@ -60,16 +138,49 @@ const ChatMainArea: React.FC = () => {
     defaultLLMProvider,
     setDefaultLLMProvider,
     isUpdatingLLMProvider,
-  } = useChatStore();
+  } = useChatStore(
+    (state) => ({
+      messages: state.messages,
+      isProcessing: state.isProcessing,
+      currentSession: state.currentSession,
+      currentPlanTitle: state.currentPlanTitle,
+      currentTaskName: state.currentTaskName,
+      memoryEnabled: state.memoryEnabled,
+      relevantMemories: state.relevantMemories,
+      sendMessage: state.sendMessage,
+      startNewSession: state.startNewSession,
+      loadSessions: state.loadSessions,
+      loadChatHistory: state.loadChatHistory,
+      toggleMemory: state.toggleMemory,
+      defaultSearchProvider: state.defaultSearchProvider,
+      setDefaultSearchProvider: state.setDefaultSearchProvider,
+      isUpdatingProvider: state.isUpdatingProvider,
+      defaultBaseModel: state.defaultBaseModel,
+      setDefaultBaseModel: state.setDefaultBaseModel,
+      isUpdatingBaseModel: state.isUpdatingBaseModel,
+      defaultLLMProvider: state.defaultLLMProvider,
+      setDefaultLLMProvider: state.setDefaultLLMProvider,
+      isUpdatingLLMProvider: state.isUpdatingLLMProvider,
+    }),
+    shallow
+  );
 
   const { selectedTask, currentPlan } = useTasksStore();
+  const [inputText, setInputText] = useState('');
 
-  // 自动滚动到底部
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({
-      behavior: isProcessing ? 'auto' : 'smooth',
+    if (!messageContainerRef.current) {
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      if (!entries.length) {
+        return;
+      }
+      setMessageAreaHeight(entries[0].contentRect.height);
     });
-  }, [messages, isProcessing]);
+    observer.observe(messageContainerRef.current);
+    return () => observer.disconnect();
+  }, []);
 
   // 初始化会话：优先从后端加载列表
   useEffect(() => {
@@ -105,6 +216,7 @@ const ChatMainArea: React.FC = () => {
     };
 
     await sendMessage(inputText.trim(), metadata);
+    setInputText('');
     inputRef.current?.focus();
   };
 
@@ -342,44 +454,24 @@ const ChatMainArea: React.FC = () => {
       </div>
 
       {/* 消息区域 */}
-      <div style={{
-        flex: 1,
-        overflow: 'auto',
-        background: 'var(--bg-primary)',
-        padding: '16px 0',
-      }}>
+      <div
+        ref={messageContainerRef}
+        style={{
+          flex: 1,
+          overflow: 'hidden',
+          background: 'var(--bg-primary)',
+          padding: '16px 0',
+        }}
+      >
         {messages.length === 0 ? (
           renderWelcome()
         ) : (
-          <div style={{
-            padding: '0 24px',
-            maxWidth: 900,
-            margin: '0 auto',
-            width: '100%',
-          }}>
-            {/* 相关记忆提示 - 极简风格 */}
-            {relevantMemories.length > 0 && (
-              <div style={{
-                marginBottom: 16,
-                padding: '10px 14px',
-                background: 'var(--bg-tertiary)',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: 12,
-                color: 'var(--text-secondary)',
-              }}>
-                <span style={{ color: 'var(--primary-color)' }}>🧠</span>
-                {relevantMemories.length} 条相关记忆
-              </div>
-            )}
-
-            {messages.map((message) => (
-              <div key={message.id} style={{ marginBottom: 16 }}>
-                <ChatMessage message={message} />
-              </div>
-            ))}
-            
-            <div ref={messagesEndRef} />
-          </div>
+          <ChatMessageList
+            messages={messages}
+            relevantMemories={relevantMemories}
+            isProcessing={isProcessing}
+            listHeight={messageAreaHeight}
+          />
         )}
       </div>
 
