@@ -589,6 +589,26 @@ async def bulk_autotitle_chat_sessions(
     )
 
 
+@router.head("/sessions/{session_id}")
+async def head_chat_session(session_id: str) -> Response:
+    """Check if a chat session exists (returns only headers, no body)."""
+    from ..database import get_db  # lazy import
+
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT id FROM chat_sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Session not found")
+            return Response(status_code=200)
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to check chat session %s: %s", session_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to check session") from exc
+
+
 @router.delete("/sessions/{session_id}", status_code=204)
 async def delete_chat_session(
     session_id: str, archive: bool = Query(False)

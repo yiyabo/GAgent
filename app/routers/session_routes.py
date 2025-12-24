@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 from ..database_pool import get_db
@@ -118,6 +118,22 @@ async def get_sessions():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.head("/sessions/{session_id}")
+async def head_session(session_id: str):
+    """Check if a session exists (returns only headers, no body)"""
+    try:
+        with get_db() as conn:
+            cursor = conn.execute("SELECT id FROM chat_sessions WHERE id = ?", (session_id,))
+            if cursor.fetchone():
+                return Response(status_code=200)
+            raise HTTPException(status_code=404, detail="Session not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/sessions/{session_id}", response_model=SessionResponse)
 async def get_session(session_id: str):
     """Get a specific session with task count"""
@@ -132,7 +148,7 @@ async def get_session(session_id: str):
                 WHERE s.id = ?
                 GROUP BY s.id, s.name, s.created_at, s.updated_at, s.is_active
             """, (session_id,))
-            
+
             session = cursor.fetchone()
             if session:
                 return SessionResponse(
@@ -146,9 +162,9 @@ async def get_session(session_id: str):
                     current_task_id=session[6],
                     current_task_name=session[7],
                 )
-                
+
         raise HTTPException(status_code=404, detail="Session not found")
-        
+
     except Exception as e:
         logger.error(f"Error getting session {session_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
