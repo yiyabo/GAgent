@@ -7,6 +7,7 @@ Designed as a drop-in replacement for GLMApiClient.
 """
 
 import logging
+import threading
 import time
 from typing import Any, Dict, List
 
@@ -33,6 +34,7 @@ class LocalEmbeddingClient:
         # Lazy load the model
         self._model_instance = None
         self._device = None
+        self._model_lock = threading.Lock()
         
         # IMPORTANT: Set self.model to model_name (string) for cache compatibility
         # This is used by batch processor: self.cache.put(text, embedding, self.api_client.model)
@@ -44,27 +46,29 @@ class LocalEmbeddingClient:
     def _model(self):
         """Lazy load the sentence-transformers model"""
         if self._model_instance is None:
-            try:
-                from sentence_transformers import SentenceTransformer
-                import torch
-                
-                # Determine device
-                self._device = 'cuda' if torch.cuda.is_available() else 'cpu'
-                logger.info(f"Loading model on device: {self._device}")
-                
-                # Load model
-                self._model_instance = SentenceTransformer(self.model_name, device=self._device)
-                logger.info(f"Model loaded successfully: {self.model_name}")
-                
-            except ImportError:
-                logger.error("sentence-transformers not installed. Install with: pip install sentence-transformers")
-                raise ImportError(
-                    "sentence-transformers is required for local embeddings. "
-                    "Install with: pip install sentence-transformers"
-                )
-            except Exception as e:
-                logger.error(f"Failed to load model {self.model_name}: {e}")
-                raise
+            with self._model_lock:
+                if self._model_instance is None:
+                    try:
+                        from sentence_transformers import SentenceTransformer
+                        import torch
+
+                        # Determine device
+                        self._device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                        logger.info(f"Loading model on device: {self._device}")
+
+                        # Load model
+                        self._model_instance = SentenceTransformer(self.model_name, device=self._device)
+                        logger.info(f"Model loaded successfully: {self.model_name}")
+
+                    except ImportError:
+                        logger.error("sentence-transformers not installed. Install with: pip install sentence-transformers")
+                        raise ImportError(
+                            "sentence-transformers is required for local embeddings. "
+                            "Install with: pip install sentence-transformers"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to load model {self.model_name}: {e}")
+                        raise
         
         return self._model_instance
 

@@ -388,6 +388,7 @@ export interface ChatMessage {
     task_name?: string | null;
     workflow_id?: string | null;
     session_id?: string;
+    backend_id?: number;
     plan_id?: number | null;
     status?: ChatActionStatus;
     tracking_id?: string;

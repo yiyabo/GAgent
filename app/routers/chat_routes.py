@@ -192,6 +192,7 @@ class StructuredReplyStreamParser:
 class ChatMessage(BaseModel):
     """Structure of an individual chat message."""
 
+    id: Optional[int] = None
     role: str  # "user" | "assistant" | "system"
     content: str
     timestamp: Optional[str] = None
@@ -690,15 +691,21 @@ async def chat_status() -> ChatStatusResponse:
 
 
 @router.get("/history/{session_id}")
-async def get_chat_history(session_id: str, limit: int = 50):
+async def get_chat_history(
+    session_id: str,
+    limit: int = 50,
+    before_id: Optional[int] = Query(default=None, ge=1),
+):
     """Fetch history for a specific session."""
     try:
-        messages = _load_chat_history(session_id, limit)
+        messages, has_more = _load_chat_history(session_id, limit, before_id)
+        next_before_id = messages[0].id if messages else None
         return {
             "success": True,
             "session_id": session_id,
             "messages": [
                 {
+                    "id": msg.id,
                     "role": msg.role,
                     "content": msg.content,
                     "timestamp": msg.timestamp,
@@ -707,6 +714,8 @@ async def get_chat_history(session_id: str, limit: int = 50):
                 for msg in messages
             ],
             "total": len(messages),
+            "has_more": has_more,
+            "next_before_id": next_before_id,
         }
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Failed to get chat history: %s", exc)
@@ -1760,37 +1769,52 @@ def _save_chat_message(
         logger.warning("Failed to save chat message: %s", exc)
 
 
-def _load_chat_history(session_id: str, limit: int = 50) -> List[ChatMessage]:
+def _load_chat_history(
+    session_id: str, limit: int = 50, before_id: Optional[int] = None
+) -> Tuple[List[ChatMessage], bool]:
     """Load session history."""
     try:
         from ..database import get_db  # lazy import
 
         with get_db() as conn:
             cursor = conn.cursor()
+            params: List[Any] = [session_id]
+            before_clause = ""
+            if before_id is not None:
+                before_clause = "AND id < ?"
+                params.append(before_id)
+            params.append(limit + 1)
             cursor.execute(
-                """
-                SELECT role, content, metadata, created_at
+                f"""
+                SELECT id, role, content, metadata, created_at
                 FROM chat_messages
                 WHERE session_id = ?
-                ORDER BY created_at ASC
+                {before_clause}
+                ORDER BY id DESC
                 LIMIT ?
                 """,
-                (session_id, limit),
+                params,
             )
             rows = cursor.fetchall()
 
-        return [
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        rows.reverse()
+
+        messages = [
             ChatMessage(
+                id=msg_id,
                 role=role,
                 content=content,
                 timestamp=created_at,
                 metadata=_loads_metadata(metadata_raw),
             )
-            for role, content, metadata_raw, created_at in rows
+            for msg_id, role, content, metadata_raw, created_at in rows
         ]
+        return messages, has_more
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to load history: %s", exc)
-        return []
+        return [], False
 
 
 def _save_assistant_response(

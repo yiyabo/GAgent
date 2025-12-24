@@ -441,12 +441,35 @@ const waitForActionCompletionViaStream = async (
 const pendingAutotitleSessions = new Set<string>();
 const autoTitleHistory = new Map<string, { planId: number | null }>();
 
+const resolveHistoryCursor = (messages: ChatMessage[]): number | null => {
+  let minId: number | null = null;
+  for (const msg of messages) {
+    const backendId = msg.metadata?.backend_id;
+    if (typeof backendId === 'number' && Number.isFinite(backendId)) {
+      minId = minId === null ? backendId : Math.min(minId, backendId);
+      continue;
+    }
+    const match = msg.id.match(/_(\d+)$/);
+    if (match) {
+      const parsed = Number(match[1]);
+      if (!Number.isNaN(parsed)) {
+        minId = minId === null ? parsed : Math.min(minId, parsed);
+      }
+    }
+  }
+  return minId;
+};
+
 interface ChatState {
   // 聊天数据
   currentSession: ChatSession | null;
   sessions: ChatSession[];
   messages: ChatMessage[];
   currentWorkflowId: string | null;
+  historyHasMore: boolean;
+  historyBeforeId: number | null;
+  historyLoading: boolean;
+  historyPageSize: number;
 
   // 当前上下文
   currentPlanId: number | null;
@@ -520,7 +543,10 @@ interface ChatState {
   retryActionRun: (trackingId: string, rawActions?: any[]) => Promise<void>;
   startNewSession: (title?: string) => ChatSession;
   restoreSession: (sessionId: string, title?: string) => Promise<ChatSession>;
-  loadChatHistory: (sessionId: string) => Promise<void>;
+  loadChatHistory: (
+    sessionId: string,
+    options?: { beforeId?: number | null; append?: boolean; pageSize?: number }
+  ) => Promise<void>;
   setDefaultSearchProvider: (provider: WebSearchProvider | null) => Promise<void>;
   setDefaultBaseModel: (model: BaseModelOption | null) => Promise<void>;
   setDefaultLLMProvider: (provider: LLMProviderOption | null) => Promise<void>;
@@ -539,6 +565,10 @@ export const useChatStore = create<ChatState>()(
     sessions: [],
     messages: [],
     currentWorkflowId: null,
+    historyHasMore: false,
+    historyBeforeId: null,
+    historyLoading: false,
+    historyPageSize: 100,
     currentPlanId: null,
     currentPlanTitle: null,
     currentTaskId: null,
@@ -568,6 +598,8 @@ export const useChatStore = create<ChatState>()(
       const provider = session?.defaultSearchProvider ?? null;
       const baseModel = session?.defaultBaseModel ?? null;
       const llmProvider = session?.defaultLLMProvider ?? null;
+      const historyCursor = session ? resolveHistoryCursor(session.messages) : null;
+      const historyHasMore = historyCursor !== null;
 
       set({
         currentSession: session,
@@ -580,6 +612,9 @@ export const useChatStore = create<ChatState>()(
         defaultSearchProvider: provider,
         defaultBaseModel: baseModel,
         defaultLLMProvider: llmProvider,
+        historyBeforeId: historyCursor,
+        historyHasMore,
+        historyLoading: false,
       });
       
       if (session) {
@@ -789,7 +824,13 @@ export const useChatStore = create<ChatState>()(
     })),
 
     // 清空消息
-    clearMessages: () => set({ messages: [] }),
+    clearMessages: () =>
+      set({
+        messages: [],
+        historyBeforeId: null,
+        historyHasMore: false,
+        historyLoading: false,
+      }),
 
     // 设置聊天上下文
     setChatContext: ({ planId, planTitle, taskId, taskName }) => {
@@ -1863,27 +1904,51 @@ export const useChatStore = create<ChatState>()(
     },
 
     // 加载聊天历史
-    loadChatHistory: async (sessionId: string) => {
+    loadChatHistory: async (sessionId: string, options) => {
+      const { beforeId = null, append = false, pageSize } = options ?? {};
+      if (append && (beforeId === null || beforeId === undefined)) {
+        set({ historyHasMore: false });
+        return;
+      }
+      if (append && get().historyLoading) {
+        return;
+      }
+      const limit = pageSize ?? get().historyPageSize ?? 50;
       try {
+        set({ historyLoading: true });
         console.log('📖 加载聊天历史:', sessionId);
-        const response = await fetch(`${ENV.API_BASE_URL}/chat/history/${sessionId}?limit=100`);
-        
+        const query = new URLSearchParams({ limit: String(limit) });
+        if (beforeId !== null && beforeId !== undefined) {
+          query.set('before_id', String(beforeId));
+        }
+        const response = await fetch(
+          `${ENV.API_BASE_URL}/chat/history/${sessionId}?${query.toString()}`
+        );
+
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
+
         const data = await response.json();
-        
+        const hasMore =
+          typeof data.has_more === 'boolean'
+            ? data.has_more
+            : Array.isArray(data.messages) && data.messages.length >= limit;
+
         if (data.success && data.messages && data.messages.length > 0) {
           console.log(`✅ 加载了 ${data.messages.length} 条历史消息`);
-          
-          // 转换后端消息格式为前端格式
-          const existingToolResults = buildToolResultsCache(get().messages);
-          const messages: ChatMessage[] = data.messages.map((msg: any, index: number) => {
+
+          const existingMessages = get().messages;
+          const existingToolResults = buildToolResultsCache(existingMessages);
+
+          const newMessages: ChatMessage[] = data.messages.map((msg: any, index: number) => {
             const metadata =
               msg.metadata && typeof msg.metadata === 'object'
                 ? { ...(msg.metadata as Record<string, any>) }
                 : {};
+            if (typeof msg.id === 'number') {
+              metadata.backend_id = msg.id;
+            }
             const trackingId =
               typeof metadata.tracking_id === 'string' ? metadata.tracking_id : null;
             let toolResults = collectToolResultsFromMetadata(metadata.tool_results);
@@ -1893,18 +1958,30 @@ export const useChatStore = create<ChatState>()(
             if (toolResults.length > 0) {
               metadata.tool_results = toolResults;
             }
+            const backendId =
+              typeof msg.id === 'number' ? msg.id : null;
+            const messageId = backendId !== null ? `${sessionId}_${backendId}` : `${sessionId}_${index}`;
             return {
-              id: `${sessionId}_${index}`,
+              id: messageId,
               type: (msg.role || 'assistant') as 'user' | 'assistant' | 'system',
               content: msg.content,
               timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
               metadata,
             };
           });
-          
-          // 更新消息列表
+
+          const merged = append ? [...newMessages, ...existingMessages] : newMessages;
+          const seen = new Set<string>();
+          const messages = merged.filter((msg) => {
+            if (seen.has(msg.id)) {
+              return false;
+            }
+            seen.add(msg.id);
+            return true;
+          });
+
           set({ messages });
-          
+
           const planContext = derivePlanContextFromMessages(messages);
 
           set((state) => {
@@ -1945,12 +2022,30 @@ export const useChatStore = create<ChatState>()(
               currentPlanTitle: isCurrent ? planTitleValue ?? null : state.currentPlanTitle,
             };
           });
+
+          const nextBeforeId =
+            typeof data.next_before_id === 'number'
+              ? data.next_before_id
+              : resolveHistoryCursor(messages);
+          set({
+            historyBeforeId: nextBeforeId ?? null,
+            historyHasMore: hasMore,
+          });
         } else {
           console.log('📭 没有历史消息');
+          set({
+            historyHasMore: false,
+            historyBeforeId: null,
+          });
+          if (!append) {
+            set({ messages: [] });
+          }
         }
       } catch (error) {
         console.error('加载聊天历史失败:', error);
         throw error;
+      } finally {
+        set({ historyLoading: false });
       }
     },
 
