@@ -281,6 +281,14 @@ export interface DecompositionJobStatus {
   action_cursor?: string | null;
 }
 
+export interface JobLogTailResponse {
+  job_id: string;
+  log_path: string;
+  total_lines: number;
+  lines: string[];
+  truncated: boolean;
+}
+
 export interface ArtifactItem {
   name: string;
   path: string;
@@ -329,6 +337,10 @@ export interface UploadedFile {
   file_size: string;
   file_type: string;
   uploaded_at: string;
+  category?: string;
+  is_archive?: boolean;
+  extracted_path?: string;
+  extracted_files?: number;
 }
 
 export interface ChatResponseMetadata {
@@ -405,9 +417,10 @@ export interface ChatMessage {
     }>;
     code_blocks?: string[];
     attachments?: Array<{
-      type: 'pdf' | 'image';
+      type: 'file' | 'image';
       path: string;
       name: string;
+      extracted_path?: string;
     }>;
     task_search_result?: boolean;
     tasks_found?: number;

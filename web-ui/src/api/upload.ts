@@ -8,6 +8,10 @@ export interface UploadResponse {
   file_size: string;
   file_type: string;
   uploaded_at: string;
+  category?: string;
+  is_archive?: boolean;
+  extracted_path?: string;
+  extracted_files?: number;
   session_id?: string;
 }
 
@@ -18,6 +22,10 @@ export interface UploadedFileInfo {
   original_name: string;
   file_size: string;
   uploaded_at: string;
+  category?: string;
+  is_archive?: boolean;
+  extracted_path?: string;
+  extracted_files?: number;
 }
 
 export interface FileListResponse {
@@ -29,7 +37,7 @@ export interface FileListResponse {
 
 export class UploadApi extends BaseApi {
   /**
-   * 上传文件（PDF等）
+   * 上传文件
    */
   uploadFile = async (
     file: File,
@@ -41,26 +49,6 @@ export class UploadApi extends BaseApi {
 
     // 使用axios直接调用，因为需要设置特殊的Content-Type
     const response = await this.client.post<UploadResponse>('/upload/file', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-    return response.data;
-  };
-
-  /**
-   * 上传图片
-   */
-  uploadImage = async (
-    file: File,
-    sessionId: string
-  ): Promise<UploadResponse> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('session_id', sessionId);
-
-    // 使用axios直接调用，因为需要设置特殊的Content-Type
-    const response = await this.client.post<UploadResponse>('/upload/image', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },

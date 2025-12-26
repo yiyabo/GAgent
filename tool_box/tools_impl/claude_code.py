@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Callable, Awaitable
 import asyncio
+from app.services.plans.decomposition_jobs import get_current_job, log_job_event
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 
 # Claude Code 运行时目录
 _RUNTIME_DIR = _PROJECT_ROOT / "runtime"
+_LOG_DIR = _RUNTIME_DIR / "claude_code_logs"
 
 
 async def _generate_task_dir_name_llm(task: str) -> str:
@@ -128,6 +130,10 @@ async def claude_code_handler(
     Returns:
         Dict containing execution results
     """
+    log_file = None
+    log_path = None
+    log_lock = asyncio.Lock()
+
     try:
         # 确保 runtime 目录存在
         _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
@@ -160,6 +166,24 @@ async def claude_code_handler(
         file_prefix = f"run_{run_id}"
 
         logger.info(f"Using task workspace: {task_work_dir}")
+
+        try:
+            job_id = get_current_job()
+            if job_id:
+                _LOG_DIR.mkdir(parents=True, exist_ok=True)
+                log_path = _LOG_DIR / f"{job_id}.log"
+            else:
+                log_path = task_work_dir / "result" / f"{file_prefix}_claude_code.log"
+
+            log_file = open(log_path, "a", encoding="utf-8")
+            log_file.write(f"[{datetime.utcnow().isoformat()}Z] Claude Code started\n")
+            log_file.write(f"task: {task}\n")
+            log_file.write(f"workspace: {task_work_dir}\n")
+            log_file.flush()
+            log_job_event("info", "Claude Code log file initialized.", {"log_path": str(log_path)})
+            log_job_event("info", "Claude Code process starting.", {"workspace": str(task_work_dir)})
+        except Exception as log_exc:
+            logger.warning(f"Failed to initialize Claude Code log file: {log_exc}")
         
         # 处理额外允许访问的目录，转换为绝对路径列表
         allowed_dirs = []
@@ -268,25 +292,36 @@ async def claude_code_handler(
         stdout_lines = []
         stderr_lines = []
 
-        async def read_stream(stream, lines, callback):
+        async def read_stream(stream, lines, callback, stream_name: str):
             while True:
                 line = await stream.readline()
                 if not line:
                     break
-                decoded_line = line.decode().rstrip()
+                decoded_line = line.decode(errors="replace").rstrip()
                 lines.append(decoded_line)
+                formatted_line = f"[{stream_name}] {decoded_line}" if decoded_line else f"[{stream_name}]"
+                if log_file:
+                    try:
+                        async with log_lock:
+                            log_file.write(formatted_line + "\n")
+                            log_file.flush()
+                    except Exception as log_err:
+                        logger.warning(f"Failed to write Claude Code log line: {log_err}")
                 if callback:
                     try:
-                        await callback(decoded_line)
+                        capped_line = formatted_line
+                        if len(capped_line) > 4000:
+                            capped_line = capped_line[:3997] + "..."
+                        await callback(capped_line)
                     except Exception as e:
                         logger.error(f"Error in stream callback: {e}")
 
         # Create tasks to read stdout and stderr concurrently
         stdout_task = asyncio.create_task(
-            read_stream(process.stdout, stdout_lines, on_stdout)
+            read_stream(process.stdout, stdout_lines, on_stdout, "stdout")
         )
         stderr_task = asyncio.create_task(
-            read_stream(process.stderr, stderr_lines, on_stderr)
+            read_stream(process.stderr, stderr_lines, on_stderr, "stderr")
         )
 
         # Wait for process to finish and streams to close
@@ -306,6 +341,13 @@ async def claude_code_handler(
                 logger.warning("Failed to parse JSON output, using raw text")
                 output_data = {"raw_output": stdout}
         
+        if log_file:
+            try:
+                log_file.write(f"[{datetime.utcnow().isoformat()}Z] Claude Code finished (exit={return_code})\n")
+                log_file.flush()
+            except Exception as log_err:
+                logger.warning(f"Failed to finalize Claude Code log file: {log_err}")
+
         # 构建返回结果
         return {
             "tool": "claude_code",
@@ -322,6 +364,7 @@ async def claude_code_handler(
             "exit_code": return_code,
             "execution_mode": "claude_code_local",
             "working_directory": str(task_work_dir),
+            "log_path": str(log_path) if log_path else None,
         }
         
     except subprocess.TimeoutExpired:
@@ -344,6 +387,13 @@ async def claude_code_handler(
             "error": str(e),
             "task": task,
         }
+    finally:
+        if log_file:
+            try:
+                log_file.flush()
+                log_file.close()
+            except Exception:
+                pass
 
 
 # ToolBox 工具定义

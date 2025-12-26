@@ -395,7 +395,8 @@ const waitForActionCompletionViaStream = async (
 
   return new Promise((resolve) => {
     let finished = false;
-    const streamUrl = `${ENV.API_BASE_URL}/tasks/decompose/jobs/${trackingId}/stream`;
+    // 统一使用通用 jobs SSE（GET），避免 chat/stream(POST) 中断后无法继续拿到终态
+    const streamUrl = `${ENV.API_BASE_URL}/jobs/${trackingId}/stream`;
     const source = new EventSource(streamUrl);
 
     const finalize = async () => {
@@ -440,6 +441,7 @@ const waitForActionCompletionViaStream = async (
 
 const pendingAutotitleSessions = new Set<string>();
 const autoTitleHistory = new Map<string, { planId: number | null }>();
+const activeActionFollowups = new Set<string>();
 
 const resolveHistoryCursor = (messages: ChatMessage[]): number | null => {
   let minId: number | null = null;
@@ -553,7 +555,6 @@ interface ChatState {
   
   // 文件上传操作
   uploadFile: (file: File) => Promise<UploadedFile>;
-  uploadImage: (file: File) => Promise<UploadedFile>;
   removeUploadedFile: (fileId: string) => Promise<void>;
   clearUploadedFiles: () => void;
 }
@@ -964,11 +965,19 @@ export const useChatStore = create<ChatState>()(
       } = get();
       // 如果有上传的文件，添加到metadata中
       const attachments = uploadedFiles.length > 0
-        ? uploadedFiles.map((f) => ({
-            type: (f.file_type.startsWith('image/') ? 'image' : 'pdf') as 'pdf' | 'image',
-            path: f.file_path,
-            name: f.original_name,
-          }))
+        ? uploadedFiles.map((f) => {
+            const name = f.original_name || f.file_name;
+            const isImage = Boolean(
+              f.file_type?.startsWith('image/') ||
+              /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(name)
+            );
+            return {
+              type: (isImage ? 'image' : 'file') as 'image' | 'file',
+              path: f.file_path,
+              name,
+              ...(f.extracted_path ? { extracted_path: f.extracted_path } : {}),
+            };
+          })
         : undefined;
 
       const mergedMetadata = {
@@ -1074,6 +1083,108 @@ export const useChatStore = create<ChatState>()(
         };
         get().addMessage(assistantMessage);
         assistantMessageAdded = true;
+
+        // 启动后台动作状态轮询/补偿（SSE 丢失时确保最终内容写回）
+        const startActionStatusPolling = (
+          trackingId: string | null | undefined,
+          messageId: string,
+          initialStatus?: ChatActionStatus,
+          initialContent?: string | null
+        ) => {
+          if (!trackingId) return;
+          const pollOnce = async (): Promise<boolean> => {
+            try {
+              const resp = await fetch(`${ENV.API_BASE_URL}/chat/actions/${trackingId}`);
+              if (!resp.ok) return false;
+              const statusResp = (await resp.json()) as ActionStatusResponse;
+
+              const status = statusResp.status;
+              const done = status === 'completed' || status === 'failed';
+              const remoteToolResults = mergeToolResults(
+                collectToolResultsFromMetadata(statusResp.result?.tool_results),
+                collectToolResultsFromMetadata(statusResp.metadata?.tool_results)
+              );
+              const remoteAnalysis =
+                typeof statusResp.result?.analysis_text === 'string'
+                  ? statusResp.result.analysis_text
+                  : typeof statusResp.metadata?.analysis_text === 'string'
+                    ? statusResp.metadata.analysis_text
+                    : undefined;
+              const remoteFinalSummary =
+                typeof statusResp.result?.final_summary === 'string'
+                  ? statusResp.result.final_summary
+                  : typeof statusResp.metadata?.final_summary === 'string'
+                    ? statusResp.metadata.final_summary
+                    : undefined;
+              const remoteReply =
+                typeof statusResp.result?.reply === 'string'
+                  ? statusResp.result.reply
+                  : undefined;
+
+              const currentMessages = get().messages;
+              const targetMessage = currentMessages.find((msg) => msg.id === messageId);
+              if (!targetMessage) {
+                return done;
+              }
+              const currentMeta: ChatResponseMetadata = {
+                ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}),
+              };
+              const contentCandidate =
+                (remoteAnalysis && remoteAnalysis.trim()) ||
+                (remoteFinalSummary && remoteFinalSummary.trim()) ||
+                (remoteReply && remoteReply.trim()) ||
+                targetMessage.content ||
+                initialContent ||
+                '';
+
+              get().updateMessage(messageId, {
+                content: contentCandidate,
+                metadata: {
+                  ...currentMeta,
+                  status,
+                  analysis_text: remoteAnalysis ?? currentMeta.analysis_text,
+                  final_summary: remoteFinalSummary ?? currentMeta.final_summary,
+                  tool_results:
+                    remoteToolResults.length > 0
+                      ? remoteToolResults
+                      : currentMeta.tool_results,
+                },
+              });
+
+              // 完成后同步一次后端历史，确保展示与落库一致（最可靠，等价于用户手动刷新但无需刷新页面）
+              if (done) {
+                const sessionKey = get().currentSession?.session_id ?? get().currentSession?.id ?? null;
+                if (sessionKey) {
+                  void get().loadChatHistory(sessionKey).catch((e) =>
+                    console.warn('同步历史失败:', e)
+                  );
+                }
+              }
+
+              return done;
+            } catch (pollError) {
+              console.warn('补偿轮询动作状态失败:', pollError);
+              return false;
+            }
+          };
+
+          // 如果初始状态已经完成且已有内容，就不轮询
+          if (initialStatus === 'completed' || initialStatus === 'failed') {
+            void pollOnce();
+            return;
+          }
+
+          void (async () => {
+            const start = Date.now();
+            const timeoutMs = 90_000;
+            const intervalMs = 2_500;
+            while (Date.now() - start < timeoutMs) {
+              const done = await pollOnce();
+              if (done) break;
+              await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            }
+          })();
+        };
 
         const {
           default_search_provider: _ignoredProvider,
@@ -1278,6 +1389,8 @@ export const useChatStore = create<ChatState>()(
             const finalSummaryCandidate =
               typeof payload.result?.final_summary === 'string'
                 ? (payload.result.final_summary as string)
+                : typeof payload.result?.reply === 'string'
+                  ? (payload.result.reply as string)
                 : typeof payload.metadata?.final_summary === 'string'
                   ? (payload.metadata.final_summary as string)
                   : typeof payload.result?.response === 'string'
@@ -1326,6 +1439,12 @@ export const useChatStore = create<ChatState>()(
                 analysis_text: analysisCandidate ?? updatedMetadata.analysis_text,
               },
             });
+
+            // 补偿：无论是否已有正文，都再拉取一次最新状态，避免 SSE 丢包导致需手动刷新
+            const tracking = (updatedMetadata.tracking_id ?? payload.job_id) as string | undefined;
+            if (tracking) {
+              startActionStatusPolling(tracking, assistantMessageId, normalizedFinalStatus, contentWithStatus);
+            }
 
             set((state) => {
               const planIdValue = finalPlanIdCandidate ?? state.currentPlanId ?? null;
@@ -1391,7 +1510,10 @@ export const useChatStore = create<ChatState>()(
                 console.warn('同步会话信息失败:', patchError);
               }
 
-              // unified_stream：总结会写回同一条消息，不需要强制刷新历史
+              // 强制同步一次历史，确保 UI 立即拿到落库后的总结（避免用户手动刷新）
+              void get()
+                .loadChatHistory(sessionAfter.session_id ?? sessionAfter.id)
+                .catch((e) => console.warn('同步历史失败:', e));
             }
             if (flushTimer !== null) {
               window.clearTimeout(flushTimer);
@@ -1519,6 +1641,19 @@ export const useChatStore = create<ChatState>()(
         });
         set({ isProcessing: false });
 
+        const trackingIdForPoll =
+          typeof assistantMetadata.tracking_id === 'string' ? assistantMetadata.tracking_id : null;
+        if ((assistantMetadata as any).unified_stream === true && trackingIdForPoll) {
+          startActionStatusPolling(
+            trackingIdForPoll,
+            assistantMessageId,
+            assistantMetadata.status,
+            (assistantMetadata.analysis_text as string | undefined) ??
+              (assistantMetadata.final_summary as string | undefined) ??
+              null
+          );
+        }
+
         set((state) => {
           const planIdValue = resolvedPlanId ?? state.currentPlanId ?? null;
           const planTitleValue = resolvedPlanTitle ?? state.currentPlanTitle ?? null;
@@ -1608,6 +1743,151 @@ export const useChatStore = create<ChatState>()(
           typeof assistantMetadata.tracking_id === 'string'
             ? assistantMetadata.tracking_id
             : undefined;
+
+        // 兜底：如果 unified_stream 返回了 tracking_id（后台动作），但 chat/stream 的 job_update 没有顺利推到前端，
+        // 则通过 jobs SSE / 轮询 chat/actions 自动把最终总结回填到同一条消息，避免用户必须手动刷新。
+        if (
+          trackingId &&
+          (assistantMetadata.status === 'pending' || assistantMetadata.status === 'running') &&
+          !activeActionFollowups.has(trackingId)
+        ) {
+          activeActionFollowups.add(trackingId);
+          void (async () => {
+            try {
+              const timeoutMs = 10 * 60_000; // 最长等待 10 分钟
+              let lastStatus: ActionStatusResponse | null =
+                await waitForActionCompletionViaStream(trackingId, timeoutMs);
+
+              if (!lastStatus) {
+                const intervalMs = 2_500;
+                const start = Date.now();
+                while (Date.now() - start < timeoutMs) {
+                  try {
+                    const status = await chatApi.getActionStatus(trackingId);
+                    lastStatus = status;
+
+                    // 同步中间态（pending/running），让 UI 状态更贴近实际
+                    const interimMessages = get().messages;
+                    const interimTarget = interimMessages.find((msg) => msg.id === assistantMessageId);
+                    if (interimTarget) {
+                      const interimMeta: ChatResponseMetadata = {
+                        ...((interimTarget.metadata as ChatResponseMetadata | undefined) ?? {}),
+                      };
+                      if (status.status !== interimMeta.status) {
+                        get().updateMessage(assistantMessageId, {
+                          metadata: {
+                            ...interimMeta,
+                            status: status.status,
+                            tracking_id: trackingId,
+                            unified_stream: true,
+                          } as any,
+                        });
+                      }
+                    }
+
+                    if (status.status === 'completed' || status.status === 'failed') {
+                      break;
+                    }
+                  } catch (pollError) {
+                    console.warn('轮询动作状态失败:', pollError);
+                    break;
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, intervalMs));
+                }
+              }
+
+              if (!lastStatus) {
+                return;
+              }
+
+              const currentMessages = get().messages;
+              const targetMessage = currentMessages.find((msg) => msg.id === assistantMessageId);
+              if (!targetMessage) {
+                return;
+              }
+
+              const existingMetadata: ChatResponseMetadata = {
+                ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}),
+              };
+
+              const toolResultsFromResult = collectToolResultsFromMetadata(
+                (lastStatus.result as any)?.tool_results
+              );
+              const toolResultsFromMetadata = collectToolResultsFromMetadata(
+                (lastStatus.metadata as any)?.tool_results
+              );
+              const mergedToolResults = mergeToolResults(toolResultsFromResult, toolResultsFromMetadata);
+
+              const analysisCandidateRaw =
+                typeof (lastStatus.result as any)?.analysis_text === 'string'
+                  ? ((lastStatus.result as any).analysis_text as string)
+                  : null;
+              const analysisCandidate =
+                analysisCandidateRaw && analysisCandidateRaw.trim().length > 0
+                  ? analysisCandidateRaw
+                  : null;
+
+              const finalSummaryCandidateRaw =
+                typeof (lastStatus.result as any)?.final_summary === 'string'
+                  ? ((lastStatus.result as any).final_summary as string)
+                  : typeof (lastStatus.metadata as any)?.final_summary === 'string'
+                    ? ((lastStatus.metadata as any).final_summary as string)
+                    : null;
+              const finalSummaryCandidate =
+                finalSummaryCandidateRaw && finalSummaryCandidateRaw.trim().length > 0
+                  ? finalSummaryCandidateRaw
+                  : null;
+
+              const completionContent =
+                analysisCandidate ??
+                finalSummaryCandidate ??
+                (lastStatus.status === 'completed'
+                  ? '工具已完成，请查看结果。'
+                  : '执行失败，请查看错误信息。');
+
+              const nextMetadata: ChatResponseMetadata = {
+                ...existingMetadata,
+                status: lastStatus.status,
+                tracking_id: lastStatus.tracking_id ?? trackingId,
+                plan_id:
+                  typeof lastStatus.plan_id === 'number'
+                    ? lastStatus.plan_id
+                    : existingMetadata.plan_id ?? null,
+                actions: Array.isArray(lastStatus.actions) ? lastStatus.actions : existingMetadata.actions,
+                action_list: Array.isArray(lastStatus.actions)
+                  ? lastStatus.actions
+                  : existingMetadata.action_list,
+                errors: Array.isArray(lastStatus.errors) ? lastStatus.errors : existingMetadata.errors,
+              };
+              (nextMetadata as any).unified_stream = true;
+              if (analysisCandidate) {
+                (nextMetadata as any).analysis_text = analysisCandidate;
+              }
+              if (finalSummaryCandidate) {
+                (nextMetadata as any).final_summary = finalSummaryCandidate;
+              }
+              if (mergedToolResults.length > 0) {
+                nextMetadata.tool_results = mergedToolResults;
+              } else if ('tool_results' in nextMetadata) {
+                delete (nextMetadata as any).tool_results;
+              }
+
+              get().updateMessage(assistantMessageId, {
+                content: completionContent,
+                metadata: nextMetadata,
+              });
+
+              const sessionKey = get().currentSession?.session_id ?? get().currentSession?.id ?? null;
+              if (sessionKey) {
+                void get().loadChatHistory(sessionKey).catch((e) =>
+                  console.warn('同步历史失败:', e)
+                );
+              }
+            } finally {
+              activeActionFollowups.delete(trackingId);
+            }
+          })();
+        }
 
         if (!trackingId) {
           const planEvents = derivePlanSyncEventsFromActions(result.actions, {
@@ -2441,6 +2721,10 @@ export const useChatStore = create<ChatState>()(
           file_size: response.file_size,
           file_type: response.file_type,
           uploaded_at: response.uploaded_at,
+          category: response.category,
+          is_archive: response.is_archive,
+          extracted_path: response.extracted_path,
+          extracted_files: response.extracted_files,
         };
 
         set((state) => ({
@@ -2450,35 +2734,6 @@ export const useChatStore = create<ChatState>()(
         return uploadedFile;
       } catch (error) {
         console.error('上传文件失败:', error);
-        throw error;
-      }
-    },
-
-    uploadImage: async (file: File) => {
-      const session = get().currentSession;
-      if (!session) {
-        throw new Error('请先创建或选择一个会话');
-      }
-
-      try {
-        const response = await uploadApi.uploadImage(file, session.id);
-        const uploadedFile: UploadedFile = {
-          file_id: response.file_path.split('/').pop()?.split('_')[0] || '',
-          file_path: response.file_path,
-          file_name: response.file_name,
-          original_name: response.original_name,
-          file_size: response.file_size,
-          file_type: response.file_type,
-          uploaded_at: response.uploaded_at,
-        };
-
-        set((state) => ({
-          uploadedFiles: [...state.uploadedFiles, uploadedFile],
-        }));
-
-        return uploadedFile;
-      } catch (error) {
-        console.error('上传图片失败:', error);
         throw error;
       }
     },
