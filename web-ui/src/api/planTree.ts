@@ -6,6 +6,7 @@ import type {
   PlanSummary,
   PlanTreeResponse,
   DecompositionJobStatus,
+  JobLogTailResponse,
 } from '@/types';
 
 interface SubgraphResponse {
@@ -64,6 +65,10 @@ class PlanTreeApi extends BaseApi {
 
   getJobStatus = async (jobId: string): Promise<DecompositionJobStatus> => {
     return this.get<DecompositionJobStatus>(`/jobs/${jobId}`);
+  };
+
+  getJobLogTail = async (jobId: string, tail = 200): Promise<JobLogTailResponse> => {
+    return this.get<JobLogTailResponse>(`/jobs/${jobId}/logs`, { tail });
   };
 
   getPlanResults = async (

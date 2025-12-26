@@ -572,8 +572,7 @@ const ChatMainArea: React.FC = () => {
               padding: '6px 10px',
               borderRadius: 'var(--radius-md)',
             }}>
-              <FileUploadButton type="file" size="small" />
-              <FileUploadButton type="image" size="small" />
+              <FileUploadButton size="small" />
             </div>
 
             {/* 输入框 - Claude 风格 */}

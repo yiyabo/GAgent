@@ -1,12 +1,15 @@
 """
 File Upload Routes
 
-处理文件和图片上传，存储到按会话分组的目录中
+处理文件上传，存储到按会话分组的目录中
 """
 
 import logging
 import os
+import shutil
+import tarfile
 import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -15,27 +18,91 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from . import register_router
+from ..services.upload_storage import ensure_session_dir
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/upload", tags=["upload"])
 
 # 上传配置
-UPLOAD_BASE_DIR = "data/uploads"
-ALLOWED_FILE_TYPES = {
-    "pdf": ["application/pdf"],
+ALLOWED_MIME_TYPES = {
+    "document": [
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "application/rtf",
+    ],
     "image": [
         "image/jpeg",
-        "image/jpg", 
+        "image/jpg",
         "image/png",
         "image/gif",
         "image/webp",
         "image/bmp",
+        "image/tiff",
+    ],
+    "archive": [
+        "application/zip",
+        "application/x-zip-compressed",
+        "application/x-tar",
+    ],
+    "data": [
+        "application/x-hdf",
+        "application/x-hdf5",
+        "chemical/x-pdb",
+        "chemical/pdb",
+        "application/dicom",
+        "application/dicom+json",
     ],
 }
-MAX_FILE_SIZE = {
-    "pdf": 50 * 1024 * 1024,  # 50MB
-    "image": 20 * 1024 * 1024,  # 20MB
+
+ALLOWED_EXTENSION_CATEGORIES = {
+    ".pdf": "document",
+    ".doc": "document",
+    ".docx": "document",
+    ".txt": "document",
+    ".md": "document",
+    ".rtf": "document",
+    ".csv": "document",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".png": "image",
+    ".gif": "image",
+    ".webp": "image",
+    ".bmp": "image",
+    ".tif": "image",
+    ".tiff": "image",
+    ".zip": "archive",
+    ".tar": "archive",
+    ".tar.gz": "archive",
+    ".tgz": "archive",
+    ".tar.bz2": "archive",
+    ".tbz": "archive",
+    ".tbz2": "archive",
+    ".h5": "data",
+    ".hdf5": "data",
+    ".hdf": "data",
+    ".hd5": "data",
+    ".pdb": "data",
+    ".dcm": "data",
+    ".nii": "data",
+    ".nii.gz": "data",
+    ".npz": "data",
+    ".npy": "data",
 }
+
+DEFAULT_MAX_FILE_SIZE = 512 * 1024 * 1024  # 512MB
+MAX_FILE_SIZE = {
+    "document": DEFAULT_MAX_FILE_SIZE,
+    "image": DEFAULT_MAX_FILE_SIZE,
+    "data": None,  # allow large data files
+    "archive": None,  # allow large archives during testing
+}
+
+UPLOAD_SUBDIR = "uploads"
+EXTRACT_SUBDIR = "extracted"
 
 register_router(
     namespace="upload",
@@ -43,7 +110,7 @@ register_router(
     path="/upload",
     router=router,
     tags=["upload"],
-    description="文件和图片上传服务",
+    description="文件上传服务",
 )
 
 
@@ -57,14 +124,36 @@ class UploadResponse(BaseModel):
     file_size: str
     file_type: str
     uploaded_at: str
+    category: Optional[str] = None
+    is_archive: Optional[bool] = None
+    extracted_path: Optional[str] = None
+    extracted_files: Optional[int] = None
     session_id: Optional[str] = None
 
 
-def _get_file_category(content_type: str) -> Optional[str]:
-    """根据MIME类型判断文件类别"""
-    for category, types in ALLOWED_FILE_TYPES.items():
-        if content_type in types:
+SORTED_ALLOWED_EXTENSIONS = sorted(
+    ALLOWED_EXTENSION_CATEGORIES.keys(),
+    key=len,
+    reverse=True,
+)
+
+
+def _normalize_content_type(content_type: str) -> str:
+    return (content_type or "").split(";")[0].strip().lower()
+
+
+def _get_file_category(content_type: str, filename: str) -> Optional[str]:
+    """根据文件名和MIME类型判断文件类别"""
+    lowered_name = (filename or "").lower()
+    for ext in SORTED_ALLOWED_EXTENSIONS:
+        if lowered_name.endswith(ext):
+            return ALLOWED_EXTENSION_CATEGORIES[ext]
+
+    normalized_type = _normalize_content_type(content_type)
+    for category, types in ALLOWED_MIME_TYPES.items():
+        if normalized_type in types:
             return category
+
     return None
 
 
@@ -75,21 +164,17 @@ def _validate_file(file: UploadFile, category: Optional[str] = None) -> tuple[bo
     Returns:
         (is_valid, error_message, detected_category)
     """
-    content_type = file.content_type or ""
+    content_type = _normalize_content_type(file.content_type or "")
     
     # 检测文件类别
-    detected_category = _get_file_category(content_type)
+    detected_category = _get_file_category(content_type, file.filename or "")
     
     if not detected_category:
-        return False, f"不支持的文件类型: {content_type}", ""
+        return False, f"不支持的文件类型: {content_type or 'unknown'}", ""
     
     # 如果指定了类别，检查是否匹配
     if category and detected_category != category:
         return False, f"文件类型不匹配，期望 {category}，实际 {detected_category}", ""
-    
-    # 检查文件大小（需要读取文件）
-    # 注意：这里只是初步检查，实际大小在保存时再次验证
-    max_size = MAX_FILE_SIZE.get(detected_category, 10 * 1024 * 1024)
     
     return True, "", detected_category
 
@@ -110,10 +195,66 @@ def _sanitize_filename(filename: str) -> str:
 
 def _get_session_upload_dir(session_id: str) -> Path:
     """获取会话的上传目录"""
-    base_path = Path(UPLOAD_BASE_DIR)
-    session_dir = base_path / f"session-{session_id}"
-    session_dir.mkdir(parents=True, exist_ok=True)
-    return session_dir
+    session_dir = ensure_session_dir(session_id)
+    upload_dir = session_dir / UPLOAD_SUBDIR
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    return upload_dir
+
+
+def _resolve_extract_dir(session_id: str, file_id: str, safe_name: str) -> Path:
+    session_dir = ensure_session_dir(session_id)
+    extract_root = session_dir / EXTRACT_SUBDIR
+    extract_root.mkdir(parents=True, exist_ok=True)
+    stem = Path(safe_name).stem
+    return extract_root / f"{file_id}_{stem}"
+
+
+def _is_within_directory(base_dir: Path, target_path: Path) -> bool:
+    base_dir = base_dir.resolve()
+    target_path = target_path.resolve()
+    return os.path.commonpath([str(base_dir), str(target_path)]) == str(base_dir)
+
+
+def _safe_extract_zip(zip_file: zipfile.ZipFile, dest_dir: Path) -> int:
+    count = 0
+    for member in zip_file.infolist():
+        member_path = dest_dir / member.filename
+        if not _is_within_directory(dest_dir, member_path):
+            raise HTTPException(status_code=400, detail="压缩包包含非法路径")
+        if not member.is_dir():
+            count += 1
+    zip_file.extractall(dest_dir)
+    return count
+
+
+def _safe_extract_tar(tar_file: tarfile.TarFile, dest_dir: Path) -> int:
+    count = 0
+    for member in tar_file.getmembers():
+        if member.islnk() or member.issym():
+            raise HTTPException(status_code=400, detail="压缩包包含不安全的链接")
+        member_path = dest_dir / member.name
+        if not _is_within_directory(dest_dir, member_path):
+            raise HTTPException(status_code=400, detail="压缩包包含非法路径")
+        if member.isfile():
+            count += 1
+    tar_file.extractall(dest_dir)
+    return count
+
+
+def _extract_archive(file_path: Path, dest_dir: Path) -> int:
+    if zipfile.is_zipfile(file_path):
+        with zipfile.ZipFile(file_path) as zip_file:
+            return _safe_extract_zip(zip_file, dest_dir)
+
+    if tarfile.is_tarfile(file_path):
+        with tarfile.open(file_path) as tar_file:
+            return _safe_extract_tar(tar_file, dest_dir)
+
+    raise HTTPException(status_code=400, detail="不支持的压缩包格式")
+
+
+def _get_max_size(category: str) -> Optional[int]:
+    return MAX_FILE_SIZE.get(category, DEFAULT_MAX_FILE_SIZE)
 
 
 async def _save_upload_file(
@@ -138,13 +279,13 @@ async def _save_upload_file(
     
     # 保存文件并检查大小
     file_size = 0
-    max_size = MAX_FILE_SIZE.get(category, 10 * 1024 * 1024)
+    max_size = _get_max_size(category)
     
     try:
         with open(file_path, "wb") as f:
             while chunk := await file.read(8192):  # 8KB chunks
                 file_size += len(chunk)
-                if file_size > max_size:
+                if max_size is not None and file_size > max_size:
                     # 删除已写入的文件
                     f.close()
                     file_path.unlink(missing_ok=True)
@@ -160,6 +301,23 @@ async def _save_upload_file(
         file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"保存文件失败: {str(e)}")
     
+    extracted_path = None
+    extracted_files = None
+
+    if category == "archive":
+        extract_dir = _resolve_extract_dir(session_id, file_id, safe_name)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            extracted_files = _extract_archive(file_path, extract_dir)
+            extracted_path = str(extract_dir)
+        except HTTPException:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            raise
+        except Exception as e:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            logger.error(f"解压缩失败: {e}")
+            raise HTTPException(status_code=500, detail=f"解压缩失败: {str(e)}")
+
     # 格式化文件大小
     if file_size < 1024:
         size_str = f"{file_size} B"
@@ -168,6 +326,8 @@ async def _save_upload_file(
     else:
         size_str = f"{file_size / 1024 / 1024:.2f} MB"
     
+    file_type = file.content_type or "application/octet-stream"
+
     return {
         "file_id": file_id,
         "file_path": str(file_path),
@@ -175,8 +335,11 @@ async def _save_upload_file(
         "original_name": original_name,
         "file_size": size_str,
         "file_size_bytes": file_size,
-        "file_type": file.content_type,
+        "file_type": file_type,
         "category": category,
+        "is_archive": category == "archive",
+        "extracted_path": extracted_path,
+        "extracted_files": extracted_files,
         "uploaded_at": datetime.now().isoformat(),
         "session_id": session_id,
     }
@@ -188,7 +351,7 @@ async def upload_file(
     session_id: str = Form(...),
 ) -> UploadResponse:
     """
-    上传文件（PDF等）
+    上传文件
     
     Args:
         file: 上传的文件
@@ -201,7 +364,7 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="session_id 不能为空")
     
     # 验证文件
-    is_valid, error_msg, category = _validate_file(file, category="pdf")
+    is_valid, error_msg, category = _validate_file(file)
     if not is_valid:
         raise HTTPException(status_code=400, detail=error_msg)
     
@@ -219,6 +382,10 @@ async def upload_file(
             file_size=file_info["file_size"],
             file_type=file_info["file_type"],
             uploaded_at=file_info["uploaded_at"],
+            category=file_info.get("category"),
+            is_archive=file_info.get("is_archive"),
+            extracted_path=file_info.get("extracted_path"),
+            extracted_files=file_info.get("extracted_files"),
             session_id=session_id,
         )
     except HTTPException:
@@ -234,7 +401,7 @@ async def upload_image(
     session_id: str = Form(...),
 ) -> UploadResponse:
     """
-    上传图片
+    上传图片（兼容旧接口）
     
     Args:
         file: 上传的图片文件
@@ -265,6 +432,10 @@ async def upload_image(
             file_size=file_info["file_size"],
             file_type=file_info["file_type"],
             uploaded_at=file_info["uploaded_at"],
+            category=file_info.get("category"),
+            is_archive=file_info.get("is_archive"),
+            extracted_path=file_info.get("extracted_path"),
+            extracted_files=file_info.get("extracted_files"),
             session_id=session_id,
         )
     except HTTPException:

@@ -290,8 +290,7 @@ const ChatPanel: React.FC = () => {
         <div className="chat-input-main" style={{ alignItems: 'stretch' }}>
           {/* 上传按钮 */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, justifyContent: 'center', padding: '6px 8px' }}>
-            <FileUploadButton type="file" size="small" />
-            <FileUploadButton type="image" size="small" />
+            <FileUploadButton size="small" />
           </div>
 
           <TextArea

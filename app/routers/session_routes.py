@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 from ..database_pool import get_db
+from ..services.upload_storage import delete_session_storage
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,12 @@ async def delete_session(session_id: str):
             # Delete the session
             session_cursor = conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
             
+            try:
+                if delete_session_storage(session_id):
+                    logger.info("Deleted session uploads for %s", session_id)
+            except Exception as e:
+                logger.warning("Failed to delete session uploads for %s: %s", session_id, e)
+
             return {
                 "message": f"Session deleted successfully",
                 "session_id": session_id,

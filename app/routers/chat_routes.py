@@ -55,6 +55,7 @@ from app.services.session_title_service import (
     SessionNotFoundError,
     SessionTitleService,
 )
+from app.services.upload_storage import delete_session_storage
 from tool_box import execute_tool
 
 from . import register_router
@@ -638,6 +639,15 @@ async def delete_chat_session(
             else:
                 conn.execute("DELETE FROM chat_sessions WHERE id=?", (session_id,))
                 logger.info("Deleted chat session %s", session_id)
+                try:
+                    if delete_session_storage(session_id):
+                        logger.info("Deleted session uploads for %s", session_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to delete session uploads for %s: %s",
+                        session_id,
+                        exc,
+                    )
         return Response(status_code=204)
     except HTTPException:
         raise
@@ -780,7 +790,10 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                     att_type = att.get("type", "file")
                     att_name = att.get("name", "未知文件")
                     att_path = att.get("path", "")
+                    att_extracted = att.get("extracted_path")
                     attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
+                    if att_extracted:
+                        attachment_info += f"  extracted: {att_extracted}\n"
             message_to_send = request.message + attachment_info
             logger.info("[CHAT][ATTACHMENTS] session=%s count=%d", request.session_id, len(attachments))
 
@@ -1089,7 +1102,10 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                         att_type = att.get("type", "file")
                         att_name = att.get("name", "未知文件")
                         att_path = att.get("path", "")
+                        att_extracted = att.get("extracted_path")
                         attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
+                        if att_extracted:
+                            attachment_info += f"  extracted: {att_extracted}\n"
                 message_to_send = request.message + attachment_info
                 logger.info(
                     "[CHAT][STREAM][ATTACHMENTS] session=%s count=%d",
@@ -3697,17 +3713,26 @@ class StructuredChatAgent:
                 current_job_id, _ = self._resolve_job_meta()
             
             if current_job_id:
-                async def log_stream_callback(line: str):
-                    """将 stdout/stderr 实时写入 job logs"""
+                async def log_stdout(line: str):
+                    """将 stdout 实时写入 job logs"""
                     plan_decomposition_jobs.append_log(
                         current_job_id,
-                        "stdout", # 使用 stdout 类型，前端可以特殊渲染
+                        "stdout",
                         line,
-                        {}
+                        {},
                     )
-                
-                params["on_stdout"] = log_stream_callback
-                params["on_stderr"] = log_stream_callback
+
+                async def log_stderr(line: str):
+                    """将 stderr 实时写入 job logs"""
+                    plan_decomposition_jobs.append_log(
+                        current_job_id,
+                        "stderr",
+                        line,
+                        {},
+                    )
+
+                params["on_stdout"] = log_stdout
+                params["on_stderr"] = log_stderr
 
         elif tool_name == "document_reader":
             operation = params.get("operation")

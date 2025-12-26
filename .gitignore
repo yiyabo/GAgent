@@ -12,3 +12,4 @@ runtime/*
 .spec-workflow
 examples
 log/
+.npm-cache

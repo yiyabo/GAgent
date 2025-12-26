@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Card, Button, Space, Tag, Typography, Tooltip, Alert, Divider } from 'antd';
+import { Card, Button, Space, Tag, Typography, Tooltip, Alert, Divider, Modal, Spin } from 'antd';
 import {
   PlayCircleOutlined,
   PauseCircleOutlined,
@@ -32,6 +32,8 @@ const levelColorMap: Record<string, string> = {
   warning: 'orange',
   warn: 'orange',
   error: 'red',
+  stdout: 'geekblue',
+  stderr: 'orange',
 };
 
 const statusMeta: Record<
@@ -144,6 +146,12 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
   const [jobType, setJobType] = React.useState<string>(initialJob?.job_type ?? initialJobType ?? 'plan_decompose');
   const [jobMetadata, setJobMetadata] = React.useState<Record<string, any>>(initialJob?.metadata ?? {});
   const [resolvedPlanId, setResolvedPlanId] = React.useState<number | null>(planId ?? initialJob?.plan_id ?? null);
+  const [cliLogVisible, setCliLogVisible] = React.useState(false);
+  const [cliLogLines, setCliLogLines] = React.useState<string[]>([]);
+  const [cliLogLoading, setCliLogLoading] = React.useState(false);
+  const [cliLogError, setCliLogError] = React.useState<string | null>(null);
+  const [cliLogTruncated, setCliLogTruncated] = React.useState(false);
+  const [cliLogPath, setCliLogPath] = React.useState<string | null>(null);
 
   const sourceRef = React.useRef<EventSource | null>(null);
   const pollerRef = React.useRef<number | null>(null);
@@ -227,6 +235,26 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
     }, 5000);
   }, [applySnapshot, jobId, stopPolling]);
 
+  const fetchCliLog = React.useCallback(async () => {
+    setCliLogLoading(true);
+    setCliLogError(null);
+    try {
+      const response = await planTreeApi.getJobLogTail(jobId, 200);
+      setCliLogLines(response.lines);
+      setCliLogTruncated(response.truncated);
+      setCliLogPath(response.log_path);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : '无法加载 CLI 日志';
+      setCliLogError(message);
+      setCliLogLines([]);
+      setCliLogTruncated(false);
+      setCliLogPath(null);
+    } finally {
+      setCliLogLoading(false);
+    }
+  }, [jobId]);
+
   React.useEffect(() => {
     applySnapshot(initialJob ?? null);
   }, [applySnapshot, initialJob, jobId]);
@@ -249,6 +277,12 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
   React.useEffect(() => {
     completionNotifiedRef.current = false;
   }, [jobId]);
+
+  React.useEffect(() => {
+    if (cliLogVisible) {
+      fetchCliLog();
+    }
+  }, [cliLogVisible, fetchCliLog]);
 
   React.useEffect(() => {
     if (!FINAL_STATUSES.has(status) || completionNotifiedRef.current) {
@@ -592,92 +626,160 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
   };
 
   return (
-    <Card
-      size="small"
-      style={{ marginTop: 12 }}
-      title={headerTitle}
-      extra={
-        <Space size="small">
-          <Tooltip title={isStreaming ? '实时同步中' : '使用轮询获取'}>
-            {isStreaming ? <PlayCircleOutlined /> : <PauseCircleOutlined />}
-          </Tooltip>
-          <Button
-            type="link"
-            size="small"
-            icon={expanded ? <UpOutlined /> : <DownOutlined />}
-            onClick={() => setExpanded((prev) => !prev)}
-          >
-            {expanded ? '收起' : '展开'}
-          </Button>
-        </Space>
-      }
-      styles={{
-        body: expanded
-          ? { paddingTop: 12, paddingBottom: 12 }
-          : { paddingTop: 0, paddingBottom: 0 },
-      }}
-    >
-      {expanded && (
-        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          <Space direction="vertical" size={4} style={{ width: '100%' }}>
-            <Space size="small">
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                目标任务：
-              </Text>
-              <Text>{targetTaskName ?? '-'}</Text>
+    <>
+      <Card
+        size="small"
+        style={{ marginTop: 12 }}
+        title={headerTitle}
+        extra={
+          <Space size="small">
+            <Tooltip title={isStreaming ? '实时同步中' : '使用轮询获取'}>
+              {isStreaming ? <PlayCircleOutlined /> : <PauseCircleOutlined />}
+            </Tooltip>
+            <Tooltip title="查看 Claude Code 日志">
+              <Button
+                type="link"
+                size="small"
+                icon={<FileTextOutlined />}
+                onClick={() => setCliLogVisible(true)}
+              >
+                CLI 日志
+              </Button>
+            </Tooltip>
+            <Button
+              type="link"
+              size="small"
+              icon={expanded ? <UpOutlined /> : <DownOutlined />}
+              onClick={() => setExpanded((prev) => !prev)}
+            >
+              {expanded ? '收起' : '展开'}
+            </Button>
+          </Space>
+        }
+        styles={{
+          body: expanded
+            ? { paddingTop: 12, paddingBottom: 12 }
+            : { paddingTop: 0, paddingBottom: 0 },
+        }}
+      >
+        {expanded && (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Space size="small">
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  目标任务：
+                </Text>
+                <Text>{targetTaskName ?? '-'}</Text>
+              </Space>
+              {resolvedPlanId !== null && resolvedPlanId !== undefined ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  计划 ID：{resolvedPlanId}
+                </Text>
+              ) : planId !== undefined && planId !== null ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  计划 ID：{planId}
+                </Text>
+              ) : null}
+              {jobMetadata?.session_id && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  会话 ID：{jobMetadata.session_id}
+                </Text>
+              )}
+              {lastUpdatedText && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  最近更新：{lastUpdatedText}
+                </Text>
+              )}
             </Space>
-            {resolvedPlanId !== null && resolvedPlanId !== undefined ? (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                计划 ID：{resolvedPlanId}
-              </Text>
-            ) : planId !== undefined && planId !== null ? (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                计划 ID：{planId}
-              </Text>
-            ) : null}
-            {jobMetadata?.session_id && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                会话 ID：{jobMetadata.session_id}
-              </Text>
+
+            {error && (
+              <Alert
+                type="error"
+                message="后台执行失败"
+                description={error}
+                showIcon
+              />
             )}
-            {lastUpdatedText && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                最近更新：{lastUpdatedText}
-              </Text>
+
+            {renderActionLogs()}
+            {renderLogs()}
+            {renderResultSummary()}
+
+            {Object.keys(stats || {}).length > 0 && (
+              <div style={{ fontSize: 12, color: '#999' }}>
+                <Divider plain style={{ margin: '12px 0' }}>
+                  统计信息
+                </Divider>
+                <Paragraph
+                  copyable={{
+                    text: JSON.stringify(stats, null, 2),
+                  }}
+                  style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}
+                >
+                  {JSON.stringify(stats, null, 2)}
+                </Paragraph>
+              </div>
             )}
           </Space>
+        )}
+      </Card>
 
-          {error && (
-            <Alert
-              type="error"
-              message="后台执行失败"
-              description={error}
-              showIcon
-            />
-          )}
-
-          {renderActionLogs()}
-          {renderLogs()}
-          {renderResultSummary()}
-
-          {Object.keys(stats || {}).length > 0 && (
-            <div style={{ fontSize: 12, color: '#999' }}>
-              <Divider plain style={{ margin: '12px 0' }}>
-                统计信息
-              </Divider>
-              <Paragraph
-                copyable={{
-                  text: JSON.stringify(stats, null, 2),
-                }}
-                style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}
-              >
-                {JSON.stringify(stats, null, 2)}
-              </Paragraph>
-            </div>
-          )}
-        </Space>
-      )}
-    </Card>
+      <Modal
+        open={cliLogVisible}
+        onCancel={() => setCliLogVisible(false)}
+        title="Claude Code CLI 日志"
+        footer={
+          <Space size="small">
+            <Button onClick={() => setCliLogVisible(false)}>关闭</Button>
+            <Button type="primary" onClick={fetchCliLog} disabled={cliLogLoading}>
+              刷新
+            </Button>
+          </Space>
+        }
+      >
+        {cliLogPath && (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            日志路径：{cliLogPath}
+          </Text>
+        )}
+        {cliLogError && (
+          <Alert
+            type="warning"
+            message="无法加载 CLI 日志"
+            description={cliLogError}
+            showIcon
+            style={{ marginTop: 12 }}
+          />
+        )}
+        {cliLogLoading ? (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '24px 0' }}>
+            <Spin />
+          </div>
+        ) : (
+          <pre
+            style={{
+              marginTop: 12,
+              maxHeight: 360,
+              overflow: 'auto',
+              background: '#111827',
+              color: '#E5E7EB',
+              padding: 12,
+              borderRadius: 6,
+              fontSize: 12,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {cliLogLines.length ? cliLogLines.join('\n') : '暂无 CLI 日志输出。'}
+          </pre>
+        )}
+        {cliLogTruncated && (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            已仅展示最新 200 行。
+          </Text>
+        )}
+      </Modal>
+    </>
   );
 };
 
