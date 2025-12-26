@@ -11,3 +11,4 @@ web-ui/node_modules
 runtime/*
 .spec-workflow
 examples
+log/
