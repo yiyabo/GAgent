@@ -20,7 +20,9 @@ const { Title, Text } = Typography;
 
 const ChatPanel: React.FC = () => {
   const { message } = AntdApp.useApp();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
+  const scrollRafRef = useRef<number | null>(null);
   const inputRef = useRef<any>(null);
 
   const {
@@ -47,10 +49,45 @@ const ChatPanel: React.FC = () => {
 
   const { selectedTask, currentPlan } = useTasksStore();
 
-  // 自动滚动到底部
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({
-      behavior: isProcessing ? 'auto' : 'smooth',
+    const container = messagesContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const updateAutoScroll = () => {
+      const distanceToBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight;
+      autoScrollRef.current = distanceToBottom < 120;
+    };
+
+    updateAutoScroll();
+    container.addEventListener('scroll', updateAutoScroll, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', updateAutoScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) {
+      return;
+    }
+    if (!autoScrollRef.current) {
+      return;
+    }
+    if (scrollRafRef.current !== null) {
+      return;
+    }
+    scrollRafRef.current = window.requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      if (!autoScrollRef.current) {
+        return;
+      }
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: isProcessing ? 'auto' : 'smooth',
+      });
     });
   }, [messages, isProcessing]);
 
@@ -212,7 +249,7 @@ const ChatPanel: React.FC = () => {
       </div>
 
       {/* 消息列表 */}
-      <div className="chat-messages">
+      <div className="chat-messages" ref={messagesContainerRef}>
         {messages.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-tertiary)' }}>
             <MessageOutlined style={{ fontSize: 32, marginBottom: 16, color: 'var(--primary-color)' }} />
@@ -268,8 +305,6 @@ const ChatPanel: React.FC = () => {
            
           </>
         )}
-        
-        <div ref={messagesEndRef} />
       </div>
 
       {/* 上下文信息 */}

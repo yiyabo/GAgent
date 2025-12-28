@@ -81,6 +81,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
       : null;
   const status = metadata?.status;
   const isCompleted = status === 'completed' || status === 'failed';
+  const isStreaming =
+    unifiedStream && (status === 'pending' || status === 'running');
 
   // 如果是统一流且处于初始 pending 阶段、没有前置文案和动作，则不渲染气泡（避免空白占位）
   if (
@@ -446,6 +448,20 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 
   const renderSummary = () => {
     if (!displayText) return null;
+    if (isStreaming) {
+      return (
+        <div
+          style={{
+            marginTop: 4,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {displayText}
+          <span className="stream-cursor">▍</span>
+        </div>
+      );
+    }
     return (
       <div style={{ marginTop: 4 }}>
         <ReactMarkdown
@@ -813,4 +829,4 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   );
 };
 
-export default ChatMessage;
+export default React.memo(ChatMessage);

@@ -468,6 +468,20 @@ body,
   margin-left: 0;
 }
 
+.stream-cursor {
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--text-secondary);
+  opacity: 0.75;
+  animation: streamCursorBlink 1s steps(2, start) infinite;
+}
+
+@keyframes streamCursorBlink {
+  to {
+    visibility: hidden;
+  }
+}
+
 /* DAG 可视化容器 */
 .dag-container {
   height: 100%;

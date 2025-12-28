@@ -1211,7 +1211,7 @@ export const useChatStore = create<ChatState>()(
 
         let streamedContent = '';
         let lastFlushedContent = '';
-        let flushTimer: number | null = null;
+        let flushHandle: number | null = null;
         let finalPayload: ChatResponsePayload | null = null;
         let jobFinalized = false;
 
@@ -1237,13 +1237,13 @@ export const useChatStore = create<ChatState>()(
         };
 
         const scheduleFlush = () => {
-          if (flushTimer !== null) {
+          if (flushHandle !== null) {
             return;
           }
-          flushTimer = window.setTimeout(() => {
-            flushTimer = null;
+          flushHandle = window.requestAnimationFrame(() => {
+            flushHandle = null;
             flushAnalysisText();
-          }, 60);
+          });
         };
 
         for await (const event of streamChatEvents(streamRequest)) {
@@ -1515,9 +1515,9 @@ export const useChatStore = create<ChatState>()(
                 .loadChatHistory(sessionAfter.session_id ?? sessionAfter.id)
                 .catch((e) => console.warn('同步历史失败:', e));
             }
-            if (flushTimer !== null) {
-              window.clearTimeout(flushTimer);
-              flushTimer = null;
+            if (flushHandle !== null) {
+              window.cancelAnimationFrame(flushHandle);
+              flushHandle = null;
             }
             flushAnalysisText(true);
             continue;
@@ -1531,9 +1531,9 @@ export const useChatStore = create<ChatState>()(
           }
         }
 
-        if (flushTimer !== null) {
-          window.clearTimeout(flushTimer);
-          flushTimer = null;
+        if (flushHandle !== null) {
+          window.cancelAnimationFrame(flushHandle);
+          flushHandle = null;
         }
         flushAnalysisText(true);
 

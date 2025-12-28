@@ -46,6 +46,11 @@ interface ChatMessageListProps {
 
 type ChatListItem = ChatMessageType | { id: string; kind: 'memory_notice'; count: number };
 
+const isMemoryNoticeItem = (
+  item: ChatListItem
+): item is { id: string; kind: 'memory_notice'; count: number } =>
+  typeof (item as any)?.kind === 'string' && (item as any).kind === 'memory_notice';
+
 const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
   ({
     messages,
@@ -70,7 +75,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
     }, [messages, relevantMemories.length]);
 
     const renderItem = useCallback((item: ChatListItem) => {
-      if ('kind' in item && item.kind === 'memory_notice') {
+      if (isMemoryNoticeItem(item)) {
         return (
           <div
             style={{
