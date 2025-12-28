@@ -13,3 +13,5 @@ runtime/*
 examples
 log/
 .npm-cache
+docs/
+.mplconfig/fontlist-v390.json

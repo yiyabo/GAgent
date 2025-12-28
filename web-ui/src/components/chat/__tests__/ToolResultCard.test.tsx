@@ -62,7 +62,7 @@ describe('ToolResultCard', () => {
     );
 
     expect(screen.getByText('请求超时')).toBeInTheDocument();
-    const retryButton = screen.getByRole('button', { name: '重试搜索' });
+    const retryButton = screen.getByRole('button', { name: /重试搜索/ });
     fireEvent.click(retryButton);
 
     await waitFor(() => {

@@ -16,6 +16,7 @@ from .vision_reader import vision_reader_tool
 from .paper_replication import paper_replication_tool
 from .generate_experiment_card import generate_experiment_card_tool
 from .manuscript_writer import manuscript_writer_tool
+from .phagescope import phagescope_tool
 
 __all__ = [
     "web_search_tool",
@@ -29,4 +30,5 @@ __all__ = [
     "paper_replication_tool",
     "generate_experiment_card_tool",
     "manuscript_writer_tool",
+    "phagescope_tool",
 ]

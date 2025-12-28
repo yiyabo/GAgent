@@ -23,6 +23,7 @@ from .tools_impl import (
     vision_reader_tool,
     paper_replication_tool,
     manuscript_writer_tool,
+    phagescope_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,16 @@ class ToolBoxIntegration:
             handler=manuscript_writer_tool["handler"],
             tags=manuscript_writer_tool.get("tags", []),
             examples=manuscript_writer_tool.get("examples", []),
+        )
+
+        register_tool(
+            name=phagescope_tool["name"],
+            description=phagescope_tool["description"],
+            category=phagescope_tool["category"],
+            parameters_schema=phagescope_tool["parameters_schema"],
+            handler=phagescope_tool["handler"],
+            tags=phagescope_tool.get("tags", []),
+            examples=phagescope_tool.get("examples", []),
         )
 
         logger.info("Built-in tools registered")

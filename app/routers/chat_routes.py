@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 import logging
+import re
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, AsyncIterator, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
@@ -56,6 +57,7 @@ from app.services.session_title_service import (
     SessionTitleService,
 )
 from app.services.upload_storage import delete_session_storage
+from app.services.tool_output_storage import store_tool_output
 from tool_box import execute_tool
 
 from . import register_router
@@ -1199,6 +1201,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             cleaned = agent._strip_code_fence(raw)
             structured = LLMStructuredResponse.model_validate_json(cleaned)
             structured = await agent._apply_experiment_fallback(structured)
+            structured = agent._apply_phagescope_fallback(structured)
             agent._current_user_message = None
 
             if not structured.actions:
@@ -1618,6 +1621,148 @@ def _load_session_metadata_dict(conn, session_id: str) -> Dict[str, Any]:
         return {}
     data = _loads_metadata(row["metadata"])
     return data or {}
+
+
+def _update_session_metadata(
+    session_id: str, updater: Callable[[Dict[str, Any]], Dict[str, Any]]
+) -> None:
+    from ..database import get_db  # lazy import to avoid cycles
+
+    with get_db() as conn:
+        _ensure_session_exists(session_id, conn)
+        metadata = _load_session_metadata_dict(conn, session_id)
+        updated = updater(dict(metadata))
+        conn.execute(
+            """
+            UPDATE chat_sessions
+            SET metadata=?,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (json.dumps(updated, ensure_ascii=False), session_id),
+        )
+        conn.commit()
+
+
+def _normalize_modulelist_value(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [str(key) for key in value.keys()]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if item]
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        if raw.startswith("{") or raw.startswith("["):
+            try:
+                parsed = json.loads(raw.replace("'", '"'))
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                return [str(key) for key in parsed.keys()]
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if item]
+        if "," in raw:
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return [raw]
+    return [str(value)]
+
+
+def _find_key_recursive(value: Any, key: str) -> Optional[Any]:
+    if isinstance(value, dict):
+        if key in value:
+            return value.get(key)
+        for item in value.values():
+            found = _find_key_recursive(item, key)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_key_recursive(item, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _extract_taskid_from_result(result: Any) -> Optional[str]:
+    if not isinstance(result, dict):
+        return None
+    for key in ("taskid", "task_id"):
+        found = _find_key_recursive(result, key)
+        if found is not None:
+            try:
+                return str(found)
+            except Exception:
+                return None
+    return None
+
+
+def _record_phagescope_task_memory(
+    session_id: str, params: Dict[str, Any], result: Any
+) -> Optional[str]:
+    taskid = _extract_taskid_from_result(result)
+    if not taskid:
+        return None
+    entry = {
+        "taskid": taskid,
+        "userid": params.get("userid"),
+        "phageid": params.get("phageid"),
+        "modulelist": _normalize_modulelist_value(params.get("modulelist")),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    def _updater(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        tasks = metadata.get("phagescope_recent_tasks")
+        if not isinstance(tasks, list):
+            tasks = []
+        tasks = [item for item in tasks if item.get("taskid") != taskid]
+        tasks.insert(0, entry)
+        metadata["phagescope_recent_tasks"] = tasks[:10]
+        metadata["phagescope_last_taskid"] = taskid
+        return metadata
+
+    _update_session_metadata(session_id, _updater)
+    return taskid
+
+
+def _lookup_phagescope_task_memory(
+    session_id: str,
+    *,
+    userid: Optional[str],
+    phageid: Optional[str],
+    modulelist: Optional[Any],
+) -> Optional[str]:
+    from ..database import get_db  # lazy import to avoid cycles
+
+    module_items = _normalize_modulelist_value(modulelist)
+    module_set = {item.lower() for item in module_items}
+    phageid_value = phageid.strip() if isinstance(phageid, str) else None
+    userid_value = userid.strip() if isinstance(userid, str) else None
+
+    with get_db() as conn:
+        metadata = _load_session_metadata_dict(conn, session_id)
+
+    tasks = metadata.get("phagescope_recent_tasks")
+    if not isinstance(tasks, list):
+        return metadata.get("phagescope_last_taskid")
+
+    for item in tasks:
+        if not isinstance(item, dict):
+            continue
+        if userid_value and item.get("userid") and item.get("userid") != userid_value:
+            continue
+        if phageid_value and item.get("phageid") and item.get("phageid") != phageid_value:
+            continue
+        if module_set:
+            stored = {str(val).lower() for val in item.get("modulelist", [])}
+            if stored and not module_set.issubset(stored):
+                continue
+        taskid = item.get("taskid")
+        if taskid:
+            return str(taskid)
+    return metadata.get("phagescope_last_taskid")
 
 
 def _get_session_settings(session_id: str) -> Dict[str, Any]:
@@ -2063,6 +2208,16 @@ async def _generate_tool_analysis(
                                     "url": url,
                                 }
                             )
+                else:
+                    details_payload = {}
+                    for field in ("data", "results", "action", "status_code", "result_kind"):
+                        if field in result_data and result_data[field] is not None:
+                            details_payload[field] = result_data[field]
+                    if details_payload:
+                        details_text = json.dumps(details_payload, ensure_ascii=True)
+                        if len(details_text) > 1200:
+                            details_text = details_text[:1197] + "..."
+                        tool_desc += f"\n   details: {details_text}"
             
             tools_description.append(tool_desc)
         
@@ -2074,6 +2229,9 @@ async def _generate_tool_analysis(
             "3. 若涉及 web_search，请逐条列出所有结果并说明价值",
             "4. 若有错误或不确定性，说明原因并给出下一步建议",
             "5. 输出不少于 6 条要点或 3 个自然段",
+            "6. Use only fields present in the tool outputs; do not invent paths, modules, or metrics.",
+            "7. If a field is missing, explicitly say it was not provided by the tool.",
+            "8. Prefer factual summaries over speculation.",
         ]
 
         base_prompt = (
@@ -2911,6 +3069,7 @@ class StructuredChatAgent:
     """Plan conversation agent using a structured schema."""
 
     MAX_HISTORY = 10
+    PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*previous\.([^\}]+)\s*\}\}")
 
     def __init__(
         self,
@@ -3004,12 +3163,14 @@ class StructuredChatAgent:
     async def handle(self, user_message: str) -> AgentResult:
         structured = await self._invoke_llm(user_message)
         structured = await self._apply_experiment_fallback(structured)
+        structured = self._apply_phagescope_fallback(structured)
         return await self.execute_structured(structured)
 
     async def get_structured_response(self, user_message: str) -> LLMStructuredResponse:
         """Return the raw structured response without executing actions."""
         structured = await self._invoke_llm(user_message)
-        return await self._apply_experiment_fallback(structured)
+        structured = await self._apply_experiment_fallback(structured)
+        return self._apply_phagescope_fallback(structured)
 
     async def _apply_experiment_fallback(
         self, structured: LLMStructuredResponse
@@ -3060,6 +3221,143 @@ class StructuredChatAgent:
 
         return structured
 
+    def _apply_phagescope_fallback(
+        self, structured: LLMStructuredResponse
+    ) -> LLMStructuredResponse:
+        user_message = self._current_user_message or ""
+        if not user_message.strip():
+            return structured
+
+        def _wants_results(text: str) -> bool:
+            text_lower = text.lower()
+            triggers = [
+                "结果",
+                "分析",
+                "展示",
+                "report",
+                "result",
+                "results",
+                "quality",
+                "评估",
+                "指标",
+            ]
+            avoid = [
+                "列表",
+                "list",
+                "任务列表",
+                "task list",
+            ]
+            return any(token in text_lower for token in triggers) and not any(
+                token in text_lower for token in avoid
+            )
+
+        def _infer_result_kind(text: str) -> Optional[str]:
+            text_lower = text.lower()
+            if any(token in text_lower for token in ("quality", "质量", "评估", "checkv")):
+                return "quality"
+            if any(token in text_lower for token in ("protein", "proteins", "蛋白")):
+                return "proteins"
+            if any(token in text_lower for token in ("fasta", "序列")):
+                return "phagefasta"
+            if any(token in text_lower for token in ("tree", "系统树")):
+                return "tree"
+            if any(token in text_lower for token in ("detail", "详情")):
+                return "phage_detail"
+            if any(token in text_lower for token in ("phage", "噬菌体")):
+                return "phage"
+            return None
+
+        if not _wants_results(user_message):
+            return structured
+
+        history_text = " ".join(
+            str(item.get("content") or "") for item in self.history[-6:]
+        )
+        inferred_kind = _infer_result_kind(user_message) or _infer_result_kind(history_text)
+
+        for action in structured.actions:
+            if action.kind != "tool_operation" or action.name != "phagescope":
+                continue
+            params = action.parameters or {}
+            action_value = params.get("action")
+            if action_value in {"task_list", "task_detail"}:
+                params = dict(params)
+                params["action"] = "result"
+                if not params.get("result_kind"):
+                    params["result_kind"] = inferred_kind or "quality"
+                action.parameters = params
+            elif action_value == "result" and not params.get("result_kind"):
+                params = dict(params)
+                params["result_kind"] = inferred_kind or "quality"
+                action.parameters = params
+
+        return structured
+
+    def _resolve_previous_path(
+        self, previous_result: Dict[str, Any], path: str
+    ) -> Optional[Any]:
+        if not path:
+            return None
+        if path in {"taskid", "task_id"}:
+            return _find_key_recursive(previous_result, "taskid") or _find_key_recursive(
+                previous_result, "task_id"
+            )
+        current: Any = previous_result
+        for part in path.split("."):
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+                continue
+            if isinstance(current, list):
+                try:
+                    index = int(part)
+                except ValueError:
+                    return None
+                if 0 <= index < len(current):
+                    current = current[index]
+                    continue
+            return None
+        if current is not None:
+            return current
+        fallback_key = path.split(".")[-1]
+        return _find_key_recursive(previous_result, fallback_key)
+
+    def _resolve_placeholders_in_value(
+        self, value: Any, previous_result: Dict[str, Any]
+    ) -> Any:
+        if isinstance(value, str):
+            def _replace(match: re.Match) -> str:
+                token = match.group(1).strip()
+                resolved = self._resolve_previous_path(previous_result, token)
+                if resolved is None:
+                    return match.group(0)
+                return str(resolved)
+
+            return self.PLACEHOLDER_PATTERN.sub(_replace, value)
+        if isinstance(value, dict):
+            return {
+                key: self._resolve_placeholders_in_value(item, previous_result)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                self._resolve_placeholders_in_value(item, previous_result)
+                for item in value
+            ]
+        return value
+
+    def _resolve_action_placeholders(
+        self, action: LLMAction, previous_result: Optional[Dict[str, Any]]
+    ) -> LLMAction:
+        if not previous_result:
+            return action
+        if not isinstance(action.parameters, dict):
+            return action
+        resolved = self._resolve_placeholders_in_value(
+            action.parameters, previous_result
+        )
+        action.parameters = resolved
+        return action
+
     async def execute_structured(
         self, structured: LLMStructuredResponse
     ) -> AgentResult:
@@ -3072,7 +3370,45 @@ class StructuredChatAgent:
             job_id = None
             job_type = "chat_action"
 
+        previous_result: Optional[Dict[str, Any]] = None
         for action in structured.sorted_actions():
+            action = self._resolve_action_placeholders(action, previous_result)
+            if (
+                action.kind == "tool_operation"
+                and action.name == "phagescope"
+                and isinstance(action.parameters, dict)
+                and steps
+            ):
+                last_step = steps[-1]
+                last_params = (
+                    last_step.details.get("parameters")
+                    if isinstance(last_step.details, dict)
+                    else None
+                )
+                if (
+                    last_step.action.kind == "tool_operation"
+                    and last_step.action.name == "phagescope"
+                    and last_step.success
+                    and isinstance(last_params, dict)
+                    and last_params.get("action") == "submit"
+                ):
+                    current_action = action.parameters.get("action")
+                    if current_action in {"result", "quality"}:
+                        patched = dict(action.parameters)
+                        taskid_value = patched.get("taskid")
+                        if taskid_value is not None:
+                            try:
+                                int(str(taskid_value).strip())
+                            except (TypeError, ValueError):
+                                patched.pop("taskid", None)
+                        if not patched.get("taskid") and previous_result:
+                            extracted_taskid = _extract_taskid_from_result(previous_result)
+                            if extracted_taskid:
+                                patched["taskid"] = extracted_taskid
+                        patched.setdefault("wait", True)
+                        patched.setdefault("poll_interval", 2.0)
+                        patched.setdefault("poll_timeout", 120.0)
+                        action.parameters = patched
             try:
                 step = await self._execute_action(action)
             except Exception as exc:  # pragma: no cover - defensive
@@ -3085,6 +3421,9 @@ class StructuredChatAgent:
                     details={"exception": type(exc).__name__},
                 )
             steps.append(step)
+            details = step.details or {}
+            result_payload = details.get("result")
+            previous_result = result_payload if isinstance(result_payload, dict) else None
 
         suggestions = self._build_suggestions(structured, steps)
         success = all(step.success for step in steps) if steps else True
@@ -3246,6 +3585,7 @@ class StructuredChatAgent:
             "- system_operation: help",
             "- tool_operation: web_search (use for live web information; requires `query`, optional provider/max_results/target_task_id)",
             "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities/target_task_id)",
+            "- tool_operation: phagescope (PhageScope phage analyses; action in ping/input_check/submit/task_list/task_detail/task_log/result/quality/download; requires `action`, optional phageid/userid/modulelist/taskid/result_kind/download_path/target_task_id)",
             "- tool_operation: generate_experiment_card (create data/<experiment_id>/card.yaml from a PDF; if pdf_path/experiment_id are omitted, uses the latest uploaded PDF and derives an id)",
             "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs/target_task_id)",
             "- tool_operation: manuscript_writer (write a research manuscript using the default LLM; requires `task` and `output_path`, optional context_paths/analysis_path/max_context_bytes/target_task_id)",
@@ -3843,6 +4183,118 @@ class StructuredChatAgent:
                 "overwrite": overwrite,
             }
 
+        elif tool_name == "phagescope":
+            if "result_kind" not in params:
+                for alias in ("resultkind", "resultKind", "result_type", "resultType"):
+                    if alias in params and params[alias] is not None:
+                        params["result_kind"] = params[alias]
+                        break
+            if "taskid" not in params:
+                for alias in ("task_id", "taskId"):
+                    if alias in params and params[alias] is not None:
+                        params["taskid"] = params[alias]
+                        break
+
+            action_value = params.get("action")
+            if not isinstance(action_value, str) or not action_value.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="phagescope requires a non-empty `action` string.",
+                    details={"error": "missing_action", "tool": tool_name},
+                )
+
+            clean_params: Dict[str, Any] = {
+                "action": action_value.strip(),
+            }
+            for key in (
+                "base_url",
+                "token",
+                "timeout",
+                "phageid",
+                "phageids",
+                "inputtype",
+                "analysistype",
+                "userid",
+                "modulelist",
+                "rundemo",
+                "taskid",
+                "modulename",
+                "result_kind",
+                "module",
+                "page",
+                "pagesize",
+                "seq_type",
+                "download_path",
+                "save_path",
+                "preview_bytes",
+                "wait",
+                "poll_interval",
+                "poll_timeout",
+                "sequence",
+                "file_path",
+            ):
+                if key in params and params[key] is not None:
+                    clean_params[key] = params[key]
+
+            for int_key in ("page", "pagesize", "preview_bytes"):
+                if int_key in clean_params:
+                    try:
+                        clean_params[int_key] = int(clean_params[int_key])
+                    except (TypeError, ValueError):
+                        clean_params.pop(int_key, None)
+
+            if "timeout" in clean_params:
+                try:
+                    clean_params["timeout"] = float(clean_params["timeout"])
+                except (TypeError, ValueError):
+                    clean_params.pop("timeout", None)
+
+            for float_key in ("poll_interval", "poll_timeout"):
+                if float_key in clean_params:
+                    try:
+                        clean_params[float_key] = float(clean_params[float_key])
+                    except (TypeError, ValueError):
+                        clean_params.pop(float_key, None)
+
+            if "wait" in clean_params and not isinstance(clean_params.get("wait"), bool):
+                wait_value = str(clean_params.get("wait", "")).strip().lower()
+                clean_params["wait"] = wait_value in {"1", "true", "yes", "y", "on"}
+
+            if isinstance(clean_params.get("rundemo"), bool):
+                clean_params["rundemo"] = "true" if clean_params["rundemo"] else "false"
+
+            action_value = clean_params.get("action")
+            if action_value in {"result", "quality"} and "taskid" in clean_params:
+                try:
+                    int(str(clean_params.get("taskid")).strip())
+                except (TypeError, ValueError):
+                    clean_params.pop("taskid", None)
+            if (
+                action_value in {"result", "quality"}
+                and not clean_params.get("taskid")
+                and self.session_id
+            ):
+                cached_taskid = _lookup_phagescope_task_memory(
+                    self.session_id,
+                    userid=clean_params.get("userid"),
+                    phageid=clean_params.get("phageid"),
+                    modulelist=clean_params.get("modulelist"),
+                )
+                if cached_taskid:
+                    clean_params["taskid"] = cached_taskid
+
+            if action_value == "quality" or (
+                action_value == "result"
+                and str(clean_params.get("result_kind") or "").strip().lower()
+                == "quality"
+            ):
+                clean_params.setdefault("wait", True)
+                clean_params.setdefault("poll_interval", 2.0)
+                clean_params.setdefault("poll_timeout", 120.0)
+
+            params = clean_params
+
         elif tool_name == "manuscript_writer":
             task_value = params.get("task")
             output_path = params.get("output_path")
@@ -3957,6 +4409,44 @@ class StructuredChatAgent:
         summary = self._summarize_tool_result(tool_name, sanitized)
         self._append_recent_tool_result(tool_name, summary, sanitized)
 
+        storage_info = None
+        if self.session_id:
+            action_payload = {
+                "kind": action.kind,
+                "name": action.name,
+                "order": action.order,
+                "blocking": action.blocking,
+                "parameters": self._drop_callables(params),
+            }
+            try:
+                storage_info = store_tool_output(
+                    session_id=self.session_id,
+                    job_id=get_current_job(),
+                    action=action_payload,
+                    tool_name=tool_name,
+                    raw_result=raw_result,
+                    summary=summary,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed to store tool output for %s in session %s: %s",
+                    tool_name,
+                    self.session_id,
+                    exc,
+                )
+
+        if tool_name == "phagescope" and self.session_id:
+            action_value = params.get("action")
+            if action_value == "submit" and sanitized.get("success"):
+                try:
+                    _record_phagescope_task_memory(self.session_id, params, sanitized)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug(
+                        "Failed to record phagescope task memory for %s: %s",
+                        self.session_id,
+                        exc,
+                    )
+
         success = sanitized.get("success", True)
         if success is False:
             message = summary or f"{tool_name} failed to execute."
@@ -4039,6 +4529,7 @@ class StructuredChatAgent:
                 "parameters": self._drop_callables(params),
                 "result": sanitized,
                 "summary": summary,
+                "storage": storage_info.__dict__ if storage_info else None,
             },
         )
 
@@ -4752,6 +5243,26 @@ class StructuredChatAgent:
         return deps
 
     def _sanitize_tool_result(self, tool_name: str, raw_result: Any) -> Dict[str, Any]:
+        if tool_name == "phagescope" and isinstance(raw_result, dict):
+            sanitized: Dict[str, Any] = {
+                "tool": tool_name,
+                "action": raw_result.get("action"),
+                "status_code": raw_result.get("status_code"),
+                "success": raw_result.get("success", False),
+            }
+            if "error" in raw_result:
+                sanitized["error"] = raw_result.get("error")
+            payload = raw_result.get("data")
+            if isinstance(payload, dict):
+                trimmed: Dict[str, Any] = {}
+                for key in ("status", "message", "code", "results", "data", "error"):
+                    if key in payload:
+                        trimmed[key] = payload[key]
+                if "results" in trimmed and isinstance(trimmed["results"], list):
+                    trimmed["results"] = trimmed["results"][:3]
+                sanitized["data"] = trimmed
+            return sanitized
+
         if tool_name == "claude_code" and isinstance(raw_result, dict):
             def _trim(text: str, limit: int = 800) -> str:
                 text = text.strip()
@@ -4899,6 +5410,23 @@ class StructuredChatAgent:
 
     @staticmethod
     def _summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
+        if tool_name == "phagescope":
+            action = result.get("action") or "phagescope"
+            if result.get("success") is False:
+                error = result.get("error") or "Execution failed"
+                return f"PhageScope {action} failed: {error}"
+            payload = result.get("data")
+            message = None
+            if isinstance(payload, dict):
+                message = payload.get("message") or payload.get("status")
+                if not message and isinstance(payload.get("data"), dict):
+                    message = payload["data"].get("taskid")
+                    if message:
+                        message = f"task created: {message}"
+            if message:
+                return f"PhageScope {action} succeeded: {message}"
+            return f"PhageScope {action} succeeded."
+
         if tool_name == "web_search":
             query = result.get("query") or ""
             prefix = f"Web search“{query}”" if query else "Web search"

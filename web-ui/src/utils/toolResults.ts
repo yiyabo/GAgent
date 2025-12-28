@@ -229,11 +229,17 @@ export const collectToolResultsFromActions = (
     if (!action || action.kind !== 'tool_operation') {
       continue;
     }
+    const details = action.details ?? undefined;
+    const extractedResult =
+      details && typeof details === 'object' && 'result' in details
+        ? ((details as any).result ?? details)
+        : details;
     const normalized = normalizeToolResultPayload({
       name: action.name,
       parameters: action.parameters,
       summary: action.message,
-      result: action.details,
+      result: extractedResult,
+      success: action.success,
     });
     if (normalized) {
       collected.push(normalized);
