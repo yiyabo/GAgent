@@ -9,7 +9,7 @@ const Tasks: React.FC = () => {
     <div className="page-container">
       <div className="page-header">
         <Title level={2}>
-          任务管理
+          Task Management
         </Title>
       </div>
       <div className="content-body">

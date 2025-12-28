@@ -8,12 +8,12 @@ const SystemPage: React.FC = () => {
     <div>
       <div className="content-header">
         <Title level={3} style={{ margin: 0 }}>
-          ⚙️ 系统设置
+          ⚙️ System Settings
         </Title>
       </div>
       <div className="content-body">
         <Card>
-          <Text>系统设置功能正在开发中...</Text>
+          <Text>System settings feature is under development...</Text>
         </Card>
       </div>
     </div>

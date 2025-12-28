@@ -64,7 +64,7 @@ async def web_search_handler(
             extra={"provider": exc.provider, "code": exc.code},
         )
 
-        # 自动兜底：builtin 失败时尝试切换到 perplexity
+        # Auto fallback: try switching to perplexity when builtin fails
         if exc.provider == "builtin" and (
             requested_provider is None or requested_provider == "builtin"
         ):

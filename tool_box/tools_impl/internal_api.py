@@ -120,38 +120,38 @@ async def internal_api_handler(
 # Tool definition for internal API calls
 internal_api_tool = {
     "name": "internal_api",
-    "description": "执行内部API调用，用于访问系统内部服务",
+    "description": "Execute internal API calls to access system internal services",
     "category": "system_integration",
     "parameters_schema": {
         "type": "object",
         "properties": {
             "endpoint": {
                 "type": "string",
-                "description": "API端点路径 (例如: /agent/create-workflow)"
+                "description": "API endpoint path (e.g., /agent/create-workflow)"
             },
             "method": {
-                "type": "string", 
-                "description": "HTTP方法",
+                "type": "string",
+                "description": "HTTP method",
                 "enum": ["GET", "POST", "PUT", "DELETE"],
                 "default": "POST"
             },
             "data": {
                 "type": "object",
-                "description": "请求数据 (用于POST/PUT请求)"
+                "description": "Request data (for POST/PUT requests)"
             },
             "timeout": {
                 "type": "number",
-                "description": "请求超时时间（秒）",
+                "description": "Request timeout in seconds",
                 "default": 60.0
             },
             "base_url": {
                 "type": "string",
-                "description": "API基础URL"
+                "description": "API base URL"
             }
         },
         "required": ["endpoint"]
     },
     "handler": internal_api_handler,
     "tags": ["api", "internal", "system"],
-    "examples": ["调用工作流程创建API", "访问内部服务接口", "系统间通信"],
+    "examples": ["Call workflow creation API", "Access internal service interface", "Inter-system communication"],
 }

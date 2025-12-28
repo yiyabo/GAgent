@@ -175,50 +175,50 @@ async def _search_perplexity(query: str) -> str:
         if not api_key:
             logger.error("Perplexity API key not configured")
             logger.error("Please set PERPLEXITY_API_KEY environment variable")
-            return "❌ 搜索失败：Perplexity API密钥未配置"
+            return "Search failed: Perplexity API key not configured"
 
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
 
-        # 构建针对搜索优化的prompt
-        search_prompt = f"""请根据以下查询提供准确、详细的信息回答：
+        # Build search-optimized prompt
+        search_prompt = f"""Please provide accurate and detailed information for the following query:
 
-查询：{query}
+Query: {query}
 
-请提供：
-1. 直接回答用户的问题
-2. 相关的最新信息
-3. 如果涉及数据，请提供具体数字
-4. 简洁但全面的回答
+Please provide:
+1. Direct answer to the user's question
+2. Relevant latest information
+3. If data is involved, provide specific numbers
+4. Concise but comprehensive answer
 
-回答语言与查询语言保持一致。"""
+Respond in the same language as the query."""
 
         payload = {
             "model": model,
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是一个智能搜索助手，能够提供准确、及时、有用的信息。请基于最新的网络信息来回答用户的问题。"
+                    "content": "You are an intelligent search assistant that provides accurate, timely, and useful information. Please answer the user's question based on the latest web information."
                 },
                 {
-                    "role": "user", 
+                    "role": "user",
                     "content": search_prompt
                 }
             ],
             "max_tokens": 1000,
-            "temperature": 0.1,  # 降低温度以获得更准确的事实性回答
+            "temperature": 0.1,  # Lower temperature for more accurate factual answers
             "stream": False
         }
 
-        timeout = aiohttp.ClientTimeout(total=30)  # Perplexity可能需要更长时间
+        timeout = aiohttp.ClientTimeout(total=30)  # Perplexity may need longer time
         
-        # 配置代理设置
+        # Configure proxy settings
         connector = None
-        proxy = None  # 🔧 禁用代理以避免 HTTPS-over-HTTPS TLS-in-TLS 问题
+        proxy = None  # Disabled proxy to avoid HTTPS-over-HTTPS TLS-in-TLS issues
         
-        # 检查代理环境变量（已禁用以避免兼容性问题）
+        # Check proxy environment variables (disabled to avoid compatibility issues)
         # https_proxy = os.getenv("https_proxy") or os.getenv("HTTPS_PROXY")
         # http_proxy = os.getenv("http_proxy") or os.getenv("HTTP_PROXY")
         
@@ -234,53 +234,53 @@ async def _search_perplexity(query: str) -> str:
                 if response.status == 200:
                     data = await response.json()
                     
-                    # 提取回答内容
+                    # Extract answer content
                     if 'choices' in data and len(data['choices']) > 0:
                         answer = data['choices'][0]['message']['content']
                         logger.info("Successfully searched using Perplexity Search API")
                         return answer
                     else:
                         logger.error("Perplexity API returned unexpected format")
-                        return "❌ 搜索失败：API返回格式异常"
+                        return "Search failed: API returned unexpected format"
 
                 elif response.status == 401:
                     logger.error("Invalid Perplexity API key")
-                    return "❌ 搜索失败：API密钥无效"
+                    return "Search failed: Invalid API key"
                 elif response.status == 429:
-                    logger.error("Perplexity API rate limit exceeded")  
-                    return "❌ 搜索失败：API请求频率限制"
+                    logger.error("Perplexity API rate limit exceeded")
+                    return "Search failed: API rate limit exceeded"
                 elif response.status == 400:
                     error_data = await response.json()
                     logger.error(f"Perplexity API bad request: {error_data}")
-                    return "❌ 搜索失败：请求格式错误"
+                    return "Search failed: Bad request format"
                 else:
                     logger.error(f"Perplexity API error: HTTP {response.status}")
-                    return f"❌ 搜索失败：HTTP {response.status}"
+                    return f"Search failed: HTTP {response.status}"
 
     except Exception as e:
         logger.error(f"Perplexity search failed: {e}")
-        return f"❌ 搜索失败：{str(e)}"
+        return f"Search failed: {str(e)}"
 
 
 # Tool definition for web search
 web_search_tool = {
     "name": "web_search",
-    "description": "智能网络搜索工具，使用Perplexity AI提供准确、最新的信息回答",
+    "description": "Intelligent web search tool using Perplexity AI to provide accurate and up-to-date information",
     "category": "information_retrieval",
     "parameters_schema": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "搜索查询字符串"},
+            "query": {"type": "string", "description": "Search query string"},
             "max_results": {
                 "type": "integer",
-                "description": "最大返回结果数量（Perplexity模式下忽略）",
+                "description": "Maximum number of results to return (ignored in Perplexity mode)",
                 "default": 5,
                 "minimum": 1,
                 "maximum": 20,
             },
             "search_engine": {
                 "type": "string",
-                "description": "固定为perplexity",
+                "description": "Search engine (fixed to perplexity)",
                 "enum": ["perplexity"],
                 "default": "perplexity",
             },
@@ -289,5 +289,5 @@ web_search_tool = {
     },
     "handler": web_search_handler,
     "tags": ["search", "web", "information", "retrieval", "perplexity", "ai"],
-    "examples": ["搜索最新的AI新闻", "2025年珠海附近的台风情况", "查询天气信息", "什么是量子计算"],
+    "examples": ["Search for the latest AI news", "Weather forecast for this week", "Query weather information", "What is quantum computing"],
 }
