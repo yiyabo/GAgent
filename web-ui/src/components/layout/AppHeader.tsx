@@ -26,26 +26,26 @@ const AppHeader: React.FC = () => {
   return (
     <Header className="app-header">
       <div className="app-logo">
-        <span style={{ fontWeight: 500, fontSize: 14, color: 'var(--text-primary)' }}>AI 任务编排</span>
+        <span style={{ fontWeight: 500, fontSize: 14, color: 'var(--text-primary)' }}>AI Task Orchestration</span>
       </div>
       
       <div className="app-header-actions">
-        {/* 系统状态 */}
+        {/* System status */}
         <Space size="small" style={{ marginRight: 16 }}>
-          <Tooltip title={apiConnected ? '已连接' : '断开'}>
+          <Tooltip title={apiConnected ? 'Connected' : 'Disconnected'}>
             <div className="system-status" style={{ gap: 6 }}>
               <div className={`status-indicator ${apiConnected ? '' : 'disconnected'}`} />
               <Text style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                {apiConnected ? '就绪' : '离线'}
+                {apiConnected ? 'Ready' : 'Offline'}
               </Text>
             </div>
           </Tooltip>
         </Space>
 
-        {/* 操作按钮 - 极简浅色 */}
+        {/* Action buttons - minimalist style */}
         <Space size="small">
           {isChatRoute && !chatListVisible && (
-            <Tooltip title="对话列表">
+            <Tooltip title="Chat List">
               <Button
                 type="text"
                 icon={<UnorderedListOutlined />}
@@ -60,7 +60,7 @@ const AppHeader: React.FC = () => {
             </Tooltip>
           )}
 
-          <Tooltip title="通知">
+          <Tooltip title="Notifications">
             <Badge count={0} size="small">
               <Button
                 type="text"
@@ -75,7 +75,7 @@ const AppHeader: React.FC = () => {
             </Badge>
           </Tooltip>
 
-          <Tooltip title="设置">
+          <Tooltip title="Settings">
             <Button
               type="text"
               icon={<SettingOutlined />}

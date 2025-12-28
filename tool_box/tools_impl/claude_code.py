@@ -17,10 +17,10 @@ from app.services.plans.decomposition_jobs import get_current_job, log_job_event
 
 logger = logging.getLogger(__name__)
 
-# 项目根目录
+# Project root directory
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 
-# Claude Code 运行时目录
+# Claude Code runtime directory
 _RUNTIME_DIR = _PROJECT_ROOT / "runtime"
 _LOG_DIR = _RUNTIME_DIR / "claude_code_logs"
 
@@ -135,15 +135,15 @@ async def claude_code_handler(
     log_lock = asyncio.Lock()
 
     try:
-        # 确保 runtime 目录存在
+        # Ensure runtime directory exists
         _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
-        # 会话级目录：不再分层 tasks/YYYY-MM-DD，所有任务都放在 session_<id>/ 下
+        # Session-level directory: All tasks are placed under session_<id>/
         session_label = f"session_{session_id}" if session_id else "session_adhoc"
         session_dir = _RUNTIME_DIR / session_label
         session_dir.mkdir(parents=True, exist_ok=True)
 
-        # 任务级目录：每个 task 一个目录，目录内仅保留 result/code/data/docs 四类产物
+        # Task-level directory: Each task has its own directory with only result/code/data/docs subdirectories
         run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         task_dir_base = None
         if task_id is not None:
@@ -185,15 +185,15 @@ async def claude_code_handler(
         except Exception as log_exc:
             logger.warning(f"Failed to initialize Claude Code log file: {log_exc}")
         
-        # 处理额外允许访问的目录，转换为绝对路径列表
+        # Process additional directories to allow access, convert to absolute paths
         allowed_dirs = []
         if add_dirs:
             for dir_path in add_dirs.split(','):
                 abs_path = _PROJECT_ROOT / dir_path.strip()
                 allowed_dirs.append(str(abs_path))
-        
-        # 在任务描述中明确工作目录、文件保存位置，并注入研究任务专用 system prompt
-        enhanced_task = (
+            
+            # Include work directory, file save location in task description, and inject research task system prompt
+            enhanced_task = (
             "You are an AI research assistant focused on rigorous scientific work. "
             "Your primary objective is to faithfully reproduce and critically analyze published research, "
             "including implementing methods as described in papers, reproducing figures and tables, "
@@ -246,7 +246,7 @@ async def claude_code_handler(
             f"{task}"
         )
         
-        # 构建命令
+        # Build command
         cmd = [
             'claude',
             '-p',  # Print mode (non-interactive)
@@ -254,15 +254,15 @@ async def claude_code_handler(
             '--output-format', output_format,
         ]
         
-        # 添加工具限制
+        # Add tool restrictions
         if allowed_tools:
             cmd.extend(['--allowed-tools', allowed_tools])
         
-        # 添加目录访问权限（相对于项目根目录的路径）
+        # Add directory access permissions (paths relative to project root)
         for abs_path in allowed_dirs:
             cmd.extend(['--add-dir', abs_path])
         
-        # 明确告诉 Claude 可以访问的绝对路径
+        # Explicitly inform Claude about accessible absolute paths
         allowed_dirs_info = ""
         if allowed_dirs:
             allowed_dirs_info = (
@@ -270,11 +270,11 @@ async def claude_code_handler(
                 + "\n".join(f"  - {d}" for d in allowed_dirs)
             )
         
-        # 修改任务描述，在最后追加目录访问信息
+        # Append directory access info to task description
         if allowed_dirs_info and not enhanced_task.endswith(allowed_dirs_info):
             enhanced_task += allowed_dirs_info
         
-        # 跳过权限检查（科研环境）
+        # Skip permission checks (research environment)
         if skip_permissions:
             cmd.append('--dangerously-skip-permissions')
         
@@ -332,7 +332,7 @@ async def claude_code_handler(
         stdout = "\n".join(stdout_lines)
         stderr = "\n".join(stderr_lines)
         
-        # 解析输出
+        # Parse output
         output_data = None
         if output_format == "json" and stdout:
             try:
@@ -348,7 +348,7 @@ async def claude_code_handler(
             except Exception as log_err:
                 logger.warning(f"Failed to finalize Claude Code log file: {log_err}")
 
-        # 构建返回结果
+        # Build return result
         return {
             "tool": "claude_code",
             "task": task,
@@ -368,7 +368,7 @@ async def claude_code_handler(
         }
         
     except subprocess.TimeoutExpired:
-        # 理论上不会触发，因为timeout=None，但保留以防万一
+        # Should not trigger since timeout=None, but kept as a safeguard
         return {
             "success": False,
             "error": "Claude CLI execution was interrupted unexpectedly",
@@ -396,7 +396,7 @@ async def claude_code_handler(
                 pass
 
 
-# ToolBox 工具定义
+# ToolBox tool definition
 claude_code_tool = {
     "name": "claude_code",
     "description": (

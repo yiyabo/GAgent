@@ -61,40 +61,40 @@ shell_execution_tool = {
         "properties": {
             "owner": {
                 "type": "string",
-                "description": "工作区/会话标识",
+                "description": "Workspace/session identifier",
             },
             "command": {
                 "oneOf": [
                     {"type": "string"},
                     {"type": "array", "items": {"type": "string"}},
                 ],
-                "description": "要执行的命令（字符串或 argv 数组）",
+                "description": "Command to execute (string or argv array)",
             },
             "timeout": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 600,
-                "description": "超时时间（秒）",
+                "description": "Timeout in seconds",
             },
             "reset_workspace": {
                 "type": "boolean",
-                "description": "执行前是否清理工作区",
+                "description": "Whether to clean workspace before execution",
                 "default": False,
             },
             "env": {
                 "type": "object",
                 "additionalProperties": {"type": "string"},
-                "description": "额外的环境变量",
+                "description": "Additional environment variables",
             },
             "files": {
                 "type": "object",
                 "additionalProperties": {"type": "string"},
-                "description": "在执行前写入工作区的文件内容 (路径 -> 内容)",
+                "description": "File content to write to workspace before execution (path -> content)",
             },
         },
         "required": ["owner", "command"],
     },
     "handler": shell_execute_handler,
     "tags": ["shell", "execution", "workspace"],
-    "examples": ["执行 python 脚本", "运行 make 构建"],
+    "examples": ["Execute python script", "Run make build"],
 }

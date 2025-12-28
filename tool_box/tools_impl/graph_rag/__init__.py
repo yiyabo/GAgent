@@ -1,7 +1,7 @@
 """
-Graph RAG 工具封装
+Graph RAG Tool Wrapper
 
-提供统一的工具定义和 handler，供工具箱注册使用。
+Provides unified tool definitions and handlers for toolbox registration.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ async def graph_rag_handler(
         return {
             "query": query,
             "success": False,
-            "error": "Graph RAG 需要提供非空的 query。",
+            "error": "Graph RAG requires a non-empty query.",
             "code": "missing_query",
         }
 
@@ -84,7 +84,7 @@ async def graph_rag_handler(
             focus_entities=sanitized_focus,
         )
     except GraphRAGError as exc:
-        logger.warning("Graph RAG 执行失败: %s", exc.message)
+        logger.warning("Graph RAG execution failed: %s", exc.message)
         payload = {
             "query": query_text,
             "success": False,
@@ -106,38 +106,38 @@ async def graph_rag_handler(
 
 graph_rag_tool = {
     "name": "graph_rag",
-    "description": "查询噬菌体知识图谱，返回相关三元组、提示词以及可选子图。",
+    "description": "Query phage knowledge graph, return relevant triples, prompts, and optional subgraph.",
     "category": "knowledge_graph",
     "parameters_schema": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "查询语句，例如“噬菌体如何感染细菌？”",
+                "description": "Query statement, e.g., 'How do phages infect bacteria?'",
             },
             "top_k": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 50,
                 "default": 12,
-                "description": "返回的最相关三元组数量（受系统上限约束）。",
+                "description": "Number of most relevant triples to return (limited by system cap).",
             },
             "hops": {
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 4,
                 "default": 1,
-                "description": "扩展子图的层数。",
+                "description": "Number of hops to expand subgraph.",
             },
             "return_subgraph": {
                 "type": "boolean",
                 "default": True,
-                "description": "是否返回 k-hop 子图 JSON。",
+                "description": "Whether to return k-hop subgraph JSON.",
             },
             "focus_entities": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "优先关注的实体名称列表，可用于重新排序结果。",
+                "description": "List of entity names to prioritize, can be used to reorder results.",
             },
         },
         "required": ["query"],
@@ -145,8 +145,8 @@ graph_rag_tool = {
     "handler": graph_rag_handler,
     "tags": ["knowledge", "graph", "rag", "phage"],
     "examples": [
-        "噬菌体如何感染耐药细菌？",
-        "列出噬菌体基因组与宿主的相互作用",
+        "How do phages infect drug-resistant bacteria?",
+        "List interactions between phage genomes and hosts",
     ],
 }
 

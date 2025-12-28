@@ -29,55 +29,55 @@ const menuItems: MenuItem[] = [
   {
     key: 'dashboard',
     icon: <DashboardOutlined />,
-    label: '控制台',
+    label: 'Dashboard',
     path: '/dashboard',
   },
   {
     key: 'chat',
     icon: <MessageOutlined />,
-    label: 'AI对话',
+    label: 'AI Chat',
     path: '/chat',
   },
   {
     key: 'tasks',
     icon: <NodeIndexOutlined />,
-    label: '任务管理',
+    label: 'Task Management',
     path: '/tasks',
   },
   {
     key: 'plans',
     icon: <ProjectOutlined />,
-    label: '计划管理',
+    label: 'Plan Management',
     path: '/plans',
   },
   {
     key: 'memory',
     icon: <DatabaseOutlined />,
-    label: '记忆管理',
+    label: 'Memory',
     path: '/memory',
   },
   {
     key: 'analytics',
     icon: <BarChartOutlined />,
-    label: '分析统计',
+    label: 'Analytics',
     path: '/analytics',
   },
   {
     key: 'tools',
     icon: <ToolOutlined />,
-    label: '工具箱',
+    label: 'Tools',
     path: '/tools',
   },
   {
     key: 'templates',
     icon: <BookOutlined />,
-    label: '模板库',
+    label: 'Templates',
     path: '/templates',
   },
   {
     key: 'system',
     icon: <SettingOutlined />,
-    label: '系统设置',
+    label: 'Settings',
     path: '/system',
   },
 ];
@@ -87,7 +87,7 @@ const AppSider: React.FC = () => {
   const location = useLocation();
   const { appSiderVisible, toggleAppSider } = useLayoutStore();
 
-  // 根据当前路径确定选中的菜单项
+  // Determine selected menu item based on current path
   const selectedKeys = [location.pathname.slice(1) || 'dashboard'];
 
   const handleMenuClick = (item: { key: string }) => {
@@ -109,7 +109,7 @@ const AppSider: React.FC = () => {
       {appSiderVisible ? (
         <>
           <div className="sider-header">
-            <Tooltip title="隐藏主导航" placement="right">
+            <Tooltip title="Hide navigation" placement="right">
               <Button
                 type="text"
                 size="small"
@@ -134,7 +134,7 @@ const AppSider: React.FC = () => {
         </>
       ) : (
         <div className="sider-collapsed">
-          <Tooltip title="展开主导航" placement="right">
+          <Tooltip title="Expand navigation" placement="right">
             <Button
               type="text"
               size="small"
@@ -142,7 +142,7 @@ const AppSider: React.FC = () => {
               className="sider-collapse-button sider-handle-vertical"
               onClick={toggleAppSider}
             >
-              <span className="sider-handle-text">主导航</span>
+              <span className="sider-handle-text">Menu</span>
             </Button>
           </Tooltip>
         </div>
