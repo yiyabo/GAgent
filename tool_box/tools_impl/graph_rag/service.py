@@ -27,21 +27,21 @@ _SERVICE_LOCK = asyncio.Lock()
 def _validate_triples_path(path: str) -> None:
     if not os.path.exists(path):
         raise GraphRAGError(
-            f"知识图谱文件不存在: {path}",
+            f"Knowledge graph file does not exist: {path}",
             code="missing_triples",
         )
     if not os.path.isfile(path):
         raise GraphRAGError(
-            f"指定的 triples 路径不是文件: {path}",
+            f"Specified triples path is not a file: {path}",
             code="invalid_triples_path",
         )
 
 
 async def get_graph_rag_service(settings: GraphRAGSettings) -> GraphRAG:
     """
-    获取 GraphRAG 实例（单例）。
+    Get GraphRAG instance (singleton).
 
-    每当配置中的 triples_path 发生变化时自动重新加载。
+    Automatically reloads when triples_path in config changes.
     """
     global _SERVICE_STATE
 
@@ -53,18 +53,18 @@ async def get_graph_rag_service(settings: GraphRAGSettings) -> GraphRAG:
                 ):
                     return _SERVICE_STATE.rag
             except FileNotFoundError:
-                # 如果新的路径不存在，后面会在 _validate_triples_path 中报错
+                # If new path doesn't exist, will error in _validate_triples_path
                 pass
 
         _validate_triples_path(settings.triples_path)
-        logger.info("加载 GraphRAG triples: %s", settings.triples_path)
+        logger.info("Loading GraphRAG triples: %s", settings.triples_path)
 
         try:
             rag = GraphRAG(settings.triples_path)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.exception("初始化 GraphRAG 失败: %s", exc)
+            logger.exception("Failed to initialize GraphRAG: %s", exc)
             raise GraphRAGError(
-                f"加载知识图谱失败: {exc}",
+                f"Failed to load knowledge graph: {exc}",
                 code="initialisation_failed",
             ) from exc
 
@@ -125,7 +125,7 @@ async def query_graph_rag(
             return_subgraph=return_subgraph,
         )
     except Exception as exc:
-        logger.exception("GraphRAG 查询失败: %s", exc)
+        logger.exception("GraphRAG query failed: %s", exc)
         raise GraphRAGError(str(exc), code="query_failed") from exc
 
     triples = _prioritise_triples(result.get("triples") or [], focus_entities)
@@ -152,7 +152,7 @@ async def query_graph_rag(
 
 
 def reset_graph_rag_service() -> None:
-    """测试场景下重置 GraphRAG 单例。"""
+    """Reset GraphRAG singleton for testing scenarios."""
 
     global _SERVICE_STATE
     _SERVICE_STATE = None

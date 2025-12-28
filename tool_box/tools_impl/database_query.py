@@ -96,17 +96,17 @@ async def get_db_connection(database: str):
 
 
 def _normalize_database_path(database: str) -> str:
-    """规范化数据库路径，避免在根目录创建文件"""
+    """Normalize database path, avoid creating files in root directory"""
     import os
     
-    # 如果是相对路径且不包含目录分隔符，放到temp目录
+    # If relative path without directory separator, put it in temp directory
     if not os.path.dirname(database) and not database.startswith('/'):
-        # 创建temp目录
+        # Create temp directory
         temp_dir = "data/databases/temp"
         os.makedirs(temp_dir, exist_ok=True)
         return os.path.join(temp_dir, database)
     
-    # 如果是绝对路径或已包含目录，保持原样
+    # If absolute path or already contains directory, keep as is
     return database
 
 
@@ -126,7 +126,7 @@ async def database_query_handler(
         Dict containing query results
     """
     try:
-        # 规范化数据库路径
+        # Normalize database path
         database = _normalize_database_path(database)
         if operation == "query":
             return await _execute_query(database, sql, params)
@@ -145,11 +145,11 @@ async def database_query_handler(
 async def _execute_query(database: str, sql: str, params: Optional[List[Any]] = None) -> Dict[str, Any]:
     """Execute SELECT query using connection pool"""
     try:
-        # 🔒 专事专办检查：如果是查询pending任务且没有session_id过滤，记录警告
-        if ("tasks" in sql.lower() and "status" in sql.lower() and "pending" in sql.lower() 
+        # Security check: if querying pending tasks without session_id filter, log warning
+        if ("tasks" in sql.lower() and "status" in sql.lower() and "pending" in sql.lower()
             and "session_id" not in sql.lower() and "SELECT" in sql.upper()):
-            logger.warning(f"🚨 检测到可能违反专事专办原则的SQL查询: {sql}")
-            logger.warning("💡 建议：待办任务查询应包含 session_id 过滤条件")
+            logger.warning(f"Detected SQL query that may violate task isolation principle: {sql}")
+            logger.warning("Suggestion: Pending task queries should include session_id filter condition")
         
         async with get_db_connection(database) as conn:
             cursor = conn.cursor()
@@ -273,22 +273,22 @@ async def _get_schema(database: str) -> Dict[str, Any]:
 # Tool definition for database query
 database_query_tool = {
     "name": "database_query",
-    "description": "执行数据库查询和操作",
+    "description": "Execute database queries and operations",
     "category": "data_access",
     "parameters_schema": {
         "type": "object",
         "properties": {
-            "database": {"type": "string", "description": "数据库文件路径"},
-            "sql": {"type": "string", "description": "SQL查询语句"},
+            "database": {"type": "string", "description": "Database file path"},
+            "sql": {"type": "string", "description": "SQL query statement"},
             "operation": {
                 "type": "string",
-                "description": "操作类型",
+                "description": "Operation type",
                 "enum": ["query", "execute", "schema"],
                 "default": "query",
             },
             "params": {
                 "type": "array",
-                "description": "查询参数（用于参数化查询）",
+                "description": "Query parameters (for parameterized queries)",
                 "items": {"type": ["string", "number", "boolean", "null"]},
             },
         },
@@ -296,5 +296,5 @@ database_query_tool = {
     },
     "handler": database_query_handler,
     "tags": ["database", "sql", "query", "data"],
-    "examples": ["查询用户表数据", "统计销售记录", "获取数据库结构信息"],
+    "examples": ["Query user table data", "Count sales records", "Get database schema information"],
 }

@@ -18,20 +18,20 @@ async def read_pdf(file_path: str) -> Dict[str, Any]:
     try:
         import PyPDF2
     except ImportError:
-        return {"success": False, "error": "缺少 PyPDF2，请先 pip install PyPDF2"}
+        return {"success": False, "error": "Missing PyPDF2, please run: pip install PyPDF2"}
 
     abs_path = Path(file_path).expanduser().resolve()
     if not abs_path.exists():
-        return {"success": False, "error": f"文件不存在: {file_path}"}
+        return {"success": False, "error": f"File not found: {file_path}"}
     if abs_path.suffix.lower() != ".pdf":
-        return {"success": False, "error": f"不是PDF文件: {file_path}"}
+        return {"success": False, "error": f"Not a PDF file: {file_path}"}
 
     try:
         size_bytes = abs_path.stat().st_size
     except OSError:
         size_bytes = 0
     if size_bytes > 50 * 1024 * 1024:
-        return {"success": False, "error": f"PDF文件过大（>{size_bytes/1024/1024:.2f}MB），上限50MB"}
+        return {"success": False, "error": f"PDF file too large (>{size_bytes/1024/1024:.2f}MB), limit is 50MB"}
 
     text_parts = []
     metadata = {}
@@ -53,7 +53,7 @@ async def read_pdf(file_path: str) -> Dict[str, Any]:
                 except Exception:
                     txt = ""
                 if txt.strip():
-                    text_parts.append(f"--- 第 {i+1} 页 ---\n{txt}")
+                    text_parts.append(f"--- Page {i+1} ---\n{txt}")
         full_text = "\n\n".join(text_parts)
         return {
             "success": True,
@@ -64,11 +64,11 @@ async def read_pdf(file_path: str) -> Dict[str, Any]:
             "metadata": metadata,
             "text": full_text,
             "text_length": len(full_text),
-            "summary": f"成功读取PDF，{page_count}页，提取{len(full_text)}字符",
+            "summary": f"Successfully read PDF, {page_count} pages, extracted {len(full_text)} characters",
         }
     except Exception as e:
-        logger.error("读取PDF失败: %s", e)
-        return {"success": False, "error": f"读取PDF失败: {e}"}
+        logger.error("Failed to read PDF: %s", e)
+        return {"success": False, "error": f"Failed to read PDF: {e}"}
 
 
 async def read_image(file_path: str, use_ocr: bool = False) -> Dict[str, Any]:
@@ -76,22 +76,22 @@ async def read_image(file_path: str, use_ocr: bool = False) -> Dict[str, Any]:
     try:
         from PIL import Image
     except ImportError:
-        return {"success": False, "error": "缺少 Pillow，请先 pip install Pillow"}
+        return {"success": False, "error": "Missing Pillow, please run: pip install Pillow"}
 
     abs_path = Path(file_path).expanduser().resolve()
     if not abs_path.exists():
-        return {"success": False, "error": f"文件不存在: {file_path}"}
+        return {"success": False, "error": f"File not found: {file_path}"}
 
     supported = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff"}
     if abs_path.suffix.lower() not in supported:
-        return {"success": False, "error": f"不支持的图片格式: {abs_path.suffix}"}
+        return {"success": False, "error": f"Unsupported image format: {abs_path.suffix}"}
 
     try:
         size_bytes = abs_path.stat().st_size
     except OSError:
         size_bytes = 0
     if size_bytes > 20 * 1024 * 1024:
-        return {"success": False, "error": f"图片文件过大（>{size_bytes/1024/1024:.2f}MB），上限20MB"}
+        return {"success": False, "error": f"Image file too large (>{size_bytes/1024/1024:.2f}MB), limit is 20MB"}
 
     try:
         img = Image.open(abs_path)
@@ -108,7 +108,7 @@ async def read_image(file_path: str, use_ocr: bool = False) -> Dict[str, Any]:
             "file_name": abs_path.name,
             "file_size": f"{size_bytes/1024:.2f} KB" if size_bytes else None,
             "image_info": info,
-            "summary": f"读取图片 {abs_path.name} 成功，尺寸 {img.width}x{img.height}, 格式 {img.format}",
+            "summary": f"Successfully read image {abs_path.name}, size {img.width}x{img.height}, format {img.format}",
         }
 
         if use_ocr:
@@ -118,25 +118,25 @@ async def read_image(file_path: str, use_ocr: bool = False) -> Dict[str, Any]:
                 text = pytesseract.image_to_string(img, lang="chi_sim+eng")
                 result["ocr_text"] = text
                 result["ocr_enabled"] = True
-                result["summary"] += f"，OCR提取{len(text)}字符"
+                result["summary"] += f", OCR extracted {len(text)} characters"
             except ImportError:
                 result["ocr_enabled"] = False
-                result["ocr_error"] = "缺少 pytesseract，无法OCR"
+                result["ocr_error"] = "Missing pytesseract, cannot perform OCR"
             except Exception as ocr_err:
                 result["ocr_enabled"] = False
-                result["ocr_error"] = f"OCR失败: {ocr_err}"
+                result["ocr_error"] = f"OCR failed: {ocr_err}"
 
         return result
     except Exception as e:
-        logger.error("读取图片失败: %s", e)
-        return {"success": False, "error": f"读取图片失败: {e}"}
+        logger.error("Failed to read image: %s", e)
+        return {"success": False, "error": f"Failed to read image: {e}"}
 
 
 async def analyze_image_with_llm(file_path: str, prompt: Optional[str] = None) -> Dict[str, Any]:
     """Placeholder: local reader does not analyze with LLM."""
     return {
         "success": False,
-        "error": "analyze_image 未启用（本地模式）",
+        "error": "analyze_image is not enabled (local mode)",
     }
 
 
@@ -144,14 +144,14 @@ async def read_text_like(file_path: str) -> Dict[str, Any]:
     """Read text/markdown/csv/json/yaml and other small text files."""
     abs_path = Path(file_path).expanduser().resolve()
     if not abs_path.exists():
-        return {"success": False, "error": f"文件不存在: {file_path}"}
+        return {"success": False, "error": f"File not found: {file_path}"}
 
     try:
         size_bytes = abs_path.stat().st_size
     except OSError:
         size_bytes = 0
     if size_bytes > 10 * 1024 * 1024:
-        return {"success": False, "error": f"文本文件过大（>{size_bytes/1024/1024:.2f}MB），上限10MB"}
+        return {"success": False, "error": f"Text file too large (>{size_bytes/1024/1024:.2f}MB), limit is 10MB"}
 
     suffix = abs_path.suffix.lower()
     text_exts = {
@@ -174,8 +174,8 @@ async def read_text_like(file_path: str) -> Dict[str, Any]:
     try:
         content = abs_path.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
-        logger.error("读取文本类文件失败: %s", e)
-        return {"success": False, "error": f"读取文本失败: {e}"}
+        logger.error("Failed to read text file: %s", e)
+        return {"success": False, "error": f"Failed to read text: {e}"}
 
     return {
         "success": True,
@@ -185,7 +185,7 @@ async def read_text_like(file_path: str) -> Dict[str, Any]:
         "format": suffix.lstrip(".") if suffix else "text",
         "text": content,
         "text_length": len(content),
-        "summary": f"成功读取文本文件，提取{len(content)}字符",
+        "summary": f"Successfully read text file, extracted {len(content)} characters",
     }
 
 
@@ -220,11 +220,11 @@ async def document_reader_handler(
                 "is_directory": True,
                 "file_path": str(abs_path),
                 "entries": entries,
-                "summary": f"路径是目录，包含 {len(entries)} 项。可用 claude_code 递归分析，或指定具体文件路径。",
+                "summary": f"Path is a directory containing {len(entries)} items. Use claude_code for recursive analysis, or specify a file path.",
             }
         except Exception as e:
-            logger.error("列目录失败: %s", e)
-            return {"success": False, "error": f"读取目录失败: {e}"}
+            logger.error("Failed to list directory: %s", e)
+            return {"success": False, "error": f"Failed to read directory: {e}"}
     # For downstream handlers, use normalized absolute path
     file_path = str(abs_path)
 
@@ -234,9 +234,9 @@ async def document_reader_handler(
             if kind == "pdf":
                 return await read_pdf(file_path)
             if kind == "image":
-                # 前端/LLM 误用 read_pdf 但传了图片，尝试读取图片
+                # Frontend/LLM misused read_pdf but passed an image, try reading as image
                 return await read_image(file_path, use_ocr=use_ocr)
-            # 其他文本类，尝试文本读取
+            # Other text types, try text reading
             return await read_text_like(file_path)
         if operation == "read_image":
             return await read_image(file_path, use_ocr=use_ocr)
@@ -251,15 +251,15 @@ async def document_reader_handler(
             return await read_text_like(file_path)
         if operation == "analyze_image":
             return await analyze_image_with_llm(file_path, prompt=prompt)
-        return {"success": False, "error": f"不支持的操作: {operation}"}
+        return {"success": False, "error": f"Unsupported operation: {operation}"}
     except Exception as e:
-        logger.error("文档读取处理失败: %s", e)
-        return {"success": False, "error": f"处理请求时出错: {e}"}
+        logger.error("Document reading failed: %s", e)
+        return {"success": False, "error": f"Error processing request: {e}"}
 
 
 document_reader_tool = {
     "name": "document_reader",
-    "description": "读取和分析文档/图片：PDF、图片(OCR可选)、文本/Markdown/CSV/JSON等（本地解析，无外部上传）",
+    "description": "Read and analyze documents/images: PDF, images (OCR optional), text/Markdown/CSV/JSON, etc. (local parsing, no external upload)",
     "category": "document_processing",
     "parameters_schema": {
         "type": "object",
@@ -267,20 +267,20 @@ document_reader_tool = {
             "operation": {
                 "type": "string",
                 "enum": ["read_pdf", "read_image", "read_text", "read_any", "analyze_image"],
-                "description": "操作类型：read_pdf, read_image, read_text, read_any（自动判断），analyze_image（占位）",
+                "description": "Operation type: read_pdf, read_image, read_text, read_any (auto-detect), analyze_image (placeholder)",
             },
             "file_path": {
                 "type": "string",
-                "description": "文件路径（绝对或相对）",
+                "description": "File path (absolute or relative)",
             },
             "use_ocr": {
                 "type": "boolean",
-                "description": "是否对图片执行OCR（仅 read_image / read_any 命中图片时生效）",
+                "description": "Whether to perform OCR on images (only effective for read_image / read_any when image is detected)",
                 "default": False,
             },
             "prompt": {
                 "type": "string",
-                "description": "分析提示词（仅 analyze_image，占位）",
+                "description": "Analysis prompt (only for analyze_image, placeholder)",
             },
         },
         "required": ["operation", "file_path"],
@@ -288,9 +288,9 @@ document_reader_tool = {
     "handler": document_reader_handler,
     "tags": ["document", "pdf", "image", "ocr", "text", "markdown", "csv", "json"],
     "examples": [
-        "读取PDF文件并提取文本内容",
-        "识别图片中的文字信息",
-        "读取Markdown/文本/CSV/JSON文件",
-        "自动判断文件类型并读取内容",
+        "Read PDF file and extract text content",
+        "Recognize text in images",
+        "Read Markdown/text/CSV/JSON files",
+        "Auto-detect file type and read content",
     ],
 }

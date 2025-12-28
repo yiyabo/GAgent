@@ -296,20 +296,20 @@ class ToolBoxLLMIntegration:
         for tool in tools:
             desc = f"- {tool['name']}: {tool['description']}"
             if tool["examples"]:
-                desc += f" (示例: {', '.join(tool['examples'][:2])})"
+                desc += f" (Examples: {', '.join(tool['examples'][:2])})"
             tool_descriptions.append(desc)
 
         enhanced_prompt = f"""
-你是一个智能助手，可以使用以下工具来帮助完成任务：
+You are an intelligent assistant that can use the following tools to help complete tasks:
 
 {chr(10).join(tool_descriptions)}
 
-当你需要使用工具时，请使用以下格式：
+When you need to use a tool, please use the following format:
 TOOL_CALL: {{"tool": "tool_name", "parameters": {{"param1": "value1"}}}}
 
-用户请求: {user_prompt}
+User request: {user_prompt}
 
-请分析请求并决定是否需要使用工具。如果需要，请使用TOOL_CALL格式调用相应工具。
+Please analyze the request and decide whether you need to use tools. If so, use the TOOL_CALL format to call the appropriate tool.
 """
 
         return enhanced_prompt

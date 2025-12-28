@@ -1,8 +1,8 @@
 """
-国际化错误消息系统
+Internationalized Error Message System
 
-支持中英文错误消息，实现错误分类和错误码体系
-遵循YAGNI原则：现在只实现中文，框架支持未来扩展
+Supports multi-language error messages with error classification and error code system
+Following YAGNI principle: Currently implemented with English as default, framework supports future extension
 """
 
 from enum import Enum
@@ -12,18 +12,18 @@ from .exceptions import ErrorCode
 
 
 class Language(Enum):
-    """支持的语言"""
+    """Supported languages"""
 
-    ZH_CN = "zh_cn"  # 简体中文
-    EN_US = "en_us"  # 美式英语
+    ZH_CN = "zh_cn"  # Simplified Chinese
+    EN_US = "en_us"  # American English
 
 
 class ErrorMessageRegistry:
     """
-    错误消息注册表
+    Error Message Registry
 
-    遵循单一职责原则：专门管理错误消息
-    遵循开闭原则：可扩展新的语言和错误类型
+    Follows Single Responsibility Principle: Dedicated to managing error messages
+    Follows Open-Closed Principle: Extensible for new languages and error types
     """
 
     def __init__(self):
@@ -32,9 +32,9 @@ class ErrorMessageRegistry:
         self._init_messages()
 
     def _init_messages(self):
-        """初始化错误消息"""
+        """Initialize error messages"""
         self._messages = {
-            # 业务错误消息 (1000-1999)
+            # Business error messages (1000-1999)
             ErrorCode.BUSINESS_RULE_VIOLATION: {
                 Language.ZH_CN: {
                     "message": "业务规则违反",
@@ -99,7 +99,7 @@ class ErrorMessageRegistry:
                     ],
                 },
             },
-            # 验证错误消息 (2000-2999)
+            # Validation error messages (2000-2999)
             ErrorCode.MISSING_REQUIRED_FIELD: {
                 Language.ZH_CN: {
                     "message": "缺少必填字段",
@@ -172,7 +172,7 @@ class ErrorMessageRegistry:
                     "suggestions": ["Check data structure", "Reference schema documentation", "Use correct data model"],
                 },
             },
-            # 系统错误消息 (3000-3999)
+            # System error messages (3000-3999)
             ErrorCode.INTERNAL_SERVER_ERROR: {
                 Language.ZH_CN: {
                     "message": "内部服务器错误",
@@ -237,7 +237,7 @@ class ErrorMessageRegistry:
                     "suggestions": ["Free memory resources", "Increase memory configuration", "Optimize memory usage"],
                 },
             },
-            # 网络错误消息 (4000-4999)
+            # Network error messages (4000-4999)
             ErrorCode.CONNECTION_FAILED: {
                 Language.ZH_CN: {
                     "message": "连接失败",
@@ -262,7 +262,7 @@ class ErrorMessageRegistry:
                     "suggestions": ["Check network speed", "Increase timeout", "Retry request"],
                 },
             },
-            # 数据库错误消息 (5000-5999)
+            # Database error messages (5000-5999)
             ErrorCode.DATABASE_CONNECTION_FAILED: {
                 Language.ZH_CN: {
                     "message": "数据库连接失败",
@@ -291,7 +291,7 @@ class ErrorMessageRegistry:
                     "suggestions": ["Check SQL syntax", "Verify table structure", "Check data permissions"],
                 },
             },
-            # 认证授权错误消息 (6000-6999)
+            # Authentication/Authorization error messages (6000-6999)
             ErrorCode.AUTHENTICATION_FAILED: {
                 Language.ZH_CN: {
                     "message": "身份验证失败",
@@ -332,7 +332,7 @@ class ErrorMessageRegistry:
                     ],
                 },
             },
-            # 外部服务错误消息 (7000-7999)
+            # External service error messages (7000-7999)
             ErrorCode.LLM_SERVICE_ERROR: {
                 Language.ZH_CN: {
                     "message": "LLM服务错误",
@@ -387,22 +387,22 @@ class ErrorMessageRegistry:
         self, error_code: int, language: Optional[Language] = None, context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        获取错误消息
+        Get error message
 
         Args:
-            error_code: 错误码
-            language: 语言，默认使用系统默认语言
-            context: 上下文信息，用于消息模板替换
+            error_code: Error code
+            language: Language, defaults to system default language
+            context: Context information for message template substitution
 
         Returns:
-            错误消息字典，包含message、description、suggestions
+            Error message dict containing message, description, suggestions
         """
         lang = language or self._default_language
 
         if error_code not in self._messages:
             # Always use English for consistent output
             language = Language.EN_US
-            # 返回默认错误消息
+            # Return default error message
             return {
                 "message": "Unknown error",
                 "description": f"Error code {error_code} not defined",
@@ -412,12 +412,12 @@ class ErrorMessageRegistry:
         error_data = self._messages[error_code]
 
         if lang not in error_data:
-            # 回退到默认语言
+            # Fallback to default language
             lang = self._default_language
 
         message_data = error_data[lang].copy()
 
-        # 支持消息模板替换（未来扩展功能）
+        # Support message template substitution (future extension)
         if context:
             message_data = self._format_with_context(message_data, context)
 
@@ -425,16 +425,16 @@ class ErrorMessageRegistry:
 
     def _format_with_context(self, message_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        使用上下文信息格式化消息（预留扩展接口）
+        Format message with context information (reserved extension interface)
 
         Args:
-            message_data: 原始消息数据
-            context: 上下文信息
+            message_data: Original message data
+            context: Context information
 
         Returns:
-            格式化后的消息数据
+            Formatted message data
         """
-        # 简单的字符串替换实现
+        # Simple string replacement implementation
         formatted_data = {}
         for key, value in message_data.items():
             if isinstance(value, str):
@@ -450,17 +450,17 @@ class ErrorMessageRegistry:
         return formatted_data
 
     def set_default_language(self, language: Language):
-        """设置默认语言"""
+        """Set default language"""
         self._default_language = language
 
     def add_custom_message(self, error_code: int, language: Language, message_data: Dict[str, Any]):
         """
-        添加自定义错误消息
+        Add custom error message
 
         Args:
-            error_code: 错误码
-            language: 语言
-            message_data: 消息数据，包含message、description、suggestions
+            error_code: Error code
+            language: Language
+            message_data: Message data containing message, description, suggestions
         """
         if error_code not in self._messages:
             self._messages[error_code] = {}
@@ -468,17 +468,17 @@ class ErrorMessageRegistry:
         self._messages[error_code][language] = message_data
 
 
-# 全局错误消息注册表实例
+# Global error message registry instance
 message_registry = ErrorMessageRegistry()
 
 
 def get_error_message(
     error_code: int, language: Optional[Language] = None, context: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """获取错误消息的便捷函数"""
+    """Convenience function to get error message"""
     return message_registry.get_message(error_code, language, context)
 
 
 def set_default_language(language: Language):
-    """设置默认语言的便捷函数"""
+    """Convenience function to set default language"""
     message_registry.set_default_language(language)
