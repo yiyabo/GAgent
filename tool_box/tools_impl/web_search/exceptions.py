@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional
 
 
 class WebSearchError(Exception):
-    """统一的 Web Search 错误类型"""
+    """Unified Web Search error type"""
 
     def __init__(
         self,

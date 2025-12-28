@@ -34,7 +34,7 @@ async def mermaid_diagram_handler(
 
         client = get_default_client()
 
-        # 构建 prompt
+        # Build prompt
         prompt = f"""Generate a Mermaid diagram for the following task:
 
 Task Description: {task_description}
@@ -85,13 +85,13 @@ sequenceDiagram
 
 Now generate the Mermaid diagram:"""
 
-        # 调用 LLM
+        # Call LLM
         response = client.chat(prompt)
 
-        # 提取 Mermaid 代码
+        # Extract Mermaid code
         mermaid_code = _extract_mermaid_code(response)
 
-        # 保存到文件（如果指定）
+        # Save to file (if specified)
         if save_path:
             with open(save_path, 'w', encoding='utf-8') as f:
                 f.write(f"```mermaid\n{mermaid_code}\n```\n")
@@ -117,17 +117,17 @@ Now generate the Mermaid diagram:"""
 
 def _extract_mermaid_code(response: str) -> str:
     """Extract Mermaid code from LLM response"""
-    # 提取 ```mermaid ... ``` 之间的内容
+    # Extract content between ```mermaid ... ```
     import re
 
-    # 尝试匹配代码块
+    # Try to match code block
     pattern = r'```mermaid\s*(.*?)\s*```'
     match = re.search(pattern, response, re.DOTALL)
 
     if match:
         return match.group(1).strip()
 
-    # 如果没有代码块标记，返回整个响应
+    # If no code block markers found, return the entire response
     return response.strip()
 
 
@@ -136,13 +136,13 @@ def _encode_mermaid(code: str) -> str:
     import base64
     import json
 
-    # Mermaid Live Editor 使用 pako 压缩 + base64
-    # 简化版：仅使用 base64（需要后续优化为 pako）
+    # Mermaid Live Editor uses pako compression + base64
+    # Simplified version: using only base64 (needs optimization to pako later)
     encoded = base64.b64encode(code.encode('utf-8')).decode('utf-8')
     return encoded
 
 
-# ToolBox 工具定义
+# ToolBox tool definition
 mermaid_diagram_tool = {
     "name": "mermaid_diagram",
     "description": (

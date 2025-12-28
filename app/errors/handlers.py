@@ -1,8 +1,8 @@
 """
-统一错误响应格式处理器
+Unified Error Response Format Handler
 
-实现标准化的错误响应格式，支持API和CLI两种输出模式
-遵循SOLID原则和DRY原则
+Implements standardized error response format, supporting both API and CLI output modes
+Follows SOLID and DRY principles
 """
 
 import sys
@@ -28,7 +28,7 @@ from .exceptions import (
 
 
 class OutputFormat(Enum):
-    """输出格式枚举"""
+    """Output format enumeration"""
 
     JSON = "json"
     CLI = "cli"
@@ -37,7 +37,7 @@ class OutputFormat(Enum):
 
 @dataclass
 class ErrorResponse:
-    """标准化错误响应数据结构"""
+    """Standardized error response data structure"""
 
     success: bool = False
     error_id: str = ""
@@ -59,23 +59,23 @@ class ErrorResponse:
 
 class ErrorResponseFormatter:
     """
-    错误响应格式化器
+    Error Response Formatter
 
-    遵循单一职责原则：专门负责错误格式化
-    遵循开闭原则：可扩展新的输出格式
+    Follows Single Responsibility Principle: Dedicated to error formatting
+    Follows Open-Closed Principle: Extensible for new output formats
     """
 
     @staticmethod
     def format_for_api(error: BaseError, include_debug: bool = False) -> Dict[str, Any]:
         """
-        格式化为API响应格式
+        Format as API response
 
         Args:
-            error: 基础错误实例
-            include_debug: 是否包含调试信息
+            error: Base error instance
+            include_debug: Whether to include debug information
 
         Returns:
-            标准化的API错误响应字典
+            Standardized API error response dictionary
         """
         response_data = {
             "success": False,
@@ -91,7 +91,7 @@ class ErrorResponseFormatter:
             },
         }
 
-        # 开发环境包含调试信息
+        # Include debug info in development environment
         if include_debug and error.cause:
             response_data["error"]["debug_info"] = {
                 "cause_type": type(error.cause).__name__,
@@ -108,16 +108,16 @@ class ErrorResponseFormatter:
     @staticmethod
     def format_for_cli(error: BaseError, verbose: bool = False) -> str:
         """
-        格式化为CLI友好的错误输出
+        Format as CLI-friendly error output
 
         Args:
-            error: 基础错误实例
-            verbose: 是否显示详细信息
+            error: Base error instance
+            verbose: Whether to show detailed information
 
         Returns:
-            CLI格式的错误消息字符串
+            CLI-formatted error message string
         """
-        # 根据严重程度选择颜色和图标
+        # Choose icon based on severity
         severity_icons = {
             ErrorSeverity.LOW: "ℹ️",
             ErrorSeverity.MEDIUM: "⚠️",
@@ -127,7 +127,7 @@ class ErrorResponseFormatter:
 
         icon = severity_icons.get(error.severity, "❌")
 
-        # 基础错误信息
+        # Basic error information
         lines = [
             f"{icon} Error [{error.error_code}]: {error.message}",
             f"   Category: {error.category.value}",
@@ -135,19 +135,19 @@ class ErrorResponseFormatter:
             f"   Error ID: {error.error_id}",
         ]
 
-        # 上下文信息
+        # Context information
         if error.context:
             lines.append("Context:")
             for key, value in error.context.items():
                 lines.append(f"     - {key}: {value}")
 
-        # 建议信息
+        # Suggestions
         if error.suggestions:
             lines.append("Suggestions:")
             for suggestion in error.suggestions:
                 lines.append(f"     • {suggestion}")
 
-        # 详细模式显示额外信息
+        # Show extra info in verbose mode
         if verbose:
             lines.append(f"Time: {error.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -159,13 +159,13 @@ class ErrorResponseFormatter:
     @staticmethod
     def format_for_log(error: BaseError) -> Dict[str, Any]:
         """
-        格式化为结构化日志格式
+        Format as structured log format
 
         Args:
-            error: 基础错误实例
+            error: Base error instance
 
         Returns:
-            结构化日志数据字典
+            Structured log data dictionary
         """
         log_data = {
             "event": "error_occurred",
@@ -186,9 +186,9 @@ class ErrorResponseFormatter:
 
 class ErrorHandler:
     """
-    统一错误处理器
+    Unified Error Handler
 
-    实现依赖倒置原则：依赖抽象的错误接口而不是具体实现
+    Implements Dependency Inversion Principle: Depends on abstract error interface rather than concrete implementations
     """
 
     def __init__(self, default_format: OutputFormat = OutputFormat.JSON):
@@ -203,22 +203,22 @@ class ErrorHandler:
         verbose: bool = False,
     ) -> Union[Dict[str, Any], str]:
         """
-        统一处理异常
+        Unified exception handling
 
         Args:
-            exception: 异常实例
-            output_format: 输出格式，默认使用初始化时设置的格式
-            include_debug: 是否包含调试信息
-            verbose: CLI模式下是否显示详细信息
+            exception: Exception instance
+            output_format: Output format, defaults to format set during initialization
+            include_debug: Whether to include debug information
+            verbose: Whether to show detailed information in CLI mode
 
         Returns:
-            格式化后的错误响应
+            Formatted error response
         """
-        # 转换为统一的BaseError格式
+        # Convert to unified BaseError format
         if isinstance(exception, BaseError):
             error = exception
         else:
-            # 将标准异常转换为SystemError
+            # Convert standard exception to SystemError
             error = SystemError(message=str(exception), cause=exception, severity=ErrorSeverity.HIGH)
 
         format_type = output_format or self.default_format
@@ -236,19 +236,19 @@ class ErrorHandler:
         self, validation_errors: List[Dict[str, Any]], output_format: Optional[OutputFormat] = None
     ) -> Union[Dict[str, Any], str]:
         """
-        批量处理验证错误
+        Batch process validation errors
 
         Args:
-            validation_errors: 验证错误列表
-            output_format: 输出格式
+            validation_errors: List of validation errors
+            output_format: Output format
 
         Returns:
-            格式化后的批量验证错误响应
+            Formatted batch validation error response
         """
         if not validation_errors:
             return self.handle_exception(ValidationError("Unknown validation error"))
 
-        # 创建综合验证错误
+        # Create combined validation error
         error_messages = []
         all_context = {}
 
@@ -275,40 +275,40 @@ class ErrorHandler:
         return self.handle_exception(validation_error, output_format)
 
 
-# 全局错误处理器实例
+# Global error handler instances
 api_error_handler = ErrorHandler(OutputFormat.JSON)
 cli_error_handler = ErrorHandler(OutputFormat.CLI)
 log_error_handler = ErrorHandler(OutputFormat.LOG)
 
 
 def handle_api_error(exception: Exception, include_debug: bool = False) -> Dict[str, Any]:
-    """API错误处理便捷函数"""
+    """Convenience function for API error handling"""
     return api_error_handler.handle_exception(exception, include_debug=include_debug)
 
 
 def handle_cli_error(exception: Exception, verbose: bool = False) -> str:
-    """CLI错误处理便捷函数"""
+    """Convenience function for CLI error handling"""
     return cli_error_handler.handle_exception(exception, verbose=verbose)
 
 
 def handle_log_error(exception: Exception) -> Dict[str, Any]:
-    """日志错误处理便捷函数"""
+    """Convenience function for log error handling"""
     return log_error_handler.handle_exception(exception)
 
 
-# 错误处理装饰器，实现AOP模式
+# Error handling decorator implementing AOP pattern
 
 from functools import wraps
 
 
 def handle_errors(output_format: OutputFormat = OutputFormat.JSON, reraise: bool = False, log_errors: bool = True):
     """
-    错误处理装饰器
+    Error handling decorator
 
     Args:
-        output_format: 输出格式
-        reraise: 是否重新抛出异常
-        log_errors: 是否记录错误日志
+        output_format: Output format
+        reraise: Whether to re-raise the exception
+        log_errors: Whether to log errors
     """
 
     def decorator(func):
@@ -317,7 +317,7 @@ def handle_errors(output_format: OutputFormat = OutputFormat.JSON, reraise: bool
             try:
                 return func(*args, **kwargs)
             except Exception as e:
-                # 记录错误日志
+                # Log the error
                 if log_errors:
                     import logging
 
@@ -325,7 +325,7 @@ def handle_errors(output_format: OutputFormat = OutputFormat.JSON, reraise: bool
                     log_data = handle_log_error(e)
                     logger.error(f"Function {func.__name__} failed", extra=log_data)
 
-                # 处理错误响应
+                # Handle error response
                 handler = ErrorHandler(output_format)
                 error_response = handler.handle_exception(e)
 
@@ -341,17 +341,17 @@ def handle_errors(output_format: OutputFormat = OutputFormat.JSON, reraise: bool
 
 def safe_execute(func, *args, default_return=None, log_errors=True, **kwargs):
     """
-    安全执行函数，捕获所有异常
+    Safely execute function, catching all exceptions
 
     Args:
-        func: 要执行的函数
-        *args: 函数参数
-        default_return: 异常时的默认返回值
-        log_errors: 是否记录错误
-        **kwargs: 函数关键字参数
+        func: Function to execute
+        *args: Function arguments
+        default_return: Default return value on exception
+        log_errors: Whether to log errors
+        **kwargs: Function keyword arguments
 
     Returns:
-        函数执行结果或默认值
+        Function execution result or default value
     """
     try:
         return func(*args, **kwargs)

@@ -24,13 +24,13 @@ ALLOWED_BASE_PATHS = [
     os.path.join(os.getcwd(), "results"),  # Project results directory
 ]
 
-# 默认工作目录 - 避免在根目录创建文件
+# Default work directory - avoid creating files in root directory
 DEFAULT_WORK_DIR = "results"
 
 
 def _normalize_file_path(file_path: str) -> str:
-    """规范化文件路径，避免在根目录创建文件"""
-    # 如果是简单文件名（没有目录），放到temp目录
+    """Normalize file path, avoid creating files in root directory"""
+    # If it's a simple filename (no directory), put it in the results directory
     if not os.path.dirname(file_path) and not file_path.startswith('/'):
         os.makedirs(DEFAULT_WORK_DIR, exist_ok=True)
         return os.path.join(DEFAULT_WORK_DIR, file_path)
@@ -91,7 +91,7 @@ async def file_operations_handler(
     destination: Optional[str] = None,
     pattern: Optional[str] = None,
 ) -> Dict[str, Any]:
-    # 规范化文件路径
+    # Normalize file path
     path = _normalize_file_path(path)
     if destination:
         destination = _normalize_file_path(destination)
@@ -401,24 +401,24 @@ async def _get_file_info(target_path: str) -> Dict[str, Any]:
 # Tool definition for file operations
 file_operations_tool = {
     "name": "file_operations",
-    "description": "执行文件系统操作（读写、列表、删除、复制、移动等）",
+    "description": "Perform file system operations (read, write, list, delete, copy, move, etc.)",
     "category": "file_management",
     "parameters_schema": {
         "type": "object",
         "properties": {
             "operation": {
                 "type": "string",
-                "description": "操作类型",
+                "description": "Operation type",
                 "enum": ["read", "write", "list", "delete", "copy", "move", "exists", "info"],
             },
-            "path": {"type": "string", "description": "目标文件/目录路径"},
-            "content": {"type": "string", "description": "写入的内容（write操作时需要）"},
-            "destination": {"type": "string", "description": "目标路径（copy/move操作时需要）"},
-            "pattern": {"type": "string", "description": "文件匹配模式（list操作时可选）"},
+            "path": {"type": "string", "description": "Target file/directory path"},
+            "content": {"type": "string", "description": "Content to write (required for write operation)"},
+            "destination": {"type": "string", "description": "Destination path (required for copy/move operations)"},
+            "pattern": {"type": "string", "description": "File matching pattern (optional for list operation)"},
         },
         "required": ["operation", "path"],
     },
     "handler": file_operations_handler,
     "tags": ["file", "filesystem", "read", "write", "management"],
-    "examples": ["读取配置文件", "创建新文档", "列出目录内容", "复制文件到备份目录"],
+    "examples": ["Read configuration file", "Create new document", "List directory contents", "Copy file to backup directory"],
 }
