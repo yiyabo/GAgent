@@ -786,7 +786,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
         message_to_send = request.message
         attachments = context.get("attachments", [])
         if attachments and isinstance(attachments, list):
-            attachment_info = "\n\n📎 用户当前上传的附件（请优先关注并使用document_reader读取这些文件）：\n"
+            attachment_info = "\n\n📎 用户当前上传的附件：\n"
             for att in attachments:
                 if isinstance(att, dict):
                     att_type = att.get("type", "file")
@@ -796,6 +796,15 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                     attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
                     if att_extracted:
                         attachment_info += f"  extracted: {att_extracted}\n"
+            # 根据附件类型给出工具使用建议
+            has_image = any(att.get("type") == "image" for att in attachments if isinstance(att, dict))
+            has_document = any(att.get("type") in ["document", "application/pdf"] for att in attachments if isinstance(att, dict))
+            if has_image and not has_document:
+                attachment_info += "\n💡 提示：图片文件请使用 vision_reader 进行视觉理解和描述。"
+            elif has_document and not has_image:
+                attachment_info += "\n💡 提示：文档文件请使用 document_reader 提取内容。"
+            elif has_image and has_document:
+                attachment_info += "\n💡 提示：图片请使用 vision_reader，文档请使用 document_reader。"
             message_to_send = request.message + attachment_info
             logger.info("[CHAT][ATTACHMENTS] session=%s count=%d", request.session_id, len(attachments))
 
@@ -1098,7 +1107,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             message_to_send = request.message
             attachments = context.get("attachments", [])
             if attachments and isinstance(attachments, list):
-                attachment_info = "\n\n📎 用户当前上传的附件（请优先关注并使用document_reader读取这些文件）：\n"
+                attachment_info = "\n\n📎 用户当前上传的附件：\n"
                 for att in attachments:
                     if isinstance(att, dict):
                         att_type = att.get("type", "file")
@@ -1108,6 +1117,15 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                         attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
                         if att_extracted:
                             attachment_info += f"  extracted: {att_extracted}\n"
+                # 根据附件类型给出工具使用建议
+                has_image = any(att.get("type") == "image" for att in attachments if isinstance(att, dict))
+                has_document = any(att.get("type") in ["document", "application/pdf"] for att in attachments if isinstance(att, dict))
+                if has_image and not has_document:
+                    attachment_info += "\n💡 提示：图片文件请使用 vision_reader 进行视觉理解和描述。"
+                elif has_document and not has_image:
+                    attachment_info += "\n💡 提示：文档文件请使用 document_reader 提取内容。"
+                elif has_image and has_document:
+                    attachment_info += "\n💡 提示：图片请使用 vision_reader，文档请使用 document_reader。"
                 message_to_send = request.message + attachment_info
                 logger.info(
                     "[CHAT][STREAM][ATTACHMENTS] session=%s count=%d",
@@ -3589,7 +3607,7 @@ class StructuredChatAgent:
             "- tool_operation: generate_experiment_card (create data/<experiment_id>/card.yaml from a PDF; if pdf_path/experiment_id are omitted, uses the latest uploaded PDF and derives an id)",
             "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs/target_task_id)",
             "- tool_operation: manuscript_writer (write a research manuscript using the default LLM; requires `task` and `output_path`, optional context_paths/analysis_path/max_context_bytes/target_task_id)",
-            "- tool_operation: document_reader (read and analyze files; requires `operation`='read_pdf'/'read_image'/'analyze_image', `file_path`, optional `use_ocr`/`prompt`/target_task_id)",
+            "- tool_operation: document_reader (extract content from files; requires `operation`='read_pdf'/'read_image'/'read_text'/'read_any', `file_path`, optional `use_ocr`/target_task_id); for visual understanding use vision_reader",
             "- tool_operation: vision_reader (vision-based OCR and figure/equation reading for images or scanned pages; requires `operation` and `image_path`, optional page_number/region/question/language/target_task_id)",
             "- tool_operation: paper_replication (load a structured ExperimentCard for phage-related paper replication experiments; optional `experiment_id`/target_task_id, currently supports 'experiment_1')",
             "  NOTE: All tool_operation actions accept an optional `target_task_id` parameter. When executing a tool for a specific plan task, include `target_task_id` to automatically update that task's status to 'completed' or 'failed' based on the tool result.",
@@ -4094,7 +4112,6 @@ class StructuredChatAgent:
                 "read_any",
                 "read_file",
                 "auto",
-                "analyze_image",
             ]:
                 return AgentStep(
                     action=action,
@@ -4107,7 +4124,6 @@ class StructuredChatAgent:
                 "operation": operation,
                 "file_path": file_path,
                 "use_ocr": params.get("use_ocr", False),
-                "prompt": params.get("prompt"),
             }
 
         elif tool_name == "vision_reader":

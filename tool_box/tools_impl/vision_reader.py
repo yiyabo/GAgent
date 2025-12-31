@@ -54,22 +54,30 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
     if not api_key:
         raise RuntimeError("Qwen vision API key is not configured (QWEN_VL_API_KEY / QWEN_API_KEY).")
 
+    # Use Qwen VL OpenAI-compatible endpoint
+    # Note: raw HTTP needs full path, OpenAI SDK would append /chat/completions automatically
     base_url = (
         os.getenv("QWEN_VL_API_URL")
-        or os.getenv("QWEN_API_URL")
-        or settings.qwen_api_url
         or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     )
     model = (
         os.getenv("QWEN_VL_MODEL")
         or os.getenv("QWEN_MODEL")
         or settings.qwen_model
-        or "qwen3-vl-plus-2025-09-23"
+        or "qwen3-vl-plus"
     )
 
     abs_path = Path(file_path).resolve()
     if not abs_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
+
+    # Check file size - limit to 10MB for API
+    file_size = abs_path.stat().st_size
+    max_size = 10 * 1024 * 1024  # 10MB
+    if file_size > max_size:
+        raise ValueError(f"Image file too large: {file_size / 1024 / 1024:.2f}MB (max: {max_size / 1024 / 1024}MB)")
+
+    logger.info(f"Processing image: {abs_path.name}, size: {file_size / 1024:.2f}KB")
 
     # Encode file as data URL
     with abs_path.open("rb") as f:
@@ -80,14 +88,15 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
     b64 = base64.b64encode(data).decode("utf-8")
     data_url = f"data:{mime};base64,{b64}"
 
+    # OpenAI-compatible format for Qwen VL
     payload: Dict[str, Any] = {
         "model": model,
         "messages": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": data_url}},
+                    {"type": "text", "text": prompt},
                 ],
             }
         ],
@@ -113,27 +122,34 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
                 logger.warning("Qwen vision response is not valid JSON; returning raw text.")
                 return text
 
-    # Try to extract the assistant message content
+    # Parse OpenAI-compatible response format
+    # Response structure: {"choices": [{"message": {"content": "..."}}]}
     try:
         choices = obj.get("choices") or []
         if not choices:
             logger.warning("Qwen vision response has no choices: %s", obj)
             return json.dumps(obj)
+
         message = choices[0].get("message") or {}
         content = message.get("content")
-        # Some providers return a simple string; others return a list of blocks
+
+        # Content is typically a string in OpenAI-compatible format
         if isinstance(content, str):
             return content
         if isinstance(content, list):
+            # Handle if content is still a list (some providers mix formats)
             parts = []
             for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    parts.append(str(part.get("text", "")))
+                if isinstance(part, dict):
+                    if "text" in part:
+                        parts.append(str(part.get("text", "")))
+                    elif part.get("type") == "text":
+                        parts.append(str(part.get("text", "")))
             if parts:
                 return "\n".join(parts)
         # Fallback: serialize the whole message
         return json.dumps(message)
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
         logger.warning("Failed to parse Qwen vision response: %s", exc)
         return json.dumps(obj)
 

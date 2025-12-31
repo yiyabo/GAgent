@@ -132,14 +132,6 @@ async def read_image(file_path: str, use_ocr: bool = False) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to read image: {e}"}
 
 
-async def analyze_image_with_llm(file_path: str, prompt: Optional[str] = None) -> Dict[str, Any]:
-    """Placeholder: local reader does not analyze with LLM."""
-    return {
-        "success": False,
-        "error": "analyze_image is not enabled (local mode)",
-    }
-
-
 async def read_text_like(file_path: str) -> Dict[str, Any]:
     """Read text/markdown/csv/json/yaml and other small text files."""
     abs_path = Path(file_path).expanduser().resolve()
@@ -203,7 +195,6 @@ async def document_reader_handler(
     operation: str,
     file_path: str,
     use_ocr: bool = False,
-    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     # Normalize path early and handle directory listing
     abs_path = Path(file_path).expanduser()
@@ -249,8 +240,6 @@ async def document_reader_handler(
             if kind == "image":
                 return await read_image(file_path, use_ocr=use_ocr)
             return await read_text_like(file_path)
-        if operation == "analyze_image":
-            return await analyze_image_with_llm(file_path, prompt=prompt)
         return {"success": False, "error": f"Unsupported operation: {operation}"}
     except Exception as e:
         logger.error("Document reading failed: %s", e)
@@ -259,15 +248,15 @@ async def document_reader_handler(
 
 document_reader_tool = {
     "name": "document_reader",
-    "description": "Read and analyze documents/images: PDF, images (OCR optional), text/Markdown/CSV/JSON, etc. (local parsing, no external upload)",
+    "description": "Extract content from files locally. Supports: PDF text extraction, image metadata (dimensions, format, size), text/Markdown/CSV/JSON files. For visual understanding like OCR, describing figures, or reading equations, use vision_reader instead.",
     "category": "document_processing",
     "parameters_schema": {
         "type": "object",
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["read_pdf", "read_image", "read_text", "read_any", "analyze_image"],
-                "description": "Operation type: read_pdf, read_image, read_text, read_any (auto-detect), analyze_image (placeholder)",
+                "enum": ["read_pdf", "read_image", "read_text", "read_any"],
+                "description": "Operation type: read_pdf, read_image, read_text, read_any (auto-detect)",
             },
             "file_path": {
                 "type": "string",
@@ -277,10 +266,6 @@ document_reader_tool = {
                 "type": "boolean",
                 "description": "Whether to perform OCR on images (only effective for read_image / read_any when image is detected)",
                 "default": False,
-            },
-            "prompt": {
-                "type": "string",
-                "description": "Analysis prompt (only for analyze_image, placeholder)",
             },
         },
         "required": ["operation", "file_path"],
