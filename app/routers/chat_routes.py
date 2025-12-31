@@ -3193,11 +3193,7 @@ class StructuredChatAgent:
     async def _apply_experiment_fallback(
         self, structured: LLMStructuredResponse
     ) -> LLMStructuredResponse:
-        """
-        Hard fallback: if the user is explicitly asking for experiment analysis
-        and manuscript_writer is selected without sections, force sections=['experiments'].
-        Uses a lightweight LLM intent check (no regex/rule engine).
-        """
+        """Guardrail: only allow manuscript_writer when the user explicitly asks to write a paper."""
         user_message = self._current_user_message or ""
         if not user_message.strip():
             return structured
@@ -3210,34 +3206,31 @@ class StructuredChatAgent:
         if not manuscript_actions:
             return structured
 
-        # If sections already specified, respect explicit parameters.
-        for action in manuscript_actions:
-            if isinstance(action.parameters, dict) and action.parameters.get("sections"):
-                return structured
-
-        intent_prompt = (
-            "Classify whether the user's request is primarily asking for an EXPERIMENT analysis section, "
-            "not a full paper draft. Return JSON only.\n\n"
-            "User message:\n"
-            f"{user_message}\n\n"
-            "Return JSON:\n"
-            '{"experiment_analysis": true/false}\n'
-        )
-
-        try:
-            intent_raw = await self.llm_service.chat_async(intent_prompt)
-            intent_json = self.llm_service.parse_json_response(intent_raw or "")
-            experiment_flag = False
-            if isinstance(intent_json, dict):
-                experiment_flag = bool(intent_json.get("experiment_analysis"))
-            if experiment_flag:
-                for action in manuscript_actions:
-                    action.parameters = dict(action.parameters or {})
-                    action.parameters.setdefault("sections", ["experiments"])
-        except Exception as exc:
-            logger.debug("Experiment fallback intent check failed: %s", exc)
-
+        if not self._explicit_manuscript_request(user_message):
+            structured.actions = [
+                action
+                for action in structured.actions
+                if not (action.kind == "tool_operation" and action.name == "manuscript_writer")
+            ]
         return structured
+
+    @staticmethod
+    def _explicit_manuscript_request(user_message: str) -> bool:
+        text = user_message.strip()
+        if not text:
+            return False
+        lowered = text.lower()
+
+        if re.search(r"\b(manuscript|paper)\b", lowered):
+            if re.search(r"\b(write|draft|revise|edit|polish|prepare)\b", lowered):
+                return True
+
+        if re.search(r"(写|撰写|生成|润色|修改|改写|完善).*(论文|稿件)", text):
+            return True
+        if re.search(r"(论文|稿件).*(写|撰写|生成|润色|修改|改写|完善)", text):
+            return True
+
+        return False
 
     def _apply_phagescope_fallback(
         self, structured: LLMStructuredResponse
@@ -3638,8 +3631,7 @@ class StructuredChatAgent:
             "Do not fabricate facts, data, or citations. If unsure, state the uncertainty or ask the user for clarification rather than inventing information.",
             "When reading files, prefer `document_reader` with `read_any` to auto-detect type; set `use_ocr` if content is likely image/scanned.",
             "For Claude Code tasks, reuse shared inputs under `runtime/session_<id>/shared` when possible; task directories should hold only incremental outputs.",
-            "For manuscript or paper drafting/editing requests, prefer `manuscript_writer` with QWEN and avoid `claude_code` unless the user explicitly asks for Claude Code.",
-            "When the user explicitly asks for experiment analysis only (not a full paper), call `manuscript_writer` with `sections` set to ['experiments'].",
+            "Use `manuscript_writer` only when the user explicitly asks to write/draft/revise a paper or manuscript; otherwise respond directly after reading files.",
             "Avoid repetitive confirmations or small talk; provide conclusions and the next executable step directly.",
             "Cite sources or note uncertainty when referring to external data; do not guess.",
             "Before potentially destructive or long-running actions (file writes, deletes, network, heavy compute), briefly state intent/impact and seek confirmation when appropriate.",
