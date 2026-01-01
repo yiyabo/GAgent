@@ -24,6 +24,7 @@ import {
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
+import { useMessages } from '@/hooks/useMessages';
 import ChatMessage from '@components/chat/ChatMessage';
 import FileUploadButton from '@components/chat/FileUploadButton';
 import UploadedFilesList from '@components/chat/UploadedFilesList';
@@ -230,6 +231,25 @@ const ChatMainArea: React.FC = () => {
 
   const { selectedTask, currentPlan } = useTasksStore();
   const [inputText, setInputText] = useState('');
+
+  const {
+    data: historyData,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading: isHistoryLoadingData,
+  } = useMessages(currentSession?.id);
+
+  const allHistoryMessages = useMemo(() => {
+    if (!historyData) return [];
+    return [...historyData.pages].reverse().flatMap((page) => page.messages);
+  }, [historyData]);
+
+  const combinedMessages = useMemo(() => {
+    const historyIds = new Set(allHistoryMessages.map((m) => m.id));
+    const activeOnly = messages.filter((m) => !historyIds.has(m.id));
+    return [...allHistoryMessages, ...activeOnly];
+  }, [allHistoryMessages, messages]);
 
   useEffect(() => {
     if (!messageContainerRef.current) {
@@ -509,7 +529,7 @@ const ChatMainArea: React.FC = () => {
             placeholder="基座模型"
             disabled={isUpdatingBaseModel}
           />
-          
+
           {/* Memory 开关 */}
           <Tooltip title={memoryEnabled ? "记忆已启用" : "记忆已禁用"}>
             <Switch
@@ -538,13 +558,13 @@ const ChatMainArea: React.FC = () => {
           renderWelcome()
         ) : (
           <ChatMessageList
-            messages={messages}
+            messages={combinedMessages}
             relevantMemories={relevantMemories}
             isProcessing={isProcessing}
-            listHeight={messageAreaHeight}
-            onReachTop={handleLoadMoreHistory}
-            canLoadMore={historyHasMore}
-            isHistoryLoading={historyLoading}
+            listHeight={messageAreaHeight - 40}
+            onReachTop={fetchNextPage}
+            canLoadMore={!!hasNextPage}
+            isHistoryLoading={isFetchingNextPage || isHistoryLoadingData}
           />
         )}
       </div>
@@ -559,7 +579,7 @@ const ChatMainArea: React.FC = () => {
         <div style={{ maxWidth: 920, margin: '0 auto' }}>
           {/* 上传文件列表 */}
           <UploadedFilesList />
-          
+
           <div
             style={{
               display: 'flex',

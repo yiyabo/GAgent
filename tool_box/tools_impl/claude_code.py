@@ -192,8 +192,8 @@ async def claude_code_handler(
                 abs_path = _PROJECT_ROOT / dir_path.strip()
                 allowed_dirs.append(str(abs_path))
             
-            # Include work directory, file save location in task description, and inject research task system prompt
-            enhanced_task = (
+        # Include work directory, file save location in task description, and inject research task system prompt
+        enhanced_task = (
             "You are an AI research assistant focused on rigorous scientific work. "
             "Your primary objective is to faithfully reproduce and critically analyze published research, "
             "including implementing methods as described in papers, reproducing figures and tables, "
