@@ -42,15 +42,20 @@ const TITLE_SOURCE_HINT: Record<string, string> = {
   user: '用户自定义标题',
 };
 
+import { useSessions, useDeleteSession, useAutoTitleSession, useUpdateSession } from '@/hooks/useSessions';
+import { summaryToChatSession } from '@store/chatUtils';
+
 const ChatSidebar: React.FC = () => {
+  const { data: sessions = [], isLoading: isSessionsLoading } = useSessions();
+  const { mutateAsync: deleteSessionMutation } = useDeleteSession();
+  const { mutateAsync: autotitleMutation } = useAutoTitleSession();
+  const { mutateAsync: updateSessionMutation } = useUpdateSession();
+
   const {
-    sessions,
     currentSession,
     setCurrentSession,
     startNewSession,
-    deleteSession,
     loadChatHistory,
-    autotitleSession,
   } = useChatStore();
   const { toggleChatList } = useLayoutStore();
 
@@ -77,7 +82,7 @@ const ChatSidebar: React.FC = () => {
   const handleSelectSession = async (session: ChatSession) => {
     // 先切换会话
     setCurrentSession(session);
-    
+
     // 如果会话没有消息，尝试从后端加载历史
     if (session.messages.length === 0 && session.session_id) {
       console.log('🔄 [ChatSidebar] 加载会话历史:', session.session_id);
@@ -91,7 +96,7 @@ const ChatSidebar: React.FC = () => {
 
   const handleArchiveSession = async (session: ChatSession) => {
     try {
-      await deleteSession(session.id, { archive: true });
+      await deleteSessionMutation({ sessionId: session.id, options: { archive: true } });
       message.success('会话已归档');
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -99,9 +104,19 @@ const ChatSidebar: React.FC = () => {
     }
   };
 
+  const handleRenameSession = async (sessionId: string, newTitle: string) => {
+    try {
+      await updateSessionMutation({ sessionId, payload: { name: newTitle } });
+      message.success('标题已更新');
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      message.error(`更新标题失败：${errMsg}`);
+    }
+  };
+
   const performDeleteSession = async (session: ChatSession) => {
     try {
-      await deleteSession(session.id);
+      await deleteSessionMutation({ sessionId: session.id });
       message.success('会话已删除');
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -113,7 +128,7 @@ const ChatSidebar: React.FC = () => {
   const confirmDeleteSession = (session: ChatSession) => {
     Modal.confirm({
       title: '删除对话',
-      icon: <ExclamationCircleOutlined />, 
+      icon: <ExclamationCircleOutlined />,
       content: `删除后将无法恢复该对话「${session.title || session.id}」，确定继续吗？`,
       okText: '删除',
       okType: 'danger',
@@ -133,7 +148,7 @@ const ChatSidebar: React.FC = () => {
     }
 
     try {
-      const result = await autotitleSession(sessionId, { force: true });
+      const result = await autotitleMutation({ sessionId, options: { force: true } });
       if (!result) {
         return;
       }
@@ -248,7 +263,7 @@ const ChatSidebar: React.FC = () => {
           type="primary"
           icon={<PlusOutlined />}
           onClick={handleNewChat}
-          style={{ 
+          style={{
             width: '100%',
             height: 40,
             borderRadius: 8,
@@ -283,8 +298,8 @@ const ChatSidebar: React.FC = () => {
             const titleHint = session.isUserNamed
               ? '用户自定义标题'
               : session.titleSource && TITLE_SOURCE_HINT[session.titleSource]
-              ? TITLE_SOURCE_HINT[session.titleSource]
-              : undefined;
+                ? TITLE_SOURCE_HINT[session.titleSource]
+                : undefined;
 
             return (
               <List.Item
@@ -321,7 +336,7 @@ const ChatSidebar: React.FC = () => {
                       flexShrink: 0,
                     }}
                   />
-                  
+
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div
                       style={{
@@ -345,54 +360,54 @@ const ChatSidebar: React.FC = () => {
                           {session.title || `会话 ${session.id.slice(-8)}`}
                         </Text>
                       </Tooltip>
-                    
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {formatTime(lastTimestamp)}
-                    </Text>
 
-                    <Dropdown
-                      menu={{
-                        items: getSessionMenuItems(session),
-                        onClick: ({ key, domEvent }) => {
-                          domEvent?.stopPropagation();
-                          void handleSessionMenuAction(session, String(key));
-                        },
-                      }}
-                      trigger={['click']}
-                      placement="bottomRight"
-                    >
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={<MoreOutlined />}
-                        onClick={(e) => e.stopPropagation()}
-                        style={{ 
-                          marginLeft: 4,
-                          opacity: 0.6,
-                          flexShrink: 0,
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {formatTime(lastTimestamp)}
+                      </Text>
+
+                      <Dropdown
+                        menu={{
+                          items: getSessionMenuItems(session),
+                          onClick: ({ key, domEvent }) => {
+                            domEvent?.stopPropagation();
+                            void handleSessionMenuAction(session, String(key));
+                          },
                         }}
-                      />
-                    </Dropdown>
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                  >
-                    <Text
-                      type="secondary"
-                      ellipsis
-                      style={{ fontSize: 12, color: 'var(--text-secondary)', flex: 1 }}
+                        trigger={['click']}
+                        placement="bottomRight"
+                      >
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<MoreOutlined />}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            marginLeft: 4,
+                            opacity: 0.6,
+                            flexShrink: 0,
+                          }}
+                        />
+                      </Dropdown>
+                    </div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
                     >
-                      {session.plan_title || '未绑定计划'}
-                    </Text>
-                    {session.is_active === false && <Tag color="gold">已归档</Tag>}
+                      <Text
+                        type="secondary"
+                        ellipsis
+                        style={{ fontSize: 12, color: 'var(--text-secondary)', flex: 1 }}
+                      >
+                        {session.plan_title || '未绑定计划'}
+                      </Text>
+                      {session.is_active === false && <Tag color="gold">已归档</Tag>}
+                    </div>
                   </div>
                 </div>
-              </div>
               </List.Item>
             );
           }}

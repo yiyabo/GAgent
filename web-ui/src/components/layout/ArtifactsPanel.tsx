@@ -102,23 +102,6 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
       }),
     enabled: Boolean(sessionId && selectedItem?.path && isText),
   });
-
-  if (!sessionId) {
-    return (
-      <div style={{ padding: 16 }}>
-        <Empty description="暂无会话，无法加载产物" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div style={{ padding: 16 }}>
-        <Empty description={`加载失败: ${(error as Error).message}`} />
-      </div>
-    );
-  }
-
   const treeData = React.useMemo<ArtifactTreeNode[]>(() => {
     const rootMap = new Map<string, ArtifactTreeNode>();
 
@@ -211,6 +194,29 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     sortNodes(roots);
     return roots;
   }, [items]);
+
+  if (!sessionId) {
+    return (
+      <div style={{ padding: 16 }}>
+        <Empty description="暂无会话，无法加载产物" />
+      </div>
+    );
+  }
+
+  // Handle 404 (not found) as empty state instead of error
+  const isNotFound = error instanceof Error && (
+    error.message.includes('404') ||
+    error.message.includes('not found') ||
+    (error as any).status === 404
+  );
+
+  if (error && !isNotFound) {
+    return (
+      <div style={{ padding: 16 }}>
+        <Empty description={`加载失败: ${(error as Error).message}`} />
+      </div>
+    );
+  }
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
