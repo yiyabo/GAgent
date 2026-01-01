@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import get_graph_rag_settings, get_search_settings
+from app.config.tool_policy import get_tool_policy, is_tool_allowed
 from app.config.decomposer_config import get_decomposer_settings
 from app.config.executor_config import get_executor_settings
 from app.repository.chat_action_runs import (
@@ -58,6 +59,7 @@ from app.services.session_title_service import (
 )
 from app.services.upload_storage import delete_session_storage
 from app.services.tool_output_storage import store_tool_output
+from app.prompts import prompt_manager
 from tool_box import execute_tool
 
 from . import register_router
@@ -3592,82 +3594,42 @@ class StructuredChatAgent:
         )
 
     def _compose_action_catalog(self, plan_bound: bool) -> str:
-        base_actions = [
-            "- system_operation: help",
-            "- tool_operation: web_search (use for live web information; requires `query`, optional provider/max_results/target_task_id)",
-            "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities/target_task_id)",
-            "- tool_operation: phagescope (PhageScope phage analyses; action in ping/input_check/submit/task_list/task_detail/task_log/result/quality/download; requires `action`, optional phageid/userid/modulelist/taskid/result_kind/download_path/target_task_id)",
-            "- tool_operation: generate_experiment_card (create data/<experiment_id>/card.yaml from a PDF; if pdf_path/experiment_id are omitted, uses the latest uploaded PDF and derives an id)",
-            "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs/target_task_id)",
-            "- tool_operation: manuscript_writer (write a research manuscript using the default LLM; requires `task` and `output_path`, optional context_paths/analysis_path/max_context_bytes/target_task_id)",
-            "- tool_operation: document_reader (extract content from files; requires `operation`='read_pdf'/'read_image'/'read_text'/'read_any', `file_path`, optional `use_ocr`/target_task_id); for visual understanding use vision_reader",
-            "- tool_operation: vision_reader (vision-based OCR and figure/equation reading for images or scanned pages; requires `operation` and `image_path`, optional page_number/region/question/language/target_task_id)",
-            "- tool_operation: paper_replication (load a structured ExperimentCard for phage-related paper replication experiments; optional `experiment_id`/target_task_id, currently supports 'experiment_1')",
-            "  NOTE: All tool_operation actions accept an optional `target_task_id` parameter. When executing a tool for a specific plan task, include `target_task_id` to automatically update that task's status to 'completed' or 'failed' based on the tool result.",
-        ]
-        if plan_bound:
-            plan_actions = [
-                "- plan_operation: create_plan, list_plans, execute_plan, delete_plan (manage the lifecycle of the current plan; treat this as the primary coordination mechanism for multi-step work)",
-                "- task_operation: create_task, update_task (can modify both `name` and `instruction` together), update_task_instruction, move_task, delete_task, decompose_task, show_tasks, query_status, rerun_task (modify the current plan structure at any time based on the dialogue: create/edit/move/delete/decompose/rerun tasks)",
-                "- context_request: request_subgraph (request additional task context; this response must not include other actions)",
-            ]
-        else:
-            plan_actions = [
-                "- plan_operation: create_plan  # when the user agrees to organize a non-trivial goal as a plan or explicitly asks to create one",
-                "- plan_operation: list_plans  # show existing plans so the user can choose one to bind; do not execute or mutate tasks while unbound",
-            ]
-        return "\n".join(base_actions + plan_actions)
+        prompts = self._get_structured_agent_prompts()
+        base_actions = list(prompts["action_catalog"]["base_actions"])
+        plan_actions = prompts["action_catalog"]["plan_actions"]
+        selected_plan_actions = plan_actions["bound" if plan_bound else "unbound"]
+        policy = get_tool_policy()
+        filtered_base_actions: List[str] = []
+        for line in base_actions:
+            tool_name = self._extract_tool_name(line)
+            if tool_name and not is_tool_allowed(tool_name, policy):
+                continue
+            filtered_base_actions.append(line)
+        return "\n".join(filtered_base_actions + list(selected_plan_actions))
 
     def _compose_guidelines(self, plan_bound: bool) -> str:
-        common_rules = [
-            "Return only a JSON object that matches the schema above\u0014no code fences or additional commentary.",
-            "`llm_reply.message` must be natural language directed to the user.",
-            "IMPORTANT UX: Two distinct modes—(1) With actions: brief preface (1-2 sentences) of what tools will do. (2) Without actions: complete, detailed answer (200-500 words typical) with specific examples and insights. NEVER give just a framework or preface when no actions are planned.",
-            "Fill `actions` in execution order (`order` starts at 1); use an empty array if no actions are required.",
-            "Use the `kind`/`name` pairs from the action catalog without inventing new values.",
-            "Before invoking heavy tools such as `claude_code`, consider whether the user's request should first be organized as a structured plan; when appropriate, propose or refine a plan and obtain user confirmation on the updated tasks before execution.",
-            "When you need to look up library/API usage or code snippets, prefer the MCP server `context7` for code search first, then continue coding.",
-            "When results are unexpected, do not over-apologize; briefly explain the issue or uncertainty and propose a next step instead of apologizing.",
-            "Do not fabricate facts, data, or citations. If unsure, state the uncertainty or ask the user for clarification rather than inventing information.",
-            "When reading files, prefer `document_reader` with `read_any` to auto-detect type; set `use_ocr` if content is likely image/scanned.",
-            "For Claude Code tasks, reuse shared inputs under `runtime/session_<id>/shared` when possible; task directories should hold only incremental outputs.",
-            "Use `manuscript_writer` only when the user explicitly asks to write/draft/revise a paper or manuscript; otherwise respond directly after reading files.",
-            "Avoid repetitive confirmations or small talk; provide conclusions and the next executable step directly.",
-            "Cite sources or note uncertainty when referring to external data; do not guess.",
-            "Before potentially destructive or long-running actions (file writes, deletes, network, heavy compute), briefly state intent/impact and seek confirmation when appropriate.",
-            "If a request fails, suggest a concrete fix or retry parameters (e.g., correct path, permissions, model/file limits) rather than only reporting failure.",
-            "Warn about large files or long runtimes up front and propose split/compress/step-by-step options when relevant.",
-            "In summaries, use concise bullet points; include an optional 'Next steps' or command snippet when execution is needed.",
-            "Separate verified facts from hypotheses; clearly label any speculation or uncertainty.",
-            "A `request_subgraph` reply may contain only that action.",
-            "Plan nodes do not provide a `priority` field; avoid fabricating it. `status` reflects progress and may be referenced when helpful.",
-            "When the user explicitly asks to execute, run, or rerun a task or the plan, include the matching action or explain why it cannot proceed.",
-            "When file attachments are present in the context or message, use `document_reader` for text-based PDFs/images and `vision_reader` when the content is primarily image-based (scanned pages, screenshots, figures, or equation images).",
-            "When the user explicitly asks to replicate a scientific paper or run a bacteriophage experiment baseline such as 'experiment_1', first obtain an ExperimentCard (call `generate_experiment_card` if needed; it can infer the latest uploaded PDF and derive an id), then call `paper_replication` to load it, and finally use `claude_code` with details from the card (targets, code root, constraints).",
-        ]
-        if plan_bound:
-            scenario_rules = [
-                "Verify that dependencies and prerequisite tasks are satisfied before executing a plan or task.",
-                "When the user wants to run the entire plan, call `plan_operation.execute_plan` and provide a summary if appropriate.",
-                "When the user targets a specific task (for example, \"run the first task\" or \"rerun task 42\"), call `task_operation.show_tasks` first if the ID is unclear, then `task_operation.rerun_task` with a concrete `task_id`.",
-                "When the user wants to adjust the workflow (rename a step, change its instructions, reorder tasks, add or remove steps), prefer `task_operation` actions: use `task_operation.show_tasks` to identify the task, then apply `update_task`, `update_task_instruction`, `move_task`, `create_task`, or `delete_task` as needed. IMPORTANT: When renaming or modifying a task's content, use `update_task` with both `name` and `instruction` parameters to ensure the task title and description stay consistent.",
-                "For complex coding or experiment work, expand or refine the plan via `task_operation.decompose_task` or `create_task`, then call `tool_operation.claude_code` from within the relevant task context instead of invoking it ad-hoc.",
-                "Use `web_search` or `graph_rag` only when the user explicitly asks for web data or knowledge-graph lookup; otherwise rely on available context or ask clarifying questions.",
-                "When `web_search` is used, craft a clear query and summarize results with sources. When `graph_rag` is used, describe phage-related insights and cite triples when helpful.",
-                "After gathering supporting information, continue scheduling or executing the requested plan or tasksdo not stop at preparation only.",
-            ]
-        else:
-            scenario_rules = [
-                "Do not create, modify, or execute tasks while the session is unbound; instead clarify needs via dialogue or tools.",
-                "When the user describes a multi-step project, experiment, or long-running workflow, suggest creating a plan and, after they agree, call `plan_operation.create_plan` and then build or decompose tasks.",
-                "Feel free to ask follow-up questions, summarize, or retrieve information that helps the user decide whether a plan is needed.",
-                "Invoke `plan_operation` when the user explicitly requests a plan, provides an existing plan ID, or clearly agrees to organize their goal as a plan.",
-                "Use `web_search` or `graph_rag` only when the user clearly asks for live search or knowledge-graph access; otherwise respond or confirm intent first.",
-            ]
-        all_rules = common_rules + scenario_rules
+        prompts = self._get_structured_agent_prompts()
+        common_rules = list(prompts["guidelines"]["common_rules"])
+        scenario_rules = prompts["guidelines"]["scenario_rules"]
+        selected_rules = scenario_rules["bound" if plan_bound else "unbound"]
+        all_rules = common_rules + list(selected_rules)
         return "\n".join(
             f"{idx}. {rule}" for idx, rule in enumerate(all_rules, start=1)
         )
+
+    @staticmethod
+    def _get_structured_agent_prompts() -> Dict[str, Any]:
+        prompts = prompt_manager.get_category("structured_agent")
+        if not isinstance(prompts, dict):
+            raise ValueError("structured_agent prompts must be a dictionary.")
+        return prompts
+
+    @staticmethod
+    def _extract_tool_name(action_line: str) -> Optional[str]:
+        match = re.search(r"-\s*tool_operation:\s*([^\s(]+)", action_line)
+        if match:
+            return match.group(1).strip()
+        return None
 
     def _resolve_job_meta(self) -> Tuple[str, str]:
         job_id = get_current_job()
@@ -3892,6 +3854,14 @@ class StructuredChatAgent:
                 success=False,
                 message="Tool action is missing a name.",
                 details={"error": "missing_tool_name"},
+            )
+        policy = get_tool_policy()
+        if not is_tool_allowed(tool_name, policy):
+            return AgentStep(
+                action=action,
+                success=False,
+                message=f"Tool '{tool_name}' is not allowed by policy.",
+                details={"error": "tool_not_allowed", "tool": tool_name},
             )
 
         params = dict(action.parameters or {})

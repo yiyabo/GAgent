@@ -12,6 +12,13 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.config.tool_policy import (
+    filter_tool_calls,
+    filter_tool_objects,
+    get_tool_policy,
+)
+from app.prompts import prompt_manager
+
 from .integration import get_llm_integration
 from .tools import get_tool_registry
 
@@ -36,6 +43,20 @@ class SmartToolRouter:
         from .integration import get_llm_integration
 
         self.llm_integration = await get_llm_integration()
+
+    @staticmethod
+    def _get_tool_router_prompts() -> Dict[str, Any]:
+        prompts = prompt_manager.get_category("tool_router")
+        if not isinstance(prompts, dict):
+            raise ValueError("tool_router prompts must be a dictionary.")
+        return prompts
+
+    def _render_tool_router_prompt(self, key: str, **kwargs: Any) -> str:
+        prompts = self._get_tool_router_prompts()
+        template = prompts.get(key)
+        if not isinstance(template, str):
+            raise ValueError(f"tool_router prompt '{key}' must be a string.")
+        return template.format(**kwargs)
 
     async def _call_llm_api(self, prompt: str, max_retries: int = 3) -> str:
         """Call unified LLM API (supports GLM, QWEN, etc.) for intelligent routing"""
@@ -138,7 +159,8 @@ class SmartToolRouter:
         """Enhanced LLM-based routing with complete tool call generation"""
         try:
             # Get available tools with detailed information
-            tools = self.tool_registry.list_tools()
+            policy = get_tool_policy()
+            tools = filter_tool_objects(self.tool_registry.list_tools(), policy)
             tool_details = []
 
             for tool in tools:
@@ -155,42 +177,12 @@ class SmartToolRouter:
             context_str = ""
             if context:
                 context_str = f"\nContext:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
-
-            prompt = f"""
-You are an advanced AI tool router for an intelligent agent. Analyse the user request and produce a complete tool execution plan.
-
-Available tools:
-{json.dumps(tool_details, ensure_ascii=False, indent=2)}
-
-User request: {request}{context_str}
-
-Perform a thorough analysis and return your routing decision. Follow these guidelines:
-1. Identify the user's true intent.
-2. Choose the most appropriate tool or tool combination.
-3. Derive precise parameters for each tool call.
-4. Consider the order in which tools should execute.
-5. When multiple tools cooperate, describe dependencies clearly.
-
-Return JSON only:
-{{
-    "intent": "Detailed analysis of user intent",
-    "complexity": "simple|medium|complex",
-    "tool_calls": [
-        {{
-            "tool_name": "specific tool name",
-            "parameters": {{"parameter name": "parameter value"}},
-            "reasoning": "Detailed reasoning for choosing this tool and parameters",
-            "execution_order": 1
-        }}
-    ],
-    "execution_plan": "Overall execution plan description",
-    "estimated_time": "estimated execution time",
-    "confidence": <float between 0 and 1>,
-    "reasoning": "Comprehensive reasoning process"
-}}
-
-Return JSON only—no additional commentary. Ensure parameters are complete and comply with each tool's schema.
-"""
+            prompt = self._render_tool_router_prompt(
+                "enhanced_prompt",
+                tool_details=json.dumps(tool_details, ensure_ascii=False, indent=2),
+                request=request,
+                context_str=context_str,
+            )
 
             # Call GLM API
             llm_response = await self._call_llm_api(prompt)
@@ -220,6 +212,7 @@ Return JSON only—no additional commentary. Ensure parameters are complete and 
                 # Sort tool calls by execution order if specified
                 if analysis["tool_calls"]:
                     analysis["tool_calls"].sort(key=lambda x: x.get("execution_order", 999))
+                analysis["tool_calls"] = filter_tool_calls(analysis["tool_calls"], policy)
 
                 return analysis
 
@@ -237,24 +230,16 @@ Return JSON only—no additional commentary. Ensure parameters are complete and 
         try:
             logger.info("🔄 Running simplified LLM routing analysis")
             
-            tools = self.tool_registry.list_tools()
+            policy = get_tool_policy()
+            tools = filter_tool_objects(self.tool_registry.list_tools(), policy)
             tool_names = [tool.name for tool in tools]
             
             # Minimal prompt focused on tool selection
-            prompt = f"""
-User request: {request}
-
-Available tools: {', '.join(tool_names)}
-
-Briefly analyse the request and choose the best tool. Return JSON:
-{{
-    "intent": "Brief user intent summary",
-    "tool_calls": [{{"tool_name": "selected tool", "parameters": {{}}, "reasoning": "selection reasoning"}}],
-    "confidence": <float between 0 and 1>
-}}
-
-Return JSON only.
-"""
+            prompt = self._render_tool_router_prompt(
+                "simplified_prompt",
+                request=request,
+                tool_names=", ".join(tool_names),
+            )
             
             llm_response = await self._call_llm_api(prompt)
             
@@ -271,6 +256,7 @@ Return JSON only.
 
                 analysis = json.loads(cleaned_response)
                 analysis["confidence"] = max(analysis.get("confidence", 0.0), 0.1)  # enforce a minimum confidence floor
+                analysis["tool_calls"] = filter_tool_calls(analysis.get("tool_calls", []), policy)
                 
                 return analysis
                 

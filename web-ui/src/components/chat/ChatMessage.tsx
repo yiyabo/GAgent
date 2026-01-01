@@ -382,15 +382,15 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             {toolOpen ? '收起' : '查看过程'}
           </Button>
         </div>
-        {processSummary && (
-          <div style={{ marginTop: 8 }}>
-            <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-              摘要：{processSummary}
-            </Text>
-          </div>
-        )}
         {toolOpen && (
           <div style={{ marginTop: 8 }}>
+            {processSummary && (
+              <div style={{ marginBottom: 8 }}>
+                <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                  摘要：{processSummary}
+                </Text>
+              </div>
+            )}
             {visibleActions.map((action: any, index: number) => {
               const label = formatToolActionLabel(action);
               const order = typeof action?.order === 'number' ? action.order : index + 1;
