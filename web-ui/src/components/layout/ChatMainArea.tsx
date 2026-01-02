@@ -21,6 +21,7 @@ import {
   UserOutlined,
   MessageOutlined,
   DatabaseOutlined,
+  BulbOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
@@ -231,6 +232,7 @@ const ChatMainArea: React.FC = () => {
 
   const { selectedTask, currentPlan } = useTasksStore();
   const [inputText, setInputText] = useState('');
+  const [deepThinkEnabled, setDeepThinkEnabled] = useState(false);
 
   const {
     data: historyData,
@@ -298,7 +300,13 @@ const ChatMainArea: React.FC = () => {
       task_name: selectedTask?.name ?? currentTaskName ?? undefined,
     };
 
-    await sendMessage(inputText.trim(), metadata);
+    // 如果开启了深度思考模式，自动添加 /think 前缀
+    let messageToSend = inputText.trim();
+    if (deepThinkEnabled && !messageToSend.startsWith('/think')) {
+      messageToSend = `/think ${messageToSend}`;
+    }
+
+    await sendMessage(messageToSend, metadata);
     setInputText('');
     inputRef.current?.focus();
   };
@@ -590,14 +598,28 @@ const ChatMainArea: React.FC = () => {
             {/* 左侧上传按钮组 */}
             <div style={{
               display: 'flex',
-              flexDirection: 'column',
+              flexDirection: 'row',
               gap: 8,
-              justifyContent: 'center',
+              alignItems: 'center',
               background: 'var(--bg-tertiary)',
               padding: '6px 10px',
               borderRadius: 'var(--radius-md)',
             }}>
               <FileUploadButton size="small" />
+              <Tooltip title={deepThinkEnabled ? '深度思考已开启' : '开启深度思考模式'}>
+                <Button
+                  type={deepThinkEnabled ? 'primary' : 'text'}
+                  icon={<BulbOutlined />}
+                  size="small"
+                  onClick={() => setDeepThinkEnabled(!deepThinkEnabled)}
+                  style={{
+                    color: deepThinkEnabled ? '#fff' : 'var(--text-secondary)',
+                    background: deepThinkEnabled ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' : 'transparent',
+                    border: deepThinkEnabled ? 'none' : '1px dashed var(--border-color)',
+                    transition: 'all 0.3s ease',
+                  }}
+                />
+              </Tooltip>
             </div>
 
             {/* 输入框 - Claude 风格 */}

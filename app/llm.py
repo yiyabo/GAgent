@@ -96,15 +96,22 @@ class LLMClient(LLMProvider):
         except Exception:
             self.backoff_base = 0.5
 
-    def chat(self, prompt: str, force_real: bool = False, model: Optional[str] = None, **_: Any) -> str:
+    def chat(self, prompt: str, force_real: bool = False, model: Optional[str] = None, messages: Optional[list] = None, **_: Any) -> str:
         if self.mock and not force_real:
             return "This is a mock completion."
 
         if not self.api_key:
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
+        
+        # Support full messages list for multi-turn conversations
+        if messages:
+            payload_messages = messages
+        else:
+            payload_messages = [{"role": "user", "content": prompt}]
+        
         payload = {
             "model": model or self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": payload_messages,
         }
         headers = self._build_headers()
         data = json.dumps(payload).encode("utf-8")

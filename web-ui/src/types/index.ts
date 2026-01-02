@@ -434,6 +434,26 @@ export interface ChatMessage {
     job_logs?: JobLogEvent[];
     [key: string]: any;
   };
+  thinking_process?: ThinkingProcess;
+}
+
+// 思考过程相关类型
+export interface ThinkingStep {
+  iteration: number;
+  thought: string;
+  action?: string | null;
+  action_result?: string | null;
+  status: 'thinking' | 'calling_tool' | 'analyzing' | 'done' | 'error';
+  timestamp?: string;
+  self_correction?: string | null;
+}
+
+export interface ThinkingProcess {
+  steps: ThinkingStep[];
+  status: 'active' | 'completed' | 'error';
+  summary?: string | null;
+  total_iterations?: number;
+  error?: string | null;
 }
 
 export interface ChatSession {

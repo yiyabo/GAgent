@@ -61,6 +61,7 @@ from app.services.upload_storage import delete_session_storage
 from app.services.tool_output_storage import store_tool_output
 from app.prompts import prompt_manager
 from tool_box import execute_tool
+from app.services.deep_think_agent import DeepThinkAgent, ThinkingStep, DeepThinkResult
 
 from . import register_router
 
@@ -1210,6 +1211,14 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             model_override = agent.extra_context.get("default_base_model")
 
             parser = StructuredReplyStreamParser()
+            
+            # 🚀 Deep Think Mode Check
+            if agent._should_use_deep_think(message_to_send):
+                logger.info("[CHAT] Activating Deep Think Mode")
+                async for chunk in agent.process_deep_think_stream(message_to_send):
+                    yield chunk
+                return
+
             async for chunk in agent.llm_service.stream_chat_async(
                 prompt, force_real=True, model=model_override
             ):
@@ -3499,6 +3508,124 @@ class StructuredChatAgent:
         self._current_user_message = None
 
         return result
+
+        return result
+
+    def _should_use_deep_think(self, message: str) -> bool:
+        """Check if deep think mode should be activated."""
+        # Check explicit trigger
+        if message.startswith("/think ") or message.startswith("/深度") or message.startswith("/deep"):
+            return True
+        # Check context flag
+        if self.extra_context.get("deep_think_enabled", False):
+            return True
+        return False
+
+    async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
+        """
+        Execute deep thinking process and yield SSE events.
+        """
+        # Create a queue for events
+        queue = asyncio.Queue()
+        
+        async def on_thinking(step: ThinkingStep):
+            await queue.put({
+                "type": "thinking_step",
+                "step": {
+                    "iteration": step.iteration,
+                    "thought": step.thought,
+                    "action": step.action,
+                    "status": step.status,
+                    "action_result": step.action_result
+                }
+            })
+
+        async def run_agent():
+            try:
+                # Wrapper for tool execution
+                async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
+                    return await execute_tool(name, **params)
+                
+                # Instantiate DeepThinkAgent
+                dt_agent = DeepThinkAgent(
+                    llm_client=self.llm_service, # Pass LLMService wrapper
+                    available_tools=["web_search", "document_reader", "graph_rag", "claude_code"],
+                    tool_executor=tool_wrapper,
+                    max_iterations=12,
+                    on_thinking=on_thinking
+                )
+                
+                # Run think
+                result = await dt_agent.think(user_message, self.extra_context)
+                await queue.put({"type": "result", "result": result})
+            except Exception as e:
+                logger.exception("Deep think execution failed")
+                await queue.put({"type": "error", "error": str(e)})
+            finally:
+                await queue.put(None) # Signal end
+
+        # Start agent in background
+        asyncio.create_task(run_agent())
+        
+        # Consume queue
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            
+            if item.get("type") == "thinking_step":
+                # Yield thinking event
+                yield _sse_message(item)
+            elif item.get("type") == "error":
+                yield _sse_message({"type": "error", "message": item["error"]})
+            elif item.get("type") == "result":
+                # Final result, yield as standard chat message
+                res: DeepThinkResult = item["result"]
+                
+                # Construct final content for display and saving
+                final_content_parts = []
+                if res.thinking_summary:
+                    final_content_parts.append(f"**Thinking Summary:** {res.thinking_summary}")
+                if res.final_answer:
+                    final_content_parts.append(res.final_answer)
+                
+                full_response = "\n\n".join(final_content_parts)
+                
+                # 💾 Save Deep Think response to database
+                if self.session_id and full_response:
+                    try:
+                        _save_chat_message(
+                            self.session_id,
+                            "assistant",
+                            full_response,
+                            metadata={
+                                "deep_think": True,
+                                "iterations": res.total_iterations,
+                                "tools_used": res.tools_used,
+                                "confidence": res.confidence,
+                            }
+                        )
+                        logger.info("[CHAT][DEEP_THINK] Response saved to database for session=%s", self.session_id)
+                    except Exception as save_err:
+                        logger.warning("[CHAT][DEEP_THINK] Failed to save response: %s", save_err)
+                
+                # Yield thinking summary first
+                if res.thinking_summary:
+                   yield _sse_message({
+                       "type": "delta", 
+                       "content": f"\n\n**Thinking Summary:** {res.thinking_summary}\n\n"
+                   })
+                
+                # Yield final answer
+                yield _sse_message({"type": "delta", "content": res.final_answer})
+                
+                # Mock a final structure event to satisfy frontend if needed, 
+                # or just let the stream end (frontend usually handles text)
+                payload = {
+                    "llm_reply": {"message": res.final_answer},
+                    "actions": []
+                }
+                yield _sse_message({"type": "final", "payload": payload})
 
     async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
         self._current_user_message = user_message

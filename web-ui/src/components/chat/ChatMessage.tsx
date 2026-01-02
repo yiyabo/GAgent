@@ -20,12 +20,14 @@ import {
 } from '@ant-design/icons';
 import { ChatMessage as ChatMessageType, ToolResultPayload } from '@/types';
 import { useChatStore } from '@store/chat';
-import ReactMarkdown from 'markdown-to-jsx';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import ToolResultCard from './ToolResultCard';
 import JobLogPanel from './JobLogPanel';
+import { ThinkingProcess } from './ThinkingProcess';
+import { MarkdownRenderer } from './MarkdownRenderer';
 import type { DecompositionJobStatus } from '@/types';
+
 
 const { Text } = Typography;
 
@@ -74,9 +76,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     analysisText && analysisText.trim().length > 0 ? analysisText : finalSummary;
   const processSummary =
     finalSummary &&
-    displayText &&
-    finalSummary.trim().length > 0 &&
-    finalSummary.trim() !== displayText.trim()
+      displayText &&
+      finalSummary.trim().length > 0 &&
+      finalSummary.trim() !== displayText.trim()
       ? finalSummary
       : null;
   const status = metadata?.status;
@@ -194,7 +196,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   // 自定义代码块渲染
   const CodeBlock = ({ children, className }: { children: string; className?: string }) => {
     const language = className?.replace('lang-', '') || 'text';
-    
+
     return (
       <SyntaxHighlighter
         style={tomorrow}
@@ -349,10 +351,10 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     const summary =
       toolActions.length > 0
         ? `工具：${toolActions
-            .map((act: any) => (typeof act?.name === 'string' ? act.name : null))
-            .filter(Boolean)
-            .slice(0, 3)
-            .join(', ')}${toolActions.length > 3 ? ` 等 ${toolActions.length} 个` : ''}`
+          .map((act: any) => (typeof act?.name === 'string' ? act.name : null))
+          .filter(Boolean)
+          .slice(0, 3)
+          .join(', ')}${toolActions.length > 3 ? ` 等 ${toolActions.length} 个` : ''}`
         : `动作：${visibleActions.length} 个`;
 
     return (
@@ -464,48 +466,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     }
     return (
       <div style={{ marginTop: 4 }}>
-        <ReactMarkdown
-          options={{
-            overrides: {
-              code: {
-                component: CodeBlock,
-              },
-              pre: {
-                component: ({ children }: { children: React.ReactNode }) => (
-                  <div>{children}</div>
-                ),
-              },
-              p: {
-                props: {
-                  style: { margin: '0 0 8px 0', lineHeight: 1.6 },
-                },
-              },
-              ul: {
-                props: {
-                  style: { margin: '8px 0', paddingLeft: '20px' },
-                },
-              },
-              ol: {
-                props: {
-                  style: { margin: '8px 0', paddingLeft: '20px' },
-                },
-              },
-              blockquote: {
-                props: {
-                  style: {
-                    borderLeft: '4px solid #d9d9d9',
-                    paddingLeft: '12px',
-                    margin: '8px 0',
-                    color: '#666',
-                    fontStyle: 'italic',
-                  },
-                },
-              },
-            },
-          }}
-        >
-          {displayText}
-        </ReactMarkdown>
+        <MarkdownRenderer content={displayText} />
       </div>
     );
   };
@@ -527,50 +488,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     if (unifiedStream) {
       return null;
     }
-    return (
-      <ReactMarkdown
-        options={{
-          overrides: {
-            code: {
-              component: CodeBlock,
-            },
-            pre: {
-              component: ({ children }: { children: React.ReactNode }) => (
-                <div>{children}</div>
-              ),
-            },
-            p: {
-              props: {
-                style: { margin: '0 0 8px 0', lineHeight: 1.6 },
-              },
-            },
-            ul: {
-              props: {
-                style: { margin: '8px 0', paddingLeft: '20px' },
-              },
-            },
-            ol: {
-              props: {
-                style: { margin: '8px 0', paddingLeft: '20px' },
-              },
-            },
-            blockquote: {
-              props: {
-                style: {
-                  borderLeft: '4px solid #d9d9d9',
-                  paddingLeft: '12px',
-                  margin: '8px 0',
-                  color: '#666',
-                  fontStyle: 'italic',
-                },
-              },
-            },
-          },
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    );
+    return <MarkdownRenderer content={content} />;
   };
 
   // 渲染元数据
@@ -743,8 +661,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   return (
     <div className={`message ${type}`}>
       <div className="message-content">
-          {type === 'assistant' && renderAvatar()}
-        
+        {type === 'assistant' && renderAvatar()}
+
         <div className="message-bubble">
           {(() => {
             // 统一摘要块，在非 unifiedStream 时也优先使用
@@ -753,6 +671,13 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
               return (
                 <>
                   {renderToolProgress()}
+                  {/* Thinking Process */}
+                  {message.thinking_process && (
+                    <ThinkingProcess
+                      process={message.thinking_process}
+                      isFinished={message.metadata?.status === 'completed' || message.metadata?.status === 'failed'}
+                    />
+                  )}
                   {summaryBlock}
                 </>
               );
@@ -771,13 +696,13 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           })()}
         </div>
       </div>
-      
+
       <div className="message-time">
         <Space size="small">
           <Text type="secondary" style={{ fontSize: 12 }}>
             {formatTime(timestamp)}
           </Text>
-          
+
           {type !== 'system' && (
             <Space size={4}>
               <Tooltip title="复制">
@@ -808,6 +733,15 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
                     size="small"
                     icon={<ReloadOutlined />}
                     onClick={() => {
+                      // Deep Think 消息直接重新发送原始消息，不 replay actions
+                      // 增加内容检测作为兜底，防止旧消息没有 metadata 导致误触发
+                      // 使用正则检测 'Thinking Summary'，忽略大小写
+                      const isDeepThink = (metadata as any)?.deep_think === true || /thinking\s*summary/i.test(content || '');
+                      if (isDeepThink) {
+                        void retryLastMessage();
+                        return;
+                      }
+
                       const trackingId = (metadata as any)?.tracking_id;
                       if (typeof trackingId === 'string' && trackingId) {
                         void retryActionRun(trackingId, ((metadata as any)?.raw_actions as any[]) ?? []);
