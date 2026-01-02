@@ -469,6 +469,44 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
                     continue;
                 }
                 if (event.type === 'final') { finalPayload = event.payload; continue; }
+                if (event.type === 'thinking_step') {
+                    const step = event.step;
+                    const targetMessage = get().messages.find((msg) => msg.id === assistantMessageId);
+                    if (!targetMessage) continue;
+
+                    const existingMetadata = { ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}) };
+                    const currentProcess = targetMessage.thinking_process ?? {
+                        steps: [],
+                        status: 'active',
+                        total_iterations: 0
+                    };
+
+                    const updatedSteps = [...currentProcess.steps];
+                    // Check if we updating existing step or adding new one
+                    const stepIndex = updatedSteps.findIndex(s => s.iteration === step.iteration);
+                    if (stepIndex >= 0) {
+                        updatedSteps[stepIndex] = step;
+                    } else {
+                        updatedSteps.push(step);
+                    }
+
+                    const updatedProcess = {
+                        ...currentProcess,
+                        steps: updatedSteps,
+                        total_iterations: Math.max(currentProcess.total_iterations ?? 0, step.iteration),
+                        // Update status based on last step
+                        status: step.status === 'done' ? 'completed' : (step.status === 'error' ? 'error' : 'active') as 'active' | 'completed' | 'error'
+                    };
+
+                    get().updateMessage(assistantMessageId, {
+                        metadata: existingMetadata,
+                        thinking_process: updatedProcess
+                    });
+
+                    // Allow UI to re-render
+                    scheduleFlush();
+                    continue;
+                }
                 if (event.type === 'error') throw new Error(event.message || 'Stream error');
             }
 
