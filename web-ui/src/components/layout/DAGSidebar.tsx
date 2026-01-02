@@ -47,7 +47,7 @@ const DAGSidebar: React.FC = () => {
 
   // 稳定化session_id以避免无限循环
   const sessionId = currentSession?.session_id;
-  
+
   const {
     data: planTasks = [],
     isFetching: planTasksLoading,
@@ -146,7 +146,7 @@ const DAGSidebar: React.FC = () => {
 
   const renderPlanPanel = () => (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '16px', borderBottom: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}>
+      <div style={{ padding: '16px', borderBottom: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}>
         <div
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}
         >
@@ -292,7 +292,7 @@ const DAGSidebar: React.FC = () => {
   );
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
       <Tabs
         activeKey={activeTab}
         onChange={setActiveTab}

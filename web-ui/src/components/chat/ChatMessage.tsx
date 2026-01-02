@@ -26,6 +26,7 @@ import ToolResultCard from './ToolResultCard';
 import JobLogPanel from './JobLogPanel';
 import { ThinkingProcess } from './ThinkingProcess';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { TypingIndicator } from './TypingIndicator';
 import type { DecompositionJobStatus } from '@/types';
 
 
@@ -86,7 +87,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const isStreaming =
     unifiedStream && (status === 'pending' || status === 'running');
 
-  // 如果是统一流且处于初始 pending 阶段、没有前置文案和动作，则不渲染气泡（避免空白占位）
+  // 如果是统一流且处于初始 pending 阶段、没有前置文案和动作，显示思考中动画
   if (
     unifiedStream &&
     metadata?.status === 'pending' &&
@@ -96,7 +97,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     (content?.trim?.() ?? '') === '' &&
     !analysisText
   ) {
-    return null;
+    return <TypingIndicator message="思考中" showAvatar={true} />;
   }
   const hasFooterDivider =
     !unifiedStream &&
