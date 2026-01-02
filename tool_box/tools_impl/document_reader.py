@@ -14,11 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 async def read_pdf(file_path: str) -> Dict[str, Any]:
-    """Read PDF locally with PyPDF2."""
+    """Read PDF locally with pypdf."""
     try:
-        import PyPDF2
+        import pypdf
     except ImportError:
-        return {"success": False, "error": "Missing PyPDF2, please run: pip install PyPDF2"}
+        return {"success": False, "error": "Missing pypdf, please run: pip install pypdf"}
 
     abs_path = Path(file_path).expanduser().resolve()
     if not abs_path.exists():
@@ -37,7 +37,7 @@ async def read_pdf(file_path: str) -> Dict[str, Any]:
     metadata = {}
     try:
         with abs_path.open("rb") as f:
-            reader = PyPDF2.PdfReader(f)
+            reader = pypdf.PdfReader(f)
             if reader.metadata:
                 metadata = {
                     "title": reader.metadata.get("/Title", ""),
