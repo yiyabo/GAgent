@@ -97,71 +97,71 @@ const ChatLayout: React.FC = () => {
         }}
       >
         <Layout style={{ height: '100%', overflow: 'hidden' }}>
-        {/* 左侧对话列表 */}
-        <Layout.Sider 
-          width={chatListWidth}
-          collapsed={!chatListVisible}
-          collapsedWidth={24}
-          trigger={null}
-          style={chatSidebarStyle}
-        >
-          {chatListVisible ? (
-            <ChatSidebar />
-          ) : (
-            <div className="chatlist-collapsed">
-              <Tooltip title="展开对话列表" placement="right">
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<MenuUnfoldOutlined />}
-                  className="chatlist-collapse-button chatlist-handle-vertical"
-                  onClick={toggleChatList}
-                >
-                  <span className="chatlist-handle-text">对话列表</span>
-                </Button>
-              </Tooltip>
-            </div>
+          {/* 左侧对话列表 */}
+          <Layout.Sider
+            width={chatListWidth}
+            collapsed={!chatListVisible}
+            collapsedWidth={24}
+            trigger={null}
+            style={chatSidebarStyle}
+          >
+            {chatListVisible ? (
+              <ChatSidebar />
+            ) : (
+              <div className="chatlist-collapsed">
+                <Tooltip title="展开对话列表" placement="right">
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<MenuUnfoldOutlined />}
+                    className="chatlist-collapse-button chatlist-handle-vertical"
+                    onClick={toggleChatList}
+                  >
+                    <span className="chatlist-handle-text">对话列表</span>
+                  </Button>
+                </Tooltip>
+              </div>
+            )}
+          </Layout.Sider>
+
+          {chatListVisible && (
+            <div
+              className="layout-resizer"
+              onMouseDown={handleDragStart('left')}
+            />
           )}
-        </Layout.Sider>
 
-        {chatListVisible && (
-          <div
-            className="layout-resizer"
-            onMouseDown={handleDragStart('left')}
-          />
-        )}
+          {/* 中间聊天主区域 */}
+          <Layout.Content
+            style={{
+              background: 'var(--bg-primary)',
+              display: dagSidebarFullscreen ? 'none' : 'flex',
+              flexDirection: 'column',
+              minWidth: 0, // 防止flex子元素溢出
+            }}
+          >
+            <ChatMainArea />
+          </Layout.Content>
 
-        {/* 中间聊天主区域 */}
-        <Layout.Content
-          style={{
-            background: 'var(--bg-primary)',
-            display: dagSidebarFullscreen ? 'none' : 'flex',
-            flexDirection: 'column',
-            minWidth: 0, // 防止flex子元素溢出
-          }}
-        >
-          <ChatMainArea />
-        </Layout.Content>
+          {!dagSidebarFullscreen && (
+            <div
+              className="layout-resizer"
+              onMouseDown={handleDragStart('right')}
+            />
+          )}
 
-        {!dagSidebarFullscreen && (
-          <div
-            className="layout-resizer"
-            onMouseDown={handleDragStart('right')}
-          />
-        )}
-
-        {/* 右侧DAG可视化 */}
-        <Layout.Sider
-          width={calculatedDagWidth}
-          style={{
-            background: 'var(--bg-secondary)',
-            borderLeft: '1px solid var(--border-color)'
-          }}
-          reverseArrow
-        >
-          <DAGSidebar />
-        </Layout.Sider>
-      </Layout>
+          {/* 右侧DAG可视化 */}
+          <Layout.Sider
+            width={calculatedDagWidth}
+            style={{
+              background: 'var(--bg-primary)',
+              borderLeft: '1px solid var(--border-color)'
+            }}
+            reverseArrow
+          >
+            <DAGSidebar />
+          </Layout.Sider>
+        </Layout>
       </div>
       <TaskDetailDrawer />
     </>
