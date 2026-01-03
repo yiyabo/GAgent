@@ -155,6 +155,7 @@ class LLMClient(LLMProvider):
         prompt: str,
         force_real: bool = False,
         model: Optional[str] = None,
+        messages: Optional[list] = None,
         **_: Any,
     ) -> AsyncIterator[str]:
         if self.mock and not force_real:
@@ -164,9 +165,15 @@ class LLMClient(LLMProvider):
         if not self.api_key:
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
 
+        # Support full messages list for multi-turn conversations
+        if messages:
+            payload_messages = messages
+        else:
+            payload_messages = [{"role": "user", "content": prompt}]
+
         payload = {
             "model": model or self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": payload_messages,
             "stream": True,
         }
         headers = self._build_headers()

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ThinkingProcess as ThinkingProcessType, ThinkingStep } from '@/types';
-import { CaretRightOutlined, LoadingOutlined, CheckCircleOutlined, InfoCircleOutlined, BulbOutlined, ToolOutlined } from '@ant-design/icons';
+import { CaretRightOutlined, LoadingOutlined, CheckCircleOutlined, InfoCircleOutlined, BulbOutlined, ToolOutlined, SearchOutlined } from '@ant-design/icons';
 import { motion, AnimatePresence } from 'framer-motion';
 import { theme, Tag, Tooltip } from 'antd';
 import classNames from 'classnames';
@@ -10,19 +10,32 @@ interface ThinkingProcessProps {
     isFinished?: boolean;
 }
 
-const ThinkingStepItem: React.FC<{ step: ThinkingStep; isLast: boolean; isFinished?: boolean }> = ({ step, isLast, isFinished }) => {
-    const { token } = theme.useToken();
-
+const ThinkingStepItem: React.FC<{ step: ThinkingStep; index: number; isLast: boolean; isFinished?: boolean }> = ({ step, index, isLast, isFinished }) => {
     // Determine step type and icon
     const isTool = !!step.action;
     const isError = step.status === 'error';
-    const isDone = step.status === 'done';
+    // A step is considered done if: status is 'done', or it has action_result (tool finished), or it's not the last step
+    const hasActionResult = !!step.action_result;
+    const isStepComplete = step.status === 'done' || hasActionResult || (!isLast && step.status !== 'thinking' && step.status !== 'calling_tool');
+    const isSearchTool = isTool && step.action?.toLowerCase().includes('search');
 
-    let icon = <BulbOutlined style={{ color: token.colorTextSecondary }} />;
-    if (isTool) icon = <ToolOutlined style={{ color: token.colorPrimary }} />;
-    if (isError) icon = <InfoCircleOutlined style={{ color: token.colorError }} />;
-    if (isDone) icon = <CheckCircleOutlined style={{ color: token.colorSuccess }} />;
-    if (step.status === 'analyzing' || step.status === 'calling_tool') icon = <div className="animate-spin"><LoadingOutlined style={{ color: token.colorPrimary }} /></div>;
+    // Determine icon based on state
+    let icon;
+    if (isError) {
+        icon = <InfoCircleOutlined style={{ color: 'var(--error-color)' }} />;
+    } else if (isStepComplete || isFinished) {
+        icon = <CheckCircleOutlined style={{ color: 'var(--success-color)' }} />;
+    } else if (step.status === 'calling_tool') {
+        icon = <LoadingOutlined spin style={{ color: 'var(--primary-color)' }} />;
+    } else if (step.status === 'thinking' || step.status === 'analyzing') {
+        icon = <LoadingOutlined spin style={{ color: 'var(--primary-color)' }} />;
+    } else if (isSearchTool) {
+        icon = <SearchOutlined style={{ color: 'var(--primary-color)' }} />;
+    } else if (isTool) {
+        icon = <ToolOutlined style={{ color: 'var(--primary-color)' }} />;
+    } else {
+        icon = <BulbOutlined style={{ color: 'var(--primary-color)' }} />;
+    }
 
     // Parse action if exists
     let actionDetails = null;
@@ -40,101 +53,208 @@ const ThinkingStepItem: React.FC<{ step: ThinkingStep; isLast: boolean; isFinish
             initial={{ opacity: 0, y: 10, height: 0 }}
             animate={{ opacity: 1, y: 0, height: 'auto' }}
             transition={{ duration: 0.3 }}
-            className="mb-3 pl-4 border-l-2 relative"
             style={{
-                borderColor: isLast && !isFinished ? token.colorPrimary : token.colorBorderSecondary,
+                marginBottom: 16,
+                paddingLeft: 16,
+                borderLeft: '2px solid',
+                borderColor: isLast && !isFinished && !isStepComplete ? 'var(--primary-color)' : 'var(--border-color)',
+                position: 'relative',
             }}
         >
-            {/* Timeline dot */}
+            {/* Timeline dot with step number */}
             <div
-                className="absolute -left-[9px] top-0 w-4 h-4 rounded-full flex items-center justify-center bg-white dark:bg-gray-800 border-2"
-                style={{ borderColor: isLast && !isFinished ? token.colorPrimary : token.colorBorder }}
+                style={{
+                    position: 'absolute',
+                    left: -13,
+                    top: 0,
+                    width: 24,
+                    height: 24,
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: isStepComplete || isFinished ? 'var(--success-color)' : 'var(--bg-primary)',
+                    border: isStepComplete || isFinished ? 'none' : '2px solid var(--border-color)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: isStepComplete || isFinished ? '#fff' : 'var(--text-secondary)',
+                }}
             >
-                <div className="scale-75">{icon}</div>
+                {isStepComplete || isFinished ? (
+                    <CheckCircleOutlined style={{ color: '#fff', fontSize: 14 }} />
+                ) : (
+                    index + 1
+                )}
             </div>
 
-            <div className="text-sm">
-                {/* Thought Content */}
-                {step.thought && (
-                    <div className="text-gray-600 dark:text-gray-300 mb-2 leading-relaxed">
-                        {step.thought}
-                    </div>
-                )}
+            {/* Thought Content */}
+            {step.thought && (
+                <div style={{
+                    color: 'var(--text-primary)',
+                    marginBottom: 8,
+                    lineHeight: 1.7,
+                    letterSpacing: '0.02em',
+                }}>
+                    {step.thought}
+                </div>
+            )}
 
-                {/* Action Card */}
-                {isTool && actionDetails && (
-                    <div className="mt-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3 border border-gray-100 dark:border-gray-700/50">
-                        <div className="flex items-center gap-2 mb-1">
-                            <span className="font-mono text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-1.5 py-0.5 rounded">
-                                {actionDetails.tool}
-                            </span>
-                            <span className="text-xs text-gray-400">正在调用...</span>
-                        </div>
-                        <div className="font-mono text-xs text-gray-500 overflow-x-auto">
-                            {JSON.stringify(actionDetails.params)}
-                        </div>
-                        {step.action_result && (
-                            <div className="mt-2 text-xs border-t border-dashed pt-2 dark:border-gray-700">
-                                <span className="text-green-600 font-medium">Result: </span>
-                                <span className="text-gray-500 line-clamp-3">{step.action_result}</span>
-                            </div>
+            {/* Action Card */}
+            {isTool && actionDetails && (
+                <div style={{
+                    marginTop: 8,
+                    background: 'var(--bg-tertiary)',
+                    borderRadius: 8,
+                    padding: 12,
+                    border: '1px solid var(--border-color)',
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                        <span style={{
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: 'var(--primary-color)',
+                            background: 'rgba(201, 100, 66, 0.1)',
+                            padding: '2px 8px',
+                            borderRadius: 4,
+                        }}>
+                            {actionDetails.tool}
+                        </span>
+                        {step.status === 'calling_tool' && (
+                            <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>正在调用...</span>
                         )}
                     </div>
-                )}
-            </div>
+                    <div style={{
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                        color: 'var(--text-secondary)',
+                        overflowX: 'auto',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-all',
+                    }}>
+                        {typeof actionDetails.params === 'object'
+                            ? JSON.stringify(actionDetails.params, null, 2)
+                            : String(actionDetails.params)
+                        }
+                    </div>
+                    {step.action_result && (
+                        <div style={{
+                            marginTop: 8,
+                            fontSize: 12,
+                            borderTop: '1px dashed var(--border-color)',
+                            paddingTop: 8,
+                        }}>
+                            <span style={{ color: 'var(--success-color)', fontWeight: 500 }}>结果: </span>
+                            <span style={{
+                                color: 'var(--text-secondary)',
+                                display: '-webkit-box',
+                                WebkitLineClamp: 3,
+                                WebkitBoxOrient: 'vertical',
+                                overflow: 'hidden',
+                            }}>
+                                {step.action_result}
+                            </span>
+                        </div>
+                    )}
+                </div>
+            )}
         </motion.div>
     );
 };
 
 export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ process, isFinished }) => {
-    const [isExpanded, setIsExpanded] = useState(!isFinished);
-    const { token } = theme.useToken();
+    // Default to collapsed when finished, expanded when active
+    const [isExpanded, setIsExpanded] = useState(!isFinished && process.status === 'active');
     const contentRef = useRef<HTMLDivElement>(null);
 
-    // Auto-expand when new steps come in if it acts like a stream
+    // Auto-expand when new steps come in during active streaming
     useEffect(() => {
         if (!isFinished && process.status === 'active') {
             setIsExpanded(true);
         }
-        // Auto-collapse when finished (optional, maybe keep expanded?)
-        // if (isFinished) setIsExpanded(false);
+        // Auto-collapse when finished
+        if (isFinished && process.status !== 'active') {
+            setIsExpanded(false);
+        }
     }, [process.steps.length, isFinished, process.status]);
 
-    const duration = (process.total_iterations || process.steps.length) * 1.5; // mocking duration estimate
-
     return (
-        <div className="my-4 max-w-3xl mx-auto">
+        <div style={{
+            margin: '16px 0',
+            maxWidth: '100%',
+        }}>
             <motion.div
-                className="rounded-xl overflow-hidden border bg-white dark:bg-[#1a1a1a]"
-                style={{ borderColor: token.colorBorderSecondary }}
+                style={{
+                    borderRadius: 12,
+                    overflow: 'hidden',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--bg-primary)',
+                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+                }}
                 initial={false}
             >
                 {/* Header Toggle */}
                 <div
                     onClick={() => setIsExpanded(!isExpanded)}
-                    className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '12px 16px',
+                        cursor: 'pointer',
+                        background: 'var(--bg-primary)',
+                        transition: 'background 0.2s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'var(--bg-tertiary)';
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'var(--bg-primary)';
+                    }}
                 >
-                    <div className="flex items-center gap-3">
-                        <div className={classNames("transition-transform duration-200", { "rotate-90": isExpanded })}>
-                            <CaretRightOutlined style={{ fontSize: 12, color: token.colorTextTertiary }} />
-                        </div>
-                        <div className="flex items-center gap-2">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                        }}>
                             {process.status === 'active' ? (
-                                <LoadingOutlined spin style={{ color: token.colorPrimary }} />
+                                <LoadingOutlined spin style={{ color: 'var(--primary-color)', fontSize: 14 }} />
                             ) : (
-                                <div className="w-4 h-4 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center">
+                                <div style={{
+                                    width: 16,
+                                    height: 16,
+                                    borderRadius: '50%',
+                                    background: 'linear-gradient(135deg, var(--primary-color) 0%, #d4886e 100%)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                }}>
                                     <BulbOutlined style={{ color: '#fff', fontSize: 10 }} />
                                 </div>
                             )}
-                            <span className="font-medium text-sm text-gray-700 dark:text-gray-200">
-                                {process.status === 'active' ? 'Deep Thinking...' : 'Thinking Process'}
+                            <span style={{
+                                fontWeight: 500,
+                                fontSize: 14,
+                                color: 'var(--text-primary)',
+                            }}>
+                                {process.status === 'active' ? 'Thinking...' : 'Thought process'}
                             </span>
                         </div>
                     </div>
 
-                    <div className="flex items-center gap-3 text-xs text-gray-400">
-                        {process.steps.length > 0 && <span>{process.steps.length} Steps</span>}
-                        {/* <span>~{Math.round(duration)}s</span> */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        {process.steps.length > 0 && (
+                            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                                {process.steps.length} step{process.steps.length > 1 ? 's' : ''}
+                            </span>
+                        )}
+                        <div style={{
+                            transition: 'transform 0.2s ease',
+                            transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                        }}>
+                            <CaretRightOutlined style={{ fontSize: 12, color: 'var(--text-tertiary)' }} />
+                        </div>
                     </div>
                 </div>
 
@@ -147,12 +267,19 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ process, isFin
                             exit={{ height: 0, opacity: 0 }}
                             transition={{ duration: 0.3, ease: "easeInOut" }}
                         >
-                            <div className="px-4 pb-4 pt-1 bg-gray-50/30 dark:bg-black/20 border-t border-gray-100 dark:border-gray-800">
-                                <div className="pl-2 pt-3">
+                            <div style={{
+                                padding: '12px 16px 16px',
+                                background: 'var(--bg-tertiary)',
+                                borderTop: '1px solid var(--border-color)',
+                                maxHeight: '400px',
+                                overflowY: 'auto',
+                            }}>
+                                <div style={{ paddingLeft: 8, paddingTop: 8 }}>
                                     {process.steps.map((step, idx) => (
                                         <ThinkingStepItem
                                             key={idx}
                                             step={step}
+                                            index={idx}
                                             isLast={idx === process.steps.length - 1}
                                             isFinished={isFinished}
                                         />
@@ -162,9 +289,21 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ process, isFin
                                         <motion.div
                                             initial={{ opacity: 0 }}
                                             animate={{ opacity: 1 }}
-                                            className="ml-4 pl-4 border-l-2 border-dashed border-gray-200 dark:border-gray-700 py-1"
+                                            style={{
+                                                marginLeft: 16,
+                                                paddingLeft: 16,
+                                                borderLeft: '2px dashed var(--border-color)',
+                                                paddingTop: 4,
+                                                paddingBottom: 4,
+                                            }}
                                         >
-                                            <span className="text-xs text-gray-400 italic">Thinking about next step...</span>
+                                            <span style={{
+                                                fontSize: 12,
+                                                color: 'var(--text-tertiary)',
+                                                fontStyle: 'italic',
+                                            }}>
+                                                Thinking about next step...
+                                            </span>
                                         </motion.div>
                                     )}
                                 </div>

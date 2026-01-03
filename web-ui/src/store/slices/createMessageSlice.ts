@@ -153,6 +153,10 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
                     if (toolResults.length > 0) {
                         metadata.tool_results = toolResults;
                     }
+
+                    // Hydrate thinking_process from metadata
+                    const thinkingProcess = metadata.thinking_process;
+
                     const backendId = typeof msg.id === 'number' ? msg.id : null;
                     const messageId = backendId !== null ? `${sessionId}_${backendId}` : `${sessionId}_${index}`;
                     return {
@@ -161,6 +165,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
                         content: msg.content,
                         timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
                         metadata,
+                        thinking_process: thinkingProcess,
                     };
                 });
 
@@ -504,6 +509,57 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
                     });
 
                     // Allow UI to re-render
+                    scheduleFlush();
+                    continue;
+                }
+                if (event.type === 'thinking_delta') {
+                    // Handle streaming delta for thinking content
+                    const { iteration, delta } = event;
+                    const targetMessage = get().messages.find((msg) => msg.id === assistantMessageId);
+                    if (!targetMessage) continue;
+
+                    const existingMetadata = { ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}) };
+                    const currentProcess = targetMessage.thinking_process ?? {
+                        steps: [],
+                        status: 'active' as const,
+                        total_iterations: 0
+                    };
+
+                    const updatedSteps = [...currentProcess.steps];
+                    // Find or create the step for this iteration
+                    let stepIndex = updatedSteps.findIndex(s => s.iteration === iteration);
+                    if (stepIndex < 0) {
+                        // Create new step
+                        updatedSteps.push({
+                            iteration,
+                            thought: delta,
+                            action: null,
+                            action_result: null,
+                            status: 'thinking' as const,
+                            timestamp: new Date().toISOString(),
+                            self_correction: null
+                        });
+                    } else {
+                        // Append delta to existing step's thought
+                        updatedSteps[stepIndex] = {
+                            ...updatedSteps[stepIndex],
+                            thought: (updatedSteps[stepIndex].thought || '') + delta
+                        };
+                    }
+
+                    const updatedProcess = {
+                        ...currentProcess,
+                        steps: updatedSteps,
+                        total_iterations: Math.max(currentProcess.total_iterations ?? 0, iteration),
+                        status: 'active' as const
+                    };
+
+                    get().updateMessage(assistantMessageId, {
+                        metadata: existingMetadata,
+                        thinking_process: updatedProcess
+                    });
+
+                    // Allow UI to re-render with streaming content
                     scheduleFlush();
                     continue;
                 }

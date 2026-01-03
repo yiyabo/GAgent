@@ -685,6 +685,13 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             }
             return (
               <>
+                {/* Thinking Process - always render if present */}
+                {message.thinking_process && (
+                  <ThinkingProcess
+                    process={message.thinking_process}
+                    isFinished={message.metadata?.status === 'completed' || message.metadata?.status === 'failed'}
+                  />
+                )}
                 {summaryBlock ?? renderContent()}
                 {renderPendingActions()}
                 {!isPendingAction && renderUnifiedStatusLine()}

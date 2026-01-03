@@ -42,6 +42,9 @@ export function useMessages(sessionId: string | null | undefined) {
                     metadata.tool_results = toolResults;
                 }
 
+                // Hydrate thinking_process from metadata if available
+                const thinkingProcess = metadata.thinking_process;
+
                 const backendId = typeof msg.id === 'number' ? msg.id : null;
                 const messageId = backendId !== null ? `${sessionId}_${backendId}` : `${sessionId}_${index}`;
 
@@ -51,6 +54,7 @@ export function useMessages(sessionId: string | null | undefined) {
                     content: msg.content,
                     timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
                     metadata,
+                    thinking_process: thinkingProcess,
                 };
             });
 
