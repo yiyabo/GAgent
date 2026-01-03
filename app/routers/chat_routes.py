@@ -3523,7 +3523,7 @@ class StructuredChatAgent:
 
     async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
         """
-        Execute deep thinking process and yield SSE events.
+        Execute deep thinking process and yield SSE events with streaming support.
         """
         # Create a queue for events
         queue = asyncio.Queue()
@@ -3540,19 +3540,37 @@ class StructuredChatAgent:
                 }
             })
 
+        async def on_thinking_delta(iteration: int, delta: str):
+            """Send token-level updates for thinking process."""
+            logger.debug(f"[DEEP_THINK_DELTA] iteration={iteration} delta_len={len(delta)}")
+            await queue.put({
+                "type": "thinking_delta",
+                "iteration": iteration,
+                "delta": delta
+            })
+
+        async def on_final_delta(delta: str):
+            """Send token-level updates for final answer."""
+            await queue.put({
+                "type": "delta",
+                "content": delta
+            })
+
         async def run_agent():
             try:
                 # Wrapper for tool execution
                 async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
                     return await execute_tool(name, **params)
                 
-                # Instantiate DeepThinkAgent
+                # Instantiate DeepThinkAgent with streaming callbacks
                 dt_agent = DeepThinkAgent(
-                    llm_client=self.llm_service, # Pass LLMService wrapper
+                    llm_client=self.llm_service,
                     available_tools=["web_search", "document_reader", "graph_rag", "claude_code"],
                     tool_executor=tool_wrapper,
                     max_iterations=12,
-                    on_thinking=on_thinking
+                    on_thinking=on_thinking,
+                    on_thinking_delta=on_thinking_delta,
+                    on_final_delta=on_final_delta
                 )
                 
                 # Run think
@@ -3575,6 +3593,12 @@ class StructuredChatAgent:
             
             if item.get("type") == "thinking_step":
                 # Yield thinking event
+                yield _sse_message(item)
+            elif item.get("type") == "thinking_delta":
+                # Yield thinking delta for streaming display
+                yield _sse_message(item)
+            elif item.get("type") == "delta":
+                # Yield final answer delta for streaming display
                 yield _sse_message(item)
             elif item.get("type") == "error":
                 yield _sse_message({"type": "error", "message": item["error"]})
@@ -3603,6 +3627,21 @@ class StructuredChatAgent:
                                 "iterations": res.total_iterations,
                                 "tools_used": res.tools_used,
                                 "confidence": res.confidence,
+                                "thinking_process": {
+                                    "status": "completed",
+                                    "total_iterations": res.total_iterations,
+                                    "steps": [
+                                        {
+                                            "iteration": s.iteration,
+                                            "thought": s.thought,
+                                            "action": s.action,
+                                            "action_result": s.action_result,
+                                            "status": "done" if s.status == "done" else "completed", # Normalize status for history
+                                            "timestamp": s.timestamp.isoformat() if s.timestamp else None
+                                        }
+                                        for s in res.thinking_steps
+                                    ]
+                                }
                             }
                         )
                         logger.info("[CHAT][DEEP_THINK] Response saved to database for session=%s", self.session_id)

@@ -69,7 +69,8 @@ export type ChatStreamEvent =
     | { type: 'final'; payload: ChatResponsePayload }
     | { type: 'job_update'; payload: Record<string, any> }
     | { type: 'error'; message?: string; error_type?: string }
-    | { type: 'thinking_step'; step: ThinkingStep };
+    | { type: 'thinking_step'; step: ThinkingStep }
+    | { type: 'thinking_delta'; iteration: number; delta: string };
 
 export const parseChatStreamEvent = (raw: string): ChatStreamEvent | null => {
     const lines = raw.split('\n');

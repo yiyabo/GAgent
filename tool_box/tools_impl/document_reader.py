@@ -219,6 +219,17 @@ async def document_reader_handler(
     # For downstream handlers, use normalized absolute path
     file_path = str(abs_path)
 
+    # Normalize operation aliases
+    operation_aliases = {
+        "extract_text": "read_any",
+        "read": "read_any",
+        "parse": "read_any",
+        "extract": "read_any",
+        "read_file": "read_any",
+        "auto": "read_any",
+    }
+    operation = operation_aliases.get(operation, operation)
+
     try:
         if operation == "read_pdf":
             kind, _ = _detect_type(file_path)
@@ -233,14 +244,20 @@ async def document_reader_handler(
             return await read_image(file_path, use_ocr=use_ocr)
         if operation == "read_text":
             return await read_text_like(file_path)
-        if operation in {"read_any", "read_file", "auto"}:
+        if operation == "read_any":
             kind, _ = _detect_type(file_path)
             if kind == "pdf":
                 return await read_pdf(file_path)
             if kind == "image":
                 return await read_image(file_path, use_ocr=use_ocr)
             return await read_text_like(file_path)
-        return {"success": False, "error": f"Unsupported operation: {operation}"}
+        
+        # Unsupported operation - provide helpful error message
+        supported_ops = ["read_pdf", "read_image", "read_text", "read_any", "extract_text", "read", "parse", "extract"]
+        return {
+            "success": False, 
+            "error": f"Unsupported operation: {operation}. Supported operations: {', '.join(supported_ops)}"
+        }
     except Exception as e:
         logger.error("Document reading failed: %s", e)
         return {"success": False, "error": f"Error processing request: {e}"}
