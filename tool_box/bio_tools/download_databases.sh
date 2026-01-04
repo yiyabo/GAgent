@@ -113,6 +113,10 @@ download_genomad() {
     fi
     
     log "使用 Docker 下载 geNomad 数据库..."
+    
+    # Ensure directory has proper permissions
+    chmod -R 777 "$DB_BASE_DIR/genomad"
+    
     docker run --rm \
         -v "$DB_BASE_DIR/genomad":/output \
         antoniopcamargo/genomad:latest \
@@ -131,6 +135,10 @@ download_virsorter2() {
     fi
     
     log "使用 Docker 下载 VirSorter2 数据库（这可能需要 30-60 分钟）..."
+    
+    # Ensure directory has proper permissions
+    chmod -R 777 "$DB_BASE_DIR/virsorter2"
+    
     docker run --rm \
         -v "$DB_BASE_DIR/virsorter2":/db \
         quay.io/biocontainers/virsorter:2.2.4--pyhdfd78af_1 \
@@ -149,6 +157,10 @@ download_pharokka() {
     fi
     
     log "使用 Docker 下载 pharokka 数据库..."
+    
+    # Ensure directory has proper permissions
+    chmod -R 777 "$DB_BASE_DIR/pharokka"
+    
     docker run --rm \
         -v "$DB_BASE_DIR/pharokka":/output \
         ghcr.io/gbouras13/pharokka:latest \
@@ -167,6 +179,9 @@ download_iphop() {
     fi
     
     log "下载 iPHoP 数据库（这可能需要 1-3 小时）..."
+    
+    # Ensure directory has proper permissions
+    chmod -R 777 "$DB_BASE_DIR/iphop"
     
     # iPHoP provides a zenodo download
     local db_url="https://zenodo.org/record/5164090/files/iPHoP_db_Sept_2021_pub.tar.gz"
@@ -198,6 +213,9 @@ download_gtdbtk() {
     fi
     
     log "下载 GTDB-Tk r214.1 数据库（这是最大的数据库，可能需要 3-6 小时）..."
+    
+    # Ensure directory has proper permissions
+    chmod -R 777 "$DB_BASE_DIR/gtdbtk"
     
     local db_url="https://data.gtdb.ecogenomic.org/releases/release214/214.1/auxillary_files/gtdbtk_r214_data.tar.gz"
     local db_file="$TEMP_DIR/gtdbtk_r214.tar.gz"
