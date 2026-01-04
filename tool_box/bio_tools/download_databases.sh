@@ -98,7 +98,7 @@ download_checkv() {
     docker run --rm \
         -v "$DB_BASE_DIR/checkv":/output \
         antoniopcamargo/checkv:latest \
-        checkv download_database /output 2>&1 | tee -a "$LOG_FILE"
+        download_database /output 2>&1 | tee -a "$LOG_FILE"
     
     success "CheckV 数据库下载完成"
 }
@@ -116,7 +116,7 @@ download_genomad() {
     docker run --rm \
         -v "$DB_BASE_DIR/genomad":/output \
         antoniopcamargo/genomad:latest \
-        genomad download-database /output 2>&1 | tee -a "$LOG_FILE"
+        download-database /output 2>&1 | tee -a "$LOG_FILE"
     
     success "geNomad 数据库下载完成"
 }
