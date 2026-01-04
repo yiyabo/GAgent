@@ -122,7 +122,7 @@ pull_biocontainers() {
 # Nextflow v22.10.5; Dorado v0.5.3; Bowtie2 v2.5.4; SAMtools v1.21 and v1.9; BLAST+ v2.2.31
 FIXED_IMAGES=(
   "nextflow/nextflow:22.10.5"
-  "genomicpariscentre/dorado:0.5.3|g"
+  "genomicpariscentre/dorado:0.5.3"
 
   # aligners & utils
   "staphb/minimap2:2.26"
