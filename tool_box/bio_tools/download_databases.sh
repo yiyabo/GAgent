@@ -276,7 +276,7 @@ EOF
     log ""
     
     # Download all databases
-    download_checkv
+    # download_checkv  # SKIP: Network issue, will download manually later
     download_genomad
     download_virsorter2
     download_pharokka
