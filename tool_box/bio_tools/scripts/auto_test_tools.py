@@ -255,17 +255,37 @@ def main():
             # Auto-Fix Retry Logic
             if not ex_res['success']:
                 print(f"  [Fail] {tool['name']} example failed. Attempting fix...")
-                fixed_cmd = attempt_fix(patched_cmd, ex_res, TEST_DATA_DIR)
-                if fixed_cmd and fixed_cmd != patched_cmd:
-                    print(f"  [Fix] Retrying with modified command...")
-                    retry_res = run_command(fixed_cmd)
-                    if retry_res['success']:
+                
+                # Check for registry/network issues first to avoid futile retries
+                if "denied" in ex_res['stderr'] and "pull access" in ex_res['stderr']:
+                     # Registry error, probably need docker login or image is private/gone
+                     notes = f"<details><summary>Error (Registry)</summary>Registry access denied. Check defaults or docker login.<br>Original: {ex_res['stderr']}</details>"
+                
+                # Check for timeout
+                elif "Command timed out" in ex_res['stderr']:
+                     # Try extending timeout once
+                     print(f"  [Fix] Command timed out. Retrying with longer timeout (300s)...")
+                     retry_res = run_command(patched_cmd, timeout=300)
+                     if retry_res['success']:
                         ex_res = retry_res
-                        notes = "⚠️ Fixed by Agent (Auto-correction applied)"
-                    else:
-                         notes = f"<details><summary>Error (Fix Failed)</summary>Original: {ex_res['stderr']}<br>Retry: {retry_res['stderr']}</details>"
+                        notes = "⚠️ Fixed by Agent (Extended Timeout)"
+                     else:
+                        notes = f"<details><summary>Error (Timeout)</summary>Command timed out even after extension.<br>Original: {ex_res['stderr']}</details>"
+                
                 else:
-                    notes = f"<details><summary>Error</summary>Code: {ex_res['stderr']}</details>"
+                    # Try standard heuristics
+                    fixed_cmd = attempt_fix(patched_cmd, ex_res, TEST_DATA_DIR)
+                    if fixed_cmd and fixed_cmd != patched_cmd:
+                        print(f"  [Fix] Retrying with modified command...")
+                        print(f"  [Debug] New Cmd: {fixed_cmd}")
+                        retry_res = run_command(fixed_cmd, timeout=120)
+                        if retry_res['success']:
+                            ex_res = retry_res
+                            notes = "⚠️ Fixed by Agent (Auto-correction applied)"
+                        else:
+                             notes = f"<details><summary>Error (Fix Failed)</summary>Original: {ex_res['stderr']}<br>Retry: {retry_res['stderr']}</details>"
+                    else:
+                        notes = f"<details><summary>Error</summary>Code: {ex_res['stderr']}</details>"
             
             ex_status = "✅" if ex_res['success'] else "❌"
         else:
