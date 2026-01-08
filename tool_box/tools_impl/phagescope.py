@@ -5,10 +5,13 @@ Provides access to the PhageScope phage analysis service.
 """
 
 import asyncio
+import csv
 import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -598,6 +601,169 @@ async def phagescope_handler(
                 "preview_bytes": len(preview),
             }
 
+        if action == "save_all":
+            # Requires taskid; optionally accepts output_dir
+            if not taskid:
+                return {"success": False, "status_code": 400, "error": "taskid is required", "action": action}
+
+            # Determine output directory
+            timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            default_output_dir = Path("runtime/phagescope") / f"task_{taskid}_{timestamp_str}"
+            output_dir = Path(save_path) if save_path else default_output_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create subdirectories
+            metadata_dir = output_dir / "metadata"
+            annotation_dir = output_dir / "annotation"
+            sequences_dir = output_dir / "sequences"
+            phylogeny_dir = output_dir / "phylogeny"
+            raw_dir = output_dir / "raw_api_responses"
+
+            for d in [metadata_dir, annotation_dir, sequences_dir, phylogeny_dir, raw_dir]:
+                d.mkdir(parents=True, exist_ok=True)
+
+            saved_files: Dict[str, str] = {}
+            raw_responses: Dict[str, Any] = {}
+            errors: List[str] = []
+
+            # Helper to fetch and save a result kind
+            async def fetch_and_save(result_kind: str) -> Optional[Dict[str, Any]]:
+                endpoint = RESULT_ENDPOINTS.get(result_kind)
+                if not endpoint:
+                    return None
+                try:
+                    status_code, payload = await _request(
+                        "GET", base_url, endpoint, params={"taskid": taskid}, headers=headers, timeout=timeout
+                    )
+                    raw_responses[result_kind] = {"status_code": status_code, "payload": payload}
+
+                    # Save raw response
+                    raw_file = raw_dir / f"{result_kind}_raw.json"
+                    raw_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                    if status_code >= 400:
+                        errors.append(f"{result_kind}: HTTP {status_code}")
+                        return None
+                    return payload
+                except Exception as e:
+                    errors.append(f"{result_kind}: {str(e)}")
+                    return None
+
+            # 1. Fetch task detail first for metadata
+            detail_status, detail_payload = await _request(
+                "GET", base_url, "/tasks/detail/", params={"taskid": taskid}, headers=headers, timeout=timeout
+            )
+            raw_responses["task_detail"] = {"status_code": detail_status, "payload": detail_payload}
+            (raw_dir / "task_detail_raw.json").write_text(
+                json.dumps(detail_payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+
+            # 2. Fetch phage info
+            phage_data = await fetch_and_save("phage")
+            if phage_data:
+                phage_file = metadata_dir / "phage_info.json"
+                phage_file.write_text(json.dumps(phage_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                saved_files["phage_info"] = str(phage_file.relative_to(output_dir))
+
+            # 3. Fetch quality
+            quality_data = await fetch_and_save("quality")
+            if quality_data:
+                quality_file = metadata_dir / "quality.json"
+                quality_file.write_text(json.dumps(quality_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                saved_files["quality"] = str(quality_file.relative_to(output_dir))
+
+            # 4. Fetch proteins and save as both JSON and TSV
+            proteins_data = await fetch_and_save("proteins")
+            if proteins_data:
+                proteins_json_file = annotation_dir / "proteins.json"
+                proteins_json_file.write_text(json.dumps(proteins_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                saved_files["proteins_json"] = str(proteins_json_file.relative_to(output_dir))
+
+                # Convert to TSV if results is a list
+                results_list = proteins_data.get("results") if isinstance(proteins_data, dict) else None
+                if isinstance(results_list, list) and results_list:
+                    proteins_tsv_file = annotation_dir / "proteins.tsv"
+                    # Get all unique keys from all records
+                    all_keys: List[str] = []
+                    for record in results_list:
+                        if isinstance(record, dict):
+                            for key in record.keys():
+                                if key not in all_keys:
+                                    all_keys.append(key)
+                    if all_keys:
+                        output = StringIO()
+                        writer = csv.DictWriter(output, fieldnames=all_keys, delimiter="\t", extrasaction="ignore")
+                        writer.writeheader()
+                        for record in results_list:
+                            if isinstance(record, dict):
+                                writer.writerow(record)
+                        proteins_tsv_file.write_text(output.getvalue(), encoding="utf-8")
+                        saved_files["proteins_tsv"] = str(proteins_tsv_file.relative_to(output_dir))
+
+            # 5. Fetch phagefasta (FASTA sequences)
+            fasta_data = await fetch_and_save("phagefasta")
+            if fasta_data:
+                fasta_content = None
+                # Try to extract actual FASTA content
+                if isinstance(fasta_data, dict):
+                    fasta_content = fasta_data.get("results") or fasta_data.get("fasta") or fasta_data.get("data")
+                if isinstance(fasta_content, str) and fasta_content.strip():
+                    fasta_file = sequences_dir / "phage.fasta"
+                    fasta_file.write_text(fasta_content, encoding="utf-8")
+                    saved_files["fasta"] = str(fasta_file.relative_to(output_dir))
+                else:
+                    # Save as JSON if not plain text
+                    fasta_json_file = sequences_dir / "phagefasta.json"
+                    fasta_json_file.write_text(json.dumps(fasta_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                    saved_files["fasta_json"] = str(fasta_json_file.relative_to(output_dir))
+
+            # 6. Fetch tree (phylogenetic tree)
+            tree_data = await fetch_and_save("tree")
+            if tree_data:
+                tree_content = None
+                if isinstance(tree_data, dict):
+                    tree_content = tree_data.get("results") or tree_data.get("tree") or tree_data.get("newick")
+                # Check if it looks like Newick format
+                if isinstance(tree_content, str) and ("(" in tree_content and ")" in tree_content):
+                    tree_file = phylogeny_dir / "tree.nwk"
+                    tree_file.write_text(tree_content, encoding="utf-8")
+                    saved_files["tree_newick"] = str(tree_file.relative_to(output_dir))
+                else:
+                    # Save as JSON
+                    tree_json_file = phylogeny_dir / "tree.json"
+                    tree_json_file.write_text(json.dumps(tree_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                    saved_files["tree_json"] = str(tree_json_file.relative_to(output_dir))
+
+            # 7. Fetch modules info
+            modules_data = await fetch_and_save("modules")
+            if modules_data:
+                modules_file = metadata_dir / "modules.json"
+                modules_file.write_text(json.dumps(modules_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                saved_files["modules"] = str(modules_file.relative_to(output_dir))
+
+            # 8. Create summary.json
+            summary = {
+                "taskid": taskid,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "output_directory": str(output_dir.resolve()),
+                "files": saved_files,
+                "errors": errors if errors else None,
+                "task_detail": detail_payload.get("results") if isinstance(detail_payload, dict) else None,
+            }
+            summary_file = output_dir / "summary.json"
+            summary_file.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+
+            return {
+                "success": len(errors) == 0,
+                "status_code": 200 if len(errors) == 0 else 207,  # 207 = Multi-Status
+                "action": action,
+                "taskid": taskid,
+                "output_directory": str(output_dir.resolve()),
+                "files_saved": saved_files,
+                "errors": errors if errors else None,
+                "summary_file": str(summary_file.resolve()),
+            }
+
         return {"success": False, "status_code": 400, "error": f"unsupported action: {action}", "action": action}
     except httpx.TimeoutException:
         return {"success": False, "status_code": 408, "error": f"timeout after {timeout}s", "action": action}
@@ -627,6 +793,7 @@ phagescope_tool = {
                     "quality",
                     "download",
                     "query",
+                    "save_all",
                 ],
             },
             "base_url": {"type": "string", "description": "API base URL"},
@@ -686,5 +853,6 @@ phagescope_tool = {
         "Check a Phage ID and submit an analysis task",
         "Fetch quality results for a completed task",
         "Retrieve task logs or download result files",
+        "Save all results from a completed task to local files (save_all)",
     ],
 }
