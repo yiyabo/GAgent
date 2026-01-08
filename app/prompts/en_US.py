@@ -37,7 +37,7 @@ PROMPTS_EN_US = {
                 "- system_operation: help",
                 "- tool_operation: web_search (use for live web information; requires `query`, optional provider/max_results/target_task_id)",
                 "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities/target_task_id)",
-                "- tool_operation: phagescope (PhageScope phage analyses; action in ping/input_check/submit/task_list/task_detail/task_log/result/quality/download; requires `action`, optional phageid/userid/modulelist/taskid/result_kind/download_path/target_task_id)",
+                "- tool_operation: phagescope (PhageScope phage analyses; action in ping/input_check/submit/task_list/task_detail/task_log/result/quality/download/save_all; requires `action`, optional phageid/userid/modulelist/taskid/result_kind/download_path/save_path/target_task_id)",
                 "- tool_operation: generate_experiment_card (create data/<experiment_id>/card.yaml from a PDF; if pdf_path/experiment_id are omitted, uses the latest uploaded PDF and derives an id)",
                 "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs/target_task_id)",
                 "- tool_operation: manuscript_writer (write a research manuscript using the default LLM; requires `task` and `output_path`, optional context_paths/analysis_path/max_context_bytes/target_task_id)",
