@@ -112,14 +112,20 @@ def prepare_command(cmd, test_data_path):
     # Also replace just "-v /data:/data" type things if they exist
     # But usually the doc says `-v /data/user_data:/data`. 
     
+    # Pre-create likely output directories in test_data_path
+    # Many tools fail if output subdir doesn't exist
+    for subdir in ["output", "bins", "results", "analysis", "qc", "annotation", "taxonomy"]:
+        (test_data_path / subdir).mkdir(exist_ok=True)
+        
+    # Heuristic: If command outputs to a file in a subdir (e.g., /data/bins/bin), ensure 'bins' exists
+    # We already did general creation, but let's check command specific paths if needed.
+
     # If the user didn't use the standard mount path in the doc, this heuristic might fail.
     # Let's try aggressive replacement of input files first.
     
     for pattern, replacement in PATH_MAPPINGS.items():
-        # strict replacement might be dangerous if we replace "/data" in "/data/output" 
-        # but here we target specific files first.
-        if "input" in pattern or "sequences" in pattern or "reads" in pattern:
-             modified_cmd = re.sub(pattern, replacement, modified_cmd)
+        # Only replace if relevant input pattern
+         modified_cmd = re.sub(pattern, replacement, modified_cmd)
 
     # Now handle the mount. We want to ensure the container sees /data mounted from our TEST_DATA_DIR
     # The doc command usually looks like: `docker run ... -v /host/path:/container/path ...`
@@ -129,6 +135,7 @@ def prepare_command(cmd, test_data_path):
     # We generally assume the doc mounts to `/data`.
     # So we want to replace whatever comes before `:/data` with `TEST_DATA_DIR`.
     
+    # Matches -v /anything/here:/data
     modified_cmd = re.sub(r"-v\s+\S+:/data", f"-v {test_data_path}:/data", modified_cmd)
     
     return modified_cmd
