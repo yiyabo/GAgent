@@ -133,7 +133,7 @@ async def read_image(file_path: str, use_ocr: bool = False) -> Dict[str, Any]:
 
 
 async def read_text_like(file_path: str) -> Dict[str, Any]:
-    """Read text/markdown/csv/json/yaml and other small text files."""
+    """Read text/markdown and other small text files. Rejects structured data formats."""
     abs_path = Path(file_path).expanduser().resolve()
     if not abs_path.exists():
         return {"success": False, "error": f"File not found: {file_path}"}
@@ -146,21 +146,29 @@ async def read_text_like(file_path: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Text file too large (>{size_bytes/1024/1024:.2f}MB), limit is 10MB"}
 
     suffix = abs_path.suffix.lower()
+    
+    # Reject structured data formats - these should use claude_code for proper analysis
+    structured_data_exts = {".csv", ".tsv", ".json", ".xlsx", ".xls", ".parquet"}
+    if suffix in structured_data_exts:
+        return {
+            "success": False,
+            "error": f"Structured data file ({suffix}) detected. For CSV, Excel, JSON, or other tabular data, use `claude_code` tool for proper data analysis, visualization, or manipulation. `document_reader` is only for unstructured text content.",
+            "suggestion": "Use claude_code with a task like: 'Read and analyze the data in {file_path}'",
+        }
+    
+    # Allowed text formats
     text_exts = {
         ".txt",
         ".md",
-        ".csv",
-        ".tsv",
-        ".json",
-        ".yaml",
-        ".yml",
         ".log",
         ".ini",
         ".cfg",
         ".config",
+        ".yaml",
+        ".yml",
     }
     if suffix and suffix not in text_exts:
-        # Allow reading unknown small text files as fallback
+        # Allow reading unknown small text files as fallback, but warn
         pass
 
     try:

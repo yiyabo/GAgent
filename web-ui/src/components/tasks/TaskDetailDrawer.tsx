@@ -73,9 +73,8 @@ const TaskDetailDrawer: React.FC = () => {
         if (!payload) {
           continue;
         }
-        const key = `${payload.name ?? ''}::${payload.summary ?? ''}::${
-          payload.result?.query ?? ''
-        }`;
+        const key = `${payload.name ?? ''}::${payload.summary ?? ''}::${payload.result?.query ?? ''
+          }`;
         if (seen.has(key)) {
           continue;
         }
@@ -184,16 +183,52 @@ const TaskDetailDrawer: React.FC = () => {
     void refetchTaskResult();
   }, [currentPlanId, selectedTaskId, refetchPlanTasks, refetchTaskResult]);
 
+  // 降级复制方案 (用于非 HTTPS 环境)
+  const fallbackCopyToClipboard = useCallback((text: string): boolean => {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    textArea.style.top = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    try {
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      return true;
+    } catch (err) {
+      console.error('Fallback copy failed:', err);
+      document.body.removeChild(textArea);
+      return false;
+    }
+  }, []);
+
   const handleCopyJSON = useCallback(async (value: unknown, successMessage: string) => {
     try {
       const text = JSON.stringify(value, null, 2);
-      await navigator.clipboard.writeText(text);
-      message.success(successMessage);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        message.success(successMessage);
+      } else {
+        // Fallback for HTTP environments
+        if (fallbackCopyToClipboard(text)) {
+          message.success(successMessage);
+        } else {
+          message.error('复制失败，请手动复制内容');
+        }
+      }
     } catch (error) {
       console.warn('复制失败', error);
-      message.error('复制失败，请手动复制内容');
+      // Try fallback on error
+      const text = JSON.stringify(value, null, 2);
+      if (fallbackCopyToClipboard(text)) {
+        message.success(successMessage);
+      } else {
+        message.error('复制失败，请手动复制内容');
+      }
     }
-  }, []);
+  }, [fallbackCopyToClipboard, message]);
 
   const handleCopyTask = useCallback(() => {
     if (!activeTask) {
@@ -335,7 +370,7 @@ const TaskDetailDrawer: React.FC = () => {
               </Title>
               <Text type="secondary">任务 ID: {activeTask.id}</Text>
             </Space>
-            )
+          )
           : '任务详情'
       }
       open={isTaskDrawerOpen}
