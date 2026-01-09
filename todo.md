@@ -12,6 +12,7 @@
 2. phage scope提供的工具可以覆盖哪些常用的生物信息学工具
 3. 工具列表，phage scope里面有的；sandbox里面有的
 4. nc 论文仔细复现，把对应的生物信息工具添加上
+5. 阅读csv文件的时候，应该要去使用Claude Code，而不是用document_reader
 
 ## 服务器部署
 1. 至少有1-2个实验需要用到phage scope里面的工具
