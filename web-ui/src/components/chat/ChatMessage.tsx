@@ -119,9 +119,33 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     lineHeight: 1.5,
   };
 
-  // 复制消息内容
+  // 复制消息内容 (带降级方案，支持 HTTP 环境)
   const handleCopy = () => {
-    navigator.clipboard.writeText(content);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(content).catch(() => {
+        fallbackCopyToClipboard(content);
+      });
+    } else {
+      fallbackCopyToClipboard(content);
+    }
+  };
+
+  // 降级复制方案 (用于非 HTTPS 环境)
+  const fallbackCopyToClipboard = (text: string) => {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    textArea.style.top = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    try {
+      document.execCommand('copy');
+    } catch (err) {
+      console.error('Fallback copy failed:', err);
+    }
+    document.body.removeChild(textArea);
   };
 
   // 保存为记忆
