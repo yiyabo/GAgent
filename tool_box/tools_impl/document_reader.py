@@ -204,6 +204,72 @@ async def document_reader_handler(
     file_path: str,
     use_ocr: bool = False,
 ) -> Dict[str, Any]:
+    import glob as glob_module
+    
+    # Check if path contains glob patterns (*, ?, [])
+    if any(c in file_path for c in ['*', '?', '[']):
+        # Expand glob pattern
+        expanded_path = Path(file_path).expanduser()
+        if not expanded_path.is_absolute():
+            expanded_path = Path.cwd() / file_path
+        
+        matched_files = sorted(glob_module.glob(str(expanded_path)))
+        
+        if not matched_files:
+            # No files matched the pattern
+            parent_dir = Path(file_path).parent
+            if parent_dir.exists():
+                # List available files in the directory to help
+                try:
+                    available = [f.name for f in Path(parent_dir).iterdir() if f.is_file()]
+                    return {
+                        "success": False,
+                        "error": f"No files matched pattern: {file_path}",
+                        "suggestion": f"Available files in {parent_dir}: {available[:10]}{'...' if len(available) > 10 else ''}",
+                        "hint": "Please specify exact file names instead of wildcard patterns.",
+                    }
+                except Exception:
+                    pass
+            return {
+                "success": False,
+                "error": f"No files matched pattern: {file_path}",
+                "hint": "Please specify exact file names instead of wildcard patterns.",
+            }
+        
+        if len(matched_files) == 1:
+            # Single match - process normally
+            file_path = matched_files[0]
+        else:
+            # Multiple matches - process each file and combine results
+            results = []
+            for matched_file in matched_files[:10]:  # Limit to 10 files
+                try:
+                    result = await document_reader_handler(operation, matched_file, use_ocr)
+                    results.append({
+                        "file": matched_file,
+                        "success": result.get("success", False),
+                        "summary": result.get("summary", ""),
+                        "text_length": result.get("text_length", 0),
+                        "error": result.get("error"),
+                    })
+                except Exception as e:
+                    results.append({
+                        "file": matched_file,
+                        "success": False,
+                        "error": str(e),
+                    })
+            
+            return {
+                "success": all(r.get("success") for r in results),
+                "is_glob_result": True,
+                "pattern": file_path,
+                "matched_count": len(matched_files),
+                "processed_count": len(results),
+                "results": results,
+                "summary": f"Processed {len(results)} files matching pattern. {sum(1 for r in results if r.get('success'))} succeeded.",
+                "hint": "For detailed content of each file, call document_reader with specific file paths.",
+            }
+    
     # Normalize path early and handle directory listing
     abs_path = Path(file_path).expanduser()
     if not abs_path.is_absolute():
