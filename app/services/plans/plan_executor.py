@@ -31,11 +31,18 @@ if TYPE_CHECKING:  # pragma: no cover
 # ---------------------------------------------------------------------------
 
 
+class ToolCallRequest(BaseModel):
+    """Tool call request from executor LLM."""
+    name: str = Field(description="Tool name: claude_code, web_search, document_reader, etc.")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="Tool parameters")
+
+
 class ExecutionResponse(BaseModel):
     """Structured payload returned by the execution LLM."""
 
-    status: str = Field(pattern="^(success|failed|skipped)$")
+    status: str = Field(pattern="^(success|failed|skipped|needs_tool)$")
     content: str
+    tool_call: Optional[ToolCallRequest] = Field(default=None, description="Tool call request when status is needs_tool")
     notes: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -116,6 +123,8 @@ class ExecutionConfig:
     include_plan_outline: bool = True
     dependency_throttle: bool = True
     max_tasks: Optional[int] = None
+    # 新增：会话上下文，包含聊天历史、用户消息等
+    session_context: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_settings(cls, settings: ExecutorSettings) -> "ExecutionConfig":
@@ -140,17 +149,44 @@ class ExecutorPromptBuilder:
 
     SYSTEM_HEADER = (
         "You are an execution agent that completes research or engineering tasks. "
-        "Produce the requested work product and respond using the JSON schema provided."
+        "You can either produce text-based results directly OR request tool execution when needed. "
+        "Respond using the JSON schema provided."
     )
 
-    OUTPUT_SCHEMA = (
-        "{\n"
-        '  "status": "success" | "failed" | "skipped",\n'
-        '  "content": "<main execution result text>",\n'
-        '  "notes": ["optional notes"],\n'
-        '  "metadata": {"model": "executor-llm", "duration_sec": 0}\n'
-        "}"
-    )
+    # 可用工具目录
+    TOOL_CATALOG = """
+=== AVAILABLE TOOLS ===
+When a task requires actual code execution, data analysis, or file operations, you can request these tools:
+- claude_code: Execute complex coding tasks (data analysis, visualization, model building, file creation)
+  Parameters: {"task": "<detailed task description>", "allowed_tools": ["bash", "python", "file_editor"]}
+- web_search: Search the web for information
+  Parameters: {"query": "<search query>", "max_results": 5}
+- document_reader: Read and extract content from files
+  Parameters: {"operation": "read_any", "file_path": "<path>"}
+"""
+
+    # 任务类型判断指引
+    TASK_TYPE_GUIDANCE = """
+=== WHEN TO USE TOOLS ===
+- For design/architecture/planning/analysis tasks → respond with text only (status: "success")
+- For data analysis/visualization/chart creation → use claude_code (status: "needs_tool")
+- For model code building/training scripts → use claude_code (status: "needs_tool")
+- For information lookup from web → use web_search (status: "needs_tool")
+- For reading/parsing files → use document_reader (status: "needs_tool")
+- For writing papers/documents with text → respond with text only (status: "success")
+"""
+
+    OUTPUT_SCHEMA = """{
+  "status": "success" | "failed" | "skipped" | "needs_tool",
+  "content": "<main result text or reasoning for tool request>",
+  "tool_call": {  // REQUIRED when status is "needs_tool", otherwise omit
+    "name": "claude_code" | "web_search" | "document_reader",
+    "parameters": { <tool-specific parameters> }
+  },
+  "notes": ["optional notes"],
+  "metadata": {}
+}"""
+
 
     def build(
         self,
@@ -160,8 +196,39 @@ class ExecutorPromptBuilder:
         dependencies: List[PlanNode],
         plan_outline: Optional[str],
         include_context: bool,
+        session_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         lines: List[str] = [self.SYSTEM_HEADER]
+        
+        # 新增：会话上下文（用户消息、聊天历史等）
+        if session_context:
+            user_message = session_context.get("user_message")
+            if user_message:
+                lines.append("\n=== USER REQUEST ===")
+                lines.append(f"{user_message}")
+            
+            chat_history = session_context.get("chat_history", [])
+            if chat_history:
+                lines.append("\n=== RECENT CONVERSATION ===")
+                # 限制历史条数，避免过长
+                recent_history = chat_history[-6:] if len(chat_history) > 6 else chat_history
+                for msg in recent_history:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    # 截断过长的消息
+                    if len(content) > 500:
+                        content = content[:500] + "..."
+                    lines.append(f"[{role}]: {content}")
+            
+            # 最近的工具结果
+            tool_results = session_context.get("recent_tool_results", [])
+            if tool_results:
+                lines.append("\n=== RECENT TOOL RESULTS ===")
+                for tr in tool_results[-3:]:  # 最近3个工具结果
+                    tool_name = tr.get("tool", "unknown")
+                    summary = tr.get("summary", "")
+                    lines.append(f"- {tool_name}: {summary}")
+        
         lines.append("\n=== TASK SUMMARY ===")
         lines.append(f"Task ID: {node.id}")
         lines.append(f"Task Name: {node.display_name()}")
@@ -180,8 +247,9 @@ class ExecutorPromptBuilder:
         if dependencies:
             lines.append("\n=== DEPENDENCIES ===")
             for dep in dependencies:
+                status_indicator = "✓" if dep.status == "completed" else "✗" if dep.status == "failed" else "○"
                 summary = dep.execution_result or "(not executed)"
-                lines.append(f"- [{dep.id}] {dep.display_name()}: {summary}")
+                lines.append(f"- [{status_indicator}] [{dep.id}] {dep.display_name()}: {summary}")
 
         if include_context:
             lines.append("\n=== CONTEXT ===")
@@ -198,6 +266,10 @@ class ExecutorPromptBuilder:
         if plan_outline:
             lines.append("\n=== PLAN OUTLINE (TRUNCATED) ===")
             lines.append(plan_outline)
+
+        # 新增：工具目录和任务类型指引
+        lines.append(self.TOOL_CATALOG)
+        lines.append(self.TASK_TYPE_GUIDANCE)
 
         lines.append("\n=== RESPONSE FORMAT ===")
         lines.append(self.OUTPUT_SCHEMA)
@@ -418,13 +490,38 @@ class PlanExecutor:
     ) -> ExecutionResult:
         parent = tree.nodes.get(node.parent_id) if node.parent_id else None
         dependencies = self._resolve_dependencies(tree, node)
-        outline = tree.to_outline(max_depth=3, max_nodes=40) if config.include_plan_outline else None
+        
+        # 新增：检查依赖状态，记录警告
+        incomplete_deps = []
+        for dep in dependencies:
+            if dep.status not in ("completed", "done"):
+                incomplete_deps.append(dep)
+                logger.warning(
+                    "Dependency %s (status=%s) not completed before executing task %s",
+                    dep.id, dep.status, node.id
+                )
+        
+        if incomplete_deps:
+            _log_job(
+                "warning",
+                f"Task {node.id} has {len(incomplete_deps)} incomplete dependencies",
+                {
+                    "task_id": node.id,
+                    "incomplete_deps": [d.id for d in incomplete_deps],
+                },
+            )
+        
+        # 增大 outline 限制：40 → 80 节点
+        outline = tree.to_outline(max_depth=4, max_nodes=80) if config.include_plan_outline else None
+        
+        # 传递 session_context 到 prompt builder
         prompt = self._prompt_builder.build(
             node=node,
             parent=parent,
             dependencies=dependencies,
             plan_outline=outline,
             include_context=config.use_context,
+            session_context=config.session_context,
         )
 
         attempts = max(1, config.max_retries)
@@ -452,6 +549,33 @@ class PlanExecutor:
                     },
                 )
                 response = self._llm.generate(prompt, config)
+                
+                # 新增：检查是否需要工具调用
+                if response.status == "needs_tool" and response.tool_call:
+                    _log_job(
+                        "info",
+                        f"Task {node.id} requests tool: {response.tool_call.name}",
+                        {
+                            "plan_id": plan_id,
+                            "task_id": node.id,
+                            "tool": response.tool_call.name,
+                        },
+                    )
+                    # 执行工具调用
+                    tool_result = self._execute_tool_call(
+                        response.tool_call,
+                        node=node,
+                        config=config,
+                    )
+                    # 合并工具结果
+                    if tool_result.get("success"):
+                        final_content = f"{response.content}\n\n=== Tool Execution Result ===\n{tool_result.get('summary', str(tool_result.get('result', '')))}"
+                        response.status = "success"
+                    else:
+                        final_content = f"{response.content}\n\n=== Tool Execution Failed ===\n{tool_result.get('error', 'Unknown error')}"
+                        response.status = "failed"
+                    response.content = final_content
+                
                 result_payload = response.model_dump()
                 raw_response = json.dumps(result_payload, ensure_ascii=False)
                 task_status = self._normalize_status(response.status)
@@ -586,9 +710,12 @@ class PlanExecutor:
                     if current_id in emitted:
                         continue
                     if current_id in visiting:
-                        raise ValueError(
-                            f"Detected circular dependency while ordering task {current_id}"
+                        # 循环依赖：跳过并警告，而不是抛出错误
+                        logger.warning(
+                            "Detected circular dependency while ordering task %s, skipping",
+                            current_id
                         )
+                        continue
                     visiting.add(current_id)
                     stack.append((current_id, 1))
                     node = tree.nodes[current_id]
@@ -596,9 +723,12 @@ class PlanExecutor:
                         if dep_id not in tree.nodes or dep_id in emitted:
                             continue
                         if dep_id in visiting:
-                            raise ValueError(
-                                f"Detected circular dependency between tasks {current_id} and {dep_id}"
+                            # 循环依赖：跳过该依赖，警告并继续
+                            logger.warning(
+                                "Detected circular dependency between tasks %s and %s, skipping dependency",
+                                current_id, dep_id
                             )
+                            continue
                         if dep_id in scheduled:
                             continue
                         stack.append((dep_id, 0))
@@ -613,9 +743,12 @@ class PlanExecutor:
                         if child_id not in tree.nodes or child_id in emitted:
                             continue
                         if child_id in visiting:
-                            raise ValueError(
-                                f"Detected circular dependency between parent {current_id} and child {child_id}"
+                            # 循环依赖：跳过该子节点，警告并继续
+                            logger.warning(
+                                "Detected circular dependency between parent %s and child %s, skipping",
+                                current_id, child_id
                             )
+                            continue
                         if child_id in scheduled:
                             continue
                         stack.append((child_id, 0))
@@ -652,6 +785,99 @@ class PlanExecutor:
             if dep is not None:
                 deps.append(dep)
         return deps
+
+    def _execute_tool_call(
+        self,
+        tool_call: ToolCallRequest,
+        node: PlanNode,
+        config: ExecutionConfig,
+    ) -> Dict[str, Any]:
+        """Execute a tool call requested by the executor LLM.
+        
+        Args:
+            tool_call: The tool call request from LLM
+            node: The current task node being executed
+            config: Execution configuration
+            
+        Returns:
+            Dict with success status, result/error, and summary
+        """
+        import asyncio
+        from tool_box import execute_tool
+        
+        tool_name = tool_call.name
+        params = dict(tool_call.parameters)
+        
+        # 添加 target_task_id 以便自动更新任务状态
+        params["target_task_id"] = node.id
+        
+        # 如果有 session_context，传递 session_id 给工具
+        if config.session_context:
+            session_id = config.session_context.get("session_id")
+            if session_id:
+                params["session_id"] = session_id
+        
+        logger.info(
+            "PlanExecutor executing tool %s for task %s with params: %s",
+            tool_name, node.id, list(params.keys())
+        )
+        _log_job(
+            "info",
+            f"Executing tool {tool_name} for task {node.id}",
+            {"tool": tool_name, "task_id": node.id},
+        )
+        
+        try:
+            # execute_tool 是异步的，需要在同步上下文中运行
+            loop = asyncio.new_event_loop()
+            try:
+                result = loop.run_until_complete(execute_tool(tool_name, **params))
+            finally:
+                loop.close()
+            
+            # 提取摘要
+            summary = self._summarize_tool_result(tool_name, result)
+            
+            logger.info(
+                "Tool %s execution succeeded for task %s",
+                tool_name, node.id
+            )
+            return {"success": True, "result": result, "summary": summary}
+            
+        except Exception as exc:
+            logger.exception(
+                "Tool %s execution failed for task %s: %s",
+                tool_name, node.id, exc
+            )
+            _log_job(
+                "error",
+                f"Tool {tool_name} failed: {exc}",
+                {"tool": tool_name, "task_id": node.id, "error": str(exc)},
+            )
+            return {"success": False, "error": str(exc)}
+
+    def _summarize_tool_result(self, tool_name: str, result: Any) -> str:
+        """Generate a brief summary of tool execution result."""
+        if result is None:
+            return "(no result)"
+        
+        if isinstance(result, dict):
+            # 优先使用已有的摘要字段
+            if "summary" in result:
+                return str(result["summary"])[:1000]
+            if "result" in result:
+                return str(result["result"])[:1000]
+            if "output" in result:
+                return str(result["output"])[:1000]
+            # 对于其他 dict，序列化前 1000 字符
+            import json
+            try:
+                return json.dumps(result, ensure_ascii=False)[:1000]
+            except (TypeError, ValueError):
+                return str(result)[:1000]
+        
+        return str(result)[:1000]
+
 
     @staticmethod
     def _normalize_status(raw: str) -> str:

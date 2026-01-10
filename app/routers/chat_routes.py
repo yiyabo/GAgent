@@ -50,7 +50,7 @@ from app.services.plans.decomposition_jobs import (
     start_decomposition_job_thread,
 )
 from app.services.plans.plan_decomposer import DecompositionResult, PlanDecomposer
-from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService
+from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService, ExecutionConfig
 from app.services.plans.plan_models import PlanTree
 from app.services.plans.plan_session import PlanSession
 from app.services.session_title_service import (
@@ -786,10 +786,16 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
         )
 
         # 处理附件：如果context中有attachments，自动附加到消息中
+        # 并尝试自动读取文本类附件内容
         message_to_send = request.message
         attachments = context.get("attachments", [])
         if attachments and isinstance(attachments, list):
             attachment_info = "\n\n📎 用户当前上传的附件：\n"
+            # 定义可自动读取的文件类型
+            AUTO_READ_TEXT_EXTS = {".txt", ".md", ".log", ".ini", ".cfg", ".yaml", ".yml"}
+            AUTO_READ_PDF_EXT = ".pdf"
+            MAX_AUTO_READ_SIZE = 200 * 1024  # 200KB
+            
             for att in attachments:
                 if isinstance(att, dict):
                     att_type = att.get("type", "file")
@@ -799,15 +805,72 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                     attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
                     if att_extracted:
                         attachment_info += f"  extracted: {att_extracted}\n"
+                    
+                    # 自动读取文本类文件内容
+                    if att_path:
+                        try:
+                            from pathlib import Path
+                            file_path = Path(att_path).expanduser().resolve()
+                            if file_path.exists() and file_path.is_file():
+                                file_size = file_path.stat().st_size
+                                suffix = file_path.suffix.lower()
+                                
+                                if file_size <= MAX_AUTO_READ_SIZE:
+                                    if suffix in AUTO_READ_TEXT_EXTS:
+                                        # 直接读取文本文件
+                                        try:
+                                            content = file_path.read_text(encoding="utf-8", errors="replace")
+                                            # 截断过长内容
+                                            if len(content) > 10000:
+                                                content = content[:10000] + f"\n... [内容已截断，共 {len(content)} 字符]"
+                                            attachment_info += f"\n📄 文件内容 ({att_name}):\n```\n{content}\n```\n"
+                                            logger.info("[CHAT][AUTO_READ] text file=%s size=%d", att_name, file_size)
+                                        except Exception as read_err:
+                                            logger.warning("[CHAT][AUTO_READ] Failed to read %s: %s", att_name, read_err)
+                                    
+                                    elif suffix == AUTO_READ_PDF_EXT:
+                                        # 读取 PDF 文件
+                                        try:
+                                            import pypdf
+                                            with file_path.open("rb") as f:
+                                                reader = pypdf.PdfReader(f)
+                                                text_parts = []
+                                                for i, page in enumerate(reader.pages[:20]):  # 限制20页
+                                                    try:
+                                                        txt = page.extract_text() or ""
+                                                        if txt.strip():
+                                                            text_parts.append(f"--- Page {i+1} ---\n{txt}")
+                                                    except Exception:
+                                                        pass
+                                                pdf_content = "\n\n".join(text_parts)
+                                                if len(pdf_content) > 15000:
+                                                    pdf_content = pdf_content[:15000] + f"\n... [PDF内容已截断，共 {len(pdf_content)} 字符]"
+                                                if pdf_content.strip():
+                                                    attachment_info += f"\n📄 PDF 内容 ({att_name}, {len(reader.pages)} 页):\n{pdf_content}\n"
+                                                    logger.info("[CHAT][AUTO_READ] pdf file=%s pages=%d", att_name, len(reader.pages))
+                                        except ImportError:
+                                            logger.warning("[CHAT][AUTO_READ] pypdf not installed, skipping PDF auto-read")
+                                        except Exception as pdf_err:
+                                            logger.warning("[CHAT][AUTO_READ] Failed to read PDF %s: %s", att_name, pdf_err)
+                        except Exception as e:
+                            logger.warning("[CHAT][AUTO_READ] Error processing attachment %s: %s", att_name, e)
+            
             # 根据附件类型给出工具使用建议
             has_image = any(att.get("type") == "image" for att in attachments if isinstance(att, dict))
             has_document = any(att.get("type") in ["document", "application/pdf"] for att in attachments if isinstance(att, dict))
-            if has_image and not has_document:
-                attachment_info += "\n💡 提示：图片文件请使用 vision_reader 进行视觉理解和描述。"
-            elif has_document and not has_image:
-                attachment_info += "\n💡 提示：文档文件请使用 document_reader 提取内容。"
-            elif has_image and has_document:
-                attachment_info += "\n💡 提示：图片请使用 vision_reader，文档请使用 document_reader。"
+            has_data = any(
+                Path(att.get("path", "")).suffix.lower() in {".csv", ".tsv", ".json", ".xlsx", ".xls"} 
+                for att in attachments if isinstance(att, dict) and att.get("path")
+            )
+            
+            hints = []
+            if has_image:
+                hints.append("图片请使用 vision_reader 进行视觉理解")
+            if has_data:
+                hints.append("数据文件(.csv/.json/.xlsx)请使用 claude_code 进行分析")
+            if hints:
+                attachment_info += f"\n💡 提示：{'; '.join(hints)}。"
+            
             message_to_send = request.message + attachment_info
             logger.info("[CHAT][ATTACHMENTS] session=%s count=%d", request.session_id, len(attachments))
 
@@ -3097,7 +3160,7 @@ class AgentResult(BaseModel):
 class StructuredChatAgent:
     """Plan conversation agent using a structured schema."""
 
-    MAX_HISTORY = 10
+    MAX_HISTORY = 30
     PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*previous\.([^\}]+)\s*\}\}")
 
     def __init__(
@@ -3685,7 +3748,7 @@ class StructuredChatAgent:
         memory_section = self._format_memories(memories) if memories else ""
         
         context_text = json.dumps(self.extra_context, ensure_ascii=False, indent=2)
-        plan_outline = self.plan_session.outline(max_depth=4, max_nodes=60)
+        plan_outline = self.plan_session.outline(max_depth=4, max_nodes=100)
         plan_status = self._compose_plan_status(plan_bound)
         plan_catalog = self._compose_plan_catalog(plan_bound)
         actions_catalog = self._compose_action_catalog(plan_bound)
@@ -4832,7 +4895,15 @@ class StructuredChatAgent:
             tree = self._require_plan_bound()
             if self.plan_executor is None:
                 raise ValueError("Plan executor is not enabled in this environment.")
-            summary = await asyncio.to_thread(self.plan_executor.execute_plan, tree.id)
+            # 构建会话上下文，传递给 Plan 执行器
+            session_ctx = {
+                "session_id": self.session_id,  # 用于工具调用
+                "user_message": self._current_user_message if hasattr(self, "_current_user_message") else None,
+                "chat_history": self.history,
+                "recent_tool_results": self.extra_context.get("recent_tool_results", []),
+            }
+            exec_config = ExecutionConfig(session_context=session_ctx)
+            summary = await asyncio.to_thread(self.plan_executor.execute_plan, tree.id, config=exec_config)
             executed_count = len(summary.executed_task_ids)
             failed_count = len(summary.failed_task_ids)
             skipped_count = len(summary.skipped_task_ids)
@@ -5132,7 +5203,15 @@ class StructuredChatAgent:
             task_id = self._coerce_int(task_id_raw, "task_id")
             if self.plan_executor is None:
                 raise ValueError("Plan executor is not enabled in this environment.")
-            result = self.plan_executor.execute_task(tree.id, task_id)
+            # 构建会话上下文，传递给任务执行器
+            session_ctx = {
+                "session_id": self.session_id,  # 用于工具调用
+                "user_message": self._current_user_message if hasattr(self, "_current_user_message") else None,
+                "chat_history": self.history,
+                "recent_tool_results": self.extra_context.get("recent_tool_results", []),
+            }
+            exec_config = ExecutionConfig(session_context=session_ctx)
+            result = self.plan_executor.execute_task(tree.id, task_id, config=exec_config)
             message = f"Task [{task_id}] execution status: {result.status}."
             details = result.to_dict()
             self._refresh_plan_tree(force_reload=True)
@@ -5175,11 +5254,18 @@ class StructuredChatAgent:
                     }
 
             task_id_raw = params.get("task_id")
+            # 构建会话上下文，传递给 Plan 分解器
+            session_ctx = {
+                "user_message": self._current_user_message if hasattr(self, "_current_user_message") else None,
+                "chat_history": self.history,
+                "recent_tool_results": self.extra_context.get("recent_tool_results", []),
+            }
             if task_id_raw is None:
                 result = self.plan_decomposer.run_plan(
                     tree.id,
                     max_depth=expand_depth,
                     node_budget=node_budget,
+                    session_context=session_ctx,
                 )
             else:
                 task_id = self._coerce_int(task_id_raw, "task_id")
@@ -5189,6 +5275,7 @@ class StructuredChatAgent:
                     expand_depth=expand_depth,
                     node_budget=node_budget,
                     allow_existing_children=allow_existing_children,
+                    session_context=session_ctx,
                 )
 
             self._last_decomposition = result
@@ -5697,16 +5784,88 @@ class StructuredChatAgent:
     def _append_recent_tool_result(
         self, tool_name: str, summary: str, sanitized: Dict[str, Any]
     ) -> None:
+        """Append tool result to context with tiered compression based on size."""
         history = self.extra_context.setdefault("recent_tool_results", [])
         if not isinstance(history, list):
             history = []
             self.extra_context["recent_tool_results"] = history
+        
+        # 分级压缩策略
+        # 将结果序列化为字符串来计算大小
+        try:
+            result_str = json.dumps(sanitized, ensure_ascii=False, default=str)
+        except Exception:
+            result_str = str(sanitized)
+        
+        result_size = len(result_str)
+        
+        # 定义阈值
+        SMALL_THRESHOLD = 2000    # 2000字符以下：完整保留
+        MEDIUM_THRESHOLD = 8000   # 8000字符以下：截断保留
+        # 超过8000：只保留摘要
+        
+        if result_size <= SMALL_THRESHOLD:
+            # 小结果：完整保留
+            compressed_result = sanitized
+            compression_level = "full"
+        elif result_size <= MEDIUM_THRESHOLD:
+            # 中等结果：保留结构但截断长文本字段
+            compressed_result = self._truncate_large_fields(sanitized, max_field_length=1000)
+            compression_level = "truncated"
+        else:
+            # 大结果：只保留摘要和关键元数据
+            compressed_result = {
+                "_compressed": True,
+                "_original_size": result_size,
+                "success": sanitized.get("success"),
+                "summary": sanitized.get("summary") or summary,
+                "error": sanitized.get("error"),
+            }
+            # 保留一些常用的小字段
+            for key in ["file_path", "file_name", "total", "count", "status"]:
+                if key in sanitized and sanitized[key] is not None:
+                    val = sanitized[key]
+                    if isinstance(val, str) and len(val) < 200:
+                        compressed_result[key] = val
+                    elif isinstance(val, (int, float, bool)):
+                        compressed_result[key] = val
+            compression_level = "summary_only"
+        
         entry = {
             "tool": tool_name,
             "summary": summary,
-            "result": sanitized,
+            "result": compressed_result,
+            "_compression": compression_level,
+            "_original_size": result_size,
         }
         history.append(entry)
-        max_items = 5
+        
+        # 增加保留数量到10个
+        max_items = 10
         if len(history) > max_items:
             del history[:-max_items]
+    
+    def _truncate_large_fields(
+        self, data: Any, max_field_length: int = 1000, current_depth: int = 0
+    ) -> Any:
+        """递归截断大文本字段，保留结构"""
+        if current_depth > 5:  # 防止过深递归
+            return "...[nested data truncated]"
+        
+        if isinstance(data, dict):
+            result = {}
+            for key, value in data.items():
+                result[key] = self._truncate_large_fields(value, max_field_length, current_depth + 1)
+            return result
+        elif isinstance(data, list):
+            if len(data) > 10:
+                # 列表过长，只保留前5个和后2个
+                truncated = data[:5] + [f"...[{len(data) - 7} items omitted]"] + data[-2:]
+                return [self._truncate_large_fields(item, max_field_length, current_depth + 1) for item in truncated]
+            return [self._truncate_large_fields(item, max_field_length, current_depth + 1) for item in data]
+        elif isinstance(data, str):
+            if len(data) > max_field_length:
+                return data[:max_field_length] + f"...[truncated, {len(data)} chars total]"
+            return data
+        else:
+            return data

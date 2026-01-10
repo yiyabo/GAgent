@@ -62,6 +62,7 @@ class DecompositionPromptBuilder:
         settings: DecomposerSettings,
         depth: int,
         max_depth: int,
+        session_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         if node is None:
             node_title = plan.title
@@ -86,6 +87,38 @@ class DecompositionPromptBuilder:
 
         prompt = [
             self.SYSTEM_HEADER,
+        ]
+        
+        # 新增：会话上下文（用户消息、聊天历史等）
+        if session_context:
+            user_message = session_context.get("user_message")
+            if user_message:
+                prompt.append("\n=== USER REQUEST ===")
+                prompt.append(f"{user_message}")
+            
+            chat_history = session_context.get("chat_history", [])
+            if chat_history:
+                prompt.append("\n=== RECENT CONVERSATION ===")
+                # 限制历史条数，避免过长
+                recent_history = chat_history[-6:] if len(chat_history) > 6 else chat_history
+                for msg in recent_history:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    # 截断过长的消息
+                    if len(content) > 500:
+                        content = content[:500] + "..."
+                    prompt.append(f"[{role}]: {content}")
+            
+            # 最近的工具结果
+            tool_results = session_context.get("recent_tool_results", [])
+            if tool_results:
+                prompt.append("\n=== RECENT TOOL RESULTS ===")
+                for tr in tool_results[-3:]:  # 最近3个工具结果
+                    tool_name = tr.get("tool", "unknown")
+                    summary = tr.get("summary", "")
+                    prompt.append(f"- {tool_name}: {summary}")
+        
+        prompt.extend([
             "\n=== PLAN OVERVIEW ===",
             outline or "(empty plan)",
             "\n=== TARGET NODE ===",
@@ -131,7 +164,7 @@ class DecompositionPromptBuilder:
             f"- Aim to produce between {settings.min_children} and {settings.max_children} well-scoped child tasks when the work warrants it.",
             f"- Returning fewer than {settings.min_children} children is acceptable only if the task is inherently small; explain via `reason` when doing so.",
             "\nOnly return JSON. Do not wrap the response in Markdown code fences.",
-        ]
+        ])
         return "\n".join(prompt)
 
     def _summarise_children(self, plan: PlanTree, node_id: int) -> List[str]:
@@ -175,6 +208,7 @@ class PlanDecomposer:
         *,
         max_depth: Optional[int] = None,
         node_budget: Optional[int] = None,
+        session_context: Optional[Dict[str, Any]] = None,
     ) -> DecompositionResult:
         """Decompose an entire plan by traversing from the plan root."""
         tree = self._repo.get_plan_tree(plan_id)
@@ -196,6 +230,7 @@ class PlanDecomposer:
             if node_budget is not None
             else self._settings.total_node_budget,
             root_reference=root_reference,
+            session_context=session_context,
         )
 
     def decompose_node(
@@ -206,6 +241,7 @@ class PlanDecomposer:
         expand_depth: Optional[int] = 1,
         node_budget: Optional[int] = None,
         allow_existing_children: Optional[bool] = None,
+        session_context: Optional[Dict[str, Any]] = None,
     ) -> DecompositionResult:
         """Decompose a specific node and optionally continue BFS under it."""
         tree = self._repo.get_plan_tree(plan_id)
@@ -227,6 +263,7 @@ class PlanDecomposer:
             else self._settings.total_node_budget,
             override_allow_existing_children=allow_existing_children,
             root_reference=root_reference,
+            session_context=session_context,
         )
 
     # ------------------------------------------------------------------
@@ -244,6 +281,7 @@ class PlanDecomposer:
         node_budget: int,
         override_allow_existing_children: Optional[bool] = None,
         root_reference: Optional[int] = None,
+        session_context: Optional[Dict[str, Any]] = None,
     ) -> DecompositionResult:
         processed: List[Optional[int]] = []
         created_nodes: List[PlanNode] = []
@@ -315,6 +353,7 @@ class PlanDecomposer:
                 settings=self._settings,
                 depth=current.relative_depth,
                 max_depth=max_depth,
+                session_context=session_context,
             )
 
             try:
@@ -363,14 +402,21 @@ class PlanDecomposer:
                     break
                 continue
 
+            # 收集当前批次中已创建的兄弟节点 ID
+            created_sibling_ids = [n.id for n in created_nodes if n.parent_id == current.node_id]
             for child in children:
                 if budget_remaining <= 0:
                     break
                 new_node = self._create_child_node(
-                    plan_id, parent_id=current.node_id, child=child
+                    plan_id,
+                    parent_id=current.node_id,
+                    child=child,
+                    tree=tree,
+                    created_sibling_ids=created_sibling_ids,
                 )
                 budget_remaining -= 1
                 created_nodes.append(new_node)
+                created_sibling_ids.append(new_node.id)  # 更新兄弟列表
                 self._update_tree_cache(tree, new_node)
                 outline_cache = tree.to_outline(max_depth=5, max_nodes=80)
                 _log_job(
@@ -438,13 +484,23 @@ class PlanDecomposer:
         *,
         parent_id: Optional[int],
         child: DecompositionChild,
+        tree: PlanTree,
+        created_sibling_ids: List[int],
     ) -> PlanNode:
+        # 验证并过滤依赖，防止循环引用
+        validated_deps = self._validate_dependencies(
+            tree=tree,
+            parent_id=parent_id,
+            raw_deps=child.dependencies,
+            created_sibling_ids=created_sibling_ids,
+        )
+        
         node = self._repo.create_task(
             plan_id,
             name=child.name,
             instruction=child.instruction,
             parent_id=parent_id,
-            dependencies=child.dependencies,
+            dependencies=validated_deps,
         )
         has_context = any(
             [
@@ -463,6 +519,69 @@ class PlanDecomposer:
             )
             node = self._repo.get_node(plan_id, node.id)
         return node
+
+    def _validate_dependencies(
+        self,
+        tree: PlanTree,
+        parent_id: Optional[int],
+        raw_deps: List[int],
+        created_sibling_ids: List[int],
+    ) -> List[int]:
+        """验证并过滤依赖 ID，防止循环引用。
+        
+        只允许依赖：
+        1. 已存在于 tree 中的任务（且不是祖先节点）
+        2. 同一批次中已创建的兄弟节点
+        
+        Args:
+            tree: 当前的计划树
+            parent_id: 当前节点的父节点 ID
+            raw_deps: LLM 返回的原始依赖 ID 列表
+            created_sibling_ids: 当前批次中已创建的兄弟节点 ID 列表
+            
+        Returns:
+            验证后的有效依赖 ID 列表
+        """
+        if not raw_deps:
+            return []
+        
+        # 收集祖先节点 ID（不能依赖祖先，会造成循环）
+        ancestor_ids: set = set()
+        current = parent_id
+        while current is not None:
+            ancestor_ids.add(current)
+            node = tree.nodes.get(current)
+            if node:
+                current = node.parent_id
+            else:
+                break
+        
+        valid_deps: List[int] = []
+        for dep_id in raw_deps:
+            # 跳过祖先节点
+            if dep_id in ancestor_ids:
+                logger.warning(
+                    "Skipping dependency %s: would create cycle with ancestor",
+                    dep_id
+                )
+                continue
+            
+            # 检查是否存在于树中
+            if dep_id in tree.nodes:
+                valid_deps.append(dep_id)
+                continue
+            
+            # 检查是否是刚创建的兄弟节点
+            if dep_id in created_sibling_ids:
+                valid_deps.append(dep_id)
+                continue
+            
+            logger.warning(
+                "Skipping dependency %s: task does not exist",
+                dep_id
+            )
+        
+        return valid_deps
 
     def _update_tree_cache(self, tree: PlanTree, node: PlanNode) -> None:
         tree.nodes[node.id] = node
