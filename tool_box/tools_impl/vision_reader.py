@@ -154,30 +154,160 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
         return json.dumps(obj)
 
 
+async def _convert_pdf_to_images(pdf_path: str, max_pages: int = 100) -> list[str]:
+    """Convert PDF pages to temporary image files for vision processing.
+    
+    Uses pdf2image (poppler) to convert PDF pages to PNG images.
+    Returns list of image file paths.
+    """
+    try:
+        from pdf2image import convert_from_path
+    except ImportError:
+        raise RuntimeError("Missing pdf2image, please run: pip install pdf2image")
+    
+    import tempfile
+    
+    abs_path = Path(pdf_path).resolve()
+    if not abs_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+    
+    # Create temp directory for images
+    temp_dir = tempfile.mkdtemp(prefix="vision_pdf_")
+    
+    try:
+        # Convert PDF pages to images (300 DPI for good quality)
+        images = convert_from_path(
+            str(abs_path),
+            dpi=200,  # Balance between quality and size
+            first_page=1,
+            last_page=max_pages,
+        )
+        
+        image_paths = []
+        for i, img in enumerate(images):
+            img_path = Path(temp_dir) / f"page_{i+1:04d}.png"
+            img.save(str(img_path), "PNG")
+            image_paths.append(str(img_path))
+        
+        logger.info(f"Converted PDF to {len(image_paths)} images in {temp_dir}")
+        return image_paths
+        
+    except Exception as e:
+        # Clean up on error
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise RuntimeError(f"Failed to convert PDF to images: {e}")
+
+
+async def _read_pdf_with_vision(
+    pdf_path: str,
+    page_numbers: Optional[list[int]] = None,
+    max_pages: int = 50,
+) -> Dict[str, Any]:
+    """Read PDF using vision model by converting pages to images.
+    
+    Args:
+        pdf_path: Path to PDF file
+        page_numbers: Optional list of specific pages to read (1-indexed)
+        max_pages: Maximum pages to process (default 50)
+    """
+    import shutil
+    
+    abs_path = Path(pdf_path).resolve()
+    if not abs_path.exists():
+        return {"success": False, "error": f"PDF not found: {pdf_path}"}
+    
+    # Check file size
+    file_size = abs_path.stat().st_size
+    max_size = 100 * 1024 * 1024  # 100MB limit for PDFs
+    if file_size > max_size:
+        return {"success": False, "error": f"PDF too large: {file_size/1024/1024:.1f}MB (max: 100MB)"}
+    
+    temp_dir = None
+    try:
+        # Convert PDF to images
+        image_paths = await _convert_pdf_to_images(str(abs_path), max_pages=max_pages)
+        temp_dir = str(Path(image_paths[0]).parent) if image_paths else None
+        
+        # If specific pages requested, filter
+        if page_numbers:
+            selected_paths = []
+            for pn in page_numbers:
+                if 1 <= pn <= len(image_paths):
+                    selected_paths.append(image_paths[pn - 1])
+            image_paths = selected_paths
+        
+        if not image_paths:
+            return {"success": False, "error": "No pages to process"}
+        
+        # Process each page with vision model
+        prompt = (
+            "You are a vision assistant for document reading. Read this PDF page and "
+            "extract ALL text content accurately, preserving the structure (paragraphs, "
+            "lists, tables, headers). Include any equations, captions, and annotations. "
+            "Return the text in proper reading order. Do not translate or add commentary."
+        )
+        
+        pages_text = []
+        for i, img_path in enumerate(image_paths):
+            page_num = page_numbers[i] if page_numbers else i + 1
+            logger.info(f"Processing PDF page {page_num}/{len(image_paths)}")
+            
+            try:
+                text = await _call_qwen_vision_api(prompt, img_path)
+                pages_text.append(f"--- Page {page_num} ---\n{text}")
+            except Exception as e:
+                pages_text.append(f"--- Page {page_num} ---\n[Error reading page: {e}]")
+        
+        full_text = "\n\n".join(pages_text)
+        
+        return {
+            "success": True,
+            "file_path": str(abs_path),
+            "file_name": abs_path.name,
+            "page_count": len(image_paths),
+            "text": full_text,
+            "text_length": len(full_text),
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to read PDF with vision: {e}")
+        return {"success": False, "error": str(e)}
+    finally:
+        # Clean up temp images
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 async def vision_reader_handler(
     operation: str,
-    image_path: str,
+    file_path: str = None,
+    image_path: str = None,  # Alias for backward compatibility
+    page_numbers: Optional[list[int]] = None,
     page_number: Optional[int] = None,
     region: Optional[Dict[str, float]] = None,
     question: Optional[str] = None,
     language: str = "en",
+    max_pages: int = 50,
 ) -> Dict[str, Any]:
-    """Vision reader tool handler.
+    """Vision reader tool handler - reads documents and images using vision model.
 
     This handler delegates visual understanding tasks to a multimodal model
-    (e.g., qwen3-vl-plus) and returns **English text only** so that a
-    text-only LLM can reason on top of it.
+    (qwen3-vl-plus) and returns text that can be consumed by downstream LLMs.
 
     Args:
-        operation: One of "ocr_page", "read_equation_image", "describe_figure", "extract_table".
-        image_path: Path to the image file (or page screenshot) on disk.
-        page_number: Optional page index for logging / context.
+        operation: One of "read_pdf", "read_image", "ocr_page", "read_equation_image", "describe_figure", "extract_table".
+        file_path: Path to the file (PDF or image) on disk.
+        image_path: Alias for file_path (backward compatibility).
+        page_numbers: Optional list of specific pages to read (1-indexed, for PDFs).
+        page_number: Optional single page index for logging / context.
         region: Optional normalized region of interest {x1,y1,x2,y2} in [0,1].
-        question: Optional extra question or instruction about the image.
+        question: Optional extra question or instruction about the content.
         language: Output language hint (currently only "en" is supported).
+        max_pages: Maximum pages to process for PDFs (default 50).
     """
 
-    op = (operation or "").strip()
+    op = (operation or "").strip().lower()
     if not op:
         return {
             "tool": "vision_reader",
@@ -186,19 +316,66 @@ async def vision_reader_handler(
             "code": "missing_operation",
         }
 
-    abs_path = Path(image_path).resolve()
+    # Accept both file_path and image_path
+    target_path = file_path or image_path
+    if not target_path:
+        return {
+            "tool": "vision_reader",
+            "success": False,
+            "error": "file_path or image_path is required.",
+            "code": "missing_path",
+        }
+
+    abs_path = Path(target_path).resolve()
     if not abs_path.exists():
         return {
             "tool": "vision_reader",
             "success": False,
-            "error": f"Image file does not exist: {image_path}",
+            "error": f"File does not exist: {target_path}",
             "code": "file_not_found",
         }
+
+    # Handle PDF reading
+    if op == "read_pdf" or abs_path.suffix.lower() == ".pdf":
+        # Use specialized PDF reading function
+        pages = page_numbers
+        if page_number and not pages:
+            pages = [page_number]
+        result = await _read_pdf_with_vision(str(abs_path), page_numbers=pages, max_pages=max_pages)
+        result["tool"] = "vision_reader"
+        result["operation"] = "read_pdf"
+        return result
+
+    # Handle generic image reading
+    if op == "read_image":
+        prompt = (
+            "You are a vision assistant. Describe what you see in this image in detail. "
+            "Extract any text content, identify objects, people, or scenes, and provide "
+            "a comprehensive description that captures all relevant information."
+        )
+        if question:
+            prompt += f"\n\nUser's specific question: {question}"
+        
+        try:
+            text = await _call_qwen_vision_api(prompt, str(abs_path))
+            return {
+                "tool": "vision_reader",
+                "success": True,
+                "operation": "read_image",
+                "file_path": str(abs_path),
+                "text": text,
+            }
+        except Exception as e:
+            return {
+                "tool": "vision_reader",
+                "success": False,
+                "operation": "read_image",
+                "error": str(e),
+            }
 
     # Construct a concise English prompt for the vision model
     lang = (language or "en").lower()
     if lang != "en":
-        # We force English output to keep the downstream environment consistent.
         lang = "en"
 
     base_prompt: str
@@ -284,9 +461,9 @@ async def vision_reader_handler(
 vision_reader_tool: Dict[str, Any] = {
     "name": "vision_reader",
     "description": (
-        "Vision-based reader for scientific documents. Uses a multimodal model "
-        "(e.g., qwen3-vl-plus) to OCR pages, read equation images, and describe "
-        "figures, returning English text for downstream reasoning."
+        "Vision-based reader for documents and images. Uses qwen3-vl-plus multimodal model "
+        "to read PDFs (page by page), OCR images, read equations, describe figures, and "
+        "extract tables. Replaces document_reader for all file reading needs."
     ),
     "category": "vision",
     "parameters_schema": {
@@ -295,20 +472,31 @@ vision_reader_tool: Dict[str, Any] = {
             "operation": {
                 "type": "string",
                 "enum": [
+                    "read_pdf",
+                    "read_image",
                     "ocr_page",
                     "read_equation_image",
                     "describe_figure",
                     "extract_table",
                 ],
-                "description": "Type of vision task to perform.",
+                "description": "Type of vision task: read_pdf (PDF documents), read_image (general images), ocr_page (OCR text), read_equation_image (math formulas), describe_figure (chart/graph), extract_table (table data).",
+            },
+            "file_path": {
+                "type": "string",
+                "description": "Path to the file (PDF or image) on disk.",
             },
             "image_path": {
                 "type": "string",
-                "description": "Path to the image file or page screenshot on disk.",
+                "description": "Alias for file_path (backward compatibility).",
+            },
+            "page_numbers": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Optional list of specific pages to read (1-indexed, for PDFs).",
             },
             "page_number": {
                 "type": "integer",
-                "description": "Optional page index for logging / context.",
+                "description": "Optional single page index for logging / context.",
             },
             "region": {
                 "type": "object",
@@ -316,7 +504,12 @@ vision_reader_tool: Dict[str, Any] = {
             },
             "question": {
                 "type": "string",
-                "description": "Optional additional instruction or question about the image.",
+                "description": "Optional additional instruction or question about the content.",
+            },
+            "max_pages": {
+                "type": "integer",
+                "description": "Maximum pages to process for PDFs (default: 50).",
+                "default": 50,
             },
             "language": {
                 "type": "string",
@@ -324,13 +517,16 @@ vision_reader_tool: Dict[str, Any] = {
                 "default": "en",
             },
         },
-        "required": ["operation", "image_path"],
+        "required": ["operation"],
     },
     "handler": vision_reader_handler,
-    "tags": ["vision", "ocr", "figure", "equation", "pdf"],
+    "tags": ["vision", "ocr", "figure", "equation", "pdf", "document"],
     "examples": [
-        "Extract all text from page 3 of a scanned PDF.",
-        "Read the main equation from an equation screenshot and explain the symbols.",
-        "Describe the trends shown in Figure 2(b).",
+        "Read a PDF document: operation='read_pdf', file_path='/path/to/paper.pdf'",
+        "Read specific pages: operation='read_pdf', file_path='/path/to/doc.pdf', page_numbers=[1,2,5]",
+        "Describe an image: operation='read_image', file_path='/path/to/figure.png'",
+        "OCR a scanned page: operation='ocr_page', file_path='/path/to/scan.jpg'",
+        "Read equations: operation='read_equation_image', file_path='/path/to/eq.png'",
     ],
 }
+

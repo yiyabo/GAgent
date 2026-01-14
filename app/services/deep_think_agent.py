@@ -335,10 +335,9 @@ Respond with ONLY a JSON object:
         tool_descriptions = {
             "claude_code": "Execute code, access local files, run shell commands. USE THIS for complex analysis, running scripts, code execution. Params: {\"task\": \"description of what to do\"}",
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. Params: {\"query\": \"search query\"}",
-            "document_reader": "Read a specific file content. Requires exact file path. Params: {\"operation\": \"read_any\", \"file_path\": \"/path/to/file\"}",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
-            "vision_reader": "Vision-based reading using multimodal AI (qwen3-vl). OCR pages, read equations, describe figures. Params: {\"operation\": \"ocr_page|read_equation_image|describe_figure|extract_table\", \"image_path\": \"/path/to/image\"}",
+            "vision_reader": "Read PDFs and images using qwen3-vl-plus vision model. Supports: read_pdf (PDF documents), read_image (general images), ocr_page (OCR), read_equation_image, describe_figure, extract_table. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\", \"page_numbers\": [1,2,3]}",
             "bio_tools": "Execute bioinformatics Docker tools (35+ tools). Supports SeqKit, BLAST, Prodigal, HMMER, CheckV, etc. Params: {\"tool_name\": \"seqkit|blast|prodigal|hmmer|checkv\", \"operation\": \"stats|blastn|predict|help\", \"input_file\": \"/path/to/input.fasta\", \"output_file\": \"result.txt\", \"params\": {}}. Use operation='list' to see all tools, operation='help' for tool-specific help.",
         }
         
