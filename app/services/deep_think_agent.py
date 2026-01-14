@@ -408,6 +408,15 @@ When user asks about FASTA, FASTQ, or sequence files:
 2. THEN: Decide if additional analysis is needed
 3. ONLY IF bio_tools cannot do it: Fall back to claude_code for custom Python analysis
 
+IMPORTANT - bio_tools operations (do NOT guess, use these exact names):
+- seqkit: stats, grep, seq, head
+- blast: blastn, blastp, makeblastdb
+- prodigal: predict, meta (NOT "predict_genes"!)
+- hmmer: hmmscan, hmmsearch
+- checkv: end_to_end, completeness
+
+If unsure about operations, call with operation="help" first to see available operations.
+
 === IMPORTANT ===
 - DO NOT hesitate to use multiple tools - resources are unlimited!
 - Call different tools to get different perspectives on the same data.
