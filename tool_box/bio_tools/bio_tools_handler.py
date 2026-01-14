@@ -93,16 +93,23 @@ def build_docker_command(
     # 确保工具目录存在
     tool_dir = ensure_tool_directory(tool_name)
     
-    # 准备挂载目录
-    mounts = [f"-v {tool_dir}:/work"]
+    # 准备挂载目录 - 必须使用绝对路径
+    tool_dir_abs = str(tool_dir.resolve())
+    mounts = [f"-v {tool_dir_abs}:/work"]
     
     # 如果有输入文件，挂载输入文件目录
     if input_file:
         input_path = Path(input_file)
+        # 转换为绝对路径
+        if not input_path.is_absolute():
+            input_path = input_path.resolve()
+        
         if input_path.exists():
-            input_dir = input_path.parent
-            mounts.append(f"-v {input_dir}:/input:ro")
+            input_dir_abs = str(input_path.parent.resolve())
+            mounts.append(f"-v {input_dir_abs}:/input:ro")
             input_file = f"/input/{input_path.name}"
+        else:
+            logger.warning(f"Input file not found: {input_path}")
     
     # 构建命令参数
     params = {
