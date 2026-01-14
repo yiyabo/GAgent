@@ -425,7 +425,7 @@ If bio_tools returns an error like "Execution failed: 'parameter_name'":
 Example error recovery:
 - Error: "Execution failed: 'protein_output'" 
 - Action: Call bio_tools(tool_name="prodigal", operation="help") to see params
-- Then retry: bio_tools(tool_name="prodigal", operation="predict", input_file="...", params={"protein_output": "output.faa"})
+- Then retry: bio_tools(tool_name="prodigal", operation="predict", input_file="...", params={{"protein_output": "output.faa"}})
 
 DO NOT use vision_reader for BIO files - it's only for PDFs and images!
 
