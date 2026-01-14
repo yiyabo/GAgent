@@ -3628,7 +3628,7 @@ class StructuredChatAgent:
                 # Instantiate DeepThinkAgent with streaming callbacks
                 dt_agent = DeepThinkAgent(
                     llm_client=self.llm_service,
-                    available_tools=["web_search", "document_reader", "graph_rag", "claude_code", "file_operations", "vision_reader"],
+                    available_tools=["web_search", "document_reader", "graph_rag", "claude_code", "file_operations", "vision_reader", "bio_tools"],
                     tool_executor=tool_wrapper,
                     max_iterations=30,
                     tool_timeout=120,  # 2分钟工具超时
