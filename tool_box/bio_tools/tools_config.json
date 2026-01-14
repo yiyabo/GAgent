@@ -26,12 +26,12 @@
                 "requires_output": true
             },
             "head": {
-                "command": "seqkit head -n {n} {input}",
-                "description": "显示前N条序列",
+                "command": "seqkit head -n {count} {input}",
+                "description": "显示前N条序列 (count=序列数量)",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
-                    "n"
+                    "count"
                 ]
             }
         }
