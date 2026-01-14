@@ -42,12 +42,13 @@ class DeepThinkAgent:
     
     # 按工具类型设置不同超时（秒）
     TOOL_TIMEOUTS = {
-        "claude_code": 600,      # 10 分钟 - 代码执行可能很长
-        "web_search": 90,        # 90 秒
-        "document_reader": 60,   # 1 分钟
-        "graph_rag": 60,         # 1 分钟
-        "file_operations": 30,   # 30 秒 - 文件操作应该很快
-        "vision_reader": 120,    # 2 分钟 - 视觉模型调用
+        "claude_code": 1200,      # 10 分钟 - 代码执行可能很长
+        "web_search": 180,        # 90 秒
+        "document_reader": 200,   # 1 分钟
+        "graph_rag": 600,         # 1 分钟
+        "file_operations": 90,   # 30 秒 - 文件操作应该很快
+        "vision_reader": 600,    # 10 分钟 - 视觉模型处理 PDF
+        "bio_tools": 86400,      # 24 小时 - 生物信息学工具不限制
     }
     
     def __init__(
