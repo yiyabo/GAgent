@@ -3628,16 +3628,24 @@ class StructuredChatAgent:
                 # Instantiate DeepThinkAgent with streaming callbacks
                 dt_agent = DeepThinkAgent(
                     llm_client=self.llm_service,
-                    available_tools=["web_search", "document_reader", "graph_rag", "claude_code"],
+                    available_tools=["web_search", "document_reader", "graph_rag", "claude_code", "file_operations", "vision_reader"],
                     tool_executor=tool_wrapper,
                     max_iterations=12,
+                    tool_timeout=120,  # 2分钟工具超时
                     on_thinking=on_thinking,
                     on_thinking_delta=on_thinking_delta,
                     on_final_delta=on_final_delta
                 )
                 
+                # 构建上下文，包含对话历史
+                think_context = {
+                    **self.extra_context,
+                    "chat_history": self.history,
+                    "session_id": self.session_id,
+                }
+                
                 # Run think
-                result = await dt_agent.think(user_message, self.extra_context)
+                result = await dt_agent.think(user_message, think_context)
                 await queue.put({"type": "result", "result": result})
             except Exception as e:
                 logger.exception("Deep think execution failed")
