@@ -334,11 +334,11 @@ Respond with ONLY a JSON object:
         """Constructs the system prompt for the Deep Think Agent."""
         # 构建工具详细描述
         tool_descriptions = {
-            "claude_code": "Execute code, access local files, run shell commands. USE THIS for complex analysis, running scripts, code execution. Params: {\"task\": \"description of what to do\"}",
+            "claude_code": "Execute Python/shell code, run scripts, access local filesystem programmatically. USE THIS ONLY for: running code, data processing scripts, file manipulation with code. DO NOT use for text analysis or summarization - use your own reasoning for that. Params: {\"task\": \"description of what to do\"}",
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. Params: {\"query\": \"search query\"}",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
-            "vision_reader": "Read PDFs and images using qwen3-vl-plus vision model. Supports: read_pdf (PDF documents), read_image (general images), ocr_page (OCR), read_equation_image, describe_figure, extract_table. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\", \"page_numbers\": [1,2,3]}",
+            "vision_reader": "Read PDFs and images using vision model. For PDF reading and document understanding. After reading a document, YOU should analyze and summarize it directly - do not call other tools. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\"}",
             "bio_tools": "Execute bioinformatics Docker tools (35+ tools). Supports SeqKit, BLAST, Prodigal, HMMER, CheckV, etc. Params: {\"tool_name\": \"seqkit|blast|prodigal|hmmer|checkv\", \"operation\": \"stats|blastn|predict|help\", \"input_file\": \"/path/to/input.fasta\", \"output_file\": \"result.txt\", \"params\": {}}. Use operation='list' to see all tools, operation='help' for tool-specific help.",
         }
         
