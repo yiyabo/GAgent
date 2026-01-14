@@ -239,11 +239,59 @@ class DeepThinkAgent:
                     await self._safe_callback(current_step)
                 continue
 
+        # 如果循环结束但没有生成最终答案，强制生成一个
+        if not final_answer and thinking_steps:
+            logger.info("[DEEP_THINK] Iterations exhausted, forcing conclusion...")
+            
+            # 构建强制结论的提示
+            conclusion_prompt = """You have reached the thinking limit. Based on all the information you've gathered, 
+you MUST now provide a final answer. Synthesize everything you've learned into a comprehensive response.
+
+Respond with ONLY a JSON object:
+{
+  "thinking": "I've gathered the following key information: [summarize key findings]",
+  "action": null,
+  "final_answer": {"answer": "Your comprehensive answer based on all gathered information", "confidence": 0.7}
+}"""
+            
+            messages.append({"role": "user", "content": conclusion_prompt})
+            
+            try:
+                # 调用 LLM 获取强制结论
+                if hasattr(self.llm_client, 'stream_chat_async'):
+                    response_text = ""
+                    async for delta in self.llm_client.stream_chat_async(prompt="", messages=messages):
+                        response_text += delta
+                        if self.on_thinking_delta:
+                            await self._safe_delta_callback(iteration + 1, delta)
+                else:
+                    response_text = await self.llm_client.chat_async(prompt="", messages=messages, temperature=0.5)
+                
+                parsed = self._parse_llm_response(response_text)
+                if parsed.get("is_final"):
+                    final_answer = parsed.get("final_answer", "")
+                    confidence = parsed.get("confidence", 0.7)
+                    
+                    # 发送最终答案
+                    if self.on_final_delta and final_answer:
+                        for char in final_answer:
+                            await self._safe_final_delta_callback(char)
+                            await asyncio.sleep(0.01)
+                else:
+                    # 如果还是没有提取到，使用 thinking 内容作为答案
+                    final_answer = parsed.get("thought", "基于已收集的信息，我无法得出明确结论。请查看上面的思考过程了解详情。")
+                    confidence = 0.5
+                    
+            except Exception as e:
+                logger.error(f"Failed to generate forced conclusion: {e}")
+                final_answer = "思考过程中收集了信息，但未能生成完整答案。请查看上面的思考步骤了解详情。"
+                confidence = 0.3
+
         # Generate summary (使用 LLM 生成有意义的摘要)
         summary = await self._generate_summary(thinking_steps, user_query)
 
         return DeepThinkResult(
-            final_answer=final_answer or "I could not generate a definitive answer after deep thinking.",
+            final_answer=final_answer or "思考过程完成，但未生成明确答案。",
             thinking_steps=thinking_steps,
             total_iterations=iteration,
             tools_used=tools_used,
@@ -301,54 +349,71 @@ class DeepThinkAgent:
                 tools_desc.append(f"- {t}")
         tools_text = "\n".join(tools_desc)
         
-        base_prompt = f"""You are a Deep Thinking AI Assistant.
-Your goal is to answer the user's question by performing a multi-step reasoning process.
-You must NOT answer immediately. Instead, you should:
-1. Analyze the user's request.
-2. Think step-by-step about how to approach the problem.
-3. Use tools if necessary to gather information.
-4. Reflect on the information you have gathered.
-5. Only when you have sufficient information, provide the final answer.
+        base_prompt = f"""You are a Deep Thinking AI Assistant with UNLIMITED resources.
+Your goal is to provide the MOST COMPREHENSIVE answer by using ALL available tools aggressively.
+
+=== CORE PRINCIPLES ===
+1. You have UNLIMITED tokens and API calls - DO NOT worry about costs.
+2. Use MULTIPLE TOOLS to gather complete information from different angles.
+3. Be THOROUGH - it's better to call 5 tools than to give an incomplete answer.
+4. Each tool provides unique insights - combine them for best results.
+
+=== THINKING PROCESS ===
+1. Break down the user's question into sub-problems.
+2. For EACH sub-problem, determine which tool(s) can help.
+3. Call tools ONE BY ONE, analyze results, then decide what else is needed.
+4. Synthesize information from ALL tool results into a comprehensive answer.
+5. Only provide final_answer when you have gathered enough information.
 
 === AVAILABLE TOOLS ===
 {tools_text}
 
-=== IMPORTANT TOOL SELECTION GUIDELINES ===
-- For LOCAL FILES/DIRECTORIES: Use "claude_code" with task like "list files in data/experiment_1" or "read and analyze files in data/xxx"
-- For INTERNET SEARCH: Use "web_search" ONLY for web-based queries
-- For READING SPECIFIC FILE: Use "document_reader" with exact file path
-- For KNOWLEDGE BASE: Use "graph_rag" for structured knowledge queries
+=== MULTI-TOOL STRATEGY ===
+For comprehensive analysis, consider this workflow:
+1. **Explore**: Use file_operations(list) to see what files exist
+2. **Read**: Use document_reader or file_operations(read) to read key files
+3. **Analyze**: Use claude_code for complex data analysis or code execution
+4. **Visualize**: Use claude_code to create charts/visualizations if needed
+5. **Research**: Use web_search for external context or comparison
+6. **Vision**: Use vision_reader for images, figures, or scanned documents
+7. **Knowledge**: Use graph_rag for structured knowledge queries
+
+=== TOOL SELECTION GUIDE ===
+- LOCAL DIRECTORY LISTING: file_operations(operation="list", path="...")
+- READ TEXT FILES: file_operations(operation="read") or document_reader
+- COMPLEX ANALYSIS/CODE: claude_code - for any code execution, data analysis, visualization
+- IMAGES/FIGURES/PDF: vision_reader - for OCR, figure description, equation reading
+- WEB INFORMATION: web_search - for internet queries, background research
+- KNOWLEDGE QUERIES: graph_rag - for structured knowledge retrieval
+
+=== IMPORTANT ===
+- DO NOT hesitate to use multiple tools - resources are unlimited!
+- Call different tools to get different perspectives on the same data.
+- If one tool's result is incomplete, try another tool for more info.
+- For file analysis: first LIST the directory, then READ interesting files, then ANALYZE with code.
 
 === OUTPUT FORMAT ===
-You MUST respond with a valid JSON object (no markdown fences). Use this structure:
+Respond with valid JSON only (no markdown fences):
 
 {{
-  "thinking": "Your reasoning process here. Explain your analysis step by step.",
-  "action": null,
+  "thinking": "Describe what you're analyzing and WHY you're choosing this tool...",
+  "action": {{"tool": "tool_name", "params": {{...}}}},
   "final_answer": null
 }}
 
-If you need to call a tool, include the action:
+When ready to answer (after using multiple tools):
 {{
-  "thinking": "I need to search for more information about...",
-  "action": {{"tool": "tool_name", "params": {{"param1": "value1"}}}},
-  "final_answer": null
-}}
-
-When you are ready to give the final answer:
-{{
-  "thinking": "Based on my analysis...",
+  "thinking": "Synthesizing information from [tool1], [tool2], [tool3]...",
   "action": null,
-  "final_answer": {{"answer": "Your complete answer here", "confidence": 0.9}}
+  "final_answer": {{"answer": "Comprehensive answer here", "confidence": 0.9}}
 }}
 
-=== CRITICAL RULES ===
-1. Always output valid JSON only. No markdown code fences.
-2. The "thinking" field should contain your reasoning process.
-3. Use "action" when you need to call a tool. Set to null otherwise.
-4. Use "final_answer" only when you have enough information. Set to null otherwise.
-5. Do NOT include your answer in "thinking". Put it in "final_answer" only.
-6. Do not loop unnecessarily - provide final_answer when ready.
+=== RULES ===
+1. Output valid JSON only.
+2. Use "action" to call tools, one at a time per response.
+3. Call MULTIPLE tools before providing final_answer.
+4. Include which tools you used in your final answer's thinking.
+5. Be thorough - incomplete answers are worse than using more tools.
 """
         
         # 添加对话历史上下文
