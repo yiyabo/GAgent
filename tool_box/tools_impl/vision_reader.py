@@ -46,18 +46,28 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
 
     settings = get_settings()
 
-    api_key = (
-        os.getenv("QWEN_VL_API_KEY")
-        or os.getenv("QWEN_API_KEY")
-        or settings.qwen_api_key
-    )
+    # Check API key from multiple sources
+    api_key_from_env = os.getenv("QWEN_VL_API_KEY") or os.getenv("QWEN_API_KEY")
+    api_key_from_settings = getattr(settings, "qwen_api_key", None)
+    
+    api_key = api_key_from_env or api_key_from_settings
+    
     if not api_key:
-        raise RuntimeError("Qwen vision API key is not configured (QWEN_VL_API_KEY / QWEN_API_KEY).")
+        env_keys = [k for k in os.environ.keys() if 'QWEN' in k.upper()]
+        raise RuntimeError(
+            f"Qwen vision API key is not configured. "
+            f"Expected: QWEN_VL_API_KEY or QWEN_API_KEY. "
+            f"Found QWEN-related env vars: {env_keys}. "
+            f"Settings qwen_api_key: {'set' if api_key_from_settings else 'not set'}"
+        )
+    
+    logger.debug(f"Using Qwen VL API key from: {'env' if api_key_from_env else 'settings'}")
 
     # Use Qwen VL OpenAI-compatible endpoint
     # Note: raw HTTP needs full path, OpenAI SDK would append /chat/completions automatically
     base_url = (
         os.getenv("QWEN_VL_API_URL")
+        or os.getenv("QWEN_API_URL")  # Fallback to general Qwen API URL
         or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     )
     model = (
@@ -100,6 +110,7 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
                 ],
             }
         ],
+        "max_tokens": 4096,  # Explicit max tokens for response
     }
 
     headers = {
@@ -107,7 +118,9 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
         "Authorization": f"Bearer {api_key}",
     }
 
-    timeout_seconds = getattr(settings, "glm_request_timeout", 60) or 60
+    logger.info(f"Calling Qwen VL API: model={model}, url={base_url}, prompt_len={len(prompt)}, image_size={len(b64)}B")
+
+    timeout_seconds = 120  # 2 minutes for vision API
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -152,6 +165,104 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
     except Exception as exc:
         logger.warning("Failed to parse Qwen vision response: %s", exc)
         return json.dumps(obj)
+
+
+async def _read_pdf_with_qwen_long(
+    pdf_path: str,
+    prompt: str = "请阅读这篇文档，提取所有文本内容，保持原有结构（段落、列表、标题等）。",
+) -> Dict[str, Any]:
+    """Read PDF using Qwen-Long file upload API - much faster for text PDFs.
+    
+    Uses the file-extract endpoint to upload PDF, then queries with Qwen-Long model.
+    This is significantly faster than converting to images and using vision model.
+    
+    Args:
+        pdf_path: Path to PDF file
+        prompt: Question or instruction for the document
+        
+    Returns:
+        Dict with success status and extracted text
+    """
+    try:
+        from openai import OpenAI
+    except ImportError:
+        logger.warning("OpenAI SDK not installed, falling back to vision model")
+        return {"success": False, "error": "OpenAI SDK not installed"}
+    
+    settings = get_settings()
+    
+    # Get API key
+    api_key = (
+        os.getenv("QWEN_VL_API_KEY")
+        or os.getenv("QWEN_API_KEY")
+        or getattr(settings, "qwen_api_key", None)
+    )
+    if not api_key:
+        return {"success": False, "error": "Qwen API key not configured"}
+    
+    # Get Qwen-Long model name
+    model = os.getenv("QWEN_LONG_MODEL") or "qwen-long"
+    
+    abs_path = Path(pdf_path).resolve()
+    if not abs_path.exists():
+        return {"success": False, "error": f"PDF not found: {pdf_path}"}
+    
+    # Check file size - Qwen-Long supports up to 150MB
+    file_size = abs_path.stat().st_size
+    if file_size > 150 * 1024 * 1024:
+        return {"success": False, "error": f"PDF too large: {file_size/1024/1024:.1f}MB (max: 150MB)"}
+    
+    logger.info(f"Using Qwen-Long for PDF: {abs_path.name}, size: {file_size/1024:.1f}KB")
+    
+    try:
+        # Create OpenAI client pointing to DashScope
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+        
+        # Step 1: Upload file
+        logger.info(f"Uploading PDF to Qwen-Long: {abs_path.name}")
+        file_object = client.files.create(
+            file=abs_path,
+            purpose="file-extract"
+        )
+        file_id = file_object.id
+        logger.info(f"PDF uploaded, file_id: {file_id}")
+        
+        # Step 2: Query with Qwen-Long
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": f"fileid://{file_id}"},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=8192,
+        )
+        
+        # Extract response
+        content = completion.choices[0].message.content if completion.choices else ""
+        
+        logger.info(f"Qwen-Long response: {len(content)} characters")
+        
+        return {
+            "success": True,
+            "file_path": str(abs_path),
+            "file_name": abs_path.name,
+            "file_id": file_id,
+            "model": model,
+            "text": content,
+            "text_length": len(content),
+            "method": "qwen-long",
+        }
+        
+    except Exception as e:
+        logger.error(f"Qwen-Long PDF reading failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "method": "qwen-long",
+        }
 
 
 async def _convert_pdf_to_images(pdf_path: str, max_pages: int = 100) -> list[str]:
@@ -337,13 +448,29 @@ async def vision_reader_handler(
 
     # Handle PDF reading
     if op == "read_pdf" or abs_path.suffix.lower() == ".pdf":
-        # Use specialized PDF reading function
+        # First try Qwen-Long (faster for text PDFs)
+        logger.info(f"Attempting PDF read with Qwen-Long first: {abs_path.name}")
+        qwen_long_result = await _read_pdf_with_qwen_long(
+            str(abs_path),
+            prompt=question or "请阅读这篇文档，提取所有文本内容，保持原有结构（段落、列表、标题等）。"
+        )
+        
+        if qwen_long_result.get("success"):
+            qwen_long_result["tool"] = "vision_reader"
+            qwen_long_result["operation"] = "read_pdf"
+            return qwen_long_result
+        
+        # Fallback to vision model if Qwen-Long fails
+        logger.info(f"Qwen-Long failed ({qwen_long_result.get('error')}), falling back to vision model")
+        
+        # Use specialized PDF reading function with vision model
         pages = page_numbers
         if page_number and not pages:
             pages = [page_number]
         result = await _read_pdf_with_vision(str(abs_path), page_numbers=pages, max_pages=max_pages)
         result["tool"] = "vision_reader"
         result["operation"] = "read_pdf"
+        result["fallback_from"] = "qwen-long"
         return result
 
     # Handle generic image reading

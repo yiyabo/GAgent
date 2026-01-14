@@ -47,7 +47,7 @@ class DeepThinkAgent:
         "document_reader": 200,   # 1 分钟
         "graph_rag": 600,         # 1 分钟
         "file_operations": 90,   # 30 秒 - 文件操作应该很快
-        "vision_reader": 600,    # 10 分钟 - 视觉模型处理 PDF
+        "vision_reader": 1200,    # 10 分钟 - 视觉模型处理 PDF
         "bio_tools": 86400,      # 24 小时 - 生物信息学工具不限制
     }
     
