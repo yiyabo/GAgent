@@ -47,6 +47,8 @@ ALLOWED_MIME_TYPES = {
         "application/zip",
         "application/x-zip-compressed",
         "application/x-tar",
+        "application/gzip",
+        "application/x-gzip",
     ],
     "data": [
         "application/x-hdf",
@@ -55,6 +57,18 @@ ALLOWED_MIME_TYPES = {
         "chemical/pdb",
         "application/dicom",
         "application/dicom+json",
+    ],
+    "bioinformatics": [
+        "text/plain",  # FASTA, FASTQ are often detected as plain text
+        "application/octet-stream",  # Binary bio files
+        "text/x-fasta",
+        "text/x-fastq",
+        "text/x-gff",
+        "text/x-gtf",
+        "text/x-vcf",
+        "text/x-sam",
+        "application/x-bam",
+        "text/x-bed",
     ],
 }
 
@@ -81,6 +95,7 @@ ALLOWED_EXTENSION_CATEGORIES = {
     ".tar.bz2": "archive",
     ".tbz": "archive",
     ".tbz2": "archive",
+    ".gz": "archive",
     ".h5": "data",
     ".hdf5": "data",
     ".hdf": "data",
@@ -91,6 +106,36 @@ ALLOWED_EXTENSION_CATEGORIES = {
     ".nii.gz": "data",
     ".npz": "data",
     ".npy": "data",
+    # Bioinformatics file formats
+    ".fasta": "bioinformatics",
+    ".fa": "bioinformatics",
+    ".fna": "bioinformatics",
+    ".faa": "bioinformatics",
+    ".ffn": "bioinformatics",
+    ".frn": "bioinformatics",
+    ".fastq": "bioinformatics",
+    ".fq": "bioinformatics",
+    ".fastq.gz": "bioinformatics",
+    ".fq.gz": "bioinformatics",
+    ".gff": "bioinformatics",
+    ".gff3": "bioinformatics",
+    ".gtf": "bioinformatics",
+    ".vcf": "bioinformatics",
+    ".vcf.gz": "bioinformatics",
+    ".sam": "bioinformatics",
+    ".bam": "bioinformatics",
+    ".bed": "bioinformatics",
+    ".bed.gz": "bioinformatics",
+    ".genbank": "bioinformatics",
+    ".gb": "bioinformatics",
+    ".gbk": "bioinformatics",
+    ".embl": "bioinformatics",
+    ".phy": "bioinformatics",
+    ".phylip": "bioinformatics",
+    ".nwk": "bioinformatics",
+    ".newick": "bioinformatics",
+    ".aln": "bioinformatics",
+    ".clustal": "bioinformatics",
 }
 
 DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
@@ -99,6 +144,7 @@ MAX_FILE_SIZE = {
     "image": DEFAULT_MAX_FILE_SIZE,
     "data": None,  # allow large data files
     "archive": None,  # allow large archives during testing
+    "bioinformatics": None,  # allow large sequencing files (FASTQ can be huge)
 }
 
 UPLOAD_SUBDIR = "uploads"
