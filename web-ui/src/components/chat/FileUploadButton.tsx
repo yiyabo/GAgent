@@ -30,6 +30,7 @@ const ALLOWED_EXTENSIONS = [
   '.tar.bz2',
   '.tbz',
   '.tbz2',
+  '.gz',
   '.h5',
   '.hdf5',
   '.hdf',
@@ -40,6 +41,36 @@ const ALLOWED_EXTENSIONS = [
   '.nii.gz',
   '.npz',
   '.npy',
+  // Bioinformatics file formats
+  '.fasta',
+  '.fa',
+  '.fna',
+  '.faa',
+  '.ffn',
+  '.frn',
+  '.fastq',
+  '.fq',
+  '.fastq.gz',
+  '.fq.gz',
+  '.gff',
+  '.gff3',
+  '.gtf',
+  '.vcf',
+  '.vcf.gz',
+  '.sam',
+  '.bam',
+  '.bed',
+  '.bed.gz',
+  '.genbank',
+  '.gb',
+  '.gbk',
+  '.embl',
+  '.phy',
+  '.phylip',
+  '.nwk',
+  '.newick',
+  '.aln',
+  '.clustal',
 ];
 
 const ALLOWED_MIME_TYPES = new Set([
@@ -53,6 +84,9 @@ const ALLOWED_MIME_TYPES = new Set([
   'application/zip',
   'application/x-zip-compressed',
   'application/x-tar',
+  'application/gzip',
+  'application/x-gzip',
+  'application/octet-stream',  // Binary bio files (BAM, etc.)
 ]);
 
 const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) => {
