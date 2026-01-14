@@ -221,14 +221,21 @@ class ToolBoxIntegration:
             for tool in tools
         ]
 
-    async def call_tool(self, tool_name: str, **kwargs) -> Any:
-        """Call a tool by name"""
+    async def call_tool(self, registered_tool_name: str, **kwargs) -> Any:
+        """Call a tool by name
+        
+        Args:
+            registered_tool_name: Name of the tool as registered in the registry
+            **kwargs: Parameters to pass to the tool handler
+        """
         registry = get_tool_registry()
-        tool_def = registry.get_tool(tool_name)
+        tool_def = registry.get_tool(registered_tool_name)
 
         if not tool_def:
-            raise ValueError(f"Tool '{tool_name}' not found")
+            raise ValueError(f"Tool '{registered_tool_name}' not found")
 
+        # For bio_tools, the kwargs from LLM already contain tool_name, operation, etc.
+        # Just pass them through directly
         return await tool_def.handler(**kwargs)
 
     async def search_tools(self, query: str) -> List[Dict[str, Any]]:
@@ -273,10 +280,15 @@ async def list_available_tools() -> List[Dict[str, Any]]:
     return await integration.get_available_tools()
 
 
-async def execute_tool(tool_name: str, **kwargs) -> Any:
-    """Execute a tool with given parameters"""
+async def execute_tool(registered_tool_name: str, **kwargs) -> Any:
+    """Execute a tool with given parameters
+    
+    Args:
+        registered_tool_name: Name of the tool as registered (e.g., 'bio_tools', 'vision_reader')
+        **kwargs: Parameters to pass to the tool handler
+    """
     integration = await get_toolbox_integration()
-    return await integration.call_tool(tool_name, **kwargs)
+    return await integration.call_tool(registered_tool_name, **kwargs)
 
 
 async def search_available_tools(query: str) -> List[Dict[str, Any]]:
