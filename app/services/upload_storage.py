@@ -5,7 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-UPLOAD_BASE_DIR = Path("data") / "information_sessions"
+# Use absolute path to ensure correct resolution on server
+UPLOAD_BASE_DIR = (Path(__file__).parent.parent.parent / "data" / "information_sessions").resolve()
 
 
 def get_session_root_dir(session_id: str) -> Path:
