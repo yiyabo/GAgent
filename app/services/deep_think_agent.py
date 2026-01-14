@@ -313,6 +313,20 @@ Respond with ONLY a JSON object:
     async def _safe_delta_callback(self, iteration: int, delta: str):
         if self.on_thinking_delta:
             try:
+                # Truncate very long deltas (e.g., FASTA file contents in JSON)
+                # to prevent UI from being overwhelmed
+                MAX_DELTA_LENGTH = 2000
+                if len(delta) > MAX_DELTA_LENGTH:
+                    # Find a reasonable truncation point
+                    truncated = delta[:MAX_DELTA_LENGTH]
+                    # Try to truncate at a newline or space for cleaner display
+                    last_newline = truncated.rfind('\\n')
+                    last_space = truncated.rfind(' ')
+                    cut_point = max(last_newline, last_space, MAX_DELTA_LENGTH - 200)
+                    if cut_point > MAX_DELTA_LENGTH - 500:
+                        truncated = delta[:cut_point]
+                    delta = truncated + f"... [truncated, {len(delta) - len(truncated)} chars hidden]"
+                
                 if asyncio.iscoroutinefunction(self.on_thinking_delta):
                     await self.on_thinking_delta(iteration, delta)
                 else:
