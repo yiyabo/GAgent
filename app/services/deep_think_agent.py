@@ -382,10 +382,17 @@ For comprehensive analysis, consider this workflow:
 === TOOL SELECTION GUIDE ===
 - LOCAL DIRECTORY LISTING: file_operations(operation="list", path="...")
 - READ TEXT FILES: file_operations(operation="read") or document_reader
-- COMPLEX ANALYSIS/CODE: claude_code - for any code execution, data analysis, visualization
+- **BIOINFORMATICS (FASTA/FASTQ/sequences)**: bio_tools - MUST TRY FIRST for any .fasta, .fa, .fq, .fastq files. Use seqkit for stats, blast for alignment, prodigal for gene prediction.
+- COMPLEX ANALYSIS/CODE: claude_code - ONLY use after bio_tools fails or for custom analysis not supported by bio_tools
 - IMAGES/FIGURES/PDF: vision_reader - for OCR, figure description, equation reading
 - WEB INFORMATION: web_search - for internet queries, background research
 - KNOWLEDGE QUERIES: graph_rag - for structured knowledge retrieval
+
+=== BIOINFORMATICS PRIORITY RULE ===
+When user asks about FASTA, FASTQ, or sequence files:
+1. FIRST: Call bio_tools with tool_name="seqkit", operation="stats" to get basic stats
+2. THEN: Decide if additional analysis is needed
+3. ONLY IF bio_tools cannot do it: Fall back to claude_code for custom Python analysis
 
 === IMPORTANT ===
 - DO NOT hesitate to use multiple tools - resources are unlimited!
