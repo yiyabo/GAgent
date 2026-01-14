@@ -3726,8 +3726,8 @@ class StructuredChatAgent:
                        "content": f"\n\n**Thinking Summary:** {res.thinking_summary}\n\n"
                    })
                 
-                # Yield final answer
-                yield _sse_message({"type": "delta", "content": res.final_answer})
+                # Note: final_answer was already streamed via on_final_delta callback
+                # No need to yield it again here to avoid duplication
                 
                 # Mock a final structure event to satisfy frontend if needed, 
                 # or just let the stream end (frontend usually handles text)

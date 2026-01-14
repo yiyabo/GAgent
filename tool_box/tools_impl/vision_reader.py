@@ -71,9 +71,9 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
     if not abs_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    # Check file size - limit to 10MB for API
+    # Check file size - limit to 50MB for API
     file_size = abs_path.stat().st_size
-    max_size = 10 * 1024 * 1024  # 10MB
+    max_size = 50 * 1024 * 1024  # 50MB
     if file_size > max_size:
         raise ValueError(f"Image file too large: {file_size / 1024 / 1024:.2f}MB (max: {max_size / 1024 / 1024}MB)")
 
