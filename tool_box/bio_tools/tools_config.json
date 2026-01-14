@@ -76,20 +76,20 @@
         "category": "gene_prediction",
         "operations": {
             "predict": {
-                "command": "prodigal -i {input} -o {output} -a {protein_output} -d {nucleotide_output}",
-                "description": "预测原核生物基因",
+                "command": "prodigal -i {input} -o /dev/null -a {protein_output} -d {nucleotide_output}",
+                "description": "预测原核生物基因，输出蛋白质和核苷酸序列",
                 "requires_input": true,
-                "requires_output": true,
+                "requires_output": false,
                 "extra_params": [
                     "protein_output",
                     "nucleotide_output"
                 ]
             },
             "meta": {
-                "command": "prodigal -i {input} -o {output} -a {protein_output} -p meta",
+                "command": "prodigal -i {input} -o /dev/null -a {protein_output} -p meta",
                 "description": "宏基因组模式基因预测",
                 "requires_input": true,
-                "requires_output": true,
+                "requires_output": false,
                 "extra_params": [
                     "protein_output"
                 ]
