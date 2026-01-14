@@ -410,12 +410,24 @@ When user asks about FASTA, FASTQ, or sequence files:
 
 IMPORTANT - bio_tools operations (do NOT guess, use these exact names):
 - seqkit: stats, grep, seq, head
-- blast: blastn, blastp, makeblastdb
-- prodigal: predict, meta (NOT "predict_genes"!)
-- hmmer: hmmscan, hmmsearch
-- checkv: end_to_end, completeness
+- blast: blastn, blastp, makeblastdb (requires database param)
+- prodigal: predict, meta (requires protein_output param)
+- hmmer: hmmscan, hmmsearch (requires database param)
+- checkv: end_to_end, completeness (requires database param)
 
-If unsure about operations, call with operation="help" first to see available operations.
+=== BIO_TOOLS ERROR RECOVERY (CRITICAL!) ===
+If bio_tools returns an error like "Execution failed: 'parameter_name'":
+1. **DO NOT give up or switch tools immediately!**
+2. Call bio_tools with operation="help" and the same tool_name to see required parameters
+3. Retry the call with the missing parameters filled in
+4. Only fall back to claude_code if the tool genuinely cannot do the task
+
+Example error recovery:
+- Error: "Execution failed: 'protein_output'" 
+- Action: Call bio_tools(tool_name="prodigal", operation="help") to see params
+- Then retry: bio_tools(tool_name="prodigal", operation="predict", input_file="...", params={"protein_output": "output.faa"})
+
+DO NOT use vision_reader for BIO files - it's only for PDFs and images!
 
 === IMPORTANT ===
 - DO NOT hesitate to use multiple tools - resources are unlimited!
