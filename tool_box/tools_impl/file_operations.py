@@ -16,12 +16,15 @@ logger = logging.getLogger(__name__)
 # Security configuration
 ALLOWED_BASE_PATHS = [
     "/tmp",
-    "/var/tmp", 
+    "/var/tmp",
+    "/data",  # Data directory
+    "/home/zczhao/GAgent",  # Project directory on server
     os.path.expanduser("~/Documents"),
     os.path.expanduser("~/Downloads"),
     os.getcwd(),  # Current working directory
     os.path.join(os.getcwd(), "data"),  # Project data directory
     os.path.join(os.getcwd(), "results"),  # Project results directory
+    os.path.join(os.getcwd(), "runtime"),  # Runtime directory
 ]
 
 # Default work directory - avoid creating files in root directory
@@ -48,14 +51,24 @@ def _validate_path_security(file_path: str) -> tuple[bool, str]:
     try:
         # Resolve absolute path to handle .. and symlinks
         abs_path = Path(file_path).resolve()
+        abs_path_str = str(abs_path)
+
+        # First check if path is in explicitly allowed directories
+        # If so, skip dangerous paths check
+        is_in_allowed = any(abs_path_str.startswith(allowed) for allowed in ALLOWED_BASE_PATHS)
+        
+        if is_in_allowed:
+            # Path is explicitly allowed, only check file size
+            if abs_path.exists() and abs_path.is_file():
+                if abs_path.stat().st_size > 50 * 1024 * 1024:  # 50MB limit
+                    return False, "File too large (>50MB)"
+            return True, ""
 
         # Check for path traversal attempts
         if ".." in file_path or file_path.startswith("/"):
-            # Allow absolute paths only if they're in allowed directories
-            if not any(str(abs_path).startswith(allowed) for allowed in ALLOWED_BASE_PATHS):
-                return False, "Path outside allowed directories"
+            return False, "Path outside allowed directories"
 
-        # Check for dangerous paths
+        # Check for dangerous paths (only for non-allowed paths)
         dangerous_paths = [
             "/etc",
             "/bin",
@@ -63,20 +76,19 @@ def _validate_path_security(file_path: str) -> tuple[bool, str]:
             "/usr/bin",
             "/usr/sbin",
             "/root",
-            "/home",
             "/var/log",
             "/proc",
             "/sys",
         ]
 
         for dangerous in dangerous_paths:
-            if str(abs_path).startswith(dangerous):
+            if abs_path_str.startswith(dangerous):
                 return False, f"Access to {dangerous} is not allowed"
 
         # Check file size for read operations (prevent reading huge files)
         if abs_path.exists() and abs_path.is_file():
-            if abs_path.stat().st_size > 10 * 1024 * 1024:  # 10MB limit
-                return False, "File too large (>10MB)"
+            if abs_path.stat().st_size > 50 * 1024 * 1024:  # 50MB limit
+                return False, "File too large (>50MB)"
 
         return True, ""
 
