@@ -339,6 +339,7 @@ Respond with ONLY a JSON object:
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
             "vision_reader": "Vision-based reading using multimodal AI (qwen3-vl). OCR pages, read equations, describe figures. Params: {\"operation\": \"ocr_page|read_equation_image|describe_figure|extract_table\", \"image_path\": \"/path/to/image\"}",
+            "bio_tools": "Execute bioinformatics Docker tools (35+ tools). Supports SeqKit, BLAST, Prodigal, HMMER, CheckV, etc. Params: {\"tool_name\": \"seqkit|blast|prodigal|hmmer|checkv\", \"operation\": \"stats|blastn|predict|help\", \"input_file\": \"/path/to/input.fasta\", \"output_file\": \"result.txt\", \"params\": {}}. Use operation='list' to see all tools, operation='help' for tool-specific help.",
         }
         
         tools_desc = []

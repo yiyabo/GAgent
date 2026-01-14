@@ -1,0 +1,149 @@
+{
+    "seqkit": {
+        "image": "staphb/seqkit:2.8.0",
+        "description": "SeqKit - A cross-platform and ultrafast toolkit for FASTA/Q file manipulation",
+        "category": "sequence_processing",
+        "operations": {
+            "stats": {
+                "command": "seqkit stats {input}",
+                "description": "统计序列文件信息（数量、长度、GC含量等）",
+                "requires_input": true,
+                "requires_output": false
+            },
+            "grep": {
+                "command": "seqkit grep -p '{pattern}' {input} -o {output}",
+                "description": "按模式搜索序列",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": [
+                    "pattern"
+                ]
+            },
+            "seq": {
+                "command": "seqkit seq {input} -o {output}",
+                "description": "序列格式转换和处理",
+                "requires_input": true,
+                "requires_output": true
+            },
+            "head": {
+                "command": "seqkit head -n {n} {input}",
+                "description": "显示前N条序列",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "n"
+                ]
+            }
+        }
+    },
+    "blast": {
+        "image": "biocontainers/blast:2.2.31",
+        "description": "BLAST+ - Basic Local Alignment Search Tool for sequence similarity search",
+        "category": "sequence_alignment",
+        "operations": {
+            "blastn": {
+                "command": "blastn -query {input} -db {database} -out {output} -outfmt 6",
+                "description": "核酸序列比对",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": [
+                    "database"
+                ]
+            },
+            "blastp": {
+                "command": "blastp -query {input} -db {database} -out {output} -outfmt 6",
+                "description": "蛋白质序列比对",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": [
+                    "database"
+                ]
+            },
+            "makeblastdb": {
+                "command": "makeblastdb -in {input} -dbtype {dbtype} -out {output}",
+                "description": "创建 BLAST 数据库",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": [
+                    "dbtype"
+                ]
+            }
+        }
+    },
+    "prodigal": {
+        "image": "docker.byoryn.cn/biocontainers/prodigal:v1-2.6.3-4-deb_cv1",
+        "description": "Prodigal - Prokaryotic gene prediction",
+        "category": "gene_prediction",
+        "operations": {
+            "predict": {
+                "command": "prodigal -i {input} -o {output} -a {protein_output} -d {nucleotide_output}",
+                "description": "预测原核生物基因",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": [
+                    "protein_output",
+                    "nucleotide_output"
+                ]
+            },
+            "meta": {
+                "command": "prodigal -i {input} -o {output} -a {protein_output} -p meta",
+                "description": "宏基因组模式基因预测",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": [
+                    "protein_output"
+                ]
+            }
+        }
+    },
+    "hmmer": {
+        "image": "staphb/hmmer:latest",
+        "description": "HMMER - Biosequence analysis using profile hidden Markov models",
+        "category": "sequence_analysis",
+        "operations": {
+            "hmmscan": {
+                "command": "hmmscan --tblout {output} {database} {input}",
+                "description": "用序列搜索 HMM 数据库",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": [
+                    "database"
+                ]
+            },
+            "hmmsearch": {
+                "command": "hmmsearch --tblout {output} {hmm_file} {input}",
+                "description": "用 HMM 搜索序列数据库",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": [
+                    "hmm_file"
+                ]
+            }
+        }
+    },
+    "checkv": {
+        "image": "quay.io/biocontainers/checkv:1.0.1--pyhdfd78af_0",
+        "description": "CheckV - Assess the quality of metagenome-assembled viral genomes",
+        "category": "virus_quality",
+        "operations": {
+            "end_to_end": {
+                "command": "checkv end_to_end {input} {output_dir} -d {database}",
+                "description": "完整的病毒基因组质量评估流程",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": [
+                    "database"
+                ]
+            },
+            "completeness": {
+                "command": "checkv completeness {input} {output_dir} -d {database}",
+                "description": "评估病毒基因组完整性",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": [
+                    "database"
+                ]
+            }
+        }
+    }
+}
