@@ -25,6 +25,7 @@ from .tools_impl import (
     manuscript_writer_tool,
     phagescope_tool,
 )
+from .bio_tools import bio_tools_tool
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +183,17 @@ class ToolBoxIntegration:
             handler=phagescope_tool["handler"],
             tags=phagescope_tool.get("tags", []),
             examples=phagescope_tool.get("examples", []),
+        )
+
+        # Register bio_tools (bioinformatics Docker tools)
+        register_tool(
+            name=bio_tools_tool["name"],
+            description=bio_tools_tool["description"],
+            category=bio_tools_tool["category"],
+            parameters_schema=bio_tools_tool["parameters_schema"],
+            handler=bio_tools_tool["handler"],
+            tags=bio_tools_tool.get("tags", []),
+            examples=bio_tools_tool.get("examples", []),
         )
 
         logger.info("Built-in tools registered")
