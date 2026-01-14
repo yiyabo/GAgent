@@ -334,12 +334,12 @@ Respond with ONLY a JSON object:
         """Constructs the system prompt for the Deep Think Agent."""
         # 构建工具详细描述
         tool_descriptions = {
-            "claude_code": "Execute Python/shell code, run scripts, access local filesystem programmatically. USE THIS ONLY for: running code, data processing scripts, file manipulation with code. DO NOT use for text analysis or summarization - use your own reasoning for that. Params: {\"task\": \"description of what to do\"}",
+            "claude_code": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. Params: {\"task\": \"description\"}",
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. Params: {\"query\": \"search query\"}",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
             "vision_reader": "Read PDFs and images using vision model. For PDF reading and document understanding. After reading a document, YOU should analyze and summarize it directly - do not call other tools. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\"}",
-            "bio_tools": "Execute bioinformatics Docker tools. First call with operation='list' to see available tools, or operation='help' with a tool_name to see operations. Example: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/path/to/file.fasta\"}. If a call fails, try operation='help' to check correct usage. Available: seqkit, blast, prodigal, hmmer, checkv.",
+            "bio_tools": "PREFERRED for bioinformatics: Execute Docker-based tools for FASTA/FASTQ/sequence analysis. For sequence stats, use seqkit. Example: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/absolute/path/to/file.fasta\"}. NOTE: input_file MUST be absolute path. Available tools: seqkit (stats, grep, seq), blast (blastn, blastp), prodigal (predict genes), hmmer (hmmscan), checkv (virus quality). Use operation='help' to see tool usage.",
         }
         
         tools_desc = []
