@@ -14,7 +14,7 @@ from app.services.foundation.settings import get_settings
 
 @dataclass
 class GLMConfig:
-    """GLM服务配置类"""
+    """GLM服务配置类（支持多种 Embedding Provider）"""
 
     # API配置
     api_key: Optional[str]
@@ -24,6 +24,15 @@ class GLMConfig:
     embedding_model: str
     embedding_dimension: int
     max_batch_size: int
+    
+    # Embedding provider: qwen, glm, local
+    embedding_provider: str
+    
+    # Qwen Embedding 配置
+    qwen_embedding_api_url: str
+    qwen_embedding_model: str
+    qwen_embedding_dimension: int
+    qwen_api_key: Optional[str]
     
     # Local embedding配置
     use_local_embedding: bool
@@ -46,6 +55,9 @@ class GLMConfig:
     def from_env(cls) -> "GLMConfig":
         """从集中配置创建配置实例（不直接读取 os.getenv）"""
         s = get_settings()
+        
+        # 获取 embedding provider
+        embedding_provider = getattr(s, "embedding_provider", "qwen")
 
         def _derive_embeddings_url(chat_url: Optional[str]) -> str:
             # 若未显式配置 embeddings API，则基于 chat/completions 推导，最后回退到默认
@@ -61,17 +73,38 @@ class GLMConfig:
         api_url = s.glm_embeddings_api_url or _derive_embeddings_url(s.glm_api_url)
 
         # 获取本地embedding配置
-        use_local = getattr(s, "use_local_embedding", True)  # 默认使用本地
+        use_local = embedding_provider == "local"
         local_model = getattr(s, "local_embedding_model", "sentence-transformers/all-mpnet-base-v2")
+        
+        # Qwen Embedding 配置
+        qwen_embedding_api_url = getattr(s, "qwen_embedding_api_url", "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings")
+        qwen_embedding_model = getattr(s, "qwen_embedding_model", "text-embedding-v4")
+        qwen_embedding_dimension = int(getattr(s, "qwen_embedding_dimension", 1536))
+        qwen_api_key = getattr(s, "qwen_api_key", None)
+        
+        # 根据 provider 选择 embedding 模型和维度
+        if embedding_provider == "qwen":
+            embedding_model = qwen_embedding_model
+            embedding_dimension = qwen_embedding_dimension
+        else:
+            embedding_model = s.glm_embedding_model
+            embedding_dimension = int(s.glm_embedding_dimension)
         
         return cls(
             # API配置
             api_key=s.glm_api_key,
             api_url=api_url,
             # Embedding配置
-            embedding_model=s.glm_embedding_model,
-            embedding_dimension=int(s.glm_embedding_dimension),
+            embedding_model=embedding_model,
+            embedding_dimension=embedding_dimension,
             max_batch_size=int(s.glm_batch_size),
+            # Embedding provider
+            embedding_provider=embedding_provider,
+            # Qwen Embedding 配置
+            qwen_embedding_api_url=qwen_embedding_api_url,
+            qwen_embedding_model=qwen_embedding_model,
+            qwen_embedding_dimension=qwen_embedding_dimension,
+            qwen_api_key=qwen_api_key,
             # Local embedding配置
             use_local_embedding=use_local,
             local_embedding_model=local_model,

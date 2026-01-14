@@ -88,6 +88,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     unifiedStream && (status === 'pending' || status === 'running');
 
   // 如果是统一流且处于初始 pending 阶段、没有前置文案和动作，显示思考中动画
+  // 但如果已经有思考步骤，则不显示简单的 TypingIndicator，而是显示 ThinkingProcess
+  const hasThinkingSteps = message.thinking_process && message.thinking_process.steps && message.thinking_process.steps.length > 0;
   if (
     unifiedStream &&
     metadata?.status === 'pending' &&
@@ -95,7 +97,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     !(metadata as any)?.raw_actions?.length &&
     !(metadata as any)?.actions?.length &&
     (content?.trim?.() ?? '') === '' &&
-    !analysisText
+    !analysisText &&
+    !hasThinkingSteps  // 关键：如果有思考步骤，不显示简单的 TypingIndicator
   ) {
     return <TypingIndicator message="思考中" showAvatar={true} />;
   }

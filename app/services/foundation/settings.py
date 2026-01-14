@@ -93,6 +93,17 @@ if _USE_PYDANTIC:
             env="QWEN_API_URL",
         )
         qwen_model: str = Field(default="qwen-turbo", env="QWEN_MODEL")
+        
+        # Qwen Embedding 配置
+        qwen_embedding_api_url: str = Field(
+            default="https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
+            env="QWEN_EMBEDDING_API_URL",
+        )
+        qwen_embedding_model: str = Field(default="text-embedding-v4", env="QWEN_EMBEDDING_MODEL")
+        qwen_embedding_dimension: int = Field(default=1536, env="QWEN_EMBEDDING_DIM")
+        
+        # Embedding provider 选择: qwen, glm, local
+        embedding_provider: str = Field(default="qwen", env="EMBEDDING_PROVIDER")
 
         # 通用LLM配置（用于选择提供商）
         llm_provider: str = Field(default="glm", env="LLM_PROVIDER")  # glm, perplexity, qwen, openai, etc.
@@ -205,6 +216,22 @@ else:
             self.xai_api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
             self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
             self.tavily_api_key = os.getenv("TAVILY_API_KEY")
+            
+            # Qwen API 配置
+            self.qwen_api_key = os.getenv("QWEN_API_KEY")
+            self.qwen_api_url = os.getenv("QWEN_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+            self.qwen_model = os.getenv("QWEN_MODEL", "qwen-turbo")
+            
+            # Qwen Embedding 配置
+            self.qwen_embedding_api_url = os.getenv("QWEN_EMBEDDING_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings")
+            self.qwen_embedding_model = os.getenv("QWEN_EMBEDDING_MODEL", "text-embedding-v4")
+            try:
+                self.qwen_embedding_dimension = int(os.getenv("QWEN_EMBEDDING_DIM", "1536"))
+            except Exception:
+                self.qwen_embedding_dimension = 1536
+            
+            # Embedding provider 选择
+            self.embedding_provider = os.getenv("EMBEDDING_PROVIDER", "qwen")
 
             # Embeddings 专用配置
             self.glm_embeddings_api_url = os.getenv("GLM_EMBEDDINGS_API_URL")
