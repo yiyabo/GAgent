@@ -25,20 +25,30 @@ logger = logging.getLogger(__name__)
 
 
 class ThreadSafeEmbeddingsService:
-    """线程安全的嵌入向量服务类（支持本地和远程模型）"""
+    """线程安全的嵌入向量服务类（支持 Qwen/GLM/本地模型）"""
 
     def __init__(self):
         """初始化线程安全的服务组件"""
         self.config = get_config()
         self.cache = get_thread_safe_embedding_cache()
+        
+        # 获取 embedding provider
+        provider = getattr(self.config, 'embedding_provider', 'qwen')
 
-        # 根据配置选择本地或远程API客户端
-        if self.config.use_local_embedding:
+        # 根据配置选择 API 客户端
+        if provider == "local" or self.config.use_local_embedding:
             logger.info("Using local embedding model (thread-safe)")
             self.api_client = LocalEmbeddingClient(self.config)
-        else:
+            self._provider = "local"
+        elif provider == "qwen":
+            logger.info("Using Qwen API for embeddings (text-embedding-v4)")
+            from app.services.embeddings.qwen_embedding_client import QwenEmbeddingClient
+            self.api_client = QwenEmbeddingClient(self.config)
+            self._provider = "qwen"
+        else:  # glm or default
             logger.info("Using GLM API for embeddings (thread-safe)")
             self.api_client = GLMApiClient(self.config)
+            self._provider = "glm"
         
         self.batch_processor = ThreadSafeBatchProcessor(self.config, self.api_client, self.cache)
         self.async_manager = ThreadSafeAsyncManager(self.batch_processor)
@@ -47,7 +57,11 @@ class ThreadSafeEmbeddingsService:
         # 服务级别的锁
         self._service_lock = threading.RLock()
 
-        logger.info(f"Thread-safe embeddings service initialized - Type: {'Local' if self.config.use_local_embedding else 'GLM API'}")
+        logger.info(
+            f"Thread-safe embeddings service initialized - "
+            f"Provider: {self._provider}, Model: {self.config.embedding_model}, "
+            f"Dimension: {self.config.embedding_dimension}"
+        )
 
     # 核心嵌入方法 - 委托给线程安全批处理器
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:

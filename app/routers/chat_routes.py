@@ -3630,7 +3630,7 @@ class StructuredChatAgent:
                     llm_client=self.llm_service,
                     available_tools=["web_search", "document_reader", "graph_rag", "claude_code", "file_operations", "vision_reader"],
                     tool_executor=tool_wrapper,
-                    max_iterations=12,
+                    max_iterations=30,
                     tool_timeout=120,  # 2分钟工具超时
                     on_thinking=on_thinking,
                     on_thinking_delta=on_thinking_delta,
