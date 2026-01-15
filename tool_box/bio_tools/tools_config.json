@@ -40,33 +40,38 @@
         "image": "biocontainers/blast:2.2.31",
         "description": "BLAST+ - Basic Local Alignment Search Tool for sequence similarity search",
         "category": "sequence_alignment",
+        "notes": "数据库必须先用 makeblastdb 创建，且路径必须使用容器内路径 /work/xxx",
         "operations": {
             "blastn": {
                 "command": "blastn -query {input} -db {database} -out {output} -outfmt 6",
-                "description": "核酸序列比对",
+                "description": "核酸序列比对 (database 必须是 /work/xxx 格式的容器内路径)",
                 "requires_input": true,
                 "requires_output": true,
                 "extra_params": [
                     "database"
-                ]
+                ],
+                "notes": "database 参数必须使用容器内路径，如 /work/mydb (对应 runtime/bio_tools/blast/mydb)"
             },
             "blastp": {
                 "command": "blastp -query {input} -db {database} -out {output} -outfmt 6",
-                "description": "蛋白质序列比对",
+                "description": "蛋白质序列比对 (database 必须是 /work/xxx 格式的容器内路径)",
                 "requires_input": true,
                 "requires_output": true,
                 "extra_params": [
                     "database"
-                ]
+                ],
+                "notes": "database 参数必须使用容器内路径，如 /work/mydb (对应 runtime/bio_tools/blast/mydb)"
             },
             "makeblastdb": {
-                "command": "makeblastdb -in {input} -dbtype {dbtype} -out {output}",
-                "description": "创建 BLAST 数据库",
+                "command": "makeblastdb -in {input} -dbtype {dbtype} -out /work/{db_name}",
+                "description": "创建 BLAST 数据库（输出到容器 /work 目录）",
                 "requires_input": true,
-                "requires_output": true,
+                "requires_output": false,
                 "extra_params": [
-                    "dbtype"
-                ]
+                    "dbtype",
+                    "db_name"
+                ],
+                "notes": "dbtype: nucl(核酸) 或 prot(蛋白质); db_name: 数据库名称，将保存在 runtime/bio_tools/blast/"
             }
         }
     },
@@ -74,25 +79,28 @@
         "image": "docker.byoryn.cn/biocontainers/prodigal:v1-2.6.3-4-deb_cv1",
         "description": "Prodigal - Prokaryotic gene prediction",
         "category": "gene_prediction",
+        "notes": "输出文件会保存到 runtime/bio_tools/prodigal/ 目录",
         "operations": {
             "predict": {
-                "command": "prodigal -i {input} -o /dev/null -a {protein_output} -d {nucleotide_output}",
+                "command": "prodigal -i {input} -o /dev/null -a /work/{protein_output} -d /work/{nucleotide_output}",
                 "description": "预测原核生物基因，输出蛋白质和核苷酸序列",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "protein_output",
                     "nucleotide_output"
-                ]
+                ],
+                "notes": "protein_output: 蛋白质输出文件名如 genes.faa; nucleotide_output: 核苷酸输出文件名如 genes.fna"
             },
             "meta": {
-                "command": "prodigal -i {input} -o /dev/null -a {protein_output} -p meta",
-                "description": "宏基因组模式基因预测",
+                "command": "prodigal -i {input} -o /dev/null -a /work/{protein_output} -p meta",
+                "description": "宏基因组模式基因预测（适合短序列或宏基因组数据）",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "protein_output"
-                ]
+                ],
+                "notes": "protein_output: 蛋白质输出文件名如 genes.faa; 适合序列数量多但单条序列较短的数据"
             }
         }
     },
@@ -100,24 +108,39 @@
         "image": "staphb/hmmer:latest",
         "description": "HMMER - Biosequence analysis using profile hidden Markov models",
         "category": "sequence_analysis",
+        "notes": "HMM数据库必须先用 hmmpress 处理，路径使用容器内路径 /work/xxx",
         "operations": {
             "hmmscan": {
-                "command": "hmmscan --tblout {output} {database} {input}",
+                "command": "hmmscan --tblout /work/{output} {database} {input}",
                 "description": "用序列搜索 HMM 数据库",
                 "requires_input": true,
-                "requires_output": true,
+                "requires_output": false,
                 "extra_params": [
-                    "database"
-                ]
+                    "database",
+                    "output"
+                ],
+                "notes": "database: 使用容器内路径如 /work/Pfam-A.hmm; 数据库需先用 hmmpress 处理"
             },
             "hmmsearch": {
-                "command": "hmmsearch --tblout {output} {hmm_file} {input}",
+                "command": "hmmsearch --tblout /work/{output} {hmm_file} {input}",
                 "description": "用 HMM 搜索序列数据库",
                 "requires_input": true,
-                "requires_output": true,
+                "requires_output": false,
+                "extra_params": [
+                    "hmm_file",
+                    "output"
+                ],
+                "notes": "hmm_file: HMM配置文件路径; output: 输出文件名"
+            },
+            "hmmpress": {
+                "command": "hmmpress /work/{hmm_file}",
+                "description": "压缩/准备 HMM 数据库以供 hmmscan 使用",
+                "requires_input": false,
+                "requires_output": false,
                 "extra_params": [
                     "hmm_file"
-                ]
+                ],
+                "notes": "hmm_file: 放在 runtime/bio_tools/hmmer/ 目录下的 HMM 文件名"
             }
         }
     },
