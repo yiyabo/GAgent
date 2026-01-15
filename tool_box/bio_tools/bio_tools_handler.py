@@ -116,6 +116,21 @@ def build_docker_command(
         # CheckV 数据库路径 (服务器上的固定位置)
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5"
         mounts.append(f"-v {db_path}:/work/database")
+
+    # 如果是 checkm，添加数据库挂载
+    if tool_name == "checkm":
+        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/checkm_data"
+        mounts.append(f"-v {db_path}:/work/database")
+
+    # 如果是 gtdbtk，添加数据库挂载
+    if tool_name == "gtdbtk":
+        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/gtdbtk/gtdbtk_r220_data"
+        mounts.append(f"-v {db_path}:/work/database")
+
+    # 如果是 bakta，添加数据库挂载
+    if tool_name == "bakta":
+        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/bakta/db"
+        mounts.append(f"-v {db_path}:/work/database")
     
     # 构建命令参数
     params = {

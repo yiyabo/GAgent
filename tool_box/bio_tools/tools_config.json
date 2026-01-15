@@ -143,31 +143,291 @@
                     "db"
                 ],
                 "notes": "db: 放在 runtime/bio_tools/hmmer/ 目录下的 HMM 文件名"
+            },
+            "hmmbuild": {
+                "command": "hmmbuild /work/{output} {input}",
+                "description": "从序列比对构建 HMM 模型",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output"
+                ],
+                "notes": "output: 输出 HMM 文件名如 test.hmm; input 应该是对齐好的 FASTA/Stockholm/Clustal/Phylip 文件"
             }
         }
     },
-    "checkv": {
-        "image": "quay.io/biocontainers/checkv:1.0.1--pyhdfd78af_0",
-        "description": "CheckV - Assess the quality of metagenome-assembled viral genomes",
-        "category": "virus_quality",
+    "dorado": {
+        "image": "genomicpariscentre/dorado:0.5.3",
+        "description": "Dorado - Oxford Nanopore basecalling and demultiplexing",
+        "category": "long_read_processing",
+        "notes": "长读长数据处理：basecall + demux。GPU可用时更快，需安装NVIDIA Container Toolkit",
         "operations": {
-            "end_to_end": {
-                "command": "checkv end_to_end {input} {output_dir} -d {database}",
-                "description": "完整的病毒基因组质量评估流程",
+            "basecall": {
+                "command": "/opt/dorado-0.5.3-linux-x64/bin/dorado basecall --model {model} --kit-name {kit} --output-dir /work/{output} {input}",
+                "description": "Nanopore 原始信号 basecalling",
                 "requires_input": true,
-                "requires_output": true,
+                "requires_output": false,
                 "extra_params": [
-                    "database"
-                ]
+                    "model",
+                    "kit",
+                    "output"
+                ],
+                "notes": "model: 模型如 dna_r10.4.1_e8.1_sup; kit: 试剂盒如 SQK-RBK001; output: 输出目录名"
             },
-            "completeness": {
-                "command": "checkv completeness {input} {output_dir} -d {database}",
-                "description": "评估病毒基因组完整性",
+            "demux": {
+                "command": "/opt/dorado-0.5.3-linux-x64/bin/dorado demux --output-dir /work/{output_dir} --kit-name {kit} {input}",
+                "description": "拆分多样本 barcode 数据",
                 "requires_input": true,
-                "requires_output": true,
+                "requires_output": false,
                 "extra_params": [
-                    "database"
-                ]
+                    "kit",
+                    "output_dir"
+                ],
+                "notes": "kit: 试剂盒如 SQK-RBK001, SQK-NBD114-96; output_dir: 输出目录名"
+            }
+        }
+    },
+    "nanoplot": {
+        "image": "staphb/nanoplot:latest",
+        "description": "NanoPlot - 长读长测序数据质控可视化",
+        "category": "long_read_processing",
+        "notes": "输入支持: --fastq, --fasta, --bam, --summary",
+        "operations": {
+            "basic": {
+                "command": "NanoPlot --fastq {input} -o /work/{output} --prefix {prefix}",
+                "description": "长读长数据质控和可视化",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "prefix"
+                ],
+                "notes": "output: 输出目录; prefix: 输出文件前缀; 输入文件放在 runtime/bio_tools/nanoplot/input/"
+            }
+        }
+    },
+    "minimap2": {
+        "image": "staphb/minimap2:latest",
+        "description": "Minimap2 - 短读长/长读长快速比对工具",
+        "category": "sequence_alignment",
+        "notes": "支持: map-pb (PacBio), map-ont (ONT), map-hifi (HiFi), sr (短读长)",
+        "operations": {
+            "map": {
+                "command": "minimap2 -ax {preset} {reference} {query} > /work/{output}",
+                "description": "序列比对",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "preset",
+                    "reference",
+                    "output"
+                ],
+                "notes": "preset: map-pb/map-ont/map-hifi/sr; reference: 参考基因组路径; output: SAM输出文件名"
+            }
+        }
+    },
+    "seqtk": {
+        "image": "staphb/seqtk:latest",
+        "description": "Seqtk -  FASTA/Q 工具",
+        "category": "sequence_processing",
+        "notes": "支持子采样、序列处理等",
+        "operations": {
+            "sample": {
+                "command": "seqtk sample {input} {fraction} > /work/{output}",
+                "description": "随机抽样序列",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "fraction",
+                    "output"
+                ],
+                "notes": "fraction: 抽样比例(0-1)如 0.1 表示10%; output: 输出文件名"
+            },
+            "size": {
+                "command": "seqtk size {input}",
+                "description": "统计序列数量和碱基数",
+                "requires_input": true,
+                "requires_output": false
+            }
+        }
+    },
+    "megahit": {
+        "image": "quay.io/biocontainers/megahit:1.2.9--h43eeafb_5",
+        "description": "MEGAHIT - 宏基因组组装工具",
+        "category": "assembly",
+        "notes": "短读长宏基因组组装首选",
+        "operations": {
+            "assemble": {
+                "command": "megahit -1 {r1} -2 {r2} -o /work/{output}",
+                "description": "短读长宏基因组组装",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "r1",
+                    "r2",
+                    "output"
+                ],
+                "notes": "r1/r2: 双端测序文件路径; output: 输出目录名; 结果保存到 runtime/bio_tools/megahit/output/"
+            }
+        }
+    },
+    "bakta": {
+        "image": "staphb/bakta:latest",
+        "description": "Bakta - 细菌基因组快速标准化注释",
+        "category": "annotation",
+        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/bakta_db，容器内映射为 /work/database",
+        "operations": {
+            "annotate": {
+                "command": "bakta --db /work/database --prefix {prefix} --output-dir /work/{output} {input}",
+                "description": "基因组/宏基因组注释",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "prefix",
+                    "output"
+                ],
+                "notes": "prefix: 输出前缀; output: 输出目录名; 需 Bakta 数据库"
+            }
+        }
+    },
+    "metabat2": {
+        "image": "quay.io/biocontainers/metabat2:2.15--h986a166_1",
+        "description": "MetaBAT2 - 宏基因组分箱工具",
+        "category": "binning",
+        "notes": "依赖 contig depth 文件 (用 jgi_summarize_bam_contig_depths 生成)",
+        "operations": {
+            "bin": {
+                "command": "metabat2 -i {contigs} -a {depth} -o /work/{output_prefix}",
+                "description": "基于丰度分箱",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "contigs",
+                    "depth",
+                    "output_prefix"
+                ],
+                "notes": "contigs: 组装结果contigs路径; depth: depth文件路径; output_prefix: 输出前缀"
+            },
+            "depth": {
+                "command": "jgi_summarize_bam_contig_depths --outputDepth /work/{output} {bam_files}",
+                "description": "计算 contig 丰度深度",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "bam_files"
+                ],
+                "notes": "output: depth输出文件名; bam: 排序后的bam文件列表(空格分隔)"
+            }
+        }
+    },
+    "concoct": {
+        "image": "quay.io/biocontainers/concoct:1.1.0--py312h71dcd68_8",
+        "description": "CONCOCT - 基于组成和丰度的宏基因组分箱",
+        "category": "binning",
+        "notes": "需要先准备 coverage table",
+        "operations": {
+            "bin": {
+                "command": "concoct --coverage_file /work/{coverage} --contigs_file {contigs} -b /work/{output}",
+                "description": "宏基因组分箱",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "coverage",
+                    "contigs",
+                    "output"
+                ],
+                "notes": "coverage: coverage table路径; contigs: contigs fasta路径; output: 输出目录"
+            }
+        }
+    },
+    "maxbin2": {
+        "image": "quay.io/biocontainers/maxbin2:2.2.7--he1b5a44_2",
+        "description": "MaxBin2 - 宏基因组分箱工具",
+        "category": "binning",
+        "notes": "需要 abundance 信息文件",
+        "operations": {
+            "bin": {
+                "command": "run_MaxBin.pl -contig {contigs} -out /work/{output} -abundance {abundance}",
+                "description": "宏基因组分箱",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "contigs",
+                    "output",
+                    "abundance"
+                ],
+                "notes": "contigs: 组装结果; output: 输出前缀; abundance: 丰度文件"
+            }
+        }
+    },
+    "das_tool": {
+        "image": "quay.io/biocontainers/das_tool:1.1.6--r42hdfd78af_0",
+        "description": "DAS Tool - 整合多个分箱结果",
+        "category": "binning",
+        "notes": "整合 MetaBAT2/CONCOCT/MaxBin 等结果",
+        "operations": {
+            "integrate": {
+                "command": "DAS_Tool -i {bins} -c {contigs} -o /work/{output}",
+                "description": "整合分箱结果",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "bins",
+                    "contigs",
+                    "output"
+                ],
+                "notes": "bins: 各工具bin文件列表(逗号分隔); contigs: 组装结果; output: 输出前缀"
+            }
+        }
+    },
+    "checkm": {
+        "image": "staphb/checkm:latest",
+        "description": "CheckM - 宏基因组组装基因组质量评估",
+        "category": "bin_assessment",
+        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/checkm_data，容器内映射为 /work/database",
+        "operations": {
+            "lineage_wf": {
+                "command": "checkm lineage_wf -x fa --tabulated -f /work/{output} --database /work/database {input} /work/{output_dir}",
+                "description": "评估 bins 完整性和污染率",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "output_dir"
+                ],
+                "notes": "input: bins目录; output: 输出统计文件; output_dir: 工作目录; 需 CheckM 数据库"
+            },
+            "qa": {
+                "command": "checkm qa -o 2 -f /work/{output} --tabulated /work/{tree} {input}",
+                "description": "详细质量评估",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "tree",
+                    "input"
+                ],
+                "notes": "tree: lineage_wf生成的tree文件; input: marker file; output: 输出文件"
+            }
+        }
+    },
+    "gtdbtk": {
+        "image": "quay.io/biocontainers/gtdbtk:2.3.2--pyhdfd78af_0",
+        "description": "GTDB-Tk - 基于系统发育的物种分类",
+        "category": "taxonomy",
+        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/gtdbtk，容器内映射为 /work/database",
+        "operations": {
+            "classify_wf": {
+                "command": "gtdbtk classify_wf --genome_dir {genome_dir} --out_dir /work/{output} --database /work/database -x fa",
+                "description": "bins 物种分类",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "genome_dir",
+                    "output"
+                ],
+                "notes": "genome_dir: bins目录(包含fa文件); output: 输出目录; 需 GTDB-Tk 数据库"
             }
         }
     }
