@@ -3679,8 +3679,7 @@ class StructuredChatAgent:
                 
                 # Construct final content for display and saving
                 final_content_parts = []
-                if res.thinking_summary:
-                    final_content_parts.append(f"**Thinking Summary:** {res.thinking_summary}")
+                # Thinking Summary removed per user request
                 if res.final_answer:
                     final_content_parts.append(res.final_answer)
                 
@@ -3719,12 +3718,10 @@ class StructuredChatAgent:
                     except Exception as save_err:
                         logger.warning("[CHAT][DEEP_THINK] Failed to save response: %s", save_err)
                 
-                # Yield thinking summary first
-                if res.thinking_summary:
-                   yield _sse_message({
-                       "type": "delta", 
-                       "content": f"\n\n**Thinking Summary:** {res.thinking_summary}\n\n"
-                   })
+                # Thinking Summary removed per user request
+                # if res.thinking_summary:
+                #    yield _sse_message({"type": "delta", "content": f"**Thinking Summary:** {res.thinking_summary}"})
+                pass
                 
                 # Note: final_answer was already streamed via on_final_delta callback
                 # No need to yield it again here to avoid duplication
