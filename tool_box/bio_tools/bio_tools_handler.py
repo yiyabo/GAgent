@@ -111,6 +111,12 @@ def build_docker_command(
         else:
             logger.warning(f"Input file not found: {input_path}")
     
+    # 如果是 checkv，添加数据库挂载
+    if tool_name == "checkv":
+        # CheckV 数据库路径 (服务器上的固定位置)
+        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5"
+        mounts.append(f"-v {db_path}:/work/database")
+    
     # 构建命令参数
     params = {
         "input": input_file or "",
