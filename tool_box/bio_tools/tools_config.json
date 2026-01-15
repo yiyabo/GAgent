@@ -43,37 +43,37 @@
         "notes": "数据库必须先用 makeblastdb 创建，且路径必须使用容器内路径 /work/xxx",
         "operations": {
             "blastn": {
-                "command": "blastn -query {input} -db {database} -out /work/{output_file} -outfmt 6",
-                "description": "核酸序列比对 (output_file: 结果保存到 runtime/bio_tools/blast/)",
+                "command": "blastn -query {input} -db {db} -out /work/{output} -outfmt 6",
+                "description": "核酸序列比对",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
-                    "database",
-                    "output_file"
+                    "db",
+                    "output"
                 ],
-                "notes": "database: 容器内路径如 /work/mydb; output_file: 输出文件名如 result.txt"
+                "notes": "db: 容器内路径如 /work/mydb; output: 输出文件名如 results.txt"
             },
             "blastp": {
-                "command": "blastp -query {input} -db {database} -out /work/{output_file} -outfmt 6",
-                "description": "蛋白质序列比对 (output_file: 结果保存到 runtime/bio_tools/blast/)",
+                "command": "blastp -query {input} -db {db} -out /work/{output} -outfmt 6",
+                "description": "蛋白质序列比对",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
-                    "database",
-                    "output_file"
+                    "db",
+                    "output"
                 ],
-                "notes": "database: 容器内路径如 /work/mydb; output_file: 输出文件名如 result.txt"
+                "notes": "db: 容器内路径如 /work/mydb; output: 输出文件名如 results.txt"
             },
             "makeblastdb": {
-                "command": "makeblastdb -in {input} -dbtype {dbtype} -out /work/{db_name}",
-                "description": "创建 BLAST 数据库（输出到容器 /work 目录）",
+                "command": "makeblastdb -in {input} -dbtype {type} -out /work/{db}",
+                "description": "创建 BLAST 数据库",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
-                    "dbtype",
-                    "db_name"
+                    "type",
+                    "db"
                 ],
-                "notes": "dbtype: nucl(核酸) 或 prot(蛋白质); db_name: 数据库名称，将保存在 runtime/bio_tools/blast/"
+                "notes": "type: nucl(核酸) 或 prot(蛋白质); db: 数据库名称(无后缀)"
             }
         }
     },
@@ -84,25 +84,25 @@
         "notes": "输出文件会保存到 runtime/bio_tools/prodigal/ 目录",
         "operations": {
             "predict": {
-                "command": "prodigal -i {input} -o /dev/null -a /work/{protein_output} -d /work/{nucleotide_output}",
-                "description": "预测原核生物基因，输出蛋白质和核苷酸序列",
+                "command": "prodigal -i {input} -o /dev/null -a /work/{protein} -d /work/{nucleotide}",
+                "description": "预测原核生物基因",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
-                    "protein_output",
-                    "nucleotide_output"
+                    "protein",
+                    "nucleotide"
                 ],
-                "notes": "protein_output: 蛋白质输出文件名如 genes.faa; nucleotide_output: 核苷酸输出文件名如 genes.fna"
+                "notes": "protein: 蛋白质输出文件名如 genes.faa; nucleotide: 核苷酸输出文件名如 genes.fna"
             },
             "meta": {
-                "command": "prodigal -i {input} -o /dev/null -a /work/{protein_output} -p meta",
-                "description": "宏基因组模式基因预测（适合短序列或宏基因组数据）",
+                "command": "prodigal -i {input} -o /dev/null -a /work/{protein} -p meta",
+                "description": "宏基因组模式基因预测",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
-                    "protein_output"
+                    "protein"
                 ],
-                "notes": "protein_output: 蛋白质输出文件名如 genes.faa; 适合序列数量多但单条序列较短的数据"
+                "notes": "protein: 蛋白质输出文件名如 genes.faa; 适合短序列或宏基因组数据"
             }
         }
     },
@@ -113,36 +113,36 @@
         "notes": "HMM数据库必须先用 hmmpress 处理，路径使用容器内路径 /work/xxx",
         "operations": {
             "hmmscan": {
-                "command": "hmmscan --tblout /work/{output} {database} {input}",
+                "command": "hmmscan --tblout /work/{output} {db} {input}",
                 "description": "用序列搜索 HMM 数据库",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
-                    "database",
+                    "db",
                     "output"
                 ],
-                "notes": "database: 使用容器内路径如 /work/Pfam-A.hmm; 数据库需先用 hmmpress 处理"
+                "notes": "db: 容器内路径如 /work/test.hmm; output: 输出文件名"
             },
             "hmmsearch": {
-                "command": "hmmsearch --tblout /work/{output} {hmm_file} {input}",
+                "command": "hmmsearch --tblout /work/{output} {db} {input}",
                 "description": "用 HMM 搜索序列数据库",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
-                    "hmm_file",
+                    "db",
                     "output"
                 ],
-                "notes": "hmm_file: HMM配置文件路径; output: 输出文件名"
+                "notes": "db: HMM文件容器内路径如 /work/test.hmm; output: 输出文件名"
             },
             "hmmpress": {
-                "command": "hmmpress /work/{hmm_file}",
+                "command": "hmmpress /work/{db}",
                 "description": "压缩/准备 HMM 数据库以供 hmmscan 使用",
                 "requires_input": false,
                 "requires_output": false,
                 "extra_params": [
-                    "hmm_file"
+                    "db"
                 ],
-                "notes": "hmm_file: 放在 runtime/bio_tools/hmmer/ 目录下的 HMM 文件名"
+                "notes": "db: 放在 runtime/bio_tools/hmmer/ 目录下的 HMM 文件名"
             }
         }
     },
