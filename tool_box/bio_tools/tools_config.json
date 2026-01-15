@@ -43,24 +43,26 @@
         "notes": "数据库必须先用 makeblastdb 创建，且路径必须使用容器内路径 /work/xxx",
         "operations": {
             "blastn": {
-                "command": "blastn -query {input} -db {database} -out {output} -outfmt 6",
-                "description": "核酸序列比对 (database 必须是 /work/xxx 格式的容器内路径)",
+                "command": "blastn -query {input} -db {database} -out /work/{output_file} -outfmt 6",
+                "description": "核酸序列比对 (output_file: 结果保存到 runtime/bio_tools/blast/)",
                 "requires_input": true,
-                "requires_output": true,
+                "requires_output": false,
                 "extra_params": [
-                    "database"
+                    "database",
+                    "output_file"
                 ],
-                "notes": "database 参数必须使用容器内路径，如 /work/mydb (对应 runtime/bio_tools/blast/mydb)"
+                "notes": "database: 容器内路径如 /work/mydb; output_file: 输出文件名如 result.txt"
             },
             "blastp": {
-                "command": "blastp -query {input} -db {database} -out {output} -outfmt 6",
-                "description": "蛋白质序列比对 (database 必须是 /work/xxx 格式的容器内路径)",
+                "command": "blastp -query {input} -db {database} -out /work/{output_file} -outfmt 6",
+                "description": "蛋白质序列比对 (output_file: 结果保存到 runtime/bio_tools/blast/)",
                 "requires_input": true,
-                "requires_output": true,
+                "requires_output": false,
                 "extra_params": [
-                    "database"
+                    "database",
+                    "output_file"
                 ],
-                "notes": "database 参数必须使用容器内路径，如 /work/mydb (对应 runtime/bio_tools/blast/mydb)"
+                "notes": "database: 容器内路径如 /work/mydb; output_file: 输出文件名如 result.txt"
             },
             "makeblastdb": {
                 "command": "makeblastdb -in {input} -dbtype {dbtype} -out /work/{db_name}",
