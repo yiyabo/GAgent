@@ -234,15 +234,22 @@ async def bio_tools_handler(
             }
         
         tool_config = config[tool_name]
+        # 返回更详细的操作信息，包括 notes 和 extra_params
+        operations_detail = {}
+        for op, info in tool_config.get("operations", {}).items():
+            operations_detail[op] = {
+                "description": info.get("description", ""),
+                "extra_params": info.get("extra_params", []),
+                "notes": info.get("notes", ""),
+            }
+        
         return {
             "success": True,
             "tool": tool_name,
             "description": tool_config.get("description", ""),
+            "notes": tool_config.get("notes", ""),
             "image": tool_config.get("image", ""),
-            "operations": {
-                op: info.get("description", "") 
-                for op, info in tool_config.get("operations", {}).items()
-            },
+            "operations": operations_detail,
         }
     
     # 验证工具和操作
