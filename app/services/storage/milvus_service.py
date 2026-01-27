@@ -105,7 +105,7 @@ class MilvusVectorService:
         # 添加字段
         schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True)
         schema.add_field(field_name="text_hash", datatype=DataType.VARCHAR, max_length=64)
-        schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=1024)
+        schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=1536)
         schema.add_field(field_name="model", datatype=DataType.VARCHAR, max_length=50)
         schema.add_field(field_name="created_at", datatype=DataType.INT64)
         schema.add_field(field_name="access_count", datatype=DataType.INT64)
@@ -152,7 +152,7 @@ class MilvusVectorService:
         # 添加字段
         schema.add_field(field_name="id", datatype=DataType.INT64, is_primary=True)
         schema.add_field(field_name="task_id", datatype=DataType.INT64)
-        schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=1024)
+        schema.add_field(field_name="embedding", datatype=DataType.FLOAT_VECTOR, dim=1536)
         schema.add_field(field_name="model", datatype=DataType.VARCHAR, max_length=50)
         schema.add_field(field_name="created_at", datatype=DataType.INT64)
         schema.add_field(field_name="updated_at", datatype=DataType.INT64)

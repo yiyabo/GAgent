@@ -25,7 +25,7 @@ class DatabaseConfig:
         Path(self.db_root).mkdir(parents=True, exist_ok=True)
 
         # 创建子目录
-        subdirs = ["main", "cache", "temp", "backups", "plans", "jobs"]
+        subdirs = ["main", "cache", "temp", "backups", "plans", "jobs", "sessions"]
         for subdir in subdirs:
             Path(self.db_root, subdir).mkdir(parents=True, exist_ok=True)
 
@@ -56,6 +56,93 @@ class DatabaseConfig:
     def get_system_jobs_db_path(self) -> Path:
         """返回存放未绑定计划 Job 的数据库路径."""
         return Path(self.db_root, "jobs", "system_jobs.sqlite")
+
+    def get_session_db_dir(self) -> Path:
+        """返回 session 独立记忆库的目录."""
+        return Path(self.db_root, "sessions")
+
+    def get_session_db_path(self, session_id: str) -> Path:
+        """
+        获取指定 session 的数据库路径.
+
+        Args:
+            session_id: 会话标识符
+
+        Returns:
+            session 专属数据库文件路径
+        """
+        # 清理 session_id，只保留安全字符
+        safe_id = self._sanitize_session_id(session_id)
+        return self.get_session_db_dir() / f"session_{safe_id}.sqlite"
+
+    def _sanitize_session_id(self, session_id: str) -> str:
+        """
+        清理 session_id，移除不安全字符.
+
+        Args:
+            session_id: 原始会话标识符
+
+        Returns:
+            安全的文件名友好字符串
+        """
+        import re
+        # 只保留字母、数字、下划线和连字符
+        safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
+        # 限制长度
+        return safe_id[:64] if len(safe_id) > 64 else safe_id
+
+    def list_session_databases(self) -> list:
+        """
+        列出所有 session 数据库文件.
+
+        Returns:
+            session 数据库文件路径列表
+        """
+        session_dir = self.get_session_db_dir()
+        if not session_dir.exists():
+            return []
+        return list(session_dir.glob("session_*.sqlite"))
+
+    def cleanup_old_sessions(self, max_age_days: int = 30) -> int:
+        """
+        清理过期的 session 数据库.
+
+        Args:
+            max_age_days: 最大保留天数
+
+        Returns:
+            清理的文件数量
+        """
+        import time
+        from datetime import datetime, timedelta
+
+        cutoff_time = time.time() - (max_age_days * 24 * 60 * 60)
+        cleaned = 0
+
+        for db_path in self.list_session_databases():
+            try:
+                wal_path = db_path.with_suffix(".sqlite-wal")
+                shm_path = db_path.with_suffix(".sqlite-shm")
+
+                # 取主库、WAL、SHM 的最新 mtime，防止误删活跃会话
+                latest_mtime = db_path.stat().st_mtime
+                if wal_path.exists():
+                    latest_mtime = max(latest_mtime, wal_path.stat().st_mtime)
+                if shm_path.exists():
+                    latest_mtime = max(latest_mtime, shm_path.stat().st_mtime)
+
+                if latest_mtime < cutoff_time:
+                    db_path.unlink()
+                    if wal_path.exists():
+                        wal_path.unlink()
+                    if shm_path.exists():
+                        shm_path.unlink()
+                    cleaned += 1
+                    logger.info(f"已清理过期 session 数据库: {db_path.name}")
+            except Exception as e:
+                logger.warning(f"清理 session 数据库失败 {db_path}: {e}")
+
+        return cleaned
 
     def migrate_existing_databases(self):
         """迁移现有数据库文件到新结构"""
@@ -141,6 +228,7 @@ class DatabaseConfig:
                 "temp": os.path.join(self.db_root, "temp"),
                 "backups": os.path.join(self.db_root, "backups"),
                 "plans": str(self.get_plan_store_dir()),
+                "sessions": str(self.get_session_db_dir()),
             },
         }
 
