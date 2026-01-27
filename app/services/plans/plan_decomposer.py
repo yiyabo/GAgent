@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from ...config.decomposer_config import DecomposerSettings, get_decomposer_settings
 from ...repository.plan_repository import PlanRepository
 from .plan_models import PlanNode, PlanTree
+from .dag_models import DAG
 from ..llm.decomposer_service import (
     DecompositionChild,
     PlanDecomposerLLMService,
@@ -42,6 +43,8 @@ class DecompositionResult(BaseModel):
     failed_nodes: List[Optional[int]] = Field(default_factory=list)
     stopped_reason: Optional[str] = None
     stats: Dict[str, Any] = Field(default_factory=dict)
+    # 图简化结果（可选，已序列化为字典）
+    simplified_dag: Optional[Dict[str, Any]] = None
 
 
 class DecompositionPromptBuilder:
@@ -252,7 +255,7 @@ class PlanDecomposer:
         )
         queue: Deque[QueueItem] = deque([QueueItem(node_id=node_id, relative_depth=0)])
         root_reference = node_id
-        return self._process_queue(
+        result = self._process_queue(
             plan_id,
             tree=tree,
             mode="single_node",
@@ -265,6 +268,38 @@ class PlanDecomposer:
             root_reference=root_reference,
             session_context=session_context,
         )
+
+        # 图简化处理（与 decompose 方法保持一致）
+        if self._settings.enable_simplification and result.created_tasks:
+            try:
+                from .tree_simplifier import TreeSimplifier
+
+                # 重新获取最新的计划树
+                updated_tree = self._repo.get_plan_tree(plan_id)
+
+                simplifier = TreeSimplifier(
+                    use_llm=self._settings.simplification_use_llm,
+                    use_cache=True,
+                )
+                # 设置阈值
+                if hasattr(simplifier.matcher, 'threshold'):
+                    simplifier.matcher.threshold = self._settings.simplification_threshold
+
+                dag_result = simplifier.simplify(updated_tree)
+
+                logger.info(
+                    "Graph simplification completed (decompose_node): "
+                    f"original={len(updated_tree.nodes)}, "
+                    f"simplified={dag_result.node_count()}, "
+                    f"merged={len(dag_result.merge_map)}"
+                )
+
+                # 更新结果
+                result.simplified_dag = dag_result.to_dict()
+            except Exception as e:
+                logger.warning(f"Graph simplification failed in decompose_node: {e}")
+
+        return result
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -457,6 +492,45 @@ class PlanDecomposer:
                 {"node_budget": node_budget},
             )
 
+        # 图简化处理（根据配置）
+        simplified_dag: Optional[dict] = None
+        if self._settings.enable_simplification and created_nodes:
+            try:
+                from .tree_simplifier import TreeSimplifier
+
+                # 重新获取最新的计划树
+                updated_tree = self._repo.get_plan_tree(plan_id)
+
+                simplifier = TreeSimplifier(
+                    use_llm=self._settings.simplification_use_llm,
+                    use_cache=True,
+                )
+                # 设置阈值
+                if hasattr(simplifier.matcher, 'threshold'):
+                    simplifier.matcher.threshold = self._settings.simplification_threshold
+
+                # 使用独立变量存储中间结果，避免异常时类型不一致
+                dag_result = simplifier.simplify(updated_tree)
+
+                _log_job(
+                    "info",
+                    "Graph simplification completed",
+                    {
+                        "original_nodes": len(updated_tree.nodes),
+                        "simplified_nodes": dag_result.node_count(),
+                        "merged_count": len(dag_result.merge_map),
+                    },
+                )
+                # 转换为可序列化的字典
+                simplified_dag = dag_result.to_dict()
+            except Exception as e:
+                logger.warning(f"Graph simplification failed: {e}")
+                _log_job(
+                    "warning",
+                    "Graph simplification failed",
+                    {"error": str(e)},
+                )
+
         return DecompositionResult(
             plan_id=plan_id,
             mode=mode,
@@ -471,6 +545,7 @@ class PlanDecomposer:
                 "queue_remaining": len(queue),
                 "llm_calls": llm_calls,
             },
+            simplified_dag=simplified_dag,
         )
 
     def _trim_children(

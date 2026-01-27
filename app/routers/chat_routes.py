@@ -70,6 +70,68 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 plan_repository = PlanRepository()
 decomposer_settings = get_decomposer_settings()
 
+# 需要用户确认才能执行的危险操作
+ACTIONS_REQUIRING_CONFIRMATION = {
+    ("plan_operation", "create_plan"),      # 创建计划
+    ("plan_operation", "delete_plan"),      # 删除计划
+    ("task_operation", "delete_task"),      # 删除任务
+    ("task_operation", "clear_tasks"),      # 清空任务
+}
+
+# 待确认操作存储: {confirmation_id: {session_id, actions, structured, created_at, ...}}
+_pending_confirmations: Dict[str, Dict[str, Any]] = {}
+
+def _generate_confirmation_id() -> str:
+    """生成确认ID"""
+    return f"confirm_{uuid4().hex[:12]}"
+
+def _requires_confirmation(actions: List[Any]) -> bool:
+    """检查操作列表是否包含需要确认的操作"""
+    for action in actions:
+        key = (getattr(action, 'kind', None), getattr(action, 'name', None))
+        if key in ACTIONS_REQUIRING_CONFIRMATION:
+            return True
+    return False
+
+def _store_pending_confirmation(
+    confirmation_id: str,
+    session_id: str,
+    actions: List[Any],
+    structured: Any,
+    plan_id: Optional[int] = None,
+    extra_context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """存储待确认的操作"""
+    _pending_confirmations[confirmation_id] = {
+        "session_id": session_id,
+        "actions": actions,
+        "structured": structured,
+        "plan_id": plan_id,
+        "extra_context": extra_context or {},
+        "created_at": datetime.now().isoformat(),
+    }
+    logger.info(f"[CONFIRMATION] Stored pending confirmation: {confirmation_id} for session {session_id}")
+
+def _get_pending_confirmation(confirmation_id: str) -> Optional[Dict[str, Any]]:
+    """获取待确认的操作"""
+    return _pending_confirmations.get(confirmation_id)
+
+def _remove_pending_confirmation(confirmation_id: str) -> Optional[Dict[str, Any]]:
+    """移除并返回待确认的操作"""
+    return _pending_confirmations.pop(confirmation_id, None)
+
+def _cleanup_old_confirmations(max_age_seconds: int = 600) -> None:
+    """清理过期的待确认操作（默认10分钟）"""
+    now = datetime.now()
+    expired = []
+    for cid, data in _pending_confirmations.items():
+        created = datetime.fromisoformat(data["created_at"])
+        if (now - created).total_seconds() > max_age_seconds:
+            expired.append(cid)
+    for cid in expired:
+        del _pending_confirmations[cid]
+        logger.info(f"[CONFIRMATION] Cleaned up expired confirmation: {cid}")
+
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
 VALID_BASE_MODELS = {"qwen3-max", "glm-4.6", "kimi-k2-thinking", "gpt-5.2-2025-12-11"}
 VALID_LLM_PROVIDERS = {"glm", "qwen", "openai", "perplexity"}
@@ -659,6 +721,145 @@ async def delete_chat_session(
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Failed to delete chat session %s: %s", session_id, exc)
         raise HTTPException(status_code=500, detail="Failed to delete session") from exc
+
+
+# ============================================================================
+# 操作确认 API
+# ============================================================================
+
+class ConfirmActionRequest(BaseModel):
+    """确认操作请求"""
+    confirmation_id: str
+    confirmed: bool = True  # True=确认执行, False=取消
+
+
+class ConfirmActionResponse(BaseModel):
+    """确认操作响应"""
+    success: bool
+    message: str
+    confirmation_id: str
+    executed: bool = False
+    result: Optional[Dict[str, Any]] = None
+
+
+@router.post("/confirm", response_model=ConfirmActionResponse)
+async def confirm_pending_action(
+    request: ConfirmActionRequest,
+    background_tasks: BackgroundTasks,
+) -> ConfirmActionResponse:
+    """
+    确认或取消待执行的操作。
+
+    当 LLM 生成的操作需要用户确认时（如 create_plan），
+    系统会暂存操作并返回 confirmation_id，用户需调用此接口确认或取消。
+    """
+    _cleanup_old_confirmations()  # 清理过期确认
+
+    pending = _remove_pending_confirmation(request.confirmation_id)
+    if not pending:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Confirmation {request.confirmation_id} not found or expired"
+        )
+
+    if not request.confirmed:
+        logger.info(f"[CONFIRMATION] User cancelled: {request.confirmation_id}")
+        return ConfirmActionResponse(
+            success=True,
+            message="操作已取消",
+            confirmation_id=request.confirmation_id,
+            executed=False,
+        )
+
+    # 用户确认，执行操作
+    logger.info(f"[CONFIRMATION] User confirmed: {request.confirmation_id}")
+
+    try:
+        session_id = pending["session_id"]
+        actions = pending["actions"]
+        plan_id = pending.get("plan_id")
+
+        # 创建后台执行任务
+        tracking_id = f"act_{uuid4().hex[:32]}"
+
+        # 调度后台执行
+        background_tasks.add_task(
+            _execute_confirmed_actions,
+            tracking_id=tracking_id,
+            session_id=session_id,
+            actions=actions,
+            plan_id=plan_id,
+            extra_context=pending.get("extra_context", {}),
+        )
+
+        return ConfirmActionResponse(
+            success=True,
+            message="操作已确认，正在执行...",
+            confirmation_id=request.confirmation_id,
+            executed=True,
+            result={"tracking_id": tracking_id},
+        )
+    except Exception as e:
+        logger.error(f"[CONFIRMATION] Execution failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/confirm/{confirmation_id}")
+async def get_pending_confirmation_status(confirmation_id: str) -> Dict[str, Any]:
+    """获取待确认操作的状态"""
+    pending = _get_pending_confirmation(confirmation_id)
+    if not pending:
+        raise HTTPException(status_code=404, detail="Confirmation not found or expired")
+
+    return {
+        "confirmation_id": confirmation_id,
+        "session_id": pending["session_id"],
+        "plan_id": pending.get("plan_id"),
+        "created_at": pending["created_at"],
+        "actions": [
+            {"kind": getattr(a, 'kind', None), "name": getattr(a, 'name', None)}
+            for a in pending.get("actions", [])
+        ],
+    }
+
+
+async def _execute_confirmed_actions(
+    tracking_id: str,
+    session_id: str,
+    actions: List[Any],
+    plan_id: Optional[int],
+    extra_context: Dict[str, Any],
+) -> None:
+    """后台执行已确认的操作"""
+    logger.info(f"[CONFIRMATION] Executing confirmed actions: {tracking_id}")
+
+    try:
+        # 获取或创建 agent
+        plan_session = PlanSessionManager(repo=plan_repository)
+        if plan_id:
+            plan_session.bind(plan_id)
+
+        agent = PlanningAgent(
+            llm_service=get_llm_service(),
+            plan_session=plan_session,
+            history=[],
+            extra_context=extra_context,
+        )
+
+        # 执行每个 action
+        for action in actions:
+            try:
+                step = await agent._dispatch_action(action)
+                logger.info(
+                    f"[CONFIRMATION] Action {action.name} completed: success={step.success}"
+                )
+            except Exception as e:
+                logger.error(f"[CONFIRMATION] Action {action.name} failed: {e}")
+
+        logger.info(f"[CONFIRMATION] All actions completed: {tracking_id}")
+
+    except Exception as e:
+        logger.error(f"[CONFIRMATION] Execution error: {e}")
 
 
 @router.get("/status", response_model=ChatStatusResponse)
@@ -1282,12 +1483,19 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                     yield chunk
                 return
 
+            # 打字机效果：与 DeepThink 保持一致
+            TYPEWRITER_DELAY = 0.01  # 10ms 延迟，与 DeepThink 一致
+            BATCH_SIZE = 1  # 逐字符发送，与 DeepThink 一致
+
             async for chunk in agent.llm_service.stream_chat_async(
                 prompt, force_real=True, model=model_override
             ):
                 for delta in parser.feed(chunk):
                     if delta:
-                        yield _sse_message({"type": "delta", "content": delta})
+                        # 逐字符发送，实现平滑打字机效果
+                        for char in delta:
+                            yield _sse_message({"type": "delta", "content": char})
+                            await asyncio.sleep(TYPEWRITER_DELAY)
 
             raw = parser.full_text()
             cleaned = agent._strip_code_fence(raw)
@@ -1465,6 +1673,57 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             )
 
             job_snapshot = plan_decomposition_jobs.get_job_payload(tracking_id)
+
+            # 检查是否需要用户确认
+            requires_confirm = _requires_confirmation(structured.actions)
+
+            if requires_confirm:
+                # 生成确认ID并存储待确认操作
+                confirmation_id = _generate_confirmation_id()
+                _store_pending_confirmation(
+                    confirmation_id=confirmation_id,
+                    session_id=request.session_id or "",
+                    actions=list(structured.actions),
+                    structured=structured,
+                    plan_id=plan_session.plan_id,
+                    extra_context=agent.extra_context,
+                )
+
+                # 构建需要确认的响应
+                confirm_actions = [
+                    {"kind": a.kind, "name": a.name}
+                    for a in structured.actions
+                    if (a.kind, a.name) in ACTIONS_REQUIRING_CONFIRMATION
+                ]
+                suggestions = [
+                    "此操作需要您的确认才能执行。",
+                    "请点击确认按钮或调用 /chat/confirm 接口确认执行。",
+                ]
+                chat_response = ChatResponse(
+                    response=structured.llm_reply.message,
+                    suggestions=suggestions,
+                    actions=pending_actions,
+                    metadata={
+                        "status": "awaiting_confirmation",
+                        "requires_confirmation": True,
+                        "confirmation_id": confirmation_id,
+                        "confirm_actions": confirm_actions,
+                        "unified_stream": True,
+                        "tracking_id": tracking_id,
+                        "plan_id": plan_session.plan_id,
+                        "raw_actions": [action.model_dump() for action in structured.actions],
+                    },
+                )
+                saved = _save_assistant_response(request.session_id, chat_response)
+                yield _sse_message({"type": "final", "payload": saved.model_dump()})
+                logger.info(
+                    "[CHAT][CONFIRMATION] Actions require confirmation: %s, confirmation_id=%s",
+                    confirm_actions,
+                    confirmation_id,
+                )
+                return
+
+            # 不需要确认，正常执行
             chat_response = ChatResponse(
                 response=structured.llm_reply.message,
                 suggestions=suggestions,
@@ -3628,7 +3887,7 @@ class StructuredChatAgent:
                 # Instantiate DeepThinkAgent with streaming callbacks
                 dt_agent = DeepThinkAgent(
                     llm_client=self.llm_service,
-                    available_tools=["web_search", "graph_rag", "claude_code", "file_operations", "vision_reader", "bio_tools"],
+                    available_tools=["web_search", "graph_rag", "claude_code", "file_operations", "vision_reader", "bio_tools", "phagescope", "result_interpreter"],
                     tool_executor=tool_wrapper,
                     max_iterations=30,
                     tool_timeout=120,  # 2分钟工具超时

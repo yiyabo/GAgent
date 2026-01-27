@@ -135,6 +135,14 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_job_index_plan ON plan_decomposition_job_index(plan_id)"
         )
 
+    # 清理过期的 session 数据库
+    try:
+        cleaned = config.cleanup_old_sessions(max_age_days=30)
+        if cleaned > 0:
+            logger.info(f"Cleaned up {cleaned} old session databases")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup old sessions: {e}")
+
     logger.info("Main database initialised at %s", main_db_path)
 
 
