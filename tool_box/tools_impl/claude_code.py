@@ -159,7 +159,7 @@ async def claude_code_handler(
         task_work_dir = session_dir / task_dir_base
         task_work_dir.mkdir(parents=True, exist_ok=True)
 
-        task_subdirs = ["result", "code", "data", "docs"]
+        task_subdirs = ["results", "code", "data", "docs"]
         for subdir in task_subdirs:
             (task_work_dir / subdir).mkdir(parents=True, exist_ok=True)
 
@@ -173,7 +173,7 @@ async def claude_code_handler(
                 _LOG_DIR.mkdir(parents=True, exist_ok=True)
                 log_path = _LOG_DIR / f"{job_id}.log"
             else:
-                log_path = task_work_dir / "result" / f"{file_prefix}_claude_code.log"
+                log_path = task_work_dir / "results" / f"{file_prefix}_claude_code.log"
 
             log_file = open(log_path, "a", encoding="utf-8")
             log_file.write(f"[{datetime.utcnow().isoformat()}Z] Claude Code started\n")
@@ -189,8 +189,14 @@ async def claude_code_handler(
         allowed_dirs = []
         if add_dirs:
             for dir_path in add_dirs.split(','):
-                abs_path = _PROJECT_ROOT / dir_path.strip()
-                allowed_dirs.append(str(abs_path))
+                dir_path = dir_path.strip()
+                # Check if already an absolute path
+                if Path(dir_path).is_absolute():
+                    allowed_dirs.append(dir_path)
+                else:
+                    # Convert relative path to absolute
+                    abs_path = _PROJECT_ROOT / dir_path
+                    allowed_dirs.append(str(abs_path))
             
         # Include work directory, file save location in task description, and inject research task system prompt
         enhanced_task = (
@@ -199,8 +205,8 @@ async def claude_code_handler(
             "including implementing methods as described in papers, reproducing figures and tables, "
             "explaining numerical results, and producing transparent, reproducible code and analysis.\n\n"
             "Workspace rule: your working root is the task directory; first list its contents to see what is already provided. "
-            "Store outputs ONLY in the four subfolders: result/, code/, data/, docs/. Do not create any other directories.\n\n"
-            "Folder usage: result/ for figures and final outputs; code/ for scripts; data/ for derived tables; "
+            "Store outputs ONLY in the four subfolders: results/, code/, data/, docs/. Do not create any other directories.\n\n"
+            "Folder usage: results/ for figures and final outputs; code/ for scripts; data/ for derived tables; "
             "docs/ for reports and narratives.\n\n"
             "When working with papers, treat every numerical value as important scientific evidence. "
             "For each important number (metrics, coefficients, hyperparameters, table entries, figure annotations), "
@@ -224,7 +230,7 @@ async def claude_code_handler(
             "running the code. Clearly distinguish actual expected outputs from purely illustrative examples, and "
             "label illustrative results as such.\n\n"
             f"You are working in the task directory '{task_work_dir.relative_to(_PROJECT_ROOT)}'. All newly generated files "
-            "must be saved under result/, code/, data/, or docs/ within this directory. "
+            "must be saved under results/, code/, data/, or docs/ within this directory."
             f"Use the file prefix '{file_prefix}' for new artifacts to avoid overwriting earlier runs. "
             "Do not overwrite original raw datasets; if preprocessing is needed, write new processed files and explain "
             "how they were produced. When reading existing project data, use paths that are consistent and "
