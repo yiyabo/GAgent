@@ -428,30 +428,32 @@ class PlanExecutorInterpreter:
     def _scan_generated_files(self) -> List[str]:
         """
         扫描 output_dir 及其子目录下生成的文件
-        
+
         扫描范围：
         1. output_dir 根目录下的文件
-        2. output_dir/results 子目录下的文件
-        
+        2. output_dir 下的所有子目录: results/, code/, data/, docs/
+
         Returns:
             List[str]: 文件的相对路径列表（相对于 output_dir）
         """
         files = []
-        
+
         # 扫描 output_dir 根目录
         for f in self.output_dir.iterdir():
             if f.is_file():
                 files.append(f.name)
-        
-        # 扫描 results 子目录
-        results_dir = self.output_dir / "results"
-        if results_dir.exists():
-            for f in results_dir.iterdir():
-                if f.is_file():
-                    # 返回相对路径，格式为 results/filename.ext
-                    relative_path = f"results/{f.name}"
-                    files.append(relative_path)
-        
+
+        # 扫描所有4个子目录: results/, code/, data/, docs/
+        subdirs_to_scan = ["results", "code", "data", "docs"]
+        for subdir in subdirs_to_scan:
+            subdir_path = self.output_dir / subdir
+            if subdir_path.exists():
+                for f in subdir_path.iterdir():
+                    if f.is_file():
+                        # 返回相对路径，格式为 subdir/filename.ext
+                        relative_path = f"{subdir}/{f.name}"
+                        files.append(relative_path)
+
         return files
 
     async def _execute_single_node(self, node_id: int) -> NodeExecutionRecord:
@@ -696,97 +698,102 @@ class PlanExecutorInterpreter:
         logger.info(f"拓扑顺序: {self._topo_order}")
         started_at = datetime.now().isoformat()
 
-        # 根据数据库中的状态初始化所有节点状态，并加载已完成节点的执行记录
-        self._initialize_node_states()
+        try:
+            # 根据数据库中的状态初始化所有节点状态，并加载已完成节点的执行记录
+            self._initialize_node_states()
 
-        # 按拓扑顺序调度执行（依赖满足才执行）
-        total_nodes = len(self._topo_order)
-        pending = [
-            node_id
-            for node_id in self._topo_order
-            if self._node_status.get(node_id) == NodeExecutionStatus.PENDING
-        ]
-        executed = 0
+            # 按拓扑顺序调度执行（依赖满足才执行）
+            total_nodes = len(self._topo_order)
+            pending = [
+                node_id
+                for node_id in self._topo_order
+                if self._node_status.get(node_id) == NodeExecutionStatus.PENDING
+            ]
+            executed = 0
 
-        while pending:
-            progress = False
-            for node_id in list(pending):
-                if not self._can_execute_node(node_id):
-                    continue
+            while pending:
+                progress = False
+                for node_id in list(pending):
+                    if not self._can_execute_node(node_id):
+                        continue
 
-                executed += 1
-                logger.info(f"[{executed}/{total_nodes}] 执行节点 [{node_id}]")
-                await self._execute_single_node(node_id)
-                pending.remove(node_id)
-                progress = True
+                    executed += 1
+                    logger.info(f"[{executed}/{total_nodes}] 执行节点 [{node_id}]")
+                    await self._execute_single_node(node_id)
+                    pending.remove(node_id)
+                    progress = True
 
-            if not progress:
-                logger.warning(
-                    "无可执行节点，剩余节点将被标记为 SKIPPED: %s",
-                    pending,
-                )
-                for node_id in pending:
-                    if self._node_status.get(node_id) == NodeExecutionStatus.PENDING:
-                        self._node_status[node_id] = NodeExecutionStatus.SKIPPED
-                        # 持久化 SKIPPED 状态到数据库
-                        node = self.tree.nodes.get(node_id)
-                        node_name = node.name if node else f"node_{node_id}"
-                        self.repo.update_task(
-                            plan_id=self.plan_id,
-                            task_id=node_id,
-                            status=NodeExecutionStatus.SKIPPED.value,
-                            execution_result=json.dumps({
-                                "task_type": None,
-                                "code": None,
-                                "code_description": None,
-                                "code_output": None,
-                                "text_response": None,
-                                "generated_files": [],
-                                "has_visualization": False,
-                                "visualization_purpose": None,
-                                "visualization_analysis": None,
-                                "error": "节点因依赖失败或无法执行而被跳过"
-                            }, ensure_ascii=False)
-                        )
-                        # 创建执行记录
-                        self._node_records[node_id] = NodeExecutionRecord(
-                            node_id=node_id,
-                            node_name=node_name,
-                            status=NodeExecutionStatus.SKIPPED,
-                            error_message="节点因依赖失败或无法执行而被跳过"
-                        )
-                break
-        
-        # 统计结果
-        completed_count = sum(1 for s in self._node_status.values() if s == NodeExecutionStatus.COMPLETED)
-        failed_count = sum(1 for s in self._node_status.values() if s == NodeExecutionStatus.FAILED)
-        skipped_count = sum(1 for s in self._node_status.values() if s == NodeExecutionStatus.SKIPPED)
-        
-        completed_at = datetime.now().isoformat()
-        
-        # 完成分析报告（添加总结部分）
-        self._finalize_analysis_report(completed_count, failed_count, skipped_count)
-        
-        # 构建结果
-        result = PlanExecutionResult(
-            plan_id=self.plan_id,
-            plan_title=self.tree.title,
-            success=(failed_count == 0),
-            total_nodes=len(self.tree.nodes),
-            completed_nodes=completed_count,
-            failed_nodes=failed_count,
-            skipped_nodes=skipped_count,
-            node_records=self._node_records,
-            all_generated_files=self._all_generated_files,
-            report_path=str(self._analysis_report_path),
-            started_at=started_at,
-            completed_at=completed_at
-        )
-        
-        logger.info(f"计划执行完成: 成功={result.success}, 完成={completed_count}, 失败={failed_count}")
-        logger.info(f"分析报告已保存: {self._analysis_report_path}")
-        
-        return result
+                if not progress:
+                    logger.warning(
+                        "无可执行节点，剩余节点将被标记为 SKIPPED: %s",
+                        pending,
+                    )
+                    for node_id in pending:
+                        if self._node_status.get(node_id) == NodeExecutionStatus.PENDING:
+                            self._node_status[node_id] = NodeExecutionStatus.SKIPPED
+                            # 持久化 SKIPPED 状态到数据库
+                            node = self.tree.nodes.get(node_id)
+                            node_name = node.name if node else f"node_{node_id}"
+                            self.repo.update_task(
+                                plan_id=self.plan_id,
+                                task_id=node_id,
+                                status=NodeExecutionStatus.SKIPPED.value,
+                                execution_result=json.dumps({
+                                    "task_type": None,
+                                    "code": None,
+                                    "code_description": None,
+                                    "code_output": None,
+                                    "text_response": None,
+                                    "generated_files": [],
+                                    "has_visualization": False,
+                                    "visualization_purpose": None,
+                                    "visualization_analysis": None,
+                                    "error": "节点因依赖失败或无法执行而被跳过"
+                                }, ensure_ascii=False)
+                            )
+                            # 创建执行记录
+                            self._node_records[node_id] = NodeExecutionRecord(
+                                node_id=node_id,
+                                node_name=node_name,
+                                status=NodeExecutionStatus.SKIPPED,
+                                error_message="节点因依赖失败或无法执行而被跳过"
+                            )
+                    break
+
+            # 统计结果
+            completed_count = sum(1 for s in self._node_status.values() if s == NodeExecutionStatus.COMPLETED)
+            failed_count = sum(1 for s in self._node_status.values() if s == NodeExecutionStatus.FAILED)
+            skipped_count = sum(1 for s in self._node_status.values() if s == NodeExecutionStatus.SKIPPED)
+
+            completed_at = datetime.now().isoformat()
+
+            # 完成分析报告（添加总结部分）
+            self._finalize_analysis_report(completed_count, failed_count, skipped_count)
+
+            # 构建结果
+            result = PlanExecutionResult(
+                plan_id=self.plan_id,
+                plan_title=self.tree.title,
+                success=(failed_count == 0),
+                total_nodes=len(self.tree.nodes),
+                completed_nodes=completed_count,
+                failed_nodes=failed_count,
+                skipped_nodes=skipped_count,
+                node_records=self._node_records,
+                all_generated_files=self._all_generated_files,
+                report_path=str(self._analysis_report_path),
+                started_at=started_at,
+                completed_at=completed_at
+            )
+
+            logger.info(f"计划执行完成: 成功={result.success}, 完成={completed_count}, 失败={failed_count}")
+            logger.info(f"分析报告已保存: {self._analysis_report_path}")
+
+            return result
+
+        finally:
+            # 无论执行成功还是异常，都清理 TaskExecutor 的临时 staging 目录
+            self.task_executor.cleanup()
 
     def _finalize_analysis_report(self, completed: int, failed: int, skipped: int):
         """完成分析报告，添加执行总结"""
