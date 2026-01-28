@@ -16,3 +16,6 @@ log/
 docs/
 .mplconfig/fontlist-v390.json
 .agentreference/
+.agent/workflows/default-environment.md
+.gitignore
+.roo/mcp.json

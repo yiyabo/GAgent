@@ -11,11 +11,23 @@ import json
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Callable, Awaitable
+from typing import Any, Dict, List, Optional, Callable, Awaitable
 import asyncio
 from app.services.plans.decomposition_jobs import get_current_job, log_job_event
 
 logger = logging.getLogger(__name__)
+
+
+def _get_available_skills() -> List[str]:
+    """获取可用的 skills 列表"""
+    try:
+        from app.services.skills import get_skills_loader
+        loader = get_skills_loader(auto_sync=False)
+        skills = loader.list_skills()
+        return [s.get("name", "") for s in skills if s.get("name")]
+    except Exception as e:
+        logger.debug(f"Failed to load skills list: {e}")
+        return []
 
 # Project root directory
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -187,69 +199,52 @@ async def claude_code_handler(
         
         # Process additional directories to allow access, convert to absolute paths
         allowed_dirs = []
+        
+        # Always include project's data directory by default
+        default_data_dir = _PROJECT_ROOT / "data"
+        if default_data_dir.exists():
+            allowed_dirs.append(str(default_data_dir))
+            logger.info(f"Auto-added default data directory: {default_data_dir}")
+        
+        # Auto-add session's runtime directory for cross-task access within same session
+        if session_dir.exists():
+            allowed_dirs.append(str(session_dir))
+            logger.info(f"Auto-added session runtime directory: {session_dir}")
+        
         if add_dirs:
             for dir_path in add_dirs.split(','):
                 dir_path = dir_path.strip()
                 # Check if already an absolute path
                 if Path(dir_path).is_absolute():
-                    allowed_dirs.append(dir_path)
+                    if dir_path not in allowed_dirs:
+                        allowed_dirs.append(dir_path)
                 else:
                     # Convert relative path to absolute
                     abs_path = _PROJECT_ROOT / dir_path
-                    allowed_dirs.append(str(abs_path))
+                    if str(abs_path) not in allowed_dirs:
+                        allowed_dirs.append(str(abs_path))
             
-        # Include work directory, file save location in task description, and inject research task system prompt
+        # Build concise task prompt with skills info and execution directive
+        # Get available skills for reference
+        available_skills = _get_available_skills()
+        skills_info = ""
+        if available_skills:
+            skills_info = (
+                f"Available skills: {', '.join(available_skills)}\n"
+            )
+        
         enhanced_task = (
-            "You are an AI research assistant focused on rigorous scientific work. "
-            "Your primary objective is to faithfully reproduce and critically analyze published research, "
-            "including implementing methods as described in papers, reproducing figures and tables, "
-            "explaining numerical results, and producing transparent, reproducible code and analysis.\n\n"
-            "Workspace rule: your working root is the task directory; first list its contents to see what is already provided. "
-            "Store outputs ONLY in the four subfolders: results/, code/, data/, docs/. Do not create any other directories.\n\n"
-            "Folder usage: results/ for figures and final outputs; code/ for scripts; data/ for derived tables; "
-            "docs/ for reports and narratives.\n\n"
-            "When working with papers, treat every numerical value as important scientific evidence. "
-            "For each important number (metrics, coefficients, hyperparameters, table entries, figure annotations), "
-            "explain what it represents, its units or scale when applicable, how it is computed or derived, "
-            "and what it tells us scientifically. When your implementation cannot match the reported numbers or "
-            "trends, do not ignore the discrepancy; instead, discuss plausible reasons such as data differences, "
-            "random seeds, preprocessing, or missing details.\n\n"
-            "When reproducing figures, aim to match the original scientific intent and style as closely as practical: "
-            "align axis labels and units, axis ranges and tick spacing, legend entries and ordering, line styles and "
-            "markers, and figure or subfigure titles. For each plot, briefly explain what each curve or group "
-            "represents, what the axes mean, and what key conclusion a researcher should draw.\n\n"
-            "PREFERRED COLOR PALETTE for visualizations (use these colors in order for consistency across figures):\n"
-            "  Primary: #ABD1BC (sage green), #BED0F9 (soft blue), #CCCC99 (olive), #DBE4FB (light periwinkle)\n"
-            "  Secondary: #E3BBED (lavender), #EDC3A5 (peach), #F1F1F1 (light gray), #FCB6A5 (coral), #FDEBAA (cream)\n"
-            "When creating plots with matplotlib/seaborn, define this palette at the start:\n"
-            "  COLORS = ['#ABD1BC', '#BED0F9', '#CCCC99', '#DBE4FB', '#E3BBED', '#EDC3A5', '#F1F1F1', '#FCB6A5', '#FDEBAA']\n"
-            "Use these colors for bar charts, line plots, scatter plots, heatmaps, and other visualizations. "
-            "Ensure sufficient contrast for accessibility and use consistent color assignments across related figures.\n\n"
-            "Always design code and experiments for reproducibility: set and document random seeds, clearly specify "
-            "key hyperparameters and whether they come from the paper or from you, and provide example commands for "
-            "running the code. Clearly distinguish actual expected outputs from purely illustrative examples, and "
-            "label illustrative results as such.\n\n"
-            f"You are working in the task directory '{task_work_dir.relative_to(_PROJECT_ROOT)}'. All newly generated files "
-            "must be saved under results/, code/, data/, or docs/ within this directory."
-            f"Use the file prefix '{file_prefix}' for new artifacts to avoid overwriting earlier runs. "
-            "Do not overwrite original raw datasets; if preprocessing is needed, write new processed files and explain "
-            "how they were produced. When reading existing project data, use paths that are consistent and "
-            "reproducible from the project root.\n\n"
-            "Maintain scientific integrity: do not fabricate real experimental data, real published papers, or "
-            "citations. Clearly distinguish statements supported by the given paper or data from your own hypotheses, "
-            "and label hypotheses as such.\n\n"
-            "When the task requests a manuscript, article draft, or paper-like report, write in a mature, expert "
-            "academic style with cohesive paragraphs (avoid short, fragmented sentences). Provide rigorous analysis "
-            "of the obtained results and connect them to scientific implications. The manuscript must include at "
-            "least Abstract, Introduction, Methods, Experiments, Results, and References. The Methods and Experiments "
-            "sections should be highly detailed, at a Nature-level of methodological clarity and completeness.\n\n"
-            "If the task description or the paper is ambiguous or under-specified, ask clarifying questions before "
-            "committing to a specific implementation. Structure your responses for researchers: start with a concise "
-            "high-level summary, then list concrete steps or code, and finally provide explanations and caveats. "
-            "All code, comments, variable names, figure labels, and documentation you produce should be in English, "
-            "even if the user communicates in another language.\n\n"
-            "User task:\n"
-            f"{task}"
+            f"[EXECUTION MODE] Write code, execute it, and save outputs to files. Do NOT just describe or plan.\n\n"
+            f"Working directory: {task_work_dir}\n"
+            f"Output folders: results/ (figures), code/ (scripts), data/ (tables), docs/ (reports)\n"
+            f"File prefix: {file_prefix}\n"
+            f"{skills_info}\n"
+            f"Task:\n{task}\n\n"
+            f"Requirements:\n"
+            f"1. Write executable scripts to code/\n"
+            f"2. Run the scripts and capture outputs\n"
+            f"3. Save all figures/results to results/\n"
+            f"4. Provide a summary of actual outputs produced"
         )
         
         # Build command
@@ -258,6 +253,7 @@ async def claude_code_handler(
             '-p',  # Print mode (non-interactive)
             enhanced_task,
             '--output-format', output_format,
+            '--max-turns', '50',  # Allow more turns for complex tasks
         ]
         
         # Add tool restrictions
