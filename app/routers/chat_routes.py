@@ -133,7 +133,7 @@ def _cleanup_old_confirmations(max_age_seconds: int = 600) -> None:
         logger.info(f"[CONFIRMATION] Cleaned up expired confirmation: {cid}")
 
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
-VALID_BASE_MODELS = {"qwen3-max", "glm-4.6", "kimi-k2-thinking", "gpt-5.2-2025-12-11"}
+VALID_BASE_MODELS = {"qwen3-max-2026-01-23", "glm-4.6", "kimi-k2-thinking", "gpt-5.2-2025-12-11"}
 VALID_LLM_PROVIDERS = {"glm", "qwen", "openai", "perplexity"}
 plan_decomposer_service = PlanDecomposer(
     repo=plan_repository,
@@ -306,7 +306,7 @@ class ChatSessionSettings(BaseModel):
 
     default_search_provider: Optional[Literal["builtin", "perplexity", "tavily"]] = None
     default_base_model: Optional[
-        Literal["qwen3-max", "glm-4.6", "kimi-k2-thinking", "gpt-5.2-2025-12-11"]
+        Literal["qwen3-max-2026-01-23", "glm-4.6", "kimi-k2-thinking", "gpt-5.2-2025-12-11"]
     ] = None
     default_llm_provider: Optional[
         Literal["glm", "qwen", "openai", "perplexity"]

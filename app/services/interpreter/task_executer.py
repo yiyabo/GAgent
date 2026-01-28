@@ -7,6 +7,12 @@
 重构说明：
 - 原流程：LLM生成代码 → LocalCodeInterpreter执行 → 失败 → LLM修复 → 重试
 - 新流程：任务描述 → claude_code_handler 自主完成一切 → 结果
+
+Skills 集成：
+- Skills 源文件存放在项目 skills/ 目录
+- 运行时同步到 ~/.claude/skills/
+- Claude Code 自动加载并根据任务语义决定使用哪些 skills
+- 可选：使用 LLM 驱动的 skill 选择进行更精细控制
 """
 
 import asyncio
@@ -21,6 +27,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 from app.services.llm.llm_service import LLMService, get_llm_service
+from app.services.skills import SkillsLoader, get_skills_loader
 from .metadata import DatasetMetadata, DataProcessor
 from .prompts.task_executer import (
     TASK_TYPE_SYSTEM_PROMPT,
@@ -169,6 +176,16 @@ class TaskExecutor:
         self.session_id = session_id
         self.plan_id = plan_id
 
+        # 初始化 Skills 管理器（确保 skills 已同步到 ~/.claude/skills/）
+        # Claude Code 会自动加载并根据任务语义决定使用哪些 skills
+        try:
+            self.skills_loader = get_skills_loader(auto_sync=True)
+            skills_count = len(self.skills_loader.list_skills())
+            logger.info(f"Skills 已同步，共 {skills_count} 个 skills 可用")
+        except Exception as e:
+            logger.warning(f"Skills 初始化失败（不影响核心功能）: {e}")
+            self.skills_loader = None
+
         logger.info(f"TaskExecutor 初始化: data_dir={self.data_dir}, output_dir={self.output_dir}")
 
     def cleanup(self) -> None:
@@ -259,6 +276,37 @@ class TaskExecutor:
         logger.info(f"任务类型判断: CODE_REQUIRED (默认)")
         return TaskType.CODE_REQUIRED
 
+    async def _select_skills_for_task(
+        self,
+        task_title: str,
+        task_description: str
+    ) -> List[str]:
+        """
+        使用 LLM 语义理解自动选择相关 skills
+
+        完全基于 LLM 判断，不使用任何关键词匹配或正则表达式。
+
+        Args:
+            task_title: 任务标题
+            task_description: 任务描述
+
+        Returns:
+            选中的 skill 名称列表
+        """
+        if not self.skills_loader:
+            return []
+
+        try:
+            selected = await self.skills_loader.select_skills_for_task(
+                task_title=task_title,
+                task_description=task_description,
+                llm_service=self.llm_service
+            )
+            return selected
+        except Exception as e:
+            logger.warning(f"LLM skill 选择失败: {e}")
+            return []
+
     async def _execute_code_task(
         self,
         task_title: str,
@@ -266,6 +314,7 @@ class TaskExecutor:
         subtask_results: str = "",
         is_visualization: bool = False,
         task_id: Optional[int] = None,
+        use_skill_hints: bool = True,
     ) -> TaskExecutionResult:
         """
         使用 Claude Code 执行需要代码的任务
@@ -276,16 +325,32 @@ class TaskExecutor:
         - 错误修复和重试
         - 信息收集（如需要）
 
+        Skills 集成：
+        - Skills 已同步到 ~/.claude/skills/，Claude Code 会自动加载
+        - 可选：使用 LLM 选择相关 skills 并在任务描述中提示
+
         Args:
             task_title: 任务标题
             task_description: 任务描述
             subtask_results: 子任务结果
             is_visualization: 是否为可视化任务
             task_id: 任务ID（用于工作区隔离）
+            use_skill_hints: 是否在任务描述中添加 skill 提示
         """
         from tool_box.tools_impl.claude_code import claude_code_handler
 
         logger.info(f"使用 Claude Code 执行任务: {task_title}")
+
+        # 可选：使用 LLM 选择相关 skills
+        skill_hints = ""
+        if use_skill_hints and self.skills_loader:
+            selected_skills = await self._select_skills_for_task(task_title, task_description)
+            if selected_skills:
+                skill_hints = f"\n## 推荐参考的 Skills:\n"
+                skill_hints += f"以下 skills 可能对此任务有帮助，请根据需要参考使用：\n"
+                for skill_name in selected_skills:
+                    skill_hints += f"- {skill_name}\n"
+                logger.info(f"LLM 选择的 skills: {selected_skills}")
 
         # 构建增强的任务描述
         datasets_summary = self._format_datasets_summary()
@@ -308,6 +373,10 @@ class TaskExecutor:
 - 数据目录: {self.data_dir}
 - 输出目录: {self.output_dir}
 """
+
+        # 添加 skill 提示
+        if skill_hints:
+            enhanced_task += skill_hints
 
         if subtask_results:
             enhanced_task += f"\n## 子任务执行结果（可作为参考）:\n{subtask_results}\n"
@@ -336,16 +405,19 @@ class TaskExecutor:
             stderr = result.get("stderr", "")
 
             # 复制 Claude Code 产出文件到 output_dir
+            # 处理所有4个子目录: results/, code/, data/, docs/
             task_dir = result.get("task_directory_full", "")
             if task_dir and self.output_dir:
-                src_results = Path(task_dir) / "results"
-                dst_results = Path(self.output_dir) / "results"
-                if src_results.exists():
-                    dst_results.mkdir(parents=True, exist_ok=True)
-                    for f in src_results.iterdir():
-                        if f.is_file():
-                            shutil.copy2(f, dst_results / f.name)
-                    logger.info(f"已复制产出文件从 {src_results} 到 {dst_results}")
+                subdirs_to_copy = ["results", "code", "data", "docs"]
+                for subdir in subdirs_to_copy:
+                    src_dir = Path(task_dir) / subdir
+                    dst_dir = Path(self.output_dir) / subdir
+                    if src_dir.exists():
+                        dst_dir.mkdir(parents=True, exist_ok=True)
+                        for f in src_dir.iterdir():
+                            if f.is_file():
+                                shutil.copy2(f, dst_dir / f.name)
+                        logger.info(f"已复制产出文件从 {src_dir} 到 {dst_dir}")
 
             # 解析输出，尝试提取可视化信息
             has_visualization = False
@@ -498,8 +570,11 @@ class TaskExecutor:
 
         logger.info(f"任务执行完成: success={result.success}")
 
-        # 显式清理临时 staging 目录
-        self.cleanup()
+        # 注意：不再在此处调用 cleanup()
+        # 当 PlanExecutorInterpreter 复用同一个 TaskExecutor 执行多个节点时，
+        # 过早清理 staging 目录会导致后续节点找不到数据文件。
+        # cleanup() 应由调用方在所有节点执行完成后统一调用，
+        # 或由析构函数 __del__ 自动处理。
 
         return result
 
@@ -533,13 +608,17 @@ async def execute_task(
         TaskExecutionResult: 任务执行结果
     """
     executor = TaskExecutor(data_file_paths=data_file_paths, **kwargs)
-    return await executor.execute(
-        task_title=task_title,
-        task_description=task_description,
-        subtask_results=subtask_results,
-        skip_info_gathering=skip_info_gathering,
-        is_visualization=is_visualization
-    )
+    try:
+        return await executor.execute(
+            task_title=task_title,
+            task_description=task_description,
+            subtask_results=subtask_results,
+            skip_info_gathering=skip_info_gathering,
+            is_visualization=is_visualization
+        )
+    finally:
+        # 显式清理临时 staging 目录，不依赖 __del__
+        executor.cleanup()
 
 
 def execute_task_sync(
@@ -568,6 +647,7 @@ def execute_task_sync(
     Returns:
         TaskExecutionResult: 任务执行结果
     """
+    # execute_task 内部已有 try/finally 处理 cleanup，直接调用即可
     return asyncio.run(execute_task(
         data_file_paths=data_file_paths,
         task_title=task_title,

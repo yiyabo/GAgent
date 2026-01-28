@@ -146,7 +146,7 @@ const ChatPanel: React.FC = () => {
   const handleBaseModelChange = async (value: string | undefined) => {
     try {
       await setDefaultBaseModel(
-        (value as 'qwen3-max' | 'glm-4.6' | 'kimi-k2-thinking' | 'gpt-5.2-2025-12-11') ?? null
+        (value as 'qwen3-max-2026-01-23' | 'glm-4.6' | 'kimi-k2-thinking' | 'gpt-5.2-2025-12-11') ?? null
       );
     } catch (error) {
       console.error('切换基座模型失败:', error);
@@ -183,7 +183,7 @@ const ChatPanel: React.FC = () => {
   ];
 
   const baseModelOptions = [
-    { label: 'Qwen3-Max', value: 'qwen3-max' },
+    { label: 'Qwen3-Max (2026-01-23)', value: 'qwen3-max-2026-01-23' },
     { label: 'GLM-4.6', value: 'glm-4.6' },
     { label: 'Kimi K2 Thinking', value: 'kimi-k2-thinking' },
     { label: 'GPT-5.2', value: 'gpt-5.2-2025-12-11' },
