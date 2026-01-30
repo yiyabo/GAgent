@@ -14,6 +14,9 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Security configuration
+MAX_READ_CHARS = 100_000   # 100K 字符限制，约 25-50K tokens
+MAX_READ_LINES = 2_000     # 2000 行限制，覆盖绝大多数源文件
+
 ALLOWED_BASE_PATHS = [
     "/tmp",
     "/var/tmp",
@@ -145,8 +148,19 @@ async def file_operations_handler(
         return {"operation": operation, "path": path, "success": False, "error": str(e)}
 
 
-async def _read_file(file_path: str) -> Dict[str, Any]:
-    """Read file content with security validation"""
+async def _read_file(file_path: str, max_chars: int = None, max_lines: int = None) -> Dict[str, Any]:
+    """Read file content with security validation and output limits
+
+    Args:
+        file_path: Path to the file to read
+        max_chars: Maximum characters to read (default: MAX_READ_CHARS)
+        max_lines: Maximum lines to read (default: MAX_READ_LINES)
+    """
+    if max_chars is None:
+        max_chars = MAX_READ_CHARS
+    if max_lines is None:
+        max_lines = MAX_READ_LINES
+
     try:
         # Security validation
         is_safe, error_msg = _validate_path_security(file_path)
@@ -166,18 +180,40 @@ async def _read_file(file_path: str) -> Dict[str, Any]:
         if not path.is_file():
             return {"operation": "read", "path": file_path, "success": False, "error": "Path is not a file"}
 
-        # File size already checked in security validation
+        # Read file with limits to prevent context overflow
+        file_size = path.stat().st_size
         with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
+            lines = []
+            total_chars = 0
+            truncated = False
+            line_count = 0
 
-        return {
+            for line in f:
+                line_count += 1
+                if line_count > max_lines or total_chars + len(line) > max_chars:
+                    truncated = True
+                    break
+                lines.append(line)
+                total_chars += len(line)
+
+            content = ''.join(lines)
+
+        result = {
             "operation": "read",
             "path": file_path,
             "success": True,
             "content": content,
             "size": len(content),
+            "file_size": file_size,
+            "lines_read": len(lines),
             "encoding": "utf-8",
+            "truncated": truncated,
         }
+
+        if truncated:
+            result["truncated_message"] = f"内容已截断（已读取 {len(lines)} 行/{len(content)} 字符，文件总大小 {file_size} 字节）"
+
+        return result
 
     except UnicodeDecodeError:
         return {

@@ -81,6 +81,9 @@ class SaveMemoryRequest(BaseModel):
     keywords: Optional[List[str]] = Field(default=None, description="Keyword list")
     context: Optional[str] = Field(default=None, description="Context description")
 
+    # Session isolation
+    session_id: Optional[str] = Field(default=None, description="Session ID for memory isolation")
+
     @field_validator("content")
     def content_must_not_be_empty(cls, v):
         if not v or not v.strip():
@@ -114,6 +117,9 @@ class QueryMemoryRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=100, description="Return limit")
     min_similarity: float = Field(default=0.01, ge=0.0, le=1.0, description="Minimum similarity threshold")
     include_task_context: bool = Field(default=False, description="Whether to include task context")
+
+    # Session isolation
+    session_id: Optional[str] = Field(default=None, description="Session ID for memory isolation")
 
 
 class MemoryItem(BaseModel):

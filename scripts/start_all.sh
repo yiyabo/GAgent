@@ -6,6 +6,23 @@ LOG_DIR="$ROOT_DIR/log"
 
 mkdir -p "$LOG_DIR"
 
+# Stop existing services first (restart behavior)
+echo "Stopping existing services (if any)..."
+if [ -x "$ROOT_DIR/scripts/stop_all.sh" ]; then
+    bash "$ROOT_DIR/scripts/stop_all.sh" || true
+    echo ""
+else
+    echo "Warning: stop_all.sh not found, skipping stop"
+fi
+
+# Sync skills to ~/.claude/skills/ before starting services
+echo "Syncing skills..."
+if [ -x "$ROOT_DIR/scripts/sync_skills.sh" ]; then
+    bash "$ROOT_DIR/scripts/sync_skills.sh"
+else
+    echo "Warning: sync_skills.sh not found or not executable"
+fi
+
 start_bg() {
   local name="$1"
   local cmd="$2"

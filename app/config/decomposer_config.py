@@ -22,6 +22,10 @@ class DecomposerSettings:
     stop_on_empty: bool = True
     retry_limit: int = 1
     allow_existing_children: bool = False
+    # Graph simplification settings
+    enable_simplification: bool = True  # 默认开启图简化
+    simplification_use_llm: bool = False  # 默认用简单匹配，节省 tokens
+    simplification_threshold: float = 0.8
 
 
 @lru_cache(maxsize=1)
@@ -57,6 +61,15 @@ def get_decomposer_settings() -> DecomposerSettings:
     if max_children < min_children:
         max_children = min_children
 
+    def _env_float(name: str, default: float) -> float:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            return default
+
     settings = DecomposerSettings(
         max_depth=max_depth,
         min_children=min_children,
@@ -73,6 +86,15 @@ def get_decomposer_settings() -> DecomposerSettings:
         retry_limit=_env_int("DECOMP_RETRY_LIMIT", defaults.retry_limit),
         allow_existing_children=_env_bool(
             "DECOMP_ALLOW_EXISTING_CHILDREN", defaults.allow_existing_children
+        ),
+        enable_simplification=_env_bool(
+            "DECOMP_ENABLE_SIMPLIFICATION", defaults.enable_simplification
+        ),
+        simplification_use_llm=_env_bool(
+            "DECOMP_SIMPLIFICATION_USE_LLM", defaults.simplification_use_llm
+        ),
+        simplification_threshold=_env_float(
+            "DECOMP_SIMPLIFICATION_THRESHOLD", defaults.simplification_threshold
         ),
     )
 
