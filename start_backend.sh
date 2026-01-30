@@ -18,8 +18,6 @@ echo "🌐 CORS Origins: $CORS_ORIGINS"
 echo "♻️  Reload enabled: $BACKEND_RELOAD"
 
 # 启动 FastAPI 应用
-# 注意：macOS 上 watchfiles 可能仍会因 runtime/ 变更触发重载。
-# 为保证长任务（Claude Code）稳定，默认关闭热重载。
 RELOAD_ARGS=()
 case "$BACKEND_RELOAD" in
   true|TRUE|1|yes|YES|on|ON)

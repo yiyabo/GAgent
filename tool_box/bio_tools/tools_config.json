@@ -110,7 +110,7 @@
         "image": "staphb/hmmer:latest",
         "description": "HMMER - Biosequence analysis using profile hidden Markov models",
         "category": "sequence_analysis",
-        "notes": "HMM数据库必须先用 hmmpress 处理，路径使用容器内路径 /work/xxx",
+        "notes": "HMM数据库必须先用 hmmpress 处理。支持绝对路径（自动挂载）或放在 runtime/bio_tools/hmmer/ 目录下的文件名",
         "operations": {
             "hmmscan": {
                 "command": "hmmscan --tblout /work/{output} {db} {input}",
@@ -121,7 +121,7 @@
                     "db",
                     "output"
                 ],
-                "notes": "db: 容器内路径如 /work/test.hmm; output: 输出文件名"
+                "notes": "db: 支持绝对路径如 /home/xxx/xxx.hmm 或相对路径（放 runtime/bio_tools/hmmer/ 目录）; output: 输出文件名"
             },
             "hmmsearch": {
                 "command": "hmmsearch --tblout /work/{output} {db} {input}",
@@ -132,7 +132,7 @@
                     "db",
                     "output"
                 ],
-                "notes": "db: HMM文件容器内路径如 /work/test.hmm; output: 输出文件名"
+                "notes": "db: 支持绝对路径如 /home/xxx/xxx.hmm 或相对路径（放 runtime/bio_tools/hmmer/ 目录）; output: 输出文件名"
             },
             "hmmpress": {
                 "command": "hmmpress /work/{db}",
@@ -223,6 +223,114 @@
                     "output"
                 ],
                 "notes": "preset: map-pb/map-ont/map-hifi/sr; reference: 参考基因组路径; output: SAM输出文件名"
+            },
+            "filter": {
+                "command": "minimap2 -t {threads} -ax map-ont {reference} {input} > /work/{output}",
+                "description": "比对到参考基因组，输出 SAM/BAM（供 samtools 过滤未比对 reads）",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "reference",
+                    "output",
+                    "threads"
+                ],
+                "notes": "reference: 参考基因组(.mmi); output: 输出SAM文件; 需配合 samtools 提取未比对 reads"
+            }
+        }
+    },
+    "samtools": {
+        "image": "staphb/samtools:latest",
+        "description": "SAMtools - 处理 SAM/BAM/CRAM 文件",
+        "category": "sequence_alignment",
+        "notes": "用于处理比对结果，支持 view/sort/index/fastq 等操作",
+        "operations": {
+            "view_filter_unmapped": {
+                "command": "samtools view -@ {threads} -b -f 4 {input} | samtools fastq -@ {threads} - | gzip -c > /work/{output}",
+                "description": "提取未比对 reads（-f 4），输出 FASTQ.gz",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "threads",
+                    "output"
+                ],
+                "notes": "input: SAM/BAM文件; output: 输出FASTQ.gz; -f 4 保留未比对 reads"
+            },
+            "view": {
+                "command": "samtools view -@ {threads} -b {input} > /work/{output}",
+                "description": "SAM 转 BAM",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "threads",
+                    "output"
+                ],
+                "notes": "input: SAM文件; output: 输出BAM文件"
+            },
+            "sort": {
+                "command": "samtools sort -@ {threads} {input} -o /work/{output}",
+                "description": "排序 BAM 文件",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "threads",
+                    "output"
+                ],
+                "notes": "input: BAM文件; output: 排序后BAM文件"
+            },
+            "index": {
+                "command": "samtools index {input}",
+                "description": "为 BAM 文件建立索引",
+                "requires_input": true,
+                "requires_output": false,
+                "notes": "input: BAM文件; 输出: .bai 索引文件"
+            },
+            "stats": {
+                "command": "samtools stats {input} > /work/{output}",
+                "description": "比对统计报告",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output"
+                ],
+                "notes": "input: SAM/BAM文件; output: 统计报告"
+            }
+        }
+    },
+    "flye": {
+        "image": "staphb/flye:latest",
+        "description": "Flye - 长读长组装工具（支持 meta 宏基因组模式）",
+        "category": "assembly",
+        "notes": "ONT/PacBio/HiFi 长读长组装，meta 模式适合宏基因组",
+        "operations": {
+            "meta": {
+                "command": "flye --meta --out-dir {output} {input}",
+                "description": "宏基因组模式组装（ONT 推荐）",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output"
+                ],
+                "notes": "input: ONT reads (fastq); output: 输出目录; 需要配合 --nano-raw 参数; 结果在 assembly.fasta"
+            },
+            "ont": {
+                "command": "flye --nano-raw --out-dir {output} {input}",
+                "description": "ONT 原始数据组装",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output"
+                ],
+                "notes": "input: ONT fastq; output: 输出目录"
+            },
+            "hifi": {
+                "command": "flye --pacbio-hifi --out-dir {output} {input}",
+                "description": "HiFi 模式组装",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output"
+                ],
+                "notes": "input: HiFi reads; output: 输出目录"
             }
         }
     },
