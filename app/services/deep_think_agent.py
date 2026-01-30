@@ -49,6 +49,8 @@ class DeepThinkAgent:
         "file_operations": 90,   # 30 秒 - 文件操作应该很快
         "vision_reader": 1200,    # 10 分钟 - 视觉模型处理 PDF
         "bio_tools": 86400,      # 24 小时 - 生物信息学工具不限制
+        "phagescope": 60,        # 1 分钟 - 仅用于提交/查询，不等待结果
+        "result_interpreter": 300,  # 5 分钟 - 数据分析和代码执行
     }
     
     def __init__(
@@ -354,6 +356,35 @@ Respond with ONLY a JSON object:
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
             "vision_reader": "Read PDFs and images using vision model. For PDF reading and document understanding. After reading a document, YOU should analyze and summarize it directly - do not call other tools. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\"}",
             "bio_tools": "PREFERRED for bioinformatics: Execute Docker-based tools for FASTA/FASTQ/sequence analysis. For sequence stats, use seqkit. Example: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/absolute/path/to/file.fasta\"}. NOTE: input_file MUST be absolute path. Available tools: seqkit (stats, grep, seq), blast (blastn, blastp), prodigal (predict genes), hmmer (hmmscan), checkv (virus quality). Use operation='help' to see tool usage.",
+            "phagescope": """PhageScope cloud platform for phage genome analysis.
+IMPORTANT: This is an ASYNC service - tasks run remotely and take minutes to hours.
+
+Workflow:
+1. submit: Submit sequences → Returns taskid immediately (DO NOT wait)
+2. task_list: Check all your submitted tasks
+3. task_detail: Check specific task status
+4. result: Get results ONLY when task is COMPLETED
+
+After submit, ALWAYS tell user: "Task submitted, ID: {taskid}. Check status later with task_detail."
+DO NOT use wait=True, it will block too long.
+
+Params: {"action": "submit|task_list|task_detail|result", "userid": "...", "taskid": "...", ...}""",
+            "result_interpreter": """Data analysis and result interpretation tool.
+Analyzes CSV, TSV, MAT, NPY data files by generating and executing Python code via Claude Code.
+
+Operations:
+- metadata: Extract dataset metadata (columns, types, samples)
+- generate: Generate Python analysis code based on task description
+- execute: Execute Python code via Claude Code
+- analyze: Full pipeline (metadata → generate → execute with auto-fix)
+
+Params for analyze (recommended):
+{"operation": "analyze", "file_paths": ["/path/to/data.csv"], "task_title": "Analysis Title", "task_description": "What to analyze"}
+
+Params for metadata:
+{"operation": "metadata", "file_path": "/path/to/data.csv"}
+
+Use this for data exploration, statistical analysis, and visualization tasks on structured data files.""",
         }
         
         tools_desc = []
@@ -464,7 +495,7 @@ When ready to answer (after using multiple tools):
             chat_history = context.get("chat_history", [])
             if chat_history:
                 history_lines = []
-                recent = chat_history[-6:] if len(chat_history) > 6 else chat_history
+                recent = chat_history[-30:] if len(chat_history) > 30 else chat_history
                 for msg in recent:
                     role = msg.get("role", "unknown")
                     content = msg.get("content", "")

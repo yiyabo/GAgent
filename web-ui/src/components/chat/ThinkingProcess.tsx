@@ -162,10 +162,25 @@ const ThinkingStepItem: React.FC<{ step: ThinkingStep; index: number; isLast: bo
     );
 };
 
+// Filter to get only main steps (tool calls or significant analysis steps)
+const getMainSteps = (steps: ThinkingStep[]): ThinkingStep[] => {
+    return steps.filter(step => {
+        // Include steps with tool actions
+        if (step.action) return true;
+        // Include steps with substantial thought content (analysis/decision)
+        if (step.thought && step.thought.length > 50) return true;
+        // Exclude intermediate thinking states
+        return false;
+    });
+};
+
 export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ process, isFinished }) => {
     // Default to collapsed when finished, expanded when active
     const [isExpanded, setIsExpanded] = useState(!isFinished && process.status === 'active');
     const contentRef = useRef<HTMLDivElement>(null);
+
+    // Calculate main steps count for display
+    const mainStepsCount = getMainSteps(process.steps).length;
 
     // Auto-expand when new steps come in during active streaming
     useEffect(() => {
@@ -244,9 +259,9 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ process, isFin
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                        {process.steps.length > 0 && (
+                        {mainStepsCount > 0 && (
                             <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                                {process.steps.length} step{process.steps.length > 1 ? 's' : ''}
+                                {mainStepsCount} step{mainStepsCount > 1 ? 's' : ''}
                             </span>
                         )}
                         <div style={{

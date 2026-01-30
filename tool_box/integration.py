@@ -24,6 +24,7 @@ from .tools_impl import (
     paper_replication_tool,
     manuscript_writer_tool,
     phagescope_tool,
+    result_interpreter_tool,
 )
 from .bio_tools import bio_tools_tool
 
@@ -194,6 +195,17 @@ class ToolBoxIntegration:
             handler=bio_tools_tool["handler"],
             tags=bio_tools_tool.get("tags", []),
             examples=bio_tools_tool.get("examples", []),
+        )
+
+        # Register result interpreter tool (data analysis and code execution)
+        register_tool(
+            name=result_interpreter_tool["name"],
+            description=result_interpreter_tool["description"],
+            category=result_interpreter_tool["category"],
+            parameters_schema=result_interpreter_tool["parameters_schema"],
+            handler=result_interpreter_tool["handler"],
+            tags=result_interpreter_tool.get("tags", []),
+            examples=result_interpreter_tool.get("examples", []),
         )
 
         logger.info("Built-in tools registered")

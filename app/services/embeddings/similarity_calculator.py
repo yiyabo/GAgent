@@ -17,9 +17,46 @@ logger = logging.getLogger(__name__)
 class SimilarityCalculator:
     """Similarity calculator class specialized in vector similarity computation"""
 
-    def __init__(self):
-        """Initialize similarity calculator"""
+    # 用于记录已警告过的维度对，避免重复警告
+    _warned_dimension_pairs: set = set()
+
+    def __init__(self, allow_dimension_mismatch: bool = True):
+        """Initialize similarity calculator
+
+        Args:
+            allow_dimension_mismatch: 是否允许维度不匹配时进行对齐处理
+        """
+        self.allow_dimension_mismatch = allow_dimension_mismatch
         logger.info("Similarity calculator initialized")
+
+    def _align_dimensions(self, embedding1: List[float], embedding2: List[float]) -> tuple:
+        """
+        对齐两个向量的维度（截断到较短的维度）
+
+        Args:
+            embedding1: 第一个向量
+            embedding2: 第二个向量
+
+        Returns:
+            对齐后的两个向量
+        """
+        len1, len2 = len(embedding1), len(embedding2)
+        if len1 == len2:
+            return embedding1, embedding2
+
+        # 只在第一次遇到该维度组合时记录 warning
+        dim_pair = (min(len1, len2), max(len1, len2))
+        if dim_pair not in self._warned_dimension_pairs:
+            self._warned_dimension_pairs.add(dim_pair)
+            logger.warning(
+                f"Embedding dimensions mismatch: {len1} vs {len2}. "
+                f"Truncating to {min(len1, len2)} dimensions. "
+                f"Consider using consistent embedding models."
+            )
+
+        # 截断到较短的维度
+        min_len = min(len1, len2)
+        return embedding1[:min_len], embedding2[:min_len]
 
     def compute_similarity(self, embedding1: List[float], embedding2: List[float]) -> float:
         """
@@ -36,8 +73,12 @@ class SimilarityCalculator:
             return 0.0
 
         if len(embedding1) != len(embedding2):
-            logger.warning(f"Embedding dimensions mismatch: {len(embedding1)} vs {len(embedding2)}")
-            return 0.0
+            if self.allow_dimension_mismatch:
+                # 尝试对齐维度
+                embedding1, embedding2 = self._align_dimensions(embedding1, embedding2)
+            else:
+                logger.debug(f"Embedding dimensions mismatch: {len(embedding1)} vs {len(embedding2)}")
+                return 0.0
 
         try:
             vec1 = np.array(embedding1, dtype=np.float32)

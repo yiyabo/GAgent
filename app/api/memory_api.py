@@ -148,6 +148,7 @@ async def list_mcp_tools():
                         },
                         "tags": {"type": "array", "items": {"type": "string"}, "description": "Tag list"},
                         "related_task_id": {"type": "integer", "description": "Related task ID"},
+                        "session_id": {"type": "string", "description": "Session ID for memory isolation (optional)"},
                     },
                     "required": ["content", "memory_type", "importance"],
                 },
@@ -167,6 +168,7 @@ async def list_mcp_tools():
                             "maximum": 1.0,
                             "description": "Minimum similarity threshold",
                         },
+                        "session_id": {"type": "string", "description": "Session ID for memory isolation (optional)"},
                     },
                     "required": ["search_text"],
                 },
@@ -186,6 +188,7 @@ async def auto_save_task_memory(task_data: Dict[str, Any] = Body(...)):
         task_id = task_data.get("task_id")
         task_name = task_data.get("task_name", "")
         task_content = task_data.get("content", "")
+        session_id = task_data.get("session_id")
 
         if not task_id or not task_content:
             raise HTTPException(status_code=400, detail="task_id and content are required")
@@ -197,6 +200,7 @@ async def auto_save_task_memory(task_data: Dict[str, Any] = Body(...)):
             importance="medium",
             tags=["task_output", "auto_generated"],
             related_task_id=task_id,
+            session_id=session_id,  # 支持 session 分库隔离
         )
 
         memory_service = get_memory_service()
