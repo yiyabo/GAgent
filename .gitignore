@@ -37,3 +37,4 @@ tool_box/bio_tools/scripts/download_iphop_db.sh
 web-ui/dist/assets/index-*.js
 web-ui/dist/assets/index-*.js.map
 web-ui/dist/index.html
+.roo/mcp.json

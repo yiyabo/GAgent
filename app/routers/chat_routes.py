@@ -70,9 +70,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 plan_repository = PlanRepository()
 decomposer_settings = get_decomposer_settings()
 
-# 需要用户确认才能执行的危险操作
+# 需要用户确认才能执行的危险操作（仅删除类操作需要确认）
 ACTIONS_REQUIRING_CONFIRMATION = {
-    ("plan_operation", "create_plan"),      # 创建计划
     ("plan_operation", "delete_plan"),      # 删除计划
     ("task_operation", "delete_task"),      # 删除任务
     ("task_operation", "clear_tasks"),      # 清空任务
