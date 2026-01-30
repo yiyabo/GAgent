@@ -1,0 +1,15 @@
+T4
+lambda
+P1
+phiX174
+MS2
+GPD_00201
+GPD_00202
+GPD_00203
+GPD_00204
+GPD_00205
+Ocean_001
+Soil_001
+Freshwater_001
+Marine_001
+Sediment_001

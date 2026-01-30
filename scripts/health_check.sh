@@ -14,12 +14,14 @@ BACKEND_HOST=${BACKEND_HOST:-0.0.0.0}
 BACKEND_PORT=${BACKEND_PORT:-9000}
 VITE_DEV_SERVER_HOST=${VITE_DEV_SERVER_HOST:-0.0.0.0}
 VITE_DEV_SERVER_PORT=${VITE_DEV_SERVER_PORT:-3000}
+AMEM_HOST=${AMEM_HOST:-0.0.0.0}
+AMEM_PORT=${AMEM_PORT:-8001}
 
 normalize_host() {
   local host="$1"
   case "$host" in
     ""|0.0.0.0|::)
-      echo "127.0.0.1"
+      echo "119.147.24.196"
       ;;
     *)
       echo "$host"
@@ -58,10 +60,11 @@ fi
 
 backend_host="$(normalize_host "$BACKEND_HOST")"
 frontend_host="$(normalize_host "$VITE_DEV_SERVER_HOST")"
+amem_host="$(normalize_host "$AMEM_HOST")"
 
 failures=0
 
-if ! wait_for_url "amem" "http://127.0.0.1:8001/health" 120; then
+if ! wait_for_url "amem" "http://${amem_host}:${AMEM_PORT}/health" 120; then
   failures=$((failures + 1))
 fi
 

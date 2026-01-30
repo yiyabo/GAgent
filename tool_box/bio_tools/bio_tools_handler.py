@@ -127,28 +127,56 @@ def build_docker_command(
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/gtdbtk/gtdbtk_r220_data"
         mounts.append(f"-v {db_path}:/work/database")
 
-    # 如果是 bakta，添加数据库挂载
-    if tool_name == "bakta":
-        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/bakta/db"
-        mounts.append(f"-v {db_path}:/work/database")
-    
     # 构建命令参数
     params = {
         "input": input_file or "",
         "output": f"/work/{output_file}" if output_file else "",
         "output_dir": "/work",
     }
-    
+
     # 添加额外参数
     if extra_params:
         params.update(extra_params)
+
+    # 如果有 db 参数，检查是否需要挂载数据库路径
+    db_path = params.get('db')
+    if db_path:
+        db_path_obj = Path(db_path)
+        # 如果是绝对路径且文件存在，挂载其父目录
+        if db_path_obj.is_absolute() and db_path_obj.exists():
+            db_dir_abs = str(db_path_obj.parent.resolve())
+            # 检查是否已经挂载了这个目录
+            mount_exists = any(f"-v {db_dir_abs}:" in m for m in mounts)
+            if not mount_exists:
+                mounts.append(f"-v {db_dir_abs}:/db:ro")
+                # 将路径转换为容器内路径
+                params['db'] = f"/db/{db_path_obj.name}"
+        elif not db_path_obj.is_absolute():
+            # 相对路径，假设在 tool_dir 中
+            params['db'] = f"/work/{db_path}"
+
+    # 如果是 bakta，添加数据库挂载
+    if tool_name == "bakta":
+        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/bakta/db"
+        mounts.append(f"-v {db_path}:/work/database")
+
+    # 如果是 minimap2 filter，添加参考基因组挂载
+    if tool_name == "minimap2" and operation == "filter":
+        ref_path = params.get('reference', '')
+        if ref_path.endswith('.mmi'):
+            ref_dir = str(Path(ref_path).parent.resolve())
+            mounts.append(f"-v {ref_dir}:/work/reference:ro")
     
     # 替换模板中的占位符
     command = command_template.format(**params)
     
     # 构建完整的 Docker 命令
     mount_str = " ".join(mounts)
-    docker_cmd = f"docker run --rm {mount_str} -w /work {image} {command}"
+    import os
+    uid = os.getuid()
+    gid = os.getgid()
+    user_flag = f"--user {uid}:{gid}"
+    docker_cmd = f"docker run --rm {user_flag} {mount_str} -w /work {image} {command}"
     
     return docker_cmd
 

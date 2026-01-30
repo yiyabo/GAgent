@@ -111,7 +111,10 @@ Commands:
 
 **Agent Command**:
 ```bash
-nextflow run /data/pipelines/phage_pipeline.nf -profile docker --input /data/reads/
+docker run --rm \
+  -v /data/user_data:/data \
+  nextflow/nextflow:22.10.5 \
+  nextflow run /data/pipelines/phage_pipeline.nf -profile docker --input /data/reads/
 ```
 
 ### Example 2: Resume a stopped run
@@ -119,7 +122,10 @@ nextflow run /data/pipelines/phage_pipeline.nf -profile docker --input /data/rea
 
 **Agent Command**:
 ```bash
-nextflow run /data/pipelines/phage_pipeline.nf -resume
+docker run --rm \
+  -v /data/user_data:/data \
+  nextflow/nextflow:22.10.5 \
+  nextflow run /data/pipelines/phage_pipeline.nf -resume
 ```
 
 ---

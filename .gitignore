@@ -16,3 +16,24 @@ log/
 docs/
 .mplconfig/fontlist-v390.json
 .agent
+
+# Bio Tools - Test Data & Logs
+logs/
+tool_box/bio_tools/test_data/
+tool_box/bio_tools/scripts/*.log
+tool_box/bio_tools/scripts/gtdbtk_output/
+tool_box/bio_tools/test_run*.log
+tool_box/bio_tools/todo.md
+tool_box/bio_tools/tool_process.md
+
+# Database Download Scripts
+pull_tools.sh
+start_all.sh
+stop_all.sh
+tool_box/bio_tools/scripts/download_all_databases.sh
+tool_box/bio_tools/scripts/download_iphop_db.sh
+
+# Web UI Build Artifacts
+web-ui/dist/assets/index-*.js
+web-ui/dist/assets/index-*.js.map
+web-ui/dist/index.html
