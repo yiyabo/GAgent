@@ -105,6 +105,24 @@ class PlanRepository:
         with get_db() as conn:
             conn.execute("DELETE FROM plans WHERE id=?", (plan_id,))
 
+    def update_plan_metadata(self, plan_id: int, metadata: Dict[str, Any]) -> None:
+        """Update the metadata for a plan.
+        
+        Args:
+            plan_id: The plan ID
+            metadata: New metadata dict (replaces existing)
+        """
+        metadata_json = _dump_json(metadata or {})
+        with get_db() as conn:
+            conn.execute(
+                """
+                UPDATE plans
+                SET metadata=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (metadata_json, plan_id),
+            )
+
     def create_task(
         self,
         plan_id: int,

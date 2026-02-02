@@ -1,0 +1,840 @@
+/* DAG 全屏可视化样式 - Claude Style */
+
+:root {
+  --dag-bg: #faf9f7;
+  --dag-bg-secondary: #f5f4f2;
+  --dag-text-primary: #1a1a1a;
+  --dag-text-secondary: #666666;
+  --dag-text-muted: #999999;
+  --dag-border: rgba(0, 0, 0, 0.08);
+  --dag-border-hover: rgba(0, 0, 0, 0.15);
+  --dag-accent: #d97706;
+  --dag-accent-light: rgba(217, 119, 6, 0.1);
+  --dag-surface: #ffffff;
+  --dag-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --dag-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --dag-radius: 8px;
+  --dag-radius-lg: 12px;
+}
+
+/* 全屏容器 - 温暖的米白色背景 */
+.dag-fullscreen-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--dag-bg);
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'SF Pro Text', sans-serif;
+}
+
+.dag-fullscreen-container:fullscreen {
+  background: var(--dag-bg);
+}
+
+/* 网络图容器 */
+.dag-network-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+}
+
+/* 工具栏 - 简洁扁平 */
+.dag-toolbar {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  z-index: 100;
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  background: var(--dag-surface);
+  border-radius: var(--dag-radius-lg);
+  border: 1px solid var(--dag-border);
+  box-shadow: var(--dag-shadow);
+}
+
+.dag-toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--dag-radius);
+  background: transparent;
+  color: var(--dag-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 14px;
+}
+
+.dag-toolbar-btn:hover {
+  background: var(--dag-bg-secondary);
+  color: var(--dag-text-primary);
+}
+
+.dag-toolbar-btn:active {
+  background: var(--dag-border);
+}
+
+.dag-toolbar-btn.active {
+  background: var(--dag-accent-light);
+  color: var(--dag-accent);
+}
+
+.dag-toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--dag-border);
+  margin: 6px 4px;
+}
+
+/* 图例面板 - 简约白色卡片 */
+.dag-legend-panel {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 100;
+  padding: 16px 20px;
+  background: var(--dag-surface);
+  border-radius: var(--dag-radius-lg);
+  border: 1px solid var(--dag-border);
+  box-shadow: var(--dag-shadow);
+  min-width: 160px;
+}
+
+.dag-legend-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dag-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 14px;
+}
+
+.dag-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: var(--dag-text-secondary);
+}
+
+/* 节点信息面板 */
+.dag-node-info-panel {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  max-width: 360px;
+  z-index: 100;
+  padding: 20px;
+  background: var(--dag-surface);
+  border-radius: var(--dag-radius-lg);
+  border: 1px solid var(--dag-border);
+  box-shadow: var(--dag-shadow-lg);
+  transform: translateY(120%);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.dag-node-info-panel.visible {
+  transform: translateY(0);
+}
+
+.dag-node-info-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--dag-border);
+}
+
+.dag-node-info-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--dag-text-primary);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dag-node-info-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--dag-radius);
+  background: transparent;
+  color: var(--dag-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.dag-node-info-close:hover {
+  background: var(--dag-bg-secondary);
+  color: var(--dag-text-primary);
+}
+
+.dag-node-info-content {
+  font-size: 13px;
+  color: var(--dag-text-secondary);
+  line-height: 1.5;
+}
+
+.dag-node-info-row {
+  display: flex;
+  align-items: flex-start;
+  padding: 8px 0;
+}
+
+.dag-node-info-row:not(:last-child) {
+  border-bottom: 1px solid var(--dag-border);
+}
+
+.dag-node-info-label {
+  width: 64px;
+  flex-shrink: 0;
+  color: var(--dag-text-muted);
+  font-size: 12px;
+}
+
+.dag-node-info-value {
+  flex: 1;
+  color: var(--dag-text-primary);
+  word-break: break-word;
+}
+
+/* 搜索栏 - 简洁胶囊形 */
+.dag-search-bar {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  width: 280px;
+  max-width: calc(100% - 400px);
+}
+
+.dag-search-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 14px 0 36px;
+  background: var(--dag-surface);
+  border: 1px solid var(--dag-border);
+  border-radius: 18px;
+  color: var(--dag-text-primary);
+  font-size: 13px;
+  outline: none;
+  transition: all 0.15s;
+}
+
+.dag-search-input::placeholder {
+  color: var(--dag-text-muted);
+}
+
+.dag-search-input:focus {
+  border-color: var(--dag-accent);
+  box-shadow: 0 0 0 3px var(--dag-accent-light);
+}
+
+.dag-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--dag-text-muted);
+  font-size: 13px;
+}
+
+/* 统计栏 - 紧凑胶囊 */
+.dag-stats-bar {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  gap: 20px;
+  padding: 10px 20px;
+  background: var(--dag-surface);
+  border-radius: 20px;
+  border: 1px solid var(--dag-border);
+  box-shadow: var(--dag-shadow);
+}
+
+.dag-stats-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dag-text-secondary);
+}
+
+.dag-stats-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.dag-stats-dot.pending {
+  background: #eab308;
+}
+
+.dag-stats-dot.running {
+  background: #3b82f6;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.dag-stats-dot.completed {
+  background: #22c55e;
+}
+
+.dag-stats-dot.failed {
+  background: #ef4444;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.1); }
+}
+
+/* 全屏提示 */
+.dag-fullscreen-hint {
+  position: absolute;
+  bottom: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  padding: 6px 12px;
+  background: var(--dag-surface);
+  border: 1px solid var(--dag-border);
+  border-radius: 16px;
+  font-size: 11px;
+  color: var(--dag-text-muted);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.dag-fullscreen-container:fullscreen .dag-fullscreen-hint {
+  opacity: 1;
+  animation: fadeOut 4s ease-in-out forwards;
+}
+
+@keyframes fadeOut {
+  0%, 80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .dag-toolbar {
+    top: 12px;
+    right: 12px;
+    padding: 4px;
+  }
+
+  .dag-toolbar-btn {
+    width: 28px;
+    height: 28px;
+  }
+
+  .dag-legend-panel {
+    display: none;
+  }
+
+  .dag-search-bar {
+    width: 180px;
+    max-width: calc(100% - 180px);
+  }
+
+  .dag-node-info-panel {
+    max-width: none;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+  }
+}
+
+/* ============================================ */
+/* 3D DAG 视图 - Claude 风格                   */
+/* ============================================ */
+
+/* ============================================ */
+/* 索引卡片风格 DAG - 专业但温暖                 */
+/* ============================================ */
+
+.dag-sticky-container {
+  background: #f5f3ed;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.dag-sticky-container:fullscreen {
+  background: #f5f3ed;
+}
+
+/* 优雅的纸质纹理 */
+.dag-sticky-container::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 39px,
+      rgba(179, 212, 252, 0.08) 39px,
+      rgba(179, 212, 252, 0.08) 40px
+    );
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 柔和的边缘晕染 */
+.dag-sticky-container::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 40%,
+    rgba(245, 243, 237, 0.8) 100%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 索引卡片图例样式 */
+.dag-card-legend {
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.dag-card-legend .dag-legend-title {
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 12px;
+  font-weight: normal;
+  color: #666;
+  letter-spacing: 0.5px;
+  text-transform: none;
+}
+
+.dag-card-legend .dag-legend-item {
+  font-size: 12px;
+  color: #4a4a4a;
+}
+
+.dag-legend-card {
+  width: 24px;
+  height: 16px;
+  border-radius: 2px;
+  display: inline-block;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.dag-legend-divider {
+  height: 1px;
+  background: var(--dag-border);
+  margin: 12px 0;
+}
+
+.dag-legend-line {
+  width: 24px;
+  height: 2px;
+  display: inline-block;
+  border-radius: 1px;
+}
+
+.dag-legend-line-solid {
+  background: #7c8594;
+}
+
+.dag-legend-line-dashed {
+  background: repeating-linear-gradient(
+    90deg,
+    #c9a87c 0px,
+    #c9a87c 6px,
+    transparent 6px,
+    transparent 10px
+  );
+}
+
+.dag-card-legend .dag-legend-hint {
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-style: normal;
+  font-size: 10px;
+}
+
+/* 工具栏动效 */
+.dag-sticky-container .dag-toolbar {
+  animation: slideInRight 0.4s ease-out;
+}
+
+.dag-sticky-container .dag-legend-panel {
+  animation: slideInLeft 0.4s ease-out;
+}
+
+.dag-sticky-container .dag-search-bar {
+  animation: slideInDown 0.3s ease-out;
+}
+
+.dag-sticky-container .dag-stats-bar {
+  animation: slideInUp 0.4s ease-out;
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInDown {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* 搜索框聚焦动效 */
+.dag-sticky-container .dag-search-input:focus {
+  border-color: #b8860b;
+  box-shadow: 0 0 0 3px rgba(184, 134, 11, 0.1);
+}
+
+/* 工具栏按钮悬停 */
+.dag-sticky-container .dag-toolbar-btn {
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.dag-sticky-container .dag-toolbar-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* 统计数字 */
+.dag-stats-count {
+  font-weight: 600;
+  color: var(--dag-text-primary);
+  margin-right: 4px;
+}
+
+/* ============================================ */
+/* 3D 视图样式（保留兼容）                       */
+/* ============================================ */
+
+.dag-3d-container {
+  background: linear-gradient(180deg, #fafaf9 0%, #f4f4f3 100%);
+}
+
+.dag-3d-container:fullscreen {
+  background: linear-gradient(180deg, #fafaf9 0%, #f4f4f3 100%);
+}
+
+.dag-3d-container::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.dag-3d-container::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(ellipse at center, transparent 30%, rgba(244, 244, 243, 0.7) 100%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 确保 canvas 在正确层级 */
+.dag-3d-container > div:first-child {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
+.dag-3d-container canvas {
+  position: relative;
+  z-index: 1;
+}
+
+/* UI 元素层级 */
+.dag-3d-container .dag-toolbar,
+.dag-3d-container .dag-search-bar,
+.dag-3d-container .dag-legend-panel,
+.dag-3d-container .dag-stats-bar,
+.dag-3d-container .dag-node-info-panel,
+.dag-3d-container .dag-fullscreen-hint {
+  z-index: 100;
+}
+
+/* 3D 图例 - 球形指示器 */
+.dag-legend-sphere {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dag-legend-hint {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--dag-border);
+  font-size: 11px;
+  color: var(--dag-text-muted);
+  line-height: 1.5;
+}
+
+/* 3D 状态点 - Claude 风格色彩 */
+.dag-3d-stats .dag-stats-dot.pending {
+  background: #d97706;
+}
+
+.dag-3d-stats .dag-stats-dot.running {
+  background: #2563eb;
+}
+
+.dag-3d-stats .dag-stats-dot.completed {
+  background: #16a34a;
+}
+
+.dag-3d-stats .dag-stats-dot.failed {
+  background: #dc2626;
+}
+
+/* 工具提示 */
+.dag-3d-container .scene-tooltip {
+  pointer-events: none !important;
+  z-index: 1000 !important;
+}
+
+/* 加载状态 */
+.dag-3d-loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.dag-3d-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 2px solid var(--dag-border);
+  border-top-color: var(--dag-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.dag-3d-loading-text {
+  color: var(--dag-text-muted);
+  font-size: 13px;
+}
+
+/* 空状态 */
+.dag-empty-state {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  color: var(--dag-text-muted);
+}
+
+.dag-empty-state-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.3;
+}
+
+.dag-empty-state-text {
+  font-size: 14px;
+}
+
+/* ============================================ */
+/* 任务详情抽屉样式                              */
+/* ============================================ */
+
+/* 确保抽屉在全屏模式下正确显示 */
+.dag-task-drawer {
+  position: absolute !important;
+  z-index: 1000 !important;
+}
+
+.dag-task-drawer .ant-drawer-content-wrapper {
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.1) !important;
+}
+
+.dag-task-drawer .ant-drawer-header {
+  cursor: default;
+}
+
+/* 确保关闭按钮可点击 */
+.dag-task-drawer .ant-drawer-close {
+  position: relative;
+  z-index: 10;
+  cursor: pointer !important;
+  pointer-events: auto !important;
+}
+
+.dag-task-drawer .ant-drawer-close:hover {
+  color: #1890ff;
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.task-detail-section {
+  padding: 4px 0;
+}
+
+.task-instruction-box {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.task-context-box {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.task-result-box {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.task-metadata-box {
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+/* 抽屉内 Tabs 样式优化 */
+.dag-sticky-container .ant-drawer .ant-tabs-nav {
+  margin-bottom: 12px;
+}
+
+.dag-sticky-container .ant-drawer .ant-tabs-tab {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.dag-sticky-container .ant-drawer .ant-descriptions-item-label {
+  width: 80px;
+  font-size: 12px;
+  color: #666;
+}
+
+.dag-sticky-container .ant-drawer .ant-descriptions-item-content {
+  font-size: 12px;
+}
+
+/* Collapse 样式 */
+.dag-sticky-container .ant-collapse-ghost > .ant-collapse-item > .ant-collapse-header {
+  padding: 8px 0;
+  font-size: 12px;
+}
+
+/* 滚动条美化 */
+.task-context-box::-webkit-scrollbar,
+.task-result-box::-webkit-scrollbar,
+.task-metadata-box::-webkit-scrollbar {
+  width: 6px;
+}
+
+.task-context-box::-webkit-scrollbar-thumb,
+.task-result-box::-webkit-scrollbar-thumb,
+.task-metadata-box::-webkit-scrollbar-thumb {
+  background: #d9d9d9;
+  border-radius: 3px;
+}
+
+.task-context-box::-webkit-scrollbar-thumb:hover,
+.task-result-box::-webkit-scrollbar-thumb:hover,
+.task-metadata-box::-webkit-scrollbar-thumb:hover {
+  background: #bfbfbf;
+}

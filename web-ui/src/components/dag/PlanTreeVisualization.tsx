@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Spin, Tooltip } from 'antd';
+import { Spin } from 'antd';
 import { PlanTaskNode } from '@/types';
 import './PlanTreeVisualization.css';
 
@@ -14,6 +14,7 @@ export interface PlanTreeVisualizationProps {
 interface TreeNode {
   task: PlanTaskNode;
   children: TreeNode[];
+  depth: number;
 }
 
 const getOrderKey = (task: PlanTaskNode): number =>
@@ -21,9 +22,7 @@ const getOrderKey = (task: PlanTaskNode): number =>
 
 const compareTaskOrder = (a: PlanTaskNode, b: PlanTaskNode): number => {
   const posDiff = getOrderKey(a) - getOrderKey(b);
-  if (posDiff !== 0) {
-    return posDiff;
-  }
+  if (posDiff !== 0) return posDiff;
   return a.id - b.id;
 };
 
@@ -46,53 +45,6 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
     }
   }, [selectedTaskId]);
 
-  // 状态图标
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return '✅';
-      case 'running':
-        return '⚡';
-      case 'pending':
-        return '⏳';
-      case 'failed':
-        return '❌';
-      default:
-        return '⭕';
-    }
-  };
-
-  // 类型图标
-  const getTypeIcon = (taskType?: string) => {
-    if (!taskType) return '📄';
-    switch (taskType.toLowerCase()) {
-      case 'root':
-        return '⭐';
-      case 'composite':
-        return '📦';
-      case 'atomic':
-        return '⚙️';
-      default:
-        return '📄';
-    }
-  };
-
-  // 状态颜色
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return '#52c41a';
-      case 'running':
-        return '#1890ff';
-      case 'pending':
-        return '#faad14';
-      case 'failed':
-        return '#ff4d4f';
-      default:
-        return '#d9d9d9';
-    }
-  };
-
   // 构建树形结构
   const buildTree = useMemo((): TreeNode[] => {
     if (!tasks || tasks.length === 0) return [];
@@ -101,16 +53,16 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
       .filter(task => !task.parent_id || task.task_type?.toLowerCase() === 'root')
       .sort(compareTaskOrder);
 
-    const buildNode = (task: PlanTaskNode): TreeNode => {
+    const buildNode = (task: PlanTaskNode, depth: number): TreeNode => {
       const children = tasks
         .filter(t => t.parent_id === task.id)
-        .map(child => buildNode(child))
+        .map(child => buildNode(child, depth + 1))
         .sort((a, b) => compareTaskOrder(a.task, b.task));
 
-      return { task, children };
+      return { task, children, depth };
     };
 
-    return roots.map(root => buildNode(root));
+    return roots.map(root => buildNode(root, 0));
   }, [tasks]);
 
   // 切换折叠
@@ -135,106 +87,93 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
     onSelectTask?.(task);
   };
 
-  // 渲染树节点
-  const renderTreeNode = (
-    node: TreeNode,
-    isLast: boolean,
-    prefix: string = '',
-    isRoot: boolean = false
-  ): React.ReactNode => {
-    const { task, children } = node;
-    const hasChildren = children.length > 0;
-    const isCollapsed = collapsed.has(task.id);
-    const isSelected = effectiveSelectedId === task.id;
-    
-    const cleanName = (task.short_name || task.name || '').replace(/^(ROOT|COMPOSITE|ATOMIC):\s*/i, '');
-    const displayName = cleanName.length > 30 ? cleanName.substring(0, 30) + '...' : cleanName;
-    
-    const connector = isRoot ? '' : (isLast ? '└── ' : '├── ');
-    const childPrefix = isRoot ? '' : (isLast ? '    ' : '│   ');
-
-    return (
-      <div key={task.id} className="plan-tree-node">
-        <div 
-          className={`plan-tree-node-content task-type-${task.task_type?.toLowerCase()} ${isSelected ? 'selected' : ''}`}
-          onClick={() => handleSelectTask(task)}
-        >
-          <span className="plan-tree-connector">{prefix}{connector}</span>
-          
-          {hasChildren && (
-            <span 
-              className="plan-tree-collapse-btn"
-              onClick={(e) => toggleCollapse(task.id, e)}
-            >
-              {isCollapsed ? '▶' : '▼'}
-            </span>
-          )}
-          
-          <Tooltip 
-            title={`ID: ${task.id} | 状态: ${task.status} | 类型: ${task.task_type}`}
-            placement="right"
-          >
-            <span className="plan-tree-node-info">
-              <span className="plan-node-type-icon">{getTypeIcon(task.task_type)}</span>
-              <span className="plan-node-status-icon">{getStatusIcon(task.status)}</span>
-              <span 
-                className="plan-node-name"
-                style={{ 
-                  color: getStatusColor(task.status),
-                  fontWeight: task.task_type?.toLowerCase() === 'root' ? 'bold' : 'normal',
-                }}
-              >
-                {displayName}
-              </span>
-            </span>
-          </Tooltip>
-        </div>
-
-        {hasChildren && !isCollapsed && (
-          <div className="plan-tree-children">
-            {children.map((child, index) =>
-              renderTreeNode(
-                child,
-                index === children.length - 1,
-                prefix + childPrefix,
-                false
-              )
-            )}
-          </div>
-        )}
-      </div>
-    );
+  // 扁平化树以便渲染
+  const flattenTree = (nodes: TreeNode[], parentCollapsed = false): TreeNode[] => {
+    const result: TreeNode[] = [];
+    for (const node of nodes) {
+      result.push(node);
+      if (!collapsed.has(node.task.id) && node.children.length > 0) {
+        result.push(...flattenTree(node.children));
+      }
+    }
+    return result;
   };
+
+  const flatNodes = useMemo(() => flattenTree(buildTree), [buildTree, collapsed]);
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height }}>
-        <Spin tip="加载任务中..." />
+      <div className="tree-loading">
+        <Spin size="small" />
+        <span>加载中...</span>
       </div>
     );
   }
 
   if (buildTree.length === 0) {
     return (
-      <div style={{ 
-        display: 'flex', 
-        flexDirection: 'column',
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height,
-        color: '#999',
-        fontSize: '12px'
-      }}>
-        <div style={{ fontSize: '32px', marginBottom: '8px' }}>🌳</div>
-        <div>暂无任务</div>
+      <div className="tree-empty">
+        <div className="tree-empty-dot" />
+        <span>暂无任务</span>
       </div>
     );
   }
 
   return (
-    <div className="plan-tree-visualization-container" style={{ height }}>
-      <div className="plan-tree-content">
-        {buildTree.map(rootNode => renderTreeNode(rootNode, true, '', true))}
+    <div className="tree-container" style={{ height }}>
+      <div className="tree-list">
+        {flatNodes.map((node) => {
+          const { task, children, depth } = node;
+          const hasChildren = children.length > 0;
+          const isCollapsed = collapsed.has(task.id);
+          const isSelected = effectiveSelectedId === task.id;
+          const isRoot = task.task_type?.toLowerCase() === 'root';
+          
+          const cleanName = (task.short_name || task.name || '').replace(/^(ROOT|COMPOSITE|ATOMIC):\s*/i, '');
+          const displayName = cleanName.length > 36 ? cleanName.substring(0, 36) + '…' : cleanName;
+
+          return (
+            <div
+              key={task.id}
+              className={`tree-item ${isSelected ? 'selected' : ''} ${isRoot ? 'root' : ''}`}
+              style={{ '--depth': depth } as React.CSSProperties}
+              onClick={() => handleSelectTask(task)}
+            >
+              {/* 缩进区域 */}
+              <div className="tree-indent">
+                {Array.from({ length: depth }).map((_, i) => (
+                  <span key={i} className="tree-indent-guide" />
+                ))}
+              </div>
+
+              {/* 展开/折叠按钮 */}
+              <div 
+                className={`tree-toggle ${hasChildren ? 'has-children' : ''}`}
+                onClick={(e) => hasChildren && toggleCollapse(task.id, e)}
+              >
+                {hasChildren && (
+                  <svg 
+                    viewBox="0 0 12 12" 
+                    className={`tree-chevron ${isCollapsed ? '' : 'expanded'}`}
+                  >
+                    <path d="M4.5 2L8.5 6L4.5 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                )}
+              </div>
+
+              {/* 状态指示器 */}
+              <div className={`tree-status status-${task.status}`} title={task.status} />
+
+              {/* 任务名称 */}
+              <span className="tree-name" title={cleanName}>
+                {displayName}
+              </span>
+
+              {/* 任务类型标签（仅root显示） */}
+              {isRoot && <span className="tree-badge">ROOT</span>}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

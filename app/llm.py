@@ -58,6 +58,44 @@ class LLMClient(LLMProvider):
             self.api_key = api_key or env_api_key or settings.qwen_api_key
             self.url = url or env_url or settings.qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
             self.model = model or env_model or settings.qwen_model or "qwen-turbo"
+        elif provider_name == "kimi":
+            # Kimi (Moonshot) via OpenAI-compatible endpoints (e.g., 百炼/compatible-mode)
+            env_api_key = os.getenv("KIMI_API_KEY")
+            env_url = os.getenv("KIMI_API_URL")
+            env_model = os.getenv("KIMI_MODEL")
+            # Fallback: allow using DashScope OpenAI-compatible QWEN_* envs to host Kimi models
+            # (Do NOT require changing .env; only used when KIMI_* is missing.)
+            qwen_api_key = os.getenv("QWEN_API_KEY")
+            qwen_api_url = os.getenv("QWEN_API_URL")
+            qwen_kimi_model_new = os.getenv("QWEN_KIMI_MODEL_NEW")
+            qwen_kimi_model = os.getenv("QWEN_KIMI_MODEL")
+            settings_api_key = getattr(settings, "kimi_api_key", None)
+            settings_api_url = getattr(settings, "kimi_api_url", None)
+            settings_model = getattr(settings, "kimi_model", None)
+            # Prefer explicit args > KIMI_* > settings.kimi_*; then fallback to QWEN_* if still missing
+            self.api_key = (
+                api_key
+                or env_api_key
+                or settings_api_key
+                or qwen_api_key
+                or getattr(settings, "qwen_api_key", None)
+            )
+            self.url = (
+                url
+                or env_url
+                or settings_api_url
+                or qwen_api_url
+                or getattr(settings, "qwen_api_url", None)
+            )
+            # Default to user requested model name; allow override via env/args
+            self.model = (
+                model
+                or env_model
+                or settings_model
+                or qwen_kimi_model_new
+                or qwen_kimi_model
+                or "kimi-k2.5"
+            )
         elif provider_name == "openai":
             env_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API")
             env_url = os.getenv("OPENAI_URL")

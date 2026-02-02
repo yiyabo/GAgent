@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
 import { Card, Spin, Button, Space, Select, Input, message, Badge } from 'antd';
-import { ReloadOutlined, ExpandOutlined } from '@ant-design/icons';
+import { ReloadOutlined, ExpandOutlined, FullscreenOutlined } from '@ant-design/icons';
 import { planTreeApi } from '@api/planTree';
 import { planTreeToTasks } from '@utils/planTree';
 import type { PlanSyncEventDetail, Task as TaskType } from '@/types';
@@ -13,22 +13,29 @@ import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 interface DAGVisualizationProps {
   onNodeClick?: (taskId: number, taskData: any) => void;
   onNodeDoubleClick?: (taskId: number, taskData: any) => void;
+  onFullscreenRequest?: () => void;
   height?: string;
   interactive?: boolean;
   showToolbar?: boolean;
+  showFullscreenButton?: boolean;
 }
 
 const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   onNodeClick,
   onNodeDoubleClick,
+  onFullscreenRequest,
+  showFullscreenButton = true,
 }) => {
   const networkRef = useRef<HTMLDivElement>(null);
   const networkInstance = useRef<Network | null>(null);
+  const nodesDataset = useRef<DataSet<any> | null>(null);
+  const edgesDataset = useRef<DataSet<any> | null>(null);
   const [tasks, setTasks] = useState<TaskType[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [stats, setStats] = useState<any>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
   const currentPlanId = useChatStore((state) => state.currentPlanId);
   const { setTasks: updateStoreTasks, setTaskStats } = useTasksStore((state) => ({
     setTasks: state.setTasks,
@@ -101,6 +108,89 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
         return 12;
     }
   };
+
+  // 高亮关联节点
+  const highlightConnected = useCallback((nodeId: number | null) => {
+    if (!nodesDataset.current || !edgesDataset.current) return;
+
+    const allNodes = nodesDataset.current.get();
+    const allEdges = edgesDataset.current.get();
+
+    if (nodeId === null) {
+      // 重置所有节点和边的样式
+      nodesDataset.current.update(
+        allNodes.map((node: any) => ({
+          id: node.id,
+          opacity: 1,
+          borderWidth: node.taskData?.task_type?.toUpperCase() === 'ROOT' ? 3 : 2,
+          font: { ...node.font, color: '#ffffff' },
+        }))
+      );
+      edgesDataset.current.update(
+        allEdges.map((edge: any) => ({
+          id: edge.id,
+          hidden: false,
+          width: edge.originalWidth || 2,
+          color: { ...edge.color, opacity: 1 },
+        }))
+      );
+      setSelectedNodeId(null);
+      return;
+    }
+
+    // 找出所有关联的节点和边
+    const connectedNodes = new Set<number>([nodeId]);
+    const connectedEdges = new Set<string>();
+
+    // 找直接关联
+    allEdges.forEach((edge: any) => {
+      if (edge.from === nodeId || edge.to === nodeId) {
+        connectedNodes.add(edge.from);
+        connectedNodes.add(edge.to);
+        connectedEdges.add(edge.id);
+      }
+    });
+
+    // 递归查找祖先路径
+    const findAncestors = (id: number) => {
+      allEdges.forEach((edge: any) => {
+        if (edge.to === id && !connectedNodes.has(edge.from)) {
+          connectedNodes.add(edge.from);
+          connectedEdges.add(edge.id);
+          findAncestors(edge.from);
+        }
+      });
+    };
+    findAncestors(nodeId);
+
+    // 更新节点样式 - 高亮关联节点，淡化其他
+    nodesDataset.current.update(
+      allNodes.map((node: any) => ({
+        id: node.id,
+        opacity: connectedNodes.has(node.id) ? 1 : 0.2,
+        borderWidth: node.id === nodeId ? 5 : (connectedNodes.has(node.id) ? 3 : 2),
+        font: {
+          ...node.font,
+          color: connectedNodes.has(node.id) ? '#ffffff' : 'rgba(255,255,255,0.3)',
+        },
+      }))
+    );
+
+    // 更新边样式 - 高亮关联边，淡化其他
+    edgesDataset.current.update(
+      allEdges.map((edge: any) => ({
+        id: edge.id,
+        hidden: !connectedEdges.has(edge.id),
+        width: connectedEdges.has(edge.id) ? (edge.originalWidth || 2) * 1.5 : 1,
+        color: {
+          ...edge.color,
+          opacity: connectedEdges.has(edge.id) ? 1 : 0.1,
+        },
+      }))
+    );
+
+    setSelectedNodeId(nodeId);
+  }, []);
 
   // 加载任务数据
   const loadTasks = useCallback(async () => {
@@ -273,9 +363,13 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
       }
     });
 
+    // 保存到 ref 以供高亮函数使用
+    nodesDataset.current = new DataSet(nodes);
+    edgesDataset.current = new DataSet(edges.map(e => ({ ...e, originalWidth: e.width })));
+
     return {
-      nodes: new DataSet(nodes),
-      edges: new DataSet(edges),
+      nodes: nodesDataset.current,
+      edges: edgesDataset.current,
     };
   };
 
@@ -367,9 +461,15 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
           const task = tasks.find(t => t.id === nodeId);
           console.log('🖱️ Node clicked:', nodeId, task);
           
+          // 高亮关联节点
+          highlightConnected(nodeId);
+          
           if (task && onNodeClick) {
             onNodeClick(nodeId, task);
           }
+        } else {
+          // 点击空白处重置高亮
+          highlightConnected(null);
         }
       });
 
@@ -378,6 +478,12 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
           const nodeId = params.nodes[0];
           const task = tasks.find(t => t.id === nodeId);
           console.log('🖱️ Node double-clicked:', nodeId, task);
+          
+          // 聚焦到节点
+          networkInstance.current?.focus(nodeId, {
+            scale: 1.5,
+            animation: { duration: 500, easingFunction: 'easeInOutQuad' },
+          });
           
           if (task && onNodeDoubleClick) {
             onNodeDoubleClick(nodeId, task);
@@ -397,7 +503,7 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
         networkInstance.current = null;
       }
     };
-  }, [tasks, searchText, statusFilter, onNodeClick, onNodeDoubleClick]);
+  }, [tasks, searchText, statusFilter, onNodeClick, onNodeDoubleClick, highlightConnected]);
 
   // 组件挂载及依赖变更时加载数据
   useEffect(() => {
@@ -476,9 +582,29 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
         <span style={{ color: '#22c55e' }}>⚪</span> ATOMIC - 原子任务
       </div>
       <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '6px' }}>
-        💡 点击节点查看详情
+        💡 点击节点高亮关联路径
       </div>
     </div>
+  );
+
+  // 全屏按钮
+  const FullscreenButton = () => (
+    showFullscreenButton && onFullscreenRequest ? (
+      <Button
+        type="text"
+        icon={<FullscreenOutlined />}
+        onClick={onFullscreenRequest}
+        style={{
+          position: 'absolute',
+          top: 10,
+          right: 10,
+          zIndex: 1000,
+          background: 'var(--bg-secondary)',
+          border: '1px solid var(--border-color)',
+        }}
+        title="全屏查看"
+      />
+    ) : null
   );
 
   return (
@@ -495,6 +621,26 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
       />
       {/* Agent工作流程图例 */}
       <AgentLegend />
+      {/* 全屏按钮 */}
+      <FullscreenButton />
+      {/* 选中节点提示 */}
+      {selectedNodeId && (
+        <div style={{
+          position: 'absolute',
+          bottom: 10,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'var(--bg-secondary)',
+          padding: '6px 12px',
+          borderRadius: '16px',
+          border: '1px solid var(--border-color)',
+          fontSize: '12px',
+          color: 'var(--text-secondary)',
+          zIndex: 1000,
+        }}>
+          点击空白处取消高亮
+        </div>
+      )}
     </div>
   );
 };
