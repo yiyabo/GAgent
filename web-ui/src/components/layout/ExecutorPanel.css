@@ -1,4 +1,4 @@
-/* 极简后台任务面板 */
+/* 任务状态表（极简） */
 
 .executor-container {
   height: 100%;
@@ -7,37 +7,92 @@
   background: transparent;
 }
 
-/* 统计栏 */
-.executor-stats {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
+/* 表格容器 */
+.task-table-wrap {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 10px 12px;
+  background:
+    radial-gradient(1200px 600px at 40% 0%, rgba(0, 0, 0, 0.03), transparent 55%),
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.03) 0px,
+      rgba(0, 0, 0, 0.03) 1px,
+      transparent 1px,
+      transparent 24px
+    );
+}
+
+.task-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: rgba(255, 255, 255, 0.68);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* 表头 */
+.task-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(0, 0, 0, 0.55);
+  background: rgba(255, 255, 255, 0.78);
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 
-.executor-stats-total {
-  font-size: 12px;
-  color: #6b7280;
-  font-weight: 500;
+.task-table tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  vertical-align: middle;
+  font-size: 13px;
+  color: #374151;
 }
 
-.executor-stats-dots {
+.task-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.task-row {
+  transition: background 0.15s ease;
+}
+
+.task-row:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.task-id {
+  width: 92px;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.task-content {
+  max-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-status {
+  width: 150px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  white-space: nowrap;
 }
 
-.executor-stat-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: #9ca3af;
-}
-
-/* 状态圆点 */
-.executor-dot {
+.task-status-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -45,131 +100,39 @@
   background: #d1d5db;
 }
 
-.executor-dot.running {
+.task-status-dot.running {
   background: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
   animation: pulse 2s ease-in-out infinite;
 }
 
-.executor-dot.succeeded,
-.executor-dot.completed {
+.task-status-dot.completed {
   background: #22c55e;
 }
 
-.executor-dot.failed {
+.task-status-dot.failed {
   background: #ef4444;
 }
 
-.executor-dot.queued,
-.executor-dot.pending {
+.task-status-dot.queued {
   background: #d1d5db;
+}
+
+.task-status-text {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.task-status-meta {
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.35);
+  margin-left: 2px;
+  font-variant-numeric: tabular-nums;
 }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
-}
-
-/* 任务列表 */
-.executor-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px 0;
-}
-
-/* 单个任务项 */
-.executor-item {
-  margin: 0 8px 4px;
-  border-radius: 6px;
-  background: transparent;
-  transition: background 0.15s ease;
-}
-
-.executor-item:hover {
-  background: rgba(0, 0, 0, 0.02);
-}
-
-.executor-item.expanded {
-  background: rgba(0, 0, 0, 0.02);
-}
-
-/* 任务头部 */
-.executor-item-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  cursor: pointer;
-  gap: 12px;
-}
-
-.executor-item-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-  min-width: 0;
-}
-
-.executor-item-label {
-  font-size: 13px;
-  color: #374151;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.executor-item:hover .executor-item-label {
-  color: #111827;
-}
-
-.executor-item-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.executor-item-duration {
-  font-size: 11px;
-  color: #9ca3af;
-  font-variant-numeric: tabular-nums;
-  background: rgba(0, 0, 0, 0.04);
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.executor-item-time {
-  font-size: 11px;
-  color: #9ca3af;
-}
-
-.executor-chevron {
-  width: 12px;
-  height: 12px;
-  color: rgba(0, 0, 0, 0.25);
-  transition: transform 0.2s ease;
-}
-
-.executor-chevron.expanded {
-  transform: rotate(90deg);
-}
-
-/* 展开内容 */
-.executor-item-content {
-  padding: 0 12px 12px;
-  animation: slideDown 0.2s ease;
-}
-
-@keyframes slideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 /* 空状态 */
@@ -205,57 +168,68 @@
 }
 
 /* 滚动条 */
-.executor-list::-webkit-scrollbar {
+.task-table-wrap::-webkit-scrollbar {
   width: 4px;
+  height: 4px;
 }
 
-.executor-list::-webkit-scrollbar-track {
+.task-table-wrap::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.executor-list::-webkit-scrollbar-thumb {
+.task-table-wrap::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.1);
   border-radius: 2px;
 }
 
-.executor-list::-webkit-scrollbar-thumb:hover {
+.task-table-wrap::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.2);
 }
 
 /* 暗色模式 */
 @media (prefers-color-scheme: dark) {
-  .executor-stats {
+  .task-table-wrap {
+    background:
+      radial-gradient(1200px 600px at 40% 0%, rgba(255, 255, 255, 0.04), transparent 55%),
+      repeating-linear-gradient(
+        to bottom,
+        rgba(255, 255, 255, 0.05) 0px,
+        rgba(255, 255, 255, 0.05) 1px,
+        transparent 1px,
+        transparent 24px
+      );
+  }
+
+  .task-table {
+    background: rgba(17, 24, 39, 0.45);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .task-table thead th {
+    background: rgba(17, 24, 39, 0.6);
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  .task-table tbody td {
     border-bottom-color: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.82);
   }
 
-  .executor-stats-total {
-    color: #9ca3af;
+  .task-row:hover {
+    background: rgba(255, 255, 255, 0.03);
   }
 
-  .executor-item:hover,
-  .executor-item.expanded {
-    background: rgba(255, 255, 255, 0.02);
+  .task-id {
+    color: rgba(255, 255, 255, 0.7);
   }
 
-  .executor-item-label {
-    color: #e5e7eb;
+  .task-status-text {
+    color: rgba(255, 255, 255, 0.75);
   }
 
-  .executor-item:hover .executor-item-label {
-    color: #f9fafb;
-  }
-
-  .executor-item-duration {
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .executor-chevron {
-    color: rgba(255, 255, 255, 0.25);
-  }
-
-  .executor-dot.queued,
-  .executor-dot.pending {
-    background: #4b5563;
+  .task-status-meta {
+    color: rgba(255, 255, 255, 0.4);
   }
 
   .executor-empty-icon {

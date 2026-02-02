@@ -225,6 +225,26 @@ def _is_retriable_result_error(status_code: int, payload: Dict[str, Any]) -> boo
     )
 
 
+def _is_result_not_ready_error(status_code: int, payload: Dict[str, Any]) -> bool:
+    """Detect PhageScope server-side 'result file not ready yet' errors.
+
+    PhageScope sometimes returns 500 with a Django debug page containing a
+    FileNotFoundError for result TSVs (e.g., phage.tsv / protein.tsv) while the
+    pipeline is still running. Treat this as a soft 'still running' signal.
+    """
+    if status_code < 400:
+        return False
+    raw = payload.get("raw")
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    raw_lower = raw.lower()
+    if "filenotfounderror" not in raw_lower and "no such file or directory" not in raw_lower:
+        return False
+    # Heuristic: the missing path usually includes output/result/*.tsv
+    if "/output/result/" in raw_lower and ".tsv" in raw_lower:
+        return True
+    return False
+
 def _parse_task_detail(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     results = payload.get("results")
     if isinstance(results, dict):
@@ -589,6 +609,21 @@ async def phagescope_handler(
                     "result_kind": result_kind,
                 }
 
+            # Soft-fail: remote result file not ready yet (common for phage/proteins).
+            # Return 202 so the agent/UI can treat it as "still running" instead of "failed".
+            if isinstance(payload, dict) and _is_result_not_ready_error(status_code, payload) and not wait:
+                return {
+                    "success": True,
+                    "status_code": 202,
+                    "action": action,
+                    "result_kind": result_kind,
+                    "taskid": str(taskid) if taskid is not None else None,
+                    "status": "running",
+                    "message": "Result not ready yet. The remote pipeline is likely still running. Retry later, or set wait=true to poll.",
+                    "data": payload,
+                    "not_ready": True,
+                }
+
             if wait and isinstance(payload, dict) and poll_timeout > 0:
                 start = time.monotonic()
                 attempts = 0
@@ -645,6 +680,10 @@ async def phagescope_handler(
                                 "poll_interval": poll_interval,
                             },
                         }
+
+                    # If still not ready, keep polling until poll_timeout.
+                    if isinstance(last_payload, dict) and _is_result_not_ready_error(last_status_code, last_payload):
+                        continue
 
                     if not (isinstance(last_payload, dict) and _is_retriable_result_error(last_status_code, last_payload)):
                         break
@@ -885,15 +924,55 @@ async def phagescope_handler(
             summary_file = output_dir / "summary.json"
             summary_file.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
+            # Decide success semantics:
+            # - If any endpoint failed, we return 207 (Multi-Status).
+            # - But if core artifacts are present, treat it as usable success with warnings.
+            has_quality = "quality" in saved_files
+            has_proteins = ("proteins_tsv" in saved_files) or ("proteins_json" in saved_files)
+            has_phage_info = "phage_info" in saved_files
+            core_saved = has_quality and has_proteins
+
+            missing_artifacts: List[str] = []
+            # Derive missing artifacts from errors (e.g. "phagefasta: HTTP 500")
+            if errors:
+                for item in errors:
+                    if not isinstance(item, str):
+                        continue
+                    name = item.split(":", 1)[0].strip()
+                    if name and name not in missing_artifacts:
+                        missing_artifacts.append(name)
+
+            # Also infer missing of core files if absent
+            if not has_quality and "quality" not in missing_artifacts:
+                missing_artifacts.append("quality")
+            if not has_proteins and "proteins" not in missing_artifacts:
+                missing_artifacts.append("proteins")
+            if not has_phage_info and "phage" not in missing_artifacts:
+                missing_artifacts.append("phage")
+
+            partial = len(errors) > 0
+            warnings: List[str] = []
+            if partial and missing_artifacts:
+                warnings.append(
+                    "Partial download: some result kinds failed. Core results are available; missing: "
+                    + ", ".join(missing_artifacts[:6])
+                    + ("..." if len(missing_artifacts) > 6 else "")
+                )
+
             return {
-                "success": len(errors) == 0,
+                "success": True if (core_saved or len(errors) == 0) else False,
                 "status_code": 200 if len(errors) == 0 else 207,  # 207 = Multi-Status
                 "action": action,
                 "taskid": taskid,
                 "output_directory": str(output_dir.resolve()),
+                "output_directory_rel": str(output_dir),
                 "files_saved": saved_files,
                 "errors": errors if errors else None,
+                "partial": True if partial else False,
+                "missing_artifacts": missing_artifacts if missing_artifacts else None,
+                "warnings": warnings if warnings else None,
                 "summary_file": str(summary_file.resolve()),
+                "summary_file_rel": str(summary_file),
             }
 
         return {"success": False, "status_code": 400, "error": f"unsupported action: {action}", "action": action}
