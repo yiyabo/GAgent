@@ -234,7 +234,13 @@ async def claude_code_handler(
             )
         
         enhanced_task = (
-            f"[EXECUTION MODE] Write code, execute it, and save outputs to files. Do NOT just describe or plan.\n\n"
+            f"[SINGLE TASK EXECUTION MODE]\n"
+            f"You are executing ONE specific task assigned by the outer agent. Do NOT plan or execute additional tasks.\n\n"
+            f"CONSTRAINTS:\n"
+            f"- Execute ONLY the task described below, nothing more\n"
+            f"- Do NOT decompose into multiple sub-projects or expand scope\n"
+            f"- If the task is too complex, report it and stop (let the outer agent decompose it)\n"
+            f"- Focus on producing concrete outputs for THIS task only\n\n"
             f"Working directory: {task_work_dir}\n"
             f"Output folders: results/ (figures), code/ (scripts), data/ (tables), docs/ (reports)\n"
             f"File prefix: {file_prefix}\n"

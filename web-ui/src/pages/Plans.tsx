@@ -308,7 +308,31 @@ const PlansPage: React.FC = () => {
   };
 
   const planOptions = planSummaries.map((plan) => ({
-    label: plan.title,
+    label: (() => {
+      const meta = (plan.metadata ?? {}) as Record<string, any>;
+      const originRaw = typeof meta.plan_origin === 'string' ? meta.plan_origin.toLowerCase() : null;
+      const originTag =
+        originRaw === 'deepthink' ? <Tag color="geekblue">DeepThink</Tag> : <Tag>Standard</Tag>;
+      const evalObj = (meta.plan_evaluation ?? null) as Record<string, any> | null;
+      const score = typeof evalObj?.overall_score === 'number' ? evalObj.overall_score : null;
+      const rounded = score != null ? Math.round(score) : null;
+      const below = rounded != null && rounded < 80;
+      const scoreTag =
+        rounded == null ? (
+          <Tag>Rubric: N/A</Tag>
+        ) : (
+          <Tag color={below ? 'red' : rounded >= 90 ? 'green' : rounded >= 80 ? 'blue' : 'orange'}>
+            Rubric {rounded}%{below ? ' (Below)' : ''}
+          </Tag>
+        );
+      return (
+        <Space size={6} wrap>
+          <Text>{plan.title}</Text>
+          {originTag}
+          {scoreTag}
+        </Space>
+      );
+    })(),
     value: plan.id,
   }));
 

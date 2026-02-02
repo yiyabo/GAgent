@@ -25,6 +25,7 @@ from .tools_impl import (
     manuscript_writer_tool,
     phagescope_tool,
     result_interpreter_tool,
+    plan_operation_tool,
 )
 from .bio_tools import bio_tools_tool
 
@@ -206,6 +207,17 @@ class ToolBoxIntegration:
             handler=result_interpreter_tool["handler"],
             tags=result_interpreter_tool.get("tags", []),
             examples=result_interpreter_tool.get("examples", []),
+        )
+
+        # Register plan operation tool (for DeepThink plan creation and optimization)
+        register_tool(
+            name=plan_operation_tool["name"],
+            description=plan_operation_tool["description"],
+            category=plan_operation_tool["category"],
+            parameters_schema=plan_operation_tool["parameters_schema"],
+            handler=plan_operation_tool["handler"],
+            tags=plan_operation_tool.get("tags", []),
+            examples=plan_operation_tool.get("examples", []),
         )
 
         logger.info("Built-in tools registered")

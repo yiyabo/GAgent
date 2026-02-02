@@ -21,7 +21,8 @@ normalize_host() {
   local host="$1"
   case "$host" in
     ""|0.0.0.0|::)
-      echo "119.147.24.196"
+      # 本地 health check 应使用 localhost，而非外网 IP
+      echo "127.0.0.1"
       ;;
     *)
       echo "$host"

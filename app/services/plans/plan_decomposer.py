@@ -321,6 +321,7 @@ class PlanDecomposer:
         processed: List[Optional[int]] = []
         created_nodes: List[PlanNode] = []
         failed: List[Optional[int]] = []
+        visited: set[Optional[int]] = set()
         outline_cache = tree.to_outline(max_depth=5, max_nodes=80)
         budget_remaining = max(node_budget, 0)
         llm_calls = 0
@@ -350,6 +351,9 @@ class PlanDecomposer:
 
         while queue and budget_remaining > 0:
             current = queue.popleft()
+            if current.node_id in visited:
+                continue
+            visited.add(current.node_id)
             if current.relative_depth > max_depth:
                 continue
 
@@ -368,6 +372,13 @@ class PlanDecomposer:
                     "Skipped node because it already has children",
                     {"node_id": node.id, "allow_existing_children": allow_existing},
                 )
+                next_depth = current.relative_depth + 1
+                if next_depth <= max_depth:
+                    for child_id in tree.children_ids(node.id):
+                        if child_id not in visited:
+                            queue.append(
+                                QueueItem(node_id=child_id, relative_depth=next_depth)
+                            )
                 continue
 
             _log_job(

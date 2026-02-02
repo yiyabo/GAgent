@@ -51,6 +51,7 @@ class DeepThinkAgent:
         "bio_tools": 86400,      # 24 小时 - 生物信息学工具不限制
         "phagescope": 60,        # 1 分钟 - 仅用于提交/查询，不等待结果
         "result_interpreter": 300,  # 5 分钟 - 数据分析和代码执行
+        "plan_operation": 1200,    # 20 分钟 - Plan 创建和优化操作（含长时验证）
     }
     
     def __init__(
@@ -385,6 +386,23 @@ Params for metadata:
 {"operation": "metadata", "file_path": "/path/to/data.csv"}
 
 Use this for data exploration, statistical analysis, and visualization tasks on structured data files.""",
+            "plan_operation": """Plan creation and optimization tool for structured task planning.
+
+Operations:
+- create: Create a new plan with tasks. Params: {"operation": "create", "title": "Plan Title", "description": "Goal", "tasks": [{"name": "Task 1", "instruction": "Details...", "dependencies": ["Task 0"]}]}
+- review: Review plan quality and structure. Returns BOTH: (1) structural health_score and (2) a strict research-plan rubric_score with detailed breakdown. Params: {"operation": "review", "plan_id": 123}
+- optimize: Apply changes to improve the plan. Params: {"operation": "optimize", "plan_id": 123, "changes": [{"action": "add_task|update_task|delete_task", ...}]}
+- get: Get plan details. Params: {"operation": "get", "plan_id": 123}
+
+WORKFLOW for Plan Creation:
+1. First use web_search to research relevant technologies/best practices
+2. Create initial plan with 'create' operation
+3. Use 'review' to check dependency issues AND research-plan rubric quality
+4. If issues found, use 'optimize' to fix them
+5. Repeat review-optimize until BOTH health_score and rubric_score are strong
+6. Report final plan to user with summary
+
+IMPORTANT: When creating plans, ensure each task has clear, actionable instructions!""",
         }
         
         tools_desc = []
@@ -432,6 +450,51 @@ For comprehensive analysis, consider this workflow:
 - IMAGES/FIGURES/PDF: vision_reader - for OCR, figure description, equation reading
 - WEB INFORMATION: web_search - for internet queries, background research
 - KNOWLEDGE QUERIES: graph_rag - for structured knowledge retrieval
+- **PLAN CREATION**: plan_operation - for creating and optimizing structured task plans
+
+=== PLAN CREATION STRATEGY ===
+When user asks to create a plan, research project, or structured task breakdown:
+
+**Step 1: Research First (CRITICAL!)**
+- Use web_search to gather information about:
+  - Latest technologies and best practices for the domain
+  - Similar successful projects or methodologies
+  - Potential challenges and proven solutions
+- This ensures your plan is based on current, accurate information
+
+**Step 2: Create Initial Plan**
+- Use plan_operation(operation="create") with:
+  - Clear, descriptive title
+  - Specific goal/description
+  - Well-structured tasks with research-grade instructions
+  - Proper dependencies between tasks
+
+Research-grade instruction requirements (CRITICAL):
+- Each task must specify: Objective; Rationale (why); Methods & Tools; Data/Inputs; Outputs/Artifacts;
+  Baselines/Controls; Metrics & QC; Acceptance criteria; Reproducibility notes (parameters/versions/seeds).
+- Avoid shallow or slogan-like steps.
+
+**Step 3: Review Plan**
+- Use plan_operation(operation="review") to check:
+  - No circular dependencies
+  - Task granularity is appropriate (not too coarse or too fine)
+  - All necessary steps are included
+  - Health score is acceptable (aim for 80+)
+  - Rubric score is acceptable (aim for 80+), especially scientific_rigor and reproducibility
+
+**Step 4: Iterate if Needed**
+- If review finds issues, use plan_operation(operation="optimize") to:
+  - Add missing tasks
+  - Update unclear instructions
+  - Fix dependency issues
+  - Adjust task granularity
+  - Add baselines/controls, explicit metrics/QC, and acceptance thresholds
+  - Add tool/I-O/parameterization details for reproducibility
+- Then review again until satisfied
+
+**Step 5: Report Final Plan**
+- Use plan_operation(operation="get") to show final structure
+- Summarize the plan to the user with key tasks and timeline
 
 === BIOINFORMATICS PRIORITY RULE ===
 When user asks about FASTA, FASTQ, or sequence files:
@@ -446,17 +509,44 @@ IMPORTANT - bio_tools operations (do NOT guess, use these exact names):
 - hmmer: hmmscan, hmmsearch (requires database param)
 - checkv: end_to_end, completeness (requires database param)
 
-=== BIO_TOOLS ERROR RECOVERY (CRITICAL!) ===
-If bio_tools returns an error like "Execution failed: 'parameter_name'":
-1. **DO NOT give up or switch tools immediately!**
-2. Call bio_tools with operation="help" and the same tool_name to see required parameters
-3. Retry the call with the missing parameters filled in
-4. Only fall back to claude_code if the tool genuinely cannot do the task
+=== BIO_TOOLS SELF-CORRECTION PROTOCOL (CRITICAL!) ===
+When bio_tools fails, follow this recovery sequence. NEVER give up after first failure!
 
-Example error recovery:
-- Error: "Execution failed: 'protein_output'" 
-- Action: Call bio_tools(tool_name="prodigal", operation="help") to see params
-- Then retry: bio_tools(tool_name="prodigal", operation="predict", input_file="...", params={{"protein_output": "output.faa"}})
+**Step 1: Check Help**
+- Call bio_tools(tool_name="xxx", operation="help") to see exact parameters
+- Read the output carefully for required vs optional params
+
+**Step 2: Web Search (if help is unclear)**
+- Call web_search(query="<tool_name> bioinformatics usage parameters example")
+- Look for official documentation or tutorials
+
+**Step 3: Inspect via Shell (if still failing)**
+- Call claude_code with task: "Run <tool> --help to see command options"
+- Check if input file format is correct with: seqkit stats <file>
+
+**Step 4: Try Alternative Tools**
+- seqkit failed → try biopython via claude_code
+- blast failed → check database path, try diamond as alternative
+- prodigal failed → check input format with seqkit first
+- assembly tools → verify FASTA format, check sequence lengths
+
+**Error Pattern Recognition:**
+- "Permission denied" → check file paths and permissions
+- "File not found" → verify absolute path, check if file exists with ls
+- "Invalid parameter" → call help, check parameter spelling/format
+- "Database not found" → verify database param path is correct
+- "Memory error" → try smaller input or request chunked processing
+- "Docker error" → report to user, may need admin intervention
+
+**Example Recovery Flow:**
+1. Error: "Execution failed: 'protein_output'"
+2. Action: bio_tools(tool_name="prodigal", operation="help")
+3. Learn: protein_output is required, should be a file path
+4. Retry: bio_tools(tool_name="prodigal", operation="predict", input_file="...", params={{"protein_output": "output.faa"}})
+5. Still failing? → web_search("prodigal protein prediction parameters")
+6. Still failing? → claude_code to run prodigal directly and debug
+
+Try at least 3 different approaches before reporting failure to user!
 
 DO NOT use vision_reader for BIO files - it's only for PDFs and images!
 

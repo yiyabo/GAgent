@@ -7,6 +7,7 @@ import type {
   PlanResultItem,
   PlanResultsResponse,
   PlanSummary,
+  PlanTreeResponse,
   PlanTaskNode,
   Task,
 } from '@/types';
@@ -80,6 +81,22 @@ export const usePlanTasks = (options: PlanTasksOptions) => {
     ...query,
     data: sortedData,
   };
+};
+
+export const usePlanTree = (planId?: number | null) => {
+  return useQuery<PlanTreeResponse>({
+    queryKey: ['planTree', 'tree', planId ?? null],
+    enabled: typeof planId === 'number',
+    queryFn: async () => {
+      if (planId == null) {
+        return Promise.reject(new Error('planId is required'));
+      }
+      return planTreeApi.getPlanTree(planId);
+    },
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
 };
 
 interface PlanResultsOptions {

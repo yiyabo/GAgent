@@ -1195,8 +1195,15 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             if agent_result.job_id:
                 metadata_payload["job_id"] = agent_result.job_id
                 metadata_payload["job_type"] = agent_result.job_type or "chat_action"
+                # 从 job 获取真实状态，而不是使用 agent_result.success
+                job_snap = plan_decomposition_jobs.get_job_payload(agent_result.job_id)
+                if job_snap:
+                    metadata_payload["job_status"] = job_snap.get("status", "queued")
+                    metadata_payload["job"] = job_snap
+                else:
+                    # 如果是同步执行完成的 job，使用 success 判断
                 metadata_payload["job_status"] = (
-                    "completed" if agent_result.success else "failed"
+                        "succeeded" if agent_result.success else "failed"
                 )
             chat_response = ChatResponse(
                 response=agent_result.reply,
@@ -1279,6 +1286,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                     plan_id=plan_session.plan_id,
                     job_id=tracking_id,
                     job_type="chat_action",
+                    sequence=action.order if isinstance(action.order, int) else None,
                     session_id=request.session_id,
                     user_message=request.message,
                     action_kind=action.kind,
@@ -1561,8 +1569,15 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                 if agent_result.job_id:
                     metadata_payload["job_id"] = agent_result.job_id
                     metadata_payload["job_type"] = agent_result.job_type or "chat_action"
+                    # 从 job 获取真实状态，而不是使用 agent_result.success
+                    job_snap = plan_decomposition_jobs.get_job_payload(agent_result.job_id)
+                    if job_snap:
+                        metadata_payload["job_status"] = job_snap.get("status", "queued")
+                        metadata_payload["job"] = job_snap
+                    else:
+                        # 如果是同步执行完成的 job，使用 success 判断
                     metadata_payload["job_status"] = (
-                        "completed" if agent_result.success else "failed"
+                            "succeeded" if agent_result.success else "failed"
                     )
                 chat_response = ChatResponse(
                     response=agent_result.reply,
@@ -1643,6 +1658,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                         plan_id=plan_session.plan_id,
                         job_id=tracking_id,
                         job_type="chat_action",
+                        sequence=action.order if isinstance(action.order, int) else None,
                         session_id=request.session_id,
                         user_message=request.message,
                         action_kind=action.kind,
@@ -3263,6 +3279,7 @@ async def retry_action_run(tracking_id: str, background_tasks: BackgroundTasks):
                 plan_id=plan_session.plan_id,
                 job_id=new_tracking,
                 job_type="chat_action",
+                sequence=action.order if isinstance(action.order, int) else None,
                 session_id=original.get("session_id"),
                 user_message=original.get("user_message", ""),
                 action_kind=action.kind,
@@ -3840,6 +3857,29 @@ class StructuredChatAgent:
         # Check context flag
         if self.extra_context.get("deep_think_enabled", False):
             return True
+        # Default: force DeepThink for plan creation / research planning.
+        # This prevents shallow plans and enables rubric-based self-optimization.
+        msg = (message or "").strip().lower()
+        if not msg:
+            return False
+        plan_keywords = (
+            "create plan",
+            "make a plan",
+            "plan for",
+            "research plan",
+            "project plan",
+            "roadmap",
+            "计划",
+            "研究计划",
+            "项目计划",
+            "任务计划",
+            "规划",
+            "拆解",
+            "分解",
+            "任务树",
+        )
+        if any(k in msg for k in plan_keywords):
+            return True
         return False
 
     async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
@@ -3879,16 +3919,353 @@ class StructuredChatAgent:
 
         async def run_agent():
             try:
-                # Wrapper for tool execution
+                # Wrapper for tool execution with plan_operation binding
                 async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
-                    return await execute_tool(name, **params)
+                    result = await execute_tool(name, **params)
+                    
+                    # Special handling: bind Plan to session after successful creation
+                    if name == "plan_operation" and isinstance(result, dict):
+                        if result.get("success") and result.get("operation") == "create":
+                            plan_id = result.get("plan_id")
+                            if plan_id:
+                                try:
+                                    # Bind the newly created plan to the current session
+                                    self.plan_session.bind(plan_id)
+                                    self._refresh_plan_tree(force_reload=True)
+                                    self.extra_context["plan_id"] = plan_id
+                                    self._dirty = True
+                                    
+                                    # CRITICAL: Also update the database session record
+                                    # so that frontend can fetch the new plan_id
+                                    if self.session_id:
+                                        _set_session_plan_id(self.session_id, plan_id)
+                                        logger.info(f"[DeepThink] Updated database session {self.session_id} with plan_id={plan_id}")
+                                    
+                                    # CRITICAL: Trigger automatic task decomposition
+                                    # This ensures DeepThink-created plans get the same
+                                    # multi-level decomposition as regular plans
+                                    session_ctx = {
+                                        "user_message": user_message,
+                                        "chat_history": self.history,
+                                        "recent_tool_results": self.extra_context.get(
+                                            "recent_tool_results", []
+                                        ),
+                                    }
+                                    decompose_result = await asyncio.to_thread(
+                                        self._auto_decompose_plan,
+                                        plan_id,
+                                        wait_for_completion=True,
+                                        session_context=session_ctx,
+                                    )
+                                    if decompose_result:
+                                        if decompose_result.get("result") is not None:
+                                            summary = decompose_result["result"]
+                                            logger.info(
+                                                "[DeepThink] Auto-decomposition completed for plan %s",
+                                                plan_id,
+                                            )
+                                            result["decomposition_completed"] = True
+                                            result["decomposition_created"] = len(
+                                                summary.created_tasks
+                                            )
+                                            result["decomposition_stats"] = summary.stats
+                                            result["decomposition_note"] = (
+                                                "Automatic task decomposition completed before review."
+                                            )
+                                        elif decompose_result.get("job") is not None:
+                                            logger.info(
+                                                "[DeepThink] Auto-decomposition submitted for plan %s",
+                                                plan_id,
+                                            )
+                                            result["decomposition_triggered"] = True
+                                            result["decomposition_note"] = (
+                                                "Automatic task decomposition has been submitted for background execution."
+                                            )
+
+                                    # -------------------------------------------------
+                                    # Auto optimization loop (max 3 rounds by default)
+                                    # - Evaluate rubric_score; if below threshold, batch-update related tasks.
+                                    # -------------------------------------------------
+                                    try:
+                                        from app.services.foundation.settings import get_settings
+                                        from app.repository.plan_repository import PlanRepository
+
+                                        settings = get_settings()
+                                        threshold = int(getattr(settings, "plan_rubric_threshold", 80))
+                                        max_rounds = int(getattr(settings, "plan_optimize_max_iters", 3))
+                                        # Clamp to safe bounds
+                                        if max_rounds < 0:
+                                            max_rounds = 0
+                                        if max_rounds > 6:
+                                            max_rounds = 6
+
+                                        repo = PlanRepository()
+
+                                        def _has_any(text: str, markers: List[str]) -> bool:
+                                            t = (text or "").lower()
+                                            return any(m in t for m in markers)
+
+                                        def _ensure_research_sections(instruction: str) -> str:
+                                            text = (instruction or "").strip()
+                                            # If already looks structured, do not spam; only append missing blocks.
+                                            blocks: List[str] = []
+                                            # bilingual headings to boost rubric while keeping Chinese readability
+                                            required_blocks = [
+                                                ("Objective（目标）", "明确本任务要产出的具体结果/产物。"),
+                                                ("Rationale（动机/为什么）", "解释为什么需要此任务，以及它如何支撑总体目标。"),
+                                                ("Methods & Tools（方法与工具）", "指定方法/工具名称，并简要说明选择理由。"),
+                                                ("Data & Inputs（数据与输入）", "指定数据来源/版本/获取方式与输入格式。"),
+                                                ("Outputs & Artifacts（输出与产物）", "明确输出文件/表格/图/模型及命名与格式。"),
+                                                ("Baselines & Controls（基线与对照）", "指定对照/基线方案。"),
+                                                ("Metrics & QC（指标与质控）", "定义评估指标与QC/验证步骤。"),
+                                                ("Acceptance Criteria（验收标准）", "定义通过阈值/验收条件。"),
+                                                ("Reproducibility（可复现性）", "记录关键参数/随机种子/版本/运行命令或流程。"),
+                                            ]
+                                            for heading, hint in required_blocks:
+                                                key = heading.split("（", 1)[0].lower()
+                                                if key and key in text.lower():
+                                                    continue
+                                                blocks.append(f"{heading}:\n- {hint}")
+                                            if not blocks:
+                                                return text
+                                            if text:
+                                                return text + "\n\n" + "\n\n".join(blocks)
+                                            return "\n\n".join(blocks)
+
+                                        def _task_title_exists(tree: Any, needle: str) -> bool:
+                                            n = (needle or "").strip().lower()
+                                            if not n:
+                                                return False
+                                            for node in tree.nodes.values():
+                                                if n in (node.name or "").lower():
+                                                    return True
+                                            return False
+
+                                        # Trace for observability (persisted to plan metadata)
+                                        auto_trace: List[Dict[str, Any]] = []
+
+                                        last_score: Optional[float] = None
+                                        last_dims: Dict[str, float] = {}
+                                        for round_idx in range(max_rounds):
+                                            review_res = await execute_tool(
+                                                "plan_operation",
+                                                operation="review",
+                                                plan_id=int(plan_id),
+                                            )
+                                            if isinstance(review_res, dict):
+                                                last_score = review_res.get("rubric_score")
+                                                dims_raw = review_res.get("rubric_dimension_scores") or {}
+                                                if isinstance(dims_raw, dict):
+                                                    for k, v in dims_raw.items():
+                                                        try:
+                                                            last_dims[str(k)] = float(v)
+                                                        except Exception:
+                                                            continue
+                                            try:
+                                                numeric = float(last_score) if last_score is not None else None
+                                            except Exception:
+                                                numeric = None
+                                            if numeric is not None and numeric >= float(threshold):
+                                                logger.info(
+                                                    "[DeepThink][AutoOptimize] plan=%s reached threshold (score=%.1f >= %s) at round=%s",
+                                                    plan_id,
+                                                    numeric,
+                                                    threshold,
+                                                    round_idx,
+                                                )
+                                                auto_trace.append(
+                                                    {
+                                                        "round": round_idx,
+                                                        "event": "stop_threshold_reached",
+                                                        "rubric_score": numeric,
+                                                        "dimension_scores": dict(last_dims),
+                                                    }
+                                                )
+                                                result["auto_optimized"] = True
+                                                result["auto_optimize_rounds"] = round_idx
+                                                result["rubric_score"] = numeric
+                                                break
+
+                                            tree = repo.get_plan_tree(int(plan_id))
+                                            # Identify root and top-level tasks
+                                            root_ids = tree.root_node_ids()
+                                            root_id = root_ids[0] if root_ids else None
+                                            children = tree.children_ids(root_id) if root_id is not None else []
+
+                                            # Build change set: dimension-driven, group update.
+                                            changes: List[Dict[str, Any]] = []
+                                            for tid in children:
+                                                node = tree.nodes.get(tid)
+                                                if not node:
+                                                    continue
+                                                instr = _ensure_research_sections(node.instruction or "")
+                                                if instr != (node.instruction or ""):
+                                                    changes.append(
+                                                        {
+                                                            "action": "update_task",
+                                                            "task_id": int(node.id),
+                                                            "instruction": instr,
+                                                        }
+                                                    )
+
+                                            # Add contextual completeness boosters (motivation/assumptions/trade-offs)
+                                            contextual = float(last_dims.get("contextual_completeness", 0.0) or 0.0)
+                                            if contextual < float(threshold):
+                                                if not _task_title_exists(tree, "motivation") and not _task_title_exists(tree, "动机"):
+                                                    changes.append(
+                                                        {
+                                                            "action": "add_task",
+                                                            "name": "Problem Framing & Motivation（问题定义与研究动机）",
+                                                            "instruction": _ensure_research_sections(
+                                                                "Write a clear problem statement, motivation, scope, and why this plan matters. Explicitly link each major step to the goal."
+                                                            ),
+                                                        }
+                                                    )
+                                                if not _task_title_exists(tree, "assumption") and not _task_title_exists(tree, "假设"):
+                                                    changes.append(
+                                                        {
+                                                            "action": "add_task",
+                                                            "name": "Assumptions, Constraints & Scope（关键假设/约束与范围）",
+                                                            "instruction": _ensure_research_sections(
+                                                                "List key assumptions (data availability, labeling, compute, timeline), constraints, and out-of-scope items. Define decision rules for scope changes."
+                                                            ),
+                                                        }
+                                                    )
+                                                if not _task_title_exists(tree, "trade-off") and not _task_title_exists(tree, "对比") and not _task_title_exists(tree, "替代"):
+                                                    changes.append(
+                                                        {
+                                                            "action": "add_task",
+                                                            "name": "Alternatives & Trade-offs（备选方案与取舍）",
+                                                            "instruction": _ensure_research_sections(
+                                                                "Enumerate alternative approaches and justify trade-offs (accuracy vs interpretability, data cost, complexity)."
+                                                            ),
+                                                        }
+                                                    )
+
+                                            # Add scientific rigor boosters (baselines/metrics/QC/robustness/thresholds)
+                                            rigor = float(last_dims.get("scientific_rigor", 0.0) or 0.0)
+
+                                            # Add a dedicated scientific rigor task if missing signals.
+                                            all_text = "\n".join(
+                                                [
+                                                    (n.name or "") + "\n" + (n.instruction or "")
+                                                    for n in tree.nodes.values()
+                                                ]
+                                            )
+                                            rigor_markers = ["qc", "validation", "baseline", "control", "threshold", "f1", "auc", "auroc", "n50", "error analysis", "robust"]
+                                            if rigor < float(threshold) and not _has_any(all_text, rigor_markers):
+                                                changes.append(
+                                                    {
+                                                        "action": "add_task",
+                                                        "name": "Scientific Rigor & Evaluation Protocol（科研严谨性与评估方案）",
+                                                        "instruction": _ensure_research_sections(
+                                                            "Define baselines/controls, evaluation metrics (e.g., F1/AUROC/N50 as applicable), QC/validation workflow, error analysis, robustness checks, and explicit acceptance thresholds. Provide a reproducible evaluation protocol and reporting template."
+                                                        ),
+                                                    }
+                                                )
+                                            if rigor < float(threshold) and not _task_title_exists(tree, "robust") and not _task_title_exists(tree, "鲁棒"):
+                                                changes.append(
+                                                    {
+                                                        "action": "add_task",
+                                                        "name": "Robustness & Error Analysis（鲁棒性与误差分析）",
+                                                        "instruction": _ensure_research_sections(
+                                                            "Plan robustness checks (OOD, ablations, sensitivity to hyperparameters) and structured error analysis. Define what failure modes to investigate."
+                                                        ),
+                                                    }
+                                                )
+
+                                            if changes:
+                                                logger.info(
+                                                    "[DeepThink][AutoOptimize] plan=%s round=%s score=%.1f dims=%s changes=%s",
+                                                    plan_id,
+                                                    round_idx,
+                                                    float(numeric or 0.0),
+                                                    {k: round(v, 1) for k, v in last_dims.items()},
+                                                    len(changes),
+                                                )
+                                                opt_res = await execute_tool(
+                                                    "plan_operation",
+                                                    operation="optimize",
+                                                    plan_id=int(plan_id),
+                                                    changes=changes,
+                                                )
+                                                applied = 0
+                                                failed = 0
+                                                if isinstance(opt_res, dict):
+                                                    applied = int(opt_res.get("applied_changes") or 0)
+                                                    failed = int(opt_res.get("failed_changes") or 0)
+                                                auto_trace.append(
+                                                    {
+                                                        "round": round_idx,
+                                                        "event": "optimize_applied",
+                                                        "rubric_score_before": numeric,
+                                                        "dimension_scores_before": dict(last_dims),
+                                                        "changes_requested": len(changes),
+                                                        "changes_applied": applied,
+                                                        "changes_failed": failed,
+                                                    }
+                                                )
+                                                # Continue loop for next review
+                                            else:
+                                                auto_trace.append(
+                                                    {
+                                                        "round": round_idx,
+                                                        "event": "no_changes_needed",
+                                                        "rubric_score": numeric,
+                                                        "dimension_scores": dict(last_dims),
+                                                    }
+                                                )
+                                                break
+
+                                        # Persist trace into plan metadata for later inspection in UI/devtools.
+                                        try:
+                                            summary = repo.get_plan_summary(int(plan_id))
+                                            meta = summary.metadata or {}
+                                            if not isinstance(meta, dict):
+                                                meta = {}
+                                            meta["plan_auto_optimize"] = {
+                                                "threshold": threshold,
+                                                "max_rounds": max_rounds,
+                                                "trace": auto_trace,
+                                                "last_rubric_score": last_score,
+                                                "last_dimension_scores": dict(last_dims),
+                                            }
+                                            repo.update_plan_metadata(int(plan_id), meta)
+                                        except Exception as meta_err:
+                                            logger.debug(
+                                                "[DeepThink][AutoOptimize] Failed to persist trace meta for plan %s: %s",
+                                                plan_id,
+                                                meta_err,
+                                            )
+                                        # If still below threshold after rounds, expose warning in tool result.
+                                        if last_score is not None:
+                                            try:
+                                                numeric = float(last_score)
+                                            except Exception:
+                                                numeric = None
+                                            if numeric is not None and numeric < float(threshold):
+                                                result["rubric_below_threshold"] = True
+                                                result["rubric_threshold"] = threshold
+                                                result["rubric_score"] = numeric
+                                    except Exception as auto_opt_err:  # noqa: BLE001 - best effort
+                                        logger.warning(
+                                            "[DeepThink] Auto optimization loop failed for plan %s: %s",
+                                            plan_id,
+                                            auto_opt_err,
+                                        )
+                                    
+                                    logger.info(f"[DeepThink] Auto-bound plan {plan_id} to session")
+                                except Exception as bind_err:
+                                    logger.warning(f"[DeepThink] Failed to bind plan {plan_id}: {bind_err}")
+                    
+                    return result
                 
                 # Instantiate DeepThinkAgent with streaming callbacks
                 dt_agent = DeepThinkAgent(
                     llm_client=self.llm_service,
-                    available_tools=["web_search", "graph_rag", "claude_code", "file_operations", "vision_reader", "bio_tools", "phagescope", "result_interpreter"],
+                    available_tools=["web_search", "graph_rag", "claude_code", "file_operations", "vision_reader", "bio_tools", "phagescope", "result_interpreter", "plan_operation"],
                     tool_executor=tool_wrapper,
-                    max_iterations=30,
+                    max_iterations=100,
                     tool_timeout=120,  # 2分钟工具超时
                     on_thinking=on_thinking,
                     on_thinking_delta=on_thinking_delta,
@@ -3988,7 +4365,11 @@ class StructuredChatAgent:
                 # or just let the stream end (frontend usually handles text)
                 payload = {
                     "llm_reply": {"message": res.final_answer},
-                    "actions": []
+                    "actions": [],
+                    "metadata": {
+                        "plan_id": self.plan_session.plan_id,  # Include plan_id so frontend can update
+                        "deep_think": True,
+                    }
                 }
                 yield _sse_message({"type": "final", "payload": payload})
 
@@ -4175,6 +4556,7 @@ class StructuredChatAgent:
                 plan_id=self.plan_session.plan_id,
                 job_id=job_id,
                 job_type=job_type,
+                sequence=action.order if isinstance(action.order, int) else None,
                 session_id=self.session_id,
                 user_message=self._current_user_message,
                 action_kind=action.kind or "",
@@ -4210,24 +4592,9 @@ class StructuredChatAgent:
     def _append_summary_to_reply(
         self, reply: str, summary: List[Dict[str, Any]]
     ) -> str:
-        if not summary:
+        # 不再在回复末尾追加 Action summary，因为前端已有状态标签和「查看过程」按钮
+        # 保留方法签名以保持兼容性
             return reply
-        lines = ["Action summary:"]
-        for item in summary:
-            status_icon = "⏳"
-            if item["success"] is True:
-                status_icon = "✅"
-            elif item["success"] is False:
-                status_icon = "⚠️"
-            descriptor = (
-                f"{item['kind']}/{item['name']}" if item["name"] else item["kind"]
-            )
-            line = f"{status_icon} Step {item['order']}: {descriptor}"
-            if item.get("message"):
-                line += f" - {item['message']}"
-            lines.append(line)
-        reply = reply.rstrip()
-        return reply + "\n\n" + "\n".join(lines)
 
     def _format_history(self) -> str:
         if not self.history:
@@ -4860,6 +5227,186 @@ class StructuredChatAgent:
             )
 
         try:
+            # PhageScope: provide elegant progress during wait/poll (job_update -> stats.tool_progress)
+            if tool_name == "phagescope":
+                action_value = str(params.get("action") or "").strip().lower()
+                wait_value = params.get("wait") is True
+                taskid_value = params.get("taskid")
+                if wait_value and action_value in {"result", "quality"} and taskid_value:
+                    from app.services.plans.decomposition_jobs import plan_decomposition_jobs
+                    import time as _time
+                    import json as _json
+
+                    def _extract_task_status(detail_result: Any) -> str:
+                        if not isinstance(detail_result, dict):
+                            return "unknown"
+                        payload = detail_result.get("data")
+                        if isinstance(payload, dict):
+                            results = payload.get("results")
+                            if isinstance(results, dict):
+                                for k in ("status", "task_status", "state", "taskstatus"):
+                                    v = results.get(k)
+                                    if isinstance(v, str) and v.strip():
+                                        return v.strip()
+                        return "unknown"
+
+                    def _extract_task_detail_dict(detail_result: Any) -> Optional[Dict[str, Any]]:
+                        if not isinstance(detail_result, dict):
+                            return None
+                        payload = detail_result.get("data")
+                        if not isinstance(payload, dict):
+                            return None
+                        # phagescope_handler attaches parsed_task_detail when possible
+                        parsed = payload.get("parsed_task_detail")
+                        if isinstance(parsed, dict):
+                            return parsed
+                        # sometimes nested under results.task_detail
+                        results = payload.get("results")
+                        if isinstance(results, dict):
+                            td = results.get("task_detail")
+                            if isinstance(td, dict):
+                                return td
+                            if isinstance(td, str) and td.strip():
+                                try:
+                                    parsed_td = _json.loads(td)
+                                    if isinstance(parsed_td, dict):
+                                        return parsed_td
+                                except Exception:
+                                    return None
+                        return None
+
+                    def _module_status_upper(value: Any) -> Optional[str]:
+                        if not isinstance(value, str):
+                            return None
+                        v = value.strip()
+                        return v.upper() if v else None
+
+                    poll_timeout = float(params.get("poll_timeout") or 120.0)
+                    poll_interval = float(params.get("poll_interval") or 2.0)
+                    start = _time.monotonic()
+
+                    # Avoid the tool's internal polling; we do it here so we can stream progress
+                    attempt_params = dict(params)
+                    attempt_params["wait"] = False
+
+                    raw_result = None
+                    last_status = "queued"
+                    while True:
+                        elapsed = _time.monotonic() - start
+                        denom = poll_timeout if poll_timeout > 0 else 1.0
+                        time_percent = int(max(0.0, min(1.0, elapsed / denom)) * 100)
+
+                        # best-effort task status
+                        modules_payload: Optional[List[Dict[str, Any]]] = None
+                        counts_payload: Optional[Dict[str, int]] = None
+                        try:
+                            detail = await execute_tool(
+                                "phagescope",
+                                action="task_detail",
+                                taskid=str(taskid_value),
+                                base_url=params.get("base_url"),
+                                token=params.get("token"),
+                                timeout=min(float(params.get("timeout") or 60.0), 40.0),
+                            )
+                            last_status = _extract_task_status(detail)
+                            task_detail = _extract_task_detail_dict(detail)
+                            if isinstance(task_detail, dict):
+                                queue = task_detail.get("task_que")
+                                if isinstance(queue, list) and queue:
+                                    modules: List[Dict[str, Any]] = []
+                                    done = 0
+                                    total = 0
+                                    for item in queue:
+                                        if not isinstance(item, dict):
+                                            continue
+                                        name = item.get("module")
+                                        if not isinstance(name, str) or not name.strip():
+                                            continue
+                                        status_raw = (
+                                            item.get("module_satus")
+                                            or item.get("module_status")
+                                            or item.get("status")
+                                        )
+                                        status_upper = _module_status_upper(status_raw) or "UNKNOWN"
+                                        is_done: Optional[bool] = None
+                                        if status_upper in {"COMPLETED", "SUCCESS", "SUCCEEDED", "DONE", "FINISHED"}:
+                                            is_done = True
+                                        elif status_upper in {"FAILED", "ERROR"}:
+                                            is_done = False
+                                        modules.append(
+                                            {
+                                                "name": name.strip(),
+                                                "status": str(status_raw) if status_raw is not None else status_upper,
+                                                "done": is_done,
+                                            }
+                                        )
+                                        total += 1
+                                        if is_done is True:
+                                            done += 1
+                                    if total > 0:
+                                        modules_payload = modules
+                                        counts_payload = {"done": done, "total": total}
+                        except Exception:
+                            # keep last_status
+                            pass
+
+                        # Prefer module-based percent when available; otherwise fallback to time-based percent.
+                        percent = time_percent
+                        if counts_payload and counts_payload.get("total"):
+                            percent = int(round((counts_payload["done"] / max(1, counts_payload["total"])) * 100))
+                            percent = max(0, min(100, percent))
+
+                        plan_decomposition_jobs.update_stats_from_context(
+                            {
+                                "tool_progress": {
+                                    "tool": "phagescope",
+                                    "taskid": str(taskid_value),
+                                    "percent": percent,
+                                    "status": last_status,
+                                    "phase": "poll",
+                                    **({"modules": modules_payload} if modules_payload is not None else {}),
+                                    **({"counts": counts_payload} if counts_payload is not None else {}),
+                                }
+                            }
+                        )
+
+                        # try fetch result
+                        raw_result = await execute_tool(tool_name, **attempt_params)
+                        if isinstance(raw_result, dict) and raw_result.get("success") is True:
+                            plan_decomposition_jobs.update_stats_from_context(
+                                {
+                                    "tool_progress": {
+                                        "tool": "phagescope",
+                                        "taskid": str(taskid_value),
+                                        "percent": 100,
+                                        "status": last_status or "Success",
+                                        "phase": "done",
+                                    }
+                                }
+                            )
+                            break
+
+                        upper = str(last_status or "").strip().upper()
+                        if upper in {"FAILED", "ERROR"}:
+                            break
+                        if elapsed >= poll_timeout:
+                            raw_result = {
+                                "success": False,
+                                "status_code": 408,
+                                "action": action_value,
+                                "taskid": str(taskid_value),
+                                "error": f"Result not ready within {poll_timeout:.0f}s. Retry later with taskid={taskid_value}.",
+                                "polling": {
+                                    "waited": True,
+                                    "poll_timeout": poll_timeout,
+                                    "poll_interval": poll_interval,
+                                },
+                            }
+                            break
+                        await asyncio.sleep(max(0.2, poll_interval))
+                else:
+                    raw_result = await execute_tool(tool_name, **params)
+            else:
             raw_result = await execute_tool(tool_name, **params)
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception(
@@ -4904,6 +5451,66 @@ class StructuredChatAgent:
                     self.session_id,
                     exc,
                 )
+
+        # Attach stored output paths back to agent/tool result (no manual copy needed)
+        if storage_info is not None and self.session_id:
+            try:
+                from app.services.upload_storage import ensure_session_dir
+                from pathlib import Path
+
+                session_root = ensure_session_dir(self.session_id)
+
+                def _abs(rel: Optional[str]) -> Optional[str]:
+                    if not rel:
+                        return None
+                    try:
+                        return str((session_root / Path(rel)).resolve())
+                    except Exception:
+                        return str(session_root / Path(rel))
+
+                storage_payload: Dict[str, Any] = {
+                    "session_id": self.session_id,
+                    "job_id": get_current_job(),
+                    "tool": tool_name,
+                    "step_order": action.order,
+                    "output_dir": _abs(getattr(storage_info, "output_dir", None)),
+                    "result_path": _abs(getattr(storage_info, "result_path", None)),
+                    "manifest_path": _abs(getattr(storage_info, "manifest_path", None)),
+                    "preview_path": _abs(getattr(storage_info, "preview_path", None)),
+                }
+                # Also keep relative paths for portability (optional)
+                storage_payload_rel: Dict[str, Any] = {
+                    "output_dir": getattr(storage_info, "output_dir", None),
+                    "result_path": getattr(storage_info, "result_path", None),
+                    "manifest_path": getattr(storage_info, "manifest_path", None),
+                    "preview_path": getattr(storage_info, "preview_path", None),
+                }
+                storage_payload["relative"] = storage_payload_rel
+
+                if isinstance(raw_result, dict):
+                    raw_result.setdefault("storage", storage_payload)
+                if isinstance(sanitized, dict):
+                    sanitized.setdefault("storage", storage_payload)
+
+                # Persist latest output location for later retrieval
+                def _updater(metadata: Dict[str, Any]) -> Dict[str, Any]:
+                    metadata["phagescope_last_output"] = storage_payload
+                    items = metadata.get("phagescope_recent_outputs")
+                    if not isinstance(items, list):
+                        items = []
+                    # de-dup by result_path
+                    rp = storage_payload.get("result_path")
+                    items = [it for it in items if not (isinstance(it, dict) and it.get("result_path") == rp)]
+                    items.insert(0, storage_payload)
+                    metadata["phagescope_recent_outputs"] = items[:10]
+                    return metadata
+
+                if tool_name == "phagescope":
+                    _update_session_metadata(self.session_id, _updater)
+                    # Make it available to the current agent loop immediately
+                    self.extra_context["phagescope_last_output"] = storage_payload
+            except Exception as exc:  # pragma: no cover - best-effort
+                logger.debug("Failed to attach phagescope storage paths: %s", exc)
 
         if tool_name == "phagescope" and self.session_id:
             action_value = params.get("action")
@@ -5016,8 +5623,13 @@ class StructuredChatAgent:
             description = params.get("description")
             owner = params.get("owner")
             metadata = params.get("metadata")
-            if metadata is not None and not isinstance(metadata, dict):
+            if metadata is None:
                 metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            # Ensure plan origin is recorded for later comparison (standard vs deepthink).
+            metadata.setdefault("plan_origin", "standard")
+            metadata.setdefault("created_by", "structured_agent")
             # First create an empty plan record
             new_tree = self.plan_session.repo.create_plan(
                 title=title,
@@ -5025,9 +5637,22 @@ class StructuredChatAgent:
                 description=description,
                 metadata=metadata,
             )
+            
+            # Create a ROOT task first - enforce a single root node for the plan
+            raw_tasks = params.get("tasks")
+            root_node = self.plan_session.repo.create_task(
+                new_tree.id,
+                name=title,
+                status="pending",
+                instruction=description or f"Root task for plan: {title}",
+                parent_id=None,  # ROOT has no parent
+                metadata={"is_root": True, "task_type": "root"},
+            )
+            root_task_id: Optional[int] = root_node.id
+            logger.info("Created ROOT task %s for plan %s", root_task_id, new_tree.id)
+            
             # If the caller provided an explicit task list, materialize it immediately
             created_seed_tasks: List[Any] = []
-            raw_tasks = params.get("tasks")
             if isinstance(raw_tasks, list) and raw_tasks:
                 for idx, t in enumerate(raw_tasks):
                     if not isinstance(t, dict):
@@ -5060,12 +5685,16 @@ class StructuredChatAgent:
                         status = status_raw.strip() or "pending"
 
                     parent_id_raw = t.get("parent_id")
-                    parent_id = None
+                    # Default to ROOT task if no parent_id is specified
+                    parent_id = root_task_id
                     if parent_id_raw is not None:
                         try:
                             parent_id = int(parent_id_raw)
                         except (TypeError, ValueError):
-                            parent_id = None
+                            parent_id = root_task_id  # Fall back to ROOT if invalid
+                    # Enforce single root: if resolved parent_id is None, force to root_task_id
+                    if parent_id is None:
+                        parent_id = root_task_id
 
                     deps_raw = t.get("dependencies")
                     deps: Optional[List[int]] = None
@@ -5667,7 +6296,13 @@ class StructuredChatAgent:
         except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
             raise ValueError(f"{field} must be an integer; received {value!r}") from exc
 
-    def _auto_decompose_plan(self, plan_id: int) -> Optional[Dict[str, Any]]:
+    def _auto_decompose_plan(
+        self,
+        plan_id: int,
+        *,
+        wait_for_completion: bool = False,
+        session_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
         settings = self.decomposer_settings
         if not settings.auto_on_create:
             note = "Automatic decomposition is disabled."
@@ -5684,6 +6319,38 @@ class StructuredChatAgent:
             if note not in self._decomposition_notes:
                 self._decomposition_notes.append(note)
             return None
+        if wait_for_completion:
+            try:
+                result = self.plan_decomposer.run_plan(
+                    plan_id,
+                    max_depth=settings.max_depth,
+                    node_budget=settings.total_node_budget,
+                    session_context=session_context,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                message = f"Automatic decomposition failed: {exc}"
+                logger.exception(
+                    "Auto decomposition failed for plan %s: %s", plan_id, exc
+                )
+                self._decomposition_errors.append(message)
+                return None
+            self._last_decomposition = result
+            if result.created_tasks:
+                self._dirty = True
+            try:
+                self._refresh_plan_tree(force_reload=True)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed to refresh plan tree after synchronous decomposition: %s",
+                    exc,
+                )
+                self._decomposition_errors.append(
+                    f"Failed to refresh plan after decomposition: {exc}"
+                )
+            note = "Automatic decomposition completed synchronously."
+            if note not in self._decomposition_notes:
+                self._decomposition_notes.append(note)
+            return {"result": result}
         try:
             job = start_decomposition_job_thread(
                 self.plan_decomposer,

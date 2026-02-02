@@ -34,18 +34,27 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
     else:
         sections_instruction = f"Preferred number of tasks: {sections} (4-8 typical)."
 
-    # Use centralized English prompt template - escape braces for JSON schema
+    # Research-grade planning prompt (still JSON-only output).
+    # NOTE: tasks[].prompt is later used as the executable instruction for each task.
     prompt = (
-        "You are an expert project planner. Break down the user's goal into a small set of actionable tasks.\n"
-        "Return ONLY a JSON object with this schema: {{\n"
+        "You are a senior research project planner. Produce a research-grade plan that is rigorous, reproducible, and execution-ready.\n"
+        "Return ONLY a JSON object with this schema: {\n"
         '  "title": string,\n'
-        '  "tasks": [ {{ "name": string, "prompt": string }} ]\n'
-        "}}\n"
+        '  "tasks": [ { "name": string, "prompt": string } ]\n'
+        "}\n"
         f"Goal: {goal}\n"
         f"{sections_instruction}\n"
         f"Style (optional): {style}\n"
         f"Notes (optional): {notes}\n"
-        "Rules: Do not include markdown code fences. Keep concise prompts for each task. The user's goal may be in any language; your response should be in the same language."
+        "Hard requirements for EACH task's prompt:\n"
+        "- Must be academically rigorous and specific.\n"
+        "- Must include: Objective; Rationale (why); Methods & Tools; Data/Inputs; Outputs/Artifacts; Baselines/Controls; Metrics & QC; Acceptance criteria; Reproducibility notes.\n"
+        "- Avoid vague slogans (e.g., 'analyze data', 'improve model') without concrete deliverables.\n"
+        "- Use realistic, feasible tools and methods; do not claim impossible capabilities.\n"
+        "- If you mention datasets or resources, name sources (e.g., NCBI/GenBank/RefSeq/ENA) and, when feasible, versions or dates.\n"
+        "Rules:\n"
+        "- Do not include markdown code fences.\n"
+        "- The user's goal may be in any language; write task names and prompts in the same language as the goal, but keep proper nouns and tool names as standard (often English).\n"
     )
 
     plan: Dict[str, Any]
@@ -79,10 +88,17 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
         if not name:
             name = f"Task {idx+1}"
         default_prompt = (
-            f"Fulfill this part of the overall goal.\n"
+            f"Objective: Fulfill this part of the overall goal.\n"
             f"Overall goal: {goal}\n"
-            f"Task: {name}.\n"
-            f"Write ~200 words with clear, actionable content in English."
+            f"Task: {name}\n\n"
+            "Rationale (why): Explain why this step is necessary and how it supports the goal.\n"
+            "Methods & Tools: Specify concrete methods/tools (names), and justify choices briefly.\n"
+            "Data/Inputs: Specify required inputs (data sources, formats, assumptions).\n"
+            "Outputs/Artifacts: Specify outputs (files, tables, figures, models) and expected structure.\n"
+            "Baselines/Controls: Define baselines or control comparisons.\n"
+            "Metrics & QC: Define evaluation metrics and QC/validation checks.\n"
+            "Acceptance criteria: Define pass/fail thresholds or completion criteria.\n"
+            "Reproducibility: Note key parameters, seeds, versions, and how to reproduce.\n"
         )
         prompt_t = t.get("prompt") if isinstance(t, dict) else None
         if not isinstance(prompt_t, str) or not prompt_t.strip():
