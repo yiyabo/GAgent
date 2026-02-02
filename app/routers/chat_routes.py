@@ -1202,9 +1202,9 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                     metadata_payload["job"] = job_snap
                 else:
                     # 如果是同步执行完成的 job，使用 success 判断
-                metadata_payload["job_status"] = (
-                        "succeeded" if agent_result.success else "failed"
-                )
+                    metadata_payload["job_status"] = (
+                            "succeeded" if agent_result.success else "failed"
+                    )
             chat_response = ChatResponse(
                 response=agent_result.reply,
                 suggestions=agent_result.suggestions,
@@ -1576,9 +1576,9 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                         metadata_payload["job"] = job_snap
                     else:
                         # 如果是同步执行完成的 job，使用 success 判断
-                    metadata_payload["job_status"] = (
-                            "succeeded" if agent_result.success else "failed"
-                    )
+                        metadata_payload["job_status"] = (
+                                "succeeded" if agent_result.success else "failed"
+                        )
                 chat_response = ChatResponse(
                     response=agent_result.reply,
                     suggestions=agent_result.suggestions,
@@ -5407,7 +5407,7 @@ class StructuredChatAgent:
                 else:
                     raw_result = await execute_tool(tool_name, **params)
             else:
-            raw_result = await execute_tool(tool_name, **params)
+                raw_result = await execute_tool(tool_name, **params)
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception(
                 "Tool %s execution failed for session %s: %s",
