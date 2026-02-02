@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 import uuid
 from collections import deque
 from contextvars import ContextVar
@@ -87,6 +88,329 @@ def _coerce_stats_payload(stats: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return dict(stats)
     except Exception:  # pragma: no cover - defensive
         return {}
+
+
+# ---------------------------------------------------------------------------
+# PhageScope tracking helpers (job_type=phagescope_track)
+# ---------------------------------------------------------------------------
+
+
+def _phagescope_module_status_upper(value: Any) -> str:
+    if not isinstance(value, str):
+        return "UNKNOWN"
+    v = value.strip()
+    return v.upper() if v else "UNKNOWN"
+
+
+def _phagescope_status_is_done(status_upper: str) -> Optional[bool]:
+    if status_upper in {"COMPLETED", "SUCCESS", "SUCCEEDED", "DONE", "FINISHED"}:
+        return True
+    if status_upper in {"FAILED", "ERROR"}:
+        return False
+    return None
+
+
+def _extract_phagescope_task_detail_dict(detail_result: Any) -> Optional[Dict[str, Any]]:
+    """Extract task_detail dict from phagescope tool output."""
+    if not isinstance(detail_result, dict):
+        return None
+    payload = detail_result.get("data")
+    if not isinstance(payload, dict):
+        return None
+    parsed = payload.get("parsed_task_detail")
+    if isinstance(parsed, dict):
+        return parsed
+    results = payload.get("results")
+    if isinstance(results, dict):
+        td = results.get("task_detail")
+        if isinstance(td, dict):
+            return td
+        if isinstance(td, str) and td.strip():
+            try:
+                parsed_td = json.loads(td)
+                if isinstance(parsed_td, dict):
+                    return parsed_td
+            except Exception:
+                return None
+    return None
+
+
+def _summarize_phagescope_modules(
+    task_detail: Dict[str, Any],
+    *,
+    requested_modules: Optional[List[str]] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, int], List[str]]:
+    """Return (modules_payload, counts, failed_modules)."""
+    requested_set = {
+        m.strip().lower()
+        for m in (requested_modules or [])
+        if isinstance(m, str) and m.strip()
+    }
+    queue = task_detail.get("task_que")
+    if not isinstance(queue, list):
+        return [], {"done": 0, "total": 0}, []
+
+    modules_payload: List[Dict[str, Any]] = []
+    done = 0
+    total = 0
+    failed: List[str] = []
+    for item in queue:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("module")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        name_clean = name.strip()
+        if requested_set and name_clean.lower() not in requested_set:
+            continue
+
+        status_raw = (
+            item.get("module_satus") or item.get("module_status") or item.get("status")
+        )
+        status_upper = _phagescope_module_status_upper(status_raw)
+        is_done = _phagescope_status_is_done(status_upper)
+        modules_payload.append(
+            {
+                "name": name_clean,
+                "status": str(status_raw) if status_raw is not None else status_upper,
+                "done": is_done,
+            }
+        )
+        total += 1
+        if is_done is True:
+            done += 1
+        elif is_done is False:
+            failed.append(name_clean)
+
+    return modules_payload, {"done": done, "total": total}, failed
+
+
+def execute_phagescope_track_job(
+    *,
+    job_id: str,
+    remote_taskid: str,
+    modulelist: Optional[List[str]] = None,
+    base_url: Optional[str] = None,
+    token: Optional[str] = None,
+    poll_interval: float = 5.0,
+    poll_timeout: float = 3600.0,
+    request_timeout: float = 40.0,
+) -> None:
+    """Track a remote PhageScope task until modules complete.
+
+    Runs in a background thread. Updates job.stats.tool_progress and finalizes the job.
+    """
+    from tool_box.tools_impl.phagescope import phagescope_handler
+
+    job = plan_decomposition_jobs.get_job(job_id)
+    if job is None:
+        return
+
+    # Bind job context so downstream code can optionally use it.
+    ctx_token = set_current_job(job_id)
+    loop: Optional[asyncio.AbstractEventLoop] = None
+    try:
+        if job.status != "running":
+            plan_decomposition_jobs.mark_running(job_id)
+
+        plan_decomposition_jobs.append_log(
+            job_id,
+            "info",
+            "PhageScope tracking started.",
+            {
+                "remote_taskid": remote_taskid,
+                "poll_interval": poll_interval,
+                "poll_timeout": poll_timeout,
+                "modulelist": modulelist or [],
+            },
+        )
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        started = time.monotonic()
+        last_counts: Optional[Dict[str, int]] = None
+
+        while True:
+            elapsed = time.monotonic() - started
+            if elapsed > max(0.0, poll_timeout):
+                plan_decomposition_jobs.mark_failure(
+                    job_id,
+                    f"PhageScope tracking timeout after {poll_timeout:.0f}s (taskid={remote_taskid}).",
+                    stats={
+                        "tool_progress": {
+                            "tool": "phagescope",
+                            "taskid": str(remote_taskid),
+                            "phase": "timeout",
+                        }
+                    },
+                )
+                break
+
+            try:
+                detail = loop.run_until_complete(
+                    phagescope_handler(
+                        action="task_detail",
+                        taskid=str(remote_taskid),
+                        base_url=base_url,
+                        token=token,
+                        timeout=float(request_timeout),
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                plan_decomposition_jobs.append_log(
+                    job_id,
+                    "warning",
+                    "PhageScope task_detail request failed; will retry.",
+                    {"error": str(exc), "remote_taskid": remote_taskid},
+                )
+                time.sleep(max(0.5, float(poll_interval)))
+                continue
+
+            task_detail = _extract_phagescope_task_detail_dict(detail)
+            modules_payload: List[Dict[str, Any]] = []
+            counts_payload: Dict[str, int] = {"done": 0, "total": 0}
+            failed_modules: List[str] = []
+            if isinstance(task_detail, dict):
+                modules_payload, counts_payload, failed_modules = _summarize_phagescope_modules(
+                    task_detail, requested_modules=modulelist
+                )
+
+            percent = 0
+            if counts_payload.get("total"):
+                percent = int(
+                    round((counts_payload["done"] / max(1, counts_payload["total"])) * 100)
+                )
+                percent = max(0, min(100, percent))
+
+            plan_decomposition_jobs.update_stats(
+                job_id,
+                {
+                    "tool_progress": {
+                        "tool": "phagescope",
+                        "taskid": str(remote_taskid),
+                        "percent": percent,
+                        "phase": "poll",
+                        "modules": modules_payload,
+                        "counts": counts_payload,
+                    }
+                },
+            )
+
+            if failed_modules:
+                plan_decomposition_jobs.append_log(
+                    job_id,
+                    "error",
+                    "PhageScope module reported failure.",
+                    {"failed_modules": failed_modules, "remote_taskid": remote_taskid},
+                )
+                plan_decomposition_jobs.mark_failure(
+                    job_id,
+                    f"PhageScope failed modules: {', '.join(failed_modules)} (taskid={remote_taskid}).",
+                    result={
+                        "remote_taskid": str(remote_taskid),
+                        "modules": modules_payload,
+                        "counts": counts_payload,
+                    },
+                    stats={
+                        "tool_progress": {
+                            "tool": "phagescope",
+                            "taskid": str(remote_taskid),
+                            "phase": "failed",
+                        }
+                    },
+                )
+                break
+
+            if last_counts != counts_payload:
+                plan_decomposition_jobs.append_log(
+                    job_id,
+                    "info",
+                    "PhageScope progress update.",
+                    {
+                        "remote_taskid": remote_taskid,
+                        "counts": counts_payload,
+                        "percent": percent,
+                    },
+                )
+                last_counts = dict(counts_payload)
+
+            if counts_payload.get("total") and counts_payload["done"] >= counts_payload["total"]:
+                plan_decomposition_jobs.append_log(
+                    job_id,
+                    "info",
+                    "PhageScope tracking completed.",
+                    {"remote_taskid": remote_taskid, "counts": counts_payload},
+                )
+                plan_decomposition_jobs.mark_success(
+                    job_id,
+                    result={
+                        "remote_taskid": str(remote_taskid),
+                        "modules": modules_payload,
+                        "counts": counts_payload,
+                        "task_detail": task_detail,
+                    },
+                    stats={
+                        "tool_progress": {
+                            "tool": "phagescope",
+                            "taskid": str(remote_taskid),
+                            "phase": "done",
+                            "percent": 100,
+                        }
+                    },
+                )
+                break
+
+            time.sleep(max(0.5, float(poll_interval)))
+    finally:
+        try:
+            if loop is not None:
+                loop.close()
+        except Exception:
+            pass
+        # Best-effort: keep chat action run status in sync so frontend polling
+        # on /chat/actions/{tracking_id} doesn't look stuck.
+        try:  # pragma: no cover - best effort
+            from app.repository.chat_action_runs import update_action_run as _update_action_run
+
+            payload = plan_decomposition_jobs.get_job_payload(job_id) or {}
+            status = payload.get("status") or "running"
+            if status == "succeeded":
+                _update_action_run(job_id, status="completed", result=payload.get("result"), errors=[])
+            elif status == "failed":
+                error = payload.get("error") or "PhageScope tracking failed"
+                _update_action_run(job_id, status="failed", result=payload.get("result"), errors=[str(error)])
+        except Exception:
+            pass
+        reset_current_job(ctx_token)
+
+
+def start_phagescope_track_job_thread(
+    *,
+    job_id: str,
+    remote_taskid: str,
+    modulelist: Optional[List[str]] = None,
+    base_url: Optional[str] = None,
+    token: Optional[str] = None,
+    poll_interval: float = 5.0,
+    poll_timeout: float = 3600.0,
+    request_timeout: float = 40.0,
+) -> None:
+    thread = threading.Thread(
+        target=execute_phagescope_track_job,
+        kwargs={
+            "job_id": job_id,
+            "remote_taskid": remote_taskid,
+            "modulelist": modulelist,
+            "base_url": base_url,
+            "token": token,
+            "poll_interval": poll_interval,
+            "poll_timeout": poll_timeout,
+            "request_timeout": request_timeout,
+        },
+        daemon=True,
+    )
+    thread.start()
 
 
 @dataclass
@@ -757,6 +1081,8 @@ __all__ = [
     "log_job_event",
     "execute_decomposition_job",
     "start_decomposition_job_thread",
+    "execute_phagescope_track_job",
+    "start_phagescope_track_job_thread",
     "set_current_job",
     "reset_current_job",
     "get_current_job",

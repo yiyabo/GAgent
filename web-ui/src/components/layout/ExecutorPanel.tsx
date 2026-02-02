@@ -1,7 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import JobLogPanel from '@components/chat/JobLogPanel';
 import { useChatStore } from '@store/chat';
 import { planTreeApi } from '@api/planTree';
 import type { DecompositionJobStatus } from '@/types';
@@ -11,6 +10,7 @@ dayjs.extend(relativeTime);
 
 interface JobEntry {
   jobId: string;
+  displayId: string;
   label: string;
   timestamp: Date;
   jobType?: string | null;
@@ -21,6 +21,27 @@ interface JobEntry {
   startedAt?: string | null;
   finishedAt?: string | null;
 }
+
+const normalizeJobStatus = (raw: unknown): 'queued' | 'running' | 'completed' | 'failed' => {
+  const key = String(raw ?? '').trim().toLowerCase();
+  if (key === 'running') return 'running';
+  if (key === 'failed') return 'failed';
+  if (key === 'succeeded' || key === 'completed') return 'completed';
+  return 'queued';
+};
+
+const getStatusLabel = (status: string): string => {
+  switch (normalizeJobStatus(status)) {
+    case 'running':
+      return '运行中';
+    case 'completed':
+      return '已完成';
+    case 'failed':
+      return '失败';
+    default:
+      return '排队中';
+  }
+};
 
 const formatActionLabel = (action: any): string => {
   if (!action || typeof action !== 'object') return '执行动作';
@@ -46,6 +67,13 @@ const formatActionLabel = (action: any): string => {
 };
 
 const formatJobLabel = (metadata: any, jobType?: string | null, jobId?: string) => {
+  // Prefer a human label for PhageScope tracking jobs.
+  const jt = (metadata?.job_type ?? jobType ?? '').toString().toLowerCase();
+  if (jt === 'phagescope_track') {
+    const phageid = typeof metadata?.phageid === 'string' ? metadata.phageid : undefined;
+    const hint = phageid ? `PhageScope · ${phageid}` : 'PhageScope · 注释任务';
+    return hint;
+  }
   const actions = (Array.isArray(metadata?.actions) ? metadata?.actions : null) ?? (Array.isArray(metadata?.raw_actions) ? metadata?.raw_actions : []);
   if (actions.length > 0) {
     const primary = formatActionLabel(actions[0]);
@@ -83,7 +111,6 @@ const FINAL_STATUSES = new Set(['succeeded', 'failed', 'completed']);
 const ExecutorPanel: React.FC = () => {
   const messages = useChatStore((state) => state.messages);
   const [jobStatuses, setJobStatuses] = useState<Record<string, { status: string; startedAt?: string | null; finishedAt?: string | null }>>({});
-  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const jobEntries = useMemo<JobEntry[]>(() => {
     const seen = new Set<string>();
@@ -100,11 +127,19 @@ const ExecutorPanel: React.FC = () => {
 
       seen.add(jobId);
 
+      const jobType = metadata.job_type ?? jobMetadata?.job_type ?? null;
+      const phagescopeTaskId = metadata.phagescope_taskid ?? null;
+      const displayId =
+        typeof phagescopeTaskId === 'string' && phagescopeTaskId.trim()
+          ? phagescopeTaskId.trim()
+          : jobId.slice(0, 8);
+
       entries.push({
         jobId,
-        label: formatJobLabel(metadata, metadata.job_type ?? jobMetadata?.job_type, jobId),
+        displayId,
+        label: formatJobLabel(metadata, jobType, jobId),
         timestamp: message.timestamp ?? new Date(),
-        jobType: metadata.job_type ?? jobMetadata?.job_type ?? null,
+        jobType,
         planId: metadata.plan_id ?? jobMetadata?.plan_id ?? null,
         targetTaskName: metadata.target_task_name ?? jobMetadata?.metadata?.target_task_name ?? null,
         initialJob: jobMetadata,
@@ -163,109 +198,50 @@ const ExecutorPanel: React.FC = () => {
     return () => clearInterval(pollInterval);
   }, [jobEntries, getJobStatus]);
 
-  // 自动展开运行中的任务
-  useEffect(() => {
-    if (expandedId) return;
-    const runningJob = jobEntries.find((entry) => getJobStatus(entry).status === 'running');
-    if (runningJob) setExpandedId(runningJob.jobId);
-    else if (jobEntries.length > 0) setExpandedId(jobEntries[0].jobId);
-  }, [jobEntries, getJobStatus, expandedId]);
-
-  // 统计
-  const stats = useMemo(() => {
-    let running = 0, completed = 0, failed = 0;
-    for (const entry of jobEntries) {
-      const { status } = getJobStatus(entry);
-      if (status === 'running') running++;
-      else if (status === 'succeeded' || status === 'completed') completed++;
-      else if (status === 'failed') failed++;
-    }
-    return { running, completed, failed, total: jobEntries.length };
-  }, [jobEntries, getJobStatus]);
-
   if (!jobEntries.length) {
     return (
       <div className="executor-empty">
         <div className="executor-empty-icon" />
-        <span>暂无后台任务</span>
+        <span>暂无任务记录</span>
       </div>
     );
   }
 
   return (
     <div className="executor-container">
-      {/* 极简统计栏 */}
-      <div className="executor-stats">
-        <span className="executor-stats-total">{stats.total} 个任务</span>
-        <div className="executor-stats-dots">
-          {stats.running > 0 && (
-            <span className="executor-stat-item">
-              <span className="executor-dot running" />
-              <span>{stats.running}</span>
-            </span>
-          )}
-          {stats.completed > 0 && (
-            <span className="executor-stat-item">
-              <span className="executor-dot completed" />
-              <span>{stats.completed}</span>
-            </span>
-          )}
-          {stats.failed > 0 && (
-            <span className="executor-stat-item">
-              <span className="executor-dot failed" />
-              <span>{stats.failed}</span>
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* 任务列表 */}
-      <div className="executor-list">
-        {jobEntries.map((entry) => {
-          const { status, startedAt, finishedAt } = getJobStatus(entry);
-          const isExpanded = expandedId === entry.jobId;
-          const duration = formatDuration(startedAt, finishedAt);
-
-          return (
-            <div key={entry.jobId} className={`executor-item ${isExpanded ? 'expanded' : ''}`}>
-              {/* 任务头部 */}
-              <div 
-                className="executor-item-header"
-                onClick={() => setExpandedId(isExpanded ? null : entry.jobId)}
-              >
-                <div className="executor-item-left">
-                  <span className={`executor-dot ${status}`} />
-                  <span className="executor-item-label" title={entry.label}>
+      <div className="task-table-wrap">
+        <table className="task-table">
+          <thead>
+            <tr>
+              <th>Task ID</th>
+              <th>内容</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {jobEntries.map((entry) => {
+              const { status, startedAt, finishedAt } = getJobStatus(entry);
+              const normalized = normalizeJobStatus(status);
+              const duration = formatDuration(startedAt, finishedAt);
+              return (
+                <tr key={entry.jobId} className="task-row">
+                  <td className="task-id" title={entry.jobId}>
+                    {entry.displayId}
+                  </td>
+                  <td className="task-content" title={entry.label}>
                     {entry.label}
-                  </span>
-                </div>
-                <div className="executor-item-right">
-                  {duration && <span className="executor-item-duration">{duration}</span>}
-                  <span className="executor-item-time">{formatRelativeTime(entry.timestamp)}</span>
-                  <svg 
-                    className={`executor-chevron ${isExpanded ? 'expanded' : ''}`}
-                    viewBox="0 0 12 12"
-                  >
-                    <path d="M4.5 2L8.5 6L4.5 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </div>
-              </div>
-
-              {/* 展开内容 */}
-              {isExpanded && (
-                <div className="executor-item-content">
-                  <JobLogPanel
-                    jobId={entry.jobId}
-                    initialJob={entry.initialJob ?? undefined}
-                    targetTaskName={entry.targetTaskName ?? null}
-                    planId={entry.planId ?? null}
-                    jobType={entry.jobType ?? null}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
+                  </td>
+                  <td className="task-status">
+                    <span className={`task-status-dot ${normalized}`} />
+                    <span className="task-status-text">{getStatusLabel(status)}</span>
+                    {duration ? <span className="task-status-meta">{duration}</span> : null}
+                    <span className="task-status-meta">{formatRelativeTime(entry.timestamp)}</span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );

@@ -48,6 +48,7 @@ from app.services.plans.decomposition_jobs import (
     reset_current_job,
     set_current_job,
     start_decomposition_job_thread,
+    start_phagescope_track_job_thread,
 )
 from app.services.plans.plan_decomposer import DecompositionResult, PlanDecomposer
 from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService, ExecutionConfig
@@ -2767,16 +2768,43 @@ async def _execute_action_run(run_id: str) -> None:
     except ValueError:
         plan_session.detach()
 
+    # Parse structured payload early so we can decide job_type/mode.
+    try:
+        structured = LLMStructuredResponse.model_validate_json(record["structured_json"])
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Structured payload invalid for run %s: %s", run_id, exc)
+        update_action_run(run_id, status="failed", errors=[str(exc)])
+        return
+
+    sorted_actions = structured.sorted_actions()
+    primary_action = sorted_actions[0] if sorted_actions else None
+
+    # PhageScope is treated as a special, long-running remote job:
+    # submit -> return taskid immediately -> track via backend polling job.
+    phagescope_submit_action: Optional[LLMAction] = None
+    if (
+        len(sorted_actions) == 1
+        and primary_action is not None
+        and primary_action.kind == "tool_operation"
+        and primary_action.name == "phagescope"
+        and isinstance(primary_action.parameters, dict)
+        and str(primary_action.parameters.get("action") or "").strip().lower() == "submit"
+    ):
+        phagescope_submit_action = primary_action
+
+    job_type_to_use = "phagescope_track" if phagescope_submit_action else "chat_action"
+    mode_to_use = "phagescope_track" if phagescope_submit_action else (record.get("mode") or "assistant")
+
     job_plan_id = plan_session.plan_id
     job_metadata = {
         "session_id": record.get("session_id"),
-        "mode": record.get("mode"),
+        "mode": mode_to_use,
         "user_message": record.get("user_message"),
     }
     job_params = {
         key: value
         for key, value in {
-            "mode": record.get("mode"),
+            "mode": mode_to_use,
             "session_id": record.get("session_id"),
             "plan_id": job_plan_id,
         }.items()
@@ -2787,8 +2815,8 @@ async def _execute_action_run(run_id: str) -> None:
         job = plan_decomposition_jobs.create_job(
             plan_id=job_plan_id,
             task_id=None,
-            mode=record.get("mode") or "assistant",
-            job_type="chat_action",
+            mode=mode_to_use,
+            job_type=job_type_to_use,
             params=job_params,
             metadata=job_metadata,
             job_id=run_id,
@@ -2799,8 +2827,8 @@ async def _execute_action_run(run_id: str) -> None:
             job = plan_decomposition_jobs.create_job(
                 plan_id=job_plan_id,
                 task_id=None,
-                mode=record.get("mode") or "assistant",
-                job_type="chat_action",
+                mode=mode_to_use,
+                job_type=job_type_to_use,
                 params=job_params,
                 metadata=job_metadata,
             )
@@ -2817,7 +2845,7 @@ async def _execute_action_run(run_id: str) -> None:
             {
                 "session_id": record.get("session_id"),
                 "plan_id": job_plan_id,
-                "mode": record.get("mode"),
+                "mode": mode_to_use,
             },
         )
 
@@ -2871,6 +2899,105 @@ async def _execute_action_run(run_id: str) -> None:
                     current_task_id,
                 )
 
+        # Special path: PhageScope submit-only tasks run as a background tracker job.
+        if phagescope_submit_action is not None:
+            plan_decomposition_jobs.mark_running(job.job_id)
+            submit_params = dict(phagescope_submit_action.parameters or {})
+            submit_params.setdefault("timeout", 120.0)
+
+            plan_decomposition_jobs.append_log(
+                job.job_id,
+                "info",
+                "Submitting PhageScope remote task.",
+                {"parameters": {k: v for k, v in submit_params.items() if k != "token"}},
+            )
+            try:
+                submit_result = await execute_tool("phagescope", **submit_params)
+            except Exception as exc:  # pragma: no cover - defensive
+                plan_decomposition_jobs.append_log(
+                    job.job_id,
+                    "error",
+                    "PhageScope submit failed.",
+                    {"error": str(exc)},
+                )
+                plan_decomposition_jobs.mark_failure(job.job_id, str(exc))
+                update_action_run(run_id, status="failed", errors=[str(exc)])
+                return
+
+            taskid = _extract_taskid_from_result(submit_result)
+            if not taskid:
+                plan_decomposition_jobs.append_log(
+                    job.job_id,
+                    "error",
+                    "PhageScope submit returned no taskid.",
+                    {"result": submit_result},
+                )
+                plan_decomposition_jobs.mark_failure(job.job_id, "phagescope submit returned no taskid")
+                update_action_run(run_id, status="failed", errors=["phagescope submit returned no taskid"])
+                return
+
+            module_items = _normalize_modulelist_value(submit_params.get("modulelist"))
+            plan_decomposition_jobs.update_stats(
+                job.job_id,
+                {
+                    "tool_progress": {
+                        "tool": "phagescope",
+                        "taskid": str(taskid),
+                        "percent": 0,
+                        "phase": "submitted",
+                        "counts": {"done": 0, "total": len(module_items) if module_items else None},
+                    }
+                },
+            )
+            plan_decomposition_jobs.append_log(
+                job.job_id,
+                "info",
+                "PhageScope task submitted; tracking in background.",
+                {"remote_taskid": str(taskid), "modulelist": module_items},
+            )
+
+            # Persist taskid into session metadata for later lookup.
+            if record.get("session_id"):
+                try:
+                    _record_phagescope_task_memory(record["session_id"], submit_params, submit_result)
+                except Exception:
+                    pass
+
+            # Update the assistant message so the user immediately sees taskid.
+            if record.get("session_id"):
+                try:
+                    _update_message_content_by_tracking(
+                        record.get("session_id"),
+                        run_id,
+                        f"已提交到 PhageScope（taskid={taskid}），已在后台跟踪运行进度。你可以在「后台任务」查看状态；完成后再让我执行下载/解读即可。",
+                    )
+                    _update_message_metadata_by_tracking(
+                        record.get("session_id"),
+                        run_id,
+                        lambda existing: {
+                            **(existing or {}),
+                            "phagescope_taskid": str(taskid),
+                            "phagescope_modulelist": module_items,
+                            "job_type": "phagescope_track",
+                        },
+                    )
+                except Exception:
+                    pass
+
+            # Start polling tracker (no auto save_all; user will request later).
+            start_phagescope_track_job_thread(
+                job_id=job.job_id,
+                remote_taskid=str(taskid),
+                modulelist=module_items,
+                base_url=submit_params.get("base_url"),
+                token=None,  # avoid persisting secrets; usually unused for PhageScope
+                poll_interval=float(submit_params.get("poll_interval") or 5.0),
+                poll_timeout=float(submit_params.get("poll_timeout") or 3600.0),
+                request_timeout=40.0,
+            )
+            # Do not finalize the job here; the tracker thread will mark_success/mark_failure.
+            return
+
         agent = StructuredChatAgent(
             mode=record.get("mode"),
             plan_session=plan_session,
@@ -2881,30 +3008,6 @@ async def _execute_action_run(run_id: str) -> None:
             history=history,
             extra_context=context,
         )
-
-        try:
-            structured = LLMStructuredResponse.model_validate_json(
-                record["structured_json"]
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.exception("Structured payload invalid for run %s: %s", run_id, exc)
-            plan_decomposition_jobs.append_log(
-                job.job_id,
-                "error",
-                "Failed to parse structured actions.",
-                {"error": str(exc)},
-            )
-            plan_decomposition_jobs.mark_failure(job.job_id, str(exc))
-            update_action_run(run_id, status="failed", errors=[str(exc)])
-            logger.info(
-                "[CHAT][ASYNC][DONE] tracking=%s status=failed errors=%s",
-                run_id,
-                exc,
-            )
-            return
-
-        sorted_actions = structured.sorted_actions()
-        primary_action = sorted_actions[0] if sorted_actions else None
 
         plan_decomposition_jobs.mark_running(job.job_id)
         plan_decomposition_jobs.append_log(
@@ -3627,6 +3730,103 @@ class StructuredChatAgent:
                 return "phage"
             return None
 
+        def _wants_download(text: str) -> bool:
+            tl = text.lower()
+            triggers = [
+                "下载",
+                "保存",
+                "落盘",
+                "导出",
+                "save_all",
+                "saveall",
+            ]
+            return any(token in tl for token in triggers)
+
+        def _wants_analysis(text: str) -> bool:
+            tl = text.lower()
+            triggers = [
+                "分析",
+                "解读",
+                "总结",
+                "interpret",
+                "analyze",
+                "analyse",
+            ]
+            return any(token in tl for token in triggers)
+
+        def _extract_taskid_from_text(text: str) -> Optional[str]:
+            # Support patterns like taskid=36322 / 任务 36322
+            m = re.search(r"(?:taskid\s*=?\s*|任务\s*)(\d{4,})", text, flags=re.IGNORECASE)
+            if m:
+                return m.group(1)
+            m = re.search(r"\b(\d{4,})\b", text)
+            if m:
+                return m.group(1)
+            return None
+
+        # One-shot UX: when the user asks to download+analyze, inject a deterministic action chain:
+        # 1) phagescope save_all (partial 207 is acceptable)
+        # 2) read key files from the saved output directory
+        if _wants_download(user_message) and _wants_analysis(user_message):
+            taskid_text = _extract_taskid_from_text(user_message)
+            taskid_from_history = _extract_taskid_from_text(
+                " ".join(str(item.get("content") or "") for item in self.history[-6:])
+            )
+            taskid_value = taskid_text or taskid_from_history
+
+            try:
+                actions: List[LLMAction] = []
+                save_params: Dict[str, Any] = {"action": "save_all"}
+                if taskid_value:
+                    save_params["taskid"] = taskid_value
+                actions.append(
+                    LLMAction(
+                        kind="tool_operation",
+                        name="phagescope",
+                        parameters=save_params,
+                        blocking=True,
+                        order=1,
+                    )
+                )
+
+                # Read files (best-effort). Use placeholders from previous save_all result.
+                read_targets = [
+                    # Use *_rel paths so file_operations can resolve them safely as relative paths.
+                    ("summary", "{{ previous.summary_file_rel }}"),
+                    ("quality", "{{ previous.output_directory_rel }}/metadata/quality.json"),
+                    ("phage_info", "{{ previous.output_directory_rel }}/metadata/phage_info.json"),
+                    ("proteins_tsv", "{{ previous.output_directory_rel }}/annotation/proteins.tsv"),
+                    ("proteins_json", "{{ previous.output_directory_rel }}/annotation/proteins.json"),
+                ]
+                for idx, (label, path_tpl) in enumerate(read_targets, start=2):
+                    actions.append(
+                        LLMAction(
+                            kind="tool_operation",
+                            name="file_operations",
+                            parameters={"operation": "read", "path": path_tpl},
+                            blocking=True,
+                            order=idx,
+                            metadata={
+                                "label": label,
+                                "optional": True,
+                                "use_anchor": True,
+                                "preserve_previous": True,
+                            },
+                        )
+                    )
+
+                structured.actions = actions
+                if structured.llm_reply and structured.llm_reply.message:
+                    # Keep LLM wording but ensure it doesn't confuse users with tool details.
+                    structured.llm_reply.message = (
+                        "我会先把 PhageScope 结果下载到本地（即便部分结果缺失也会继续），"
+                        "然后读取关键文件并给出结构化解读。"
+                    )
+                return structured
+            except Exception:
+                # Fall back to the model's original actions.
+                return structured
+
         if not _wants_results(user_message):
             return structured
 
@@ -3640,13 +3840,10 @@ class StructuredChatAgent:
                 continue
             params = action.parameters or {}
             action_value = params.get("action")
-            if action_value in {"task_list", "task_detail"}:
-                params = dict(params)
-                params["action"] = "result"
-                if not params.get("result_kind"):
-                    params["result_kind"] = inferred_kind or "quality"
-                action.parameters = params
-            elif action_value == "result" and not params.get("result_kind"):
+            # Important: do NOT rewrite explicit task_detail/task_list into result.
+            # Users often ask for completion status, and converting to result_kind=phage_detail
+            # can hit remote endpoints that are not ready / error-prone.
+            if action_value == "result" and not params.get("result_kind"):
                 params = dict(params)
                 params["result_kind"] = inferred_kind or "quality"
                 action.parameters = params
@@ -3731,8 +3928,12 @@ class StructuredChatAgent:
             job_type = "chat_action"
 
         previous_result: Optional[Dict[str, Any]] = None
+        anchor_result: Optional[Dict[str, Any]] = None
         for action in structured.sorted_actions():
-            action = self._resolve_action_placeholders(action, previous_result)
+            placeholder_source = previous_result
+            if isinstance(action.metadata, dict) and action.metadata.get("use_anchor") and anchor_result:
+                placeholder_source = anchor_result
+            action = self._resolve_action_placeholders(action, placeholder_source)
             if (
                 action.kind == "tool_operation"
                 and action.name == "phagescope"
@@ -3783,7 +3984,18 @@ class StructuredChatAgent:
             steps.append(step)
             details = step.details or {}
             result_payload = details.get("result")
-            previous_result = result_payload if isinstance(result_payload, dict) else None
+            if isinstance(result_payload, dict):
+                if (
+                    anchor_result is None
+                    and step.action.kind == "tool_operation"
+                    and step.action.name == "phagescope"
+                    and isinstance(details.get("parameters"), dict)
+                    and (details["parameters"].get("action") == "save_all")
+                ):
+                    anchor_result = result_payload
+
+            if not (isinstance(action.metadata, dict) and action.metadata.get("preserve_previous")):
+                previous_result = result_payload if isinstance(result_payload, dict) else None
 
         suggestions = self._build_suggestions(structured, steps)
         success = all(step.success for step in steps) if steps else True
@@ -3807,6 +4019,15 @@ class StructuredChatAgent:
 
         actions_summary = self._build_actions_summary(steps)
         reply_text = structured.llm_reply.message or ""
+
+        # Special case: one-shot "download + analyze" chain for PhageScope.
+        # We must synthesize the analysis here (there is no post-tool LLM pass in this mode).
+        try:
+            synthesized = self._maybe_synthesize_phagescope_saveall_analysis(steps)
+            if synthesized:
+                reply_text = synthesized
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.debug("Failed to synthesize phagescope save_all analysis: %s", exc)
         if self._include_action_summary and actions_summary:
             reply_text = self._append_summary_to_reply(reply_text, actions_summary)
 
@@ -3848,6 +4069,175 @@ class StructuredChatAgent:
         return result
 
         return result
+
+    def _maybe_synthesize_phagescope_saveall_analysis(self, steps: List[AgentStep]) -> Optional[str]:
+        """If the action sequence matches save_all + local reads, return a structured analysis string."""
+        if not steps:
+            return None
+
+        save_step: Optional[AgentStep] = None
+        for step in steps:
+            if step.action.kind == "tool_operation" and step.action.name == "phagescope":
+                params = (
+                    step.details.get("parameters")
+                    if isinstance(step.details, dict)
+                    else None
+                )
+                if isinstance(params, dict) and params.get("action") == "save_all":
+                    save_step = step
+                    break
+        if not save_step or not isinstance(save_step.details, dict):
+            return None
+
+        save_result = save_step.details.get("result")
+        if not isinstance(save_result, dict):
+            return None
+
+        # Detect the injected chain by presence of file_operations reads with metadata labels.
+        reads: Dict[str, str] = {}
+        for step in steps:
+            if step.action.kind != "tool_operation" or step.action.name != "file_operations":
+                continue
+            label = step.action.metadata.get("label") if isinstance(step.action.metadata, dict) else None
+            if not isinstance(label, str) or not label:
+                continue
+            result = step.details.get("result") if isinstance(step.details, dict) else None
+            if isinstance(result, dict) and isinstance(result.get("content"), str):
+                reads[label] = result["content"]
+
+        if not reads:
+            return None
+
+        output_dir = save_result.get("output_directory") or save_result.get("output_directory_rel")
+        status_code = save_result.get("status_code")
+        missing = save_result.get("missing_artifacts") or []
+        missing_text = ""
+        if isinstance(missing, list) and missing:
+            missing_text = f"（部分缺失：{', '.join(str(x) for x in missing)}）"
+
+        # Parse key jsons (best-effort)
+        phage_info = None
+        quality = None
+        try:
+            if "phage_info" in reads:
+                phage_info = json.loads(reads["phage_info"]).get("results")
+        except Exception:
+            phage_info = None
+        try:
+            if "quality" in reads:
+                quality = json.loads(reads["quality"]).get("results")
+        except Exception:
+            quality = None
+
+        # Extract host/lifestyle/taxonomy
+        host = lifestyle = taxonomy = gc_content = length = genes = None
+        if isinstance(phage_info, list) and phage_info:
+            row = phage_info[0] if isinstance(phage_info[0], dict) else None
+            if isinstance(row, dict):
+                host = row.get("host")
+                lifestyle = row.get("lifestyle")
+                taxonomy = row.get("taxonomy")
+                gc_content = row.get("gc_content")
+                length = row.get("length")
+                genes = row.get("genes")
+
+        # Extract quality summary
+        qsum = None
+        if isinstance(quality, dict):
+            q = quality.get("quality_summary")
+            if isinstance(q, list) and q and isinstance(q[0], dict):
+                qsum = q[0]
+
+        # Proteins: count + top5 annotations
+        protein_count = None
+        top5 = []
+        proteins_tsv = reads.get("proteins_tsv")
+        if isinstance(proteins_tsv, str) and proteins_tsv.strip():
+            lines = [ln for ln in proteins_tsv.splitlines() if ln.strip()]
+            if len(lines) >= 2:
+                protein_count = max(0, len(lines) - 1)
+                header = lines[0].split("\t")
+                idx = None
+                for i, col in enumerate(header):
+                    if col.strip() in {"Protein_function_classification", "function", "annotation"}:
+                        idx = i
+                        break
+                for ln in lines[1:6]:
+                    cols = ln.split("\t")
+                    if idx is not None and idx < len(cols):
+                        top5.append(cols[idx].strip())
+        # Fallback: parse proteins.json when TSV missing/empty
+        if (protein_count is None or not top5) and isinstance(reads.get("proteins_json"), str):
+            try:
+                payload = json.loads(reads["proteins_json"])
+                results = payload.get("results") if isinstance(payload, dict) else None
+                if isinstance(results, list):
+                    if protein_count is None:
+                        protein_count = len(results)
+                    if not top5:
+                        for item in results[:5]:
+                            if not isinstance(item, dict):
+                                continue
+                            val = (
+                                item.get("Protein_function_classification")
+                                or item.get("function")
+                                or item.get("annotation")
+                            )
+                            if val is not None:
+                                top5.append(str(val).strip())
+            except Exception:
+                pass
+        # Fallback: if no tsv, try summary/task_detail or phage_info genes
+        if protein_count is None:
+            try:
+                if isinstance(genes, str) and genes.isdigit():
+                    protein_count = int(genes)
+            except Exception:
+                protein_count = None
+
+        lines: List[str] = []
+        lines.append(f"已下载到：{output_dir}{missing_text}")
+        if status_code == 207:
+            lines.append("提示：本次为 207（部分成功），核心结果可用，我已按可用结果继续解读。")
+
+        lines.append("")
+        lines.append("## 结构化解读")
+        if isinstance(qsum, dict):
+            lines.append("- **质量指标**：")
+            lines.append(
+                "  - contig_id={cid}, length={clen}, gene_count={gc}, checkv_quality={cq}, miuvig_quality={mq}, completeness={comp}, contamination={cont}".format(
+                    cid=qsum.get("contig_id"),
+                    clen=qsum.get("contig_length"),
+                    gc=qsum.get("gene_count"),
+                    cq=qsum.get("checkv_quality"),
+                    mq=qsum.get("miuvig_quality"),
+                    comp=qsum.get("completeness"),
+                    cont=qsum.get("contamination"),
+                )
+            )
+        else:
+            lines.append("- **质量指标**：未能读取 `metadata/quality.json`，请检查该文件是否存在或是否被安全策略拦截。")
+
+        lines.append("- **宿主/生活方式**：")
+        if host or lifestyle or taxonomy:
+            lines.append(f"  - host={host}, lifestyle={lifestyle}, taxonomy={taxonomy}")
+            lines.append(f"  - length={length}, genes={genes}, gc_content={gc_content}")
+        else:
+            lines.append("  - 未能读取 `metadata/phage_info.json` 或内容为空。")
+
+        lines.append("- **蛋白注释**：")
+        if protein_count is not None:
+            lines.append(f"  - 蛋白数量：{protein_count}")
+        else:
+            lines.append("  - 蛋白数量：未能统计（可稍后补充读取 proteins.json/tsv）")
+        if top5:
+            lines.append("  - 前 5 条注释：")
+            for i, item in enumerate(top5, 1):
+                lines.append(f"    {i}. {item}")
+        else:
+            lines.append("  - 前 5 条注释：未能从 `annotation/proteins.tsv` 提取（可能缺失或读取失败）。")
+
+        return "\n".join(lines).strip()
 
     def _should_use_deep_think(self, message: str) -> bool:
         """Check if deep think mode should be activated."""
@@ -4758,6 +5148,66 @@ class StructuredChatAgent:
                     normalized_provider = settings_provider or "builtin"
             params["provider"] = normalized_provider
 
+        elif tool_name == "file_operations":
+            operation = params.get("operation")
+            if not isinstance(operation, str) or not operation.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="file_operations requires a non-empty `operation` string.",
+                    details={"error": "invalid_operation", "tool": tool_name},
+                )
+            operation = operation.strip()
+            # Minimal validation for common operations.
+            if operation in {"read", "list", "delete", "exists", "info"}:
+                path = params.get("path")
+                if not isinstance(path, str) or not path.strip():
+                    return AgentStep(
+                        action=action,
+                        success=False,
+                        message=f"file_operations {operation} requires a non-empty `path` string.",
+                        details={"error": "missing_params", "tool": tool_name},
+                    )
+                clean_params = {"operation": operation, "path": path}
+                if operation == "list":
+                    pattern = params.get("pattern")
+                    if isinstance(pattern, str) and pattern.strip():
+                        clean_params["pattern"] = pattern
+                params = clean_params
+            elif operation in {"write"}:
+                path = params.get("path")
+                content = params.get("content")
+                if not isinstance(path, str) or not path.strip():
+                    return AgentStep(
+                        action=action,
+                        success=False,
+                        message="file_operations write requires a non-empty `path` string.",
+                        details={"error": "missing_params", "tool": tool_name},
+                    )
+                if content is None:
+                    content = ""
+                if not isinstance(content, str):
+                    content = str(content)
+                params = {"operation": operation, "path": path, "content": content}
+            elif operation in {"copy", "move"}:
+                path = params.get("path")
+                dest = params.get("destination")
+                if not isinstance(path, str) or not path.strip() or not isinstance(dest, str) or not dest.strip():
+                    return AgentStep(
+                        action=action,
+                        success=False,
+                        message=f"file_operations {operation} requires `path` and `destination`.",
+                        details={"error": "missing_params", "tool": tool_name},
+                    )
+                params = {"operation": operation, "path": path, "destination": dest}
+            else:
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message=f"file_operations does not support operation={operation!r}.",
+                    details={"error": "invalid_operation", "tool": tool_name},
+                )
+
         elif tool_name == "graph_rag":
             query = params.get("query")
             if not isinstance(query, str) or not query.strip():
@@ -5102,13 +5552,13 @@ class StructuredChatAgent:
                 clean_params["rundemo"] = "true" if clean_params["rundemo"] else "false"
 
             action_value = clean_params.get("action")
-            if action_value in {"result", "quality"} and "taskid" in clean_params:
+            if action_value in {"result", "quality", "task_detail", "save_all"} and "taskid" in clean_params:
                 try:
                     int(str(clean_params.get("taskid")).strip())
                 except (TypeError, ValueError):
                     clean_params.pop("taskid", None)
             if (
-                action_value in {"result", "quality"}
+                action_value in {"result", "quality", "task_detail", "save_all"}
                 and not clean_params.get("taskid")
                 and self.session_id
             ):
@@ -5423,6 +5873,27 @@ class StructuredChatAgent:
             )
 
         sanitized = self._sanitize_tool_result(tool_name, raw_result)
+        # For optional local file reads (e.g., one-shot phagescope download+analyze),
+        # treat read failures as non-fatal and continue the chain.
+        try:
+            is_optional = (
+                isinstance(action.metadata, dict) and bool(action.metadata.get("optional"))
+            )
+            if (
+                tool_name == "file_operations"
+                and is_optional
+                and isinstance(params, dict)
+                and params.get("operation") == "read"
+                and isinstance(sanitized, dict)
+                and sanitized.get("success") is False
+            ):
+                patched = dict(sanitized)
+                patched["optional"] = True
+                patched["optional_error"] = patched.get("error") or "read_failed"
+                patched["success"] = True
+                sanitized = patched
+        except Exception:
+            pass
         summary = self._summarize_tool_result(tool_name, sanitized)
         self._append_recent_tool_result(tool_name, summary, sanitized)
 
@@ -6413,6 +6884,22 @@ class StructuredChatAgent:
             }
             if "error" in raw_result:
                 sanitized["error"] = raw_result.get("error")
+            # Keep key local artifact paths for save_all so follow-up file reads can work.
+            if str(raw_result.get("action") or "").strip().lower() == "save_all":
+                for key in (
+                    "taskid",
+                    "output_directory",
+                    "output_directory_rel",
+                    "summary_file",
+                    "summary_file_rel",
+                    "files_saved",
+                    "errors",
+                    "missing_artifacts",
+                    "warnings",
+                    "partial",
+                ):
+                    if key in raw_result:
+                        sanitized[key] = raw_result.get(key)
             payload = raw_result.get("data")
             if isinstance(payload, dict):
                 trimmed: Dict[str, Any] = {}
@@ -6422,6 +6909,29 @@ class StructuredChatAgent:
                 if "results" in trimmed and isinstance(trimmed["results"], list):
                     trimmed["results"] = trimmed["results"][:3]
                 sanitized["data"] = trimmed
+            return sanitized
+
+        if tool_name == "file_operations" and isinstance(raw_result, dict):
+            # Some operations (e.g. exists) historically didn't include "success".
+            inferred_success = raw_result.get("success")
+            if inferred_success is None:
+                inferred_success = False if raw_result.get("error") else True
+            sanitized: Dict[str, Any] = {
+                "tool": tool_name,
+                "operation": raw_result.get("operation"),
+                "path": raw_result.get("path"),
+                "success": bool(inferred_success),
+            }
+            if "error" in raw_result:
+                sanitized["error"] = raw_result.get("error")
+            # Keep read content for downstream synthesis (already bounded by tool limits).
+            content = raw_result.get("content")
+            if isinstance(content, str):
+                # Extra guardrail: cap to 80k chars to avoid bloating chat logs.
+                sanitized["content"] = content[:80_000]
+            for key in ("size", "file_size", "lines_read", "encoding", "truncated", "truncated_message", "count", "items", "exists", "type"):
+                if key in raw_result:
+                    sanitized[key] = raw_result.get(key)
             return sanitized
 
         if tool_name == "claude_code" and isinstance(raw_result, dict):
@@ -6573,6 +7083,27 @@ class StructuredChatAgent:
     def _summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
         if tool_name == "phagescope":
             action = result.get("action") or "phagescope"
+            # Special handling: save_all may return 207 (partial) but still be usable.
+            if str(action).strip().lower() == "save_all":
+                status_code = result.get("status_code")
+                out_dir = result.get("output_directory") or result.get("output_directory_rel")
+                missing = result.get("missing_artifacts") or []
+                errors = result.get("errors") or []
+                if result.get("success") is True:
+                    if status_code == 207:
+                        miss_text = ""
+                        if isinstance(missing, list) and missing:
+                            miss_text = f"; missing: {', '.join(str(x) for x in missing[:6])}{'...' if len(missing) > 6 else ''}"
+                        elif isinstance(errors, list) and errors:
+                            miss_text = f"; partial errors: {', '.join(str(x) for x in errors[:2])}{'...' if len(errors) > 2 else ''}"
+                        return f"PhageScope save_all completed (partial): saved to {out_dir}{miss_text}"
+                    return f"PhageScope save_all completed: saved to {out_dir}"
+                error = result.get("error") or "Execution failed"
+                # If partial output exists, surface it even on failure.
+                if status_code == 207 and out_dir:
+                    return f"PhageScope save_all completed (partial): saved to {out_dir}; but marked failed: {error}"
+                return f"PhageScope save_all failed: {error}"
+
             if result.get("success") is False:
                 error = result.get("error") or "Execution failed"
                 return f"PhageScope {action} failed: {error}"
