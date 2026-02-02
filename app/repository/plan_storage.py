@@ -521,6 +521,7 @@ def append_action_log_entry(
     plan_id: Optional[int],
     job_id: str,
     job_type: Optional[str],
+    sequence: Optional[int] = None,
     session_id: Optional[str],
     user_message: Optional[str],
     action_kind: str,
@@ -556,17 +557,36 @@ def append_action_log_entry(
 
     with plan_db_connection(db_path) as conn:
         _ensure_action_log_tables(conn, plan_id=plan_id)
-        current_max = conn.execute(
-            "SELECT COALESCE(MAX(sequence), 0) AS seq FROM plan_action_logs WHERE job_id=?",
-            (job_id,),
-        ).fetchone()
-        next_sequence = int(current_max["seq"]) + 1 if current_max else 1
+        next_sequence: int
+        if isinstance(sequence, int) and sequence > 0:
+            next_sequence = sequence
+        else:
+            current_max = conn.execute(
+                "SELECT COALESCE(MAX(sequence), 0) AS seq FROM plan_action_logs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            next_sequence = int(current_max["seq"]) + 1 if current_max else 1
+
+        # Upsert on (job_id, sequence) so each action occupies one row.
+        # This avoids misleading duplicate rows like queued->running->completed as separate entries.
         conn.execute(
             """
             INSERT INTO plan_action_logs (
                 plan_id, job_id, job_type, sequence, session_id, user_message,
                 action_kind, action_name, status, success, message, details_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id, sequence) DO UPDATE SET
+                plan_id=excluded.plan_id,
+                job_type=excluded.job_type,
+                session_id=excluded.session_id,
+                user_message=excluded.user_message,
+                action_kind=excluded.action_kind,
+                action_name=excluded.action_name,
+                status=excluded.status,
+                success=excluded.success,
+                message=excluded.message,
+                details_json=excluded.details_json,
+                updated_at=CURRENT_TIMESTAMP
             """,
             (
                 plan_id,

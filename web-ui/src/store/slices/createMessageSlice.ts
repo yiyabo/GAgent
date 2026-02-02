@@ -398,6 +398,11 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
                     const mergedToolResults = mergeToolResults(collectToolResultsFromMetadata(existingMetadata.tool_results), mergeToolResults(collectToolResultsFromMetadata(payload.result?.tool_results), collectToolResultsFromSteps(stepList)));
                     const updatedMetadata: ChatResponseMetadata = { ...existingMetadata, status: jobStatus ?? existingMetadata.status };
                     (updatedMetadata as any).unified_stream = true;
+                    // Tool progress (e.g., PhageScope polling progress)
+                    const toolProgress = (payload.stats && typeof payload.stats === 'object' ? (payload.stats as any).tool_progress : null) ?? null;
+                    if (toolProgress && typeof toolProgress === 'object') {
+                        (updatedMetadata as any).tool_progress = toolProgress;
+                    }
                     if (!(updatedMetadata as any).plan_message) {
                         (updatedMetadata as any).plan_message = actionsFromSteps.length > 0 ? formatToolPlanPreface(actionsFromSteps) : targetMessage.content || null;
                     }

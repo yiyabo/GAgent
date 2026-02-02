@@ -432,6 +432,43 @@ class PlanDecompositionJobManager:
             job.persisted_log_count += 1
         self._notify_subscribers(subscribers, payload)
 
+    def update_stats(self, job_id: str, stats: Dict[str, Any]) -> None:
+        """Merge stats into the job and notify subscribers."""
+        if not isinstance(stats, dict):
+            return
+        subscribers: List[PlanDecompositionSubscriber] = []
+        payload: Dict[str, Any]
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            # merge
+            merged = dict(job.stats)
+            for k, v in stats.items():
+                merged[k] = v
+            job.stats = _coerce_stats_payload(merged)
+            job.last_activity_at = _utc_now()
+            subscribers = list(job.subscribers)
+            payload = {
+                "job_id": job_id,
+                "job_type": job.job_type,
+                "status": job.status,
+                "event": None,
+                "stats": dict(job.stats),
+                "metadata": dict(job.metadata),
+            }
+        update_decomposition_job_status(
+            job.plan_id,
+            job_id=job_id,
+            status=job.status,
+            error=job.error,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            stats=_coerce_stats_payload(job.stats),
+            result=_coerce_result_payload(job.result),
+        )
+        self._notify_subscribers(subscribers, payload)
+
     def log_from_context(
         self,
         level: str,
@@ -442,6 +479,12 @@ class PlanDecompositionJobManager:
         if not job_id:
             return
         self.append_log(job_id, level, message, metadata=metadata)
+
+    def update_stats_from_context(self, stats: Dict[str, Any]) -> None:
+        job_id = _job_context.get()
+        if not job_id:
+            return
+        self.update_stats(job_id, stats)
 
     def cleanup(self) -> None:
         with self._lock:

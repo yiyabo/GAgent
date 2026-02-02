@@ -125,6 +125,8 @@ class ExecutionConfig:
     max_tasks: Optional[int] = None
     # 新增：会话上下文，包含聊天历史、用户消息等
     session_context: Optional[Dict[str, Any]] = None
+    # 新增：强制依赖检查，未完成的依赖会导致任务被跳过
+    enforce_dependencies: bool = True
 
     @classmethod
     def from_settings(cls, settings: ExecutorSettings) -> "ExecutionConfig":
@@ -136,6 +138,7 @@ class ExecutionConfig:
             include_plan_outline=settings.include_plan_outline,
             dependency_throttle=settings.dependency_throttle,
             max_tasks=settings.max_tasks,
+            enforce_dependencies=getattr(settings, 'enforce_dependencies', True),
         )
 
 
@@ -156,37 +159,109 @@ class ExecutorPromptBuilder:
     # 可用工具目录
     TOOL_CATALOG = """
 === AVAILABLE TOOLS ===
-When a task requires actual code execution, data analysis, or file operations, you can request these tools:
-- claude_code: Execute complex coding tasks (data analysis, visualization, model building, file creation)
+When a task requires tool execution, request one of these tools:
+
+**BIOINFORMATICS (FASTA/FASTQ/sequences):**
+- bio_tools: Execute bioinformatics Docker tools (seqkit, blast, prodigal, hmmer, checkv, etc.)
+  Parameters: {"tool_name": "seqkit|blast|prodigal|...", "operation": "stats|blastn|predict|help", "input_file": "<path>", "params": {...}}
+  NOTE: Always call operation="help" first if unsure about parameters!
+
+**CODE EXECUTION & DATA ANALYSIS:**
+- claude_code: Execute complex coding tasks (data analysis, visualization, model building)
   Parameters: {"task": "<detailed task description>", "allowed_tools": ["bash", "python", "file_editor"]}
+
+**INFORMATION RETRIEVAL:**
 - web_search: Search the web for information
   Parameters: {"query": "<search query>", "max_results": 5}
-- document_reader: Read and extract content from files
+- graph_rag: Query phage-host knowledge graph
+  Parameters: {"query": "<query>", "top_k": 5, "hops": 2}
+
+**FILE & DOCUMENT PROCESSING:**
+- document_reader: Read and extract content from text files (PDF, TXT, DOCX)
   Parameters: {"operation": "read_any", "file_path": "<path>"}
+- vision_reader: OCR and visual understanding for images/scanned PDFs
+  Parameters: {"operation": "ocr_page|describe_figure|read_equation_image", "file_path": "<path>"}
+
+**SPECIALIZED:**
+- phagescope: PhageScope platform operations (submit jobs, check status, get results)
+  Parameters: {"action": "submit|task_list|task_detail|result", ...}
+- manuscript_writer: Generate research manuscripts
+  Parameters: {"task": "<writing task>", "output_path": "<path>"}
 """
 
     # 任务类型判断指引
     TASK_TYPE_GUIDANCE = """
 === WHEN TO USE TOOLS ===
-- For design/architecture/planning/analysis tasks → respond with text only (status: "success")
-- For data analysis/visualization/chart creation → use claude_code (status: "needs_tool")
-- For model code building/training scripts → use claude_code (status: "needs_tool")
-- For information lookup from web → use web_search (status: "needs_tool")
-- For reading/parsing files → use document_reader (status: "needs_tool")
-- For writing papers/documents with text → respond with text only (status: "success")
+- For design/architecture/planning/text writing → respond with text only (status: "success")
+- For FASTA/FASTQ/sequence analysis → use bio_tools FIRST (status: "needs_tool")
+- For data analysis/visualization/charts → use claude_code (status: "needs_tool")
+- For model code building/training → use claude_code (status: "needs_tool")
+- For web information lookup → use web_search (status: "needs_tool")
+- For reading text files (PDF/TXT) → use document_reader (status: "needs_tool")
+- For reading images/scanned docs → use vision_reader (status: "needs_tool")
+- For phage knowledge queries → use graph_rag (status: "needs_tool")
 """
 
     OUTPUT_SCHEMA = """{
   "status": "success" | "failed" | "skipped" | "needs_tool",
   "content": "<main result text or reasoning for tool request>",
   "tool_call": {  // REQUIRED when status is "needs_tool", otherwise omit
-    "name": "claude_code" | "web_search" | "document_reader",
+    "name": "bio_tools" | "claude_code" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "manuscript_writer",
     "parameters": { <tool-specific parameters> }
   },
   "notes": ["optional notes"],
   "metadata": {}
 }"""
 
+    def _summarize_long_result(self, result: str, max_length: int = 2000) -> str:
+        """Summarize long execution results to avoid prompt bloat.
+        
+        Preserves key information like:
+        - Numbers, metrics, statistics
+        - File paths
+        - Conclusions and key findings
+        - Error messages
+        
+        Args:
+            result: The original result text
+            max_length: Maximum length to return
+            
+        Returns:
+            Summarized result if over max_length, otherwise original
+        """
+        if not result or len(result) <= max_length:
+            return result
+        
+        # Strategy: Keep beginning and end, add truncation notice
+        # Beginning often has summary/conclusion
+        # End often has final results or file paths
+        keep_start = int(max_length * 0.6)
+        keep_end = int(max_length * 0.3)
+        
+        # Extract key patterns to preserve
+        import re
+        
+        # Find file paths
+        file_paths = re.findall(r'[\w/\-\.]+\.(csv|json|txt|png|jpg|pdf|fasta|fa|fq|xlsx)', result)
+        
+        # Find numbers with context (e.g., "accuracy: 0.95", "rows: 1000")
+        metrics = re.findall(r'\b\w+[:\s=]+\d+\.?\d*%?\b', result)[:5]
+        
+        # Build summary
+        summary_parts = [
+            result[:keep_start].strip(),
+            "\n... [TRUNCATED - original was {} chars] ...\n".format(len(result)),
+        ]
+        
+        if file_paths:
+            summary_parts.append(f"[Key files: {', '.join(set(file_paths[:5]))}]")
+        
+        if metrics:
+            summary_parts.append(f"[Key metrics: {'; '.join(metrics[:5])}]")
+        
+        summary_parts.append(result[-keep_end:].strip())
+        
+        return "\n".join(summary_parts)
 
     def build(
         self,
@@ -242,13 +317,17 @@ When a task requires actual code execution, data analysis, or file operations, y
             if parent.instruction:
                 lines.append(f"Parent Instruction: {parent.instruction.strip()}")
             if parent.execution_result:
-                lines.append(f"Parent Latest Result: {parent.execution_result}")
+                # 对超长结果进行压缩
+                parent_result = self._summarize_long_result(parent.execution_result, max_length=2000)
+                lines.append(f"Parent Latest Result: {parent_result}")
 
         if dependencies:
             lines.append("\n=== DEPENDENCIES ===")
             for dep in dependencies:
                 status_indicator = "✓" if dep.status == "completed" else "✗" if dep.status == "failed" else "○"
-                summary = dep.execution_result or "(not executed)"
+                raw_result = dep.execution_result or "(not executed)"
+                # 对超长结果进行压缩
+                summary = self._summarize_long_result(raw_result, max_length=2000)
                 lines.append(f"- [{status_indicator}] [{dep.id}] {dep.display_name()}: {summary}")
 
         if include_context:
@@ -451,6 +530,25 @@ class PlanExecutor:
             )
 
         summary.finished_at = time.time()
+        
+        # 自动生成执行汇总报告
+        if summary.executed_task_ids:
+            try:
+                plan_summary = self._generate_plan_summary(plan_id, tree, summary, cfg)
+                if plan_summary:
+                    # 存储汇总到 plan metadata
+                    current_metadata = tree.metadata or {}
+                    current_metadata["execution_summary"] = plan_summary
+                    current_metadata["execution_summary_at"] = summary.finished_at
+                    self._repo.update_plan_metadata(plan_id, current_metadata)
+                    _log_job(
+                        "info",
+                        "Plan execution summary generated.",
+                        {"plan_id": plan_id, "summary_length": len(plan_summary)},
+                    )
+            except Exception as exc:
+                logger.warning("Failed to generate plan summary: %s", exc)
+        
         _log_job(
             "info",
             "Plan execution finished.",
@@ -491,7 +589,7 @@ class PlanExecutor:
         parent = tree.nodes.get(node.parent_id) if node.parent_id else None
         dependencies = self._resolve_dependencies(tree, node)
         
-        # 新增：检查依赖状态，记录警告
+        # 检查依赖状态
         incomplete_deps = []
         for dep in dependencies:
             if dep.status not in ("completed", "done"):
@@ -501,13 +599,40 @@ class PlanExecutor:
                     dep.id, dep.status, node.id
                 )
         
-        if incomplete_deps:
+        # 如果有未完成的依赖且启用了强制依赖检查，则跳过任务
+        if incomplete_deps and config.enforce_dependencies:
+            skip_reason = f"Skipped due to {len(incomplete_deps)} incomplete dependencies: {[d.id for d in incomplete_deps]}"
             _log_job(
                 "warning",
-                f"Task {node.id} has {len(incomplete_deps)} incomplete dependencies",
+                f"Task {node.id} skipped: dependencies not satisfied",
                 {
                     "task_id": node.id,
                     "incomplete_deps": [d.id for d in incomplete_deps],
+                    "enforce_dependencies": True,
+                },
+            )
+            # 更新任务状态为 skipped
+            try:
+                self._repo.update_task(plan_id, node.id, status="skipped")
+            except Exception as exc:
+                logger.warning("Failed to update task %s status to skipped: %s", node.id, exc)
+            
+            return ExecutionResult(
+                plan_id=plan_id,
+                task_id=node.id,
+                status="skipped",
+                content=skip_reason,
+                notes=[f"Dependencies not completed: {[d.id for d in incomplete_deps]}"],
+            )
+        elif incomplete_deps:
+            # 仅警告，不阻塞
+            _log_job(
+                "warning",
+                f"Task {node.id} has {len(incomplete_deps)} incomplete dependencies (continuing anyway)",
+                {
+                    "task_id": node.id,
+                    "incomplete_deps": [d.id for d in incomplete_deps],
+                    "enforce_dependencies": False,
                 },
             )
         
@@ -785,6 +910,74 @@ class PlanExecutor:
             if dep is not None:
                 deps.append(dep)
         return deps
+
+    def _generate_plan_summary(
+        self,
+        plan_id: int,
+        tree: PlanTree,
+        summary: "ExecutionSummary",
+        config: ExecutionConfig,
+    ) -> Optional[str]:
+        """Generate a comprehensive summary of the plan execution.
+        
+        Collects all completed task results and uses LLM to synthesize
+        a final report.
+        
+        Returns:
+            Summary text or None if generation fails
+        """
+        # 收集所有已完成任务的结果
+        completed_results = []
+        for result in summary.results:
+            if result.status == "completed":
+                node = tree.nodes.get(result.task_id)
+                if node:
+                    completed_results.append({
+                        "task_id": result.task_id,
+                        "task_name": node.display_name(),
+                        "instruction": node.instruction,
+                        "result": result.content[:2000] if len(result.content) > 2000 else result.content,
+                    })
+        
+        if not completed_results:
+            return None
+        
+        # 构建汇总提示
+        summary_prompt = (
+            "You are generating a comprehensive execution summary for a completed plan.\n\n"
+            f"Plan Title: {tree.title}\n"
+            f"Plan Description: {tree.description or 'N/A'}\n\n"
+            "=== COMPLETED TASKS ===\n"
+        )
+        
+        for r in completed_results:
+            summary_prompt += f"\n**Task {r['task_id']}: {r['task_name']}**\n"
+            if r['instruction']:
+                summary_prompt += f"Instruction: {r['instruction'][:200]}...\n" if len(r['instruction'] or '') > 200 else f"Instruction: {r['instruction']}\n"
+            summary_prompt += f"Result: {r['result']}\n"
+        
+        summary_prompt += (
+            "\n=== YOUR TASK ===\n"
+            "Generate a concise executive summary (200-400 words) that:\n"
+            "1. Summarizes what was accomplished across all tasks\n"
+            "2. Highlights key findings, outputs, or deliverables\n"
+            "3. Notes any important files or artifacts created\n"
+            "4. Identifies any issues or areas needing follow-up\n\n"
+            "Write the summary in a professional, clear style."
+        )
+        
+        try:
+            response = self._llm.generate(
+                summary_prompt,
+                config,
+            )
+            return response.content
+        except Exception as exc:
+            logger.warning("Failed to generate plan summary via LLM: %s", exc)
+            # Fallback: simple text summary
+            fallback = f"Plan '{tree.title}' completed with {len(completed_results)} tasks.\n"
+            fallback += f"Completed: {len(summary.executed_task_ids)}, Failed: {len(summary.failed_task_ids)}, Skipped: {len(summary.skipped_task_ids)}"
+            return fallback
 
     def _execute_tool_call(
         self,

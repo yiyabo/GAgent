@@ -16,6 +16,7 @@ log/
 docs/
 .mplconfig/fontlist-v390.json
 .agent
+.cursor/
 
 # Bio Tools - Test Data & Logs
 logs/

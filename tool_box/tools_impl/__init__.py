@@ -18,6 +18,7 @@ from .generate_experiment_card import generate_experiment_card_tool
 from .manuscript_writer import manuscript_writer_tool
 from .phagescope import phagescope_tool
 from .result_interpreter import result_interpreter_tool
+from .plan_tools import plan_operation_tool
 
 __all__ = [
     "web_search_tool",
@@ -33,4 +34,5 @@ __all__ = [
     "manuscript_writer_tool",
     "phagescope_tool",
     "result_interpreter_tool",
+    "plan_operation_tool",
 ]

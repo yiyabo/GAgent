@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Card, Button, Space, Tag, Typography, Tooltip, Alert, Divider, Modal, Spin } from 'antd';
+import { Card, Button, Space, Tag, Typography, Tooltip, Alert, Divider, Modal, Spin, Progress } from 'antd';
 import {
   PlayCircleOutlined,
   PauseCircleOutlined,
@@ -23,7 +23,7 @@ dayjs.extend(relativeTime);
 const { Text, Paragraph } = Typography;
 
 const MAX_RENDER_LOGS = 200;
-const FINAL_STATUSES = new Set(['succeeded', 'failed']);
+const FINAL_STATUSES = new Set(['succeeded', 'failed', 'completed']);
 
 const levelColorMap: Record<string, string> = {
   debug: 'default',
@@ -49,6 +49,16 @@ const statusMeta: Record<
     label: '排队中',
     icon: <PauseCircleOutlined />,
   },
+  pending: {
+    color: 'default',
+    label: '排队中',
+    icon: <PauseCircleOutlined />,
+  },
+  awaiting_confirmation: {
+    color: 'default',
+    label: '等待确认',
+    icon: <PauseCircleOutlined />,
+  },
   running: {
     color: 'processing',
     label: '执行中',
@@ -59,11 +69,34 @@ const statusMeta: Record<
     label: '已完成',
     icon: <CheckCircleOutlined />,
   },
+  completed: {
+    color: 'success',
+    label: '已完成',
+    icon: <CheckCircleOutlined />,
+  },
   failed: {
     color: 'error',
     label: '失败',
     icon: <CloseCircleOutlined />,
   },
+};
+
+const normalizeActionStatusKey = (raw: unknown): string => {
+  const key = String(raw ?? '').trim().toLowerCase();
+  if (!key) return 'queued';
+  if (key === 'completed') return 'completed';
+  if (key === 'succeeded') return 'succeeded';
+  if (key === 'failed') return 'failed';
+  if (key === 'running') return 'running';
+  if (key === 'pending') return 'pending';
+  if (key === 'awaiting_confirmation') return 'awaiting_confirmation';
+  return key;
+};
+
+const parseIsoToMs = (value?: string | null): number | null => {
+  if (!value) return null;
+  const ts = Date.parse(value);
+  return Number.isNaN(ts) ? null : ts;
 };
 
 const jobTypeMeta: Record<
@@ -89,6 +122,12 @@ const jobTypeMeta: Record<
     label: '后台任务日志',
     color: 'geekblue',
   },
+};
+
+const toNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 };
 
 type StreamMessage =
@@ -137,6 +176,7 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
   const [actionLogs, setActionLogs] = React.useState<ActionLogEntry[]>(initialJob?.action_logs ?? []);
   const [status, setStatus] = React.useState<string>(initialJob?.status ?? 'queued');
   const [stats, setStats] = React.useState<Record<string, any>>(initialJob?.stats ?? {});
+  const [jobParams, setJobParams] = React.useState<Record<string, any>>(initialJob?.params ?? {});
   const [result, setResult] = React.useState<Record<string, any> | null>(initialJob?.result ?? null);
   const [error, setError] = React.useState<string | null>(initialJob?.error ?? null);
   const [expanded, setExpanded] = React.useState(false);
@@ -169,6 +209,9 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
     setError(snapshot.error ?? null);
     if (snapshot.job_type) {
       setJobType(snapshot.job_type || 'plan_decompose');
+    }
+    if (snapshot.params && typeof snapshot.params === 'object') {
+      setJobParams(snapshot.params as Record<string, any>);
     }
     if (snapshot.metadata && typeof snapshot.metadata === 'object') {
       setJobMetadata(snapshot.metadata);
@@ -485,17 +528,74 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
     if (!actionLogs.length) {
       return null;
     }
+
+    // UX: coalesce the common pattern:
+    //   [running "Action execution started."] -> [completed/failed "... succeeded/failed ..."]
+    // into a single row showing the final status + duration, to avoid the illusion of being stuck.
+    const condensed = (() => {
+      const sorted = [...actionLogs].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+      const merged: ActionLogEntry[] = [];
+      for (const entry of sorted) {
+        const prev = merged.length ? merged[merged.length - 1] : null;
+        if (!prev) {
+          merged.push(entry);
+          continue;
+        }
+        const prevKey = normalizeActionStatusKey(prev.status);
+        const curKey = normalizeActionStatusKey(entry.status);
+        const sameAction =
+          prev.action_kind === entry.action_kind &&
+          prev.action_name === entry.action_name;
+        const looksLikeStart =
+          prevKey === 'running' &&
+          typeof prev.message === 'string' &&
+          prev.message.toLowerCase().includes('action execution started');
+        const isFinal = curKey === 'completed' || curKey === 'succeeded' || curKey === 'failed';
+
+        if (sameAction && looksLikeStart && isFinal) {
+          const startMs = parseIsoToMs(prev.created_at ?? prev.updated_at);
+          const endMs = parseIsoToMs(entry.created_at ?? entry.updated_at);
+          const durationMs =
+            startMs !== null && endMs !== null && endMs >= startMs ? endMs - startMs : null;
+          const mergedEntry: ActionLogEntry = {
+            ...entry,
+            // preserve the original start details for debugging
+            details: {
+              ...(entry.details ?? {}),
+              _start: {
+                sequence: prev.sequence,
+                status: prev.status,
+                message: prev.message,
+                created_at: prev.created_at,
+                updated_at: prev.updated_at,
+              },
+              ...(durationMs !== null ? { duration_ms: durationMs } : {}),
+            },
+          };
+          // Replace the previous row with the merged final row
+          merged[merged.length - 1] = mergedEntry;
+          continue;
+        }
+        merged.push(entry);
+      }
+      return merged;
+    })();
+
     return (
       <div style={{ width: '100%' }}>
         <Divider plain style={{ margin: '12px 0' }}>
           动作执行记录
         </Divider>
         <Space direction="vertical" size={6} style={{ width: '100%' }}>
-          {actionLogs.map((entry) => {
-            const statusKey = (entry.status || '').toLowerCase();
+          {condensed.map((entry) => {
+            const statusKey = normalizeActionStatusKey(entry.status || '');
             const statusInfo = statusMeta[statusKey] || statusMeta.queued;
             const descriptor = entry.action_name ? `${entry.action_kind}/${entry.action_name}` : entry.action_kind;
             const timestamp = entry.created_at ?? entry.updated_at;
+            const durationMs =
+              entry.details && typeof (entry.details as any).duration_ms === 'number'
+                ? ((entry.details as any).duration_ms as number)
+                : null;
             return (
               <div key={`action_${entry.sequence}`} style={{ fontSize: 12, borderLeft: '2px solid #f0f0f0', paddingLeft: 8 }}>
                 <Space size="small">
@@ -510,6 +610,11 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
                 {entry.message && (
                   <div style={{ marginTop: 4 }}>
                     <Text>{entry.message}</Text>
+                  </div>
+                )}
+                {durationMs !== null && durationMs >= 0 && (
+                  <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+                    耗时：{durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
                   </div>
                 )}
                 {timestamp && (
@@ -625,6 +730,106 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
     return null;
   };
 
+  const progressContext = React.useMemo(() => {
+    if (jobType !== 'plan_decompose') return null;
+    const totalBudget =
+      toNumber(jobParams?.node_budget) ??
+      toNumber(stats?.node_budget);
+    let remainingBudget: number | null = null;
+    let queueRemaining: number | null = null;
+    for (let idx = logs.length - 1; idx >= 0; idx -= 1) {
+      const metadata = logs[idx]?.metadata;
+      if (!metadata || typeof metadata !== 'object') continue;
+      if (remainingBudget === null) {
+        remainingBudget = toNumber((metadata as Record<string, any>).budget_remaining);
+      }
+      if (queueRemaining === null) {
+        queueRemaining = toNumber((metadata as Record<string, any>).queue_remaining);
+      }
+      if (remainingBudget !== null || queueRemaining !== null) {
+        break;
+      }
+    }
+    const consumedFromStats = toNumber(stats?.consumed_budget);
+    const consumedBudget =
+      consumedFromStats ??
+      (totalBudget !== null && remainingBudget !== null
+        ? Math.max(0, totalBudget - remainingBudget)
+        : null);
+    const percentRaw =
+      totalBudget !== null && totalBudget > 0 && consumedBudget !== null
+        ? Math.round((consumedBudget / totalBudget) * 100)
+        : null;
+    const percent =
+      percentRaw !== null ? Math.max(0, Math.min(100, percentRaw)) : null;
+    return {
+      totalBudget,
+      consumedBudget,
+      remainingBudget,
+      queueRemaining,
+      percent,
+    };
+  }, [jobParams, jobType, logs, stats]);
+
+  const renderProgressBar = () => {
+    if (jobType !== 'plan_decompose') return null;
+    const isFinal = FINAL_STATUSES.has(status);
+    const percent =
+      progressContext?.percent !== null && progressContext?.percent !== undefined
+        ? progressContext.percent
+        : isFinal
+          ? 100
+          : 0;
+    const progressStatus =
+      status === 'failed' ? 'exception' : isFinal ? 'success' : 'active';
+    const showBudget =
+      progressContext?.totalBudget !== null &&
+      progressContext?.totalBudget !== undefined &&
+      progressContext?.consumedBudget !== null &&
+      progressContext?.consumedBudget !== undefined;
+    const detailParts: string[] = [];
+    if (showBudget) {
+      detailParts.push(
+        `已处理 ${Math.max(0, Math.round(progressContext!.consumedBudget!))}/${Math.round(
+          progressContext!.totalBudget!
+        )}`
+      );
+    }
+    if (
+      progressContext?.queueRemaining !== null &&
+      progressContext?.queueRemaining !== undefined
+    ) {
+      detailParts.push(`队列剩余 ${Math.max(0, Math.round(progressContext.queueRemaining))}`);
+    }
+    const detailText = detailParts.length ? detailParts.join(' · ') : null;
+    return (
+      <div style={{ width: '100%' }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          拆解进度
+        </Text>
+        <Progress
+          percent={percent}
+          status={progressStatus as any}
+          size="small"
+          showInfo
+          format={() => {
+            if (progressContext?.percent !== null && progressContext?.percent !== undefined) {
+              return `${percent}%`;
+            }
+            if (status === 'failed') return '失败';
+            if (isFinal) return '完成';
+            return '估算中';
+          }}
+        />
+        {detailText && (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {detailText}
+          </Text>
+        )}
+      </div>
+    );
+  };
+
   return (
     <>
       <Card
@@ -701,6 +906,7 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
               />
             )}
 
+            {renderProgressBar()}
             {renderActionLogs()}
             {renderLogs()}
             {renderResultSummary()}

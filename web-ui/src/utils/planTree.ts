@@ -1,23 +1,23 @@
 import type { PlanNodeResponse, PlanTreeResponse, Task } from '@/types';
 
 export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
-  const adjacency = tree.adjacency || {};
-  const childrenLookup = new Map<number, number[]>();
-
-  Object.entries(adjacency).forEach(([key, value]) => {
-    if (!Array.isArray(value)) {
-      return;
+  const nodes = Object.values(tree.nodes || {});
+  
+  // 从 parent_id 反向构建子节点关系
+  const childrenByParent = new Map<number, number[]>();
+  nodes.forEach((node: PlanNodeResponse) => {
+    if (node.parent_id != null) {
+      const parentId = Number(node.parent_id);
+      if (!childrenByParent.has(parentId)) {
+        childrenByParent.set(parentId, []);
+      }
+      childrenByParent.get(parentId)!.push(Number(node.id));
     }
-    const parentId = key === 'null' ? null : Number(key);
-    if (parentId == null) {
-      return;
-    }
-    childrenLookup.set(parentId, value.map((child) => Number(child)));
   });
 
-  return Object.values(tree.nodes || {}).map((node: PlanNodeResponse) => {
+  const tasks = nodes.map((node: PlanNodeResponse) => {
     const id = Number(node.id);
-    const childIds = childrenLookup.get(id) ?? [];
+    const childIds = childrenByParent.get(id) ?? [];
     const isRoot = node.parent_id == null;
     const hasChildren = childIds.length > 0;
     const taskType: Task['task_type'] = isRoot ? 'root' : hasChildren ? 'composite' : 'atomic';
@@ -47,7 +47,7 @@ export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
       id,
       name: node.name,
       status,
-      parent_id: node.parent_id ?? undefined,
+      parent_id: node.parent_id != null ? Number(node.parent_id) : undefined,
       path: node.path ?? undefined,
       depth: node.depth ?? 0,
       task_type: taskType,
@@ -69,4 +69,6 @@ export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
       root_id: undefined,
     } as Task;
   });
+
+  return tasks;
 }

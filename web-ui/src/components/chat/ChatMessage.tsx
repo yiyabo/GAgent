@@ -9,6 +9,7 @@ import {
   Drawer,
   Tag,
   Divider,
+  Progress,
 } from 'antd';
 import {
   UserOutlined,
@@ -385,6 +386,20 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           .join(', ')}${toolActions.length > 3 ? ` 等 ${toolActions.length} 个` : ''}`
         : `动作：${visibleActions.length} 个`;
 
+    const toolProgress = (metadata as any)?.tool_progress as any;
+    const toolProgressPercent =
+      toolProgress && typeof toolProgress?.percent === 'number' ? toolProgress.percent : null;
+    const toolProgressStatus =
+      toolProgress && typeof toolProgress?.status === 'string' ? toolProgress.status : null;
+    const toolProgressCounts =
+      toolProgress && typeof toolProgress?.counts === 'object' ? toolProgress.counts : null;
+    const toolProgressModules =
+      toolProgress && Array.isArray(toolProgress?.modules) ? toolProgress.modules : null;
+    const moduleDone =
+      toolProgressCounts && typeof toolProgressCounts.done === 'number' ? toolProgressCounts.done : null;
+    const moduleTotal =
+      toolProgressCounts && typeof toolProgressCounts.total === 'number' ? toolProgressCounts.total : null;
+
     return (
       <div
         style={{
@@ -412,6 +427,34 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             {toolOpen ? '收起' : '查看过程'}
           </Button>
         </div>
+        <div style={{ marginTop: 8 }}>
+          <Progress
+            percent={
+              status === 'completed' || status === 'failed'
+                ? 100
+                : toolProgressPercent !== null
+                  ? Math.max(0, Math.min(99, Math.round(toolProgressPercent)))
+                  : 0
+            }
+            status={status === 'failed' ? 'exception' : status === 'completed' ? 'success' : 'active'}
+            showInfo={false}
+            size="small"
+          />
+          {moduleDone !== null && moduleTotal !== null && status !== 'completed' && status !== 'failed' && (
+            <div style={{ marginTop: 6 }}>
+              <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                模块进度：{moduleDone}/{moduleTotal}
+              </Text>
+            </div>
+          )}
+          {toolProgressStatus && status !== 'completed' && status !== 'failed' && (
+            <div style={{ marginTop: 6 }}>
+              <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                当前状态：{toolProgressStatus}
+              </Text>
+            </div>
+          )}
+        </div>
         {toolOpen && (
           <div style={{ marginTop: 8 }}>
             {processSummary && (
@@ -419,6 +462,31 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
                 <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
                   摘要：{processSummary}
                 </Text>
+              </div>
+            )}
+            {toolProgressModules && toolProgressModules.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                  模块完成情况：
+                </Text>
+                <div style={{ marginTop: 6 }}>
+                  <Space size={[6, 6]} wrap>
+                    {toolProgressModules.map((m: any, idx: number) => {
+                      const name = typeof m?.name === 'string' ? m.name : `module_${idx + 1}`;
+                      const done = typeof m?.done === 'boolean' ? m.done : null;
+                      const rawStatus =
+                        typeof m?.status === 'string' ? m.status : (done === true ? 'DONE' : 'RUNNING');
+                      const upper = String(rawStatus).toUpperCase();
+                      const failed = done === false || upper === 'FAILED' || upper === 'ERROR';
+                      const color = failed ? 'red' : done === true ? 'green' : 'blue';
+                      return (
+                        <Tag key={`${name}_${idx}`} color={color} style={{ marginInlineEnd: 0 }}>
+                          {name}
+                        </Tag>
+                      );
+                    })}
+                  </Space>
+                </div>
               </div>
             )}
             {visibleActions.map((action: any, index: number) => {
