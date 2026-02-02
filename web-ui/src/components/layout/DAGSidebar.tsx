@@ -673,7 +673,7 @@ const DAGSidebar: React.FC = () => {
             },
             {
               key: 'executor',
-              label: '后台任务',
+              label: '任务状态',
               children: (
                 <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                   <ExecutorPanel />
