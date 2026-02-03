@@ -16,6 +16,8 @@ from .vision_reader import vision_reader_tool
 from .paper_replication import paper_replication_tool
 from .generate_experiment_card import generate_experiment_card_tool
 from .manuscript_writer import manuscript_writer_tool
+from .literature_pipeline import literature_pipeline_tool
+from .review_pack_writer import review_pack_writer_tool
 from .phagescope import phagescope_tool
 from .result_interpreter import result_interpreter_tool
 from .plan_tools import plan_operation_tool
@@ -32,6 +34,8 @@ __all__ = [
     "paper_replication_tool",
     "generate_experiment_card_tool",
     "manuscript_writer_tool",
+    "literature_pipeline_tool",
+    "review_pack_writer_tool",
     "phagescope_tool",
     "result_interpreter_tool",
     "plan_operation_tool",
