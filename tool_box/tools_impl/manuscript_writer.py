@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -38,6 +39,7 @@ _ALLOWED_TEXT_EXTENSIONS = {
     ".json",
     ".yaml",
     ".yml",
+    ".bib",
 }
 _DEFAULT_SECTIONS = [
     "abstract",
@@ -166,6 +168,41 @@ def _average_score(scores: Dict[str, Any]) -> float:
     return sum(values) / len(values)
 
 
+def _extract_markdown_citekeys(text: str) -> List[str]:
+    """Extract citekeys from Markdown citekey syntax: [@citekey]."""
+    if not text:
+        return []
+    keys: List[str] = []
+    for m in re.finditer(r"\[@([A-Za-z0-9_:\-]+)\]", text):
+        k = m.group(1).strip()
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
+def _extract_bibtex_keys(text: str) -> List[str]:
+    """Extract BibTeX entry keys from raw .bib content blocks."""
+    if not text:
+        return []
+    keys: List[str] = []
+    # Match: @article{Key,
+    for m in re.finditer(r"@\w+\s*\{\s*([^,\s]+)\s*,", text):
+        k = m.group(1).strip()
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
+def _render_references_section(citekeys: List[str]) -> str:
+    lines = ["## References", ""]
+    for k in citekeys:
+        lines.append(f"[@{k}]")
+    if len(lines) == 2:
+        lines.append("Not available")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _section_title(section: str) -> str:
     mapping = {
         "methods": "Methods",
@@ -222,8 +259,9 @@ def _section_requirements(section: str) -> List[str]:
         ]
     if section == "references":
         return [
-            "List only provided citations or data sources (file paths).",
-            "Do not fabricate external references.",
+            "List references ONLY from the provided reference library/context (e.g. references.bib or evidence.md).",
+            "Use the provided BibTeX citekeys (Markdown citekeys: [@citekey]) and do NOT invent new citekeys.",
+            "Do not fabricate external references beyond the provided library.",
         ]
     return ["Follow scientific writing standards for this section."]
 
@@ -378,6 +416,7 @@ async def manuscript_writer_handler(
     evaluation_provider: Optional[str] = None,
     merge_provider: Optional[str] = None,
     session_id: Optional[str] = None,
+    keep_workspace: bool = False,
 ) -> Dict[str, Any]:
     """
     Generate a manuscript draft using staged generation, evaluation, and merge.
@@ -431,6 +470,7 @@ async def manuscript_writer_handler(
             section_list = list(_DEFAULT_SECTIONS)
 
         context_text = _build_context_blocks(context_paths, max_context_bytes)
+        bib_keys = _extract_bibtex_keys(context_text)
 
         gen_model = _resolve_model_name(generation_model)
         eval_model = _resolve_model_name(evaluation_model)
@@ -454,11 +494,38 @@ async def manuscript_writer_handler(
 
         section_results: List[Dict[str, Any]] = []
         passed_sections: List[Tuple[str, Path]] = []
+        drafted_texts: List[str] = []
 
         for idx, section in enumerate(section_list, start=1):
             section_filename = f"{idx:02d}_{section}.md"
             section_path = sections_dir / section_filename
             requirements = _section_requirements(section)
+
+            # Special-case: build References section deterministically from citekeys + provided BibTeX.
+            if section.lower() == "references" and bib_keys:
+                cited = _extract_markdown_citekeys("\n\n".join(drafted_texts))
+                allowed = set(bib_keys)
+                missing = [k for k in cited if k not in allowed]
+                used = [k for k in cited if k in allowed]
+                # If nothing was cited yet, include a limited slice of the library to avoid empty references.
+                if not used:
+                    used = bib_keys[: min(30, len(bib_keys))]
+                section_text = _render_references_section(used)
+                section_path.write_text(section_text, encoding="utf-8")
+                section_results.append(
+                    {
+                        "section": section,
+                        "path": str(section_path.relative_to(_PROJECT_ROOT)),
+                        "attempts": 0,
+                        "passed": True,
+                        "evaluation_path": None,
+                        "reference_keys_used": len(used),
+                        "reference_keys_missing": missing[:50] if missing else None,
+                    }
+                )
+                passed_sections.append((section, section_path))
+                drafted_texts.append(section_text)
+                continue
 
             section_text = await _chat(
                 gen_llm,
@@ -527,6 +594,7 @@ async def manuscript_writer_handler(
             )
             if passed:
                 passed_sections.append((section, section_path))
+                drafted_texts.append(section_text)
 
         if len(passed_sections) != len(section_list):
             manifest_path = merge_dir / "merge_queue.json"
@@ -534,6 +602,24 @@ async def manuscript_writer_handler(
                 json.dumps(section_results, ensure_ascii=True, indent=2),
                 encoding="utf-8",
             )
+            # Best-effort: still emit a partial combined draft for human iteration.
+            try:
+                combined_partial = "\n\n".join(
+                    (sections_dir / f"{i:02d}_{sec}.md").read_text(encoding="utf-8")
+                    for i, sec in enumerate(section_list, start=1)
+                )
+            except Exception:
+                combined_partial = "\n\n".join(
+                    section_path.read_text(encoding="utf-8")
+                    for _, section_path in passed_sections
+                )
+            partial_path = merge_dir / "combined_partial.md"
+            partial_path.write_text(combined_partial, encoding="utf-8")
+            partial_output = output_file.with_suffix(output_file.suffix + ".partial.md")
+            try:
+                partial_output.write_text(combined_partial, encoding="utf-8")
+            except Exception:
+                pass
             return {
                 "tool": "manuscript_writer",
                 "success": False,
@@ -542,6 +628,8 @@ async def manuscript_writer_handler(
                 "sections_dir": str(sections_dir.relative_to(_PROJECT_ROOT)),
                 "reviews_dir": str(reviews_dir.relative_to(_PROJECT_ROOT)),
                 "merge_queue": str(manifest_path.relative_to(_PROJECT_ROOT)),
+                "combined_partial": str(partial_path.relative_to(_PROJECT_ROOT)),
+                "partial_output_path": str(partial_output.relative_to(_PROJECT_ROOT)),
                 "temp_workspace": str(work_dir.relative_to(_PROJECT_ROOT)),
                 "sections": section_results,
             }
@@ -563,10 +651,11 @@ async def manuscript_writer_handler(
         )
 
         cleanup_errors: List[str] = []
-        try:
-            shutil.rmtree(work_dir)
-        except Exception as exc:
-            cleanup_errors.append(str(exc))
+        if not keep_workspace:
+            try:
+                shutil.rmtree(work_dir)
+            except Exception as exc:
+                cleanup_errors.append(str(exc))
 
         return {
             "tool": "manuscript_writer",
@@ -579,7 +668,7 @@ async def manuscript_writer_handler(
             "output_path": str(output_file.relative_to(_PROJECT_ROOT)),
             "sections": section_results,
             "draft_chars": len(final_text or ""),
-            "intermediate_purged": True,
+            "intermediate_purged": not keep_workspace,
             "temp_workspace": str(work_dir.relative_to(_PROJECT_ROOT)),
             "cleanup_errors": cleanup_errors,
         }
@@ -658,6 +747,11 @@ manuscript_writer_tool = {
             "merge_provider": {
                 "type": "string",
                 "description": "Optional provider override for merge (e.g., qwen, glm).",
+            },
+            "keep_workspace": {
+                "type": "boolean",
+                "description": "Keep intermediate drafts/reviews workspace for audit/debugging.",
+                "default": False,
             },
         },
         "required": ["task", "output_path"],
