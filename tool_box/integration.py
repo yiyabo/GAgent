@@ -19,6 +19,8 @@ from .tools_impl import (
     graph_rag_tool,
     internal_api_tool,
     web_search_tool,
+    literature_pipeline_tool,
+    review_pack_writer_tool,
     document_reader_tool,
     vision_reader_tool,
     paper_replication_tool,
@@ -64,6 +66,26 @@ class ToolBoxIntegration:
             handler=web_search_tool["handler"],
             tags=web_search_tool.get("tags", []),
             examples=web_search_tool.get("examples", []),
+        )
+
+        register_tool(
+            name=literature_pipeline_tool["name"],
+            description=literature_pipeline_tool["description"],
+            category=literature_pipeline_tool["category"],
+            parameters_schema=literature_pipeline_tool["parameters_schema"],
+            handler=literature_pipeline_tool["handler"],
+            tags=literature_pipeline_tool.get("tags", []),
+            examples=literature_pipeline_tool.get("examples", []),
+        )
+
+        register_tool(
+            name=review_pack_writer_tool["name"],
+            description=review_pack_writer_tool["description"],
+            category=review_pack_writer_tool["category"],
+            parameters_schema=review_pack_writer_tool["parameters_schema"],
+            handler=review_pack_writer_tool["handler"],
+            tags=review_pack_writer_tool.get("tags", []),
+            examples=review_pack_writer_tool.get("examples", []),
         )
 
         # Register file operations tool

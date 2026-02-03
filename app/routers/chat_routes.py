@@ -5263,6 +5263,101 @@ class StructuredChatAgent:
                 "focus_entities": focus_entities,
             }
 
+        elif tool_name == "literature_pipeline":
+            query = params.get("query")
+            if not isinstance(query, str) or not query.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="literature_pipeline requires a non-empty `query` string.",
+                    details={"error": "missing_query", "tool": tool_name},
+                )
+            clean_params: Dict[str, Any] = {"query": query.strip()}
+            max_results = params.get("max_results")
+            if max_results is not None:
+                try:
+                    clean_params["max_results"] = int(max_results)
+                except (TypeError, ValueError):
+                    pass
+            out_dir = params.get("out_dir")
+            if isinstance(out_dir, str) and out_dir.strip():
+                clean_params["out_dir"] = out_dir.strip()
+            download_pdfs = params.get("download_pdfs")
+            if isinstance(download_pdfs, bool):
+                clean_params["download_pdfs"] = download_pdfs
+            max_pdfs = params.get("max_pdfs")
+            if max_pdfs is not None:
+                try:
+                    clean_params["max_pdfs"] = int(max_pdfs)
+                except (TypeError, ValueError):
+                    pass
+            user_agent = params.get("user_agent")
+            if isinstance(user_agent, str) and user_agent.strip():
+                clean_params["user_agent"] = user_agent.strip()
+            proxy = params.get("proxy")
+            if isinstance(proxy, str) and proxy.strip():
+                clean_params["proxy"] = proxy.strip()
+            params = clean_params
+
+        elif tool_name == "review_pack_writer":
+            topic = params.get("topic")
+            if not isinstance(topic, str) or not topic.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="review_pack_writer requires a non-empty `topic` string.",
+                    details={"error": "missing_topic", "tool": tool_name},
+                )
+            clean_params: Dict[str, Any] = {"topic": topic.strip()}
+            query = params.get("query")
+            if isinstance(query, str) and query.strip():
+                clean_params["query"] = query.strip()
+            out_dir = params.get("out_dir")
+            if isinstance(out_dir, str) and out_dir.strip():
+                clean_params["out_dir"] = out_dir.strip()
+            for int_key in ("max_results", "max_pdfs", "max_revisions"):
+                if int_key in params and params[int_key] is not None:
+                    try:
+                        clean_params[int_key] = int(params[int_key])
+                    except (TypeError, ValueError):
+                        pass
+            if "evaluation_threshold" in params and params["evaluation_threshold"] is not None:
+                try:
+                    clean_params["evaluation_threshold"] = float(params["evaluation_threshold"])
+                except (TypeError, ValueError):
+                    pass
+            for bool_key in ("download_pdfs", "keep_workspace"):
+                if isinstance(params.get(bool_key), bool):
+                    clean_params[bool_key] = params[bool_key]
+            output_path = params.get("output_path")
+            if isinstance(output_path, str) and output_path.strip():
+                clean_params["output_path"] = output_path.strip()
+            sections = params.get("sections")
+            if isinstance(sections, list):
+                clean_sections: List[str] = []
+                for item in sections:
+                    if isinstance(item, str) and item.strip():
+                        clean_sections.append(item.strip())
+                if clean_sections:
+                    clean_params["sections"] = clean_sections
+            task_value = params.get("task")
+            if isinstance(task_value, str) and task_value.strip():
+                clean_params["task"] = task_value.strip()
+            for key in (
+                "generation_model",
+                "evaluation_model",
+                "merge_model",
+                "generation_provider",
+                "evaluation_provider",
+                "merge_provider",
+                "user_agent",
+                "proxy",
+            ):
+                val = params.get(key)
+                if isinstance(val, str) and val.strip():
+                    clean_params[key] = val.strip()
+            params = clean_params
+
         elif tool_name == "claude_code":
             # Claude Code CLI - requires task parameter
             task_value = params.get("task")
