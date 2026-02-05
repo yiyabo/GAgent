@@ -324,7 +324,14 @@ When a task requires tool execution, request one of these tools:
         if dependencies:
             lines.append("\n=== DEPENDENCIES ===")
             for dep in dependencies:
-                status_indicator = "✓" if dep.status == "completed" else "✗" if dep.status == "failed" else "○"
+                dep_status = (dep.status or "").strip().lower()
+                status_indicator = (
+                    "✓"
+                    if dep_status in {"completed", "done"}
+                    else "✗"
+                    if dep_status == "failed"
+                    else "○"
+                )
                 raw_result = dep.execution_result or "(not executed)"
                 # 对超长结果进行压缩
                 summary = self._summarize_long_result(raw_result, max_length=2000)
@@ -592,7 +599,8 @@ class PlanExecutor:
         # 检查依赖状态
         incomplete_deps = []
         for dep in dependencies:
-            if dep.status not in ("completed", "done"):
+            dep_status = (dep.status or "pending").strip().lower()
+            if dep_status not in ("completed", "done"):
                 incomplete_deps.append(dep)
                 logger.warning(
                     "Dependency %s (status=%s) not completed before executing task %s",
@@ -601,28 +609,80 @@ class PlanExecutor:
         
         # 如果有未完成的依赖且启用了强制依赖检查，则跳过任务
         if incomplete_deps and config.enforce_dependencies:
-            skip_reason = f"Skipped due to {len(incomplete_deps)} incomplete dependencies: {[d.id for d in incomplete_deps]}"
+            incomplete_ids = [d.id for d in incomplete_deps]
+            incomplete_display = ", ".join(
+                f"#{d.id}({(d.status or 'pending').strip()})" for d in incomplete_deps
+            )
+            skip_reason = (
+                f"Blocked by dependencies: task #{node.id} requires completed outputs from "
+                f"{len(incomplete_deps)} dependency task(s): {incomplete_display}."
+            )
             _log_job(
                 "warning",
                 f"Task {node.id} skipped: dependencies not satisfied",
                 {
                     "task_id": node.id,
-                    "incomplete_deps": [d.id for d in incomplete_deps],
+                    "incomplete_deps": incomplete_ids,
                     "enforce_dependencies": True,
                 },
             )
-            # 更新任务状态为 skipped
+            notes = [
+                "This task was not executed because dependency outputs are missing.",
+                f"Unmet dependencies: {incomplete_display}",
+            ]
+            metadata = {
+                "blocked_by_dependencies": True,
+                "incomplete_dependencies": incomplete_ids,
+                "incomplete_dependency_info": [
+                    {"id": d.id, "name": d.display_name(), "status": d.status}
+                    for d in incomplete_deps
+                ],
+                "enforce_dependencies": True,
+            }
+            payload = {
+                "status": "skipped",
+                "content": skip_reason,
+                "notes": notes,
+                "metadata": metadata,
+            }
+            raw_response = json.dumps(payload, ensure_ascii=False)
+
+            # Persist skip reason so the UI can render why it was skipped.
             try:
-                self._repo.update_task(plan_id, node.id, status="skipped")
+                self._persist_execution(
+                    plan_id,
+                    node.id,
+                    payload,
+                    status="skipped",
+                )
             except Exception as exc:
-                logger.warning("Failed to update task %s status to skipped: %s", node.id, exc)
+                logger.warning(
+                    "Failed to persist skipped execution result for task %s: %s",
+                    node.id,
+                    exc,
+                )
+                try:
+                    self._repo.update_task(plan_id, node.id, status="skipped")
+                except Exception as inner_exc:  # pragma: no cover - defensive
+                    logger.warning(
+                        "Failed to update task %s status to skipped: %s",
+                        node.id,
+                        inner_exc,
+                    )
+
+            # Update in-memory tree so subsequent tasks see latest status/result.
+            node.status = "skipped"
+            node.execution_result = raw_response
+            tree.nodes[node.id] = node
             
             return ExecutionResult(
                 plan_id=plan_id,
                 task_id=node.id,
                 status="skipped",
                 content=skip_reason,
-                notes=[f"Dependencies not completed: {[d.id for d in incomplete_deps]}"],
+                notes=notes,
+                metadata=metadata,
+                raw_response=raw_response,
             )
         elif incomplete_deps:
             # 仅警告，不阻塞

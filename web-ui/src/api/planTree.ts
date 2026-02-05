@@ -5,6 +5,8 @@ import type {
   PlanResultsResponse,
   PlanSummary,
   PlanTreeResponse,
+  DependencyPlanResponse,
+  ExecuteTaskResponse,
   DecompositionJobStatus,
   JobLogTailResponse,
 } from '@/types';
@@ -30,6 +32,12 @@ interface DecomposeTaskResponse {
   message: string;
   result: Record<string, any>;
   job?: DecompositionJobStatus | null;
+}
+
+export interface ExecuteTaskWithDepsPayload {
+  include_dependencies?: boolean;
+  async_mode?: boolean;
+  session_id?: string;
 }
 
 class PlanTreeApi extends BaseApi {
@@ -88,6 +96,23 @@ class PlanTreeApi extends BaseApi {
 
   getPlanExecutionSummary = async (planId: number): Promise<PlanExecutionSummary> => {
     return this.get<PlanExecutionSummary>(`/plans/${planId}/execution/summary`);
+  };
+
+  getTaskDependencyPlan = async (
+    planId: number,
+    taskId: number
+  ): Promise<DependencyPlanResponse> => {
+    return this.get<DependencyPlanResponse>(`/tasks/${taskId}/dependency-plan`, {
+      plan_id: planId,
+    });
+  };
+
+  executeTaskWithDeps = async (
+    planId: number,
+    taskId: number,
+    payload: ExecuteTaskWithDepsPayload = {}
+  ): Promise<ExecuteTaskResponse> => {
+    return this.post<ExecuteTaskResponse>(`/tasks/${taskId}/execute?plan_id=${planId}`, payload);
   };
 }
 

@@ -30,6 +30,7 @@ export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
         status = 'running';
         break;
       case 'success':
+      case 'done':
       case 'completed':
         status = 'completed';
         break;

@@ -727,6 +727,57 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
       );
     }
 
+    if (jobType === 'plan_execute') {
+      const executed = Array.isArray((result as any).executed_task_ids)
+        ? ((result as any).executed_task_ids as any[])
+        : [];
+      const failed = Array.isArray((result as any).failed_task_ids)
+        ? ((result as any).failed_task_ids as any[])
+        : [];
+      const skipped = Array.isArray((result as any).skipped_task_ids)
+        ? ((result as any).skipped_task_ids as any[])
+        : [];
+      const order = Array.isArray((result as any).execution_order)
+        ? ((result as any).execution_order as any[])
+        : [];
+      const total = order.length || executed.length + failed.length + skipped.length;
+      const targetTaskId = (result as any).target_task_id;
+      const firstFailed = failed.length ? failed[0] : null;
+      const firstSkipped = skipped.length ? skipped[0] : null;
+
+      return (
+        <div style={{ marginTop: 12 }}>
+          <Divider plain style={{ margin: '12px 0' }}>
+            执行总结
+          </Divider>
+          <Space direction="vertical" size="small" style={{ width: '100%' }}>
+            <Space size="small">
+              <FileTextOutlined />
+              <Text>步骤数：{total}</Text>
+            </Space>
+            {typeof targetTaskId === 'number' && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                目标任务：#{targetTaskId}
+              </Text>
+            )}
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              成功：{executed.length}，失败：{failed.length}，跳过：{skipped.length}
+            </Text>
+            {firstFailed != null && (
+              <Text type="danger" style={{ fontSize: 12 }}>
+                首个失败任务：#{String(firstFailed)}
+              </Text>
+            )}
+            {firstFailed == null && firstSkipped != null && (
+              <Text type="warning" style={{ fontSize: 12 }}>
+                首个跳过任务：#{String(firstSkipped)}
+              </Text>
+            )}
+          </Space>
+        </div>
+      );
+    }
+
     return null;
   };
 
