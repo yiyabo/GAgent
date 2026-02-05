@@ -106,7 +106,8 @@ class PlanTree(BaseModel):
             lines.append(line)
             
             # 如果任务已完成且有执行结果，显示结果摘要
-            if include_results and node.status == "completed" and node.execution_result:
+            status_norm = str(node.status or "").strip().lower()
+            if include_results and status_norm in {"completed", "done"} and node.execution_result:
                 result_snippet = node.execution_result.strip()[:200]
                 if len(node.execution_result) > 200:
                     result_snippet += "..."

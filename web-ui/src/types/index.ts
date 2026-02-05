@@ -117,6 +117,35 @@ export interface PlanExecutionSummary {
   pending: number;
 }
 
+export interface DependencyNodeInfo {
+  id: number;
+  name: string;
+  status: string;
+}
+
+export interface DependencyPlanResponse {
+  plan_id: number;
+  target_task_id: number;
+  satisfied_statuses: string[];
+  direct_dependencies: number[];
+  closure_dependencies: number[];
+  missing_dependencies: DependencyNodeInfo[];
+  running_dependencies: DependencyNodeInfo[];
+  execution_order: number[];
+  cycle_detected: boolean;
+  cycle_paths: number[][];
+}
+
+export interface ExecuteTaskResponse {
+  success: boolean;
+  message: string;
+  plan_id: number;
+  task_id: number;
+  dependency_plan: DependencyPlanResponse;
+  job?: DecompositionJobStatus | null;
+  result?: Record<string, any> | null;
+}
+
 export type WebSearchProvider = 'builtin' | 'perplexity' | 'tavily';
 export type LLMProviderOption = 'glm' | 'qwen' | 'openai' | 'perplexity';
 export type BaseModelOption = 'qwen3-max-2026-01-23' | 'glm-4.6' | 'kimi-k2-thinking' | 'gpt-5.2-2025-12-11';

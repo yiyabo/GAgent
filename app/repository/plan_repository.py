@@ -280,7 +280,36 @@ class PlanRepository:
         via tools (e.g. claude_code) without explicitly executing the parent nodes themselves.
         """
 
-        completed_like = {"completed", "skipped"}
+        def _child_is_completed_like(status_value: Any, execution_result_value: Any) -> bool:
+            status_norm = (
+                str(status_value).strip().lower()
+                if status_value is not None
+                else "pending"
+            )
+            if status_norm == "completed":
+                return True
+            if status_norm != "skipped":
+                return False
+
+            # "skipped" can mean either "intentionally skipped" or "blocked by dependencies".
+            # Only treat non-blocked skips as completion-like for ancestor roll-up.
+            if not execution_result_value:
+                return True
+            if not isinstance(execution_result_value, str):
+                return True
+            raw = execution_result_value.strip()
+            if not raw or not raw.startswith("{"):
+                return True
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                return True
+            if not isinstance(payload, dict):
+                return True
+            metadata = payload.get("metadata")
+            if isinstance(metadata, dict) and metadata.get("blocked_by_dependencies") is True:
+                return False
+            return True
 
         row = conn.execute(
             "SELECT parent_id FROM tasks WHERE id=?",
@@ -294,19 +323,16 @@ class PlanRepository:
             guard += 1
 
             child_rows = conn.execute(
-                "SELECT status FROM tasks WHERE parent_id=?",
+                "SELECT status, execution_result FROM tasks WHERE parent_id=?",
                 (parent_id,),
             ).fetchall()
             if not child_rows:
                 break
 
-            child_statuses = []
-            for r in child_rows:
-                raw = r["status"]
-                s = str(raw).strip().lower() if raw is not None else "pending"
-                child_statuses.append(s)
-
-            if not all(s in completed_like for s in child_statuses):
+            if not all(
+                _child_is_completed_like(r["status"], r["execution_result"])
+                for r in child_rows
+            ):
                 break
 
             parent_row = conn.execute(

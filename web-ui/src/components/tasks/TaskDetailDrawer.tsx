@@ -1,24 +1,33 @@
-import React, { useCallback, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   App as AntdApp,
+  Alert,
   Button,
   Collapse,
   Descriptions,
   Drawer,
   Empty,
+  Modal,
   Space,
   Spin,
   Tag,
   Typography,
 } from 'antd';
-import { ReloadOutlined, CopyOutlined } from '@ant-design/icons';
+import { ReloadOutlined, CopyOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { planTreeApi } from '@api/planTree';
 import { usePlanTasks } from '@hooks/usePlans';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import ToolResultCard from '@components/chat/ToolResultCard';
-import type { PlanResultItem, PlanTaskNode, PlanSyncEventDetail, ToolResultPayload } from '@/types';
+import JobLogPanel from '@components/chat/JobLogPanel';
+import type {
+  DependencyPlanResponse,
+  PlanResultItem,
+  PlanTaskNode,
+  PlanSyncEventDetail,
+  ToolResultPayload,
+} from '@/types';
 import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 
 const { Paragraph, Text, Title } = Typography;
@@ -61,7 +70,7 @@ const TaskDetailDrawer: React.FC = () => {
     setTaskResult: state.setTaskResult,
   }));
 
-  const { currentPlanId, recentToolResults } = useChatStore((state) => {
+  const { currentPlanId, currentSessionId, recentToolResults } = useChatStore((state) => {
     const results: ToolResultPayload[] = [];
     const seen = new Set<string>();
     for (let idx = state.messages.length - 1; idx >= 0 && results.length < 5; idx -= 1) {
@@ -87,6 +96,7 @@ const TaskDetailDrawer: React.FC = () => {
     }
     return {
       currentPlanId: state.currentPlanId,
+      currentSessionId: state.currentSession?.session_id ?? state.currentSession?.id ?? null,
       recentToolResults: results,
     };
   });
@@ -183,6 +193,98 @@ const TaskDetailDrawer: React.FC = () => {
     void refetchTaskResult();
   }, [currentPlanId, selectedTaskId, refetchPlanTasks, refetchTaskResult]);
 
+  const [executeModalOpen, setExecuteModalOpen] = useState(false);
+  const [dependencyPlanLoading, setDependencyPlanLoading] = useState(false);
+  const [dependencyPlan, setDependencyPlan] = useState<DependencyPlanResponse | null>(null);
+  const [executeLoading, setExecuteLoading] = useState(false);
+  const [executeJobId, setExecuteJobId] = useState<string | null>(null);
+  const [executeError, setExecuteError] = useState<string | null>(null);
+
+  const handleOpenExecuteModal = useCallback(async () => {
+    if (!currentPlanId || !selectedTaskId) {
+      message.error('缺少计划或任务信息，无法执行任务');
+      return;
+    }
+    setExecuteModalOpen(true);
+    setExecuteJobId(null);
+    setExecuteError(null);
+    setDependencyPlan(null);
+    setDependencyPlanLoading(true);
+    try {
+      const plan = await planTreeApi.getTaskDependencyPlan(currentPlanId, selectedTaskId);
+      setDependencyPlan(plan);
+    } catch (err: any) {
+      setExecuteError(err?.message || '获取依赖信息失败');
+    } finally {
+      setDependencyPlanLoading(false);
+    }
+  }, [currentPlanId, message, selectedTaskId]);
+
+  const handleCloseExecuteModal = useCallback(() => {
+    setExecuteModalOpen(false);
+    setExecuteJobId(null);
+    setExecuteError(null);
+    setDependencyPlan(null);
+    setDependencyPlanLoading(false);
+    setExecuteLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isTaskDrawerOpen && executeModalOpen) {
+      handleCloseExecuteModal();
+    }
+  }, [executeModalOpen, handleCloseExecuteModal, isTaskDrawerOpen]);
+
+  const handleExecuteWithDeps = useCallback(async () => {
+    if (!currentPlanId || !selectedTaskId) {
+      return;
+    }
+    if (dependencyPlan?.cycle_detected) {
+      message.error('检测到循环依赖，无法执行。请先修正依赖关系');
+      return;
+    }
+    if (dependencyPlan?.running_dependencies?.length) {
+      message.warning('存在依赖任务正在执行中，请稍后再试');
+      return;
+    }
+
+    setExecuteLoading(true);
+    setExecuteError(null);
+    try {
+      const resp = await planTreeApi.executeTaskWithDeps(currentPlanId, selectedTaskId, {
+        include_dependencies: true,
+        async_mode: true,
+        session_id: currentSessionId ?? undefined,
+      });
+      if (!resp.success) {
+        setExecuteError(resp.message || '执行提交失败');
+        setDependencyPlan(resp.dependency_plan ?? dependencyPlan);
+        return;
+      }
+      const jobId = resp.job?.job_id;
+      if (!jobId) {
+        setExecuteError('执行已提交，但未返回 job_id');
+        return;
+      }
+      setExecuteJobId(jobId);
+      message.success('已提交后台执行');
+      void refetchPlanTasks();
+      void refetchTaskResult();
+    } catch (err: any) {
+      setExecuteError(err?.message || '执行提交失败');
+    } finally {
+      setExecuteLoading(false);
+    }
+  }, [
+    currentPlanId,
+    currentSessionId,
+    dependencyPlan,
+    message,
+    refetchPlanTasks,
+    refetchTaskResult,
+    selectedTaskId,
+  ]);
+
   // 降级复制方案 (用于非 HTTPS 环境)
   const fallbackCopyToClipboard = useCallback((text: string): boolean => {
     const textArea = document.createElement('textarea');
@@ -275,6 +377,37 @@ const TaskDetailDrawer: React.FC = () => {
       </Space>
     );
   };
+
+  const resolveTaskName = useCallback(
+    (taskId: number) => {
+      if (taskId === selectedTaskId && activeTask?.name) {
+        return activeTask.name;
+      }
+      const fromMap = taskMap.get(taskId)?.name;
+      if (fromMap) {
+        return fromMap;
+      }
+      const fromPlan =
+        dependencyPlan?.missing_dependencies?.find((d) => d.id === taskId)?.name ??
+        dependencyPlan?.running_dependencies?.find((d) => d.id === taskId)?.name;
+      return fromPlan || `任务 #${taskId}`;
+    },
+    [activeTask?.name, dependencyPlan, selectedTaskId, taskMap]
+  );
+
+  const resolveTaskStatus = useCallback(
+    (taskId: number) => {
+      const fromMap = taskMap.get(taskId)?.status;
+      if (fromMap) {
+        return fromMap;
+      }
+      const fromPlan =
+        dependencyPlan?.missing_dependencies?.find((d) => d.id === taskId)?.status ??
+        dependencyPlan?.running_dependencies?.find((d) => d.id === taskId)?.status;
+      return fromPlan || 'pending';
+    },
+    [dependencyPlan, taskMap]
+  );
 
   const renderContextSections = () => {
     const sections = activeTask?.context_sections;
@@ -379,6 +512,15 @@ const TaskDetailDrawer: React.FC = () => {
       maskClosable
       extra={
         <Space>
+          <Button
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            onClick={handleOpenExecuteModal}
+            disabled={!currentPlanId || !selectedTaskId}
+            loading={dependencyPlanLoading || executeLoading}
+          >
+            执行
+          </Button>
           <Button
             icon={<ReloadOutlined />}
             onClick={handleRefresh}
@@ -530,6 +672,155 @@ const TaskDetailDrawer: React.FC = () => {
           </section>
         </Space>
       )}
+
+      <Modal
+        open={executeModalOpen}
+        title={executeJobId ? '执行进度' : '执行任务'}
+        onCancel={handleCloseExecuteModal}
+        width={720}
+        footer={
+          executeJobId
+            ? [
+                <Button key="close" onClick={handleCloseExecuteModal}>
+                  关闭
+                </Button>,
+              ]
+            : [
+                <Button key="cancel" onClick={handleCloseExecuteModal}>
+                  取消
+                </Button>,
+                <Button
+                  key="run"
+                  type="primary"
+                  onClick={handleExecuteWithDeps}
+                  loading={executeLoading}
+                  disabled={
+                    dependencyPlanLoading ||
+                    !dependencyPlan ||
+                    Boolean(dependencyPlan?.cycle_detected) ||
+                    Boolean(dependencyPlan?.running_dependencies?.length)
+                  }
+                >
+                  {dependencyPlan?.missing_dependencies?.length
+                    ? '按顺序一键执行'
+                    : '执行该任务'}
+                </Button>,
+              ]
+        }
+      >
+        {dependencyPlanLoading ? (
+          <div style={{ padding: '16px 0' }}>
+            <Spin tip="获取依赖信息..." />
+          </div>
+        ) : executeJobId ? (
+          <JobLogPanel
+            jobId={executeJobId}
+            targetTaskName={activeTask?.name ?? null}
+            planId={currentPlanId}
+            jobType="plan_execute"
+          />
+        ) : (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            {executeError && (
+              <Alert
+                type="error"
+                message="无法执行"
+                description={executeError}
+                showIcon
+              />
+            )}
+
+            {dependencyPlan?.cycle_detected && (
+              <Alert
+                type="error"
+                message="检测到循环依赖"
+                description="请先修正依赖关系后再执行该任务。"
+                showIcon
+              />
+            )}
+
+            {dependencyPlan && !dependencyPlan.cycle_detected && (
+              <>
+                <Text type="secondary">
+                  依赖闭包：{dependencyPlan.closure_dependencies.length} 个；未满足依赖：
+                  {dependencyPlan.missing_dependencies.length} 个
+                </Text>
+
+                {dependencyPlan.running_dependencies.length > 0 && (
+                  <Alert
+                    type="warning"
+                    message="依赖任务执行中"
+                    description="存在依赖任务正在执行中。请等待其完成后再执行该任务。"
+                    showIcon
+                  />
+                )}
+
+                <div>
+                  <Text type="secondary">未满足依赖</Text>
+                  {dependencyPlan.missing_dependencies.length === 0 ? (
+                    <div style={{ marginTop: 6 }}>
+                      <Text>无</Text>
+                    </div>
+                  ) : (
+                    <Space
+                      direction="vertical"
+                      size={6}
+                      style={{ width: '100%', marginTop: 6 }}
+                    >
+                      {dependencyPlan.missing_dependencies.map((dep) => (
+                        <Space key={dep.id} size={8} wrap>
+                          <Tag color={statusColorMap[dep.status] ?? 'default'}>
+                            {statusLabelMap[dep.status] ?? dep.status}
+                          </Tag>
+                          <Button
+                            size="small"
+                            type="link"
+                            onClick={() => handleDependencyClick(dep.id)}
+                          >
+                            #{dep.id} {dep.name}
+                          </Button>
+                        </Space>
+                      ))}
+                    </Space>
+                  )}
+                </div>
+
+                <div>
+                  <Text type="secondary">推荐执行顺序</Text>
+                  <Space
+                    direction="vertical"
+                    size={6}
+                    style={{ width: '100%', marginTop: 6 }}
+                  >
+                    {(dependencyPlan.execution_order ?? []).map((tid, index) => {
+                      const isTarget = tid === selectedTaskId;
+                      const status = resolveTaskStatus(tid);
+                      return (
+                        <Space key={`${tid}_${index}`} size={8} wrap>
+                          <Text type="secondary" style={{ width: 22 }}>
+                            {index + 1}.
+                          </Text>
+                          <Tag color={statusColorMap[status] ?? 'default'}>
+                            {statusLabelMap[status] ?? status}
+                          </Tag>
+                          <Button
+                            size="small"
+                            type={isTarget ? 'primary' : 'link'}
+                            onClick={() => handleDependencyClick(tid)}
+                          >
+                            #{tid} {resolveTaskName(tid)}
+                          </Button>
+                          {isTarget && <Text type="secondary">（目标任务）</Text>}
+                        </Space>
+                      );
+                    })}
+                  </Space>
+                </div>
+              </>
+            )}
+          </Space>
+        )}
+      </Modal>
     </Drawer>
   );
 };
