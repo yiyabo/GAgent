@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query
@@ -10,10 +11,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.repository.plan_repository import PlanRepository
+from app.services.plans.dependency_planner import DependencyPlan, compute_dependency_plan
 from app.services.plans.plan_decomposer import PlanDecomposer, DecompositionResult
+from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor
 from app.services.plans.decomposition_jobs import (
     execute_decomposition_job,
     plan_decomposition_jobs,
+    log_job_event,
+    reset_current_job,
+    set_current_job,
 )
 from . import register_router
 
@@ -22,6 +28,7 @@ task_router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 _plan_repo = PlanRepository()
 _plan_decomposer = PlanDecomposer(repo=_plan_repo)
+_plan_executor = PlanExecutor(repo=_plan_repo)
 logger = logging.getLogger(__name__)
 
 
@@ -167,6 +174,237 @@ def _parse_execution_result(raw_value: Any) -> Tuple[Optional[str], List[str], D
     return str(payload), [], {}, None
 
 
+class DependencyNodeSummary(BaseModel):
+    id: int
+    name: str
+    status: str
+
+
+class DependencyPlanResponse(BaseModel):
+    plan_id: int
+    target_task_id: int
+    satisfied_statuses: List[str] = Field(default_factory=list)
+    direct_dependencies: List[int] = Field(default_factory=list)
+    closure_dependencies: List[int] = Field(default_factory=list)
+    missing_dependencies: List[DependencyNodeSummary] = Field(default_factory=list)
+    running_dependencies: List[DependencyNodeSummary] = Field(default_factory=list)
+    execution_order: List[int] = Field(default_factory=list)
+    cycle_detected: bool = False
+    cycle_paths: List[List[int]] = Field(default_factory=list)
+
+
+def _to_dependency_plan_response(
+    tree: "PlanTree",
+    plan: DependencyPlan,
+) -> DependencyPlanResponse:
+    def _node_summary(task_id: int) -> DependencyNodeSummary:
+        node = tree.nodes[task_id]
+        return DependencyNodeSummary(id=node.id, name=node.display_name(), status=node.status)
+
+    return DependencyPlanResponse(
+        plan_id=plan.plan_id,
+        target_task_id=plan.target_task_id,
+        satisfied_statuses=list(plan.satisfied_statuses),
+        direct_dependencies=list(plan.direct_dependencies),
+        closure_dependencies=list(plan.closure_dependencies),
+        missing_dependencies=[_node_summary(tid) for tid in plan.missing_dependencies],
+        running_dependencies=[_node_summary(tid) for tid in plan.running_dependencies],
+        execution_order=list(plan.execution_order),
+        cycle_detected=plan.cycle_detected,
+        cycle_paths=[list(path) for path in plan.cycle_paths],
+    )
+
+
+class ExecuteTaskRequest(BaseModel):
+    include_dependencies: bool = True
+    async_mode: bool = True
+    session_id: Optional[str] = None
+
+
+class ExecuteTaskResponse(BaseModel):
+    success: bool
+    message: str
+    plan_id: int
+    task_id: int
+    dependency_plan: DependencyPlanResponse
+    job: Optional[Dict[str, Any]] = None
+    result: Optional[Dict[str, Any]] = None
+
+
+def _run_task_chain_job(
+    *,
+    job_id: str,
+    plan_id: int,
+    target_task_id: int,
+    task_order: List[int],
+    session_id: Optional[str] = None,
+) -> None:
+    token = set_current_job(job_id)
+    executed: List[int] = []
+    failed: List[int] = []
+    skipped: List[int] = []
+    step_summaries: List[Dict[str, Any]] = []
+    try:
+        plan_decomposition_jobs.mark_running(job_id)
+        log_job_event(
+            "info",
+            "Task chain execution started.",
+            {
+                "plan_id": plan_id,
+                "target_task_id": target_task_id,
+                "steps": len(task_order),
+                "task_order": task_order,
+            },
+        )
+
+        session_ctx = {
+            "session_id": session_id,
+            "user_message": f"Execute task chain for task #{target_task_id} (UI-triggered).",
+            "chat_history": [],
+            "recent_tool_results": [],
+        }
+
+        for idx, task_id in enumerate(task_order, start=1):
+            log_job_event(
+                "info",
+                "Executing chain step.",
+                {
+                    "plan_id": plan_id,
+                    "target_task_id": target_task_id,
+                    "step": idx,
+                    "total_steps": len(task_order),
+                    "task_id": task_id,
+                },
+            )
+
+            try:
+                exec_config = ExecutionConfig(session_context=session_ctx)
+                result = _plan_executor.execute_task(
+                    plan_id,
+                    task_id,
+                    config=exec_config,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                failed.append(task_id)
+                error = f"Task #{task_id} raised an exception: {exc}"
+                log_job_event(
+                    "error",
+                    "Chain step raised exception; stopping.",
+                    {"task_id": task_id, "error": str(exc)},
+                )
+                plan_decomposition_jobs.mark_failure(
+                    job_id,
+                    error,
+                    result={
+                        "plan_id": plan_id,
+                        "target_task_id": target_task_id,
+                        "execution_order": task_order,
+                        "executed_task_ids": executed,
+                        "failed_task_ids": failed,
+                        "skipped_task_ids": skipped,
+                        "steps": step_summaries,
+                    },
+                    stats={
+                        "executed": len(executed),
+                        "failed": len(failed),
+                        "skipped": len(skipped),
+                        "total_steps": len(task_order),
+                    },
+                )
+                return
+
+            step_summaries.append(
+                {
+                    "task_id": task_id,
+                    "status": result.status,
+                    "duration_sec": result.duration_sec,
+                }
+            )
+
+            if result.status == "completed":
+                executed.append(task_id)
+                continue
+            if result.status == "skipped":
+                skipped.append(task_id)
+                error = (
+                    f"Task #{task_id} was skipped (likely blocked by dependencies); stopping the chain."
+                )
+                log_job_event(
+                    "warning",
+                    "Chain step skipped; stopping.",
+                    {"task_id": task_id, "reason": result.content},
+                )
+                plan_decomposition_jobs.mark_failure(
+                    job_id,
+                    error,
+                    result={
+                        "plan_id": plan_id,
+                        "target_task_id": target_task_id,
+                        "execution_order": task_order,
+                        "executed_task_ids": executed,
+                        "failed_task_ids": failed,
+                        "skipped_task_ids": skipped,
+                        "steps": step_summaries,
+                    },
+                    stats={
+                        "executed": len(executed),
+                        "failed": len(failed),
+                        "skipped": len(skipped),
+                        "total_steps": len(task_order),
+                    },
+                )
+                return
+
+            failed.append(task_id)
+            error = f"Task #{task_id} failed; stopping the chain."
+            log_job_event(
+                "error",
+                "Chain step failed; stopping.",
+                {"task_id": task_id, "reason": result.content},
+            )
+            plan_decomposition_jobs.mark_failure(
+                job_id,
+                error,
+                result={
+                    "plan_id": plan_id,
+                    "target_task_id": target_task_id,
+                    "execution_order": task_order,
+                    "executed_task_ids": executed,
+                    "failed_task_ids": failed,
+                    "skipped_task_ids": skipped,
+                    "steps": step_summaries,
+                },
+                stats={
+                    "executed": len(executed),
+                    "failed": len(failed),
+                    "skipped": len(skipped),
+                    "total_steps": len(task_order),
+                },
+            )
+            return
+
+        plan_decomposition_jobs.mark_success(
+            job_id,
+            result={
+                "plan_id": plan_id,
+                "target_task_id": target_task_id,
+                "execution_order": task_order,
+                "executed_task_ids": executed,
+                "failed_task_ids": failed,
+                "skipped_task_ids": skipped,
+                "steps": step_summaries,
+            },
+            stats={
+                "executed": len(executed),
+                "failed": len(failed),
+                "skipped": len(skipped),
+                "total_steps": len(task_order),
+            },
+        )
+    finally:
+        reset_current_job(token)
+
+
 @plan_router.get("/{plan_id}/tree", summary="获取完整计划树")
 def get_plan_tree(plan_id: int):
     """Return serialized PlanTree for the specified plan."""
@@ -235,6 +473,165 @@ def get_task_result(task_id: int, plan_id: int = Query(..., description="计划 
         notes=notes,
         metadata=metadata,
         raw=raw_payload,
+    )
+
+
+@task_router.get(
+    "/{task_id}/dependency-plan",
+    response_model=DependencyPlanResponse,
+    summary="获取任务依赖预检结果与推荐执行顺序",
+)
+def get_task_dependency_plan(
+    task_id: int,
+    plan_id: int = Query(..., description="计划 ID"),
+):
+    try:
+        tree = _plan_repo.get_plan_tree(plan_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not tree.has_node(task_id):
+        raise HTTPException(status_code=404, detail=f"Plan {plan_id} 中未找到节点 {task_id}")
+
+    plan = compute_dependency_plan(tree, task_id)
+    return _to_dependency_plan_response(tree, plan)
+
+
+@task_router.post(
+    "/{task_id}/execute",
+    response_model=ExecuteTaskResponse,
+    summary="执行单个任务（可选一键补齐依赖链，异步 Job）",
+)
+def execute_task_with_dependencies(
+    task_id: int,
+    plan_id: int = Query(..., description="计划 ID"),
+    request: Optional[ExecuteTaskRequest] = Body(default=None),
+):
+    request = request or ExecuteTaskRequest()
+    try:
+        tree = _plan_repo.get_plan_tree(plan_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not tree.has_node(task_id):
+        raise HTTPException(status_code=404, detail=f"Plan {plan_id} 中未找到节点 {task_id}")
+
+    dep_plan = compute_dependency_plan(tree, task_id)
+    dep_response = _to_dependency_plan_response(tree, dep_plan)
+
+    if dep_plan.cycle_detected:
+        return ExecuteTaskResponse(
+            success=False,
+            message="检测到循环依赖，无法生成可靠的执行顺序。请先修正依赖关系后再试。",
+            plan_id=plan_id,
+            task_id=task_id,
+            dependency_plan=dep_response,
+            job=None,
+            result=None,
+        )
+
+    if dep_plan.running_dependencies:
+        return ExecuteTaskResponse(
+            success=False,
+            message="存在依赖任务正在执行中。请等待其完成后再执行该任务。",
+            plan_id=plan_id,
+            task_id=task_id,
+            dependency_plan=dep_response,
+            job=None,
+            result=None,
+        )
+
+    task_order = [task_id]
+    if request.include_dependencies:
+        task_order = list(dep_plan.execution_order) or [task_id]
+
+    if not request.async_mode:
+        # Synchronous path (best-effort; may take a long time depending on LLM/tool calls).
+        executed: List[int] = []
+        failed: List[int] = []
+        skipped: List[int] = []
+        for tid in task_order:
+            session_ctx = {
+                "session_id": request.session_id,
+                "user_message": f"Execute task chain for task #{task_id} (UI-triggered).",
+                "chat_history": [],
+                "recent_tool_results": [],
+            }
+            exec_config = ExecutionConfig(session_context=session_ctx)
+            result = _plan_executor.execute_task(plan_id, tid, config=exec_config)
+            if result.status == "completed":
+                executed.append(tid)
+                continue
+            if result.status == "skipped":
+                skipped.append(tid)
+                break
+            failed.append(tid)
+            break
+
+        return ExecuteTaskResponse(
+            success=len(failed) == 0 and len(skipped) == 0,
+            message="执行完成。" if len(failed) == 0 and len(skipped) == 0 else "执行未完成（存在失败或跳过）。",
+            plan_id=plan_id,
+            task_id=task_id,
+            dependency_plan=dep_response,
+            job=None,
+            result={
+                "execution_order": task_order,
+                "executed_task_ids": executed,
+                "failed_task_ids": failed,
+                "skipped_task_ids": skipped,
+            },
+        )
+
+    job = plan_decomposition_jobs.create_job(
+        plan_id=plan_id,
+        task_id=task_id,
+        mode="task_chain",
+        job_type="plan_execute",
+        params={
+            "include_dependencies": request.include_dependencies,
+            "steps": len(task_order),
+        },
+        metadata={
+            "session_id": request.session_id,
+            "plan_id": plan_id,
+            "plan_title": tree.title,
+            "target_task_id": task_id,
+            "target_task_name": tree.nodes[task_id].display_name(),
+        },
+    )
+    plan_decomposition_jobs.append_log(
+        job.job_id,
+        "info",
+        "任务执行已加入后台队列",
+        {
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "job_type": job.job_type,
+            "mode": job.mode,
+            "steps": len(task_order),
+        },
+    )
+
+    thread = threading.Thread(
+        target=_run_task_chain_job,
+        kwargs={
+            "job_id": job.job_id,
+            "plan_id": plan_id,
+            "target_task_id": task_id,
+            "task_order": task_order,
+            "session_id": request.session_id,
+        },
+        daemon=True,
+    )
+    thread.start()
+
+    return ExecuteTaskResponse(
+        success=True,
+        message="任务执行已提交到后台执行。",
+        plan_id=plan_id,
+        task_id=task_id,
+        dependency_plan=dep_response,
+        job=job.to_payload(),
+        result={"job_id": job.job_id, "status": job.status},
     )
 
 
