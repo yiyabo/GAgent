@@ -1027,13 +1027,16 @@ def start_decomposition_job_thread(
     node_budget: Optional[int] = None,
     allow_existing_children: Optional[bool] = None,
 ) -> PlanDecompositionJob:
+    effective_node_budget: Optional[int] = (
+        None if node_budget is None or node_budget <= 0 else int(node_budget)
+    )
     params = {
         "mode": mode,
         "plan_id": plan_id,
         "task_id": task_id,
         "max_depth": max_depth,
         "expand_depth": expand_depth,
-        "node_budget": node_budget,
+        "node_budget": effective_node_budget,
         "allow_existing_children": allow_existing_children,
     }
     job = plan_decomposition_jobs.create_job(
@@ -1063,7 +1066,7 @@ def start_decomposition_job_thread(
             "task_id": task_id,
             "max_depth": max_depth,
             "expand_depth": expand_depth,
-            "node_budget": node_budget,
+            "node_budget": effective_node_budget,
             "allow_existing_children": allow_existing_children,
         },
         daemon=True,

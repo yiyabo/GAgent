@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from app.routers.chat_routes import AgentStep, StructuredChatAgent
+from app.services.llm.structured_response import (
+    LLMAction,
+    LLMReply,
+    LLMStructuredResponse,
+    RetryPolicy,
+)
+from app.services.paper_replication import ExperimentCard
+from tool_box.tools_impl import generate_experiment_card as generate_card_module
+
+
+def _build_minimal_agent() -> StructuredChatAgent:
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=None)
+    agent._resolve_job_meta = lambda: (None, "chat_action")
+    agent._resolve_action_placeholders = lambda action, _source=None: action
+    agent._build_suggestions = lambda _structured, _steps: []
+    agent._build_actions_summary = lambda _steps: []
+    agent._maybe_synthesize_phagescope_saveall_analysis = lambda _steps: None
+    agent._append_summary_to_reply = lambda reply, _summary: reply
+    agent._persist_if_dirty = lambda: False
+    agent._include_action_summary = False
+    agent._decomposition_errors = []
+    agent._current_user_message = None
+    agent._sync_job_id = None
+    agent.mode = "assistant"
+    agent.session_id = "test-session"
+    agent.conversation_id = None
+    agent.extra_context = {}
+    agent.history = []
+    return agent
+
+
+def test_generate_experiment_card_reuse_does_not_reference_pdf_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    card_path = tmp_path / "card.yaml"
+    card = ExperimentCard(
+        paper={"title": "Demo", "pdf_path": str(pdf_path)},
+        experiment={"id": "demo_exp", "name": "demo"},
+        task={"description": "demo"},
+    )
+    monkeypatch.setattr(
+        generate_card_module,
+        "_find_existing_card_for_pdf",
+        lambda _pdf: ("demo_exp", card, card_path),
+    )
+
+    async def _unexpected_read_pdf(_path: str):
+        raise AssertionError("read_pdf should not be called when reusing a card")
+
+    monkeypatch.setattr(generate_card_module, "read_pdf", _unexpected_read_pdf)
+
+    result = asyncio.run(
+        generate_card_module.generate_experiment_card_handler(
+            pdf_path=str(pdf_path),
+            overwrite=False,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["metadata"]["reused"] is True
+    assert result["metadata"]["pdf_file"] == "paper.pdf"
+
+
+def test_execute_structured_stops_on_blocking_failure() -> None:
+    agent = _build_minimal_agent()
+    executed: list[str] = []
+
+    async def _fake_execute_action(action: LLMAction) -> AgentStep:
+        executed.append(action.name)
+        if action.name == "first":
+            return AgentStep(action=action, success=False, message="failed", details={})
+        return AgentStep(action=action, success=True, message="ok", details={})
+
+    agent._execute_action = _fake_execute_action
+
+    structured = LLMStructuredResponse(
+        llm_reply=LLMReply(message="run"),
+        actions=[
+            LLMAction(kind="system_operation", name="first", blocking=True, order=1),
+            LLMAction(kind="system_operation", name="second", blocking=True, order=2),
+        ],
+    )
+    result = asyncio.run(agent.execute_structured(structured))
+
+    assert executed == ["first"]
+    assert len(result.steps) == 1
+    assert result.success is False
+
+
+def test_execute_structured_retries_before_failing() -> None:
+    agent = _build_minimal_agent()
+    attempts = {"count": 0}
+
+    async def _fake_execute_action(action: LLMAction) -> AgentStep:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return AgentStep(action=action, success=False, message="transient", details={})
+        return AgentStep(
+            action=action,
+            success=True,
+            message="ok",
+            details={"result": {"value": 1}},
+        )
+
+    agent._execute_action = _fake_execute_action
+
+    structured = LLMStructuredResponse(
+        llm_reply=LLMReply(message="run"),
+        actions=[
+            LLMAction(
+                kind="system_operation",
+                name="retryable",
+                blocking=True,
+                order=1,
+                retry_policy=RetryPolicy(max_retries=1, backoff_sec=0),
+            )
+        ],
+    )
+    result = asyncio.run(agent.execute_structured(structured))
+
+    assert attempts["count"] == 2
+    assert result.success is True
+    assert result.steps[0].details["attempt"] == 2
+    assert result.steps[0].details["max_attempts"] == 2
+
+
+def test_execute_plan_step_marks_failure_when_plan_has_failed_or_skipped_tasks() -> None:
+    tree = SimpleNamespace(id=34)
+    summary = SimpleNamespace(
+        executed_task_ids=[1],
+        failed_task_ids=[],
+        skipped_task_ids=[2],
+        to_dict=lambda: {
+            "executed_task_ids": [1],
+            "failed_task_ids": [],
+            "skipped_task_ids": [2],
+        },
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent._require_plan_bound = lambda: tree
+    agent.plan_executor = SimpleNamespace(execute_plan=lambda _plan_id, config=None: summary)
+    agent._refresh_plan_tree = lambda force_reload=True: None
+    agent.session_id = "s1"
+    agent._current_user_message = "run"
+    agent.history = []
+    agent.extra_context = {}
+
+    action = LLMAction(kind="plan_operation", name="execute_plan", parameters={}, order=1)
+    step = asyncio.run(agent._handle_plan_action(action))
+
+    assert step.success is False
+    assert step.details["skipped_task_ids"] == [2]
+
+
+def test_rerun_task_step_marks_failure_on_skipped_status() -> None:
+    tree = SimpleNamespace(id=34)
+    result = SimpleNamespace(
+        status="skipped",
+        to_dict=lambda: {"status": "skipped", "content": "blocked by dependencies"},
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent._require_plan_bound = lambda: tree
+    agent.plan_executor = SimpleNamespace(execute_task=lambda _plan_id, _task_id, config=None: result)
+    agent._refresh_plan_tree = lambda force_reload=True: None
+    agent.session_id = "s1"
+    agent._current_user_message = "run"
+    agent.history = []
+    agent.extra_context = {}
+
+    action = LLMAction(
+        kind="task_operation",
+        name="rerun_task",
+        parameters={"task_id": 23},
+        order=1,
+    )
+    step = agent._handle_task_action(action)
+
+    assert step.success is False
+    assert step.message == "Task [23] was skipped."

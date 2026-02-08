@@ -129,8 +129,8 @@ async def generate_experiment_card_handler(
             "card_path": str(card_path),
             "card": card.to_dict(),
             "metadata": {
-                "pdf_pages": pdf_result.get("page_count"),
-                "pdf_file": pdf_result.get("file_name"),
+                "pdf_pages": None,
+                "pdf_file": abs_pdf.name,
                 "reused": True,
             },
         }

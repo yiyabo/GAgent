@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ...config.executor_config import ExecutorSettings, get_executor_settings
 from ...llm import LLMClient
+from ..deliverables import get_deliverable_publisher
 from ..llm.llm_service import LLMService
 from .plan_models import PlanNode, PlanTree
 
@@ -167,8 +168,9 @@ When a task requires tool execution, request one of these tools:
   NOTE: Always call operation="help" first if unsure about parameters!
 
 **CODE EXECUTION & DATA ANALYSIS:**
-- claude_code: Execute complex coding tasks (data analysis, visualization, model building)
-  Parameters: {"task": "<detailed task description>", "allowed_tools": ["bash", "python", "file_editor"]}
+- claude_code: Execute one concrete implementation task (data analysis, visualization, model building)
+  Parameters: {"task": "<atomic implementation instruction only>", "allowed_tools": "Bash,Edit"}
+  IMPORTANT: Never ask claude_code to do planning/decomposition/roadmap work.
 
 **INFORMATION RETRIEVAL:**
 - web_search: Search the web for information
@@ -196,6 +198,7 @@ When a task requires tool execution, request one of these tools:
 - For FASTA/FASTQ/sequence analysis → use bio_tools FIRST (status: "needs_tool")
 - For data analysis/visualization/charts → use claude_code (status: "needs_tool")
 - For model code building/training → use claude_code (status: "needs_tool")
+- Never use claude_code for task planning or decomposition; planning stays in the orchestration layer.
 - For web information lookup → use web_search (status: "needs_tool")
 - For reading text files (PDF/TXT) → use document_reader (status: "needs_tool")
 - For reading images/scanned docs → use vision_reader (status: "needs_tool")
@@ -438,6 +441,7 @@ class PlanExecutor:
         self._settings = settings or get_executor_settings()
         self._llm = llm_service or PlanExecutorLLMService(settings=self._settings)
         self._prompt_builder = prompt_builder or ExecutorPromptBuilder()
+        self._deliverable_publisher = get_deliverable_publisher()
 
     def execute_plan(
         self,
@@ -757,8 +761,19 @@ class PlanExecutor:
                         final_content = f"{response.content}\n\n=== Tool Execution Result ===\n{tool_result.get('summary', str(tool_result.get('result', '')))}"
                         response.status = "success"
                     else:
-                        final_content = f"{response.content}\n\n=== Tool Execution Failed ===\n{tool_result.get('error', 'Unknown error')}"
+                        tool_error = tool_result.get("error")
+                        if (
+                            not tool_error
+                            and isinstance(tool_result.get("result"), dict)
+                        ):
+                            tool_error = tool_result["result"].get("error")
+                        final_content = f"{response.content}\n\n=== Tool Execution Failed ===\n{tool_error or 'Unknown error'}"
                         response.status = "failed"
+                    deliverable_payload = tool_result.get("deliverables")
+                    if isinstance(deliverable_payload, dict):
+                        metadata = dict(response.metadata or {})
+                        metadata["deliverables"] = deliverable_payload
+                        response.metadata = metadata
                     response.content = final_content
                 
                 result_payload = response.model_dump()
@@ -1060,9 +1075,21 @@ class PlanExecutor:
         
         tool_name = tool_call.name
         params = dict(tool_call.parameters)
-        
-        # 添加 target_task_id 以便自动更新任务状态
-        params["target_task_id"] = node.id
+
+        # 规范化任务上下文参数，避免把不受支持的参数透传给工具 handler。
+        # claude_code 使用 task_id/plan_id；历史遗留 target_task_id 统一转换。
+        if tool_name == "claude_code":
+            legacy_target_task_id = params.pop("target_task_id", None)
+            if params.get("task_id") is None:
+                params["task_id"] = (
+                    legacy_target_task_id
+                    if legacy_target_task_id is not None
+                    else node.id
+                )
+            if params.get("plan_id") is None:
+                params["plan_id"] = node.plan_id
+        else:
+            params.pop("target_task_id", None)
         
         # 如果有 session_context，传递 session_id 给工具
         if config.session_context:
@@ -1090,12 +1117,60 @@ class PlanExecutor:
             
             # 提取摘要
             summary = self._summarize_tool_result(tool_name, result)
+            tool_success = not (
+                isinstance(result, dict)
+                and result.get("success") is False
+            )
+            publish_report = None
+            session_id = None
+            if config.session_context:
+                maybe_session = config.session_context.get("session_id")
+                if isinstance(maybe_session, str) and maybe_session.strip():
+                    session_id = maybe_session.strip()
+
+            if session_id:
+                try:
+                    publish_report = self._deliverable_publisher.publish_from_tool_result(
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        raw_result=result,
+                        summary=summary,
+                        source={
+                            "channel": "plan_executor",
+                            "mode": "task_execution",
+                        },
+                        job_id=self._current_job_id(),
+                        plan_id=node.plan_id,
+                        task_id=node.id,
+                        task_name=node.display_name(),
+                        task_instruction=node.instruction,
+                        publish_status="final" if tool_success else "draft",
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(
+                        "Failed to publish deliverables for plan %s task %s: %s",
+                        node.plan_id,
+                        node.id,
+                        exc,
+                    )
             
             logger.info(
                 "Tool %s execution succeeded for task %s",
                 tool_name, node.id
             )
-            return {"success": True, "result": result, "summary": summary}
+            payload: Dict[str, Any] = {
+                "success": tool_success,
+                "result": result,
+                "summary": summary,
+            }
+            if not tool_success:
+                if isinstance(result, dict):
+                    payload["error"] = result.get("error") or result.get("message") or "Tool execution returned success=false."
+                else:
+                    payload["error"] = "Tool execution returned success=false."
+            if publish_report is not None:
+                payload["deliverables"] = publish_report.to_dict()
+            return payload
             
         except Exception as exc:
             logger.exception(
@@ -1130,6 +1205,14 @@ class PlanExecutor:
                 return str(result)[:1000]
         
         return str(result)[:1000]
+
+    def _current_job_id(self) -> Optional[str]:
+        try:
+            from .decomposition_jobs import get_current_job
+
+            return get_current_job()
+        except Exception:  # pragma: no cover - defensive
+            return None
 
 
     @staticmethod

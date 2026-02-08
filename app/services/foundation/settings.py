@@ -68,10 +68,10 @@ if _USE_PYDANTIC:
         # GLM / LLM 配置
         glm_api_key: Optional[str] = Field(default=None, env="GLM_API_KEY")
         glm_api_url: str = Field(
-            default="https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
             env="GLM_API_URL",
         )
-        glm_model: str = Field(default="glm-4-flash", env="GLM_MODEL")
+        glm_model: str = Field(default="qwen3-max-2026-01-23", env="GLM_MODEL")
         glm_request_timeout: int = Field(default=60, env="GLM_REQUEST_TIMEOUT")
         llm_request_timeout: int = Field(default=60, env="LLM_REQUEST_TIMEOUT")
         llm_mock: bool = Field(default=False, env="LLM_MOCK")
@@ -111,7 +111,7 @@ if _USE_PYDANTIC:
         embedding_provider: str = Field(default="qwen", env="EMBEDDING_PROVIDER")
 
         # 通用LLM配置（用于选择提供商）
-        llm_provider: str = Field(default="glm", env="LLM_PROVIDER")  # glm, perplexity, qwen, openai, etc.
+        llm_provider: str = Field(default="qwen", env="LLM_PROVIDER")  # qwen preferred
 
         # GLM Embeddings 专用配置（集中到此，供 app.services.config 使用）
         glm_embeddings_api_url: Optional[str] = Field(default=None, env="GLM_EMBEDDINGS_API_URL")
@@ -194,8 +194,8 @@ else:
             self.database_url = os.getenv("DATABASE_URL", "sqlite:///./tasks.db")
             self.base_url = os.getenv("BASE_URL")
             self.glm_api_key = os.getenv("GLM_API_KEY")
-            self.glm_api_url = os.getenv("GLM_API_URL", "https://open.bigmodel.cn/api/paas/v4/chat/completions")
-            self.glm_model = os.getenv("GLM_MODEL", "glm-4-flash")
+            self.glm_api_url = os.getenv("GLM_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+            self.glm_model = os.getenv("GLM_MODEL", "qwen3-max-2026-01-23")
             try:
                 self.glm_request_timeout = int(os.getenv("GLM_REQUEST_TIMEOUT", "60"))
             except Exception:
@@ -212,7 +212,7 @@ else:
             self.perplexity_model = os.getenv("PERPLEXITY_MODEL", "sonar-reasoning-pro")
             
             # 通用LLM配置
-            self.llm_provider = os.getenv("LLM_PROVIDER", "glm")
+            self.llm_provider = os.getenv("LLM_PROVIDER", "qwen")
             try:
                 self.llm_retries = int(os.getenv("LLM_RETRIES", "2"))
             except Exception:

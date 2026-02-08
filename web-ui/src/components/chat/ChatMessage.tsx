@@ -23,6 +23,7 @@ import { ChatMessage as ChatMessageType, ToolResultPayload } from '@/types';
 import { useChatStore } from '@store/chat';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { planTreeApi } from '@api/planTree';
 import ToolResultCard from './ToolResultCard';
 import JobLogPanel from './JobLogPanel';
 import { ThinkingProcess } from './ThinkingProcess';
@@ -32,6 +33,73 @@ import type { DecompositionJobStatus } from '@/types';
 
 
 const { Text } = Typography;
+const FINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'completed']);
+
+const normalizeJobStatus = (raw: unknown): string => {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return value || 'queued';
+};
+
+const toNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const computeDecomposeProgress = (
+  job: DecompositionJobStatus | null,
+): {
+  status: string;
+  percent: number | null;
+  totalBudget: number | null;
+  consumedBudget: number | null;
+  queueRemaining: number | null;
+  createdCount: number | null;
+  processedCount: number | null;
+} | null => {
+  if (!job) return null;
+  const status = normalizeJobStatus(job.status);
+  const stats = (job.stats ?? {}) as Record<string, any>;
+  const params = (job.params ?? {}) as Record<string, any>;
+  const logs = Array.isArray(job.logs) ? job.logs : [];
+  const totalBudget = toNumber(params.node_budget) ?? toNumber(stats.node_budget);
+  let remainingBudget: number | null = null;
+  let queueRemaining: number | null = toNumber(stats.queue_remaining);
+  let createdCount: number | null = null;
+  let processedCount: number | null = null;
+  for (let idx = logs.length - 1; idx >= 0; idx -= 1) {
+    const metadata = (logs[idx]?.metadata ?? null) as Record<string, any> | null;
+    if (!metadata) continue;
+    if (remainingBudget === null) remainingBudget = toNumber(metadata.budget_remaining);
+    if (queueRemaining === null) queueRemaining = toNumber(metadata.queue_remaining);
+    if (createdCount === null) createdCount = toNumber(metadata.created_count ?? metadata.createdCount);
+    if (processedCount === null) processedCount = toNumber(metadata.processed_count ?? metadata.processedCount);
+    if (
+      (remainingBudget !== null || totalBudget === null) &&
+      queueRemaining !== null &&
+      createdCount !== null &&
+      processedCount !== null
+    ) {
+      break;
+    }
+  }
+  const consumedFromStats = toNumber(stats.consumed_budget);
+  const consumedBudget =
+    consumedFromStats ??
+    (totalBudget !== null && remainingBudget !== null
+      ? Math.max(0, totalBudget - remainingBudget)
+      : createdCount !== null
+        ? Math.max(0, Math.round(createdCount))
+      : null);
+  const percentRaw =
+    totalBudget !== null && totalBudget > 0 && consumedBudget !== null
+      ? Math.round((consumedBudget / totalBudget) * 100)
+      : processedCount !== null && queueRemaining !== null
+        ? Math.round((processedCount / Math.max(1, processedCount + queueRemaining + 1)) * 100)
+      : null;
+  const percent = percentRaw !== null ? Math.max(0, Math.min(100, percentRaw)) : null;
+  return { status, percent, totalBudget, consumedBudget, queueRemaining, createdCount, processedCount };
+};
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -46,18 +114,90 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const [processOpen, setProcessOpen] = useState(false);
   const [toolOpen, setToolOpen] = useState(false);
   const unifiedStream = Boolean(metadata && (metadata as any).unified_stream);
+  const decompositionJob = useMemo(() => {
+    const direct = (metadata as any)?.decomposition_job;
+    if (direct && typeof direct === 'object') {
+      const jobId = (direct as any)?.job_id;
+      if (typeof jobId === 'string' && jobId.trim().length > 0) {
+        return direct as DecompositionJobStatus;
+      }
+    }
+    const actions =
+      (Array.isArray((metadata as any)?.actions) ? (metadata as any).actions : null) ??
+      (Array.isArray((metadata as any)?.raw_actions) ? (metadata as any).raw_actions : []);
+    for (let idx = actions.length - 1; idx >= 0; idx -= 1) {
+      const embedded = actions[idx]?.details?.decomposition_job;
+      if (embedded && typeof embedded === 'object') {
+        const jobId = (embedded as any)?.job_id;
+        if (typeof jobId === 'string' && jobId.trim().length > 0) {
+          return embedded as DecompositionJobStatus;
+        }
+      }
+    }
+    return null;
+  }, [metadata]);
+  const decompositionJobId = typeof decompositionJob?.job_id === 'string' ? decompositionJob.job_id : null;
+  const [decomposeSnapshot, setDecomposeSnapshot] = useState<DecompositionJobStatus | null>(null);
+  const effectiveDecomposeJob = decomposeSnapshot ?? decompositionJob;
+  const decomposeProgress = useMemo(
+    () => computeDecomposeProgress(effectiveDecomposeJob),
+    [effectiveDecomposeJob],
+  );
+  const decomposeStatus = decomposeProgress?.status ?? (effectiveDecomposeJob ? normalizeJobStatus(effectiveDecomposeJob.status) : null);
+  const isDecomposeActive = Boolean(decompositionJobId) && Boolean(decomposeStatus) && !FINAL_JOB_STATUSES.has(decomposeStatus as string);
+  const isDecomposeFailed = decomposeStatus === 'failed';
   const planMessage =
     unifiedStream && typeof (metadata as any)?.plan_message === 'string'
       ? ((metadata as any).plan_message as string)
       : null;
   const shouldAutoOpenProcess =
-    unifiedStream && (metadata?.status === 'pending' || metadata?.status === 'running');
+    unifiedStream && ((metadata?.status === 'pending' || metadata?.status === 'running') || isDecomposeActive);
 
   React.useEffect(() => {
     if (shouldAutoOpenProcess) {
       setProcessOpen(true);
     }
   }, [shouldAutoOpenProcess]);
+
+  React.useEffect(() => {
+    if (!decompositionJobId) {
+      setDecomposeSnapshot(null);
+      return;
+    }
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const stopTimer = () => {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const fetchStatus = async () => {
+      try {
+        const snapshot = await planTreeApi.getJobStatus(decompositionJobId);
+        if (cancelled) return;
+        setDecomposeSnapshot(snapshot);
+        const normalized = normalizeJobStatus(snapshot.status);
+        if (FINAL_JOB_STATUSES.has(normalized)) {
+          stopTimer();
+        }
+      } catch (error) {
+        if (!cancelled) {
+          stopTimer();
+        }
+      }
+    };
+
+    fetchStatus();
+    timer = window.setInterval(fetchStatus, 5000);
+
+    return () => {
+      cancelled = true;
+      stopTimer();
+    };
+  }, [decompositionJobId]);
 
   const toolResults: ToolResultPayload[] = useMemo(
     () =>
@@ -364,16 +504,23 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
     if (visibleActions.length === 0) return null;
     const toolActions = visibleActions.filter((act: any) => act?.kind === 'tool_operation');
 
+    const effectiveStatus = isDecomposeFailed ? 'failed' : isDecomposeActive ? 'running' : status;
     const statusLabel =
-      status === 'completed'
+      isDecomposeActive
+        ? '计划拆解中'
+        : effectiveStatus === 'completed'
         ? '已完成'
-        : status === 'failed'
+        : effectiveStatus === 'failed'
           ? '已失败'
           : '执行中';
     const statusColor =
-      status === 'completed'
+      isDecomposeFailed
+        ? 'red'
+        : isDecomposeActive
+          ? 'blue'
+          : effectiveStatus === 'completed'
         ? 'green'
-        : status === 'failed'
+        : effectiveStatus === 'failed'
           ? 'red'
           : 'blue';
 
@@ -399,6 +546,20 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
       toolProgressCounts && typeof toolProgressCounts.done === 'number' ? toolProgressCounts.done : null;
     const moduleTotal =
       toolProgressCounts && typeof toolProgressCounts.total === 'number' ? toolProgressCounts.total : null;
+    const decomposePercent =
+      isDecomposeActive && decomposeProgress?.percent !== null && decomposeProgress?.percent !== undefined
+        ? Math.max(0, Math.min(99, Math.round(decomposeProgress.percent)))
+        : null;
+    const progressPercent =
+      isDecomposeActive
+        ? decomposePercent ?? 0
+        : effectiveStatus === 'completed' || effectiveStatus === 'failed'
+          ? 100
+          : toolProgressPercent !== null
+            ? Math.max(0, Math.min(99, Math.round(toolProgressPercent)))
+            : 0;
+    const progressStatus =
+      effectiveStatus === 'failed' ? 'exception' : effectiveStatus === 'completed' ? 'success' : 'active';
 
     return (
       <div
@@ -429,25 +590,43 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
         </div>
         <div style={{ marginTop: 8 }}>
           <Progress
-            percent={
-              status === 'completed' || status === 'failed'
-                ? 100
-                : toolProgressPercent !== null
-                  ? Math.max(0, Math.min(99, Math.round(toolProgressPercent)))
-                  : 0
-            }
-            status={status === 'failed' ? 'exception' : status === 'completed' ? 'success' : 'active'}
+            percent={progressPercent}
+            status={progressStatus}
             showInfo={false}
             size="small"
           />
-          {moduleDone !== null && moduleTotal !== null && status !== 'completed' && status !== 'failed' && (
+          {isDecomposeActive && (
+            <div style={{ marginTop: 6 }}>
+              <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                拆解进度：
+                {decomposeProgress?.percent !== null && decomposeProgress?.percent !== undefined
+                  ? `${Math.round(decomposeProgress.percent)}%`
+                  : '计算中'}
+                {decomposeProgress?.consumedBudget !== null &&
+                  decomposeProgress?.consumedBudget !== undefined
+                  ? `，已创建 ${Math.max(0, Math.round(decomposeProgress.consumedBudget))} 个任务`
+                  : ''}
+                {decomposeProgress?.queueRemaining !== null && decomposeProgress?.queueRemaining !== undefined
+                  ? `，队列剩余 ${decomposeProgress.queueRemaining}`
+                  : ''}
+              </Text>
+            </div>
+          )}
+          {isDecomposeFailed && (
+            <div style={{ marginTop: 6 }}>
+              <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                拆解失败{effectiveDecomposeJob?.error ? `：${effectiveDecomposeJob.error}` : ''}
+              </Text>
+            </div>
+          )}
+          {moduleDone !== null && moduleTotal !== null && effectiveStatus !== 'completed' && effectiveStatus !== 'failed' && (
             <div style={{ marginTop: 6 }}>
               <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
                 模块进度：{moduleDone}/{moduleTotal}
               </Text>
             </div>
           )}
-          {toolProgressStatus && status !== 'completed' && status !== 'failed' && (
+          {toolProgressStatus && effectiveStatus !== 'completed' && effectiveStatus !== 'failed' && (
             <div style={{ marginTop: 6 }}>
               <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
                 当前状态：{toolProgressStatus}

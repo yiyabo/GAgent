@@ -331,7 +331,7 @@ const ChatMainArea: React.FC = () => {
     }
     try {
       await setDefaultBaseModel(
-        (value as 'qwen3-max-2026-01-23' | 'glm-4.6' | 'kimi-k2-thinking' | 'gpt-5.2-2025-12-11') ?? null
+        (value as 'qwen3-max-2026-01-23' | 'qwen-turbo') ?? null
       );
     } catch (err) {
       console.error('[ChatMainArea] 切换基座模型失败:', err);
@@ -345,7 +345,7 @@ const ChatMainArea: React.FC = () => {
     }
     try {
       await setDefaultLLMProvider(
-        (value as 'glm' | 'qwen' | 'openai' | 'perplexity') ?? null
+        (value as 'qwen') ?? null
       );
     } catch (err) {
       console.error('[ChatMainArea] 切换LLM提供商失败:', err);
@@ -364,17 +364,12 @@ const ChatMainArea: React.FC = () => {
   const llmProviderValue = defaultLLMProvider ?? undefined;
 
   const llmProviderOptions = [
-    { label: 'GLM', value: 'glm' },
     { label: 'Qwen', value: 'qwen' },
-    { label: 'OpenAI', value: 'openai' },
-    { label: 'Perplexity', value: 'perplexity' },
   ];
 
   const baseModelOptions = [
     { label: 'Qwen3-Max (2026-01-23)', value: 'qwen3-max-2026-01-23' },
-    { label: 'GLM-4.6', value: 'glm-4.6' },
-    { label: 'Kimi K2 Thinking', value: 'kimi-k2-thinking' },
-    { label: 'GPT-5.2', value: 'gpt-5.2-2025-12-11' },
+    { label: 'Qwen-Turbo', value: 'qwen-turbo' },
   ];
 
   // 处理键盘事件

@@ -24,8 +24,8 @@ class SearchSettings:
     qwen_model: str = "qwen-turbo"
 
     glm_api_key: Optional[str] = None
-    glm_api_url: str = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-    glm_model: str = "glm-4-flash"
+    glm_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    glm_model: str = "qwen3-max-2026-01-23"
 
     builtin_request_timeout: float = 40.0
 
@@ -69,8 +69,8 @@ def get_search_settings() -> SearchSettings:
     qwen_model = _env("QWEN_MODEL", "qwen-turbo")
 
     glm_api_key = _env("GLM_API_KEY")
-    glm_api_url = _env("GLM_API_URL", "https://open.bigmodel.cn/api/paas/v4/chat/completions")
-    glm_model = _env("GLM_MODEL", "glm-4-flash")
+    glm_api_url = _env("GLM_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
+    glm_model = _env("GLM_MODEL", "qwen3-max-2026-01-23")
 
     perplexity_api_key = _env("PERPLEXITY_API_KEY")
     perplexity_api_url = _env("PERPLEXITY_API_URL", "https://api.perplexity.ai/chat/completions")
@@ -109,8 +109,8 @@ def get_search_settings() -> SearchSettings:
         qwen_api_url=qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         qwen_model=qwen_model or "qwen-turbo",
         glm_api_key=glm_api_key,
-        glm_api_url=glm_api_url or "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        glm_model=glm_model or "glm-4-flash",
+        glm_api_url=glm_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        glm_model=glm_model or "qwen3-max-2026-01-23",
         builtin_request_timeout=builtin_timeout,
         perplexity_api_key=perplexity_api_key,
         perplexity_api_url=perplexity_api_url or "https://api.perplexity.ai/chat/completions",

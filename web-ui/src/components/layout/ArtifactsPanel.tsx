@@ -4,41 +4,36 @@ import {
   Button,
   Empty,
   Input,
+  Segmented,
   Space,
   Tag,
-  Typography,
   Tooltip,
   Tree,
+  Typography,
 } from 'antd';
 import {
-  FileTextOutlined,
   FileImageOutlined,
   FileOutlined,
+  FileTextOutlined,
   FolderOpenOutlined,
-  ReloadOutlined,
-  LinkOutlined,
-  FullscreenOutlined,
   FullscreenExitOutlined,
+  FullscreenOutlined,
+  LinkOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
-import { artifactsApi, buildArtifactFileUrl } from '@api/artifacts';
-import type { ArtifactItem } from '@/types';
+import {
+  artifactsApi,
+  buildArtifactFileUrl,
+  buildDeliverableFileUrl,
+} from '@api/artifacts';
+import type { ArtifactItem, DeliverableItem } from '@/types';
 import type { DataNode } from 'antd/es/tree';
 import { useLayoutStore } from '@store/layout';
 
 const { Text } = Typography;
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
-const TEXT_EXTS = new Set([
-  'md',
-  'txt',
-  'csv',
-  'tsv',
-  'json',
-  'log',
-  'py',
-  'r',
-  'html',
-]);
+const TEXT_EXTS = new Set(['md', 'txt', 'csv', 'tsv', 'json', 'log', 'py', 'r', 'html', 'tex', 'bib']);
 
 const formatSize = (size = 0) => {
   if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
@@ -46,62 +41,146 @@ const formatSize = (size = 0) => {
   return `${size} B`;
 };
 
+const formatModuleName = (module?: string) => {
+  if (!module) return '';
+  if (module === 'image_tabular') return 'image & tabular';
+  return module;
+};
+
 interface ArtifactsPanelProps {
   sessionId: string | null;
 }
+
+type PanelMode = 'deliverables' | 'raw';
 
 type ArtifactTreeNode = DataNode & {
   filePath?: string;
   isLeaf?: boolean;
 };
 
+interface DisplayFileItem {
+  path: string;
+  name: string;
+  extension?: string | null;
+  size?: number;
+  module?: string;
+  sourceType: PanelMode;
+}
+
+const isNotFoundError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const status = (error as any)?.status;
+  const message = error.message.toLowerCase();
+  return status === 404 || message.includes('404') || message.includes('not found');
+};
+
 const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const { dagSidebarFullscreen, toggleDagSidebarFullscreen } = useLayoutStore();
+  const [mode, setMode] = React.useState<PanelMode>('deliverables');
   const [keyword, setKeyword] = React.useState('');
   const [selectedPath, setSelectedPath] = React.useState<string | null>(null);
 
-  const { data, isLoading, isFetching, error, refetch } = useQuery({
-    queryKey: ['artifacts', sessionId],
+  const {
+    data: rawData,
+    isLoading: rawLoading,
+    isFetching: rawFetching,
+    error: rawError,
+    refetch: refetchRaw,
+  } = useQuery({
+    queryKey: ['artifacts', 'raw', sessionId],
     queryFn: () =>
       artifactsApi.listSessionArtifacts(sessionId ?? '', {
         maxDepth: 4,
         includeDirs: false,
         limit: 500,
       }),
-    enabled: Boolean(sessionId),
+    enabled: Boolean(sessionId && mode === 'raw'),
     refetchInterval: 10000,
   });
 
-  const items = React.useMemo(() => {
-    if (!data?.items) return [];
-    const normalizedKeyword = keyword.trim().toLowerCase();
-    if (!normalizedKeyword) return data.items;
-    return data.items.filter((item) => item.path.toLowerCase().includes(normalizedKeyword));
-  }, [data?.items, keyword]);
+  const {
+    data: deliverableData,
+    isLoading: deliverableLoading,
+    isFetching: deliverableFetching,
+    error: deliverableError,
+    refetch: refetchDeliverables,
+  } = useQuery({
+    queryKey: ['artifacts', 'deliverables', sessionId],
+    queryFn: () =>
+      artifactsApi.listSessionDeliverables(sessionId ?? '', {
+        scope: 'latest',
+        includeDraft: false,
+        limit: 1000,
+      }),
+    enabled: Boolean(sessionId && mode === 'deliverables'),
+    refetchInterval: 10000,
+  });
 
-  const selectedItem = items.find((item) => item.path === selectedPath) ?? null;
+  const displayItems = React.useMemo<DisplayFileItem[]>(() => {
+    if (mode === 'deliverables') {
+      return (deliverableData?.items ?? []).map((item: DeliverableItem) => ({
+        path: item.path,
+        name: item.name,
+        extension: item.extension,
+        size: item.size,
+        module: item.module,
+        sourceType: 'deliverables',
+      }));
+    }
+    return (rawData?.items ?? [])
+      .filter((item: ArtifactItem) => item.type === 'file')
+      .map((item: ArtifactItem) => ({
+        path: item.path,
+        name: item.name,
+        extension: item.extension,
+        size: item.size,
+        sourceType: 'raw',
+      }));
+  }, [deliverableData?.items, mode, rawData?.items]);
+
+  const filteredItems = React.useMemo(() => {
+    const normalizedKeyword = keyword.trim().toLowerCase();
+    if (!normalizedKeyword) {
+      return displayItems;
+    }
+    return displayItems.filter((item) => item.path.toLowerCase().includes(normalizedKeyword));
+  }, [displayItems, keyword]);
+
+  const selectedItem = filteredItems.find((item) => item.path === selectedPath) ?? null;
 
   React.useEffect(() => {
-    if (!items.length) {
+    if (!filteredItems.length) {
       setSelectedPath(null);
       return;
     }
-    if (!selectedPath || !items.find((item) => item.path === selectedPath)) {
-      setSelectedPath(items[0].path);
+    if (!selectedPath || !filteredItems.some((item) => item.path === selectedPath)) {
+      setSelectedPath(filteredItems[0].path);
     }
-  }, [items, selectedPath]);
+  }, [filteredItems, selectedPath]);
 
   const isImage = selectedItem?.extension ? IMAGE_EXTS.has(selectedItem.extension) : false;
   const isText = selectedItem?.extension ? TEXT_EXTS.has(selectedItem.extension) : false;
 
   const { data: textPreview, isLoading: textLoading } = useQuery({
-    queryKey: ['artifact-text', sessionId, selectedItem?.path],
-    queryFn: () =>
-      artifactsApi.getSessionArtifactText(sessionId ?? '', selectedItem?.path ?? '', {
+    queryKey: ['artifacts', 'text', sessionId, selectedItem?.sourceType, selectedItem?.path],
+    queryFn: async () => {
+      if (!selectedItem?.path) {
+        throw new Error('缺少文件路径');
+      }
+      if (selectedItem.sourceType === 'deliverables') {
+        return artifactsApi.getSessionDeliverableText(sessionId ?? '', selectedItem.path, {
+          maxBytes: 200000,
+        });
+      }
+      return artifactsApi.getSessionArtifactText(sessionId ?? '', selectedItem.path, {
         maxBytes: 200000,
-      }),
+      });
+    },
     enabled: Boolean(sessionId && selectedItem?.path && isText),
   });
+
   const treeData = React.useMemo<ArtifactTreeNode[]>(() => {
     const rootMap = new Map<string, ArtifactTreeNode>();
 
@@ -121,7 +200,9 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
 
       const children = (parent.children ?? []) as ArtifactTreeNode[];
       const existing = children.find((child) => child.key === key);
-      if (existing) return existing;
+      if (existing) {
+        return existing;
+      }
 
       const node: ArtifactTreeNode = {
         key,
@@ -134,7 +215,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
       return node;
     };
 
-    const addFile = (item: ArtifactItem) => {
+    const addFile = (item: DisplayFileItem) => {
       const parts = item.path.split('/').filter(Boolean);
       let parent: ArtifactTreeNode | null = null;
       let currentKey = '';
@@ -162,17 +243,13 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
           } else {
             rootMap.set(currentKey, leafNode);
           }
-        } else {
-          parent = ensureNode(parent, currentKey, part);
+          return;
         }
+        parent = ensureNode(parent, currentKey, part);
       });
     };
 
-    items.forEach((item) => {
-      if (item.type === 'file') {
-        addFile(item);
-      }
-    });
+    filteredItems.forEach((item) => addFile(item));
 
     const sortNodes = (nodes: ArtifactTreeNode[]) => {
       nodes.sort((a, b) => {
@@ -193,7 +270,11 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     const roots = Array.from(rootMap.values());
     sortNodes(roots);
     return roots;
-  }, [items]);
+  }, [filteredItems]);
+
+  const activeError = mode === 'deliverables' ? deliverableError : rawError;
+  const isLoading = mode === 'deliverables' ? deliverableLoading : rawLoading;
+  const isFetching = mode === 'deliverables' ? deliverableFetching : rawFetching;
 
   if (!sessionId) {
     return (
@@ -203,29 +284,47 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     );
   }
 
-  // Handle 404 (not found) as empty state instead of error
-  const isNotFound = error instanceof Error && (
-    error.message.includes('404') ||
-    error.message.includes('not found') ||
-    (error as any).status === 404
-  );
-
-  if (error && !isNotFound) {
+  if (activeError && !isNotFoundError(activeError)) {
     return (
       <div style={{ padding: 16 }}>
-        <Empty description={`加载失败: ${(error as Error).message}`} />
+        <Empty description={`加载失败: ${(activeError as Error).message}`} />
       </div>
     );
   }
+
+  const paperCompleted = Number(deliverableData?.paper_status?.completed_count ?? 0);
+  const paperTotal = Number(deliverableData?.paper_status?.total_sections ?? 0);
+
+  const fileUrl = selectedItem
+    ? selectedItem.sourceType === 'deliverables'
+      ? buildDeliverableFileUrl(sessionId, selectedItem.path)
+      : buildArtifactFileUrl(sessionId, selectedItem.path)
+    : null;
+
+  const handleRefetch = () => {
+    if (mode === 'deliverables') {
+      void refetchDeliverables();
+      return;
+    }
+    void refetchRaw();
+  };
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-color)' }}>
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              生成文件列表
-            </Text>
+            <Space direction="vertical" size={2}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {mode === 'deliverables' ? '最终交付文件' : '原始产物文件'}
+              </Text>
+              {mode === 'deliverables' && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  已发布 {deliverableData?.count ?? 0} 个文件
+                  {paperTotal > 0 ? ` · 论文章节 ${paperCompleted}/${paperTotal}` : ''}
+                </Text>
+              )}
+            </Space>
             <Space size={6}>
               <Tooltip title={dagSidebarFullscreen ? '退出全屏' : '侧边栏全屏'}>
                 <Button
@@ -234,16 +333,26 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                   onClick={toggleDagSidebarFullscreen}
                 />
               </Tooltip>
-              <Button
-                size="small"
-                icon={<ReloadOutlined />}
-                onClick={() => refetch()}
-                loading={isFetching}
-              >
+              <Button size="small" icon={<ReloadOutlined />} onClick={handleRefetch} loading={isFetching}>
                 刷新
               </Button>
             </Space>
           </Space>
+
+          <Segmented
+            value={mode}
+            options={[
+              { label: '最终交付', value: 'deliverables' },
+              { label: '原始产物', value: 'raw' },
+            ]}
+            onChange={(value) => {
+              setMode(value as PanelMode);
+              setSelectedPath(null);
+              setKeyword('');
+            }}
+            block
+          />
+
           <Input.Search
             placeholder="搜索文件名或路径"
             value={keyword}
@@ -259,7 +368,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
             <div style={{ padding: 16 }}>
               <Text type="secondary">加载中...</Text>
             </div>
-          ) : items.length ? (
+          ) : filteredItems.length ? (
             <Tree
               showIcon
               treeData={treeData}
@@ -275,7 +384,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
             />
           ) : (
             <div style={{ padding: 16 }}>
-              <Empty description="暂无产物文件" />
+              <Empty description={mode === 'deliverables' ? '暂无最终交付文件' : '暂无产物文件'} />
             </div>
           )}
         </div>
@@ -300,21 +409,25 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                     {formatSize(selectedItem.size)}
                   </Text>
                 )}
+                {selectedItem.sourceType === 'deliverables' && selectedItem.module && (
+                  <Tag color="blue">{formatModuleName(selectedItem.module)}</Tag>
+                )}
                 <Tooltip title="打开文件">
                   <Button
                     size="small"
                     icon={<LinkOutlined />}
                     onClick={() => {
-                      const url = buildArtifactFileUrl(sessionId, selectedItem.path);
-                      window.open(url, '_blank');
+                      if (fileUrl) {
+                        window.open(fileUrl, '_blank');
+                      }
                     }}
                   />
                 </Tooltip>
               </Space>
 
-              {isImage && (
+              {isImage && fileUrl && (
                 <img
-                  src={buildArtifactFileUrl(sessionId, selectedItem.path)}
+                  src={fileUrl}
                   alt={selectedItem.name}
                   style={{ width: '100%', borderRadius: 8, border: '1px solid var(--border-color)' }}
                 />
@@ -343,11 +456,14 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
               )}
 
               {!isImage && !isText && (
-                <Text type="secondary">该文件类型暂不支持预览，请点击右侧按钮下载。</Text>
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description="当前类型暂不支持预览，可点击右上角按钮打开文件"
+                />
               )}
             </div>
           ) : (
-            <Empty description="请选择一个文件预览" />
+            <Empty description="请选择文件预览" image={Empty.PRESENTED_IMAGE_SIMPLE} />
           )}
         </div>
       </div>

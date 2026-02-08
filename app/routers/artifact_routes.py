@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import mimetypes
 from datetime import datetime
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.config.deliverable_config import get_deliverable_settings
+
 from . import register_router
 
 RUNTIME_DIR = Path(__file__).parent.parent.parent.resolve() / "runtime"
+INFO_SESSIONS_DIR = Path(__file__).parent.parent.parent.resolve() / "data" / "information_sessions"
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
@@ -40,25 +44,385 @@ class ArtifactTextResponse(BaseModel):
     truncated: bool = False
 
 
-def _resolve_session_dir(session_id: str) -> Path:
-    session_id = session_id.strip()
-    if not session_id:
+class DeliverableItem(BaseModel):
+    module: str
+    path: str
+    name: str
+    status: str = "final"
+    size: int = 0
+    extension: Optional[str] = None
+    updated_at: Optional[str] = None
+    source_path: Optional[str] = None
+
+
+class DeliverableVersionSummary(BaseModel):
+    version_id: str
+    created_at: Optional[str] = None
+    published_files_count: int = 0
+    published_modules: List[str] = Field(default_factory=list)
+
+
+class DeliverableListResponse(BaseModel):
+    session_id: str
+    scope: Literal["latest", "history"] = "latest"
+    version_id: Optional[str] = None
+    root_path: str
+    modules: Dict[str, List[DeliverableItem]] = Field(default_factory=dict)
+    items: List[DeliverableItem] = Field(default_factory=list)
+    count: int = 0
+    paper_status: Dict[str, Any] = Field(default_factory=dict)
+    available_versions: List[DeliverableVersionSummary] = Field(default_factory=list)
+
+
+class DeliverableManifestResponse(BaseModel):
+    session_id: str
+    scope: Literal["latest", "history"] = "latest"
+    version_id: Optional[str] = None
+    manifest_path: Optional[str] = None
+    manifest: Dict[str, Any] = Field(default_factory=dict)
+    available_versions: List[DeliverableVersionSummary] = Field(default_factory=list)
+
+
+def _strip_session_prefixes(value: str) -> str:
+    token = (value or "").strip()
+    while True:
+        if token.startswith("session_"):
+            token = token[len("session_"):]
+            continue
+        if token.startswith("session-"):
+            token = token[len("session-"):]
+            continue
+        break
+    return token
+
+
+def _find_session_candidates(root: Path, *, session_base: str) -> List[Path]:
+    resolved_root = root.resolve()
+    if not resolved_root.exists() or not resolved_root.is_dir():
+        return []
+
+    candidates: List[Path] = []
+    for item in resolved_root.iterdir():
+        if not item.is_dir():
+            continue
+        try:
+            candidate = item.resolve()
+        except Exception:
+            continue
+        if not str(candidate).startswith(str(resolved_root)):
+            continue
+        if _strip_session_prefixes(item.name) != session_base:
+            continue
+        candidates.append(candidate)
+    return candidates
+
+
+def _candidate_score(candidate: Path, *, purpose: str, source: str) -> Tuple[int, float]:
+    score = 0
+    deliverables_root = candidate / "deliverables"
+    deliverables_manifest = deliverables_root / "manifest_latest.json"
+    deliverables_latest = deliverables_root / "latest"
+    tool_outputs = candidate / "tool_outputs"
+
+    if purpose == "raw":
+        if tool_outputs.exists():
+            score += 100
+        if source == "info":
+            score += 20
+        if deliverables_manifest.exists() or deliverables_latest.exists():
+            score += 5
+    elif purpose == "deliverables":
+        if deliverables_manifest.exists():
+            score += 120
+        elif deliverables_latest.exists():
+            score += 90
+        elif deliverables_root.exists():
+            score += 60
+        if source == "runtime":
+            score += 15
+    else:
+        if deliverables_root.exists():
+            score += 40
+        if tool_outputs.exists():
+            score += 40
+
+    try:
+        modified = candidate.stat().st_mtime
+    except Exception:
+        modified = 0.0
+    return score, modified
+
+
+def _resolve_session_dir(
+    session_id: str,
+    *,
+    purpose: Literal["raw", "deliverables", "generic"] = "generic",
+) -> Path:
+    normalized = session_id.strip()
+    if not normalized:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id is required")
 
-    candidates = []
-    if session_id.startswith("session_"):
-        candidates.append(session_id)
-        candidates.append(f"session_{session_id}")
-    else:
-        candidates.append(f"session_{session_id}")
+    session_base = _strip_session_prefixes(normalized)
+    if not session_base:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id is invalid")
 
-    for label in candidates:
-        session_dir = (RUNTIME_DIR / label).resolve()
-        if session_dir.exists() and session_dir.is_dir():
-            if str(session_dir).startswith(str(RUNTIME_DIR.resolve())):
-                return session_dir
+    runtime_root = RUNTIME_DIR.resolve()
+    info_root = INFO_SESSIONS_DIR.resolve()
+    runtime_candidates = _find_session_candidates(runtime_root, session_base=session_base)
+    info_candidates = _find_session_candidates(info_root, session_base=session_base)
 
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session artifacts not found")
+    combined: List[Tuple[Path, str]] = []
+    combined.extend((item, "runtime") for item in runtime_candidates)
+    combined.extend((item, "info") for item in info_candidates)
+    if not combined:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session artifacts not found")
+
+    ranked = sorted(
+        combined,
+        key=lambda item: _candidate_score(item[0], purpose=purpose, source=item[1]),
+        reverse=True,
+    )
+    return ranked[0][0]
+
+
+def _deliverables_root(session_dir: Path) -> Path:
+    return session_dir / "deliverables"
+
+
+def _deliverables_latest_dir(session_dir: Path) -> Path:
+    return _deliverables_root(session_dir) / "latest"
+
+
+def _deliverables_history_dir(session_dir: Path) -> Path:
+    return _deliverables_root(session_dir) / "history"
+
+
+def _safe_json_load(path: Path) -> Dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _list_deliverable_versions(
+    *,
+    history_root: Path,
+    limit: int = 200,
+) -> List[DeliverableVersionSummary]:
+    if get_deliverable_settings().single_version_only:
+        return []
+    if not history_root.exists() or not history_root.is_dir():
+        return []
+
+    versions: List[DeliverableVersionSummary] = []
+    for version_dir in sorted(
+        [item for item in history_root.iterdir() if item.is_dir()],
+        key=lambda item: item.name,
+        reverse=True,
+    )[:limit]:
+        manifest = _safe_json_load(version_dir / "manifest.json")
+        version_id = str(manifest.get("version_id") or version_dir.name)
+        created_at = manifest.get("created_at")
+        published_files_count = int(manifest.get("published_files_count") or 0)
+        published_modules = manifest.get("published_modules") or []
+        if not isinstance(published_modules, list):
+            published_modules = []
+        versions.append(
+            DeliverableVersionSummary(
+                version_id=version_id,
+                created_at=created_at if isinstance(created_at, str) else None,
+                published_files_count=published_files_count,
+                published_modules=[str(item) for item in published_modules if item is not None],
+            )
+        )
+    return versions
+
+
+def _resolve_deliverable_view(
+    *,
+    session_dir: Path,
+    scope: str,
+    version: Optional[str],
+) -> Tuple[str, Optional[str], Path, Path, Dict[str, Any]]:
+    settings = get_deliverable_settings()
+    normalized_scope = (scope or "latest").strip().lower()
+    if normalized_scope not in {"latest", "history"}:
+        normalized_scope = "latest"
+
+    deliverables_root = _deliverables_root(session_dir)
+    latest_root = _deliverables_latest_dir(session_dir)
+    history_root = _deliverables_history_dir(session_dir)
+
+    explicit_version = (version or "").strip()
+    if settings.single_version_only:
+        explicit_version = ""
+        normalized_scope = "latest"
+
+    if explicit_version:
+        version_dir = (history_root / explicit_version).resolve()
+        if not version_dir.exists() or not version_dir.is_dir():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable version not found")
+        manifest_path = version_dir / "manifest.json"
+        manifest = _safe_json_load(manifest_path)
+        resolved_version = str(manifest.get("version_id") or explicit_version)
+        return "history", resolved_version, version_dir, manifest_path, manifest
+
+    if normalized_scope == "history":
+        candidate_versions = sorted(
+            [item for item in history_root.iterdir() if item.is_dir()],
+            key=lambda item: item.name,
+            reverse=True,
+        ) if history_root.exists() else []
+        if candidate_versions:
+            active = candidate_versions[0]
+            manifest_path = active / "manifest.json"
+            manifest = _safe_json_load(manifest_path)
+            resolved_version = str(manifest.get("version_id") or active.name)
+            return "history", resolved_version, active, manifest_path, manifest
+
+    manifest_path = deliverables_root / "manifest_latest.json"
+    manifest = _safe_json_load(manifest_path)
+    resolved_version = manifest.get("version_id")
+    if not isinstance(resolved_version, str):
+        resolved_version = None
+    return "latest", resolved_version, latest_root, manifest_path, manifest
+
+
+def _paper_status_from_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    paper_status = manifest.get("paper_status")
+    if isinstance(paper_status, dict):
+        return paper_status
+    return {
+        "completed_sections": [],
+        "missing_sections": [],
+        "total_sections": 0,
+        "completed_count": 0,
+    }
+
+
+def _manifest_items(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    direct_items = manifest.get("items")
+    if isinstance(direct_items, list):
+        for item in direct_items:
+            if isinstance(item, dict):
+                rows.append(dict(item))
+        if rows:
+            return rows
+
+    modules = manifest.get("modules")
+    if not isinstance(modules, dict):
+        return rows
+
+    for module_name, module_items in modules.items():
+        if not isinstance(module_items, list):
+            continue
+        for item in module_items:
+            if isinstance(item, str):
+                rows.append({"module": module_name, "path": item})
+            elif isinstance(item, dict):
+                row = dict(item)
+                row.setdefault("module", module_name)
+                rows.append(row)
+    return rows
+
+
+def _scan_deliverable_files(files_root: Path, *, limit: int) -> List[Dict[str, Any]]:
+    if not files_root.exists() or not files_root.is_dir():
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    for path in sorted(files_root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(files_root)
+        module = rel.parts[0] if rel.parts else "docs"
+        rows.append(
+            {
+                "module": module,
+                "path": str(rel),
+                "size": path.stat().st_size,
+                "updated_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+                "status": "final",
+            }
+        )
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _materialize_deliverable_items(
+    *,
+    manifest: Dict[str, Any],
+    files_root: Path,
+    include_draft: bool,
+    module_filter: Optional[str],
+    limit: int,
+) -> Tuple[List[DeliverableItem], Dict[str, List[DeliverableItem]]]:
+    rows = _manifest_items(manifest)
+    if not rows:
+        rows = _scan_deliverable_files(files_root, limit=limit)
+
+    normalized_filter = (module_filter or "").strip().lower() or None
+    resolved_root = files_root.resolve()
+
+    items: List[DeliverableItem] = []
+    modules: Dict[str, List[DeliverableItem]] = {}
+    for row in rows:
+        raw_path = str(row.get("path") or "").strip()
+        if not raw_path:
+            continue
+
+        module = str(row.get("module") or "").strip().lower()
+        if not module:
+            module = Path(raw_path).parts[0] if Path(raw_path).parts else "docs"
+
+        if normalized_filter and module != normalized_filter:
+            continue
+
+        status_value = str(row.get("status") or "final").strip().lower() or "final"
+        if not include_draft and status_value == "draft":
+            continue
+
+        normalized_path = raw_path.lstrip("/").replace("\\", "/")
+        target = (files_root / normalized_path).resolve()
+        if not str(target).startswith(str(resolved_root)):
+            continue
+
+        stat = target.stat() if target.exists() and target.is_file() else None
+        extension = Path(normalized_path).suffix.lower().lstrip(".") or None
+        size = int(row.get("size") or 0)
+        if stat is not None and size <= 0:
+            size = stat.st_size
+        updated_at = row.get("updated_at")
+        if stat is not None and not isinstance(updated_at, str):
+            updated_at = datetime.fromtimestamp(stat.st_mtime).isoformat()
+
+        item = DeliverableItem(
+            module=module,
+            path=normalized_path,
+            name=Path(normalized_path).name,
+            status=status_value,
+            size=max(0, size),
+            extension=extension,
+            updated_at=updated_at if isinstance(updated_at, str) else None,
+            source_path=str(row.get("source_path")) if row.get("source_path") is not None else None,
+        )
+        items.append(item)
+        modules.setdefault(module, []).append(item)
+
+        if len(items) >= limit:
+            break
+
+    for module_name in list(modules.keys()):
+        modules[module_name] = sorted(modules[module_name], key=lambda entry: entry.path)
+    items.sort(key=lambda entry: (entry.module, entry.path))
+    return items, modules
 
 
 def _iter_items(
@@ -126,7 +490,7 @@ async def list_session_artifacts(
     limit: int = Query(500, ge=1, le=5000),
     extensions: Optional[str] = Query(None),
 ) -> ArtifactListResponse:
-    session_dir = _resolve_session_dir(session_id)
+    session_dir = _resolve_session_dir(session_id, purpose="raw")
     ext_list = None
     if extensions:
         ext_list = [ext.strip().lower().lstrip(".") for ext in extensions.split(",") if ext.strip()]
@@ -152,7 +516,7 @@ async def get_session_artifact_file(
     session_id: str,
     path: str = Query(..., min_length=1),
 ) -> FileResponse:
-    session_dir = _resolve_session_dir(session_id)
+    session_dir = _resolve_session_dir(session_id, purpose="raw")
     target = (session_dir / path).resolve()
 
     if not str(target).startswith(str(session_dir)):
@@ -174,13 +538,162 @@ async def get_session_artifact_text(
     path: str = Query(..., min_length=1),
     max_bytes: int = Query(200000, ge=1024, le=2_000_000),
 ) -> ArtifactTextResponse:
-    session_dir = _resolve_session_dir(session_id)
+    session_dir = _resolve_session_dir(session_id, purpose="raw")
     target = (session_dir / path).resolve()
 
     if not str(target).startswith(str(session_dir)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid artifact path")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+
+    raw = target.read_bytes()
+    truncated = len(raw) > max_bytes
+    if truncated:
+        raw = raw[:max_bytes]
+    content = raw.decode("utf-8", errors="replace")
+    return ArtifactTextResponse(path=path, content=content, truncated=truncated)
+
+
+@router.get("/sessions/{session_id}/deliverables", response_model=DeliverableListResponse)
+async def list_session_deliverables(
+    session_id: str,
+    scope: Literal["latest", "history"] = Query("latest"),
+    version: Optional[str] = Query(None),
+    include_draft: bool = Query(False),
+    module: Optional[str] = Query(None),
+    limit: int = Query(1000, ge=1, le=5000),
+) -> DeliverableListResponse:
+    try:
+        session_dir = _resolve_session_dir(session_id, purpose="deliverables")
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_404_NOT_FOUND:
+            raise
+        return DeliverableListResponse(
+            session_id=session_id,
+            scope="latest",
+            version_id=None,
+            root_path="",
+            modules={},
+            items=[],
+            count=0,
+            paper_status={
+                "completed_sections": [],
+                "missing_sections": [],
+                "total_sections": 0,
+                "completed_count": 0,
+            },
+            available_versions=[],
+        )
+    resolved_scope, resolved_version, files_root, _manifest_path, manifest = _resolve_deliverable_view(
+        session_dir=session_dir,
+        scope=scope,
+        version=version,
+    )
+
+    items, modules = _materialize_deliverable_items(
+        manifest=manifest,
+        files_root=files_root,
+        include_draft=include_draft,
+        module_filter=module,
+        limit=limit,
+    )
+    versions = _list_deliverable_versions(history_root=_deliverables_history_dir(session_dir))
+
+    return DeliverableListResponse(
+        session_id=session_id,
+        scope=resolved_scope,
+        version_id=resolved_version,
+        root_path=str(files_root),
+        modules=modules,
+        items=items,
+        count=len(items),
+        paper_status=_paper_status_from_manifest(manifest),
+        available_versions=versions,
+    )
+
+
+@router.get("/sessions/{session_id}/deliverables/manifest", response_model=DeliverableManifestResponse)
+async def get_session_deliverables_manifest(
+    session_id: str,
+    scope: Literal["latest", "history"] = Query("latest"),
+    version: Optional[str] = Query(None),
+) -> DeliverableManifestResponse:
+    try:
+        session_dir = _resolve_session_dir(session_id, purpose="deliverables")
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_404_NOT_FOUND:
+            raise
+        return DeliverableManifestResponse(
+            session_id=session_id,
+            scope="latest",
+            version_id=None,
+            manifest_path=None,
+            manifest={},
+            available_versions=[],
+        )
+    resolved_scope, resolved_version, _files_root, manifest_path, manifest = _resolve_deliverable_view(
+        session_dir=session_dir,
+        scope=scope,
+        version=version,
+    )
+
+    versions = _list_deliverable_versions(history_root=_deliverables_history_dir(session_dir))
+    return DeliverableManifestResponse(
+        session_id=session_id,
+        scope=resolved_scope,
+        version_id=resolved_version,
+        manifest_path=str(manifest_path) if manifest_path.exists() else None,
+        manifest=manifest,
+        available_versions=versions,
+    )
+
+
+@router.get("/sessions/{session_id}/deliverables/file")
+async def get_session_deliverable_file(
+    session_id: str,
+    path: str = Query(..., min_length=1),
+    version: Optional[str] = Query(None),
+) -> FileResponse:
+    session_dir = _resolve_session_dir(session_id, purpose="deliverables")
+    _, _, files_root, _, _ = _resolve_deliverable_view(
+        session_dir=session_dir,
+        scope="history" if version else "latest",
+        version=version,
+    )
+    target = (files_root / path).resolve()
+
+    if not str(target).startswith(str(files_root.resolve())):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid deliverable path")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable file not found")
+
+    media_type, _ = mimetypes.guess_type(str(target))
+    return FileResponse(
+        path=target,
+        media_type=media_type or "application/octet-stream",
+        filename=target.name,
+    )
+
+
+@router.get("/sessions/{session_id}/deliverables/text", response_model=ArtifactTextResponse)
+async def get_session_deliverable_text(
+    session_id: str,
+    path: str = Query(..., min_length=1),
+    version: Optional[str] = Query(None),
+    max_bytes: int = Query(200000, ge=1024, le=2_000_000),
+) -> ArtifactTextResponse:
+    session_dir = _resolve_session_dir(session_id, purpose="deliverables")
+    _, _, files_root, _, _ = _resolve_deliverable_view(
+        session_dir=session_dir,
+        scope="history" if version else "latest",
+        version=version,
+    )
+    target = (files_root / path).resolve()
+
+    if not str(target).startswith(str(files_root.resolve())):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid deliverable path")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable not found")
 
     raw = target.read_bytes()
     truncated = len(raw) > max_bytes

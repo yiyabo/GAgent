@@ -17,18 +17,38 @@ logger = logging.getLogger(__name__)
 MAX_READ_CHARS = 100_000   # 100K 字符限制，约 25-50K tokens
 MAX_READ_LINES = 2_000     # 2000 行限制，覆盖绝大多数源文件
 
-ALLOWED_BASE_PATHS = [
-    "/tmp",
-    "/var/tmp",
-    "/data",  # Data directory
-    "/home/zczhao/GAgent",  # Project directory on server
-    os.path.expanduser("~/Documents"),
-    os.path.expanduser("~/Downloads"),
-    os.getcwd(),  # Current working directory
-    os.path.join(os.getcwd(), "data"),  # Project data directory
-    os.path.join(os.getcwd(), "results"),  # Project results directory
-    os.path.join(os.getcwd(), "runtime"),  # Runtime directory
-]
+def _normalize_allowed_base_paths() -> List[str]:
+    cwd = Path(os.getcwd()).resolve()
+    defaults = [
+        Path("/tmp"),
+        Path("/var/tmp"),
+        Path("/data"),
+        Path("/home/zczhao/GAgent"),  # Project directory on server
+        Path(os.path.expanduser("~/Documents")),
+        Path(os.path.expanduser("~/Downloads")),
+        cwd,  # Current working directory
+        cwd / "data",  # Project data directory
+        cwd / "results",  # Project results directory
+        cwd / "runtime",  # Runtime directory
+    ]
+
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for path in defaults:
+        variants = [path]
+        try:
+            variants.append(path.resolve())
+        except Exception:
+            pass
+        for item in variants:
+            key = str(item)
+            if key and key not in seen:
+                seen.add(key)
+                normalized.append(key)
+    return normalized
+
+
+ALLOWED_BASE_PATHS = _normalize_allowed_base_paths()
 
 # Default work directory - avoid creating files in root directory
 DEFAULT_WORK_DIR = "results"
@@ -44,6 +64,14 @@ def _normalize_file_path(file_path: str) -> str:
     return file_path
 
 
+def _path_is_within(candidate: Path, base: Path) -> bool:
+    try:
+        candidate.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
 def _validate_path_security(file_path: str) -> tuple[bool, str]:
     """
     Validate file path for security
@@ -52,23 +80,33 @@ def _validate_path_security(file_path: str) -> tuple[bool, str]:
         (is_safe, error_message)
     """
     try:
-        # Resolve absolute path to handle .. and symlinks
-        abs_path = Path(file_path).resolve()
-        abs_path_str = str(abs_path)
+        input_path = Path(file_path).expanduser()
+        lexical_abs = Path(os.path.abspath(str(input_path)))
+        resolved_abs = input_path.resolve(strict=False)
 
-        # First check if path is in explicitly allowed directories
-        # If so, skip dangerous paths check
-        is_in_allowed = any(abs_path_str.startswith(allowed) for allowed in ALLOWED_BASE_PATHS)
+        # First check if path is in explicitly allowed directories.
+        # We check both lexical and resolved absolute paths so symlinked
+        # project directories (e.g. data -> /Volumes/...) can still pass.
+        is_in_allowed = False
+        for allowed in ALLOWED_BASE_PATHS:
+            allowed_path = Path(allowed).expanduser()
+            try:
+                allowed_resolved = allowed_path.resolve(strict=False)
+            except Exception:
+                allowed_resolved = allowed_path
+            if _path_is_within(lexical_abs, allowed_path) or _path_is_within(resolved_abs, allowed_resolved):
+                is_in_allowed = True
+                break
         
         if is_in_allowed:
             # Path is explicitly allowed, only check file size
-            if abs_path.exists() and abs_path.is_file():
-                if abs_path.stat().st_size > 50 * 1024 * 1024:  # 50MB limit
+            if resolved_abs.exists() and resolved_abs.is_file():
+                if resolved_abs.stat().st_size > 50 * 1024 * 1024:  # 50MB limit
                     return False, "File too large (>50MB)"
             return True, ""
 
         # Check for path traversal attempts
-        if ".." in file_path or file_path.startswith("/"):
+        if ".." in Path(file_path).parts or Path(file_path).is_absolute():
             return False, "Path outside allowed directories"
 
         # Check for dangerous paths (only for non-allowed paths)
@@ -85,12 +123,12 @@ def _validate_path_security(file_path: str) -> tuple[bool, str]:
         ]
 
         for dangerous in dangerous_paths:
-            if abs_path_str.startswith(dangerous):
+            if _path_is_within(resolved_abs, Path(dangerous)):
                 return False, f"Access to {dangerous} is not allowed"
 
         # Check file size for read operations (prevent reading huge files)
-        if abs_path.exists() and abs_path.is_file():
-            if abs_path.stat().st_size > 50 * 1024 * 1024:  # 50MB limit
+        if resolved_abs.exists() and resolved_abs.is_file():
+            if resolved_abs.stat().st_size > 50 * 1024 * 1024:  # 50MB limit
                 return False, "File too large (>50MB)"
 
         return True, ""
