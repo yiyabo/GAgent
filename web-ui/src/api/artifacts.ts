@@ -1,6 +1,11 @@
 import { BaseApi } from './client';
 import { ENV } from '@/config/env';
-import type { ArtifactListResponse, ArtifactTextResponse } from '@/types';
+import type {
+  ArtifactListResponse,
+  ArtifactTextResponse,
+  DeliverableListResponse,
+  DeliverableManifestResponse,
+} from '@/types';
 
 class ArtifactsApi extends BaseApi {
   listSessionArtifacts = async (
@@ -25,6 +30,50 @@ class ArtifactsApi extends BaseApi {
       max_bytes: options?.maxBytes,
     });
   };
+
+  listSessionDeliverables = async (
+    sessionId: string,
+    options?: {
+      scope?: 'latest' | 'history';
+      version?: string;
+      includeDraft?: boolean;
+      module?: string;
+      limit?: number;
+    }
+  ): Promise<DeliverableListResponse> => {
+    return this.get<DeliverableListResponse>(`/artifacts/sessions/${sessionId}/deliverables`, {
+      scope: options?.scope ?? 'latest',
+      version: options?.version,
+      include_draft: options?.includeDraft,
+      module: options?.module,
+      limit: options?.limit,
+    });
+  };
+
+  getSessionDeliverablesManifest = async (
+    sessionId: string,
+    options?: { scope?: 'latest' | 'history'; version?: string }
+  ): Promise<DeliverableManifestResponse> => {
+    return this.get<DeliverableManifestResponse>(
+      `/artifacts/sessions/${sessionId}/deliverables/manifest`,
+      {
+        scope: options?.scope ?? 'latest',
+        version: options?.version,
+      }
+    );
+  };
+
+  getSessionDeliverableText = async (
+    sessionId: string,
+    path: string,
+    options?: { version?: string; maxBytes?: number }
+  ): Promise<ArtifactTextResponse> => {
+    return this.get<ArtifactTextResponse>(`/artifacts/sessions/${sessionId}/deliverables/text`, {
+      path,
+      version: options?.version,
+      max_bytes: options?.maxBytes,
+    });
+  };
 }
 
 export const artifactsApi = new ArtifactsApi();
@@ -32,4 +81,14 @@ export const artifactsApi = new ArtifactsApi();
 export const buildArtifactFileUrl = (sessionId: string, path: string) => {
   const encoded = encodeURIComponent(path);
   return `${ENV.API_BASE_URL}/artifacts/sessions/${sessionId}/file?path=${encoded}`;
+};
+
+export const buildDeliverableFileUrl = (
+  sessionId: string,
+  path: string,
+  options?: { version?: string }
+) => {
+  const encodedPath = encodeURIComponent(path);
+  const encodedVersion = options?.version ? `&version=${encodeURIComponent(options.version)}` : '';
+  return `${ENV.API_BASE_URL}/artifacts/sessions/${sessionId}/deliverables/file?path=${encodedPath}${encodedVersion}`;
 };

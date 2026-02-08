@@ -147,8 +147,8 @@ export interface ExecuteTaskResponse {
 }
 
 export type WebSearchProvider = 'builtin' | 'perplexity' | 'tavily';
-export type LLMProviderOption = 'glm' | 'qwen' | 'openai' | 'perplexity';
-export type BaseModelOption = 'qwen3-max-2026-01-23' | 'glm-4.6' | 'kimi-k2-thinking' | 'gpt-5.2-2025-12-11';
+export type LLMProviderOption = 'qwen';
+export type BaseModelOption = 'qwen3-max-2026-01-23' | 'qwen-turbo';
 
 export interface ChatSessionSettings {
   default_search_provider?: WebSearchProvider | null;
@@ -338,6 +338,53 @@ export interface ArtifactTextResponse {
   path: string;
   content: string;
   truncated: boolean;
+}
+
+export type DeliverableModule =
+  | 'code'
+  | 'docs'
+  | 'image_tabular'
+  | 'paper'
+  | 'refs'
+  | string;
+
+export interface DeliverableItem {
+  module: DeliverableModule;
+  path: string;
+  name: string;
+  status: 'draft' | 'final' | 'superseded' | string;
+  size?: number;
+  extension?: string | null;
+  updated_at?: string | null;
+  source_path?: string | null;
+}
+
+export interface DeliverableVersionSummary {
+  version_id: string;
+  created_at?: string | null;
+  published_files_count: number;
+  published_modules: string[];
+}
+
+export interface DeliverableListResponse {
+  session_id: string;
+  scope: 'latest' | 'history';
+  version_id?: string | null;
+  root_path: string;
+  modules: Record<string, DeliverableItem[]>;
+  items: DeliverableItem[];
+  count: number;
+  paper_status?: Record<string, any>;
+  available_versions: DeliverableVersionSummary[];
+}
+
+export interface DeliverableManifestResponse {
+  session_id: string;
+  scope: 'latest' | 'history';
+  version_id?: string | null;
+  manifest_path?: string | null;
+  manifest: Record<string, any>;
+  available_versions: DeliverableVersionSummary[];
 }
 
 export interface ToolResultPayload {

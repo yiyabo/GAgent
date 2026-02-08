@@ -657,7 +657,7 @@ def evaluate_plan_rubric(
     tree: PlanTree,
     *,
     evaluator_client: Optional[LLMClient] = None,
-    evaluator_provider: str = "kimi",
+    evaluator_provider: str = "qwen",
     evaluator_model: Optional[str] = None,
     dim_weights: Optional[Dict[str, float]] = None,
     sub_weights: Optional[Dict[str, Dict[str, float]]] = None,
@@ -666,7 +666,7 @@ def evaluate_plan_rubric(
     """
     Evaluate a plan using the 5-dimension rubric.
 
-    - Primary path: use an independent evaluator LLM (Kimi) to score subcriteria and provide evidence.
+    - Primary path: use an independent evaluator LLM (Qwen) to score subcriteria and provide evidence.
     - Fallback path: deterministic, conservative rule-only scoring if evaluator is unavailable.
 
     Output is always English (textual feedback/evidence).
@@ -684,7 +684,6 @@ def evaluate_plan_rubric(
             logger.warning("Rubric evaluator client init failed: %s", exc)
             client = None
 
-    # If provider is kimi, enforce URL presence; otherwise LLMClient will error at call time.
     if client is None or not getattr(client, "api_key", None) or not getattr(client, "url", None):
         sub_scores, evidence, rule_only = _fallback_rule_only_scores(tree)
         dim_scores, overall = _aggregate_scores(
@@ -706,8 +705,7 @@ def evaluate_plan_rubric(
                     "Evaluator model unavailable; produced a conservative rule-only estimate."
                 ],
                 "actionable_revisions": [
-                    "Configure evaluator provider credentials (KIMI_API_KEY/KIMI_API_URL/KIMI_MODEL) to enable strict rubric scoring.",
-                    "If your deployment hosts Kimi models behind a Qwen/DashScope OpenAI-compatible endpoint, ensure the runtime provides QWEN_API_KEY/QWEN_API_URL plus a Kimi model name (e.g., QWEN_KIMI_MODEL_NEW).",
+                    "Configure evaluator provider credentials (QWEN_API_KEY/QWEN_API_URL/QWEN_MODEL) to enable strict rubric scoring.",
                 ],
             },
             rule_evidence=rule_only,
@@ -852,4 +850,3 @@ Your job is to score each subcriterion and provide concrete evidence.
         feedback=feedback,
         rule_evidence=rule_evidence,
     )
-

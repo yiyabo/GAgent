@@ -13,7 +13,8 @@ class DecomposerSettings:
     max_depth: int = 2
     min_children: int = 2
     max_children: int = 5
-    total_node_budget: int = 50
+    # 0 (or negative) means unlimited budget; decomposition is still bounded by max_depth/max_children.
+    total_node_budget: int = 0
     model: Optional[str] = None
     provider: Optional[str] = None
     api_url: Optional[str] = None

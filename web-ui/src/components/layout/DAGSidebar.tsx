@@ -92,6 +92,41 @@ const DAGSidebar: React.FC = () => {
     for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
       const metadata = messages[idx]?.metadata as Record<string, any> | null | undefined;
       if (!metadata) continue;
+      const embeddedDecomposeJob = (metadata.decomposition_job as Record<string, any> | null | undefined) ?? null;
+      if (embeddedDecomposeJob) {
+        const jobId = (embeddedDecomposeJob.job_id ?? null) as string | null;
+        const jobType = (embeddedDecomposeJob.job_type ?? 'plan_decompose') as string | null;
+        const planId = (embeddedDecomposeJob.plan_id ?? null) as number | null;
+        if (jobId && jobType === 'plan_decompose') {
+          if (planId !== null && planId !== currentPlanId) continue;
+          return {
+            jobId,
+            jobType,
+            planId,
+            initialJob: embeddedDecomposeJob,
+            status: embeddedDecomposeJob.status ?? null,
+          };
+        }
+      }
+      const actions =
+        (Array.isArray(metadata.actions) ? metadata.actions : null) ??
+        (Array.isArray(metadata.raw_actions) ? metadata.raw_actions : []);
+      for (let actIdx = actions.length - 1; actIdx >= 0; actIdx -= 1) {
+        const actionJob = (actions[actIdx] as any)?.details?.decomposition_job as Record<string, any> | undefined;
+        if (!actionJob) continue;
+        const jobId = (actionJob.job_id ?? null) as string | null;
+        const jobType = (actionJob.job_type ?? 'plan_decompose') as string | null;
+        const planId = (actionJob.plan_id ?? null) as number | null;
+        if (!jobId || jobType !== 'plan_decompose') continue;
+        if (planId !== null && planId !== currentPlanId) break;
+        return {
+          jobId,
+          jobType,
+          planId,
+          initialJob: actionJob,
+          status: actionJob.status ?? null,
+        };
+      }
       const job = (metadata.job as Record<string, any> | null | undefined) ?? null;
       const jobType = (metadata.job_type ?? job?.job_type ?? null) as string | null;
       const jobId = (metadata.job_id ?? job?.job_id ?? null) as string | null;
@@ -153,43 +188,64 @@ const DAGSidebar: React.FC = () => {
     if (!latestDecomposeJob?.jobId) return null;
     const snapshot = (decomposeSnapshot as Record<string, any> | null) ?? latestDecomposeJob.initialJob ?? null;
     if (!snapshot) return null;
-    const stats = (snapshot.stats ?? {}) as Record<string, any>;
-    const params = (snapshot.params ?? {}) as Record<string, any>;
-    const logs = Array.isArray(snapshot.logs) ? snapshot.logs : [];
-    const totalBudget = toNumber(params.node_budget) ?? toNumber(stats.node_budget);
-    let remainingBudget: number | null = null;
-    let queueRemaining: number | null = null;
-    for (let idx = logs.length - 1; idx >= 0; idx -= 1) {
-      const metadata = logs[idx]?.metadata as Record<string, any> | undefined;
-      if (!metadata) continue;
-      if (remainingBudget === null) {
-        remainingBudget = toNumber(metadata.budget_remaining);
-      }
-      if (queueRemaining === null) {
-        queueRemaining = toNumber(metadata.queue_remaining);
-      }
-      if (remainingBudget !== null || queueRemaining !== null) break;
-    }
-    const consumedFromStats = toNumber(stats.consumed_budget);
-    const consumedBudget =
-      consumedFromStats ??
-      (totalBudget !== null && remainingBudget !== null
-        ? Math.max(0, totalBudget - remainingBudget)
-        : null);
-    const percentRaw =
-      totalBudget !== null && totalBudget > 0 && consumedBudget !== null
-        ? Math.round((consumedBudget / totalBudget) * 100)
-        : null;
-    const percent =
-      percentRaw !== null ? Math.max(0, Math.min(100, percentRaw)) : null;
-    return {
-      status: snapshot.status as string,
-      percent,
-      totalBudget,
-      consumedBudget,
-      queueRemaining,
-    };
-  }, [decomposeSnapshot, latestDecomposeJob]);
+	    const stats = (snapshot.stats ?? {}) as Record<string, any>;
+	    const params = (snapshot.params ?? {}) as Record<string, any>;
+	    const logs = Array.isArray(snapshot.logs) ? snapshot.logs : [];
+	    const totalBudget = toNumber(params.node_budget) ?? toNumber(stats.node_budget);
+	    let remainingBudget: number | null = null;
+	    let queueRemaining: number | null = toNumber(stats.queue_remaining);
+	    let createdCount: number | null = null;
+	    let processedCount: number | null = null;
+	    for (let idx = logs.length - 1; idx >= 0; idx -= 1) {
+	      const metadata = logs[idx]?.metadata as Record<string, any> | undefined;
+	      if (!metadata) continue;
+	      if (remainingBudget === null) {
+	        remainingBudget = toNumber(metadata.budget_remaining);
+	      }
+	      if (queueRemaining === null) {
+	        queueRemaining = toNumber(metadata.queue_remaining);
+	      }
+	      if (createdCount === null) {
+	        createdCount = toNumber(metadata.created_count ?? metadata.createdCount);
+	      }
+	      if (processedCount === null) {
+	        processedCount = toNumber(metadata.processed_count ?? metadata.processedCount);
+	      }
+	      if (
+	        (remainingBudget !== null || totalBudget === null) &&
+	        queueRemaining !== null &&
+	        createdCount !== null &&
+	        processedCount !== null
+	      ) {
+	        break;
+	      }
+	    }
+	    const consumedFromStats = toNumber(stats.consumed_budget);
+	    const consumedBudget =
+	      consumedFromStats ??
+	      (totalBudget !== null && remainingBudget !== null
+	        ? Math.max(0, totalBudget - remainingBudget)
+	        : createdCount !== null
+	          ? Math.max(0, Math.round(createdCount))
+	        : null);
+	    const percentRaw =
+	      totalBudget !== null && totalBudget > 0 && consumedBudget !== null
+	        ? Math.round((consumedBudget / totalBudget) * 100)
+	        : processedCount !== null && queueRemaining !== null
+	          ? Math.round((processedCount / Math.max(1, processedCount + queueRemaining + 1)) * 100)
+	        : null;
+	    const percent =
+	      percentRaw !== null ? Math.max(0, Math.min(100, percentRaw)) : null;
+	    return {
+	      status: snapshot.status as string,
+	      percent,
+	      totalBudget,
+	      consumedBudget,
+	      queueRemaining,
+	      createdCount,
+	      processedCount,
+	    };
+	  }, [decomposeSnapshot, latestDecomposeJob]);
 
   const planEvaluation = useMemo(() => {
     const meta = (planTree?.metadata ?? {}) as Record<string, any>;
@@ -306,17 +362,13 @@ const DAGSidebar: React.FC = () => {
             ? '失败'
             : '进行中';
 
-    const showBudget =
-      decomposeProgress.totalBudget != null && decomposeProgress.consumedBudget != null;
-    const percent =
-      decomposeProgress.percent != null ? decomposeProgress.percent : showBudget ? 0 : 0;
+    const percent = decomposeProgress.percent != null ? decomposeProgress.percent : 0;
     const detailParts: string[] = [];
-    if (showBudget) {
-      detailParts.push(
-        `已处理 ${Math.max(0, Math.round(decomposeProgress.consumedBudget!))}/${Math.round(
-          decomposeProgress.totalBudget!
-        )}`
-      );
+    if (decomposeProgress.consumedBudget != null) {
+      detailParts.push(`已创建 ${Math.max(0, Math.round(decomposeProgress.consumedBudget))}`);
+    }
+    if (decomposeProgress.totalBudget != null && decomposeProgress.totalBudget > 0) {
+      detailParts.push(`上限 ${Math.round(decomposeProgress.totalBudget)}`);
     }
     if (decomposeProgress.queueRemaining != null) {
       detailParts.push(`队列剩余 ${Math.max(0, Math.round(decomposeProgress.queueRemaining))}`);

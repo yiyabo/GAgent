@@ -61,7 +61,7 @@ class GLMConfig:
 
         def _derive_embeddings_url(chat_url: Optional[str]) -> str:
             # 若未显式配置 embeddings API，则基于 chat/completions 推导，最后回退到默认
-            default_url = "https://open.bigmodel.cn/api/paas/v4/embeddings"
+            default_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
             if not chat_url:
                 return default_url
             cu = str(chat_url)

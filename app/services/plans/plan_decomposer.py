@@ -323,11 +323,12 @@ class PlanDecomposer:
         failed: List[Optional[int]] = []
         visited: set[Optional[int]] = set()
         outline_cache = tree.to_outline(max_depth=5, max_nodes=80)
-        budget_remaining = max(node_budget, 0)
+        unlimited_budget = node_budget <= 0
+        budget_remaining: Optional[int] = None if unlimited_budget else max(node_budget, 0)
         llm_calls = 0
         stopped_reason: Optional[str] = None
 
-        if budget_remaining == 0:
+        if budget_remaining is not None and budget_remaining == 0:
             return DecompositionResult(
                 plan_id=plan_id,
                 mode=mode,
@@ -337,7 +338,7 @@ class PlanDecomposer:
                 failed_nodes=failed,
                 stopped_reason="node_budget_exhausted",
                 stats={
-                    "node_budget": node_budget,
+                    "node_budget": node_budget if node_budget > 0 else None,
                     "consumed_budget": 0,
                     "queue_remaining": len(queue),
                     "llm_calls": 0,
@@ -349,7 +350,7 @@ class PlanDecomposer:
             else override_allow_existing_children
         )
 
-        while queue and budget_remaining > 0:
+        while queue and (budget_remaining is None or budget_remaining > 0):
             current = queue.popleft()
             if current.node_id in visited:
                 continue
@@ -389,6 +390,8 @@ class PlanDecomposer:
                     "depth": current.relative_depth,
                     "queue_remaining": len(queue),
                     "budget_remaining": budget_remaining,
+                    "created_count": len(created_nodes),
+                    "processed_count": len(processed),
                 },
             )
             prompt = self._prompt_builder.build(
@@ -451,7 +454,7 @@ class PlanDecomposer:
             # 收集当前批次中已创建的兄弟节点 ID
             created_sibling_ids = [n.id for n in created_nodes if n.parent_id == current.node_id]
             for child in children:
-                if budget_remaining <= 0:
+                if budget_remaining is not None and budget_remaining <= 0:
                     break
                 new_node = self._create_child_node(
                     plan_id,
@@ -460,7 +463,8 @@ class PlanDecomposer:
                     tree=tree,
                     created_sibling_ids=created_sibling_ids,
                 )
-                budget_remaining -= 1
+                if budget_remaining is not None:
+                    budget_remaining -= 1
                 created_nodes.append(new_node)
                 created_sibling_ids.append(new_node.id)  # 更新兄弟列表
                 self._update_tree_cache(tree, new_node)
@@ -477,14 +481,14 @@ class PlanDecomposer:
                 if (
                     not child.leaf
                     and current.relative_depth + 1 <= max_depth
-                    and budget_remaining > 0
-                ):
-                    queue.append(
-                        QueueItem(
-                            node_id=new_node.id,
-                            relative_depth=current.relative_depth + 1,
+                    and (budget_remaining is None or budget_remaining > 0)
+                    ):
+                        queue.append(
+                            QueueItem(
+                                node_id=new_node.id,
+                                relative_depth=current.relative_depth + 1,
+                            )
                         )
-                    )
 
             if llm_result.should_stop:
                 stopped_reason = llm_result.reason or "llm_requested_stop"
@@ -495,7 +499,7 @@ class PlanDecomposer:
                 )
                 break
 
-        if budget_remaining <= 0:
+        if budget_remaining is not None and budget_remaining <= 0:
             stopped_reason = stopped_reason or "node_budget_exhausted"
             _log_job(
                 "info",
@@ -551,8 +555,8 @@ class PlanDecomposer:
             failed_nodes=failed,
             stopped_reason=stopped_reason,
             stats={
-                "node_budget": node_budget,
-                "consumed_budget": node_budget - budget_remaining,
+                "node_budget": node_budget if node_budget > 0 else None,
+                "consumed_budget": len(created_nodes),
                 "queue_remaining": len(queue),
                 "llm_calls": llm_calls,
             },
