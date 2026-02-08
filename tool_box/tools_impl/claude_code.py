@@ -11,11 +11,14 @@ import json
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Awaitable
+from typing import Any, Dict, List, Optional, Callable, Awaitable, Sequence
 import asyncio
 from app.services.plans.decomposition_jobs import get_current_job, log_job_event
 
 logger = logging.getLogger(__name__)
+
+_BLOCK_SCOPE_STATUS = "STATUS: BLOCKED_SCOPE"
+_BLOCK_SCOPE_REASON = "REASON: NEED_ATOMIC_TASK"
 
 
 def _get_available_skills() -> List[str]:
@@ -28,6 +31,70 @@ def _get_available_skills() -> List[str]:
     except Exception as e:
         logger.debug(f"Failed to load skills list: {e}")
         return []
+
+
+def _normalize_csv_values(value: Any) -> List[str]:
+    if value is None:
+        return []
+
+    raw_items: List[str] = []
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+        for item in value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if not text:
+                continue
+            if "," in text:
+                raw_items.extend(text.split(","))
+            else:
+                raw_items.append(text)
+    else:
+        text = str(value).strip()
+        if text:
+            raw_items = [text]
+
+    tokens: List[str] = []
+    seen = set()
+    for item in raw_items:
+        token = str(item).strip()
+        if not token:
+            continue
+        normalized = token.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        tokens.append(token)
+    return tokens
+
+
+def _detect_scope_blocked(stdout: str, output_data: Optional[Dict[str, Any]]) -> Optional[str]:
+    candidates: List[str] = []
+    if stdout:
+        candidates.append(stdout)
+    if isinstance(output_data, dict):
+        for key in ("result", "content", "message", "raw_output"):
+            value = output_data.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value)
+
+    for text in candidates:
+        if _BLOCK_SCOPE_STATUS not in text:
+            continue
+        detail_match = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("DETAIL:"):
+                detail_match = stripped[len("DETAIL:") :].strip()
+                break
+        if detail_match:
+            return detail_match
+        if _BLOCK_SCOPE_REASON in text:
+            return "Need atomic task decomposition."
+        return "Blocked by execution scope guardrail."
+    return None
 
 # Project root directory
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -114,8 +181,8 @@ Directory name:"""
 
 async def claude_code_handler(
     task: str,
-    allowed_tools: Optional[str] = None,
-    add_dirs: Optional[str] = None,
+    allowed_tools: Optional[Any] = None,
+    add_dirs: Optional[Any] = None,
     skip_permissions: bool = True,
     output_format: str = "json",
     session_id: Optional[str] = None,
@@ -197,6 +264,10 @@ async def claude_code_handler(
         except Exception as log_exc:
             logger.warning(f"Failed to initialize Claude Code log file: {log_exc}")
         
+        # Normalize optional CLI params (supports both string and list inputs)
+        normalized_allowed_tools = _normalize_csv_values(allowed_tools)
+        normalized_add_dirs = _normalize_csv_values(add_dirs)
+
         # Process additional directories to allow access, convert to absolute paths
         allowed_dirs = []
         
@@ -211,8 +282,8 @@ async def claude_code_handler(
             allowed_dirs.append(str(session_dir))
             logger.info(f"Auto-added session runtime directory: {session_dir}")
         
-        if add_dirs:
-            for dir_path in add_dirs.split(','):
+        if normalized_add_dirs:
+            for dir_path in normalized_add_dirs:
                 dir_path = dir_path.strip()
                 # Check if already an absolute path
                 if Path(dir_path).is_absolute():
@@ -233,6 +304,13 @@ async def claude_code_handler(
                 f"Available skills: {', '.join(available_skills)}\n"
             )
         
+        allowed_dirs_info = ""
+        if allowed_dirs:
+            allowed_dirs_info = (
+                "\n\nIMPORTANT: You have access to these additional directories (use ABSOLUTE paths):\n"
+                + "\n".join(f"  - {d}" for d in allowed_dirs)
+            )
+
         enhanced_task = (
             f"[SINGLE TASK EXECUTION MODE]\n"
             f"You are executing ONE specific task assigned by the outer agent. Do NOT plan or execute additional tasks.\n\n"
@@ -241,6 +319,12 @@ async def claude_code_handler(
             f"- Do NOT decompose into multiple sub-projects or expand scope\n"
             f"- If the task is too complex, report it and stop (let the outer agent decompose it)\n"
             f"- Focus on producing concrete outputs for THIS task only\n\n"
+            f"SCOPE GUARDRAIL (MANDATORY):\n"
+            f"- If the request still contains planning/roadmap/decomposition work OR more than one independent objective,\n"
+            f"  STOP immediately and output exactly:\n"
+            f"  {_BLOCK_SCOPE_STATUS}\n"
+            f"  {_BLOCK_SCOPE_REASON}\n"
+            f"  DETAIL: <one sentence>\n\n"
             f"Working directory: {task_work_dir}\n"
             f"Output folders: results/ (figures), code/ (scripts), data/ (tables), docs/ (reports)\n"
             f"File prefix: {file_prefix}\n"
@@ -251,6 +335,7 @@ async def claude_code_handler(
             f"2. Run the scripts and capture outputs\n"
             f"3. Save all figures/results to results/\n"
             f"4. Provide a summary of actual outputs produced"
+            f"{allowed_dirs_info}"
         )
         
         # Build command
@@ -263,24 +348,12 @@ async def claude_code_handler(
         ]
         
         # Add tool restrictions
-        if allowed_tools:
-            cmd.extend(['--allowed-tools', allowed_tools])
+        if normalized_allowed_tools:
+            cmd.extend(['--allowed-tools', ",".join(normalized_allowed_tools)])
         
         # Add directory access permissions (paths relative to project root)
         for abs_path in allowed_dirs:
             cmd.extend(['--add-dir', abs_path])
-        
-        # Explicitly inform Claude about accessible absolute paths
-        allowed_dirs_info = ""
-        if allowed_dirs:
-            allowed_dirs_info = (
-                f"\n\nIMPORTANT: You have access to these additional directories (use ABSOLUTE paths):\n"
-                + "\n".join(f"  - {d}" for d in allowed_dirs)
-            )
-        
-        # Append directory access info to task description
-        if allowed_dirs_info and not enhanced_task.endswith(allowed_dirs_info):
-            enhanced_task += allowed_dirs_info
         
         # Skip permission checks (research environment)
         if skip_permissions:
@@ -348,6 +421,10 @@ async def claude_code_handler(
             except json.JSONDecodeError:
                 logger.warning("Failed to parse JSON output, using raw text")
                 output_data = {"raw_output": stdout}
+
+        blocked_detail = _detect_scope_blocked(stdout, output_data)
+        if blocked_detail:
+            success = False
         
         if log_file:
             try:
@@ -357,7 +434,7 @@ async def claude_code_handler(
                 logger.warning(f"Failed to finalize Claude Code log file: {log_err}")
 
         # Build return result
-        return {
+        result_payload = {
             "tool": "claude_code",
             "task": task,
             "task_directory": task_dir_base,
@@ -374,6 +451,11 @@ async def claude_code_handler(
             "working_directory": str(task_work_dir),
             "log_path": str(log_path) if log_path else None,
         }
+        if blocked_detail:
+            result_payload["blocked_by_scope_guardrail"] = True
+            result_payload["blocked_reason"] = blocked_detail
+            result_payload["error"] = f"Blocked by scope guardrail: {blocked_detail}"
+        return result_payload
         
     except subprocess.TimeoutExpired:
         # Should not trigger since timeout=None, but kept as a safeguard

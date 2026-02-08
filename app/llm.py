@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import random
 import time
@@ -9,6 +10,8 @@ import httpx
 
 from .interfaces import LLMProvider
 from .services.foundation.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def _truthy(val: Optional[str]) -> bool:
@@ -37,10 +40,17 @@ class LLMClient(LLMProvider):
         backoff_base: Optional[float] = None,
     ) -> None:
         settings = get_settings()
-        
-        # 确定使用的提供商
-        self.provider = provider or os.getenv("LLM_PROVIDER") or settings.llm_provider or "glm"
-        
+
+        # 确定使用的提供商（强制将 legacy glm 路由到 qwen，避免误打到 BigModel）
+        requested_provider = (
+            provider or os.getenv("LLM_PROVIDER") or settings.llm_provider or "qwen"
+        )
+        requested_provider = str(requested_provider).strip().lower()
+        if requested_provider == "glm":
+            logger.warning("LLM provider 'glm' is deprecated; forcing provider='qwen'")
+            requested_provider = "qwen"
+        self.provider = requested_provider
+
         provider_name = self.provider.lower()
 
         # 根据提供商配置API参数
@@ -57,7 +67,16 @@ class LLMClient(LLMProvider):
             env_model = os.getenv("QWEN_MODEL")
             self.api_key = api_key or env_api_key or settings.qwen_api_key
             self.url = url or env_url or settings.qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-            self.model = model or env_model or settings.qwen_model or "qwen-turbo"
+            selected_model = model or env_model or settings.qwen_model or "qwen-turbo"
+            selected_model_str = str(selected_model).strip().lower()
+            if selected_model_str and not selected_model_str.startswith("qwen"):
+                logger.warning(
+                    "Model '%s' is not a Qwen-series model; forcing model='%s'",
+                    selected_model,
+                    settings.qwen_model or "qwen-turbo",
+                )
+                selected_model = settings.qwen_model or "qwen-turbo"
+            self.model = selected_model
         elif provider_name == "kimi":
             # Kimi (Moonshot) via OpenAI-compatible endpoints (e.g., 百炼/compatible-mode)
             env_api_key = os.getenv("KIMI_API_KEY")
@@ -105,13 +124,20 @@ class LLMClient(LLMProvider):
             self.model = model or env_model or "gpt-4o-mini"
             self.openai_project = os.getenv("OPENAI_PROJECT")
             self.openai_org = os.getenv("OPENAI_ORG") or os.getenv("OPENAI_ORGANIZATION")
-        else:  # 默认GLM
-            env_api_key = os.getenv("GLM_API_KEY")
-            env_url = os.getenv("GLM_API_URL")
-            env_model = os.getenv("GLM_MODEL")
-            self.api_key = api_key or env_api_key or settings.glm_api_key
-            self.url = url or env_url or settings.glm_api_url or "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-            self.model = model or env_model or settings.glm_model or "glm-4-flash"
+        else:  # unknown provider -> fallback to qwen
+            logger.warning("Unknown provider '%s'; forcing provider='qwen'", provider_name)
+            self.provider = "qwen"
+            env_api_key = os.getenv("QWEN_API_KEY")
+            env_url = os.getenv("QWEN_API_URL")
+            env_model = os.getenv("QWEN_MODEL")
+            self.api_key = api_key or env_api_key or settings.qwen_api_key
+            self.url = (
+                url
+                or env_url
+                or settings.qwen_api_url
+                or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            )
+            self.model = model or env_model or settings.qwen_model or "qwen-turbo"
         
         self.timeout = timeout or settings.glm_request_timeout
         # 🚫 科研项目要求：强制禁用Mock模式，必须使用真实API

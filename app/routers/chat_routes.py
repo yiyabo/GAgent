@@ -10,6 +10,7 @@ import logging
 import re
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
 from uuid import uuid4
 
@@ -52,12 +53,13 @@ from app.services.plans.decomposition_jobs import (
 )
 from app.services.plans.plan_decomposer import DecompositionResult, PlanDecomposer
 from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService, ExecutionConfig
-from app.services.plans.plan_models import PlanTree
+from app.services.plans.plan_models import PlanNode, PlanTree
 from app.services.plans.plan_session import PlanSession
 from app.services.session_title_service import (
     SessionNotFoundError,
     SessionTitleService,
 )
+from app.services.deliverables import get_deliverable_publisher
 from app.services.upload_storage import delete_session_storage
 from app.services.tool_output_storage import store_tool_output
 from app.prompts import prompt_manager
@@ -133,8 +135,8 @@ def _cleanup_old_confirmations(max_age_seconds: int = 600) -> None:
         logger.info(f"[CONFIRMATION] Cleaned up expired confirmation: {cid}")
 
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
-VALID_BASE_MODELS = {"qwen3-max-2026-01-23", "glm-4.6", "kimi-k2-thinking", "gpt-5.2-2025-12-11"}
-VALID_LLM_PROVIDERS = {"glm", "qwen", "openai", "perplexity"}
+VALID_BASE_MODELS = {"qwen3-max-2026-01-23", "qwen-turbo"}
+VALID_LLM_PROVIDERS = {"qwen"}
 plan_decomposer_service = PlanDecomposer(
     repo=plan_repository,
     settings=decomposer_settings,
@@ -306,10 +308,10 @@ class ChatSessionSettings(BaseModel):
 
     default_search_provider: Optional[Literal["builtin", "perplexity", "tavily"]] = None
     default_base_model: Optional[
-        Literal["qwen3-max-2026-01-23", "glm-4.6", "kimi-k2-thinking", "gpt-5.2-2025-12-11"]
+        Literal["qwen3-max-2026-01-23", "qwen-turbo"]
     ] = None
     default_llm_provider: Optional[
-        Literal["glm", "qwen", "openai", "perplexity"]
+        Literal["qwen"]
     ] = None
 
 
@@ -1509,7 +1511,10 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             cleaned = agent._strip_code_fence(raw)
             structured = LLMStructuredResponse.model_validate_json(cleaned)
             structured = await agent._apply_experiment_fallback(structured)
+            structured = agent._apply_plan_first_guardrail(structured)
             structured = agent._apply_phagescope_fallback(structured)
+            structured = agent._apply_task_execution_followthrough_guardrail(structured)
+            structured = agent._apply_completion_claim_guardrail(structured)
             agent._current_user_message = None
 
             if not structured.actions:
@@ -2488,9 +2493,37 @@ def _merge_async_metadata(
             if "logs" in job_payload:
                 metadata["job_logs"] = job_payload.get("logs")
 
+    latest_decomposition_job: Optional[Dict[str, Any]] = (
+        metadata.get("decomposition_job")
+        if isinstance(metadata.get("decomposition_job"), dict)
+        else None
+    )
+
     for action in actions or []:
         details = action.get("details") or {}
         embedded_job = details.get("decomposition_job")
+        if isinstance(embedded_job, dict):
+            embedded_job_id = embedded_job.get("job_id")
+            if isinstance(embedded_job_id, str) and embedded_job_id.strip():
+                job_summary: Dict[str, Any] = {
+                    "job_id": embedded_job_id,
+                    "job_type": embedded_job.get("job_type") or "plan_decompose",
+                    "status": embedded_job.get("status"),
+                    "plan_id": embedded_job.get("plan_id"),
+                    "task_id": embedded_job.get("task_id"),
+                    "mode": embedded_job.get("mode"),
+                    "error": embedded_job.get("error"),
+                    "created_at": embedded_job.get("created_at"),
+                    "started_at": embedded_job.get("started_at"),
+                    "finished_at": embedded_job.get("finished_at"),
+                }
+                if isinstance(embedded_job.get("stats"), dict):
+                    job_summary["stats"] = embedded_job.get("stats")
+                if isinstance(embedded_job.get("params"), dict):
+                    job_summary["params"] = embedded_job.get("params")
+                if isinstance(embedded_job.get("metadata"), dict):
+                    job_summary["metadata"] = embedded_job.get("metadata")
+                latest_decomposition_job = job_summary
         if embedded_job and "job_id" not in metadata:
             metadata["type"] = "job_log"
             metadata["job"] = embedded_job
@@ -2505,6 +2538,11 @@ def _merge_async_metadata(
                 metadata["target_task_name"] = details["target_task_name"]
             elif "title" in details:
                 metadata["target_task_name"] = details["title"]
+
+    if latest_decomposition_job:
+        metadata["decomposition_job"] = latest_decomposition_job
+        metadata["decomposition_job_id"] = latest_decomposition_job.get("job_id")
+        metadata["decomposition_job_status"] = latest_decomposition_job.get("status")
 
     return metadata
 
@@ -3633,14 +3671,20 @@ class StructuredChatAgent:
     async def handle(self, user_message: str) -> AgentResult:
         structured = await self._invoke_llm(user_message)
         structured = await self._apply_experiment_fallback(structured)
+        structured = self._apply_plan_first_guardrail(structured)
         structured = self._apply_phagescope_fallback(structured)
+        structured = self._apply_task_execution_followthrough_guardrail(structured)
+        structured = self._apply_completion_claim_guardrail(structured)
         return await self.execute_structured(structured)
 
     async def get_structured_response(self, user_message: str) -> LLMStructuredResponse:
         """Return the raw structured response without executing actions."""
         structured = await self._invoke_llm(user_message)
         structured = await self._apply_experiment_fallback(structured)
-        return self._apply_phagescope_fallback(structured)
+        structured = self._apply_plan_first_guardrail(structured)
+        structured = self._apply_phagescope_fallback(structured)
+        structured = self._apply_task_execution_followthrough_guardrail(structured)
+        return self._apply_completion_claim_guardrail(structured)
 
     async def _apply_experiment_fallback(
         self, structured: LLMStructuredResponse
@@ -3850,6 +3894,754 @@ class StructuredChatAgent:
 
         return structured
 
+    @staticmethod
+    def _extract_task_id_from_text(text: str) -> Optional[int]:
+        if not text:
+            return None
+        patterns = [
+            r"(?:task[_\s-]?id|task)\s*[#:=]?\s*(\d+)",
+            r"任务\s*[#:=]?\s*(\d+)",
+            r"#(\d+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _is_status_query_only(text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        status_tokens = (
+            "完成了",
+            "完成吗",
+            "完成没",
+            "done",
+            "status",
+            "进度",
+            "状态",
+            "更新了吗",
+            "好了没",
+            "结果呢",
+        )
+        execute_tokens = (
+            "执行",
+            "运行",
+            "开始",
+            "继续",
+            "重跑",
+            "重试",
+            "run",
+            "execute",
+            "start",
+            "rerun",
+            "resume",
+        )
+        has_status = any(token in lowered for token in status_tokens)
+        has_execute = any(token in lowered for token in execute_tokens)
+        return has_status and not has_execute
+
+    @staticmethod
+    def _user_explicitly_requests_execution(text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        execute_tokens = (
+            "执行",
+            "运行",
+            "开始",
+            "继续",
+            "重跑",
+            "重试",
+            "去做",
+            "撰写",
+            "写",
+            "run ",
+            "execute",
+            "start",
+            "rerun",
+            "resume",
+            "do task",
+        )
+        return any(token in lowered for token in execute_tokens)
+
+    @staticmethod
+    def _reply_promises_execution(reply_text: str) -> bool:
+        lowered = str(reply_text or "").strip().lower()
+        if not lowered:
+            return False
+        promise_tokens = (
+            "我将",
+            "我会",
+            "马上",
+            "立即",
+            "接下来",
+            "i will",
+            "i'll",
+            "starting now",
+            "immediately",
+        )
+        action_tokens = (
+            "执行",
+            "运行",
+            "开始",
+            "撰写",
+            "写入",
+            "run",
+            "execute",
+            "start",
+            "draft",
+            "write",
+        )
+        return any(token in lowered for token in promise_tokens) and any(
+            token in lowered for token in action_tokens
+        )
+
+    def _apply_task_execution_followthrough_guardrail(
+        self,
+        structured: LLMStructuredResponse,
+    ) -> LLMStructuredResponse:
+        """Ensure task execution intent always emits a concrete rerun_task action."""
+        if structured.actions:
+            return structured
+
+        plan_id = self.plan_session.plan_id
+        if plan_id is None:
+            return structured
+
+        user_message = str(self._current_user_message or "").strip()
+
+        reply_text = (
+            structured.llm_reply.message
+            if structured.llm_reply and isinstance(structured.llm_reply.message, str)
+            else ""
+        )
+
+        explicit_execute = self._user_explicitly_requests_execution(user_message)
+        promise_execute = self._reply_promises_execution(reply_text)
+        if not explicit_execute and not promise_execute:
+            return structured
+        if self._is_status_query_only(user_message) and not promise_execute:
+            return structured
+
+        try:
+            tree = self.plan_session.repo.get_plan_tree(plan_id)
+        except Exception:
+            return structured
+        target_task_id = self._resolve_followthrough_target_task_id(
+            tree=tree,
+            user_message=user_message,
+            reply_text=reply_text,
+        )
+        if target_task_id is None:
+            return structured
+        if not tree.has_node(target_task_id):
+            return structured
+
+        node = tree.get_node(target_task_id)
+        node_status = str(node.status or "pending").strip().lower()
+        if node_status in {"running", "completed", "done"} and self._is_status_query_only(user_message):
+            return structured
+
+        structured.actions = [
+            LLMAction(
+                kind="task_operation",
+                name="rerun_task",
+                parameters={"task_id": target_task_id},
+                blocking=True,
+                order=1,
+                metadata={
+                    "guardrail": "execution_followthrough",
+                    "target_task_name": node.display_name(),
+                },
+            )
+        ]
+        if structured.llm_reply:
+            structured.llm_reply.message = (
+                f"收到，我现在开始执行任务 #{target_task_id}（{node.display_name()}），"
+                "执行结果会同步返回。"
+            )
+        return structured
+
+    def _resolve_followthrough_target_task_id(
+        self,
+        *,
+        tree: PlanTree,
+        user_message: str,
+        reply_text: str,
+    ) -> Optional[int]:
+        explicit_task_id = self._extract_task_id_from_text(user_message)
+        if explicit_task_id is not None and tree.has_node(explicit_task_id):
+            if not tree.children_ids(explicit_task_id):
+                return explicit_task_id
+            descendant = self._first_executable_atomic_descendant(tree, explicit_task_id)
+            if descendant is not None:
+                return descendant
+
+        raw_current_task_id = self.extra_context.get("current_task_id")
+        try:
+            current_task_id = int(raw_current_task_id) if raw_current_task_id is not None else None
+        except (TypeError, ValueError):
+            current_task_id = None
+        if current_task_id is not None and tree.has_node(current_task_id):
+            if not tree.children_ids(current_task_id):
+                node = tree.get_node(current_task_id)
+                if self._is_task_executable_status(node.status):
+                    return node.id
+            descendant = self._first_executable_atomic_descendant(tree, current_task_id)
+            if descendant is not None:
+                return descendant
+
+        keyword_text = "\n".join(
+            part.strip()
+            for part in (user_message, reply_text)
+            if isinstance(part, str) and part.strip()
+        )
+        keyword_match = self._match_atomic_task_by_keywords(tree, keyword_text)
+        if keyword_match is not None:
+            return keyword_match
+
+        for node in tree.nodes.values():
+            if tree.children_ids(node.id):
+                continue
+            if self._is_task_executable_status(node.status):
+                return node.id
+        return None
+
+    @staticmethod
+    def _looks_like_completion_claim(reply_text: str) -> bool:
+        lowered = str(reply_text or "").strip().lower()
+        if not lowered:
+            return False
+        claim_tokens = (
+            "已完成",
+            "完成了",
+            "全部完成",
+            "已创建",
+            "已生成",
+            "completed",
+            "all required files",
+            "files have been created",
+            "generated successfully",
+        )
+        return any(token in lowered for token in claim_tokens)
+
+    @staticmethod
+    def _extract_declared_absolute_paths(reply_text: str) -> List[str]:
+        if not reply_text:
+            return []
+        pattern = re.compile(r"(/(?:[^\s`\"'<>|])+)")
+        paths: List[str] = []
+        seen: set[str] = set()
+        for match in pattern.findall(reply_text):
+            cleaned = match.rstrip(".,;:!?)]}")
+            if not cleaned.startswith("/"):
+                continue
+            if cleaned in seen:
+                continue
+            seen.add(cleaned)
+            paths.append(cleaned)
+        return paths
+
+    def _apply_completion_claim_guardrail(
+        self,
+        structured: LLMStructuredResponse,
+    ) -> LLMStructuredResponse:
+        if not structured.llm_reply or not isinstance(structured.llm_reply.message, str):
+            return structured
+        reply_text = structured.llm_reply.message
+        if not self._looks_like_completion_claim(reply_text):
+            return structured
+
+        declared_paths = self._extract_declared_absolute_paths(reply_text)
+        if not declared_paths:
+            return structured
+
+        missing: List[str] = []
+        for path_text in declared_paths[:40]:
+            try:
+                if not Path(path_text).exists():
+                    missing.append(path_text)
+            except Exception:
+                missing.append(path_text)
+
+        if not missing:
+            return structured
+
+        preview = "\n".join(f"- {item}" for item in missing[:8])
+        structured.llm_reply.message = (
+            "自动核验发现以下声明文件当前不存在，结果不能判定为“已完成”：\n"
+            f"{preview}\n"
+            "请先执行并实际落盘，再返回完成结论。"
+        )
+        return structured
+
+    @staticmethod
+    def _is_task_executable_status(status: Optional[str]) -> bool:
+        normalized = str(status or "pending").strip().lower()
+        return normalized in {"pending", "failed", "skipped"}
+
+    def _first_executable_atomic_descendant(
+        self,
+        tree: PlanTree,
+        parent_task_id: int,
+    ) -> Optional[int]:
+        queue = list(tree.children_ids(parent_task_id))
+        while queue:
+            node_id = queue.pop(0)
+            if not tree.has_node(node_id):
+                continue
+            children = tree.children_ids(node_id)
+            if children:
+                queue.extend(children)
+                continue
+            node = tree.get_node(node_id)
+            if self._is_task_executable_status(node.status):
+                return node.id
+        return None
+
+    def _match_atomic_task_by_keywords(
+        self,
+        tree: PlanTree,
+        text: str,
+    ) -> Optional[int]:
+        merged = str(text or "").strip().lower()
+        if not merged:
+            return None
+
+        keyword_groups: Dict[str, Tuple[str, ...]] = {
+            "abstract": ("abstract", "摘要"),
+            "introduction": ("introduction", "intro", "引言"),
+            "methods": ("method", "methods", "方法"),
+            "experiment": ("experiment", "evaluation", "实验", "评估"),
+            "result": ("result", "results", "结果"),
+            "conclusion": ("conclusion", "总结", "结论"),
+            "reference": ("reference", "references", "bib", "参考文献"),
+        }
+        requested_sections = [
+            key
+            for key, aliases in keyword_groups.items()
+            if any(alias in merged for alias in aliases)
+        ]
+        if not requested_sections:
+            return None
+
+        candidates: List[Tuple[int, int]] = []
+        for node in tree.nodes.values():
+            if tree.children_ids(node.id):
+                continue
+            if not self._is_task_executable_status(node.status):
+                continue
+            node_text = f"{node.display_name()} {node.instruction or ''}".lower()
+            score = 0
+            for section in requested_sections:
+                aliases = keyword_groups.get(section, ())
+                if any(alias in node_text for alias in aliases):
+                    score += 1
+            if score > 0:
+                candidates.append((score, node.id))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda row: (-row[0], row[1]))
+        return candidates[0][1]
+
+    @staticmethod
+    def _is_generic_plan_confirmation(text: str) -> bool:
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+        normalized = re.sub(r"[\s，。,.!！?？]+", "", raw).lower()
+        generic_phrases = {
+            "ok",
+            "okay",
+            "yes",
+            "yep",
+            "sure",
+            "好的",
+            "好",
+            "可以",
+            "可以的",
+            "行",
+            "行的",
+            "创建吧",
+            "开始吧",
+            "执行吧",
+            "继续吧",
+            "可以创建吧",
+            "可以开始吧",
+            "可以执行吧",
+            "可以的创建吧",
+            "可以的开始吧",
+            "可以的执行吧",
+        }
+        return normalized in generic_phrases
+
+    def _infer_plan_seed_message(self, current_message: str) -> Optional[str]:
+        current = str(current_message or "").strip()
+        history = self.history or []
+        for item in reversed(history):
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "")).strip().lower()
+            if role != "user":
+                continue
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            if current and content == current:
+                continue
+            if self._is_generic_plan_confirmation(content):
+                continue
+            return content
+        return None
+
+    def _apply_plan_first_guardrail(
+        self,
+        structured: LLMStructuredResponse,
+    ) -> LLMStructuredResponse:
+        """Guardrail: enforce plan-first for broad project requests."""
+        user_message = (self._current_user_message or "").strip()
+        if not user_message:
+            return structured
+        if self.plan_session.plan_id is not None:
+            return structured
+        if re.search(
+            r"(不要|无需|不用|don't|do not)\s*(创建|生成|make|create).*(计划|plan)",
+            user_message,
+            flags=re.IGNORECASE,
+        ):
+            return structured
+
+        actions = list(structured.actions or [])
+        if not actions:
+            return structured
+
+        plan_actions = [action for action in actions if action.kind == "plan_operation"]
+        tool_actions = [action for action in actions if action.kind == "tool_operation"]
+        if not tool_actions:
+            return structured
+        if not self._should_force_plan_first(user_message, tool_actions):
+            return structured
+
+        existing_create_action = next(
+            (
+                action
+                for action in plan_actions
+                if action.name == "create_plan"
+            ),
+            None,
+        )
+
+        request_seed = user_message
+        if self._is_generic_plan_confirmation(user_message):
+            inferred = self._infer_plan_seed_message(user_message)
+            if inferred:
+                request_seed = inferred
+
+        compact_title = re.sub(r"\s+", " ", request_seed).strip()
+        if len(compact_title) > 80:
+            compact_title = compact_title[:80].rstrip()
+        if not compact_title:
+            compact_title = "Research Project Plan"
+
+        create_params: Dict[str, Any] = {}
+        if existing_create_action and isinstance(existing_create_action.parameters, dict):
+            create_params.update(existing_create_action.parameters)
+        create_params.setdefault("title", compact_title)
+        create_params.setdefault("goal", request_seed)
+        create_params.setdefault("description", request_seed)
+
+        structured.actions = [
+            LLMAction(
+                kind="plan_operation",
+                name="create_plan",
+                parameters=create_params,
+                blocking=True,
+                order=1,
+                metadata={
+                    "guardrail": "plan_first",
+                    "reason": "prevent_one_shot_tool_execution",
+                },
+            )
+        ]
+        if structured.llm_reply and structured.llm_reply.message:
+            structured.llm_reply.message = "我会先创建并分解任务图谱，确认计划结构后再按任务执行。"
+        return structured
+
+    @staticmethod
+    def _should_force_plan_first(
+        user_message: str,
+        tool_actions: Optional[List[LLMAction]] = None,
+    ) -> bool:
+        text = (user_message or "").strip()
+        lowered = text.lower()
+        if not lowered:
+            return False
+
+        project_keywords = (
+            "从0到1",
+            "完整",
+            "全流程",
+            "整个任务",
+            "综述",
+            "论文",
+            "项目",
+            "task graph",
+            "任务图谱",
+            "project",
+            "end-to-end",
+            "end to end",
+            "roadmap",
+            "research plan",
+            "manuscript",
+            "paper draft",
+            "review paper",
+        )
+        action_keywords = (
+            "完成",
+            "实现",
+            "产出",
+            "交付",
+            "构建",
+            "build",
+            "deliver",
+            "complete",
+            "implement",
+            "finish",
+        )
+        broad_execution_keywords = (
+            "一键",
+            "全部",
+            "全都",
+            "一次性",
+            "完整项目",
+            "whole project",
+            "full project",
+            "entire workflow",
+        )
+
+        has_project_signal = any(token in lowered for token in project_keywords)
+        has_action_signal = any(token in lowered for token in action_keywords)
+        long_request = len(text) >= 80
+
+        actions = list(tool_actions or [])
+        has_claude_action = any(action.name == "claude_code" for action in actions)
+        has_heavy_tool_mix = len(actions) >= 2
+
+        claude_task_texts: List[str] = []
+        for action in actions:
+            if action.name != "claude_code":
+                continue
+            params = action.parameters or {}
+            task_text = str(params.get("task") or "").strip().lower()
+            if task_text:
+                claude_task_texts.append(task_text)
+
+        claude_task_is_broad = any(
+            len(task_text) >= 120
+            or any(token in task_text for token in project_keywords)
+            or any(token in task_text for token in broad_execution_keywords)
+            for task_text in claude_task_texts
+        )
+        user_message_requests_broad_execution = any(
+            token in lowered for token in broad_execution_keywords
+        )
+
+        if has_project_signal and (has_action_signal or long_request):
+            return True
+        if has_claude_action and (
+            has_project_signal
+            or user_message_requests_broad_execution
+            or claude_task_is_broad
+        ):
+            return True
+        if has_claude_action and has_heavy_tool_mix and long_request:
+            return True
+        return False
+
+    def _resolve_claude_code_task_context(self) -> Tuple[Optional[PlanNode], Optional[str]]:
+        plan_id = self.plan_session.plan_id
+        if plan_id is None:
+            return None, "missing_plan_binding"
+
+        raw_task_id = self.extra_context.get("current_task_id")
+        if raw_task_id is None:
+            return None, "missing_target_task"
+
+        try:
+            task_id = int(raw_task_id)
+        except (TypeError, ValueError):
+            return None, "invalid_target_task"
+
+        try:
+            tree = self.plan_session.repo.get_plan_tree(plan_id)
+        except Exception:
+            return None, "plan_tree_unavailable"
+
+        if not tree.has_node(task_id):
+            return None, "target_task_not_found"
+
+        node = tree.get_node(task_id)
+        if tree.children_ids(task_id):
+            atomic_task_id = self._first_executable_atomic_descendant(tree, task_id)
+            if atomic_task_id is None:
+                return None, "target_task_not_atomic"
+            try:
+                self.extra_context["current_task_id"] = int(atomic_task_id)
+            except (TypeError, ValueError):
+                pass
+            node = tree.get_node(atomic_task_id)
+            logger.info(
+                "[CLAUDE_CODE] Redirected composite task %s to atomic descendant %s",
+                task_id,
+                atomic_task_id,
+            )
+
+        return node, None
+
+    @staticmethod
+    def _normalize_csv_arg(value: Any) -> Optional[str]:
+        tokens: List[str] = []
+        if value is None:
+            return None
+        if isinstance(value, str):
+            raw_tokens = value.split(",")
+            tokens = [token.strip() for token in raw_tokens if token.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                if item is None:
+                    continue
+                item_text = str(item).strip()
+                if not item_text:
+                    continue
+                if "," in item_text:
+                    tokens.extend(part.strip() for part in item_text.split(",") if part.strip())
+                else:
+                    tokens.append(item_text)
+        else:
+            item_text = str(value).strip()
+            if item_text:
+                tokens.append(item_text)
+
+        if not tokens:
+            return None
+
+        deduped: List[str] = []
+        seen = set()
+        for token in tokens:
+            normalized = token.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(token)
+        return ",".join(deduped) if deduped else None
+
+    @staticmethod
+    def _summarize_amem_experiences_for_cc(
+        experiences: List[Dict[str, Any]],
+        *,
+        max_items: int = 3,
+    ) -> str:
+        if not experiences:
+            return ""
+
+        lines: List[str] = []
+        for exp in experiences[:max_items]:
+            content = str(exp.get("content") or "")
+            score = exp.get("score")
+            score_text = ""
+            try:
+                if score is not None:
+                    score_text = f"{float(score):.2f}"
+            except (TypeError, ValueError):
+                score_text = ""
+
+            status_match = re.search(r"状态:\s*([^\n]+)", content)
+            key_match = re.search(r"##\s*关键发现\s*([\s\S]+)", content)
+            key_text = ""
+            if key_match:
+                key_text = key_match.group(1).splitlines()[0].strip()
+            if not key_text:
+                for raw_line in content.splitlines():
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    key_text = line
+                    break
+            if not key_text:
+                key_text = "No concise finding extracted."
+            key_text = re.sub(r"\s+", " ", key_text)[:220]
+
+            segments: List[str] = []
+            if score_text:
+                segments.append(f"score={score_text}")
+            if status_match:
+                segments.append(status_match.group(1).strip())
+            header = f"[{' | '.join(segments)}] " if segments else ""
+            lines.append(f"- {header}{key_text}")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _compose_claude_code_atomic_task_prompt(
+        *,
+        task_node: PlanNode,
+        original_task: str,
+        amem_hints: str = "",
+    ) -> str:
+        task_instruction = (task_node.instruction or "").strip() or original_task.strip()
+        user_task_context = original_task.strip()
+        if len(user_task_context) > 1200:
+            user_task_context = user_task_context[:1200].rstrip() + "..."
+
+        lines: List[str] = [
+            "[OUTER AGENT EXECUTION CONTRACT]",
+            "You are a code execution worker for ONE atomic task. Planning is forbidden.",
+            f"Plan ID: {task_node.plan_id}",
+            f"Task ID: {task_node.id}",
+            f"Task Name: {task_node.display_name()}",
+            "",
+            "Atomic task objective:",
+            task_instruction or "No instruction provided.",
+            "",
+            "Mandatory rules:",
+            "- Execute ONLY this atomic task.",
+            "- Do NOT create roadmap, decomposition, or extra tasks.",
+            "- Do NOT execute sibling or downstream tasks.",
+            "- Keep outputs scoped to the current task deliverables.",
+            "- If this task still needs decomposition or broader planning, STOP and output exactly:",
+            "  STATUS: BLOCKED_SCOPE",
+            "  REASON: NEED_ATOMIC_TASK",
+            "  DETAIL: <one sentence>",
+        ]
+
+        if user_task_context and user_task_context != task_instruction:
+            lines.extend(
+                [
+                    "",
+                    "User-provided context (reference only, do not expand scope):",
+                    user_task_context,
+                ]
+            )
+
+        if amem_hints:
+            lines.extend(
+                [
+                    "",
+                    "Historical execution hints (reference only, never expand scope):",
+                    amem_hints,
+                ]
+            )
+
+        return "\n".join(lines)
+
     def _resolve_previous_path(
         self, previous_result: Dict[str, Any], path: str
     ) -> Optional[Any]:
@@ -3970,17 +4762,56 @@ class StructuredChatAgent:
                         patched.setdefault("poll_interval", 2.0)
                         patched.setdefault("poll_timeout", 120.0)
                         action.parameters = patched
-            try:
-                step = await self._execute_action(action)
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.exception("Action execution failed: %s", exc)
-                errors.append(str(exc))
+            retry_limit = 0
+            backoff_sec = 0.0
+            if action.retry_policy is not None:
+                retry_limit = max(0, int(action.retry_policy.max_retries))
+                backoff_sec = max(0.0, float(action.retry_policy.backoff_sec))
+
+            attempt = 0
+            step: Optional[AgentStep] = None
+            while attempt <= retry_limit:
+                attempt += 1
+                try:
+                    step = await self._execute_action(action)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception("Action execution failed: %s", exc)
+                    step = AgentStep(
+                        action=action,
+                        success=False,
+                        message=f"Action execution failed: {exc}",
+                        details={"exception": type(exc).__name__},
+                    )
+
+                if step.success or attempt > retry_limit:
+                    break
+
+                retry_message = (
+                    f"Action {action.kind}/{action.name} failed on attempt "
+                    f"{attempt}/{retry_limit + 1}; retrying."
+                )
+                errors.append(retry_message)
+                logger.warning(retry_message)
+                if backoff_sec > 0:
+                    await asyncio.sleep(backoff_sec)
+
+            if step is None:  # pragma: no cover - defensive
                 step = AgentStep(
                     action=action,
                     success=False,
-                    message=f"Action execution failed: {exc}",
-                    details={"exception": type(exc).__name__},
+                    message="Action execution failed with an unknown error.",
+                    details={"exception": "UnknownError"},
                 )
+
+            step.details = dict(step.details or {})
+            step.details.setdefault("attempt", attempt)
+            step.details.setdefault("max_attempts", retry_limit + 1)
+            if action.retry_policy is not None:
+                step.details.setdefault(
+                    "retry_policy",
+                    {"max_retries": retry_limit, "backoff_sec": backoff_sec},
+                )
+
             steps.append(step)
             details = step.details or {}
             result_payload = details.get("result")
@@ -3996,6 +4827,17 @@ class StructuredChatAgent:
 
             if not (isinstance(action.metadata, dict) and action.metadata.get("preserve_previous")):
                 previous_result = result_payload if isinstance(result_payload, dict) else None
+
+            if not step.success:
+                errors.append(step.message)
+                if action.blocking:
+                    block_message = (
+                        f"Stopping execution because blocking action "
+                        f"{action.kind}/{action.name} failed."
+                    )
+                    errors.append(block_message)
+                    logger.warning(block_message)
+                    break
 
         suggestions = self._build_suggestions(structured, steps)
         success = all(step.success for step in steps) if steps else True
@@ -4309,9 +5151,49 @@ class StructuredChatAgent:
 
         async def run_agent():
             try:
+                deep_think_tool_order = 0
+
                 # Wrapper for tool execution with plan_operation binding
                 async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
-                    result = await execute_tool(name, **params)
+                    nonlocal deep_think_tool_order
+                    safe_params = params if isinstance(params, dict) else {}
+
+                    if name != "plan_operation":
+                        deep_think_tool_order += 1
+                        synthetic_action = LLMAction(
+                            kind="tool_operation",
+                            name=name,
+                            parameters=safe_params,
+                            order=max(1, deep_think_tool_order),
+                            blocking=True,
+                            metadata={"origin": "deep_think"},
+                        )
+                        step = await self._handle_tool_action(synthetic_action)
+
+                        details = step.details if isinstance(step.details, dict) else {}
+                        result_payload = details.get("result")
+                        if isinstance(result_payload, dict):
+                            result = dict(result_payload)
+                            if isinstance(step.message, str) and step.message.strip():
+                                result.setdefault("summary", step.message.strip())
+                            storage_payload = details.get("storage")
+                            if storage_payload is not None:
+                                result.setdefault("storage", storage_payload)
+                            deliverables_payload = details.get("deliverables")
+                            if deliverables_payload is not None:
+                                result.setdefault("deliverables", deliverables_payload)
+                            return result
+
+                        fallback_result: Dict[str, Any] = {
+                            "success": bool(step.success),
+                            "tool": name,
+                            "message": step.message,
+                        }
+                        if isinstance(details, dict) and details:
+                            fallback_result["details"] = details
+                        return fallback_result
+
+                    result = await execute_tool(name, **safe_params)
                     
                     # Special handling: bind Plan to session after successful creation
                     if name == "plan_operation" and isinstance(result, dict):
@@ -5369,9 +6251,34 @@ class StructuredChatAgent:
                     details={"error": "invalid_task", "tool": tool_name},
                 )
 
+            task_node, context_error = self._resolve_claude_code_task_context()
+            if context_error or task_node is None:
+                context_messages = {
+                    "missing_plan_binding": "claude_code execution requires a bound plan. Please create/bind a plan first.",
+                    "missing_target_task": "claude_code execution requires a target atomic task context. Please select or run a task first.",
+                    "invalid_target_task": "claude_code execution requires a valid numeric task id.",
+                    "plan_tree_unavailable": "Unable to load the current plan tree. Please retry after refreshing plan state.",
+                    "target_task_not_found": "The selected task was not found in the current plan.",
+                    "target_task_not_atomic": "claude_code can only execute atomic tasks. Please decompose this task and execute a leaf task.",
+                }
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message=context_messages.get(
+                        context_error or "",
+                        "claude_code execution requires a bound atomic task context.",
+                    ),
+                    details={
+                        "error": context_error or "missing_task_context",
+                        "tool": tool_name,
+                        "requires_plan_binding": True,
+                        "requires_atomic_task": True,
+                    },
+                )
+
             # 🔍 A-mem集成：查询历史执行经验
             original_task = task_value.strip()
-            enhanced_task = original_task
+            amem_hints = ""
             amem_experiences = []
             
             try:
@@ -5386,33 +6293,31 @@ class StructuredChatAgent:
                     )
                     
                     if amem_experiences:
-                        # 格式化经验供LLM参考
-                        experience_context = amem_client.format_experiences_for_llm(amem_experiences)
-                        enhanced_task = f"{original_task}\n\n{experience_context}"
+                        amem_hints = self._summarize_amem_experiences_for_cc(
+                            amem_experiences
+                        )
                         logger.info(
-                            f"[AMEM] Enhanced task with {len(amem_experiences)} historical experiences"
+                            f"[AMEM] Injected compact hints from {len(amem_experiences)} historical experiences"
                         )
             except Exception as amem_err:
                 logger.warning(f"[AMEM] Failed to query experiences: {amem_err}")
                 # 继续执行，不影响主流程
 
             # Optional: allowed_tools parameter
-            allowed_tools = params.get("allowed_tools")
-            if allowed_tools and not isinstance(allowed_tools, str):
-                allowed_tools = str(allowed_tools)
+            allowed_tools = self._normalize_csv_arg(params.get("allowed_tools"))
 
             # Optional: add_dirs parameter
-            add_dirs_param = params.get("add_dirs")
-            add_dirs: Optional[str] = None
-            if add_dirs_param is not None:
-                if isinstance(add_dirs_param, list):
-                    add_dirs = ",".join(str(d) for d in add_dirs_param if d)
-                elif isinstance(add_dirs_param, str):
-                    add_dirs = add_dirs_param
+            add_dirs = self._normalize_csv_arg(params.get("add_dirs"))
 
-            # Build final params (使用增强后的任务描述)
+            constrained_task = self._compose_claude_code_atomic_task_prompt(
+                task_node=task_node,
+                original_task=original_task,
+                amem_hints=amem_hints,
+            )
+
+            # Build final params (严格原子任务执行约束)
             params = {
-                "task": enhanced_task,
+                "task": constrained_task,
             }
             if allowed_tools:
                 params["allowed_tools"] = allowed_tools
@@ -5420,14 +6325,10 @@ class StructuredChatAgent:
                 params["add_dirs"] = add_dirs
 
             # 会话/任务上下文信息，便于 runtime 归档与溯源
-            params["session_id"] = self.session_id
-            if self.plan_session.plan_id is not None:
-                params["plan_id"] = self.plan_session.plan_id
-            if self.extra_context.get("current_task_id") is not None:
-                try:
-                    params["task_id"] = int(self.extra_context.get("current_task_id"))
-                except (TypeError, ValueError):
-                    pass
+            if self.session_id:
+                params["session_id"] = self.session_id
+            params["plan_id"] = task_node.plan_id
+            params["task_id"] = task_node.id
 
             # 🚀 实时日志回调注入
             # 获取当前上下文中的 job_id (在 _execute_action 中已经 set_current_job)
@@ -5778,7 +6679,6 @@ class StructuredChatAgent:
                 wait_value = params.get("wait") is True
                 taskid_value = params.get("taskid")
                 if wait_value and action_value in {"result", "quality"} and taskid_value:
-                    from app.services.plans.decomposition_jobs import plan_decomposition_jobs
                     import time as _time
                     import json as _json
 
@@ -6091,6 +6991,60 @@ class StructuredChatAgent:
                     )
 
         success = sanitized.get("success", True)
+        deliverable_report = None
+        if self.session_id:
+            publish_task_id: Optional[int] = None
+            publish_task_name: Optional[str] = None
+            publish_task_instruction: Optional[str] = None
+            try:
+                current_task_id = self.extra_context.get("current_task_id")
+                if current_task_id is not None:
+                    publish_task_id = int(current_task_id)
+            except (TypeError, ValueError):
+                publish_task_id = None
+
+            if publish_task_id is not None and self.plan_session.plan_id is not None:
+                try:
+                    tree = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id)
+                    if tree.has_node(publish_task_id):
+                        task_node = tree.get_node(publish_task_id)
+                        publish_task_name = task_node.display_name()
+                        publish_task_instruction = task_node.instruction
+                except Exception as exc:  # pragma: no cover - best-effort
+                    logger.debug(
+                        "Unable to resolve task context for deliverable publish in session %s: %s",
+                        self.session_id,
+                        exc,
+                    )
+
+            try:
+                publish_payload = self._drop_callables(raw_result)
+                deliverable_report = get_deliverable_publisher().publish_from_tool_result(
+                    session_id=self.session_id,
+                    tool_name=tool_name,
+                    raw_result=publish_payload,
+                    summary=summary,
+                    source={
+                        "channel": "chat",
+                        "action_kind": action.kind,
+                        "action_name": action.name,
+                        "step_order": action.order,
+                    },
+                    job_id=get_current_job(),
+                    plan_id=self.plan_session.plan_id,
+                    task_id=publish_task_id,
+                    task_name=publish_task_name,
+                    task_instruction=publish_task_instruction,
+                    publish_status="final" if success is not False else "draft",
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed to publish deliverables for session %s tool %s: %s",
+                    self.session_id,
+                    tool_name,
+                    exc,
+                )
+
         if success is False:
             message = summary or f"{tool_name} failed to execute."
         else:
@@ -6173,6 +7127,7 @@ class StructuredChatAgent:
                 "result": sanitized,
                 "summary": summary,
                 "storage": storage_info.__dict__ if storage_info else None,
+                "deliverables": deliverable_report.to_dict() if deliverable_report else None,
             },
         )
 
@@ -6373,9 +7328,10 @@ class StructuredChatAgent:
                 parts.append(f"Skipped tasks: {skipped_count}")
             message = "，".join(parts) + "。"
             details = summary.to_dict()
+            success = failed_count == 0 and skipped_count == 0
             self._refresh_plan_tree(force_reload=True)
             return AgentStep(
-                action=action, success=True, message=message, details=details
+                action=action, success=success, message=message, details=details
             )
 
         if action.name == "delete_plan":
@@ -6670,11 +7626,17 @@ class StructuredChatAgent:
             }
             exec_config = ExecutionConfig(session_context=session_ctx)
             result = self.plan_executor.execute_task(tree.id, task_id, config=exec_config)
+            status = (result.status or "").strip().lower()
+            success = status in {"completed", "done", "success"}
             message = f"Task [{task_id}] execution status: {result.status}."
+            if status == "skipped":
+                message = f"Task [{task_id}] was skipped."
+            elif status in {"failed", "error"}:
+                message = f"Task [{task_id}] failed."
             details = result.to_dict()
             self._refresh_plan_tree(force_reload=True)
             return AgentStep(
-                action=action, success=True, message=message, details=details
+                action=action, success=success, message=message, details=details
             )
 
         if action.name == "decompose_task":
