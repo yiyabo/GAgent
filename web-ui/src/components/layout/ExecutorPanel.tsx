@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import { Button, Space, Tag, Typography } from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
+import { Button, Space, Tag, Tooltip, Typography } from 'antd';
+import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { planTreeApi } from '@api/planTree';
 import type {
@@ -110,6 +110,8 @@ const ExecutorPanel: React.FC = () => {
     (state) => state.currentSession?.session_id ?? state.currentSession?.id ?? null
   );
   const currentPlanId = useChatStore((state) => state.currentPlanId ?? null);
+  const sendMessage = useChatStore((state) => state.sendMessage);
+  const isProcessing = useChatStore((state) => state.isProcessing);
   const [board, setBoard] = useState<BackgroundTaskBoardResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -270,6 +272,24 @@ const ExecutorPanel: React.FC = () => {
                           <span className="task-status-text">{getStatusLabel(item.status)}</span>
                           {duration ? <span className="task-status-meta">{duration}</span> : null}
                           <span className="task-status-meta">{formatRelativeTime(item.created_at)}</span>
+                          {normalized === 'completed' && (
+                            <Tooltip title="让 Agent 分析此任务的结果">
+                              <Button
+                                type="link"
+                                size="small"
+                                icon={<SearchOutlined />}
+                                disabled={isProcessing}
+                                onClick={() => {
+                                  const displayId = getDisplayId(item);
+                                  const prompt = `后台任务「${item.label}」(${displayId}) 已完成，请帮我获取并分析结果。`;
+                                  void sendMessage(prompt);
+                                }}
+                                style={{ padding: '0 4px', fontSize: 11, height: 'auto', lineHeight: 1 }}
+                              >
+                                分析
+                              </Button>
+                            </Tooltip>
+                          )}
                         </td>
                       </tr>
                     );

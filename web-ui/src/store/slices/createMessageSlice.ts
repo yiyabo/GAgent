@@ -22,6 +22,8 @@ import {
     buildToolResultsCache,
     activeActionFollowups,
     autoTitleHistory,
+    detectBackgroundCategory,
+    BACKGROUND_CATEGORY_LABELS,
 } from '../chatUtils';
 import { chatApi } from '@api/chat';
 import { memoryApi } from '@api/memory';
@@ -366,6 +368,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
             let flushHandle: number | null = null;
             let finalPayload: ChatResponsePayload | null = null;
             let jobFinalized = false;
+            let isBackgroundDispatch = false;
 
             const flushAnalysisText = (force: boolean = false) => {
                 if (!force && streamedContent === lastFlushedContent) return;
@@ -478,7 +481,90 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
                     flushAnalysisText(true);
                     continue;
                 }
-                if (event.type === 'final') { finalPayload = event.payload; continue; }
+                if (event.type === 'final') {
+                    finalPayload = event.payload;
+
+                    // ---- Background dispatch: detect long-running tasks ----
+                    const bgCategory = detectBackgroundCategory(event.payload);
+                    if (bgCategory) {
+                        // Flush any streamed analysis text accumulated so far.
+                        if (flushHandle !== null) { window.cancelAnimationFrame(flushHandle); flushHandle = null; }
+                        flushAnalysisText(true);
+
+                        const result = event.payload;
+                        const bgMeta = (result as any).metadata ?? {};
+                        const trackingId = typeof bgMeta.tracking_id === 'string' ? bgMeta.tracking_id : null;
+                        const bgActions = (result.actions ?? []) as ChatActionSummary[];
+                        const bgPlanId = coercePlanId(bgMeta.plan_id) ?? extractPlanIdFromActions(bgActions) ?? coercePlanId(mergedMetadata.plan_id) ?? get().currentPlanId ?? null;
+                        const bgPlanTitle = coercePlanTitle(bgMeta.plan_title) ?? extractPlanTitleFromActions(bgActions) ?? coercePlanTitle(mergedMetadata.plan_title) ?? get().currentPlanTitle ?? null;
+
+                        const categoryLabel = BACKGROUND_CATEGORY_LABELS[bgCategory] ?? bgCategory;
+                        const bgContent = streamedContent.trim()
+                            ? streamedContent
+                            : (typeof result.response === 'string' && result.response.trim()
+                                ? result.response
+                                : `${categoryLabel} 任务已提交至后台运行，请在右侧「任务状态」面板查看进度。\n\n任务完成后，您可以告诉我进行结果分析。`);
+
+                        get().updateMessage(assistantMessageId, {
+                            content: bgContent,
+                            metadata: {
+                                ...bgMeta,
+                                status: 'running' as ChatActionStatus,
+                                background_category: bgCategory,
+                                tracking_id: trackingId,
+                                plan_id: bgPlanId,
+                                plan_title: bgPlanTitle,
+                                actions: bgActions,
+                                action_list: bgActions,
+                                analysis_text: streamedContent || null,
+                            },
+                        });
+
+                        // Sync plan context so the sidebar picks up the new plan.
+                        set((state) => {
+                            const planIdValue = bgPlanId ?? state.currentPlanId ?? null;
+                            const planTitleValue = bgPlanTitle ?? state.currentPlanTitle ?? null;
+                            const updatedSession = state.currentSession
+                                ? { ...state.currentSession, plan_id: planIdValue, plan_title: planTitleValue }
+                                : null;
+                            return {
+                                currentPlanId: planIdValue,
+                                currentPlanTitle: planTitleValue,
+                                currentSession: updatedSession ?? state.currentSession,
+                                sessions: updatedSession
+                                    ? state.sessions.map((s) => (s.id === updatedSession.id ? updatedSession : s))
+                                    : state.sessions,
+                            };
+                        });
+
+                        // Dispatch plan sync events for the sidebar DAG.
+                        const sessionAfterBg = get().currentSession;
+                        const bgSyncEvents = derivePlanSyncEventsFromActions(bgActions, {
+                            fallbackPlanId: bgPlanId ?? sessionAfterBg?.plan_id ?? null,
+                            fallbackPlanTitle: bgPlanTitle ?? sessionAfterBg?.plan_title ?? null,
+                        });
+                        if (bgSyncEvents.length > 0) {
+                            for (const ev of bgSyncEvents) {
+                                dispatchPlanSyncEvent(ev, {
+                                    trackingId,
+                                    source: 'chat.stream.background',
+                                    status: 'running',
+                                    sessionId: sessionAfterBg?.session_id ?? null,
+                                });
+                            }
+                        } else if (bgPlanId != null) {
+                            dispatchPlanSyncEvent(
+                                { type: 'task_changed', plan_id: bgPlanId, plan_title: bgPlanTitle ?? sessionAfterBg?.plan_title ?? null },
+                                { trackingId, source: 'chat.stream.background', status: 'running', sessionId: sessionAfterBg?.session_id ?? null },
+                            );
+                        }
+
+                        isBackgroundDispatch = true;
+                        break; // Exit the for-await loop; generator cleanup will cancel the reader.
+                    }
+
+                    continue;
+                }
                 if (event.type === 'thinking_step') {
                     const step = event.step;
                     const targetMessage = get().messages.find((msg) => msg.id === assistantMessageId);
@@ -573,6 +659,28 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
 
             if (flushHandle !== null) { window.cancelAnimationFrame(flushHandle); flushHandle = null; }
             flushAnalysisText(true);
+
+            // Background dispatch: the task has been kicked off in the
+            // backend.  Release the UI immediately so the user can keep
+            // chatting while monitoring progress in the ExecutorPanel.
+            if (isBackgroundDispatch) {
+                set({ isProcessing: false });
+                // Persist session metadata so reload picks up context.
+                const sessionForBg = get().currentSession;
+                if (sessionForBg) {
+                    void chatApi.updateSession(sessionForBg.session_id ?? sessionForBg.id, {
+                        plan_id: get().currentPlanId ?? null,
+                        plan_title: get().currentPlanTitle ?? null,
+                        is_active: true,
+                    }).catch((e) => console.warn('同步会话失败:', e));
+                }
+                try {
+                    window.dispatchEvent(new CustomEvent('tasksUpdated', {
+                        detail: { type: 'chat_message_processed', session_id: sessionForBg?.session_id ?? null, plan_id: get().currentPlanId ?? null },
+                    }));
+                } catch (_) { /* ignore */ }
+                return; // Early return — no polling, no waitForActionCompletion.
+            }
 
             if (!finalPayload && !jobFinalized) throw new Error('No final response received');
             if (jobFinalized) { set({ isProcessing: false }); return; }
