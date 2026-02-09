@@ -9,6 +9,7 @@ import csv
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from io import StringIO
@@ -30,6 +31,26 @@ RESULT_ENDPOINTS = {
     "tree": "/tasks/result/tree/",
     "phagefasta": "/tasks/result/phagefasta/",
     "phage_detail": "/tasks/result/phage/detail/",
+}
+
+# result_kind aliases used by agent prompts / user instructions.
+# Value tuple: (canonical_result_kind, optional_module)
+RESULT_KIND_ALIASES: Dict[str, Tuple[str, Optional[str]]] = {
+    "protein": ("proteins", None),
+    "phage-detail": ("phage_detail", None),
+    "modules-trna": ("modules", "trna"),
+    "modules_trna": ("modules", "trna"),
+    "modules-anticrispr": ("modules", "anticrispr"),
+    "modules_anticrispr": ("modules", "anticrispr"),
+    "modules-anti_crispr": ("modules", "anticrispr"),
+    "modules_anti_crispr": ("modules", "anticrispr"),
+}
+
+# Remote download path aliases that can be reconstructed from result APIs.
+DOWNLOAD_TSV_FALLBACKS: Dict[str, str] = {
+    "/output/result/phage.tsv": "phage",
+    "/output/result/protein.tsv": "proteins",
+    "/output/result/proteins.tsv": "proteins",
 }
 
 # 分析类型配置
@@ -150,6 +171,149 @@ def _normalize_modulelist(value: Any) -> str:
             return json.dumps({item: True for item in items})
         return json.dumps({raw: True})
     return json.dumps({str(value): True})
+
+
+def _coerce_sequence_ids(value: Any) -> List[str]:
+    """Normalize loose sequence_ids payloads to a clean ID list."""
+    if value is None:
+        return []
+
+    items: List[str] = []
+    if isinstance(value, (list, tuple, set)):
+        items = [str(v).strip() for v in value if str(v).strip()]
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        parsed = _safe_json_loads(raw.replace("'", '"')) if raw.startswith("[") else None
+        if isinstance(parsed, list):
+            items = [str(v).strip() for v in parsed if str(v).strip()]
+        else:
+            items = [chunk.strip() for chunk in re.split(r"[;,\s]+", raw) if chunk.strip()]
+    else:
+        text = str(value).strip()
+        if text:
+            items = [text]
+
+    # Keep order, drop duplicates.
+    seen = set()
+    deduped: List[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _coerce_accession_ids_from_sequence(value: Any) -> List[str]:
+    """If sequence field actually carries accession IDs, extract them."""
+    if not isinstance(value, str):
+        return []
+    raw = value.strip()
+    if not raw:
+        return []
+    # Real sequence/FASTA content should not be treated as accession IDs.
+    if "\n" in raw and (">" in raw or len(raw) > 120):
+        return []
+
+    items = _coerce_sequence_ids(raw)
+    if not items:
+        return []
+
+    # Broad accession-like pattern (e.g., NC_001628.1, MN908947.3)
+    accession_re = re.compile(r"^[A-Za-z]{1,6}_?\d+(?:\.\d+)?$")
+    if all(accession_re.match(item) for item in items):
+        return items
+    return []
+
+
+def _apply_sequence_ids_alias(
+    phageid: Optional[str],
+    phageids: Optional[str],
+    sequence_ids: Any,
+) -> Tuple[Optional[str], Optional[str]]:
+    ids = _coerce_sequence_ids(sequence_ids)
+    if not ids:
+        return phageid, phageids
+
+    if not phageid:
+        phageid = ids[0] if len(ids) == 1 else json.dumps(ids)
+    if not phageids:
+        phageids = ";".join(ids)
+    return phageid, phageids
+
+
+def _normalize_result_kind_and_module(
+    result_kind: Optional[str],
+    module: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    if not result_kind:
+        return result_kind, module
+
+    raw = result_kind.strip()
+    if not raw:
+        return None, module
+
+    canonical = raw.lower().replace(" ", "_")
+    if canonical in RESULT_ENDPOINTS:
+        return canonical, module
+
+    if raw in RESULT_KIND_ALIASES:
+        mapped_kind, mapped_module = RESULT_KIND_ALIASES[raw]
+        if mapped_module and not module:
+            module = mapped_module
+        return mapped_kind, module
+
+    if canonical in RESULT_KIND_ALIASES:
+        mapped_kind, mapped_module = RESULT_KIND_ALIASES[canonical]
+        if mapped_module and not module:
+            module = mapped_module
+        return mapped_kind, module
+
+    dashed = canonical.replace("_", "-")
+    if dashed in RESULT_KIND_ALIASES:
+        mapped_kind, mapped_module = RESULT_KIND_ALIASES[dashed]
+        if mapped_module and not module:
+            module = mapped_module
+        return mapped_kind, module
+
+    return result_kind, module
+
+
+def _results_payload_to_tsv_text(payload: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    rows = payload.get("results")
+    if rows is None:
+        return None
+
+    normalized_rows: List[Any]
+    if isinstance(rows, list):
+        normalized_rows = rows
+    else:
+        normalized_rows = [rows]
+
+    buffer = StringIO()
+    if normalized_rows and all(isinstance(item, dict) for item in normalized_rows):
+        headers: List[str] = []
+        for row in normalized_rows:
+            for key in row.keys():
+                key_str = str(key)
+                if key_str not in headers:
+                    headers.append(key_str)
+        writer = csv.DictWriter(buffer, fieldnames=headers)
+        writer.writeheader()
+        for row in normalized_rows:
+            writer.writerow({key: row.get(key, "") for key in headers})
+        return buffer.getvalue()
+
+    # Fallback for non-dict rows
+    writer = csv.writer(buffer, delimiter="\t")
+    writer.writerow(["value"])
+    for row in normalized_rows:
+        writer.writerow([row])
+    return buffer.getvalue()
 
 
 def _validate_module_dependencies(modules: List[str]) -> Tuple[bool, Optional[str]]:
@@ -325,6 +489,7 @@ async def phagescope_handler(
     timeout: float = 60.0,
     phageid: Optional[str] = None,
     phageids: Optional[str] = None,
+    sequence_ids: Optional[Any] = None,
     inputtype: str = "enter",
     analysistype: str = "Annotation Pipline",
     userid: Optional[str] = None,
@@ -355,6 +520,15 @@ async def phagescope_handler(
         headers["Authorization"] = f"Bearer {token}"
 
     action = action.lower().strip()
+    phageid, phageids = _apply_sequence_ids_alias(phageid, phageids, sequence_ids)
+    # Compatibility: some callers misuse `sequence` to pass phage accession IDs.
+    if sequence and not phageid and not phageids:
+        accession_ids = _coerce_accession_ids_from_sequence(sequence)
+        if accession_ids:
+            phageid = accession_ids[0] if len(accession_ids) == 1 else json.dumps(accession_ids)
+            phageids = ";".join(accession_ids)
+            sequence = None
+
     if action == "quality":
         action = "result"
         result_kind = result_kind or "quality"
@@ -578,6 +752,7 @@ async def phagescope_handler(
         if action == "result":
             if not result_kind:
                 return {"success": False, "status_code": 400, "error": "result_kind is required", "action": action}
+            result_kind, module = _normalize_result_kind_and_module(result_kind, module)
             endpoint = RESULT_ENDPOINTS.get(result_kind)
             if not endpoint:
                 return {
@@ -758,7 +933,64 @@ async def phagescope_handler(
                 response = await client.get(url)
             content_type = response.headers.get("content-type", "")
             content = response.content or b""
+
+            # Fallback: some documented paths (e.g. output/result/phage.tsv) are
+            # not directly downloadable from the API root. If taskid is provided,
+            # rebuild TSV via structured result endpoint.
+            fallback_kind = DOWNLOAD_TSV_FALLBACKS.get(path.lower())
+            if response.status_code >= 400 and fallback_kind and taskid:
+                fb_status, fb_payload = await _request(
+                    "GET",
+                    base_url,
+                    RESULT_ENDPOINTS[fallback_kind],
+                    params={"taskid": taskid},
+                    headers=headers,
+                    timeout=timeout,
+                )
+                if fb_status < 400 and isinstance(fb_payload, dict):
+                    tsv_text = _results_payload_to_tsv_text(fb_payload)
+                    if tsv_text is not None:
+                        content = tsv_text.encode("utf-8")
+                        content_type = "text/tab-separated-values; charset=utf-8"
+                        if save_path:
+                            dest = Path(save_path).expanduser().resolve()
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            dest.write_bytes(content)
+                            return {
+                                "success": True,
+                                "status_code": 200,
+                                "action": action,
+                                "saved_path": str(dest),
+                                "content_type": content_type,
+                                "content_length": len(content),
+                                "fallback": "result_api_tsv",
+                                "taskid": str(taskid),
+                            }
+                        preview = content[: max(preview_bytes, 0)]
+                        return {
+                            "success": True,
+                            "status_code": 200,
+                            "action": action,
+                            "data": preview.decode("utf-8", errors="replace"),
+                            "content_type": content_type,
+                            "content_length": len(content),
+                            "preview_bytes": len(preview),
+                            "fallback": "result_api_tsv",
+                            "taskid": str(taskid),
+                        }
+
             if save_path:
+                if response.status_code >= 400:
+                    preview = content[: max(preview_bytes, 0)].decode("utf-8", errors="replace")
+                    return {
+                        "success": False,
+                        "status_code": response.status_code,
+                        "action": action,
+                        "error": f"Download failed: HTTP {response.status_code}",
+                        "content_type": content_type,
+                        "content_length": len(content),
+                        "preview": preview,
+                    }
                 dest = Path(save_path).expanduser().resolve()
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content)
@@ -969,7 +1201,51 @@ async def phagescope_handler(
                         if status_code >= 400:
                             errors.append(f"modules[{module_name}]: HTTP {status_code}")
                             continue
+
+                        # Persist per-module payload for easier downstream debugging/consumption.
+                        module_out_file = annotation_dir / f"module_{safe_module_name}.json"
+                        module_out_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                        saved_files[f"module_{safe_module_name}"] = str(module_out_file.relative_to(output_dir))
                         modules_payload[module_name] = payload
+
+                        # Fallbacks for flaky result endpoints:
+                        # - quality endpoint may 500 while modules[quality] is available
+                        # - proteins endpoint may 500 while modules[annotation] holds annotation records
+                        if module_name.lower() == "quality" and "quality" not in saved_files:
+                            quality_fallback_file = metadata_dir / "quality_from_modules.json"
+                            quality_fallback_file.write_text(
+                                json.dumps(payload, indent=2, ensure_ascii=False),
+                                encoding="utf-8",
+                            )
+                            saved_files["quality"] = str(quality_fallback_file.relative_to(output_dir))
+
+                        if module_name.lower() == "annotation" and "proteins_json" not in saved_files:
+                            proteins_fallback_file = annotation_dir / "proteins_from_annotation.json"
+                            proteins_fallback_file.write_text(
+                                json.dumps(payload, indent=2, ensure_ascii=False),
+                                encoding="utf-8",
+                            )
+                            saved_files["proteins_json"] = str(proteins_fallback_file.relative_to(output_dir))
+
+                            # Try deriving TSV when annotation payload has tabular-like records.
+                            ann_results = payload.get("results") if isinstance(payload, dict) else None
+                            if isinstance(ann_results, list) and ann_results:
+                                all_keys: List[str] = []
+                                for record in ann_results:
+                                    if isinstance(record, dict):
+                                        for key in record.keys():
+                                            if key not in all_keys:
+                                                all_keys.append(key)
+                                if all_keys:
+                                    out = StringIO()
+                                    writer = csv.DictWriter(out, fieldnames=all_keys, delimiter="\t", extrasaction="ignore")
+                                    writer.writeheader()
+                                    for record in ann_results:
+                                        if isinstance(record, dict):
+                                            writer.writerow(record)
+                                    proteins_tsv_fallback = annotation_dir / "proteins_from_annotation.tsv"
+                                    proteins_tsv_fallback.write_text(out.getvalue(), encoding="utf-8")
+                                    saved_files["proteins_tsv"] = str(proteins_tsv_fallback.relative_to(output_dir))
                     except Exception as e:
                         errors.append(f"modules[{module_name}]: {str(e)}")
                 if modules_payload:
@@ -1002,7 +1278,14 @@ async def phagescope_handler(
             has_quality = "quality" in saved_files
             has_proteins = ("proteins_tsv" in saved_files) or ("proteins_json" in saved_files)
             has_phage_info = "phage_info" in saved_files
-            core_saved = has_quality and has_proteins
+            requested_module_set = {
+                str(module_name).strip().lower()
+                for module_name in (module_names or [])
+                if str(module_name).strip()
+            }
+            expects_quality = ("quality" in requested_module_set) or (not requested_module_set)
+            expects_proteins = ("annotation" in requested_module_set) or (not requested_module_set)
+            core_saved = ((not expects_quality) or has_quality) and ((not expects_proteins) or has_proteins)
 
             missing_artifacts: List[str] = []
             # Derive missing artifacts from errors (e.g. "phagefasta: HTTP 500")
@@ -1015,12 +1298,24 @@ async def phagescope_handler(
                         missing_artifacts.append(name)
 
             # Also infer missing of core files if absent
-            if not has_quality and "quality" not in missing_artifacts:
+            if expects_quality and (not has_quality) and "quality" not in missing_artifacts:
                 missing_artifacts.append("quality")
-            if not has_proteins and "proteins" not in missing_artifacts:
+            if expects_proteins and (not has_proteins) and "proteins" not in missing_artifacts:
                 missing_artifacts.append("proteins")
             if not has_phage_info and "phage" not in missing_artifacts:
                 missing_artifacts.append("phage")
+
+            # If fallback files were successfully generated, remove stale core-missing markers.
+            if has_quality:
+                missing_artifacts = [m for m in missing_artifacts if m != "quality"]
+            if has_proteins:
+                missing_artifacts = [m for m in missing_artifacts if m != "proteins"]
+            if has_phage_info:
+                missing_artifacts = [m for m in missing_artifacts if m != "phage"]
+            if not expects_quality:
+                missing_artifacts = [m for m in missing_artifacts if m != "quality"]
+            if not expects_proteins:
+                missing_artifacts = [m for m in missing_artifacts if m != "proteins"]
 
             partial = len(errors) > 0
             warnings: List[str] = []
@@ -1085,6 +1380,7 @@ phagescope_tool = {
             "timeout": {"type": "number", "description": "Request timeout in seconds", "default": 60.0},
             "phageid": {"type": "string", "description": "Single Phage ID or JSON list string"},
             "phageids": {"type": "string", "description": "Semicolon-separated Phage ID list"},
+            "sequence_ids": {"description": "Alias of phage IDs (array/string accepted)"},
             "inputtype": {
                 "type": "string",
                 "description": "Input type",
@@ -1108,8 +1404,8 @@ phagescope_tool = {
             "modulename": {"type": "string", "description": "Module name for task logs"},
             "result_kind": {
                 "type": "string",
-                "description": "Result type",
-                "enum": list(RESULT_ENDPOINTS.keys()),
+                "description": "Result type (canonical or aliases like modules-trna/modules-anticrispr)",
+                "enum": list(RESULT_ENDPOINTS.keys()) + list(RESULT_KIND_ALIASES.keys()),
             },
             "module": {"type": "string", "description": "Module name for result=modules"},
             "page": {"type": "integer", "description": "Page number"},
