@@ -240,8 +240,19 @@ def _is_result_not_ready_error(status_code: int, payload: Dict[str, Any]) -> boo
     raw_lower = raw.lower()
     if "filenotfounderror" not in raw_lower and "no such file or directory" not in raw_lower:
         return False
-    # Heuristic: the missing path usually includes output/result/*.tsv
-    if "/output/result/" in raw_lower and ".tsv" in raw_lower:
+    # Heuristic: missing artifacts may live under output/result or output/rawdata
+    # during execution (e.g., *.tsv / *.txt / *.fasta / *.nwk).
+    has_output_path = (
+        "/output/result/" in raw_lower
+        or "/output/rawdata/" in raw_lower
+        or "workspace/user_task" in raw_lower
+        or "/tasks/result/" in raw_lower
+    )
+    has_result_ext = any(
+        ext in raw_lower
+        for ext in (".tsv", ".txt", ".fasta", ".fa", ".nwk", ".json")
+    )
+    if has_output_path and has_result_ext:
         return True
     return False
 
@@ -466,6 +477,19 @@ async def phagescope_handler(
                 endpoint = _get_analysis_endpoint(analysistype, module_items)
                 actual_analysistype = analysistype
 
+            # PhageScope cluster API expects sequence/file payloads and may raise 500
+            # for phageid-only requests. Fail fast with a clear local validation error.
+            if endpoint == "/analyze/clusterpipline/" and not sequence and not file_path:
+                return {
+                    "success": False,
+                    "status_code": 400,
+                    "error": (
+                        "cluster_submit requires sequence (inputtype=paste) "
+                        "or file_path (inputtype=upload); phageid-only input is not supported by remote API."
+                    ),
+                    "action": action,
+                }
+
             data = _build_phage_payload(phageid, phageids)
             data.update(
                 {
@@ -597,6 +621,8 @@ async def phagescope_handler(
                 params["pagesize"] = pagesize
             if seq_type:
                 params["type"] = seq_type
+            if result_kind == "phage_detail" and phageid:
+                params["phageid"] = phageid
             status_code, payload = await _request(
                 "GET", base_url, endpoint, params=params, headers=headers, timeout=timeout
             )
@@ -723,7 +749,12 @@ async def phagescope_handler(
                 return {"success": False, "status_code": 400, "error": "download_path is required", "action": action}
             path = download_path if download_path.startswith("/") else f"/{download_path}"
             url = f"{base_url}{path}"
-            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                headers=headers,
+                follow_redirects=True,
+                trust_env=False,
+            ) as client:
                 response = await client.get(url)
             content_type = response.headers.get("content-type", "")
             content = response.content or b""
@@ -906,11 +937,52 @@ async def phagescope_handler(
                     saved_files["tree_json"] = str(tree_json_file.relative_to(output_dir))
 
             # 7. Fetch modules info
-            modules_data = await fetch_and_save("modules")
-            if modules_data:
-                modules_file = metadata_dir / "modules.json"
-                modules_file.write_text(json.dumps(modules_data, indent=2, ensure_ascii=False), encoding="utf-8")
-                saved_files["modules"] = str(modules_file.relative_to(output_dir))
+            module_names: List[str] = []
+            if isinstance(detail_payload, dict):
+                detail_results = detail_payload.get("results")
+                if isinstance(detail_results, dict):
+                    module_names = _parse_modulelist(detail_results.get("modulelist"))
+
+            if module_names:
+                modules_payload: Dict[str, Any] = {}
+                for module_name in module_names:
+                    module_name = str(module_name).strip()
+                    if not module_name:
+                        continue
+                    safe_module_name = "".join(
+                        ch if (ch.isalnum() or ch in {"_", "-"}) else "_"
+                        for ch in module_name
+                    )
+                    try:
+                        status_code, payload = await _request(
+                            "GET",
+                            base_url,
+                            RESULT_ENDPOINTS["modules"],
+                            params={"taskid": taskid, "module": module_name},
+                            headers=headers,
+                            timeout=timeout,
+                        )
+                        raw_key = f"modules:{module_name}"
+                        raw_responses[raw_key] = {"status_code": status_code, "payload": payload}
+                        raw_file = raw_dir / f"modules_{safe_module_name}_raw.json"
+                        raw_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                        if status_code >= 400:
+                            errors.append(f"modules[{module_name}]: HTTP {status_code}")
+                            continue
+                        modules_payload[module_name] = payload
+                    except Exception as e:
+                        errors.append(f"modules[{module_name}]: {str(e)}")
+                if modules_payload:
+                    modules_file = metadata_dir / "modules.json"
+                    modules_file.write_text(json.dumps(modules_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                    saved_files["modules"] = str(modules_file.relative_to(output_dir))
+            else:
+                # Backward compatibility for servers that may support modules aggregation.
+                modules_data = await fetch_and_save("modules")
+                if modules_data:
+                    modules_file = metadata_dir / "modules.json"
+                    modules_file.write_text(json.dumps(modules_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                    saved_files["modules"] = str(modules_file.relative_to(output_dir))
 
             # 8. Create summary.json
             summary = {
