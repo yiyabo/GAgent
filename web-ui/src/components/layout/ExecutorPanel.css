@@ -7,6 +7,19 @@
   background: transparent;
 }
 
+.executor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 6px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.executor-error {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
 /* 表格容器 */
 .task-table-wrap {
   flex: 1;
@@ -21,6 +34,21 @@
       transparent 1px,
       transparent 24px
     );
+}
+
+.executor-group {
+  margin-bottom: 12px;
+}
+
+.executor-group:last-child {
+  margin-bottom: 0;
+}
+
+.executor-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 2px 8px;
 }
 
 .task-table {
@@ -79,9 +107,20 @@
 
 .task-content {
   max-width: 0;
-  white-space: nowrap;
+  white-space: normal;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.task-content-meta {
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.45);
+  margin-top: 4px;
+  line-height: 1.35;
+}
+
+.task-content-error {
+  color: #dc2626;
 }
 
 .task-status {
@@ -200,6 +239,14 @@
       );
   }
 
+  .executor-toolbar {
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .executor-error {
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+  }
+
   .task-table {
     background: rgba(17, 24, 39, 0.45);
     border-color: rgba(255, 255, 255, 0.08);
@@ -230,6 +277,14 @@
 
   .task-status-meta {
     color: rgba(255, 255, 255, 0.4);
+  }
+
+  .task-content-meta {
+    color: rgba(255, 255, 255, 0.55);
+  }
+
+  .task-content-error {
+    color: #fca5a5;
   }
 
   .executor-empty-icon {

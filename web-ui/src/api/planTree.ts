@@ -9,6 +9,7 @@ import type {
   ExecuteTaskResponse,
   DecompositionJobStatus,
   JobLogTailResponse,
+  BackgroundTaskBoardResponse,
 } from '@/types';
 
 interface SubgraphResponse {
@@ -77,6 +78,15 @@ class PlanTreeApi extends BaseApi {
 
   getJobLogTail = async (jobId: string, tail = 200): Promise<JobLogTailResponse> => {
     return this.get<JobLogTailResponse>(`/jobs/${jobId}/logs`, { tail });
+  };
+
+  getBackgroundTaskBoard = async (options?: {
+    limit?: number;
+    session_id?: string;
+    plan_id?: number;
+    include_finished?: boolean;
+  }): Promise<BackgroundTaskBoardResponse> => {
+    return this.get<BackgroundTaskBoardResponse>('/jobs/board', options);
   };
 
   getPlanResults = async (

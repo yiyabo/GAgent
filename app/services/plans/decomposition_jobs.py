@@ -135,6 +135,26 @@ def _extract_phagescope_task_detail_dict(detail_result: Any) -> Optional[Dict[st
     return None
 
 
+def _extract_phagescope_task_status(detail_result: Any) -> str:
+    """Extract high-level remote status from phagescope task_detail output."""
+    if not isinstance(detail_result, dict):
+        return "unknown"
+    payload = detail_result.get("data")
+    if not isinstance(payload, dict):
+        return "unknown"
+    results = payload.get("results")
+    if isinstance(results, dict):
+        for key in ("status", "task_status", "state", "taskstatus"):
+            value = results.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for key in ("status", "task_status", "state", "taskstatus"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "unknown"
+
+
 def _summarize_phagescope_modules(
     task_detail: Dict[str, Any],
     *,
@@ -192,8 +212,8 @@ def execute_phagescope_track_job(
     modulelist: Optional[List[str]] = None,
     base_url: Optional[str] = None,
     token: Optional[str] = None,
-    poll_interval: float = 5.0,
-    poll_timeout: float = 3600.0,
+    poll_interval: float = 30.0,
+    poll_timeout: float = 172800.0,
     request_timeout: float = 40.0,
 ) -> None:
     """Track a remote PhageScope task until modules complete.
@@ -268,6 +288,7 @@ def execute_phagescope_track_job(
                 continue
 
             task_detail = _extract_phagescope_task_detail_dict(detail)
+            task_status = _extract_phagescope_task_status(detail)
             modules_payload: List[Dict[str, Any]] = []
             counts_payload: Dict[str, int] = {"done": 0, "total": 0}
             failed_modules: List[str] = []
@@ -290,6 +311,7 @@ def execute_phagescope_track_job(
                         "tool": "phagescope",
                         "taskid": str(remote_taskid),
                         "percent": percent,
+                        "status": task_status,
                         "phase": "poll",
                         "modules": modules_payload,
                         "counts": counts_payload,
@@ -316,6 +338,7 @@ def execute_phagescope_track_job(
                         "tool_progress": {
                             "tool": "phagescope",
                             "taskid": str(remote_taskid),
+                            "status": task_status,
                             "phase": "failed",
                         }
                     },
@@ -348,12 +371,14 @@ def execute_phagescope_track_job(
                         "remote_taskid": str(remote_taskid),
                         "modules": modules_payload,
                         "counts": counts_payload,
+                        "status": task_status,
                         "task_detail": task_detail,
                     },
                     stats={
                         "tool_progress": {
                             "tool": "phagescope",
                             "taskid": str(remote_taskid),
+                            "status": task_status,
                             "phase": "done",
                             "percent": 100,
                         }
@@ -371,15 +396,64 @@ def execute_phagescope_track_job(
         # Best-effort: keep chat action run status in sync so frontend polling
         # on /chat/actions/{tracking_id} doesn't look stuck.
         try:  # pragma: no cover - best effort
-            from app.repository.chat_action_runs import update_action_run as _update_action_run
+            from app.repository.chat_action_runs import (
+                fetch_action_run as _fetch_action_run,
+                update_action_run as _update_action_run,
+            )
 
             payload = plan_decomposition_jobs.get_job_payload(job_id) or {}
             status = payload.get("status") or "running"
+            existing_record = _fetch_action_run(job_id) or {}
+            existing_result = (
+                existing_record.get("result")
+                if isinstance(existing_record.get("result"), dict)
+                else None
+            )
+            job_result = payload.get("result")
+            merged_result: Dict[str, Any] = {}
+            if isinstance(existing_result, dict):
+                merged_result.update(existing_result)
+            if isinstance(job_result, dict):
+                merged_result.update(job_result)
+
+            stats_payload = payload.get("stats")
+            if isinstance(stats_payload, dict):
+                tool_progress = stats_payload.get("tool_progress")
+                if isinstance(tool_progress, dict):
+                    merged_result["tool_progress"] = tool_progress
+                    if str(tool_progress.get("tool") or "").strip().lower() == "phagescope":
+                        phage_result = (
+                            dict(merged_result.get("phagescope"))
+                            if isinstance(merged_result.get("phagescope"), dict)
+                            else {}
+                        )
+                        taskid_value = tool_progress.get("taskid") or merged_result.get("remote_taskid")
+                        if taskid_value is not None:
+                            phage_result["taskid"] = str(taskid_value)
+                        status_text = tool_progress.get("status")
+                        if isinstance(status_text, str) and status_text.strip():
+                            phage_result["status"] = status_text.strip()
+                        counts_value = tool_progress.get("counts")
+                        if isinstance(counts_value, dict):
+                            phage_result["counts"] = counts_value
+                        if phage_result:
+                            merged_result["phagescope"] = phage_result
+                            merged_result["background_running"] = [
+                                {
+                                    "tool": "phagescope",
+                                    "taskid": phage_result.get("taskid"),
+                                    "backend_job_id": job_id,
+                                    "status": phage_result.get("status"),
+                                    "counts": phage_result.get("counts"),
+                                }
+                            ]
+
+            result_payload = merged_result or (job_result if isinstance(job_result, dict) else existing_result)
             if status == "succeeded":
-                _update_action_run(job_id, status="completed", result=payload.get("result"), errors=[])
+                _update_action_run(job_id, status="completed", result=result_payload, errors=[])
             elif status == "failed":
                 error = payload.get("error") or "PhageScope tracking failed"
-                _update_action_run(job_id, status="failed", result=payload.get("result"), errors=[str(error)])
+                _update_action_run(job_id, status="failed", result=result_payload, errors=[str(error)])
         except Exception:
             pass
         reset_current_job(ctx_token)
@@ -392,8 +466,8 @@ def start_phagescope_track_job_thread(
     modulelist: Optional[List[str]] = None,
     base_url: Optional[str] = None,
     token: Optional[str] = None,
-    poll_interval: float = 5.0,
-    poll_timeout: float = 3600.0,
+    poll_interval: float = 30.0,
+    poll_timeout: float = 172800.0,
     request_timeout: float = 40.0,
 ) -> None:
     thread = threading.Thread(

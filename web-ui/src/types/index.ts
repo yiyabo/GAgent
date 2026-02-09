@@ -318,6 +318,46 @@ export interface JobLogTailResponse {
   truncated: boolean;
 }
 
+export type BackgroundTaskCategory = 'task_creation' | 'phagescope' | 'claude_code';
+
+export interface BackgroundTaskItem {
+  category: BackgroundTaskCategory;
+  job_id: string;
+  job_type: string;
+  status: string;
+  label: string;
+  session_id?: string | null;
+  plan_id?: number | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  taskid?: string | null;
+  remote_status?: string | null;
+  phase?: string | null;
+  counts?: {
+    done: number;
+    total: number;
+  } | null;
+  error?: string | null;
+}
+
+export interface BackgroundTaskGroup {
+  key: BackgroundTaskCategory;
+  label: string;
+  total: number;
+  running: number;
+  queued: number;
+  succeeded: number;
+  failed: number;
+  items: BackgroundTaskItem[];
+}
+
+export interface BackgroundTaskBoardResponse {
+  generated_at: string;
+  total: number;
+  groups: Record<BackgroundTaskCategory, BackgroundTaskGroup>;
+}
+
 export interface ArtifactItem {
   name: string;
   path: string;

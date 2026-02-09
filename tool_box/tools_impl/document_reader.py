@@ -3,14 +3,86 @@ Document Reader - local parsing (no external upload)
 
 PDF: PyPDF2 (<=50MB)
 Image: Pillow (+ optional pytesseract OCR)
+DOCX: Office Open XML parsing (no external service)
 Text/Markdown/CSV/JSON/YAML: plain UTF-8 read (<=10MB)
 """
 
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+import zipfile
+from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_docx_text(xml_bytes: bytes) -> str:
+    """Extract visible text from DOCX document.xml."""
+    root = ET.fromstring(xml_bytes)
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+    paragraphs = []
+    for para in root.findall(".//w:p", ns):
+        parts = []
+        for text_node in para.findall(".//w:t", ns):
+            if text_node.text:
+                parts.append(text_node.text)
+        if parts:
+            paragraphs.append("".join(parts))
+
+    if paragraphs:
+        return "\n\n".join(paragraphs)
+
+    # Fallback: flatten all text nodes if paragraph structure is unusual.
+    flat_parts = []
+    for text_node in root.findall(".//w:t", ns):
+        if text_node.text:
+            flat_parts.append(text_node.text)
+    return "\n".join(flat_parts)
+
+
+async def read_docx(file_path: str) -> Dict[str, Any]:
+    """Read DOCX locally by parsing Office Open XML."""
+    abs_path = Path(file_path).expanduser().resolve()
+    if not abs_path.exists():
+        return {"success": False, "error": f"File not found: {file_path}"}
+    if abs_path.suffix.lower() != ".docx":
+        return {"success": False, "error": f"Not a DOCX file: {file_path}"}
+
+    try:
+        size_bytes = abs_path.stat().st_size
+    except OSError:
+        size_bytes = 0
+    if size_bytes > 20 * 1024 * 1024:
+        return {"success": False, "error": f"DOCX file too large (>{size_bytes/1024/1024:.2f}MB), limit is 20MB"}
+
+    try:
+        with zipfile.ZipFile(abs_path, "r") as archive:
+            if "word/document.xml" not in archive.namelist():
+                return {"success": False, "error": "Invalid DOCX: missing word/document.xml"}
+            xml_bytes = archive.read("word/document.xml")
+    except zipfile.BadZipFile:
+        return {"success": False, "error": "Invalid DOCX: corrupted ZIP container"}
+    except Exception as exc:
+        logger.error("Failed to open DOCX: %s", exc)
+        return {"success": False, "error": f"Failed to open DOCX: {exc}"}
+
+    try:
+        text = _extract_docx_text(xml_bytes)
+    except Exception as exc:
+        logger.error("Failed to parse DOCX XML: %s", exc)
+        return {"success": False, "error": f"Failed to parse DOCX content: {exc}"}
+
+    return {
+        "success": True,
+        "file_path": str(abs_path),
+        "file_name": abs_path.name,
+        "file_size": f"{size_bytes/1024:.2f} KB" if size_bytes else None,
+        "format": "docx",
+        "text": text,
+        "text_length": len(text),
+        "summary": f"Successfully read DOCX file, extracted {len(text)} characters",
+    }
 
 
 async def read_pdf(file_path: str) -> Dict[str, Any]:
@@ -190,12 +262,14 @@ async def read_text_like(file_path: str) -> Dict[str, Any]:
 
 
 def _detect_type(file_path: str) -> Tuple[str, str]:
-    """Return (kind, suffix) where kind in pdf/image/text."""
+    """Return (kind, suffix) where kind in pdf/image/docx/text."""
     suffix = Path(file_path).suffix.lower()
     if suffix == ".pdf":
         return "pdf", suffix
     if suffix in {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff"}:
         return "image", suffix
+    if suffix == ".docx":
+        return "docx", suffix
     return "text", suffix
 
 
@@ -312,11 +386,16 @@ async def document_reader_handler(
             if kind == "image":
                 # Frontend/LLM misused read_pdf but passed an image, try reading as image
                 return await read_image(file_path, use_ocr=use_ocr)
+            if kind == "docx":
+                return await read_docx(file_path)
             # Other text types, try text reading
             return await read_text_like(file_path)
         if operation == "read_image":
             return await read_image(file_path, use_ocr=use_ocr)
         if operation == "read_text":
+            kind, _ = _detect_type(file_path)
+            if kind == "docx":
+                return await read_docx(file_path)
             return await read_text_like(file_path)
         if operation == "read_any":
             kind, _ = _detect_type(file_path)
@@ -324,6 +403,8 @@ async def document_reader_handler(
                 return await read_pdf(file_path)
             if kind == "image":
                 return await read_image(file_path, use_ocr=use_ocr)
+            if kind == "docx":
+                return await read_docx(file_path)
             return await read_text_like(file_path)
         
         # Unsupported operation - provide helpful error message
@@ -339,7 +420,7 @@ async def document_reader_handler(
 
 document_reader_tool = {
     "name": "document_reader",
-    "description": "Extract content from files locally. Supports: PDF text extraction, image metadata (dimensions, format, size), text/Markdown/CSV/JSON files. For visual understanding like OCR, describing figures, or reading equations, use vision_reader instead.",
+    "description": "Extract content from files locally. Supports: PDF text extraction, DOCX text extraction, image metadata (dimensions, format, size), text/Markdown/CSV/JSON files. For visual understanding like OCR, describing figures, or reading equations, use vision_reader instead.",
     "category": "document_processing",
     "parameters_schema": {
         "type": "object",
@@ -362,9 +443,10 @@ document_reader_tool = {
         "required": ["operation", "file_path"],
     },
     "handler": document_reader_handler,
-    "tags": ["document", "pdf", "image", "ocr", "text", "markdown", "csv", "json"],
+    "tags": ["document", "pdf", "docx", "image", "ocr", "text", "markdown", "csv", "json"],
     "examples": [
         "Read PDF file and extract text content",
+        "Read DOCX file and extract text content",
         "Recognize text in images",
         "Read Markdown/text/CSV/JSON files",
         "Auto-detect file type and read content",

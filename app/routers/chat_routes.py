@@ -2071,6 +2071,176 @@ def _extract_taskid_from_result(result: Any) -> Optional[str]:
     return None
 
 
+def _extract_phagescope_task_snapshot(detail_result: Any) -> Dict[str, Any]:
+    """Extract a compact status snapshot from phagescope task_detail output."""
+    if not isinstance(detail_result, dict):
+        return {}
+    payload = detail_result.get("data")
+    if not isinstance(payload, dict):
+        return {}
+
+    snapshot: Dict[str, Any] = {}
+    results = payload.get("results")
+    if isinstance(results, dict):
+        for key in ("status", "task_status", "state", "taskstatus"):
+            value = results.get(key)
+            if isinstance(value, str) and value.strip():
+                snapshot["remote_status"] = value.strip()
+                break
+
+    task_detail = payload.get("parsed_task_detail")
+    if not isinstance(task_detail, dict) and isinstance(results, dict):
+        raw_task_detail = results.get("task_detail")
+        if isinstance(raw_task_detail, dict):
+            task_detail = raw_task_detail
+        elif isinstance(raw_task_detail, str) and raw_task_detail.strip():
+            try:
+                parsed = json.loads(raw_task_detail)
+                if isinstance(parsed, dict):
+                    task_detail = parsed
+            except Exception:
+                task_detail = None
+
+    if not isinstance(task_detail, dict):
+        return snapshot
+
+    task_status = task_detail.get("task_status")
+    if isinstance(task_status, str) and task_status.strip():
+        snapshot["task_status"] = task_status.strip()
+
+    queue = task_detail.get("task_que")
+    if not isinstance(queue, list):
+        return snapshot
+
+    done_states = {"COMPLETED", "SUCCESS", "SUCCEEDED", "DONE", "FINISHED"}
+    failed_states = {"FAILED", "ERROR"}
+    done = 0
+    failed = 0
+    waiting = 0
+    running_modules: List[str] = []
+    total = 0
+    for item in queue:
+        if not isinstance(item, dict):
+            continue
+        module_name = str(item.get("module") or "").strip()
+        if not module_name:
+            continue
+        status_raw = item.get("module_satus") or item.get("module_status") or item.get("status")
+        status_upper = str(status_raw or "").strip().upper()
+        total += 1
+        if status_upper in done_states:
+            done += 1
+            continue
+        if status_upper in failed_states:
+            failed += 1
+            continue
+        waiting += 1
+        if len(running_modules) < 5:
+            running_modules.append(module_name)
+
+    snapshot["counts"] = {
+        "done": done,
+        "failed": failed,
+        "waiting": waiting,
+        "total": total,
+    }
+    if running_modules:
+        snapshot["running_modules"] = running_modules
+    return snapshot
+
+
+def _build_phagescope_submit_background_summary(
+    *,
+    taskid: str,
+    background_job_id: str,
+    module_items: Optional[List[str]] = None,
+    snapshot: Optional[Dict[str, Any]] = None,
+) -> str:
+    snapshot = snapshot or {}
+    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+    done = counts.get("done") if isinstance(counts.get("done"), int) else 0
+    total_from_snapshot = counts.get("total") if isinstance(counts.get("total"), int) else 0
+    total = total_from_snapshot or len(module_items or [])
+    progress_text = f"{done}/{total}" if total > 0 else "0/?"
+
+    remote_status = (
+        str(snapshot.get("remote_status") or "").strip()
+        or str(snapshot.get("task_status") or "").strip()
+        or "submitted"
+    )
+    running_modules = snapshot.get("running_modules") if isinstance(snapshot.get("running_modules"), list) else []
+    running_suffix = ""
+    if running_modules:
+        running_suffix = f"，进行中模块：{', '.join(str(x) for x in running_modules[:3])}"
+
+    return (
+        f"PhageScope 任务已提交（taskid={taskid}）。"
+        f"已完成：submit。"
+        f"后台运行中：后台任务ID={background_job_id}，状态={remote_status}，模块进度={progress_text}{running_suffix}。"
+        "下一步：在「后台任务」刷新查看最新状态；任务完成后再执行 result/save_all/download。"
+    )
+
+
+def _is_empty_phagescope_param(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
+def _backfill_phagescope_submit_params(
+    submit_params: Dict[str, Any],
+    *,
+    sorted_actions: Sequence[LLMAction],
+    submit_action: LLMAction,
+    user_message: Optional[str],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Best-effort backfill for submit params from earlier PhageScope actions and message."""
+    patched = dict(submit_params or {})
+    backfilled_keys: List[str] = []
+    candidates = (
+        "userid",
+        "phageid",
+        "phageids",
+        "modulelist",
+        "analysistype",
+        "inputtype",
+        "sequence_ids",
+        "sequence",
+        "file_path",
+    )
+
+    previous_values: Dict[str, Any] = {}
+    for action in sorted_actions:
+        if action is submit_action:
+            break
+        if action.kind != "tool_operation" or action.name != "phagescope":
+            continue
+        if not isinstance(action.parameters, dict):
+            continue
+        for key in candidates:
+            value = action.parameters.get(key)
+            if not _is_empty_phagescope_param(value):
+                previous_values[key] = value
+
+    for key, value in previous_values.items():
+        if _is_empty_phagescope_param(patched.get(key)):
+            patched[key] = value
+            backfilled_keys.append(key)
+
+    # If userid is still missing, try extracting an email-like identifier from user message.
+    if _is_empty_phagescope_param(patched.get("userid")) and isinstance(user_message, str):
+        email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", user_message)
+        if email_match:
+            patched["userid"] = email_match.group(0)
+            backfilled_keys.append("userid(from_message)")
+
+    return patched, backfilled_keys
+
+
 def _record_phagescope_task_memory(
     session_id: str, params: Dict[str, Any], result: Any
 ) -> Optional[str]:
@@ -2820,15 +2990,26 @@ async def _execute_action_run(run_id: str) -> None:
     # PhageScope is treated as a special, long-running remote job:
     # submit -> return taskid immediately -> track via backend polling job.
     phagescope_submit_action: Optional[LLMAction] = None
-    if (
-        len(sorted_actions) == 1
-        and primary_action is not None
-        and primary_action.kind == "tool_operation"
-        and primary_action.name == "phagescope"
-        and isinstance(primary_action.parameters, dict)
-        and str(primary_action.parameters.get("action") or "").strip().lower() == "submit"
-    ):
-        phagescope_submit_action = primary_action
+    dropped_phagescope_actions: List[str] = []
+    phagescope_only_actions = bool(sorted_actions) and all(
+        action.kind == "tool_operation" and action.name == "phagescope"
+        for action in sorted_actions
+    )
+    if phagescope_only_actions:
+        for action in sorted_actions:
+            if not isinstance(action.parameters, dict):
+                continue
+            if str(action.parameters.get("action") or "").strip().lower() == "submit":
+                phagescope_submit_action = action
+                break
+        if phagescope_submit_action is not None:
+            for action in sorted_actions:
+                if action is phagescope_submit_action:
+                    continue
+                action_name = ""
+                if isinstance(action.parameters, dict):
+                    action_name = str(action.parameters.get("action") or "").strip().lower()
+                dropped_phagescope_actions.append(action_name or f"{action.kind}:{action.name}")
 
     job_type_to_use = "phagescope_track" if phagescope_submit_action else "chat_action"
     mode_to_use = "phagescope_track" if phagescope_submit_action else (record.get("mode") or "assistant")
@@ -2941,7 +3122,15 @@ async def _execute_action_run(run_id: str) -> None:
         if phagescope_submit_action is not None:
             plan_decomposition_jobs.mark_running(job.job_id)
             submit_params = dict(phagescope_submit_action.parameters or {})
+            submit_params, backfilled_keys = _backfill_phagescope_submit_params(
+                submit_params,
+                sorted_actions=sorted_actions,
+                submit_action=phagescope_submit_action,
+                user_message=record.get("user_message"),
+            )
             submit_params.setdefault("timeout", 120.0)
+            submit_params.setdefault("poll_interval", 30.0)
+            submit_params.setdefault("poll_timeout", 172800.0)
 
             plan_decomposition_jobs.append_log(
                 job.job_id,
@@ -2949,6 +3138,42 @@ async def _execute_action_run(run_id: str) -> None:
                 "Submitting PhageScope remote task.",
                 {"parameters": {k: v for k, v in submit_params.items() if k != "token"}},
             )
+            if backfilled_keys:
+                plan_decomposition_jobs.append_log(
+                    job.job_id,
+                    "info",
+                    "Backfilled missing PhageScope submit parameters from context.",
+                    {"keys": backfilled_keys},
+                )
+            if dropped_phagescope_actions:
+                plan_decomposition_jobs.append_log(
+                    job.job_id,
+                    "info",
+                    "PhageScope submit-only mode enabled; skipped follow-up actions in this turn.",
+                    {"skipped_actions": dropped_phagescope_actions},
+                )
+            missing_fields: List[str] = []
+            if _is_empty_phagescope_param(submit_params.get("userid")):
+                missing_fields.append("userid")
+            if _is_empty_phagescope_param(submit_params.get("modulelist")):
+                missing_fields.append("modulelist")
+            has_input_source = any(
+                not _is_empty_phagescope_param(submit_params.get(key))
+                for key in ("phageid", "phageids", "sequence", "file_path", "sequence_ids")
+            )
+            if not has_input_source:
+                missing_fields.append("phageid/phageids/sequence/file_path")
+            if missing_fields:
+                msg = "PhageScope submit missing required params: " + ", ".join(missing_fields)
+                plan_decomposition_jobs.append_log(
+                    job.job_id,
+                    "error",
+                    msg,
+                    {"missing_fields": missing_fields},
+                )
+                plan_decomposition_jobs.mark_failure(job.job_id, msg)
+                update_action_run(run_id, status="failed", errors=[msg])
+                return
             try:
                 submit_result = await execute_tool("phagescope", **submit_params)
             except Exception as exc:  # pragma: no cover - defensive
@@ -2975,23 +3200,118 @@ async def _execute_action_run(run_id: str) -> None:
                 return
 
             module_items = _normalize_modulelist_value(submit_params.get("modulelist"))
+            task_snapshot: Dict[str, Any] = {}
+            try:
+                detail_result = await execute_tool(
+                    "phagescope",
+                    action="task_detail",
+                    taskid=str(taskid),
+                    base_url=submit_params.get("base_url"),
+                    timeout=min(float(submit_params.get("timeout") or 60.0), 40.0),
+                )
+                task_snapshot = _extract_phagescope_task_snapshot(detail_result)
+            except Exception as exc:  # pragma: no cover - best-effort
+                plan_decomposition_jobs.append_log(
+                    job.job_id,
+                    "warning",
+                    "Initial PhageScope task_detail probe failed; tracker will continue polling.",
+                    {"remote_taskid": str(taskid), "error": str(exc)},
+                )
+
+            counts_from_snapshot = (
+                task_snapshot.get("counts")
+                if isinstance(task_snapshot.get("counts"), dict)
+                else {}
+            )
+            done_count = (
+                counts_from_snapshot.get("done")
+                if isinstance(counts_from_snapshot.get("done"), int)
+                else 0
+            )
+            total_count_raw = (
+                counts_from_snapshot.get("total")
+                if isinstance(counts_from_snapshot.get("total"), int)
+                else None
+            )
+            total_count = total_count_raw if total_count_raw and total_count_raw > 0 else (
+                len(module_items) if module_items else None
+            )
+            percent = 0
+            if isinstance(total_count, int) and total_count > 0:
+                percent = int(round((done_count / max(1, total_count)) * 100))
+                percent = max(0, min(100, percent))
+            remote_status = (
+                str(task_snapshot.get("remote_status") or "").strip()
+                or str(task_snapshot.get("task_status") or "").strip()
+                or "submitted"
+            )
+
+            progress_payload: Dict[str, Any] = {
+                "tool": "phagescope",
+                "taskid": str(taskid),
+                "percent": percent,
+                "status": remote_status,
+                "phase": "submitted",
+            }
+            if isinstance(total_count, int) and total_count > 0:
+                progress_payload["counts"] = {
+                    "done": done_count,
+                    "total": total_count,
+                }
+
             plan_decomposition_jobs.update_stats(
                 job.job_id,
                 {
-                    "tool_progress": {
-                        "tool": "phagescope",
-                        "taskid": str(taskid),
-                        "percent": 0,
-                        "phase": "submitted",
-                        "counts": {"done": 0, "total": len(module_items) if module_items else None},
-                    }
+                    "tool_progress": progress_payload
                 },
             )
+
+            summary_text = _build_phagescope_submit_background_summary(
+                taskid=str(taskid),
+                background_job_id=job.job_id,
+                module_items=module_items,
+                snapshot=task_snapshot,
+            )
+
             plan_decomposition_jobs.append_log(
                 job.job_id,
                 "info",
                 "PhageScope task submitted; tracking in background.",
-                {"remote_taskid": str(taskid), "modulelist": module_items},
+                {
+                    "remote_taskid": str(taskid),
+                    "modulelist": module_items,
+                    "status_snapshot": task_snapshot or None,
+                },
+            )
+
+            update_action_run(
+                run_id,
+                result={
+                    "tracking_id": run_id,
+                    "execution_mode": "phagescope_track",
+                    "final_summary": summary_text,
+                    "completed_now": [
+                        {"tool": "phagescope", "action": "submit", "taskid": str(taskid)}
+                    ],
+                    "background_running": [
+                        {
+                            "tool": "phagescope",
+                            "taskid": str(taskid),
+                            "backend_job_id": job.job_id,
+                            "status": remote_status,
+                            "modulelist": module_items,
+                            "counts": progress_payload.get("counts"),
+                        }
+                    ],
+                    "phagescope": {
+                        "taskid": str(taskid),
+                        "backend_job_id": job.job_id,
+                        "status": remote_status,
+                        "modulelist": module_items,
+                        "counts": progress_payload.get("counts"),
+                    },
+                },
+                errors=[],
             )
 
             # Persist taskid into session metadata for later lookup.
@@ -3007,7 +3327,7 @@ async def _execute_action_run(run_id: str) -> None:
                     _update_message_content_by_tracking(
                         record.get("session_id"),
                         run_id,
-                        f"已提交到 PhageScope（taskid={taskid}），已在后台跟踪运行进度。你可以在「后台任务」查看状态；完成后再让我执行下载/解读即可。",
+                        summary_text,
                     )
                     _update_message_metadata_by_tracking(
                         record.get("session_id"),
@@ -3016,6 +3336,9 @@ async def _execute_action_run(run_id: str) -> None:
                             **(existing or {}),
                             "phagescope_taskid": str(taskid),
                             "phagescope_modulelist": module_items,
+                            "phagescope_remote_status": remote_status,
+                            "phagescope_counts": progress_payload.get("counts"),
+                            "phagescope_submit_only": True,
                             "job_type": "phagescope_track",
                         },
                     )
@@ -3029,8 +3352,8 @@ async def _execute_action_run(run_id: str) -> None:
                 modulelist=module_items,
                 base_url=submit_params.get("base_url"),
                 token=None,  # avoid persisting secrets; usually unused for PhageScope
-                poll_interval=float(submit_params.get("poll_interval") or 5.0),
-                poll_timeout=float(submit_params.get("poll_timeout") or 3600.0),
+                poll_interval=float(submit_params.get("poll_interval") or 30.0),
+                poll_timeout=float(submit_params.get("poll_timeout") or 172800.0),
                 request_timeout=40.0,
             )
             # Do not finalize the job here; the tracker thread will mark_success/mark_failure.
@@ -3309,22 +3632,87 @@ async def get_action_status(tracking_id: str):
 
     actions, tool_results = _build_action_status_payloads(record)
 
-    # 提取 final_summary 以便前端显示
     result_data = record.get("result") or {}
+    if not isinstance(result_data, dict):
+        result_data = {}
+
+    job_snapshot = plan_decomposition_jobs.get_job_payload(tracking_id, include_logs=False)
+    if isinstance(job_snapshot, dict):
+        stats_payload = job_snapshot.get("stats")
+        if isinstance(stats_payload, dict):
+            progress = stats_payload.get("tool_progress")
+            if isinstance(progress, dict):
+                result_data = dict(result_data)
+                result_data["tool_progress"] = progress
+                if str(progress.get("tool") or "").strip().lower() == "phagescope":
+                    phage_result = (
+                        dict(result_data.get("phagescope"))
+                        if isinstance(result_data.get("phagescope"), dict)
+                        else {}
+                    )
+                    taskid = progress.get("taskid")
+                    if taskid is not None:
+                        phage_result["taskid"] = str(taskid)
+                    status_text = progress.get("status")
+                    if isinstance(status_text, str) and status_text.strip():
+                        phage_result["status"] = status_text.strip()
+                    counts = progress.get("counts")
+                    if isinstance(counts, dict):
+                        phage_result["counts"] = counts
+                    if phage_result:
+                        result_data["phagescope"] = phage_result
+                    if "background_running" not in result_data:
+                        result_data["background_running"] = [
+                            {
+                                "tool": "phagescope",
+                                "taskid": phage_result.get("taskid"),
+                                "backend_job_id": tracking_id,
+                                "status": phage_result.get("status"),
+                                "counts": phage_result.get("counts"),
+                            }
+                        ]
+
+    # 提取 final_summary 以便前端显示
     final_summary = result_data.get("final_summary")
-    
+    if not final_summary and isinstance(job_snapshot, dict):
+        stats_payload = job_snapshot.get("stats")
+        if isinstance(stats_payload, dict):
+            progress = stats_payload.get("tool_progress")
+            if (
+                isinstance(progress, dict)
+                and str(progress.get("tool") or "").strip().lower() == "phagescope"
+                and progress.get("taskid") is not None
+            ):
+                snapshot_payload: Dict[str, Any] = {
+                    "remote_status": progress.get("status"),
+                }
+                if isinstance(progress.get("counts"), dict):
+                    snapshot_payload["counts"] = progress.get("counts")
+                final_summary = _build_phagescope_submit_background_summary(
+                    taskid=str(progress.get("taskid")),
+                    background_job_id=tracking_id,
+                    module_items=None,
+                    snapshot=snapshot_payload,
+                )
+                result_data["final_summary"] = final_summary
+
     metadata = {}
     if tool_results:
         metadata["tool_results"] = tool_results
     if final_summary:
         metadata["final_summary"] = final_summary
+    if isinstance(job_snapshot, dict):
+        metadata["job"] = job_snapshot
+        stats_payload = job_snapshot.get("stats")
+        if isinstance(stats_payload, dict) and isinstance(stats_payload.get("tool_progress"), dict):
+            metadata["tool_progress"] = stats_payload.get("tool_progress")
     
     return ActionStatusResponse(
         tracking_id=tracking_id,
         status=record["status"],
         plan_id=record.get("plan_id"),
         actions=actions,
-        result=record.get("result"),
+        result=result_data or record.get("result"),
         errors=record.get("errors"),
         created_at=record.get("created_at"),
         started_at=record.get("started_at"),
@@ -3455,6 +3843,53 @@ def _build_action_status_payloads(
 ) -> Tuple[List[Dict[str, Any]], Optional[List[Dict[str, Any]]]]:
     """Build action payload list based on stored structured/result data."""
     result = record.get("result") or {}
+    if isinstance(result, dict):
+        completed_now = result.get("completed_now")
+        background_running = result.get("background_running")
+        payloads: List[Dict[str, Any]] = []
+        if isinstance(completed_now, list):
+            for item in completed_now:
+                if not isinstance(item, dict):
+                    continue
+                payloads.append(
+                    {
+                        "kind": "tool_operation",
+                        "name": item.get("tool"),
+                        "parameters": {
+                            "action": item.get("action"),
+                            "taskid": item.get("taskid"),
+                        },
+                        "order": None,
+                        "blocking": False,
+                        "status": "completed",
+                        "success": True,
+                        "message": "completed_now",
+                        "details": item,
+                    }
+                )
+        if isinstance(background_running, list):
+            for item in background_running:
+                if not isinstance(item, dict):
+                    continue
+                payloads.append(
+                    {
+                        "kind": "tool_operation",
+                        "name": item.get("tool"),
+                        "parameters": {
+                            "action": "task_detail",
+                            "taskid": item.get("taskid"),
+                        },
+                        "order": None,
+                        "blocking": False,
+                        "status": "running",
+                        "success": None,
+                        "message": "background_running",
+                        "details": item,
+                    }
+                )
+        if payloads:
+            return payloads, None
+
     steps = result.get("steps") or []
     tool_results: List[Dict[str, Any]] = []
     if steps:
@@ -3807,6 +4242,37 @@ class StructuredChatAgent:
             if m:
                 return m.group(1)
             return None
+
+        # Guardrail: for long-running PhageScope workflows, prefer submit-only in this turn.
+        # If the model emits submit + result/save_all/download in one response, keep submit only.
+        phagescope_actions = [
+            action
+            for action in structured.actions
+            if action.kind == "tool_operation" and action.name == "phagescope"
+        ]
+        submit_actions = [
+            action
+            for action in phagescope_actions
+            if isinstance(action.parameters, dict)
+            and str(action.parameters.get("action") or "").strip().lower() == "submit"
+        ]
+        if submit_actions and len(phagescope_actions) > 1:
+            explicit_taskid = _extract_taskid_from_text(user_message)
+            if not (explicit_taskid and (_wants_results(user_message) or _wants_download(user_message))):
+                submit_action = sorted(
+                    submit_actions,
+                    key=lambda item: (item.order if isinstance(item.order, int) else 10**9),
+                )[0]
+                normalized_submit = LLMAction.model_validate(submit_action.model_dump())
+                normalized_submit.order = 1
+                normalized_submit.blocking = True
+                structured.actions = [normalized_submit]
+                if structured.llm_reply and structured.llm_reply.message:
+                    structured.llm_reply.message = (
+                        "我会先把 PhageScope 任务提交到后台，不在本轮等待远端完成；"
+                        "提交后会返回 taskid 与后台运行状态。"
+                    )
+                return structured
 
         # One-shot UX: when the user asks to download+analyze, inject a deterministic action chain:
         # 1) phagescope save_all (partial 207 is acceptable)
@@ -4746,7 +5212,7 @@ class StructuredChatAgent:
                     and last_params.get("action") == "submit"
                 ):
                     current_action = action.parameters.get("action")
-                    if current_action in {"result", "quality"}:
+                    if current_action in {"result", "quality", "save_all", "download"}:
                         patched = dict(action.parameters)
                         taskid_value = patched.get("taskid")
                         if taskid_value is not None:
@@ -4758,9 +5224,15 @@ class StructuredChatAgent:
                             extracted_taskid = _extract_taskid_from_result(previous_result)
                             if extracted_taskid:
                                 patched["taskid"] = extracted_taskid
-                        patched.setdefault("wait", True)
-                        patched.setdefault("poll_interval", 2.0)
-                        patched.setdefault("poll_timeout", 120.0)
+                        # Do not block on immediate result retrieval after submit.
+                        # Convert follow-up actions to a lightweight status query.
+                        patched["action"] = "task_detail"
+                        patched.pop("result_kind", None)
+                        patched.pop("download_path", None)
+                        patched.pop("save_path", None)
+                        patched.pop("wait", None)
+                        patched.pop("poll_interval", None)
+                        patched.pop("poll_timeout", None)
                         action.parameters = patched
             retry_limit = 0
             backoff_sec = 0.0
@@ -5535,7 +6007,7 @@ class StructuredChatAgent:
                 # Instantiate DeepThinkAgent with streaming callbacks
                 dt_agent = DeepThinkAgent(
                     llm_client=self.llm_service,
-                    available_tools=["web_search", "graph_rag", "claude_code", "file_operations", "vision_reader", "bio_tools", "phagescope", "result_interpreter", "plan_operation"],
+                    available_tools=["web_search", "graph_rag", "claude_code", "file_operations", "document_reader", "vision_reader", "bio_tools", "phagescope", "result_interpreter", "plan_operation"],
                     tool_executor=tool_wrapper,
                     max_iterations=100,
                     tool_timeout=120,  # 2分钟工具超时
@@ -6477,6 +6949,48 @@ class StructuredChatAgent:
                     if alias in params and params[alias] is not None:
                         params["taskid"] = params[alias]
                         break
+            if "phageid" not in params:
+                for alias in ("phage_id", "phageId"):
+                    if alias in params and params[alias] is not None:
+                        params["phageid"] = params[alias]
+                        break
+            if "phageids" not in params:
+                for alias in ("phage_ids", "phageIds"):
+                    if alias in params and params[alias] is not None:
+                        params["phageids"] = params[alias]
+                        break
+
+            # Compat aliases used by some prompts/tool wrappers.
+            sequence_ids_value = None
+            for alias in ("sequence_ids", "sequenceIds", "sequence_id", "sequenceId", "idlist"):
+                if alias in params and params[alias] is not None:
+                    sequence_ids_value = params[alias]
+                    break
+            if sequence_ids_value is not None and not params.get("phageid") and not params.get("phageids"):
+                seq_items: List[str] = []
+                if isinstance(sequence_ids_value, (list, tuple, set)):
+                    seq_items = [str(v).strip() for v in sequence_ids_value if str(v).strip()]
+                elif isinstance(sequence_ids_value, str):
+                    raw = sequence_ids_value.strip()
+                    if raw:
+                        parsed = None
+                        if raw.startswith("["):
+                            try:
+                                parsed = json.loads(raw.replace("'", '"'))
+                            except Exception:
+                                parsed = None
+                        if isinstance(parsed, list):
+                            seq_items = [str(v).strip() for v in parsed if str(v).strip()]
+                        else:
+                            normalized = raw.replace(",", ";").replace("\n", ";")
+                            seq_items = [chunk.strip() for chunk in normalized.split(";") if chunk.strip()]
+                else:
+                    text = str(sequence_ids_value).strip()
+                    if text:
+                        seq_items = [text]
+                if seq_items:
+                    params["phageid"] = seq_items[0] if len(seq_items) == 1 else json.dumps(seq_items, ensure_ascii=False)
+                    params["phageids"] = ";".join(seq_items)
 
             action_value = params.get("action")
             if not isinstance(action_value, str) or not action_value.strip():
@@ -6496,6 +7010,7 @@ class StructuredChatAgent:
                 "timeout",
                 "phageid",
                 "phageids",
+                "sequence_ids",
                 "inputtype",
                 "analysistype",
                 "userid",
@@ -8164,14 +8679,32 @@ class StructuredChatAgent:
             if result.get("success") is False:
                 error = result.get("error") or "Execution failed"
                 return f"PhageScope {action} failed: {error}"
+
+            action_lower = str(action).strip().lower()
+            if action_lower == "submit":
+                taskid = _extract_taskid_from_result(result)
+                if taskid:
+                    return f"PhageScope submit succeeded: taskid={taskid}; running in background."
+                return "PhageScope submit succeeded; task is running in background."
+
+            if action_lower == "task_detail":
+                snapshot = _extract_phagescope_task_snapshot(result)
+                status = (
+                    str(snapshot.get("remote_status") or "").strip()
+                    or str(snapshot.get("task_status") or "").strip()
+                    or "unknown"
+                )
+                counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+                done = counts.get("done") if isinstance(counts.get("done"), int) else None
+                total = counts.get("total") if isinstance(counts.get("total"), int) else None
+                if isinstance(done, int) and isinstance(total, int) and total > 0:
+                    return f"PhageScope task_detail succeeded: status={status}, progress={done}/{total}."
+                return f"PhageScope task_detail succeeded: status={status}."
+
             payload = result.get("data")
             message = None
             if isinstance(payload, dict):
                 message = payload.get("message") or payload.get("status")
-                if not message and isinstance(payload.get("data"), dict):
-                    message = payload["data"].get("taskid")
-                    if message:
-                        message = f"task created: {message}"
             if message:
                 return f"PhageScope {action} succeeded: {message}"
             return f"PhageScope {action} succeeded."

@@ -37,7 +37,7 @@ PROMPTS_EN_US = {
                 "- system_operation: help",
                 "- tool_operation: web_search (use for live web information; requires `query`, optional provider/max_results/target_task_id)",
                 "- tool_operation: graph_rag (query the phage-host knowledge graph; requires `query`, optional top_k/hops/return_subgraph/focus_entities/target_task_id)",
-                "- tool_operation: phagescope (PhageScope phage analyses; action in ping/input_check/submit/task_list/task_detail/task_log/result/quality/download/save_all; requires `action`, optional phageid/userid/modulelist/taskid/result_kind/download_path/save_path/target_task_id)",
+                "- tool_operation: phagescope (PhageScope phage analyses; action in ping/input_check/submit/task_list/task_detail/task_log/result/quality/download/save_all; requires `action`, optional phageid/userid/modulelist/taskid/result_kind/download_path/save_path/target_task_id. IMPORTANT: submit is async and should return immediately; do not wait for completion in the same turn.)",
                 "- tool_operation: generate_experiment_card (create data/<experiment_id>/card.yaml from a PDF; if pdf_path/experiment_id are omitted, uses the latest uploaded PDF and derives an id)",
                 "- tool_operation: claude_code (execute complex coding tasks using Claude AI with full local file access; requires `task`, optional allowed_tools/add_dirs/target_task_id)",
                 "- tool_operation: manuscript_writer (write a research manuscript using the default LLM; requires `task` and `output_path`, optional context_paths/analysis_path/max_context_bytes/target_task_id)",
@@ -90,6 +90,8 @@ PROMPTS_EN_US = {
                 "IMPORTANT: Only call `claude_code` when the user explicitly requests coding, programming, script execution, file creation, OR data analysis on structured files (CSV, JSON, Excel). Do NOT call `claude_code` for simple questions, math formula requests, explanations, or general conversation. If unsure, ask the user to clarify before invoking `claude_code`.",
                 "IMPORTANT: Do not invoke `claude_code` without plan/task context for project-level requests. Prefer creating/decomposing tasks first, then execute one atomic task at a time.",
                 "When the user explicitly asks to replicate a scientific paper or run a bacteriophage experiment baseline such as 'experiment_1', first obtain an ExperimentCard (call `generate_experiment_card` if needed; it can infer the latest uploaded PDF and derives an id), then call `paper_replication` to load it, and finally use `claude_code` with details from the card (targets, code root, constraints).",
+                "For PhageScope long-running jobs, prefer `submit` only in the current turn; do not chain `result`/`save_all`/`download` immediately after submit. Report what is completed now and what is running in background.",
+                "When returning a PhageScope submit response, ensure `llm_reply.message` includes: (1) completed action(s), (2) running background info with taskid and current status if available, (3) next step to refresh status and fetch results later.",
             ],
             "scenario_rules": {
                 "bound": [
