@@ -185,8 +185,9 @@ When a task requires tool execution, request one of these tools:
   Parameters: {"operation": "ocr_page|describe_figure|read_equation_image", "file_path": "<path>"}
 
 **SPECIALIZED:**
-- phagescope: PhageScope platform operations (submit jobs, check status, get results)
-  Parameters: {"action": "submit|task_list|task_detail|result", ...}
+- phagescope: PhageScope platform operations (submit jobs, check status, fetch results)
+  Parameters: {"action": "submit|task_list|task_detail|task_log|result|quality|download|save_all", ...}
+  IMPORTANT: submit is async and should return taskid quickly. For long-running jobs, prefer submit now and check status later.
 - manuscript_writer: Generate research manuscripts
   Parameters: {"task": "<writing task>", "output_path": "<path>"}
 """
@@ -203,6 +204,7 @@ When a task requires tool execution, request one of these tools:
 - For reading text files (PDF/TXT) → use document_reader (status: "needs_tool")
 - For reading images/scanned docs → use vision_reader (status: "needs_tool")
 - For phage knowledge queries → use graph_rag (status: "needs_tool")
+- For PhageScope long-running analyses → submit first, do not wait in the same turn; report taskid and current background status.
 """
 
     OUTPUT_SCHEMA = """{
@@ -1188,7 +1190,34 @@ class PlanExecutor:
         """Generate a brief summary of tool execution result."""
         if result is None:
             return "(no result)"
-        
+
+        if tool_name == "phagescope" and isinstance(result, dict):
+            action = str(result.get("action") or "phagescope").strip().lower()
+            if result.get("success") is False:
+                return f"PhageScope {action} failed: {result.get('error') or result.get('message') or 'unknown error'}"
+            if action == "submit":
+                taskid = result.get("taskid")
+                if taskid is None and isinstance(result.get("data"), dict):
+                    taskid = result["data"].get("taskid")
+                return f"PhageScope submit succeeded: taskid={taskid}; running in background."
+            if action == "task_detail":
+                status = "unknown"
+                data = result.get("data")
+                if isinstance(data, dict):
+                    parsed = data.get("parsed_task_detail")
+                    if isinstance(parsed, dict):
+                        status = str(parsed.get("task_status") or status)
+                    results = data.get("results")
+                    if isinstance(results, dict):
+                        status = str(results.get("status") or status)
+                return f"PhageScope task_detail succeeded: status={status}."
+            if action == "save_all":
+                out_dir = result.get("output_directory") or result.get("output_directory_rel")
+                if out_dir:
+                    return f"PhageScope save_all completed: {out_dir}"
+                return "PhageScope save_all completed."
+            return f"PhageScope {action} succeeded."
+
         if isinstance(result, dict):
             # 优先使用已有的摘要字段
             if "summary" in result:

@@ -355,7 +355,8 @@ Respond with ONLY a JSON object:
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. Params: {\"query\": \"search query\"}",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
-            "vision_reader": "Read PDFs and images using vision model. For PDF reading and document understanding. After reading a document, YOU should analyze and summarize it directly - do not call other tools. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\"}",
+            "document_reader": "Read local documents with format-aware parsing. Use this first for .docx/.pdf/.txt content extraction. Params: {\"operation\": \"read_any|read_pdf|read_text\", \"file_path\": \"/abs/path\"}",
+            "vision_reader": "Read PDFs and images using vision model. Use for visual OCR/figures/equations, not for DOCX. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\"}",
             "bio_tools": "PREFERRED for bioinformatics: Execute Docker-based tools for FASTA/FASTQ/sequence analysis. For sequence stats, use seqkit. Example: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/absolute/path/to/file.fasta\"}. NOTE: input_file MUST be absolute path. Available tools: seqkit (stats, grep, seq), blast (blastn, blastp), prodigal (predict genes), hmmer (hmmscan), checkv (virus quality). Use operation='help' to see tool usage.",
             "phagescope": """PhageScope cloud platform for phage genome analysis.
 IMPORTANT: This is an ASYNC service - tasks run remotely and take minutes to hours.
@@ -366,10 +367,20 @@ Workflow:
 3. task_detail: Check specific task status
 4. result: Get results ONLY when task is COMPLETED
 
-After submit, ALWAYS tell user: "Task submitted, ID: {taskid}. Check status later with task_detail."
+After submit, stop PhageScope result retrieval in this turn unless user explicitly asks to query status only.
+After submit, ALWAYS tell user with 3 parts:
+- Completed now: submit + taskid
+- Running in background: current status/module progress if known
+- Next step: refresh status later, then fetch result/save_all/download after completion
 DO NOT use wait=True, it will block too long.
 
-Params: {"action": "submit|task_list|task_detail|result", "userid": "...", "taskid": "...", ...}""",
+Parameter rules (CRITICAL):
+- Use `phageid` or `phageids`; do NOT use `sequence` for accession IDs.
+- `submit` requires `userid` + `modulelist` + `phageid/phageids`.
+- `input_check` requires `phageid/phageids`.
+- `result` requires `taskid` + `result_kind` (quality/proteins/phage_detail/modules/tree/phagefasta).
+
+Params: {"action": "submit|task_list|task_detail|result|save_all|download", "userid": "...", "phageid": "...", "phageids": "...", "taskid": "...", "result_kind": "..."}""",
             "result_interpreter": """Data analysis and result interpretation tool.
 Analyzes CSV, TSV, MAT, NPY data files by generating and executing Python code via Claude Code.
 
@@ -578,6 +589,7 @@ When ready to answer (after using multiple tools):
 3. Call MULTIPLE tools before providing final_answer.
 4. Include which tools you used in your final answer's thinking.
 5. Be thorough - incomplete answers are worse than using more tools.
+6. For PhageScope submit, prioritize non-blocking backend execution over immediate result fetching.
 """
         
         # 添加对话历史上下文
