@@ -134,6 +134,48 @@ def _cleanup_old_confirmations(max_age_seconds: int = 600) -> None:
         del _pending_confirmations[cid]
         logger.info(f"[CONFIRMATION] Cleaned up expired confirmation: {cid}")
 
+
+# ---------------------------------------------------------------------------
+# Background task classification
+# ---------------------------------------------------------------------------
+
+# Action names that correspond to long-running background tasks.
+_BACKGROUND_TOOL_NAMES: Dict[str, str] = {
+    "phagescope": "phagescope",
+    "claude_code": "claude_code",
+}
+
+_BACKGROUND_PLAN_OPS = {"create_plan", "optimize_plan"}
+
+
+def _classify_background_category(
+    actions: List[Any],
+    job_snapshot: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Classify an action run as a long-running background category.
+
+    Returns ``"phagescope"``, ``"claude_code"``, or ``"task_creation"``
+    when the actions indicate a long-running background task, otherwise
+    ``None``.
+    """
+    # 1. Check job_type from snapshot (most reliable if available)
+    job_type = str((job_snapshot or {}).get("job_type") or "").strip().lower()
+    if job_type == "phagescope_track":
+        return "phagescope"
+    if job_type == "plan_decompose":
+        return "task_creation"
+
+    # 2. Scan individual actions
+    for action in actions:
+        kind = getattr(action, "kind", None) or ""
+        name = str(getattr(action, "name", None) or "").strip().lower()
+        if kind == "tool_operation" and name in _BACKGROUND_TOOL_NAMES:
+            return _BACKGROUND_TOOL_NAMES[name]
+        if kind == "plan_operation" and name in _BACKGROUND_PLAN_OPS:
+            return "task_creation"
+
+    return None
+
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
 VALID_BASE_MODELS = {"qwen3-max-2026-01-23", "qwen-turbo"}
 VALID_LLM_PROVIDERS = {"qwen"}
@@ -1745,6 +1787,9 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                 return
 
             # 不需要确认，正常执行
+            bg_category = _classify_background_category(
+                structured.actions, job_snapshot
+            )
             chat_response = ChatResponse(
                 response=structured.llm_reply.message,
                 suggestions=suggestions,
@@ -1761,6 +1806,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                     "job_status": (job_snapshot or {}).get("status", "queued"),
                     "job": job_snapshot,
                     "job_logs": (job_snapshot or {}).get("logs"),
+                    "background_category": bg_category,
                 },
             )
 
@@ -5624,10 +5670,11 @@ class StructuredChatAgent:
         async def run_agent():
             try:
                 deep_think_tool_order = 0
+                deep_think_bg_category: Optional[str] = None
 
                 # Wrapper for tool execution with plan_operation binding
                 async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
-                    nonlocal deep_think_tool_order
+                    nonlocal deep_think_tool_order, deep_think_bg_category
                     safe_params = params if isinstance(params, dict) else {}
 
                     if name != "plan_operation":
@@ -5698,7 +5745,7 @@ class StructuredChatAgent:
                                     decompose_result = await asyncio.to_thread(
                                         self._auto_decompose_plan,
                                         plan_id,
-                                        wait_for_completion=True,
+                                        wait_for_completion=False,
                                         session_context=session_ctx,
                                     )
                                     if decompose_result:
@@ -5726,279 +5773,21 @@ class StructuredChatAgent:
                                                 "Automatic task decomposition has been submitted for background execution."
                                             )
 
-                                    # -------------------------------------------------
-                                    # Auto optimization loop (max 3 rounds by default)
-                                    # - Evaluate rubric_score; if below threshold, batch-update related tasks.
-                                    # -------------------------------------------------
-                                    try:
-                                        from app.services.foundation.settings import get_settings
-                                        from app.repository.plan_repository import PlanRepository
+                                    # Mark that a background decomposition was started
+                                    # so the final SSE event can include background_category.
+                                    deep_think_bg_category = "task_creation"
 
-                                        settings = get_settings()
-                                        threshold = int(getattr(settings, "plan_rubric_threshold", 80))
-                                        max_rounds = int(getattr(settings, "plan_optimize_max_iters", 3))
-                                        # Clamp to safe bounds
-                                        if max_rounds < 0:
-                                            max_rounds = 0
-                                        if max_rounds > 6:
-                                            max_rounds = 6
-
-                                        repo = PlanRepository()
-
-                                        def _has_any(text: str, markers: List[str]) -> bool:
-                                            t = (text or "").lower()
-                                            return any(m in t for m in markers)
-
-                                        def _ensure_research_sections(instruction: str) -> str:
-                                            text = (instruction or "").strip()
-                                            # If already looks structured, do not spam; only append missing blocks.
-                                            blocks: List[str] = []
-                                            # bilingual headings to boost rubric while keeping Chinese readability
-                                            required_blocks = [
-                                                ("Objective（目标）", "明确本任务要产出的具体结果/产物。"),
-                                                ("Rationale（动机/为什么）", "解释为什么需要此任务，以及它如何支撑总体目标。"),
-                                                ("Methods & Tools（方法与工具）", "指定方法/工具名称，并简要说明选择理由。"),
-                                                ("Data & Inputs（数据与输入）", "指定数据来源/版本/获取方式与输入格式。"),
-                                                ("Outputs & Artifacts（输出与产物）", "明确输出文件/表格/图/模型及命名与格式。"),
-                                                ("Baselines & Controls（基线与对照）", "指定对照/基线方案。"),
-                                                ("Metrics & QC（指标与质控）", "定义评估指标与QC/验证步骤。"),
-                                                ("Acceptance Criteria（验收标准）", "定义通过阈值/验收条件。"),
-                                                ("Reproducibility（可复现性）", "记录关键参数/随机种子/版本/运行命令或流程。"),
-                                            ]
-                                            for heading, hint in required_blocks:
-                                                key = heading.split("（", 1)[0].lower()
-                                                if key and key in text.lower():
-                                                    continue
-                                                blocks.append(f"{heading}:\n- {hint}")
-                                            if not blocks:
-                                                return text
-                                            if text:
-                                                return text + "\n\n" + "\n\n".join(blocks)
-                                            return "\n\n".join(blocks)
-
-                                        def _task_title_exists(tree: Any, needle: str) -> bool:
-                                            n = (needle or "").strip().lower()
-                                            if not n:
-                                                return False
-                                            for node in tree.nodes.values():
-                                                if n in (node.name or "").lower():
-                                                    return True
-                                            return False
-
-                                        # Trace for observability (persisted to plan metadata)
-                                        auto_trace: List[Dict[str, Any]] = []
-
-                                        last_score: Optional[float] = None
-                                        last_dims: Dict[str, float] = {}
-                                        for round_idx in range(max_rounds):
-                                            review_res = await execute_tool(
-                                                "plan_operation",
-                                                operation="review",
-                                                plan_id=int(plan_id),
-                                            )
-                                            if isinstance(review_res, dict):
-                                                last_score = review_res.get("rubric_score")
-                                                dims_raw = review_res.get("rubric_dimension_scores") or {}
-                                                if isinstance(dims_raw, dict):
-                                                    for k, v in dims_raw.items():
-                                                        try:
-                                                            last_dims[str(k)] = float(v)
-                                                        except Exception:
-                                                            continue
-                                            try:
-                                                numeric = float(last_score) if last_score is not None else None
-                                            except Exception:
-                                                numeric = None
-                                            if numeric is not None and numeric >= float(threshold):
-                                                logger.info(
-                                                    "[DeepThink][AutoOptimize] plan=%s reached threshold (score=%.1f >= %s) at round=%s",
-                                                    plan_id,
-                                                    numeric,
-                                                    threshold,
-                                                    round_idx,
-                                                )
-                                                auto_trace.append(
-                                                    {
-                                                        "round": round_idx,
-                                                        "event": "stop_threshold_reached",
-                                                        "rubric_score": numeric,
-                                                        "dimension_scores": dict(last_dims),
-                                                    }
-                                                )
-                                                result["auto_optimized"] = True
-                                                result["auto_optimize_rounds"] = round_idx
-                                                result["rubric_score"] = numeric
-                                                break
-
-                                            tree = repo.get_plan_tree(int(plan_id))
-                                            # Identify root and top-level tasks
-                                            root_ids = tree.root_node_ids()
-                                            root_id = root_ids[0] if root_ids else None
-                                            children = tree.children_ids(root_id) if root_id is not None else []
-
-                                            # Build change set: dimension-driven, group update.
-                                            changes: List[Dict[str, Any]] = []
-                                            for tid in children:
-                                                node = tree.nodes.get(tid)
-                                                if not node:
-                                                    continue
-                                                instr = _ensure_research_sections(node.instruction or "")
-                                                if instr != (node.instruction or ""):
-                                                    changes.append(
-                                                        {
-                                                            "action": "update_task",
-                                                            "task_id": int(node.id),
-                                                            "instruction": instr,
-                                                        }
-                                                    )
-
-                                            # Add contextual completeness boosters (motivation/assumptions/trade-offs)
-                                            contextual = float(last_dims.get("contextual_completeness", 0.0) or 0.0)
-                                            if contextual < float(threshold):
-                                                if not _task_title_exists(tree, "motivation") and not _task_title_exists(tree, "动机"):
-                                                    changes.append(
-                                                        {
-                                                            "action": "add_task",
-                                                            "name": "Problem Framing & Motivation（问题定义与研究动机）",
-                                                            "instruction": _ensure_research_sections(
-                                                                "Write a clear problem statement, motivation, scope, and why this plan matters. Explicitly link each major step to the goal."
-                                                            ),
-                                                        }
-                                                    )
-                                                if not _task_title_exists(tree, "assumption") and not _task_title_exists(tree, "假设"):
-                                                    changes.append(
-                                                        {
-                                                            "action": "add_task",
-                                                            "name": "Assumptions, Constraints & Scope（关键假设/约束与范围）",
-                                                            "instruction": _ensure_research_sections(
-                                                                "List key assumptions (data availability, labeling, compute, timeline), constraints, and out-of-scope items. Define decision rules for scope changes."
-                                                            ),
-                                                        }
-                                                    )
-                                                if not _task_title_exists(tree, "trade-off") and not _task_title_exists(tree, "对比") and not _task_title_exists(tree, "替代"):
-                                                    changes.append(
-                                                        {
-                                                            "action": "add_task",
-                                                            "name": "Alternatives & Trade-offs（备选方案与取舍）",
-                                                            "instruction": _ensure_research_sections(
-                                                                "Enumerate alternative approaches and justify trade-offs (accuracy vs interpretability, data cost, complexity)."
-                                                            ),
-                                                        }
-                                                    )
-
-                                            # Add scientific rigor boosters (baselines/metrics/QC/robustness/thresholds)
-                                            rigor = float(last_dims.get("scientific_rigor", 0.0) or 0.0)
-
-                                            # Add a dedicated scientific rigor task if missing signals.
-                                            all_text = "\n".join(
-                                                [
-                                                    (n.name or "") + "\n" + (n.instruction or "")
-                                                    for n in tree.nodes.values()
-                                                ]
-                                            )
-                                            rigor_markers = ["qc", "validation", "baseline", "control", "threshold", "f1", "auc", "auroc", "n50", "error analysis", "robust"]
-                                            if rigor < float(threshold) and not _has_any(all_text, rigor_markers):
-                                                changes.append(
-                                                    {
-                                                        "action": "add_task",
-                                                        "name": "Scientific Rigor & Evaluation Protocol（科研严谨性与评估方案）",
-                                                        "instruction": _ensure_research_sections(
-                                                            "Define baselines/controls, evaluation metrics (e.g., F1/AUROC/N50 as applicable), QC/validation workflow, error analysis, robustness checks, and explicit acceptance thresholds. Provide a reproducible evaluation protocol and reporting template."
-                                                        ),
-                                                    }
-                                                )
-                                            if rigor < float(threshold) and not _task_title_exists(tree, "robust") and not _task_title_exists(tree, "鲁棒"):
-                                                changes.append(
-                                                    {
-                                                        "action": "add_task",
-                                                        "name": "Robustness & Error Analysis（鲁棒性与误差分析）",
-                                                        "instruction": _ensure_research_sections(
-                                                            "Plan robustness checks (OOD, ablations, sensitivity to hyperparameters) and structured error analysis. Define what failure modes to investigate."
-                                                        ),
-                                                    }
-                                                )
-
-                                            if changes:
-                                                logger.info(
-                                                    "[DeepThink][AutoOptimize] plan=%s round=%s score=%.1f dims=%s changes=%s",
-                                                    plan_id,
-                                                    round_idx,
-                                                    float(numeric or 0.0),
-                                                    {k: round(v, 1) for k, v in last_dims.items()},
-                                                    len(changes),
-                                                )
-                                                opt_res = await execute_tool(
-                                                    "plan_operation",
-                                                    operation="optimize",
-                                                    plan_id=int(plan_id),
-                                                    changes=changes,
-                                                )
-                                                applied = 0
-                                                failed = 0
-                                                if isinstance(opt_res, dict):
-                                                    applied = int(opt_res.get("applied_changes") or 0)
-                                                    failed = int(opt_res.get("failed_changes") or 0)
-                                                auto_trace.append(
-                                                    {
-                                                        "round": round_idx,
-                                                        "event": "optimize_applied",
-                                                        "rubric_score_before": numeric,
-                                                        "dimension_scores_before": dict(last_dims),
-                                                        "changes_requested": len(changes),
-                                                        "changes_applied": applied,
-                                                        "changes_failed": failed,
-                                                    }
-                                                )
-                                                # Continue loop for next review
-                                            else:
-                                                auto_trace.append(
-                                                    {
-                                                        "round": round_idx,
-                                                        "event": "no_changes_needed",
-                                                        "rubric_score": numeric,
-                                                        "dimension_scores": dict(last_dims),
-                                                    }
-                                                )
-                                                break
-
-                                        # Persist trace into plan metadata for later inspection in UI/devtools.
-                                        try:
-                                            summary = repo.get_plan_summary(int(plan_id))
-                                            meta = summary.metadata or {}
-                                            if not isinstance(meta, dict):
-                                                meta = {}
-                                            meta["plan_auto_optimize"] = {
-                                                "threshold": threshold,
-                                                "max_rounds": max_rounds,
-                                                "trace": auto_trace,
-                                                "last_rubric_score": last_score,
-                                                "last_dimension_scores": dict(last_dims),
-                                            }
-                                            repo.update_plan_metadata(int(plan_id), meta)
-                                        except Exception as meta_err:
-                                            logger.debug(
-                                                "[DeepThink][AutoOptimize] Failed to persist trace meta for plan %s: %s",
-                                                plan_id,
-                                                meta_err,
-                                            )
-                                        # If still below threshold after rounds, expose warning in tool result.
-                                        if last_score is not None:
-                                            try:
-                                                numeric = float(last_score)
-                                            except Exception:
-                                                numeric = None
-                                            if numeric is not None and numeric < float(threshold):
-                                                result["rubric_below_threshold"] = True
-                                                result["rubric_threshold"] = threshold
-                                                result["rubric_score"] = numeric
-                                    except Exception as auto_opt_err:  # noqa: BLE001 - best effort
-                                        logger.warning(
-                                            "[DeepThink] Auto optimization loop failed for plan %s: %s",
-                                            plan_id,
-                                            auto_opt_err,
-                                        )
-                                    
-                                    logger.info(f"[DeepThink] Auto-bound plan {plan_id} to session")
+                                    # NOTE: Auto optimization loop is skipped when
+                                    # decomposition runs in the background because it
+                                    # depends on the completed task tree.  The user can
+                                    # trigger plan review/optimize manually after
+                                    # decomposition finishes.
+                                    logger.info(
+                                        "[DeepThink] Auto-bound plan %s to session "
+                                        "(decomposition dispatched to background, "
+                                        "auto-optimize skipped)",
+                                        plan_id,
+                                    )
                                 except Exception as bind_err:
                                     logger.warning(f"[DeepThink] Failed to bind plan {plan_id}: {bind_err}")
                     
@@ -6025,7 +5814,11 @@ class StructuredChatAgent:
                 
                 # Run think
                 result = await dt_agent.think(user_message, think_context)
-                await queue.put({"type": "result", "result": result})
+                await queue.put({
+                    "type": "result",
+                    "result": result,
+                    "bg_category": deep_think_bg_category,
+                })
             except Exception as e:
                 logger.exception("Deep think execution failed")
                 await queue.put({"type": "error", "error": str(e)})
@@ -6107,13 +5900,17 @@ class StructuredChatAgent:
                 
                 # Mock a final structure event to satisfy frontend if needed, 
                 # or just let the stream end (frontend usually handles text)
+                bg_category = item.get("bg_category")
+                final_metadata: Dict[str, Any] = {
+                    "plan_id": self.plan_session.plan_id,  # Include plan_id so frontend can update
+                    "deep_think": True,
+                }
+                if bg_category:
+                    final_metadata["background_category"] = bg_category
                 payload = {
                     "llm_reply": {"message": res.final_answer},
                     "actions": [],
-                    "metadata": {
-                        "plan_id": self.plan_session.plan_id,  # Include plan_id so frontend can update
-                        "deep_think": True,
-                    }
+                    "metadata": final_metadata,
                 }
                 yield _sse_message({"type": "final", "payload": payload})
 

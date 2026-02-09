@@ -18,6 +18,7 @@ import {
   CopyOutlined,
   ReloadOutlined,
   DatabaseOutlined,
+  CloudSyncOutlined,
 } from '@ant-design/icons';
 import { ChatMessage as ChatMessageType, ToolResultPayload } from '@/types';
 import { useChatStore } from '@store/chat';
@@ -494,6 +495,60 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 
   const renderAnalysis = () => null;
 
+  // ---- Background dispatch card ----
+  const bgCategory = (metadata as any)?.background_category as string | undefined;
+  const isBackgroundDispatch = Boolean(bgCategory && (bgCategory === 'phagescope' || bgCategory === 'claude_code' || bgCategory === 'task_creation'));
+
+  const renderBackgroundDispatchCard = () => {
+    if (!isBackgroundDispatch) return null;
+    const categoryLabels: Record<string, string> = {
+      phagescope: 'PhageScope',
+      claude_code: 'Claude Code',
+      task_creation: '任务创建 / 拆解',
+    };
+    const categoryColors: Record<string, string> = {
+      phagescope: 'purple',
+      claude_code: 'geekblue',
+      task_creation: 'cyan',
+    };
+    const label = categoryLabels[bgCategory!] ?? bgCategory;
+    const color = categoryColors[bgCategory!] ?? 'blue';
+    const trackingId = typeof (metadata as any)?.tracking_id === 'string'
+      ? ((metadata as any).tracking_id as string)
+      : null;
+
+    return (
+      <div
+        style={{
+          marginBottom: 10,
+          padding: '12px 14px',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px solid color-mix(in srgb, var(--primary-color) 30%, var(--border-color))',
+          background: 'color-mix(in srgb, var(--primary-color) 4%, var(--bg-tertiary))',
+          fontSize: 13,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <CloudSyncOutlined style={{ color: 'var(--primary-color)', fontSize: 16 }} />
+          <Text strong style={{ fontSize: 13, color: 'var(--text-primary)' }}>
+            后台任务已提交
+          </Text>
+          <Tag color={color} style={{ margin: 0, fontSize: 11 }}>{label}</Tag>
+        </div>
+        <Text style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.6 }}>
+          任务已提交至后台运行。请在右侧「任务状态」面板查看进度，完成后可以告诉我进行结果分析。
+        </Text>
+        {trackingId && (
+          <div style={{ marginTop: 6 }}>
+            <Text style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>
+              Tracking: {trackingId.slice(0, 16)}...
+            </Text>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderToolProgress = () => {
     if (!unifiedStream) return null;
     const actions =
@@ -945,7 +1000,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             if (unifiedStream) {
               return (
                 <>
-                  {renderToolProgress()}
+                  {isBackgroundDispatch ? renderBackgroundDispatchCard() : renderToolProgress()}
                   {/* Thinking Process */}
                   {message.thinking_process && (
                     <ThinkingProcess

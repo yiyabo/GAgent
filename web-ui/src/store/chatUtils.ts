@@ -99,6 +99,7 @@ export const streamChatEvents = async function* (
     let attempts = 0;
 
     while (attempts < maxRetries) {
+        let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
         try {
             const response = await fetch(`${ENV.API_BASE_URL}/chat/stream`, {
                 method: 'POST',
@@ -116,31 +117,37 @@ export const streamChatEvents = async function* (
                 throw new Error('Empty stream body');
             }
 
-            const reader = response.body.getReader();
+            reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
             let buffer = '';
 
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                let boundary = buffer.indexOf('\n\n');
-                while (boundary !== -1) {
-                    const rawEvent = buffer.slice(0, boundary);
-                    buffer = buffer.slice(boundary + 2);
-                    const event = parseChatStreamEvent(rawEvent);
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    let boundary = buffer.indexOf('\n\n');
+                    while (boundary !== -1) {
+                        const rawEvent = buffer.slice(0, boundary);
+                        buffer = buffer.slice(boundary + 2);
+                        const event = parseChatStreamEvent(rawEvent);
+                        if (event) {
+                            yield event;
+                        }
+                        boundary = buffer.indexOf('\n\n');
+                    }
+                }
+
+                if (buffer.trim().length > 0) {
+                    const event = parseChatStreamEvent(buffer);
                     if (event) {
                         yield event;
                     }
-                    boundary = buffer.indexOf('\n\n');
                 }
-            }
-
-            if (buffer.trim().length > 0) {
-                const event = parseChatStreamEvent(buffer);
-                if (event) {
-                    yield event;
-                }
+            } finally {
+                // Ensure the reader is properly cancelled when the consumer
+                // breaks out of the for-await loop (e.g. background dispatch).
+                reader.cancel().catch(() => {});
             }
 
             // If we reached here, the stream finished successfully
@@ -465,6 +472,71 @@ export const resolveHistoryCursor = (messages: ChatMessage[]): number | null => 
         }
     }
     return minId;
+};
+
+// ---------------------------------------------------------------------------
+// Background task detection
+// ---------------------------------------------------------------------------
+
+export type BackgroundCategory = 'phagescope' | 'claude_code' | 'task_creation';
+
+/** Human-readable labels for each background category. */
+export const BACKGROUND_CATEGORY_LABELS: Record<BackgroundCategory, string> = {
+    phagescope: 'PhageScope',
+    claude_code: 'Claude Code',
+    task_creation: '任务创建 / 拆解',
+};
+
+/** Tool-operation action names that map to a background category. */
+const _BG_TOOL_NAMES: Record<string, BackgroundCategory> = {
+    phagescope: 'phagescope',
+    claude_code: 'claude_code',
+};
+
+/** Plan-operation action names that trigger long-running decomposition. */
+const _BG_PLAN_OPS = new Set(['create_plan', 'optimize_plan']);
+
+/**
+ * Detect whether a chat response payload represents a long-running background
+ * task.  Returns the category string (``"phagescope"`` / ``"claude_code"`` /
+ * ``"task_creation"``) or ``null`` for normal short tasks.
+ *
+ * Detection strategy:
+ * 1. Read the explicit ``background_category`` field set by the backend.
+ * 2. Fall back to scanning action names in the payload.
+ */
+export const detectBackgroundCategory = (
+    payload: ChatResponsePayload | Record<string, any> | null | undefined,
+): BackgroundCategory | null => {
+    if (!payload) return null;
+
+    // 1. Explicit backend signal (most reliable).
+    const meta = (payload as any).metadata ?? payload;
+    const explicit = meta?.background_category;
+    if (
+        typeof explicit === 'string' &&
+        (explicit === 'phagescope' || explicit === 'claude_code' || explicit === 'task_creation')
+    ) {
+        return explicit as BackgroundCategory;
+    }
+
+    // 2. Heuristic: scan actions / raw_actions.
+    const actions: any[] =
+        (Array.isArray((payload as any).actions) ? (payload as any).actions : null) ??
+        (Array.isArray(meta?.raw_actions) ? meta.raw_actions : []);
+
+    for (const action of actions) {
+        const kind = String(action?.kind ?? '').trim().toLowerCase();
+        const name = String(action?.name ?? '').trim().toLowerCase();
+        if (kind === 'tool_operation' && name in _BG_TOOL_NAMES) {
+            return _BG_TOOL_NAMES[name];
+        }
+        if (kind === 'plan_operation' && _BG_PLAN_OPS.has(name)) {
+            return 'task_creation';
+        }
+    }
+
+    return null;
 };
 
 // Shared state for sessions and messages
