@@ -4520,6 +4520,37 @@ class StructuredChatAgent:
         structured: LLMStructuredResponse,
     ) -> LLMStructuredResponse:
         """Ensure task execution intent always emits a concrete rerun_task action."""
+        # region agent log
+        try:
+            with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
+                _dbg.write(
+                    json.dumps(
+                        {
+                            "id": f"followthrough_enter_{int(__import__('time').time()*1000)}",
+                            "timestamp": int(__import__("time").time() * 1000),
+                            "runId": "pre-fix-2",
+                            "hypothesisId": "N1,N2,N3",
+                            "location": "app/routers/chat_routes.py:_apply_task_execution_followthrough_guardrail",
+                            "message": "followthrough guardrail entered",
+                            "data": {
+                                "session_id": self.session_id,
+                                "plan_id": self.plan_session.plan_id,
+                                "has_actions": bool(structured.actions),
+                                "user_message": str(self._current_user_message or "")[:200],
+                                "reply_message": (
+                                    str(structured.llm_reply.message)[:200]
+                                    if structured.llm_reply and isinstance(structured.llm_reply.message, str)
+                                    else ""
+                                ),
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # endregion
         if structured.actions:
             return structured
 
@@ -4537,6 +4568,33 @@ class StructuredChatAgent:
 
         explicit_execute = self._user_explicitly_requests_execution(user_message)
         promise_execute = self._reply_promises_execution(reply_text)
+        # region agent log
+        try:
+            with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
+                _dbg.write(
+                    json.dumps(
+                        {
+                            "id": f"followthrough_decision_{int(__import__('time').time()*1000)}",
+                            "timestamp": int(__import__("time").time() * 1000),
+                            "runId": "pre-fix-2",
+                            "hypothesisId": "N1,N2,N3",
+                            "location": "app/routers/chat_routes.py:_apply_task_execution_followthrough_guardrail",
+                            "message": "followthrough decision signals",
+                            "data": {
+                                "explicit_execute": explicit_execute,
+                                "promise_execute": promise_execute,
+                                "status_query_only": self._is_status_query_only(user_message),
+                                "user_message": user_message[:200],
+                                "reply_text": reply_text[:200],
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # endregion
         if not explicit_execute and not promise_execute:
             return structured
         if self._is_status_query_only(user_message) and not promise_execute:
@@ -4574,6 +4632,31 @@ class StructuredChatAgent:
                 },
             )
         ]
+        # region agent log
+        try:
+            with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
+                _dbg.write(
+                    json.dumps(
+                        {
+                            "id": f"followthrough_injected_{int(__import__('time').time()*1000)}",
+                            "timestamp": int(__import__("time").time() * 1000),
+                            "runId": "pre-fix-2",
+                            "hypothesisId": "N1,N2",
+                            "location": "app/routers/chat_routes.py:_apply_task_execution_followthrough_guardrail",
+                            "message": "guardrail injected rerun_task",
+                            "data": {
+                                "target_task_id": target_task_id,
+                                "target_task_name": node.display_name(),
+                                "node_status": node_status,
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # endregion
         if structured.llm_reply:
             structured.llm_reply.message = (
                 f"收到，我现在开始执行任务 #{target_task_id}（{node.display_name()}），"
@@ -4686,6 +4769,31 @@ class StructuredChatAgent:
         if not missing:
             return structured
 
+        # region agent log
+        try:
+            with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
+                _dbg.write(
+                    json.dumps(
+                        {
+                            "id": f"completion_guardrail_rewrite_{int(__import__('time').time()*1000)}",
+                            "timestamp": int(__import__("time").time() * 1000),
+                            "runId": "pre-fix-2",
+                            "hypothesisId": "N4",
+                            "location": "app/routers/chat_routes.py:_apply_completion_claim_guardrail",
+                            "message": "completion claim guardrail rewrote reply",
+                            "data": {
+                                "declared_paths": declared_paths[:8],
+                                "missing_paths": missing[:8],
+                                "original_reply": reply_text[:240],
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # endregion
         preview = "\n".join(f"- {item}" for item in missing[:8])
         structured.llm_reply.message = (
             "自动核验发现以下声明文件当前不存在，结果不能判定为“已完成”：\n"
@@ -7929,6 +8037,32 @@ class StructuredChatAgent:
             task_id = self._coerce_int(task_id_raw, "task_id")
             if self.plan_executor is None:
                 raise ValueError("Plan executor is not enabled in this environment.")
+            # region agent log
+            try:
+                with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
+                    _dbg.write(
+                        json.dumps(
+                            {
+                                "id": f"rerun_task_execute_{int(__import__('time').time()*1000)}",
+                                "timestamp": int(__import__("time").time() * 1000),
+                                "runId": "pre-fix-2",
+                                "hypothesisId": "N1,N2,N5",
+                                "location": "app/routers/chat_routes.py:_execute_action",
+                                "message": "executing rerun_task action",
+                                "data": {
+                                    "task_id": task_id,
+                                    "session_id": self.session_id,
+                                    "action_metadata": action.metadata if isinstance(action.metadata, dict) else None,
+                                    "current_user_message": str(self._current_user_message or "")[:200],
+                                },
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+            # endregion
             # 构建会话上下文，传递给任务执行器
             session_ctx = {
                 "session_id": self.session_id,  # 用于工具调用

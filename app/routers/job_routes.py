@@ -139,10 +139,14 @@ def _classify_action_run(
 
     has_claude_code = False
     has_phagescope = False
+    has_plan_creation = False
     for action in actions:
-        if str(action.get("kind") or "").strip().lower() != "tool_operation":
-            continue
+        kind = str(action.get("kind") or "").strip().lower()
         name = str(action.get("name") or "").strip().lower()
+        if kind == "plan_operation" and name in ("create_plan", "optimize_plan"):
+            has_plan_creation = True
+        if kind != "tool_operation":
+            continue
         if name == "claude_code":
             has_claude_code = True
         if name == "phagescope":
@@ -152,6 +156,8 @@ def _classify_action_run(
         return "phagescope"
     if has_claude_code:
         return "claude_code"
+    if has_plan_creation:
+        return "task_creation"
     return None
 
 
@@ -316,6 +322,41 @@ def _list_task_creation_job_ids_filtered(limit: int, *, plan_id: Optional[int] =
     return [str(row["job_id"]) for row in rows if row and row["job_id"]]
 
 
+def _list_task_creation_job_ids_by_plan_ids(limit: int, plan_ids: List[int]) -> List[str]:
+    normalized_ids: List[int] = []
+    for pid in plan_ids:
+        try:
+            value = int(pid)
+        except Exception:
+            continue
+        if value > 0 and value not in normalized_ids:
+            normalized_ids.append(value)
+    if not normalized_ids:
+        return []
+
+    placeholders = ",".join("?" for _ in normalized_ids)
+    sql = (
+        f"""
+        SELECT job_id
+        FROM plan_decomposition_job_index
+        WHERE job_type='plan_decompose' AND plan_id IN ({placeholders})
+        ORDER BY created_at DESC
+        LIMIT ?
+        """
+    )
+    try:
+        with get_db() as conn:
+            rows = conn.execute(sql, (*normalized_ids, limit)).fetchall()
+    except Exception as exc:  # pragma: no cover - defensive
+        _logger.warning(
+            "jobs.board: failed to query plan_decomposition_job_index for plan_ids=%s: %s",
+            normalized_ids,
+            exc,
+        )
+        return []
+    return [str(row["job_id"]) for row in rows if row and row["job_id"]]
+
+
 @job_router.get(
     "/board",
     response_model=BackgroundTaskBoardResponse,
@@ -327,12 +368,18 @@ def get_background_task_board(
     plan_id: Optional[int] = Query(None, ge=1),
     include_finished: bool = Query(True),
 ):
+    # region agent log
+    run_id = "pre-fix"
+    # endregion
     groups: Dict[str, BackgroundTaskGroup] = {
         "task_creation": _build_group("task_creation", "任务创建"),
         "phagescope": _build_group("phagescope", "PhageScope"),
         "claude_code": _build_group("claude_code", "Claude Code"),
     }
     seen: set[str] = set()
+    # region agent log
+    debug_logged = 0
+    # endregion
 
     # 1) Chat action runs -> classify into phagescope / claude_code
     params: List[Any] = []
@@ -363,6 +410,16 @@ def get_background_task_board(
         _logger.warning("jobs.board: failed to query chat_action_runs: %s", exc)
         rows = []
 
+    candidate_plan_ids: List[int] = []
+    for row in rows:
+        raw_plan_id = row["plan_id"]
+        try:
+            plan_value = int(raw_plan_id) if raw_plan_id is not None else None
+        except Exception:
+            plan_value = None
+        if isinstance(plan_value, int) and plan_value > 0 and plan_value not in candidate_plan_ids:
+            candidate_plan_ids.append(plan_value)
+
     for row in rows:
         job_id = str(row["id"])
         if job_id in seen:
@@ -370,7 +427,7 @@ def get_background_task_board(
         job_payload = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False) or {}
         actions = _extract_actions_from_structured(row["structured_json"])
         category = _classify_action_run(job_payload, actions)
-        if category not in {"phagescope", "claude_code"}:
+        if category not in {"phagescope", "claude_code", "task_creation"}:
             continue
 
         status = str(job_payload.get("status") or row["status"] or "queued")
@@ -396,16 +453,85 @@ def get_background_task_board(
 
         _append_item(groups[category], BackgroundTaskItem(**item_payload))
         seen.add(job_id)
+        # region agent log
+        if debug_logged < 6:
+            try:
+                with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
+                    _dbg.write(
+                        json.dumps(
+                            {
+                                "id": f"jobs_board_row_{job_id}",
+                                "timestamp": int(__import__("time").time() * 1000),
+                                "runId": run_id,
+                                "hypothesisId": "H2,H3,H5",
+                                "location": "app/routers/job_routes.py:get_background_task_board",
+                                "message": "chat_action row merged into board",
+                                "data": {
+                                    "job_id": job_id,
+                                    "session_id": row["session_id"],
+                                    "effective_plan_id": effective_plan_id,
+                                    "row_plan_id": row["plan_id"],
+                                    "category": category,
+                                    "row_status": row["status"],
+                                    "job_payload_status": job_payload.get("status"),
+                                    "final_status_used": status,
+                                    "row_created_at": row["created_at"],
+                                    "row_started_at": row["started_at"],
+                                    "row_finished_at": row["finished_at"],
+                                    "payload_created_at": job_payload.get("created_at"),
+                                    "payload_started_at": job_payload.get("started_at"),
+                                    "payload_finished_at": job_payload.get("finished_at"),
+                                },
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+            debug_logged += 1
+        # endregion
 
     # 2) Explicit task creation jobs from decomposition index
     task_creation_ids: List[str]
     if session_id and effective_plan_id is None:
-        task_creation_ids = []
+        task_creation_ids = _list_task_creation_job_ids_by_plan_ids(
+            limit * 4,
+            candidate_plan_ids,
+        )
     else:
         task_creation_ids = _list_task_creation_job_ids_filtered(
             limit * 4,
             plan_id=effective_plan_id if (session_id or plan_id is not None) else None,
         )
+    # region agent log
+    try:
+        with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
+            _dbg.write(
+                json.dumps(
+                    {
+                        "id": f"jobs_board_task_creation_ids_{int(__import__('time').time()*1000)}",
+                        "timestamp": int(__import__("time").time() * 1000),
+                        "runId": run_id,
+                        "hypothesisId": "H4,H5",
+                        "location": "app/routers/job_routes.py:get_background_task_board",
+                        "message": "task creation index ids resolved",
+                        "data": {
+                            "session_id": session_id,
+                            "plan_id_query": plan_id,
+                            "effective_plan_id": effective_plan_id,
+                            "candidate_plan_ids": candidate_plan_ids,
+                            "task_creation_ids_count": len(task_creation_ids),
+                            "task_creation_ids_head": task_creation_ids[:3],
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # endregion
 
     for job_id in task_creation_ids:
         if job_id in seen:
@@ -461,6 +587,29 @@ def get_background_task_board(
             generated_at = now_row["ts"] if now_row and now_row["ts"] else ""
     except Exception:  # pragma: no cover - defensive
         generated_at = ""
+    # region agent log
+    try:
+        with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
+            _dbg.write(
+                json.dumps(
+                    {
+                        "id": f"jobs_board_generated_at_{int(__import__('time').time()*1000)}",
+                        "timestamp": int(__import__("time").time() * 1000),
+                        "runId": run_id,
+                        "hypothesisId": "H1",
+                        "location": "app/routers/job_routes.py:get_background_task_board",
+                        "message": "board generated_at value from db",
+                        "data": {
+                            "generated_at": generated_at,
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # endregion
 
     return BackgroundTaskBoardResponse(
         generated_at=generated_at,
