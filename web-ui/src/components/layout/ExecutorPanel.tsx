@@ -19,6 +19,17 @@ const { Text } = Typography;
 const GROUP_ORDER: BackgroundTaskCategory[] = ['task_creation', 'phagescope', 'claude_code'];
 const FINAL_STATUSES = new Set(['succeeded', 'completed', 'failed']);
 
+const parseServerTime = (time?: string | null) => {
+  if (!time) return null;
+  const raw = String(time).trim();
+  if (!raw) return null;
+  // Backend may emit SQLite-style timestamps without timezone; treat them as UTC to avoid local offset drift.
+  const hasZone = /[zZ]|[+\-]\d{2}:\d{2}$/.test(raw);
+  if (hasZone) return dayjs(raw);
+  if (raw.includes('T')) return dayjs(`${raw}Z`);
+  return dayjs(`${raw.replace(' ', 'T')}Z`);
+};
+
 const EMPTY_BOARD = (): BackgroundTaskBoardResponse => ({
   generated_at: new Date().toISOString(),
   total: 0,
@@ -86,8 +97,10 @@ const getDisplayId = (item: BackgroundTaskItem): string => {
 
 const formatDuration = (startedAt?: string | null, finishedAt?: string | null): string => {
   if (!startedAt) return '';
-  const start = dayjs(startedAt);
-  const end = finishedAt ? dayjs(finishedAt) : dayjs();
+  const start = parseServerTime(startedAt);
+  if (!start || !start.isValid()) return '';
+  const end = finishedAt ? parseServerTime(finishedAt) : dayjs();
+  if (!end || !end.isValid()) return '';
   const diffMs = end.diff(start);
   if (diffMs < 1000) return '<1s';
   if (diffMs < 60000) return `${Math.floor(diffMs / 1000)}s`;
@@ -97,7 +110,8 @@ const formatDuration = (startedAt?: string | null, finishedAt?: string | null): 
 
 const formatRelativeTime = (time?: string | null): string => {
   if (!time) return '-';
-  const date = dayjs(time);
+  const date = parseServerTime(time);
+  if (!date || !date.isValid()) return '-';
   const diffMs = Date.now() - date.valueOf();
   if (diffMs < 60000) return '刚刚';
   if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}分钟前`;
@@ -136,6 +150,17 @@ const ExecutorPanel: React.FC = () => {
           plan_id: currentPlanId ?? undefined,
           include_finished: true,
         });
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/1723c28b-04a9-4833-9549-e6acfba2d89d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'web-ui/src/components/layout/ExecutorPanel.tsx:fetchBoard',message:'board snapshot received',data:{runId:'pre-fix',hypothesisId:'H1,H3,H5',sessionId:currentSessionId,planId:currentPlanId,generated_at:snapshot?.generated_at,total:snapshot?.total,task_creation_count:snapshot?.groups?.task_creation?.items?.length ?? 0,task_creation_statuses:(snapshot?.groups?.task_creation?.items ?? []).slice(0,3).map((i)=>({job_id:i.job_id,status:i.status,created_at:i.created_at,started_at:i.started_at,finished_at:i.finished_at,label:i.label}))},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        // #region agent log
+        (() => {
+          const firstTask = snapshot?.groups?.task_creation?.items?.[0];
+          if (!firstTask?.created_at) return;
+          const parsed = dayjs(firstTask.created_at);
+          fetch('http://127.0.0.1:7242/ingest/1723c28b-04a9-4833-9549-e6acfba2d89d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'web-ui/src/components/layout/ExecutorPanel.tsx:fetchBoard',message:'task timestamp parse details',data:{runId:'pre-fix',hypothesisId:'H1,H2',job_id:firstTask.job_id,raw_created_at:firstTask.created_at,parsed_iso:parsed.isValid()?parsed.toISOString():null,now_iso:new Date().toISOString(),diff_ms:Date.now()-parsed.valueOf(),status:firstTask.status},timestamp:Date.now()})}).catch(()=>{});
+        })();
+        // #endregion
         setBoard(snapshot);
         setError(null);
       } catch (err: any) {
@@ -150,6 +175,36 @@ const ExecutorPanel: React.FC = () => {
 
   useEffect(() => {
     void fetchBoard(true);
+  }, [fetchBoard]);
+
+  const timeoutIdsRef = React.useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => {
+    const onTasksUpdated = () => {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/1723c28b-04a9-4833-9549-e6acfba2d89d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'web-ui/src/components/layout/ExecutorPanel.tsx:onTasksUpdated',message:'tasksUpdated event received',data:{runId:'pre-fix',hypothesisId:'H5',sessionId:currentSessionId,planId:currentPlanId},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      timeoutIdsRef.current.forEach((id) => clearTimeout(id));
+      timeoutIdsRef.current = [];
+      const t1 = setTimeout(() => {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/1723c28b-04a9-4833-9549-e6acfba2d89d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'web-ui/src/components/layout/ExecutorPanel.tsx:onTasksUpdated',message:'delayed board refresh fired 2s',data:{runId:'pre-fix',hypothesisId:'H5'},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        void fetchBoard(true);
+      }, 2000);
+      const t2 = setTimeout(() => {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/1723c28b-04a9-4833-9549-e6acfba2d89d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'web-ui/src/components/layout/ExecutorPanel.tsx:onTasksUpdated',message:'delayed board refresh fired 6s',data:{runId:'pre-fix',hypothesisId:'H5'},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        void fetchBoard(true);
+      }, 6000);
+      timeoutIdsRef.current = [t1, t2];
+    };
+    window.addEventListener('tasksUpdated', onTasksUpdated);
+    return () => {
+      window.removeEventListener('tasksUpdated', onTasksUpdated);
+      timeoutIdsRef.current.forEach((id) => clearTimeout(id));
+      timeoutIdsRef.current = [];
+    };
   }, [fetchBoard]);
 
   const runningExists = useMemo(() => {
