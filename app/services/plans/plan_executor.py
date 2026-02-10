@@ -1073,6 +1073,7 @@ class PlanExecutor:
             Dict with success status, result/error, and summary
         """
         import asyncio
+        from concurrent.futures import ThreadPoolExecutor
         from tool_box import execute_tool
         
         tool_name = tool_call.name
@@ -1108,14 +1109,55 @@ class PlanExecutor:
             f"Executing tool {tool_name} for task {node.id}",
             {"tool": tool_name, "task_id": node.id},
         )
+
+        def _append_debug_log(message: str, data: Dict[str, Any]) -> None:
+            # #region agent log
+            try:
+                with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
+                    _dbg.write(
+                        json.dumps(
+                            {
+                                "id": f"plan_executor_tool_{int(time.time() * 1000)}",
+                                "timestamp": int(time.time() * 1000),
+                                "runId": "post-fix-1",
+                                "hypothesisId": "R1",
+                                "location": "app/services/plans/plan_executor.py:_execute_tool_call",
+                                "message": message,
+                                "data": data,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+            # #endregion
         
         try:
-            # execute_tool 是异步的，需要在同步上下文中运行
-            loop = asyncio.new_event_loop()
+            # execute_tool 是异步的。若当前线程已有运行中的 loop（如在 async 请求链路里），
+            # 则切换到独立线程运行，避免 "Cannot run the event loop while another loop is running"。
             try:
-                result = loop.run_until_complete(execute_tool(tool_name, **params))
-            finally:
-                loop.close()
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            if running_loop and running_loop.is_running():
+                _append_debug_log(
+                    "tool execution uses worker thread due to active event loop",
+                    {"tool": tool_name, "task_id": node.id, "has_running_loop": True},
+                )
+
+                def _run_in_worker() -> Any:
+                    return asyncio.run(execute_tool(tool_name, **params))
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    result = executor.submit(_run_in_worker).result()
+            else:
+                _append_debug_log(
+                    "tool execution uses local asyncio.run",
+                    {"tool": tool_name, "task_id": node.id, "has_running_loop": False},
+                )
+                result = asyncio.run(execute_tool(tool_name, **params))
             
             # 提取摘要
             summary = self._summarize_tool_result(tool_name, result)
@@ -1175,6 +1217,10 @@ class PlanExecutor:
             return payload
             
         except Exception as exc:
+            _append_debug_log(
+                "tool execution failed",
+                {"tool": tool_name, "task_id": node.id, "error": str(exc)},
+            )
             logger.exception(
                 "Tool %s execution failed for task %s: %s",
                 tool_name, node.id, exc
