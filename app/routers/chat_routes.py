@@ -2931,30 +2931,61 @@ async def _generate_action_analysis(
     llm_provider: Optional[str] = None,
 ) -> Optional[str]:
     created_tasks = _collect_created_tasks_from_steps(steps)
-    if not created_tasks:
+
+    # Also collect structured results from plan/task operations
+    step_summaries: List[str] = []
+    for step in steps:
+        if not step.success:
+            continue
+        details = step.details or {}
+        kind = step.action.kind or ""
+        name = step.action.name or ""
+        msg = step.message or ""
+        if kind in ("plan_operation", "task_operation"):
+            detail_text = msg
+            if isinstance(details, dict):
+                for key in ("plans", "outline", "task", "plan_id", "task_count"):
+                    val = details.get(key)
+                    if val is not None:
+                        detail_text += f"\n{key}: {json.dumps(val, ensure_ascii=False, default=str)[:2000]}"
+            step_summaries.append(f"[{kind}/{name}] {detail_text}")
+
+    if created_tasks:
+        lines: List[str] = []
+        for idx, task in enumerate(created_tasks, 1):
+            task_name = str(task.get("name") or task.get("title") or "").strip()
+            instruction = str(task.get("instruction") or "").strip()
+            if task_name:
+                lines.append(f"{idx}. {task_name}")
+            if instruction:
+                lines.append(f"   - 说明: {instruction}")
+        tasks_text = "\n".join(lines)
+
+        prompt = (
+            "你是项目分析助手。用户要求对任务拆解结果进行详细分析。"
+            "请基于拆解结果给出深入分析：覆盖范围是否充分、任务之间关系、"
+            "是否有遗漏、可进一步细化的方向（如有）。不要复述\u201c生成了X个子任务\u201d这类总结，"
+            "直接给出专业分析正文。\n"
+            "要求：至少 6 条要点或 3 个自然段；要点清晰、具体可执行。\n\n"
+            f"用户问题：{user_message}\n\n"
+            "拆解结果：\n"
+            f"{tasks_text}\n\n"
+            "请输出分析："
+        )
+    elif step_summaries:
+        steps_text = "\n\n".join(step_summaries)
+        prompt = (
+            "你是项目分析助手。用户请求分析后台任务的执行结果。"
+            "请基于以下执行步骤的输出，给出结构化的分析：主要发现、关键数据、"
+            "下一步建议。直接输出专业分析正文，不要说\u201c我来分析\u201d之类的开场白。\n"
+            "要求：内容具体、数据驱动、可操作。\n\n"
+            f"用户问题：{user_message}\n\n"
+            "执行结果：\n"
+            f"{steps_text}\n\n"
+            "请输出分析："
+        )
+    else:
         return None
-
-    lines: List[str] = []
-    for idx, task in enumerate(created_tasks, 1):
-        name = str(task.get("name") or task.get("title") or "").strip()
-        instruction = str(task.get("instruction") or "").strip()
-        if name:
-            lines.append(f"{idx}. {name}")
-        if instruction:
-            lines.append(f"   - 说明: {instruction}")
-    tasks_text = "\n".join(lines)
-
-    prompt = (
-        "你是项目分析助手。用户要求对任务拆解结果进行详细分析。"
-        "请基于拆解结果给出深入分析：覆盖范围是否充分、任务之间关系、"
-        "是否有遗漏、可进一步细化的方向（如有）。不要复述“生成了X个子任务”这类总结，"
-        "直接给出专业分析正文。\n"
-        "要求：至少 6 条要点或 3 个自然段；要点清晰、具体可执行。\n\n"
-        f"用户问题：{user_message}\n\n"
-        "拆解结果：\n"
-        f"{tasks_text}\n\n"
-        "请输出分析："
-    )
     try:
         llm_service = _get_llm_service_for_provider(llm_provider)
         analysis = await llm_service.chat_async(prompt)
@@ -3472,7 +3503,7 @@ async def _execute_action_run(run_id: str) -> None:
                 step.success,
             )
             
-            if step.action.kind != "tool_operation":
+            if step.action.kind not in ("tool_operation", "plan_operation", "task_operation"):
                 continue
             details = step.details or {}
             result_payload = details.get("result")
@@ -4734,9 +4765,18 @@ class StructuredChatAgent:
         pattern = re.compile(r"(/(?:[^\s`\"'<>|])+)")
         paths: List[str] = []
         seen: set[str] = set()
+        # CJK and other non-filesystem characters indicate the "/" is part of
+        # natural language (e.g. "创建/拆分"), not a real file path.
+        _NON_PATH_RE = re.compile(r"[\u2E80-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFFEF\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u{20000}-\u{2FA1F}]|[^\x00-\x7F]{2}")
         for match in pattern.findall(reply_text):
             cleaned = match.rstrip(".,;:!?)]}")
             if not cleaned.startswith("/"):
+                continue
+            # Skip matches that contain CJK or other clearly non-path characters
+            if _NON_PATH_RE.search(cleaned):
+                continue
+            # Must have at least one path separator depth (e.g. /foo/bar)
+            if cleaned.count("/") < 2:
                 continue
             if cleaned in seen:
                 continue
@@ -6264,6 +6304,14 @@ class StructuredChatAgent:
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
             cleaned = "\n".join(lines).strip()
+        # Fix incomplete Unicode escapes (e.g. "\u" not followed by 4 hex digits)
+        # that some LLMs emit, which cause json.loads to fail with
+        # "incomplete escape \u at position N".
+        cleaned = re.sub(
+            r'\\u(?![0-9a-fA-F]{4})',
+            r'\\\\u',
+            cleaned,
+        )
         return cleaned
 
     async def _execute_action(self, action: LLMAction) -> AgentStep:

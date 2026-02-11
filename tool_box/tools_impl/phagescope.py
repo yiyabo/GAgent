@@ -716,20 +716,29 @@ async def phagescope_handler(
             return {"success": status_code < 400, "status_code": status_code, "data": payload, "action": action}
 
         if action == "task_detail":
-            if not taskid:
+            if not taskid and (phageid or phageids):
+                # LLM often calls task_detail with phageid instead of taskid.
+                # Redirect to phage_detail result query which works with phageid.
+                pass  # fall through to the result branch below
+            elif not taskid:
                 return {"success": False, "status_code": 400, "error": "taskid is required", "action": action}
-            status_code, payload = await _request(
-                "GET", base_url, "/tasks/detail/", params={"taskid": taskid}, headers=headers, timeout=timeout
-            )
-            if isinstance(payload, dict):
-                results = payload.get("results", {})
-                modulelist_value = results.get("modulelist")
-                payload["parsed_modulelist"] = _parse_modulelist(modulelist_value)
-                task_detail = results.get("task_detail")
-                parsed_detail = _safe_json_loads(task_detail) if isinstance(task_detail, str) else None
-                if parsed_detail is not None:
-                    payload["parsed_task_detail"] = parsed_detail
-            return {"success": status_code < 400, "status_code": status_code, "data": payload, "action": action}
+            else:
+                status_code, payload = await _request(
+                    "GET", base_url, "/tasks/detail/", params={"taskid": taskid}, headers=headers, timeout=timeout
+                )
+                if isinstance(payload, dict):
+                    results = payload.get("results", {})
+                    modulelist_value = results.get("modulelist")
+                    payload["parsed_modulelist"] = _parse_modulelist(modulelist_value)
+                    task_detail = results.get("task_detail")
+                    parsed_detail = _safe_json_loads(task_detail) if isinstance(task_detail, str) else None
+                    if parsed_detail is not None:
+                        payload["parsed_task_detail"] = parsed_detail
+                return {"success": status_code < 400, "status_code": status_code, "data": payload, "action": action}
+
+            # Fallback: task_detail called with phageid -> redirect to result/phage_detail
+            action = "result"
+            result_kind = "phage_detail"
 
         if action == "task_log":
             if not taskid or not modulename:
