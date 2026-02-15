@@ -39,3 +39,6 @@ web-ui/dist/assets/index-*.js
 web-ui/dist/assets/index-*.js.map
 web-ui/dist/index.html
 .roo/mcp.json
+
+# docs
+docs_summary

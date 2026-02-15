@@ -211,9 +211,43 @@ def _extract_phagescope_progress(job_payload: Optional[Dict[str, Any]]) -> Dict[
     if "taskid" not in out:
         result = (job_payload or {}).get("result")
         if isinstance(result, dict):
-            remote_taskid = result.get("remote_taskid")
-            if remote_taskid is not None:
-                out["taskid"] = str(remote_taskid)
+            # Try multiple locations where taskid might be stored
+            for key in ("remote_taskid", "taskid"):
+                val = result.get(key)
+                if val is not None:
+                    out["taskid"] = str(val)
+                    break
+            # Also check nested phagescope dict and completed_now list
+            if "taskid" not in out:
+                ps = result.get("phagescope")
+                if isinstance(ps, dict) and ps.get("taskid"):
+                    out["taskid"] = str(ps["taskid"])
+            if "taskid" not in out:
+                completed = result.get("completed_now")
+                if isinstance(completed, list):
+                    for item in completed:
+                        if isinstance(item, dict) and item.get("taskid"):
+                            out["taskid"] = str(item["taskid"])
+                            break
+            # Check steps for phagescope actions that returned taskid
+            if "taskid" not in out:
+                steps = result.get("steps")
+                if isinstance(steps, list):
+                    for step in steps:
+                        if not isinstance(step, dict):
+                            continue
+                        details = step.get("details") or {}
+                        if not isinstance(details, dict):
+                            continue
+                        step_result = details.get("result")
+                        if isinstance(step_result, dict):
+                            for key in ("taskid", "remote_taskid"):
+                                val = step_result.get(key)
+                                if val is not None:
+                                    out["taskid"] = str(val)
+                                    break
+                        if "taskid" in out:
+                            break
     return out
 
 
@@ -368,18 +402,12 @@ def get_background_task_board(
     plan_id: Optional[int] = Query(None, ge=1),
     include_finished: bool = Query(True),
 ):
-    # region agent log
-    run_id = "pre-fix"
-    # endregion
     groups: Dict[str, BackgroundTaskGroup] = {
         "task_creation": _build_group("task_creation", "任务创建"),
         "phagescope": _build_group("phagescope", "PhageScope"),
         "claude_code": _build_group("claude_code", "Claude Code"),
     }
     seen: set[str] = set()
-    # region agent log
-    debug_logged = 0
-    # endregion
 
     # 1) Chat action runs -> classify into phagescope / claude_code
     params: List[Any] = []
@@ -453,44 +481,6 @@ def get_background_task_board(
 
         _append_item(groups[category], BackgroundTaskItem(**item_payload))
         seen.add(job_id)
-        # region agent log
-        if debug_logged < 6:
-            try:
-                with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
-                    _dbg.write(
-                        json.dumps(
-                            {
-                                "id": f"jobs_board_row_{job_id}",
-                                "timestamp": int(__import__("time").time() * 1000),
-                                "runId": run_id,
-                                "hypothesisId": "H2,H3,H5",
-                                "location": "app/routers/job_routes.py:get_background_task_board",
-                                "message": "chat_action row merged into board",
-                                "data": {
-                                    "job_id": job_id,
-                                    "session_id": row["session_id"],
-                                    "effective_plan_id": effective_plan_id,
-                                    "row_plan_id": row["plan_id"],
-                                    "category": category,
-                                    "row_status": row["status"],
-                                    "job_payload_status": job_payload.get("status"),
-                                    "final_status_used": status,
-                                    "row_created_at": row["created_at"],
-                                    "row_started_at": row["started_at"],
-                                    "row_finished_at": row["finished_at"],
-                                    "payload_created_at": job_payload.get("created_at"),
-                                    "payload_started_at": job_payload.get("started_at"),
-                                    "payload_finished_at": job_payload.get("finished_at"),
-                                },
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            debug_logged += 1
-        # endregion
 
     # 2) Explicit task creation jobs from decomposition index
     task_creation_ids: List[str]
@@ -504,35 +494,6 @@ def get_background_task_board(
             limit * 4,
             plan_id=effective_plan_id if (session_id or plan_id is not None) else None,
         )
-    # region agent log
-    try:
-        with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
-            _dbg.write(
-                json.dumps(
-                    {
-                        "id": f"jobs_board_task_creation_ids_{int(__import__('time').time()*1000)}",
-                        "timestamp": int(__import__("time").time() * 1000),
-                        "runId": run_id,
-                        "hypothesisId": "H4,H5",
-                        "location": "app/routers/job_routes.py:get_background_task_board",
-                        "message": "task creation index ids resolved",
-                        "data": {
-                            "session_id": session_id,
-                            "plan_id_query": plan_id,
-                            "effective_plan_id": effective_plan_id,
-                            "candidate_plan_ids": candidate_plan_ids,
-                            "task_creation_ids_count": len(task_creation_ids),
-                            "task_creation_ids_head": task_creation_ids[:3],
-                        },
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # endregion
-
     for job_id in task_creation_ids:
         if job_id in seen:
             continue
@@ -587,29 +548,6 @@ def get_background_task_board(
             generated_at = now_row["ts"] if now_row and now_row["ts"] else ""
     except Exception:  # pragma: no cover - defensive
         generated_at = ""
-    # region agent log
-    try:
-        with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
-            _dbg.write(
-                json.dumps(
-                    {
-                        "id": f"jobs_board_generated_at_{int(__import__('time').time()*1000)}",
-                        "timestamp": int(__import__("time").time() * 1000),
-                        "runId": run_id,
-                        "hypothesisId": "H1",
-                        "location": "app/routers/job_routes.py:get_background_task_board",
-                        "message": "board generated_at value from db",
-                        "data": {
-                            "generated_at": generated_at,
-                        },
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # endregion
 
     return BackgroundTaskBoardResponse(
         generated_at=generated_at,
