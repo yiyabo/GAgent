@@ -112,6 +112,102 @@ async def web_search_api(payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=500, detail=f"Web search failed: {e}") from e
 
 
+# bio_tools 专用端点
+@router.post("/tools/bio-tools")
+async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
+    """
+    执行生物信息学工具 (bio_tools)
+    
+    请求参数:
+    - tool_name: 工具名称 (如 "seqkit", "blast", "genomad")
+    - operation: 操作类型 (如 "stats", "blastn", "end_to_end")
+    - input_file: 输入文件路径 (可选)
+    - output_file: 输出文件名 (可选)
+    - params: 额外参数字典 (可选)
+    - timeout: 超时时间秒数 (可选, 默认3600)
+    
+    示例:
+    ```json
+    {
+        "tool_name": "seqkit",
+        "operation": "stats",
+        "input_file": "/path/to/file.fasta"
+    }
+    ```
+    """
+    try:
+        from tool_box import execute_tool
+        
+        tool_name = payload.get("tool_name")
+        operation = payload.get("operation", "help")
+        input_file = payload.get("input_file")
+        output_file = payload.get("output_file")
+        params = payload.get("params", {})
+        timeout = payload.get("timeout", 3600)
+        
+        if not tool_name:
+            raise HTTPException(status_code=400, detail="tool_name is required")
+        
+        # 构建参数
+        kwargs = {
+            "tool_name": tool_name,
+            "operation": operation,
+        }
+        if input_file:
+            kwargs["input_file"] = input_file
+        if output_file:
+            kwargs["output_file"] = output_file
+        if params:
+            kwargs["params"] = params
+        if timeout:
+            kwargs["timeout"] = timeout
+        
+        result = await execute_tool("bio_tools", **kwargs)
+        
+        return {
+            "success": result.get("success", False),
+            "tool": tool_name,
+            "operation": operation,
+            "result": result,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"bio_tools execution failed: {str(e)}") from e
+
+
+@router.get("/tools/bio-tools/list")
+async def list_bio_tools():
+    """
+    获取所有可用的生物信息学工具列表
+    """
+    try:
+        from tool_box.bio_tools.bio_tools_handler import get_available_bio_tools
+        
+        tools = get_available_bio_tools()
+        
+        # 按类别分组
+        by_category = {}
+        for tool in tools:
+            cat = tool["category"]
+            by_category.setdefault(cat, []).append({
+                "name": tool["name"],
+                "description": tool["description"],
+                "operations": tool["operations"],
+            })
+        
+        return {
+            "success": True,
+            "count": len(tools),
+            "tools_by_category": by_category,
+            "tools": tools,
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list bio_tools: {str(e)}") from e
+
+
 # 任务相关的工具端点
 @router.get("/tasks/{task_id}/tool-requirements")
 async def get_task_tool_requirements(task_id: int):

@@ -538,5 +538,382 @@
                 "notes": "genome_dir: bins目录(包含fa文件); output: 输出目录; 需 GTDB-Tk 数据库"
             }
         }
+    },
+    "genomad": {
+        "image": "quay.io/biocontainers/genomad:1.7.6--pyhdfd78af_0",
+        "description": "geNomad - 移动遗传元素识别（噬菌体/质粒预测）",
+        "category": "phage",
+        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/genomad (~5GB)，容器内映射为 /work/database。高内存需求(16GB+)",
+        "operations": {
+            "end_to_end": {
+                "command": "genomad end-to-end {input} /work/{output} /work/database",
+                "description": "端到端分析（推荐）- 识别噬菌体和质粒",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output"
+                ],
+                "notes": "input: 输入FASTA文件; output: 输出目录名; 需 geNomad 数据库"
+            },
+            "annotate": {
+                "command": "genomad annotate {input} /work/{output} /work/database",
+                "description": "基因预测和标记注释",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output"
+                ],
+                "notes": "input: 输入FASTA文件; output: 输出目录名"
+            },
+            "find_proviruses": {
+                "command": "genomad find-proviruses {input} /work/{output} /work/database",
+                "description": "查找整合的前噬菌体",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output"
+                ],
+                "notes": "input: 输入FASTA文件; output: 输出目录名"
+            }
+        }
+    },
+    "checkv": {
+        "image": "quay.io/biocontainers/checkv:1.0.1--pyhdfd78af_0",
+        "description": "CheckV - 病毒基因组质量评估",
+        "category": "phage",
+        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5 (~2GB)，容器内映射为 /work/database",
+        "operations": {
+            "end_to_end": {
+                "command": "checkv end_to_end {input} /work/{output} -d /work/database -t {threads}",
+                "description": "完整质量评估流程",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "threads"
+                ],
+                "notes": "input: 病毒序列FASTA; output: 输出目录; threads: 线程数(默认4)"
+            },
+            "completeness": {
+                "command": "checkv completeness {input} /work/{output} -d /work/database -t {threads}",
+                "description": "仅评估完整度",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "threads"
+                ],
+                "notes": "input: 病毒序列FASTA; output: 输出目录; threads: 线程数(默认4)"
+            },
+            "complete_genomes": {
+                "command": "checkv complete_genomes {input} /work/{output}",
+                "description": "识别完整基因组（基于末端重复）",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output"
+                ],
+                "notes": "input: 病毒序列FASTA; output: 输出目录"
+            }
+        }
+    },
+    "virsorter2": {
+        "image": "quay.io/biocontainers/virsorter:2.2.4--pyhdfd78af_2",
+        "description": "VirSorter2 - 多分类器病毒序列识别",
+        "category": "phage",
+        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/virsorter2/db/db (~10-15GB)，容器内映射为 /work/database。使用 -j 参数指定线程数而非 --threads",
+        "operations": {
+            "run": {
+                "command": "virsorter run -i {input} -w /work/{output} --db-dir /work/database --min-score {min_score} -j {threads}",
+                "description": "运行病毒识别流程",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "min_score",
+                    "threads"
+                ],
+                "notes": "input: 输入FASTA; output: 输出目录; min_score: 最低分数阈值(默认0.5); threads: 线程数(默认4)"
+            }
+        }
+    },
+    "bwa": {
+        "image": "staphb/bwa:latest",
+        "description": "BWA - Burrows-Wheeler Alignment Tool，短读序列比对",
+        "category": "sequence_alignment",
+        "notes": "需要先运行 bwa index 构建索引。支持单端和双端测序数据比对",
+        "operations": {
+            "index": {
+                "command": "bwa index {input}",
+                "description": "为参考基因组构建BWA索引",
+                "requires_input": true,
+                "requires_output": false,
+                "notes": "input: 参考基因组FASTA文件。将生成 .amb, .ann, .bwt, .pac, .sa 索引文件"
+            },
+            "mem": {
+                "command": "bwa mem -t {threads} {reference} {input} > /work/{output}",
+                "description": "BWA-MEM算法比对（推荐）",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "reference",
+                    "output",
+                    "threads"
+                ],
+                "notes": "reference: 已索引的参考基因组; input: 单端或双端FASTQ; output: SAM输出文件; threads: 线程数(默认4)"
+            }
+        }
+    },
+    "bowtie2": {
+        "image": "staphb/bowtie2:latest",
+        "description": "Bowtie 2 - 快速敏感的序列比对工具",
+        "category": "sequence_alignment",
+        "notes": "需要先运行 bowtie2-build 构建索引",
+        "operations": {
+            "build": {
+                "command": "bowtie2-build {input} /work/{index_prefix}",
+                "description": "构建Bowtie2索引",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "index_prefix"
+                ],
+                "notes": "input: 参考基因组FASTA; index_prefix: 索引前缀名。将生成 .1.bt2, .2.bt2, .3.bt2, .4.bt2, .rev.1.bt2, .rev.2.bt2 文件"
+            },
+            "align": {
+                "command": "bowtie2 -p {threads} -x {index} -1 {r1} -2 {r2} -S /work/{output}",
+                "description": "双端测序比对",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "index",
+                    "r1",
+                    "r2",
+                    "output",
+                    "threads"
+                ],
+                "notes": "index: 索引前缀; r1/r2: 双端FASTQ文件; output: SAM输出; threads: 线程数(默认4)"
+            }
+        }
+    },
+    "mmseqs2": {
+        "image": "staphb/mmseqs2:latest",
+        "description": "MMseqs2 - 超快速蛋白序列搜索和聚类",
+        "category": "sequence_analysis",
+        "notes": "支持 easy-search, easy-linclust, easy-taxonomy 等易用接口",
+        "operations": {
+            "easy_search": {
+                "command": "mmseqs easy-search {query} {target} /work/{output} /work/tmp --threads {threads}",
+                "description": "快速序列搜索",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "query",
+                    "target",
+                    "output",
+                    "threads"
+                ],
+                "notes": "query: 查询序列FASTA; target: 目标序列FASTA; output: 比对结果(m8格式); threads: 线程数(默认4)"
+            },
+            "easy_linclust": {
+                "command": "mmseqs easy-linclust {input} /work/{output} /work/tmp --min-seq-id {min_seq_id} --cov-mode 1 --threads {threads}",
+                "description": "线性时间序列聚类",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "min_seq_id",
+                    "threads"
+                ],
+                "notes": "input: 输入FASTA; output: 输出前缀; min_seq_id: 最小序列相似度(默认0.9); threads: 线程数(默认4)"
+            }
+        }
+    },
+    "trim_galore": {
+        "image": "staphb/trim-galore:latest",
+        "description": "Trim Galore! - 质量和接头修剪工具",
+        "category": "sequence_processing",
+        "notes": "自动检测Illumina、Nextera和Small RNA接头。封装了Cutadapt和FastQC",
+        "operations": {
+            "trim": {
+                "command": "trim_galore --quality {quality} --length {min_length} --cores {cores} -o /work {input}",
+                "description": "单端测序修剪",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "quality",
+                    "min_length",
+                    "cores"
+                ],
+                "notes": "input: 输入FASTQ; quality: Phred质量阈值(默认20); min_length: 最小长度(默认20); cores: CPU核心数(默认1)"
+            },
+            "trim_paired": {
+                "command": "trim_galore --paired --quality {quality} --length {min_length} --cores {cores} -o /work {r1} {r2}",
+                "description": "双端测序修剪",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "r1",
+                    "r2",
+                    "quality",
+                    "min_length",
+                    "cores"
+                ],
+                "notes": "r1/r2: 双端FASTQ文件; quality: Phred质量阈值(默认20); min_length: 最小长度(默认20); cores: CPU核心数(默认1)"
+            }
+        }
+    },
+    "ngmlr": {
+        "image": "staphb/ngmlr:latest",
+        "description": "NGMLR - 结构变异感知的序列比对工具",
+        "category": "sequence_alignment",
+        "notes": "专门为长读测序(ONT和PacBio)设计，适合结构变异检测。常与Sniffles2配合使用",
+        "operations": {
+            "map": {
+                "command": "ngmlr -r {reference} -q {input} -o /work/{output} -x {preset} -t {threads}",
+                "description": "长读序列比对",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "reference",
+                    "output",
+                    "preset",
+                    "threads"
+                ],
+                "notes": "reference: 参考基因组FASTA; input: 长读FASTQ; output: SAM输出; preset: ont或pacbio; threads: 线程数(默认4)"
+            }
+        }
+    },
+    "sniffles2": {
+        "image": "staphb/sniffles:latest",
+        "description": "Sniffles2 - 结构变异检测工具",
+        "category": "sequence_analysis",
+        "notes": "专为长读测序数据设计，检测缺失、插入、重复、倒位等结构变异。输入必须是排序并索引的BAM文件",
+        "operations": {
+            "call": {
+                "command": "sniffles --input {input} --vcf /work/{output} --reference {reference} --threads {threads}",
+                "description": "检测结构变异",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "reference",
+                    "threads"
+                ],
+                "notes": "input: 排序索引的BAM文件; output: VCF输出; reference: 参考基因组FASTA; threads: 线程数(默认4)"
+            }
+        }
+    },
+    "fastani": {
+        "image": "staphb/fastani:latest",
+        "description": "FastANI - 快速全基因组平均核苷酸一致性计算",
+        "category": "taxonomy",
+        "notes": "用于物种界定(ANI>=95%通常表示同种)。比BLAST-based ANI方法快得多",
+        "operations": {
+            "compare": {
+                "command": "fastANI -q {query} -r {reference} -o /work/{output} -t {threads}",
+                "description": "比较两个基因组",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "reference",
+                    "output",
+                    "threads"
+                ],
+                "notes": "query: 查询基因组FASTA; reference: 参考基因组FASTA; output: 结果文件; threads: 线程数(默认1)"
+            }
+        }
+    },
+    "vibrant": {
+        "image": "quay.io/biocontainers/vibrant:1.2.1--pyhdfd78af_0",
+        "description": "VIBRANT - 病毒识别和分类工具",
+        "category": "phage",
+        "notes": "需要数据库。使用HMM模型识别病毒序列",
+        "operations": {
+            "run": {
+                "command": "VIBRANT_run.py -i {input} -o /work/{output} -t {threads}",
+                "description": "运行VIBRANT病毒识别",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "threads"
+                ],
+                "notes": "input: 输入FASTA; output: 输出目录; threads: 线程数(默认4)"
+            }
+        }
+    },
+    "iphop": {
+        "image": "quay.io/biocontainers/iphop:latest",
+        "description": "iPHoP - 噬菌体宿主预测工具",
+        "category": "phage",
+        "notes": "需要数据库(~20GB+)。基于机器学习的噬菌体-宿主关联预测",
+        "operations": {
+            "predict": {
+                "command": "iphop predict --fa_file {input} --db_dir /work/database --out_dir /work/{output} --num_threads {threads}",
+                "description": "预测噬菌体宿主",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "output",
+                    "threads"
+                ],
+                "notes": "input: 噬菌体序列FASTA; output: 输出目录; threads: 线程数(默认4)"
+            }
+        }
+    },
+    "nextflow": {
+        "image": "nextflow/nextflow:22.10.5",
+        "description": "Nextflow - 数据驱动计算流程系统",
+        "category": "workflow",
+        "notes": "用于创建可扩展、可重现的科学工作流。支持-resume恢复失败的任务",
+        "operations": {
+            "run": {
+                "command": "nextflow run {pipeline} -profile docker -work-dir /work/work",
+                "description": "运行Nextflow流程",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "pipeline"
+                ],
+                "notes": "pipeline: 流程脚本路径(.nf文件)或远程仓库。需要在/work目录中运行"
+            },
+            "clean": {
+                "command": "nextflow clean -f",
+                "description": "清理工作目录",
+                "requires_input": false,
+                "requires_output": false,
+                "notes": "删除项目缓存和工作目录中的中间文件"
+            }
+        }
+    },
+    "snakemake": {
+        "image": "snakemake/snakemake:latest",
+        "description": "Snakemake - 工作流管理系统",
+        "category": "workflow",
+        "notes": "基于Python的DSL，用于创建可扩展、可重现的数据分析流程。支持Conda和容器",
+        "operations": {
+            "run": {
+                "command": "snakemake -s {snakefile} --cores {cores} --workdir /work",
+                "description": "运行Snakemake流程",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "snakefile",
+                    "cores"
+                ],
+                "notes": "snakefile: Snakefile路径; cores: 并行CPU核心数。可以使用--use-conda或--use-singularity"
+            },
+            "dry_run": {
+                "command": "snakemake -s {snakefile} -n --workdir /work",
+                "description": "干运行(检查流程但不执行)",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": [
+                    "snakefile"
+                ],
+                "notes": "snakefile: Snakefile路径。显示将要执行的任务而不实际运行"
+            }
+        }
     }
 }
