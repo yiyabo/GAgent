@@ -150,9 +150,27 @@ def _ensure_semicolon_list_string(value: str) -> str:
     return value
 
 
+_ALL_ANNOTATION_MODULES = {
+    "quality": True,
+    "host": True,
+    "lifestyle": True,
+    "annotation": True,
+    "terminator": True,
+    "taxonomic": True,
+    "trna": True,
+    "anticrispr": True,
+    "crispr": True,
+    "arvf": True,
+    "transmembrane": True,
+}
+
+
 def _normalize_modulelist(value: Any) -> str:
     if value is None:
         return ""
+    # "all" → expand to every annotation module
+    if isinstance(value, str) and value.strip().lower() == "all":
+        return json.dumps(_ALL_ANNOTATION_MODULES)
     if isinstance(value, dict):
         return json.dumps(value)
     if isinstance(value, (list, tuple)):
@@ -520,6 +538,9 @@ async def phagescope_handler(
         headers["Authorization"] = f"Bearer {token}"
 
     action = action.lower().strip()
+    # Default userid so submit/task_list work even when LLM omits it.
+    if not userid:
+        userid = "agent_default_user"
     phageid, phageids = _apply_sequence_ids_alias(phageid, phageids, sequence_ids)
     # Compatibility: some callers misuse `sequence` to pass phage accession IDs.
     if sequence and not phageid and not phageids:

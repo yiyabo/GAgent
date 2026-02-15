@@ -150,17 +150,6 @@ const ExecutorPanel: React.FC = () => {
           plan_id: currentPlanId ?? undefined,
           include_finished: true,
         });
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/1723c28b-04a9-4833-9549-e6acfba2d89d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'web-ui/src/components/layout/ExecutorPanel.tsx:fetchBoard',message:'board snapshot received',data:{runId:'pre-fix',hypothesisId:'H1,H3,H5',sessionId:currentSessionId,planId:currentPlanId,generated_at:snapshot?.generated_at,total:snapshot?.total,task_creation_count:snapshot?.groups?.task_creation?.items?.length ?? 0,task_creation_statuses:(snapshot?.groups?.task_creation?.items ?? []).slice(0,3).map((i)=>({job_id:i.job_id,status:i.status,created_at:i.created_at,started_at:i.started_at,finished_at:i.finished_at,label:i.label}))},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-        // #region agent log
-        (() => {
-          const firstTask = snapshot?.groups?.task_creation?.items?.[0];
-          if (!firstTask?.created_at) return;
-          const parsed = dayjs(firstTask.created_at);
-          fetch('http://127.0.0.1:7242/ingest/1723c28b-04a9-4833-9549-e6acfba2d89d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'web-ui/src/components/layout/ExecutorPanel.tsx:fetchBoard',message:'task timestamp parse details',data:{runId:'pre-fix',hypothesisId:'H1,H2',job_id:firstTask.job_id,raw_created_at:firstTask.created_at,parsed_iso:parsed.isValid()?parsed.toISOString():null,now_iso:new Date().toISOString(),diff_ms:Date.now()-parsed.valueOf(),status:firstTask.status},timestamp:Date.now()})}).catch(()=>{});
-        })();
-        // #endregion
         setBoard(snapshot);
         setError(null);
       } catch (err: any) {
@@ -180,23 +169,10 @@ const ExecutorPanel: React.FC = () => {
   const timeoutIdsRef = React.useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => {
     const onTasksUpdated = () => {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/1723c28b-04a9-4833-9549-e6acfba2d89d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'web-ui/src/components/layout/ExecutorPanel.tsx:onTasksUpdated',message:'tasksUpdated event received',data:{runId:'pre-fix',hypothesisId:'H5',sessionId:currentSessionId,planId:currentPlanId},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       timeoutIdsRef.current.forEach((id) => clearTimeout(id));
       timeoutIdsRef.current = [];
-      const t1 = setTimeout(() => {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/1723c28b-04a9-4833-9549-e6acfba2d89d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'web-ui/src/components/layout/ExecutorPanel.tsx:onTasksUpdated',message:'delayed board refresh fired 2s',data:{runId:'pre-fix',hypothesisId:'H5'},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-        void fetchBoard(true);
-      }, 2000);
-      const t2 = setTimeout(() => {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/1723c28b-04a9-4833-9549-e6acfba2d89d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'web-ui/src/components/layout/ExecutorPanel.tsx:onTasksUpdated',message:'delayed board refresh fired 6s',data:{runId:'pre-fix',hypothesisId:'H5'},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-        void fetchBoard(true);
-      }, 6000);
+      const t1 = setTimeout(() => void fetchBoard(true), 2000);
+      const t2 = setTimeout(() => void fetchBoard(true), 6000);
       timeoutIdsRef.current = [t1, t2];
     };
     window.addEventListener('tasksUpdated', onTasksUpdated);
@@ -336,8 +312,16 @@ const ExecutorPanel: React.FC = () => {
                                 disabled={isProcessing}
                                 onClick={() => {
                                   const displayId = getDisplayId(item);
-                                  const prompt = `后台任务「${item.label}」(${displayId}) 已完成，请帮我获取并分析结果。`;
-                                  void sendMessage(prompt);
+                                  if (item.category === 'phagescope') {
+                                    // PhageScope: use DeepThink to download + read files + analyze in one loop
+                                    const taskidHint = item.taskid ? `taskid=${item.taskid}` : `job_id=${item.job_id}`;
+                                    const prompt = `/think PhageScope 任务 (${taskidHint}) 已完成。请先用 phagescope save_all 下载结果到本地，然后用 file_operations 读取关键文件（summary.json、phage_info.json、quality.json、proteins.tsv），最后给出结构化的生物信息学解读。`;
+                                    void sendMessage(prompt);
+                                  } else {
+                                    // Other tasks: text-only analysis
+                                    const prompt = `后台任务「${item.label}」(${displayId}) 已完成。请根据已有的执行记录和日志，直接分析这个任务的结果和状态，不要调用任何工具，不要重新提交任务。`;
+                                    void sendMessage(prompt, { analysis_only: true, source_job_id: item.job_id });
+                                  }
                                 }}
                                 style={{ padding: '0 4px', fontSize: 11, height: 'auto', lineHeight: 1 }}
                               >
