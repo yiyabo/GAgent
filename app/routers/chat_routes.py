@@ -145,6 +145,10 @@ _BACKGROUND_TOOL_NAMES: Dict[str, str] = {
     "claude_code": "claude_code",
 }
 
+# PhageScope actions that should run synchronously (not dispatched to background).
+# Only "submit" is truly long-running; save_all/result/task_detail are fast downloads.
+_PHAGESCOPE_SYNC_ACTIONS = {"save_all", "result", "quality", "task_detail", "task_list", "task_log", "input_check", "download"}
+
 _BACKGROUND_PLAN_OPS = {"create_plan", "optimize_plan"}
 
 
@@ -170,6 +174,14 @@ def _classify_background_category(
         kind = getattr(action, "kind", None) or ""
         name = str(getattr(action, "name", None) or "").strip().lower()
         if kind == "tool_operation" and name in _BACKGROUND_TOOL_NAMES:
+            # PhageScope: only "submit" is truly long-running.
+            # save_all/result/quality etc. are fast and should run synchronously
+            # so the analysis chain (save_all → read files → synthesize) stays in one turn.
+            if name == "phagescope":
+                params = getattr(action, "parameters", None) or {}
+                ps_action = str(params.get("action") or "").strip().lower()
+                if ps_action in _PHAGESCOPE_SYNC_ACTIONS:
+                    continue  # Don't classify as background
             return _BACKGROUND_TOOL_NAMES[name]
         if kind == "plan_operation" and name in _BACKGROUND_PLAN_OPS:
             return "task_creation"
@@ -1558,6 +1570,10 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             structured = agent._apply_task_execution_followthrough_guardrail(structured)
             structured = agent._apply_completion_claim_guardrail(structured)
             agent._current_user_message = None
+
+            # "分析" button from ExecutorPanel: force text-only response, no tool calls.
+            if context.get("analysis_only"):
+                structured.actions = []
 
             if not structured.actions:
                 agent_result = await agent.execute_structured(structured)
@@ -3229,9 +3245,10 @@ async def _execute_action_run(run_id: str) -> None:
                     "PhageScope submit-only mode enabled; skipped follow-up actions in this turn.",
                     {"skipped_actions": dropped_phagescope_actions},
                 )
-            missing_fields: List[str] = []
+            # Default userid so LLM doesn't need to know a specific value.
             if _is_empty_phagescope_param(submit_params.get("userid")):
-                missing_fields.append("userid")
+                submit_params["userid"] = "agent_default_user"
+            missing_fields: List[str] = []
             if _is_empty_phagescope_param(submit_params.get("modulelist")):
                 missing_fields.append("modulelist")
             has_input_source = any(
@@ -4491,30 +4508,6 @@ class StructuredChatAgent:
         return has_status and not has_execute
 
     @staticmethod
-    def _user_explicitly_requests_execution(text: str) -> bool:
-        lowered = str(text or "").strip().lower()
-        if not lowered:
-            return False
-        execute_tokens = (
-            "执行",
-            "运行",
-            "开始",
-            "继续",
-            "重跑",
-            "重试",
-            "去做",
-            "撰写",
-            "写",
-            "run ",
-            "execute",
-            "start",
-            "rerun",
-            "resume",
-            "do task",
-        )
-        return any(token in lowered for token in execute_tokens)
-
-    @staticmethod
     def _reply_promises_execution(reply_text: str) -> bool:
         lowered = str(reply_text or "").strip().lower()
         if not lowered:
@@ -4550,151 +4543,16 @@ class StructuredChatAgent:
         self,
         structured: LLMStructuredResponse,
     ) -> LLMStructuredResponse:
-        """Ensure task execution intent always emits a concrete rerun_task action."""
-        # region agent log
-        try:
-            with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
-                _dbg.write(
-                    json.dumps(
-                        {
-                            "id": f"followthrough_enter_{int(__import__('time').time()*1000)}",
-                            "timestamp": int(__import__("time").time() * 1000),
-                            "runId": "pre-fix-2",
-                            "hypothesisId": "N1,N2,N3",
-                            "location": "app/routers/chat_routes.py:_apply_task_execution_followthrough_guardrail",
-                            "message": "followthrough guardrail entered",
-                            "data": {
-                                "session_id": self.session_id,
-                                "plan_id": self.plan_session.plan_id,
-                                "has_actions": bool(structured.actions),
-                                "user_message": str(self._current_user_message or "")[:200],
-                                "reply_message": (
-                                    str(structured.llm_reply.message)[:200]
-                                    if structured.llm_reply and isinstance(structured.llm_reply.message, str)
-                                    else ""
-                                ),
-                            },
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # endregion
-        if structured.actions:
-            return structured
+        """Disabled: keyword-based intent override is architecturally unsound.
 
-        plan_id = self.plan_session.plan_id
-        if plan_id is None:
-            return structured
+        Modern agent systems (Cursor, Windsurf, Claude Code) trust the LLM's
+        action selection.  If the LLM returns no actions, the response is treated
+        as a text-only reply.  Execution intent should be guided via system
+        prompt, not injected by a post-hoc regex guardrail.
 
-        user_message = str(self._current_user_message or "").strip()
-
-        reply_text = (
-            structured.llm_reply.message
-            if structured.llm_reply and isinstance(structured.llm_reply.message, str)
-            else ""
-        )
-
-        explicit_execute = self._user_explicitly_requests_execution(user_message)
-        promise_execute = self._reply_promises_execution(reply_text)
-        # region agent log
-        try:
-            with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
-                _dbg.write(
-                    json.dumps(
-                        {
-                            "id": f"followthrough_decision_{int(__import__('time').time()*1000)}",
-                            "timestamp": int(__import__("time").time() * 1000),
-                            "runId": "pre-fix-2",
-                            "hypothesisId": "N1,N2,N3",
-                            "location": "app/routers/chat_routes.py:_apply_task_execution_followthrough_guardrail",
-                            "message": "followthrough decision signals",
-                            "data": {
-                                "explicit_execute": explicit_execute,
-                                "promise_execute": promise_execute,
-                                "status_query_only": self._is_status_query_only(user_message),
-                                "user_message": user_message[:200],
-                                "reply_text": reply_text[:200],
-                            },
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # endregion
-        if not explicit_execute and not promise_execute:
-            return structured
-        if self._is_status_query_only(user_message) and not promise_execute:
-            return structured
-
-        try:
-            tree = self.plan_session.repo.get_plan_tree(plan_id)
-        except Exception:
-            return structured
-        target_task_id = self._resolve_followthrough_target_task_id(
-            tree=tree,
-            user_message=user_message,
-            reply_text=reply_text,
-        )
-        if target_task_id is None:
-            return structured
-        if not tree.has_node(target_task_id):
-            return structured
-
-        node = tree.get_node(target_task_id)
-        node_status = str(node.status or "pending").strip().lower()
-        if node_status in {"running", "completed", "done"} and self._is_status_query_only(user_message):
-            return structured
-
-        structured.actions = [
-            LLMAction(
-                kind="task_operation",
-                name="rerun_task",
-                parameters={"task_id": target_task_id},
-                blocking=True,
-                order=1,
-                metadata={
-                    "guardrail": "execution_followthrough",
-                    "target_task_name": node.display_name(),
-                },
-            )
-        ]
-        # region agent log
-        try:
-            with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
-                _dbg.write(
-                    json.dumps(
-                        {
-                            "id": f"followthrough_injected_{int(__import__('time').time()*1000)}",
-                            "timestamp": int(__import__("time").time() * 1000),
-                            "runId": "pre-fix-2",
-                            "hypothesisId": "N1,N2",
-                            "location": "app/routers/chat_routes.py:_apply_task_execution_followthrough_guardrail",
-                            "message": "guardrail injected rerun_task",
-                            "data": {
-                                "target_task_id": target_task_id,
-                                "target_task_name": node.display_name(),
-                                "node_status": node_status,
-                            },
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # endregion
-        if structured.llm_reply:
-            structured.llm_reply.message = (
-                f"收到，我现在开始执行任务 #{target_task_id}（{node.display_name()}），"
-                "执行结果会同步返回。"
-            )
+        Keeping the method signature so callers don't break.
+        """
         return structured
-
     def _resolve_followthrough_target_task_id(
         self,
         *,
@@ -4788,60 +4646,12 @@ class StructuredChatAgent:
         self,
         structured: LLMStructuredResponse,
     ) -> LLMStructuredResponse:
-        if not structured.llm_reply or not isinstance(structured.llm_reply.message, str):
-            return structured
-        reply_text = structured.llm_reply.message
-        if not self._looks_like_completion_claim(reply_text):
-            return structured
-
-        declared_paths = self._extract_declared_absolute_paths(reply_text)
-        if not declared_paths:
-            return structured
-
-        missing: List[str] = []
-        for path_text in declared_paths[:40]:
-            try:
-                if not Path(path_text).exists():
-                    missing.append(path_text)
-            except Exception:
-                missing.append(path_text)
-
-        if not missing:
-            return structured
-
-        # region agent log
-        try:
-            with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
-                _dbg.write(
-                    json.dumps(
-                        {
-                            "id": f"completion_guardrail_rewrite_{int(__import__('time').time()*1000)}",
-                            "timestamp": int(__import__("time").time() * 1000),
-                            "runId": "pre-fix-2",
-                            "hypothesisId": "N4",
-                            "location": "app/routers/chat_routes.py:_apply_completion_claim_guardrail",
-                            "message": "completion claim guardrail rewrote reply",
-                            "data": {
-                                "declared_paths": declared_paths[:8],
-                                "missing_paths": missing[:8],
-                                "original_reply": reply_text[:240],
-                            },
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # endregion
-        preview = "\n".join(f"- {item}" for item in missing[:8])
-        structured.llm_reply.message = (
-            "自动核验发现以下声明文件当前不存在，结果不能判定为“已完成”：\n"
-            f"{preview}\n"
-            "请先执行并实际落盘，再返回完成结论。"
-        )
+        """Disabled: file-existence checks on LLM reply text caused repeated
+        false positives (CJK slashes, short paths, etc.).  The LLM is better
+        positioned to judge task completion status.  Keeping signature for
+        call-site compatibility.
+        """
         return structured
-
     @staticmethod
     def _is_task_executable_status(status: Optional[str]) -> bool:
         normalized = str(status or "pending").strip().lower()
@@ -4966,75 +4776,12 @@ class StructuredChatAgent:
         self,
         structured: LLMStructuredResponse,
     ) -> LLMStructuredResponse:
-        """Guardrail: enforce plan-first for broad project requests."""
-        user_message = (self._current_user_message or "").strip()
-        if not user_message:
-            return structured
-        if self.plan_session.plan_id is not None:
-            return structured
-        if re.search(
-            r"(不要|无需|不用|don't|do not)\s*(创建|生成|make|create).*(计划|plan)",
-            user_message,
-            flags=re.IGNORECASE,
-        ):
-            return structured
-
-        actions = list(structured.actions or [])
-        if not actions:
-            return structured
-
-        plan_actions = [action for action in actions if action.kind == "plan_operation"]
-        tool_actions = [action for action in actions if action.kind == "tool_operation"]
-        if not tool_actions:
-            return structured
-        if not self._should_force_plan_first(user_message, tool_actions):
-            return structured
-
-        existing_create_action = next(
-            (
-                action
-                for action in plan_actions
-                if action.name == "create_plan"
-            ),
-            None,
-        )
-
-        request_seed = user_message
-        if self._is_generic_plan_confirmation(user_message):
-            inferred = self._infer_plan_seed_message(user_message)
-            if inferred:
-                request_seed = inferred
-
-        compact_title = re.sub(r"\s+", " ", request_seed).strip()
-        if len(compact_title) > 80:
-            compact_title = compact_title[:80].rstrip()
-        if not compact_title:
-            compact_title = "Research Project Plan"
-
-        create_params: Dict[str, Any] = {}
-        if existing_create_action and isinstance(existing_create_action.parameters, dict):
-            create_params.update(existing_create_action.parameters)
-        create_params.setdefault("title", compact_title)
-        create_params.setdefault("goal", request_seed)
-        create_params.setdefault("description", request_seed)
-
-        structured.actions = [
-            LLMAction(
-                kind="plan_operation",
-                name="create_plan",
-                parameters=create_params,
-                blocking=True,
-                order=1,
-                metadata={
-                    "guardrail": "plan_first",
-                    "reason": "prevent_one_shot_tool_execution",
-                },
-            )
-        ]
-        if structured.llm_reply and structured.llm_reply.message:
-            structured.llm_reply.message = "我会先创建并分解任务图谱，确认计划结构后再按任务执行。"
+        """Disabled: keyword-based plan injection overrides the LLM's action
+        selection.  Plan creation should be guided by the system prompt (which
+        already instructs the model to create plans for multi-step work).
+        Keeping signature for call-site compatibility.
+        """
         return structured
-
     @staticmethod
     def _should_force_plan_first(
         user_message: str,
@@ -5849,6 +5596,60 @@ class StructuredChatAgent:
                             deliverables_payload = details.get("deliverables")
                             if deliverables_payload is not None:
                                 result.setdefault("deliverables", deliverables_payload)
+
+                            # DeepThink PhageScope submit: register tracking job so
+                            # the task status panel can show progress.
+                            if (
+                                name == "phagescope"
+                                and str(safe_params.get("action") or "").strip().lower() == "submit"
+                                and result.get("success") is not False
+                            ):
+                                taskid = _extract_taskid_from_result(result)
+                                if taskid:
+                                    try:
+                                        tracking_id = f"act_{uuid4().hex}"
+                                        modulelist_raw = safe_params.get("modulelist")
+                                        module_items = _normalize_modulelist_value(modulelist_raw) if modulelist_raw else None
+                                        job = plan_decomposition_jobs.create_job(
+                                            plan_id=self.plan_session.plan_id,
+                                            task_id=None,
+                                            mode="phagescope_track",
+                                            job_type="phagescope_track",
+                                            params={"taskid": taskid, "session_id": self.session_id},
+                                            metadata={"session_id": self.session_id, "origin": "deep_think", "remote_taskid": taskid},
+                                            job_id=tracking_id,
+                                        )
+                                        create_action_run(
+                                            run_id=tracking_id,
+                                            session_id=self.session_id,
+                                            user_message=f"[DeepThink] PhageScope submit (taskid={taskid})",
+                                            mode="phagescope_track",
+                                            plan_id=self.plan_session.plan_id,
+                                            context={"origin": "deep_think"},
+                                            history=[],
+                                            structured_json=json.dumps({
+                                                "llm_reply": {"message": f"PhageScope submit taskid={taskid}"},
+                                                "actions": [{"kind": "tool_operation", "name": "phagescope", "parameters": safe_params}],
+                                            }),
+                                        )
+                                        update_action_run(tracking_id, status="running")
+                                        start_phagescope_track_job_thread(
+                                            job_id=tracking_id,
+                                            remote_taskid=str(taskid),
+                                            modulelist=module_items,
+                                            poll_interval=30.0,
+                                            poll_timeout=172800.0,
+                                            request_timeout=40.0,
+                                        )
+                                        logger.info(
+                                            "[DeepThink] Registered PhageScope tracking job %s for taskid=%s",
+                                            tracking_id, taskid,
+                                        )
+                                    except Exception as track_exc:
+                                        logger.warning(
+                                            "[DeepThink] Failed to register PhageScope tracking: %s", track_exc,
+                                        )
+
                             return result
 
                         fallback_result: Dict[str, Any] = {
@@ -8085,32 +7886,6 @@ class StructuredChatAgent:
             task_id = self._coerce_int(task_id_raw, "task_id")
             if self.plan_executor is None:
                 raise ValueError("Plan executor is not enabled in this environment.")
-            # region agent log
-            try:
-                with open("/Users/apple/LLM/agent/.cursor/debug.log", "a", encoding="utf-8") as _dbg:
-                    _dbg.write(
-                        json.dumps(
-                            {
-                                "id": f"rerun_task_execute_{int(__import__('time').time()*1000)}",
-                                "timestamp": int(__import__("time").time() * 1000),
-                                "runId": "pre-fix-2",
-                                "hypothesisId": "N1,N2,N5",
-                                "location": "app/routers/chat_routes.py:_execute_action",
-                                "message": "executing rerun_task action",
-                                "data": {
-                                    "task_id": task_id,
-                                    "session_id": self.session_id,
-                                    "action_metadata": action.metadata if isinstance(action.metadata, dict) else None,
-                                    "current_user_message": str(self._current_user_message or "")[:200],
-                                },
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            # endregion
             # 构建会话上下文，传递给任务执行器
             session_ctx = {
                 "session_id": self.session_id,  # 用于工具调用
