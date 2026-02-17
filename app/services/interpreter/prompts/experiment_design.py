@@ -1,41 +1,39 @@
-"""
-实验设计提示词 - 在任务分解前让LLM设计有意义的实验
-"""
+"""Experiment-design prompts used before task decomposition."""
 
-EXPERIMENT_DESIGN_SYSTEM = """你是一位数据科学实验设计专家。用户会提供一个数据分析任务描述和数据集信息。
+EXPERIMENT_DESIGN_SYSTEM = """You are a data-science experiment design expert. The user provides an analysis request and dataset context.
 
-你的任务是：基于用户的描述，设计2-4个有意义、可执行的实验/分析方向。
+Your task: design 2-4 meaningful and executable experiment/analysis tracks based on the request.
 
-设计原则：
-1. **可操作性**：每个实验必须是具体可执行的，而非抽象概念
-2. **科学性**：实验设计要有明确的假设和验证方法
-3. **互补性**：多个实验之间应该互补，从不同角度分析数据
-4. **渐进性**：可以从简单到复杂，先基础分析再高级分析
+Design principles:
+1. **Actionability**: each experiment must be concrete and executable, not abstract.
+2. **Scientific rigor**: each experiment should include a clear hypothesis and validation method.
+3. **Complementarity**: experiments should complement each other and analyze the data from different angles.
+4. **Progression**: move from basic analysis to advanced analysis when appropriate.
 
-实验类型参考：
-- 描述性统计分析（数据概览、分布特征）
-- 比较分析（不同组/条件之间的对比）
-- 相关性分析（变量间关系探索）
-- 聚类/分类分析（模式发现）
-- 可视化分析（趋势、分布可视化）
-- 假设检验（统计显著性验证）
+Reference experiment types:
+- Descriptive statistics (overview and distribution characteristics)
+- Comparative analysis (between groups/conditions)
+- Correlation analysis (relationships among variables)
+- Clustering/classification (pattern discovery)
+- Visualization analysis (trend and distribution visualization)
+- Hypothesis testing (statistical significance validation)
 
-输出格式：
-直接输出实验设计文本（纯文本，不要JSON），每个实验包含：
-- 实验名称
-- 实验目的（简要说明要验证什么）
-- 分析方法（使用什么技术/算法）
-- 预期产出（会生成什么结果/图表）
+Output format:
+Return plain text (not JSON). For each experiment include:
+- Experiment name
+- Objective (what it validates/explains)
+- Method (techniques/algorithms)
+- Expected outputs (results/charts/artifacts)
 
-注意：
-- 实验设计要紧密围绕用户的原始需求
-- 考虑数据集的特点（从元数据中推断）
-- 控制实验数量在2-4个，确保可行性"""
+Constraints:
+- Keep designs tightly aligned with the user’s original goal.
+- Consider dataset characteristics inferred from metadata.
+- Keep total experiments between 2 and 4 to ensure feasibility."""
 
-EXPERIMENT_DESIGN_USER = """## 用户需求
+EXPERIMENT_DESIGN_USER = """## User Requirement
 {description}
 
-## 数据集信息
+## Dataset Information
 {data_info}
 
-请为这个分析任务设计2-4个有意义的实验方向。每个实验要具体、可执行。"""
+Design 2-4 meaningful experiment directions for this analysis task. Each experiment must be concrete and executable."""

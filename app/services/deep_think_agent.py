@@ -31,6 +31,11 @@ class DeepThinkResult:
     confidence: float  # 0.0 to 1.0
     thinking_summary: str  # A concise summary for the user
 
+
+class DeepThinkProtocolError(RuntimeError):
+    """Raised when DeepThink output violates the required JSON protocol."""
+
+
 class DeepThinkAgent:
     """
     Agent that performs multi-step reasoning and tool calling before answering.
@@ -53,6 +58,9 @@ class DeepThinkAgent:
         "result_interpreter": 300,  # 5 分钟 - 数据分析和代码执行
         "plan_operation": 1200,    # 20 分钟 - Plan 创建和优化操作（含长时验证）
     }
+
+    FINAL_STREAM_CHUNK_CHARS = 1
+    FINAL_STREAM_DELAY_SEC = 0.01
     
     def __init__(
         self,
@@ -144,21 +152,18 @@ class DeepThinkAgent:
                 # Use streaming LLM call to get response token by token
                 response_text = ""
                 
-                # Check if LLM client supports streaming
-                has_stream = hasattr(self.llm_client, 'stream_chat_async')
-                logger.info(f"[DEEP_THINK] LLM streaming check: has_stream_chat_async={has_stream}")
-                
-                if has_stream:
-                    logger.info("[DEEP_THINK] Using streaming LLM call")
-                    async for delta in self.llm_client.stream_chat_async(prompt="", messages=messages):
-                        response_text += delta
-                        # Send delta to frontend
-                        if self.on_thinking_delta:
-                            await self._safe_delta_callback(iteration, delta)
-                else:
-                    # Fallback to non-streaming
-                    logger.info("[DEEP_THINK] Fallback to non-streaming LLM call")
-                    response_text = await self.llm_client.chat_async(prompt="", messages=messages, temperature=0.7)
+                # Strict mode: DeepThink requires streaming-capable LLM client.
+                if not hasattr(self.llm_client, "stream_chat_async"):
+                    raise DeepThinkProtocolError(
+                        "DeepThink requires LLM client support for stream_chat_async in strict mode."
+                    )
+
+                logger.info("[DEEP_THINK] Using streaming LLM call")
+                async for delta in self.llm_client.stream_chat_async(prompt="", messages=messages):
+                    response_text += delta
+                    # Send delta to frontend
+                    if self.on_thinking_delta:
+                        await self._safe_delta_callback(iteration, delta)
 
                 # Parse response
                 parsed = self._parse_llm_response(response_text)
@@ -176,10 +181,7 @@ class DeepThinkAgent:
                     
                     # Stream final answer if callback provided
                     if self.on_final_delta and final_answer:
-                        # Send final answer as stream
-                        for char in final_answer:
-                            await self._safe_final_delta_callback(char)
-                            await asyncio.sleep(0.01)  # Small delay for visual effect
+                        await self._stream_final_answer(final_answer)
                     break
                 
                 # Handle Action
@@ -234,20 +236,27 @@ class DeepThinkAgent:
                     messages.append({"role": "assistant", "content": response_text})
                     messages.append({"role": "user", "content": self._get_next_step_prompt(iteration)})
 
+            except DeepThinkProtocolError as e:
+                logger.error("DeepThink protocol violation at iteration %s: %s", iteration, e)
+                current_step.status = "error"
+                current_step.thought = f"Protocol error: {str(e)}"
+                thinking_steps.append(current_step)
+                if self.on_thinking:
+                    await self._safe_callback(current_step)
+                raise
             except Exception as e:
-                logger.error(f"Error in deep thinking loop: {e}")
+                logger.exception("Error in deep thinking loop")
                 current_step.status = "error"
                 current_step.thought = f"Error: {str(e)}"
                 thinking_steps.append(current_step)
                 if self.on_thinking:
                     await self._safe_callback(current_step)
-                continue
+                raise
 
-        # 如果循环结束但没有生成最终答案，强制生成一个
+        # If iterations are exhausted without a final answer, request one strict JSON turn.
         if not final_answer and thinking_steps:
-            logger.info("[DEEP_THINK] Iterations exhausted, forcing conclusion...")
-            
-            # 构建强制结论的提示
+            logger.info("[DEEP_THINK] Iterations exhausted, requesting strict final conclusion")
+
             conclusion_prompt = """You have reached the thinking limit. Based on all the information you've gathered, 
 you MUST now provide a final answer. Synthesize everything you've learned into a comprehensive response.
 
@@ -257,20 +266,21 @@ Respond with ONLY a JSON object:
   "action": null,
   "final_answer": {"answer": "Your comprehensive answer based on all gathered information", "confidence": 0.7}
 }"""
-            
+
             messages.append({"role": "user", "content": conclusion_prompt})
-            
+
             try:
-                # 调用 LLM 获取强制结论
-                if hasattr(self.llm_client, 'stream_chat_async'):
-                    response_text = ""
-                    async for delta in self.llm_client.stream_chat_async(prompt="", messages=messages):
-                        response_text += delta
-                        if self.on_thinking_delta:
-                            await self._safe_delta_callback(iteration + 1, delta)
-                else:
-                    response_text = await self.llm_client.chat_async(prompt="", messages=messages, temperature=0.5)
-                
+                if not hasattr(self.llm_client, "stream_chat_async"):
+                    raise DeepThinkProtocolError(
+                        "DeepThink requires stream_chat_async for forced conclusion in strict mode."
+                    )
+
+                response_text = ""
+                async for delta in self.llm_client.stream_chat_async(prompt="", messages=messages):
+                    response_text += delta
+                    if self.on_thinking_delta:
+                        await self._safe_delta_callback(iteration + 1, delta)
+
                 parsed = self._parse_llm_response(response_text)
                 if parsed.get("is_final"):
                     final_answer = parsed.get("final_answer", "")
@@ -278,24 +288,23 @@ Respond with ONLY a JSON object:
                     
                     # 发送最终答案
                     if self.on_final_delta and final_answer:
-                        for char in final_answer:
-                            await self._safe_final_delta_callback(char)
-                            await asyncio.sleep(0.01)
+                        await self._stream_final_answer(final_answer)
                 else:
-                    # 如果还是没有提取到，使用 thinking 内容作为答案
-                    final_answer = parsed.get("thought", "基于已收集的信息，我无法得出明确结论。请查看上面的思考过程了解详情。")
-                    confidence = 0.5
-                    
+                    raise DeepThinkProtocolError(
+                        "Forced conclusion did not include a valid final_answer object."
+                    )
             except Exception as e:
-                logger.error(f"Failed to generate forced conclusion: {e}")
-                final_answer = "思考过程中收集了信息，但未能生成完整答案。请查看上面的思考步骤了解详情。"
-                confidence = 0.3
+                logger.exception("Failed to generate strict forced conclusion")
+                raise DeepThinkProtocolError("Failed to generate strict final answer.") from e
+
+        if not final_answer:
+            raise DeepThinkProtocolError("DeepThink terminated without final_answer.")
 
         # Generate summary (使用 LLM 生成有意义的摘要)
         summary = await self._generate_summary(thinking_steps, user_query)
 
         return DeepThinkResult(
-            final_answer=final_answer or "思考过程完成，但未生成明确答案。",
+            final_answer=final_answer,
             thinking_steps=thinking_steps,
             total_iterations=iteration,
             tools_used=tools_used,
@@ -346,6 +355,35 @@ Respond with ONLY a JSON object:
                     self.on_final_delta(delta)
             except Exception as e:
                 logger.error(f"Error in on_final_delta callback: {e}")
+
+    @classmethod
+    def _chunk_final_answer(cls, text: str) -> List[str]:
+        text = text or ""
+        if not text:
+            return []
+
+        chunks: List[str] = []
+        buffer: List[str] = []
+        max_chars = max(8, int(cls.FINAL_STREAM_CHUNK_CHARS))
+        split_chars = {".", "!", "?", "\n", ",", ";", ":", "，", "。", "！", "？"}
+
+        for ch in text:
+            buffer.append(ch)
+            if len(buffer) >= max_chars or (ch in split_chars and len(buffer) >= max_chars // 2):
+                chunks.append("".join(buffer))
+                buffer = []
+
+        if buffer:
+            chunks.append("".join(buffer))
+        return chunks
+
+    async def _stream_final_answer(self, final_answer: str) -> None:
+        if not self.on_final_delta or not final_answer:
+            return
+        for chunk in self._chunk_final_answer(final_answer):
+            await self._safe_final_delta_callback(chunk)
+            if self.FINAL_STREAM_DELAY_SEC > 0:
+                await asyncio.sleep(self.FINAL_STREAM_DELAY_SEC)
 
     def _build_system_prompt(self, context: Optional[Dict[str, Any]] = None) -> str:
         """Constructs the system prompt for the Deep Think Agent."""
@@ -618,9 +656,24 @@ When ready to answer (after using multiple tools):
             return 'Please continue thinking. If you are ready to answer, include "final_answer" in your JSON response.'
 
     def _parse_llm_response(self, response: str) -> Dict[str, Any]:
-        """Parse the structured LLM response. Tries JSON first, falls back to XML."""
+        """Parse strict JSON response and raise on any protocol violation."""
+        json_str = self._extract_json(response)
+        try:
+            parsed = json.loads(json_str)
+        except json.JSONDecodeError as exc:
+            raise DeepThinkProtocolError(f"LLM output is not valid JSON: {exc}") from exc
+
+        if not isinstance(parsed, dict):
+            raise DeepThinkProtocolError("LLM output JSON must be an object.")
+
+        thinking = parsed.get("thinking", "")
+        if thinking is None:
+            thinking = ""
+        if not isinstance(thinking, str):
+            thinking = str(thinking)
+
         result = {
-            "thought": "",
+            "thought": thinking,
             "is_final": False,
             "final_answer": "",
             "confidence": 0.0,
@@ -628,49 +681,59 @@ When ready to answer (after using multiple tools):
             "tool_params": None,
             "action_str": None,
         }
-        
-        # 1. 尝试 JSON 解析
-        try:
-            json_str = self._extract_json(response)
-            parsed = json.loads(json_str)
-            
-            # 提取 thinking
-            result["thought"] = parsed.get("thinking", "")
-            
-            # 检查 final_answer
-            final_ans = parsed.get("final_answer")
-            if final_ans and isinstance(final_ans, dict):
-                result["is_final"] = True
-                result["final_answer"] = final_ans.get("answer", "")
-                result["confidence"] = min(max(float(final_ans.get("confidence", 0.8)), 0.0), 1.0)
-                return result
-            
-            # 检查 action
-            action = parsed.get("action")
-            if action and isinstance(action, dict):
-                result["tool_name"] = action.get("tool")
-                result["tool_params"] = action.get("params", {})
-                result["action_str"] = json.dumps(action)
-            
+
+        final_ans = parsed.get("final_answer")
+        if final_ans is not None:
+            if not isinstance(final_ans, dict):
+                raise DeepThinkProtocolError("final_answer must be an object or null.")
+            answer = final_ans.get("answer")
+            if not isinstance(answer, str) or not answer.strip():
+                raise DeepThinkProtocolError("final_answer.answer must be a non-empty string.")
+            confidence_raw = final_ans.get("confidence", 0.8)
+            try:
+                confidence = float(confidence_raw)
+            except (TypeError, ValueError) as exc:
+                raise DeepThinkProtocolError("final_answer.confidence must be numeric.") from exc
+            result["is_final"] = True
+            result["final_answer"] = answer
+            result["confidence"] = min(max(confidence, 0.0), 1.0)
             return result
-            
-        except (json.JSONDecodeError, ValueError, TypeError) as e:
-            logger.debug(f"JSON parsing failed, trying XML fallback: {e}")
-        
-        # 2. Fallback: XML 解析（向后兼容）
-        return self._parse_xml_fallback(response)
+
+        action = parsed.get("action")
+        if action is not None:
+            if not isinstance(action, dict):
+                raise DeepThinkProtocolError("action must be an object or null.")
+            tool_name = action.get("tool")
+            if not isinstance(tool_name, str) or not tool_name.strip():
+                raise DeepThinkProtocolError("action.tool must be a non-empty string.")
+            tool_params = action.get("params", {})
+            if tool_params is None:
+                tool_params = {}
+            if not isinstance(tool_params, dict):
+                raise DeepThinkProtocolError("action.params must be an object.")
+            result["tool_name"] = tool_name.strip()
+            result["tool_params"] = tool_params
+            result["action_str"] = json.dumps(
+                {"tool": result["tool_name"], "params": tool_params},
+                ensure_ascii=False,
+            )
+
+        return result
     
     def _extract_json(self, text: str) -> str:
-        """Extract JSON object from potentially mixed content."""
-        import re
-        
-        # 移除 markdown code fences
-        text = re.sub(r'```json\s*', '', text)
-        text = re.sub(r'```\s*', '', text)
-        text = text.strip()
-        
-        # 尝试找到 JSON 对象
-        # 匹配最外层的花括号
+        """Extract the first complete top-level JSON object."""
+        text = (text or "").strip()
+        if not text:
+            raise DeepThinkProtocolError("LLM output is empty.")
+
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].lstrip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+
         brace_count = 0
         start_idx = -1
         for i, char in enumerate(text):
@@ -679,105 +742,68 @@ When ready to answer (after using multiple tools):
                     start_idx = i
                 brace_count += 1
             elif char == '}':
+                if brace_count == 0:
+                    continue
                 brace_count -= 1
                 if brace_count == 0 and start_idx >= 0:
                     return text[start_idx:i+1]
-        
-        # 如果没找到完整的 JSON，返回原始文本
-        return text
-    
-    def _parse_xml_fallback(self, response: str) -> Dict[str, Any]:
-        """Parse XML-formatted response (backwards compatibility)."""
-        import re
-        result = {
-            "thought": "",
-            "is_final": False,
-            "final_answer": "",
-            "confidence": 0.0,
-            "tool_name": None,
-            "tool_params": None,
-            "action_str": None,
-        }
-        
-        # Extract thinking
-        thinking_match = re.search(r'<thinking>(.*?)</thinking>', response, re.DOTALL)
-        if thinking_match:
-            result["thought"] = thinking_match.group(1).strip()
-        
-        # Check for final answer
-        ready_match = re.search(r'<ready_to_answer\s+confidence=["\']?([\d.]+)["\']?>(.*?)</ready_to_answer>', response, re.DOTALL)
-        if ready_match:
-            result["is_final"] = True
-            result["confidence"] = min(max(float(ready_match.group(1)), 0.0), 1.0)
-            result["final_answer"] = ready_match.group(2).strip()
-            return result
-        
-        # Check for action
-        action_match = re.search(r'<action>(.*?)</action>', response, re.DOTALL)
-        if action_match:
-            action_str = action_match.group(1).strip()
-            result["action_str"] = action_str
-            try:
-                action_obj = json.loads(action_str)
-                result["tool_name"] = action_obj.get("tool")
-                result["tool_params"] = action_obj.get("params", {})
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse action JSON: {action_str}")
-        
-        return result
+
+        raise DeepThinkProtocolError("No complete JSON object found in LLM output.")
 
     async def _generate_summary(self, steps: List[ThinkingStep], user_query: str) -> str:
-        """Generate a meaningful summary of the thinking process using LLM.
-        
-        Args:
-            steps: List of thinking steps
-            user_query: Original user query for context
-            
-        Returns:
-            A concise summary string
-        """
+        """Generate a concise DeepThink summary via LLM in strict mode."""
         if not steps:
-            return "No thinking steps recorded."
-        
-        # 收集工具使用信息
+            raise DeepThinkProtocolError(
+                "DeepThink summary generation requires at least one thinking step."
+            )
+
+        if not hasattr(self.llm_client, "chat_async"):
+            raise DeepThinkProtocolError(
+                "LLM client does not support chat_async required for summary generation."
+            )
+
         tool_calls = [s for s in steps if s.action]
         tools_used = []
-        for s in tool_calls:
-            if s.action and '"tool":' in s.action:
-                try:
-                    tools_used.append(s.action.split('"tool":')[1].split('"')[1])
-                except (IndexError, AttributeError):
-                    pass
-        tools_used = list(set(tools_used))
-        
-        # 构建思考步骤摘要
-        steps_text = ""
-        for s in steps[:5]:  # 最多 5 步
-            thought_preview = s.thought[:150] + "..." if len(s.thought) > 150 else s.thought
-            steps_text += f"- Step {s.iteration}: {thought_preview}\n"
-        
-        # 尝试使用 LLM 生成摘要
-        try:
-            if hasattr(self.llm_client, 'chat_async'):
-                prompt = f"""Summarize this thinking process in 1-2 sentences (Chinese preferred):
+        for step in tool_calls:
+            action_raw = step.action or ""
+            try:
+                payload = json.loads(action_raw)
+            except Exception:
+                continue
+            tool_name = payload.get("tool")
+            if isinstance(tool_name, str) and tool_name.strip():
+                tools_used.append(tool_name.strip())
+        tools_used = list(dict.fromkeys(tools_used))
+
+        steps_lines: List[str] = []
+        for step in steps[:5]:
+            thought_preview = (
+                f"{step.thought[:150]}..." if len(step.thought) > 150 else step.thought
+            )
+            steps_lines.append(f"- Step {step.iteration}: {thought_preview}")
+        steps_text = "\n".join(steps_lines)
+
+        prompt = f"""Summarize this thinking process in 1-2 concise English sentences:
 User Question: {user_query[:200]}
 Thinking Steps:
 {steps_text}
-Tools Used: {', '.join(tools_used) if tools_used else 'None'}
+Tools Used: {", ".join(tools_used) if tools_used else "None"}
 
 Summary:"""
-                summary = await asyncio.wait_for(
-                    self.llm_client.chat_async(prompt=prompt, max_tokens=150),
-                    timeout=10  # 10秒超时
-                )
-                if summary and len(summary.strip()) > 10:
-                    return summary.strip()
-        except Exception as e:
-            logger.debug(f"LLM summary generation failed: {e}")
-        
-        # Fallback: 简单摘要
-        if tools_used:
-            tools_str = ", ".join(tools_used)
-            return f"Completed {len(steps)} reasoning steps, used tools: {tools_str}."
-        else:
-            return f"Completed {len(steps)} reasoning steps through pure analysis."
+
+        try:
+            summary = await asyncio.wait_for(
+                self.llm_client.chat_async(prompt=prompt, max_tokens=150),
+                timeout=10,
+            )
+        except Exception as exc:
+            raise DeepThinkProtocolError(
+                "LLM summary generation failed in strict mode."
+            ) from exc
+
+        cleaned = str(summary or "").strip()
+        if len(cleaned) <= 10:
+            raise DeepThinkProtocolError(
+                "LLM summary output is empty or too short in strict mode."
+            )
+        return cleaned

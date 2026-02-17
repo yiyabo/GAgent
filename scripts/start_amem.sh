@@ -1,5 +1,5 @@
 #!/bin/bash
-# A-mem服务启动脚本
+# A-mem 服务启动脚本
 
 echo "🧠 Starting A-mem (Agentic Memory) Service..."
 
@@ -12,7 +12,11 @@ if [ -f "$ROOT_DIR/.env" ]; then
     set +a
 fi
 
-# 进入A-mem目录
+# 设置 Hugging Face 镜像源（解决国内访问问题）
+export HF_ENDPOINT=https://hf-mirror.com
+echo "🌐 Using Hugging Face mirror: ${HF_ENDPOINT}"
+
+# 进入 A-mem 目录
 cd "$(dirname "$0")/../execute_memory/A-mem-main" || exit 1
 
 # 检查配置文件
@@ -34,6 +38,6 @@ if ! python -c "import agentic_memory" 2>/dev/null; then
     pip install -e .
 fi
 
-# 启动服务（端口8001，避免与主服务冲突）
+# 启动服务（端口 8001，避免与主服务冲突）
 echo "🚀 Starting A-mem API on port 8001..."
 python api.py --port 8001

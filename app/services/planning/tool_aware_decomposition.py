@@ -47,7 +47,7 @@ class ToolAwareTaskDecomposer:
         try:
             from tool_box import get_smart_router
             
-            # 只有在未初始化时才获取router
+            # Only initialize router once.
             if self.tool_router is None:
                 self.tool_router = await get_smart_router()
                 logger.info("Tool-aware decomposer initialized")
@@ -114,10 +114,10 @@ class ToolAwareTaskDecomposer:
 
             # Use tool router to analyze requirements
             analysis_prompt = f"""
-任务名称: {task_name}
-任务描述: {task_prompt}
+Task name: {task_name}
+Task description: {task_prompt}
 
-分析这个任务是否需要外部工具支持，以及需要什么类型的工具。
+Analyze whether this task requires external tools and what tool categories are needed.
 """
 
             routing_result = await self.tool_router.route_request(analysis_prompt)
@@ -197,38 +197,34 @@ class ToolAwareTaskDecomposer:
         # Build enhanced decomposition prompt
         enhanced_prompt = self._build_tool_aware_prompt(task_name, task_prompt, task_type, strategy, max_subtasks)
 
-        # Fallback: if prompt is empty (e.g., atomic task with no tool guidance),
-        # force a composite-style prompt to allow a simple breakdown instead of failing.
+        # Strict mode: fail fast when prompt generation is invalid.
         if not isinstance(enhanced_prompt, str) or not enhanced_prompt.strip():
-            enhanced_prompt = _build_decomposition_prompt(
-                task_name, task_prompt, TaskType.COMPOSITE, max_subtasks
-            ) or f"请将以下任务分解为 2-{max_subtasks} 个具体步骤：\n任务名称：{task_name}\n任务描述：{task_prompt}\n"
+            logger.error(
+                "Tool-aware decomposition prompt is empty for task_id=%s task_name=%s",
+                task_id,
+                task_name,
+            )
+            return {
+                "success": False,
+                "error": "Tool-aware decomposition prompt is empty; aborting without fallback.",
+            }
 
         # Use planning service for decomposition
 
         plan_payload = {
             "goal": enhanced_prompt,
-            "title": f"工具增强_分解_{task_name}",
+            "title": f"tool_aware_decomposition_{task_name}",
             "sections": strategy["suggested_subtasks"],
         }
 
         try:
             plan_result = propose_plan_service(plan_payload)
         except Exception as e:
-            logger.warning(f"LLM plan generation failed, using simple fallback: {e}")
-            # Simple mechanical fallback to avoid hard failure under rate limiting
-            simple_count = max(2, min(strategy.get("suggested_subtasks", 3), max_subtasks))
-            fallback_tasks = []
-            for i in range(simple_count):
-                nm = f"{task_name}-子任务{i+1}"
-                pr = 100 + i * 10
-                pp = (
-                    f"围绕父任务‘{task_name}’完成第{i+1}步具体工作。\n"
-                    f"父任务描述：{(task_prompt or '').strip()}\n"
-                    "请给出清晰的子步骤、输入与输出要点（150-300字）。"
-                )
-                fallback_tasks.append({"name": nm, "prompt": pp, "priority": pr})
-            plan_result = {"title": f"工具增强_分解_{task_name}", "tasks": fallback_tasks}
+            logger.error("Tool-aware plan generation failed for task_id=%s: %s", task_id, e)
+            return {
+                "success": False,
+                "error": f"Tool-aware plan generation failed: {e}",
+            }
 
         if not isinstance(plan_result, dict) or not plan_result.get("tasks"):
             return {"success": False, "error": "Failed to generate tool-aware subtasks"}
@@ -238,7 +234,7 @@ class ToolAwareTaskDecomposer:
         created_subtasks = []
 
         for i, subtask in enumerate(subtasks[:max_subtasks]):
-            subtask_name = subtask.get("name", f"工具增强子任务 {i+1}")
+            subtask_name = subtask.get("name", f"Tool-aware subtask {i+1}")
             subtask_priority = subtask.get("priority", 100 + i * 10)
 
             # Determine child task type
@@ -269,23 +265,26 @@ class ToolAwareTaskDecomposer:
             if enhanced_subtask_prompt:
                 self.repo.upsert_task_input(subtask_id, enhanced_subtask_prompt)
 
-            # 新增：为COMPOSITE/ATOMIC自动创建结果目录或占位md文件（与标准分解一致）
+            # Initialize result placeholders for COMPOSITE/ATOMIC tasks (aligned with standard decomposition).
             try:
                 child_info = self.repo.get_task_info(subtask_id)
                 child_path = get_task_file_path(child_info, self.repo)
-                # COMPOSITE → 目录 + summary.md
+                # COMPOSITE -> directory + summary.md
                 if child_info.get("task_type") == "composite":
                     if ensure_task_directory(child_path):
                         summary_md = os.path.join(child_path, "summary.md")
                         if not os.path.exists(summary_md):
                             with open(summary_md, "w", encoding="utf-8") as f:
-                                f.write(f"# {subtask_name} — 阶段总结\n\n此文档将聚合该 COMPOSITE 下所有 ATOMIC 的输出，以形成阶段总结。\n")
-                # ATOMIC → 文件占位
+                                f.write(
+                                    f"# {subtask_name} - Stage Summary\n\n"
+                                    "This document aggregates outputs from all ATOMIC tasks under this COMPOSITE task.\n"
+                                )
+                # ATOMIC -> file placeholder
                 elif child_info.get("task_type") == "atomic":
                     ensure_task_directory(child_path)
                     if not os.path.exists(child_path):
                         with open(child_path, "w", encoding="utf-8") as f:
-                            f.write(f"# {subtask_name}\n\n(自动生成的任务文档，执行完成后将写入内容)\n")
+                            f.write(f"# {subtask_name}\n\n(Auto-generated task document. Execution output will be written here.)\n")
             except Exception as e:
                 logger.warning(
                     {
@@ -301,7 +300,7 @@ class ToolAwareTaskDecomposer:
                     "id": subtask_id,
                     "name": subtask_name,
                     "type": child_type,
-                    "task_type": child_type,  # ⭐ 前端需要task_type字段
+                    "task_type": child_type,  # Frontend expects task_type field.
                     "priority": subtask_priority,
                     "tool_enhanced": True,
                 }
@@ -335,30 +334,33 @@ class ToolAwareTaskDecomposer:
 
         if ToolRequirement.INFORMATION_RETRIEVAL.value in tool_requirements:
             tool_guidance += """
-工具增强指导 - 信息检索:
-- 某些子任务可能需要搜索最新信息或外部资料
-- 请确保包含信息收集和验证的子任务
-- 考虑信息的时效性和可靠性要求
+Tool Guidance - Information Retrieval:
+- Some subtasks may need up-to-date or external information.
+- Include subtasks for information gathering and verification.
+- Consider timeliness and source reliability requirements.
 """
 
         if ToolRequirement.DATA_PROCESSING.value in tool_requirements:
             tool_guidance += """
-工具增强指导 - 数据处理:
-- 某些子任务可能需要查询或分析结构化数据
-- 请包含数据收集、清理和分析的子任务
-- 考虑数据的格式转换和存储需求
+Tool Guidance - Data Processing:
+- Some subtasks may need querying or analyzing structured data.
+- Include data collection, cleaning, and analysis subtasks.
+- Consider data format conversion and storage needs.
 """
 
         if ToolRequirement.FILE_MANAGEMENT.value in tool_requirements:
             tool_guidance += """
-工具增强指导 - 文件管理:
-- 某些子任务可能需要读写文件或管理文档
-- 请包含文件创建、编辑和组织的子任务
-- 考虑文件格式和存储结构的规划
+Tool Guidance - File Management:
+- Some subtasks may need file read/write or document management.
+- Include file creation, editing, and organization subtasks.
+- Consider file format and storage structure planning.
 """
 
         if tool_guidance:
-            enhanced_prompt = f"{base_prompt}\n\n{tool_guidance}\n\n请在分解时考虑这些工具能力，确保子任务能够充分利用可用的外部工具。"
+            enhanced_prompt = (
+                f"{base_prompt}\n\n{tool_guidance}\n\n"
+                "Consider these tool capabilities during decomposition so subtasks can leverage available tools effectively."
+            )
         else:
             enhanced_prompt = base_prompt
 
@@ -378,13 +380,13 @@ class ToolAwareTaskDecomposer:
                 if root:
                     root_name = root.get("name", "")
                     root_prompt = self.repo.get_task_input_prompt(root.get("id")) or ""
-                    root_brief = f"[ROOT主题] {root_name}\n[核心目标] {root_prompt[:500]}\n\n"
+                    root_brief = f"[ROOT TOPIC] {root_name}\n[CORE OBJECTIVE] {root_prompt[:500]}\n\n"
                 
                 # Get parent chain
                 parent = self.repo.get_parent(task_id)
                 if parent:
                     parent_name = parent.get("name", "")
-                    parent_chain = f"[父任务] {parent_name}\n\n"
+                    parent_chain = f"[PARENT TASK] {parent_name}\n\n"
             except Exception as e:
                 logger.warning(f"Failed to inject root brief: {e}")
         
@@ -393,21 +395,24 @@ class ToolAwareTaskDecomposer:
         tool_notice = ""
         
         if tool_requirements and ToolRequirement.NONE.value not in tool_requirements:
-            tool_notice = "\n\n[可用工具提示]\n"
+            tool_notice = "\n\n[AVAILABLE TOOL HINTS]\n"
             
             if ToolRequirement.INFORMATION_RETRIEVAL.value in tool_requirements:
-                tool_notice += "- 如需最新信息或外部资料，可以请求搜索相关内容\n"
+                tool_notice += "- If up-to-date or external information is needed, request web search support.\n"
             
             if ToolRequirement.DATA_PROCESSING.value in tool_requirements:
-                tool_notice += "- 如需结构化数据分析，可以请求查询相关数据库\n"
+                tool_notice += "- If structured data analysis is needed, request database/data-query support.\n"
             
             if ToolRequirement.FILE_MANAGEMENT.value in tool_requirements:
-                tool_notice += "- 如需文件操作，可以请求读写相关文件\n"
+                tool_notice += "- If file operations are needed, request file read/write support.\n"
             
-            tool_notice += "系统会自动识别需求并调用相应工具。"
+            tool_notice += "The system will route requests to appropriate tools automatically."
         
         # Phase 3: Combine all parts with explicit theme constraint
-        theme_constraint = "\n\n⚠️ 重要约束：所有内容必须紧扣上述ROOT主题，不得偏离。若信息不足，优先提问澄清。\n"
+        theme_constraint = (
+            "\n\nIMPORTANT CONSTRAINT: Keep all content tightly aligned with the ROOT TOPIC above. "
+            "Do not drift. If information is insufficient, ask clarifying questions first.\n"
+        )
         
         return f"{root_brief}{parent_chain}{original_prompt}{theme_constraint}{tool_notice}"
     
@@ -466,13 +471,6 @@ def should_use_tool_aware_decomposition(task: Dict[str, Any]) -> bool:
 
     # Check if task content suggests tool usage
     prompt_indicators = [
-        "搜索",
-        "查找",
-        "最新",
-        "数据",
-        "分析",
-        "文件",
-        "报告",
         "search",
         "find",
         "latest",

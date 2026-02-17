@@ -450,18 +450,18 @@ class PhageEvaluator(LLMBasedEvaluator):
         """Use LLM for phage domain expert evaluation"""
 
         evaluation_aspects = [
-            "**科学准确性**: 噬菌体生物学概念和机制是否准确？",
-            "**临床相关性**: 内容对噬菌体治疗应用的相关程度？",
-            "**技术可行性**: 提到的技术方法是否在当前条件下可行？",
-            "**安全考量**: 是否充分考虑了生物安全和临床安全？",
-            "**创新潜力**: 内容是否体现了该领域的创新性和前沿性？",
-            "**专业深度**: 内容的专业水平和技术深度如何？",
+            "**Scientific Accuracy**: Are phage biology concepts and mechanisms accurate?",
+            "**Clinical Relevance**: How relevant is the content to phage therapy applications?",
+            "**Technical Feasibility**: Are proposed methods feasible under current constraints?",
+            "**Safety Considerations**: Are biosafety and clinical safety addressed adequately?",
+            "**Innovation Potential**: Does the content demonstrate novelty and frontier value?",
+            "**Professional Depth**: How strong is the technical and domain depth?",
         ]
 
         specific_instructions = """
-作为噬菌体研究领域的资深专家，请从专业角度评估内容。
+You are a senior expert in phage research. Evaluate the content from a professional perspective.
 
-请以JSON格式返回评估结果：
+Return the result in JSON format:
 {
     "scientific_accuracy": 0.8,
     "clinical_relevance": 0.7,
@@ -471,10 +471,10 @@ class PhageEvaluator(LLMBasedEvaluator):
     "professional_depth": 0.7,
     "overall_expert_score": 0.75,
     "expertise_level": "advanced",
-    "key_strengths": ["优势1", "优势2"],
-    "technical_concerns": ["技术问题1", "技术问题2"],
-    "improvement_suggestions": ["建议1", "建议2", "建议3"],
-    "phage_specific_insights": ["专业洞察1", "专业洞察2"],
+    "key_strengths": ["Strength 1", "Strength 2"],
+    "technical_concerns": ["Concern 1", "Concern 2"],
+    "improvement_suggestions": ["Suggestion 1", "Suggestion 2", "Suggestion 3"],
+    "phage_specific_insights": ["Insight 1", "Insight 2"],
     "confidence_level": 0.9
 }
 """
@@ -486,26 +486,17 @@ class PhageEvaluator(LLMBasedEvaluator):
         required_fields = ["scientific_accuracy", "clinical_relevance", "technical_feasibility"]
         result = self.call_llm_with_json_parsing(phage_expert_prompt, required_fields)
 
-        return result if result else self._fallback_phage_llm_evaluation()
+        if result:
+            return result
+        raise RuntimeError(
+            "LLM phage expert evaluation failed: no valid structured payload was produced."
+        )
 
     def _fallback_phage_llm_evaluation(self) -> Dict[str, Any]:
-        """Fallback evaluation when LLM is unavailable"""
-        return {
-            "scientific_accuracy": 0.6,
-            "clinical_relevance": 0.6,
-            "technical_feasibility": 0.6,
-            "safety_considerations": 0.6,
-            "innovation_potential": 0.5,
-            "professional_depth": 0.5,
-            "overall_expert_score": 0.55,
-            "expertise_level": "basic",
-            "key_strengths": ["基础内容覆盖"],
-            "technical_concerns": ["LLM专家评估不可用"],
-            "improvement_suggestions": ["建议增加专业深度"],
-            "phage_specific_insights": ["需要更多噬菌体专业知识"],
-            "confidence_level": 0.3,
-            "evaluation_method": "fallback",
-        }
+        """Fallback phage expert scoring is disabled by policy."""
+        raise RuntimeError(
+            "Fallback phage evaluation is disabled. Use strict LLM expert output only."
+        )
 
     def _calculate_phage_dimensions(
         self,

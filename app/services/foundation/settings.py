@@ -92,7 +92,7 @@ if _USE_PYDANTIC:
             default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
             env="QWEN_API_URL",
         )
-        qwen_model: str = Field(default="qwen-turbo", env="QWEN_MODEL")
+        qwen_model: str = Field(default="qwen3.5-plus", env="QWEN_MODEL")
 
         # Kimi (Moonshot) OpenAI-compatible API 配置（如百炼平台）
         kimi_api_key: Optional[str] = Field(default=None, env="KIMI_API_KEY")
@@ -160,6 +160,17 @@ if _USE_PYDANTIC:
         # Plan rubric evaluation & auto-optimization
         plan_rubric_threshold: int = Field(default=80, env="PLAN_RUBRIC_THRESHOLD")
         plan_optimize_max_iters: int = Field(default=3, env="PLAN_OPTIMIZE_MAX_ITERS")
+
+        # DeepThink configuration
+        # Mode:
+        # - explicit: only explicit commands trigger DeepThink
+        # - smart: LLM-routed decision (default)
+        # - aggressive: kept as backward-compatible alias of smart
+        deep_think_mode: str = Field(default="smart", env="DEEP_THINK_MODE")
+        # Legacy threshold; may be used by compatibility paths.
+        deep_think_confidence_threshold: float = Field(default=0.5, env="DEEP_THINK_CONFIDENCE_THRESHOLD")
+        # Legacy min-length setting; may be used by compatibility paths.
+        deep_think_min_message_length: int = Field(default=8, env="DEEP_THINK_MIN_MESSAGE_LENGTH")
 
         # A-mem (Agentic Memory) 配置
         amem_enabled: bool = Field(
@@ -229,7 +240,7 @@ else:
             # Qwen API 配置
             self.qwen_api_key = os.getenv("QWEN_API_KEY")
             self.qwen_api_url = os.getenv("QWEN_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
-            self.qwen_model = os.getenv("QWEN_MODEL", "qwen-turbo")
+            self.qwen_model = os.getenv("QWEN_MODEL", "qwen3.5-plus")
 
             # Kimi (Moonshot) OpenAI-compatible API 配置
             self.kimi_api_key = os.getenv("KIMI_API_KEY")
@@ -316,7 +327,6 @@ else:
                 self.job_log_max_rows = int(os.getenv("JOB_LOG_MAX_ROWS", "10000"))
             except Exception:
                 self.job_log_max_rows = 10000
-
             # Plan rubric evaluation & auto-optimization
             try:
                 self.plan_rubric_threshold = int(os.getenv("PLAN_RUBRIC_THRESHOLD", "80"))
@@ -326,6 +336,21 @@ else:
                 self.plan_optimize_max_iters = int(os.getenv("PLAN_OPTIMIZE_MAX_ITERS", "3"))
             except Exception:
                 self.plan_optimize_max_iters = 3
+
+            # DeepThink settings
+            self.deep_think_mode = os.getenv("DEEP_THINK_MODE", "smart")
+            try:
+                self.deep_think_confidence_threshold = float(
+                    os.getenv("DEEP_THINK_CONFIDENCE_THRESHOLD", "0.5")
+                )
+            except Exception:
+                self.deep_think_confidence_threshold = 0.5
+            try:
+                self.deep_think_min_message_length = int(
+                    os.getenv("DEEP_THINK_MIN_MESSAGE_LENGTH", "8")
+                )
+            except Exception:
+                self.deep_think_min_message_length = 8
 
 
 @lru_cache(maxsize=1)

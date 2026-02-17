@@ -148,7 +148,7 @@ export interface ExecuteTaskResponse {
 
 export type WebSearchProvider = 'builtin' | 'perplexity' | 'tavily';
 export type LLMProviderOption = 'qwen';
-export type BaseModelOption = 'qwen3-max-2026-01-23' | 'qwen-turbo';
+export type BaseModelOption = 'qwen3.5-plus' | 'qwen3-max-2026-01-23' | 'qwen-turbo';
 
 export interface ChatSessionSettings {
   default_search_provider?: WebSearchProvider | null;
@@ -338,6 +338,13 @@ export interface BackgroundTaskItem {
     done: number;
     total: number;
   } | null;
+  progress_percent?: number | null;
+  progress_status?: string | null;
+  progress_text?: string | null;
+  current_step?: number | null;
+  total_steps?: number | null;
+  done_steps?: number | null;
+  current_task_id?: number | null;
   error?: string | null;
 }
 

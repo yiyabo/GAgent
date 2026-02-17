@@ -42,55 +42,46 @@ def create_task(task: TaskCreate):
 
 @router.post("/intelligent-create", response_model=Task)
 async def intelligent_create_task(payload: Dict[str, Any] = Body(...)):
-    """🧠 智能任务创建 - 使用LLM从用户输入中提炼任务名称
-    
-    科研项目要求：完全使用LLM理解用户意图，不使用正则表达式或关键词匹配
-    
-    Args:
-        payload: 包含user_input, session_id, workflow_id的字典
-        
-    Returns:
-        Task: 创建的任务对象
-    """
+    """Intelligent task creation via LLM-based title extraction."""
     user_input = payload.get("user_input", "")
     session_id = payload.get("session_id")
     workflow_id = payload.get("workflow_id")
     
     if not user_input or not user_input.strip():
-        raise HTTPException(status_code=400, detail="用户输入不能为空")
+        raise HTTPException(status_code=400, detail="User input cannot be empty")
     
     try:
-        # 🧠 使用LLM提炼ROOT任务名称
+        # Use LLM to extract a concise ROOT task title.
         llm_service = get_llm_service()
         
-        extraction_prompt = f"""请从用户的自然语言输入中提炼出一个简洁、精准的ROOT任务名称。
+        extraction_prompt = f"""Extract a concise and accurate ROOT task title from the user's natural-language request.
 
-用户输入：
+User input:
 \"\"\"{user_input}\"\"\"
 
-提炼要求：
-1. 提取核心目标，去除冗余词汇（如"帮我"、"我想"等）
-2. 长度控制在10-30字
-3. 保留关键的专业术语和领域词汇
-4. 使用陈述性语句（不要疑问句）
-5. 如果是科研任务，保留研究对象和方法
-6. 如果是工程任务，保留技术栈和产品名称
+Requirements:
+1. Capture the core objective and remove filler phrases (e.g., "help me", "I want to").
+2. Keep the title concise (roughly 6-20 words).
+3. Preserve critical domain terminology and technical entities.
+4. Use a declarative phrase (not a question).
+5. For research requests, preserve research object and method.
+6. For engineering requests, preserve technology stack and product names.
 
-只返回提炼后的任务名称，不要任何解释、标点或额外文字。"""
+Return only the extracted task title. No explanation or extra text."""
 
         llm_response = await llm_service.chat_async(extraction_prompt)
         task_name = llm_response.strip()
         
-        # 如果LLM返回为空或过长，使用截断的原始输入
+        # Fallback if extraction fails or becomes too long.
         if not task_name or len(task_name) > 100:
             task_name = user_input[:50].strip()
         
-        # 创建ROOT任务
+        # Create ROOT task.
         task_id = default_repo.create_task(
             name=task_name,
             status="pending",
             priority=2,
-            task_type="root",  # 明确标记为ROOT任务
+            task_type="root",  # Explicitly mark as ROOT task.
             session_id=session_id,
             workflow_id=workflow_id,
             root_id=None,
@@ -105,7 +96,7 @@ async def intelligent_create_task(payload: Dict[str, Any] = Body(...)):
     except Exception as e:
         raise HTTPException(
             status_code=500, 
-            detail=f"智能任务创建失败: {str(e)}"
+            detail=f"Intelligent task creation failed: {str(e)}"
         )
 
 

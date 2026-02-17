@@ -203,25 +203,9 @@ class BaseEvaluator(ABC):
         }
 
     def generate_fallback_dimensions(self, content: str, base_score: float = 0.7) -> EvaluationDimensions:
-        """Generate fallback dimensions when LLM is unavailable"""
-
-        metrics = self.calculate_basic_metrics(content)
-        word_count = metrics["word_count"]
-
-        # Improved length-based adjustments
-        if word_count >= 50:  # Reasonable content length
-            length_factor = min(word_count / 150, 1.2)  # Allow slight bonus for longer content
-        else:
-            length_factor = word_count / 50  # Penalty for very short content
-
-        # More generous fallback scores for testing
-        return EvaluationDimensions(
-            relevance=max(0.5, base_score * length_factor),
-            completeness=max(0.4, (base_score - 0.1) * length_factor),
-            accuracy=base_score * 0.95,  # Less conservative
-            clarity=max(0.5, base_score * (0.85 + 0.15 * length_factor)),
-            coherence=base_score * 0.9,
-            scientific_rigor=base_score * 0.8,
+        """Fallback scoring is disabled by policy."""
+        raise RuntimeError(
+            "Fallback evaluation dimensions are disabled. Use strict LLM evaluation results only."
         )
 
     def build_evaluation_prompt_template(
@@ -242,22 +226,22 @@ class BaseEvaluator(ABC):
         aspects_text = "\n".join([f"{i+1}. {aspect}" for i, aspect in enumerate(evaluation_aspects)])
 
         return f"""
-作为专业的内容质量评估专家，请对以下内容进行评估。
+You are a professional content-quality evaluator. Assess the content below.
 
-任务背景："{task_name}"
-任务类型：{task_type}
+Task context: "{task_name}"
+Task type: {task_type}
 
-需要评估的内容：
+Content to evaluate:
 ```
 {content_preview}
 ```
 
-请从以下维度评估内容质量：
+Evaluate quality across the following dimensions:
 {aspects_text}
 
 {specific_instructions}
 
-请以JSON格式返回评估结果。
+Return the result in JSON format.
 """
 
 
@@ -274,30 +258,30 @@ class LLMBasedEvaluator(BaseEvaluator):
         """Generate improvement suggestions using LLM"""
 
         if not low_scoring_dimensions:
-            return ["内容质量良好，无需重大修改"]
+            return ["Content quality is good; no major revisions are needed."]
 
         task_name, _ = self.extract_task_info(task_context)
 
         low_scores_text = ", ".join([f"{dim}: {score:.2f}" for dim, score in low_scoring_dimensions])
 
         suggestion_prompt = f"""
-作为内容改进专家，请为以下内容提供具体的改进建议。
+You are a content-improvement expert. Provide concrete revision suggestions.
 
-任务："{task_name}"
+Task: "{task_name}"
 
-内容片段：
+Content excerpt:
 ```
 {content[:500]}
 ```
 
-需要改进的维度：
+Low-scoring dimensions:
 {low_scores_text}
 
-请提供{max_suggestions}个具体、可操作的改进建议，每个建议要明确指出：
-1. 需要改进的具体问题
-2. 具体的改进方法
+Provide {max_suggestions} specific, actionable suggestions. Each suggestion should clearly state:
+1. The concrete issue to improve.
+2. The practical way to improve it.
 
-请以简洁的列表形式返回建议。
+Return suggestions as a concise list.
 """
 
         try:
@@ -318,8 +302,8 @@ class LLMBasedEvaluator(BaseEvaluator):
                     if clean_line:
                         suggestions.append(clean_line)
 
-            return suggestions[:max_suggestions] if suggestions else [f"建议改进评分较低的维度: {low_scores_text}"]
+            return suggestions[:max_suggestions] if suggestions else [f"Improve the low-scoring dimensions: {low_scores_text}"]
 
         except Exception as e:
             logger.error(f"Suggestion generation failed in {self.evaluator_name}: {e}")
-            return [f"建议改进评分较低的维度: {low_scores_text}"]
+            return [f"Improve the low-scoring dimensions: {low_scores_text}"]

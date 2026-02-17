@@ -64,7 +64,12 @@ from app.services.upload_storage import delete_session_storage
 from app.services.tool_output_storage import store_tool_output
 from app.prompts import prompt_manager
 from tool_box import execute_tool
-from app.services.deep_think_agent import DeepThinkAgent, ThinkingStep, DeepThinkResult
+from app.services.deep_think_agent import (
+    DeepThinkAgent,
+    DeepThinkProtocolError,
+    DeepThinkResult,
+    ThinkingStep,
+)
 
 from . import register_router
 
@@ -82,13 +87,14 @@ ACTIONS_REQUIRING_CONFIRMATION = {
 
 # 待确认操作存储: {confirmation_id: {session_id, actions, structured, created_at, ...}}
 _pending_confirmations: Dict[str, Dict[str, Any]] = {}
+_ACTION_RUN_ID_PATTERN = re.compile(r"\bact_[0-9a-f]{8,64}\b", re.IGNORECASE)
 
 def _generate_confirmation_id() -> str:
-    """生成确认ID"""
+    """Generate a short confirmation ID."""
     return f"confirm_{uuid4().hex[:12]}"
 
 def _requires_confirmation(actions: List[Any]) -> bool:
-    """检查操作列表是否包含需要确认的操作"""
+    """Check whether the action list contains operations requiring confirmation."""
     for action in actions:
         key = (getattr(action, 'kind', None), getattr(action, 'name', None))
         if key in ACTIONS_REQUIRING_CONFIRMATION:
@@ -103,7 +109,7 @@ def _store_pending_confirmation(
     plan_id: Optional[int] = None,
     extra_context: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """存储待确认的操作"""
+    """Store pending actions that require user confirmation."""
     _pending_confirmations[confirmation_id] = {
         "session_id": session_id,
         "actions": actions,
@@ -115,15 +121,15 @@ def _store_pending_confirmation(
     logger.info(f"[CONFIRMATION] Stored pending confirmation: {confirmation_id} for session {session_id}")
 
 def _get_pending_confirmation(confirmation_id: str) -> Optional[Dict[str, Any]]:
-    """获取待确认的操作"""
+    """Fetch a pending confirmation payload by ID."""
     return _pending_confirmations.get(confirmation_id)
 
 def _remove_pending_confirmation(confirmation_id: str) -> Optional[Dict[str, Any]]:
-    """移除并返回待确认的操作"""
+    """Remove and return a pending confirmation payload."""
     return _pending_confirmations.pop(confirmation_id, None)
 
 def _cleanup_old_confirmations(max_age_seconds: int = 600) -> None:
-    """清理过期的待确认操作（默认10分钟）"""
+    """Clean up expired pending confirmations (default: 10 minutes)."""
     now = datetime.now()
     expired = []
     for cid, data in _pending_confirmations.items():
@@ -189,7 +195,7 @@ def _classify_background_category(
     return None
 
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
-VALID_BASE_MODELS = {"qwen3-max-2026-01-23", "qwen-turbo"}
+VALID_BASE_MODELS = {"qwen3.5-plus", "qwen3-max-2026-01-23", "qwen-turbo"}
 VALID_LLM_PROVIDERS = {"qwen"}
 plan_decomposer_service = PlanDecomposer(
     repo=plan_repository,
@@ -211,6 +217,17 @@ register_router(
 
 def _sse_message(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _split_stream_text(
+    text: str,
+    *,
+    chunk_chars: int,
+) -> List[str]:
+    if not text:
+        return []
+    size = max(1, int(chunk_chars))
+    return [text[i : i + size] for i in range(0, len(text), size)]
 
 
 class StructuredReplyStreamParser:
@@ -362,7 +379,7 @@ class ChatSessionSettings(BaseModel):
 
     default_search_provider: Optional[Literal["builtin", "perplexity", "tavily"]] = None
     default_base_model: Optional[
-        Literal["qwen3-max-2026-01-23", "qwen-turbo"]
+        Literal["qwen3.5-plus", "qwen3-max-2026-01-23", "qwen-turbo"]
     ] = None
     default_llm_provider: Optional[
         Literal["qwen"]
@@ -764,10 +781,10 @@ async def delete_chat_session(
                 logger.info("Deleted chat session %s", session_id)
                 try:
                     if delete_session_storage(session_id):
-                        logger.info("Deleted session uploads for %s", session_id)
+                        logger.info("Deleted session storage for %s", session_id)
                 except Exception as exc:
                     logger.warning(
-                        "Failed to delete session uploads for %s: %s",
+                        "Failed to delete session storage for %s: %s",
                         session_id,
                         exc,
                     )
@@ -784,13 +801,13 @@ async def delete_chat_session(
 # ============================================================================
 
 class ConfirmActionRequest(BaseModel):
-    """确认操作请求"""
+    """Request payload for action confirmation."""
     confirmation_id: str
     confirmed: bool = True  # True=确认执行, False=取消
 
 
 class ConfirmActionResponse(BaseModel):
-    """确认操作响应"""
+    """Response payload for action confirmation."""
     success: bool
     message: str
     confirmation_id: str
@@ -804,10 +821,11 @@ async def confirm_pending_action(
     background_tasks: BackgroundTasks,
 ) -> ConfirmActionResponse:
     """
-    确认或取消待执行的操作。
+    Confirm or cancel pending actions.
 
-    当 LLM 生成的操作需要用户确认时（如 create_plan），
-    系统会暂存操作并返回 confirmation_id，用户需调用此接口确认或取消。
+    When LLM-generated actions require user confirmation (for example, create/delete operations),
+    the system stores them temporarily and returns a confirmation_id.
+    The client then calls this endpoint to confirm or cancel.
     """
     _cleanup_old_confirmations()  # 清理过期确认
 
@@ -822,7 +840,7 @@ async def confirm_pending_action(
         logger.info(f"[CONFIRMATION] User cancelled: {request.confirmation_id}")
         return ConfirmActionResponse(
             success=True,
-            message="操作已取消",
+            message="Operation cancelled",
             confirmation_id=request.confirmation_id,
             executed=False,
         )
@@ -850,7 +868,7 @@ async def confirm_pending_action(
 
         return ConfirmActionResponse(
             success=True,
-            message="操作已确认，正在执行...",
+            message="Operation confirmed. Execution has started...",
             confirmation_id=request.confirmation_id,
             executed=True,
             result={"tracking_id": tracking_id},
@@ -862,7 +880,7 @@ async def confirm_pending_action(
 
 @router.get("/confirm/{confirmation_id}")
 async def get_pending_confirmation_status(confirmation_id: str) -> Dict[str, Any]:
-    """获取待确认操作的状态"""
+    """Get the status of a pending confirmation request."""
     pending = _get_pending_confirmation(confirmation_id)
     if not pending:
         raise HTTPException(status_code=404, detail="Confirmation not found or expired")
@@ -886,7 +904,7 @@ async def _execute_confirmed_actions(
     plan_id: Optional[int],
     extra_context: Dict[str, Any],
 ) -> None:
-    """后台执行已确认的操作"""
+    """Execute confirmed actions in the background."""
     logger.info(f"[CONFIRMATION] Executing confirmed actions: {tracking_id}")
 
     try:
@@ -1047,7 +1065,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
         message_to_send = request.message
         attachments = context.get("attachments", [])
         if attachments and isinstance(attachments, list):
-            attachment_info = "\n\n📎 用户当前上传的附件：\n"
+            attachment_info = "\n\n📎 Attachments uploaded by the user:\n"
             # 定义可自动读取的文件类型
             AUTO_READ_TEXT_EXTS = {".txt", ".md", ".log", ".ini", ".cfg", ".yaml", ".yml"}
             AUTO_READ_PDF_EXT = ".pdf"
@@ -1056,7 +1074,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             for att in attachments:
                 if isinstance(att, dict):
                     att_type = att.get("type", "file")
-                    att_name = att.get("name", "未知文件")
+                    att_name = att.get("name", "unknown_file")
                     att_path = att.get("path", "")
                     att_extracted = att.get("extracted_path")
                     attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
@@ -1079,8 +1097,8 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                                             content = file_path.read_text(encoding="utf-8", errors="replace")
                                             # 截断过长内容
                                             if len(content) > 10000:
-                                                content = content[:10000] + f"\n... [内容已截断，共 {len(content)} 字符]"
-                                            attachment_info += f"\n📄 文件内容 ({att_name}):\n```\n{content}\n```\n"
+                                                content = content[:10000] + f"\n... [content truncated, total {len(content)} chars]"
+                                            attachment_info += f"\n📄 File content ({att_name}):\n```\n{content}\n```\n"
                                             logger.info("[CHAT][AUTO_READ] text file=%s size=%d", att_name, file_size)
                                         except Exception as read_err:
                                             logger.warning("[CHAT][AUTO_READ] Failed to read %s: %s", att_name, read_err)
@@ -1101,9 +1119,9 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                                                         pass
                                                 pdf_content = "\n\n".join(text_parts)
                                                 if len(pdf_content) > 15000:
-                                                    pdf_content = pdf_content[:15000] + f"\n... [PDF内容已截断，共 {len(pdf_content)} 字符]"
+                                                    pdf_content = pdf_content[:15000] + f"\n... [PDF content truncated, total {len(pdf_content)} chars]"
                                                 if pdf_content.strip():
-                                                    attachment_info += f"\n📄 PDF 内容 ({att_name}, {len(reader.pages)} 页):\n{pdf_content}\n"
+                                                    attachment_info += f"\n📄 PDF content ({att_name}, {len(reader.pages)} pages):\n{pdf_content}\n"
                                                     logger.info("[CHAT][AUTO_READ] pdf file=%s pages=%d", att_name, len(reader.pages))
                                         except ImportError:
                                             logger.warning("[CHAT][AUTO_READ] pypdf not installed, skipping PDF auto-read")
@@ -1122,11 +1140,11 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             
             hints = []
             if has_image:
-                hints.append("图片请使用 vision_reader 进行视觉理解")
+                hints.append("For images, use `vision_reader` for visual understanding")
             if has_data:
-                hints.append("数据文件(.csv/.json/.xlsx)请使用 claude_code 进行分析")
+                hints.append("For data files (.csv/.json/.xlsx), use `claude_code` for analysis")
             if hints:
-                attachment_info += f"\n💡 提示：{'; '.join(hints)}。"
+                attachment_info += f"\n💡 Hint: {'; '.join(hints)}."
             
             message_to_send = request.message + attachment_info
             logger.info("[CHAT][ATTACHMENTS] session=%s count=%d", request.session_id, len(attachments))
@@ -1144,6 +1162,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
         # 这个逻辑必须在 session_id 检查之前执行，确保 task_id 总是被处理
         if "task_id" in context and "current_task_id" not in context:
             context["current_task_id"] = context["task_id"]
+            context["_current_task_source"] = "request"
             logger.info(
                 "[CHAT][TASK_SYNC] Using task_id from context: %s",
                 context["current_task_id"],
@@ -1157,6 +1176,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                 current_task_id = _get_session_current_task(request.session_id)
                 if current_task_id is not None:
                     context["current_task_id"] = current_task_id
+                    context["_current_task_source"] = "session"
                     logger.info(
                         "[CHAT][TASK_SYNC] Using current_task_id from session: %s",
                         current_task_id,
@@ -1191,6 +1211,15 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             session_llm_provider = session_settings.get("default_llm_provider")
             if session_llm_provider:
                 context["default_llm_provider"] = session_llm_provider
+
+        analysis_only_response = await _build_analysis_only_chat_response(
+            user_message=request.message,
+            context=context,
+            session_id=request.session_id,
+            llm_provider=context.get("default_llm_provider"),
+        )
+        if analysis_only_response is not None:
+            return _save_assistant_response(request.session_id, analysis_only_response)
 
         agent = StructuredChatAgent(
             mode=request.mode,
@@ -1396,15 +1425,11 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
         return _save_assistant_response(request.session_id, chat_response)
 
     except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Chat processing failed: %s", exc)
-        error_message = "⚠️ Something went wrong while processing the request. Try again later or rephrase."
-        fallback = ChatResponse(
-            response=error_message,
-            suggestions=["Retry", "Try another phrasing", "Contact the administrator"],
-            actions=[],
-            metadata={"error": True, "error_type": type(exc).__name__},
-        )
-        return _save_assistant_response(request.session_id, fallback)
+        logger.exception("Chat processing failed in strict mode")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Chat processing failed in strict mode: {type(exc).__name__}",
+        ) from exc
 
 
 @router.post("/stream")
@@ -1438,11 +1463,11 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             message_to_send = request.message
             attachments = context.get("attachments", [])
             if attachments and isinstance(attachments, list):
-                attachment_info = "\n\n📎 用户当前上传的附件：\n"
+                attachment_info = "\n\n📎 Attachments uploaded by the user:\n"
                 for att in attachments:
                     if isinstance(att, dict):
                         att_type = att.get("type", "file")
-                        att_name = att.get("name", "未知文件")
+                        att_name = att.get("name", "unknown_file")
                         att_path = att.get("path", "")
                         att_extracted = att.get("extracted_path")
                         attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
@@ -1452,11 +1477,11 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                 has_image = any(att.get("type") == "image" for att in attachments if isinstance(att, dict))
                 has_document = any(att.get("type") in ["document", "application/pdf"] for att in attachments if isinstance(att, dict))
                 if has_image and not has_document:
-                    attachment_info += "\n💡 提示：图片文件请使用 vision_reader 进行视觉理解和描述。"
+                    attachment_info += "\n💡 Hint: Use `vision_reader` for image understanding and description."
                 elif has_document and not has_image:
-                    attachment_info += "\n💡 提示：文档文件请使用 document_reader 提取内容。"
+                    attachment_info += "\n💡 Hint: Use `document_reader` to extract content from documents."
                 elif has_image and has_document:
-                    attachment_info += "\n💡 提示：图片请使用 vision_reader，文档请使用 document_reader。"
+                    attachment_info += "\n💡 Hint: Use `vision_reader` for images and `document_reader` for documents."
                 message_to_send = request.message + attachment_info
                 logger.info(
                     "[CHAT][STREAM][ATTACHMENTS] session=%s count=%d",
@@ -1474,6 +1499,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
 
             if "task_id" in context and "current_task_id" not in context:
                 context["current_task_id"] = context["task_id"]
+                context["_current_task_source"] = "request"
                 logger.info(
                     "[CHAT][STREAM][TASK_SYNC] Using task_id from context: %s",
                     context["current_task_id"],
@@ -1486,6 +1512,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                     current_task_id = _get_session_current_task(request.session_id)
                     if current_task_id is not None:
                         context["current_task_id"] = current_task_id
+                        context["_current_task_source"] = "session"
                         logger.info(
                             "[CHAT][STREAM][TASK_SYNC] Using current_task_id from session: %s",
                             current_task_id,
@@ -1521,6 +1548,18 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                 if session_llm_provider:
                     context["default_llm_provider"] = session_llm_provider
 
+            analysis_only_response = await _build_analysis_only_chat_response(
+                user_message=request.message,
+                context=context,
+                session_id=request.session_id,
+                llm_provider=context.get("default_llm_provider"),
+            )
+            if analysis_only_response is not None:
+                saved = _save_assistant_response(request.session_id, analysis_only_response)
+                yield _sse_message({"type": "start"})
+                yield _sse_message({"type": "final", "payload": saved.model_dump()})
+                return
+
             agent = StructuredChatAgent(
                 mode=request.mode,
                 plan_session=plan_session,
@@ -1541,34 +1580,25 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             parser = StructuredReplyStreamParser()
             
             # 🚀 Deep Think Mode Check
-            if agent._should_use_deep_think(message_to_send):
+            if await agent._should_use_deep_think(message_to_send):
                 logger.info("[CHAT] Activating Deep Think Mode")
                 async for chunk in agent.process_deep_think_stream(message_to_send):
                     yield chunk
                 return
 
-            # 打字机效果：与 DeepThink 保持一致
-            TYPEWRITER_DELAY = 0.01  # 10ms 延迟，与 DeepThink 一致
-            BATCH_SIZE = 1  # 逐字符发送，与 DeepThink 一致
-
+            TYPEWRITER_DELAY_SEC = 0.01
             async for chunk in agent.llm_service.stream_chat_async(
                 prompt, force_real=True, model=model_override
             ):
                 for delta in parser.feed(chunk):
                     if delta:
-                        # 逐字符发送，实现平滑打字机效果
-                        for char in delta:
-                            yield _sse_message({"type": "delta", "content": char})
-                            await asyncio.sleep(TYPEWRITER_DELAY)
+                        for piece in _split_stream_text(delta, chunk_chars=1):
+                            yield _sse_message({"type": "delta", "content": piece})
+                            await asyncio.sleep(TYPEWRITER_DELAY_SEC)
 
             raw = parser.full_text()
             cleaned = agent._strip_code_fence(raw)
             structured = LLMStructuredResponse.model_validate_json(cleaned)
-            structured = await agent._apply_experiment_fallback(structured)
-            structured = agent._apply_plan_first_guardrail(structured)
-            structured = agent._apply_phagescope_fallback(structured)
-            structured = agent._apply_task_execution_followthrough_guardrail(structured)
-            structured = agent._apply_completion_claim_guardrail(structured)
             agent._current_user_message = None
 
             # "分析" button from ExecutorPanel: force text-only response, no tool calls.
@@ -1775,8 +1805,8 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                     if (a.kind, a.name) in ACTIONS_REQUIRING_CONFIRMATION
                 ]
                 suggestions = [
-                    "此操作需要您的确认才能执行。",
-                    "请点击确认按钮或调用 /chat/confirm 接口确认执行。",
+                    "This operation requires your confirmation before execution.",
+                    "Click confirm or call `/chat/confirm` to proceed.",
                 ]
                 chat_response = ChatResponse(
                     response=structured.llm_reply.message,
@@ -1864,12 +1894,17 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             finally:
                 plan_decomposition_jobs.unregister_subscriber(tracking_id, queue)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.error("Chat streaming failed: %s", exc)
+            logger.exception("Chat streaming failed in strict mode")
+            detail = (
+                f"Streaming request failed in strict mode: "
+                f"{type(exc).__name__}: {exc}"
+            )
             yield _sse_message(
                 {
                     "type": "error",
-                    "message": "⚠️ Streaming request failed. Please try again.",
+                    "message": detail,
                     "error_type": type(exc).__name__,
+                    "strict_mode": True,
                 }
             )
 
@@ -2233,13 +2268,13 @@ def _build_phagescope_submit_background_summary(
     running_modules = snapshot.get("running_modules") if isinstance(snapshot.get("running_modules"), list) else []
     running_suffix = ""
     if running_modules:
-        running_suffix = f"，进行中模块：{', '.join(str(x) for x in running_modules[:3])}"
+        running_suffix = f"; running modules: {', '.join(str(x) for x in running_modules[:3])}"
 
     return (
-        f"PhageScope 任务已提交（taskid={taskid}）。"
-        f"已完成：submit。"
-        f"后台运行中：后台任务ID={background_job_id}，状态={remote_status}，模块进度={progress_text}{running_suffix}。"
-        "下一步：在「后台任务」刷新查看最新状态；任务完成后再执行 result/save_all/download。"
+        f"PhageScope task submitted (taskid={taskid}). "
+        f"Completed step: submit. "
+        f"Running in background: background_job_id={background_job_id}, status={remote_status}, module progress={progress_text}{running_suffix}. "
+        "Next: refresh the Background Jobs panel for live status; after completion, run result/save_all/download."
     )
 
 
@@ -2786,23 +2821,187 @@ def _get_llm_service_for_provider(provider: Optional[str]) -> LLMService:
     return get_llm_service()
 
 
+def _extract_source_action_run_id(
+    context: Optional[Dict[str, Any]],
+    user_message: str,
+) -> Optional[str]:
+    source_id = None
+    if isinstance(context, dict):
+        raw_source = context.get("source_job_id")
+        if isinstance(raw_source, str) and raw_source.strip():
+            source_id = raw_source.strip()
+        elif raw_source is not None:
+            source_id = str(raw_source).strip()
+    if source_id and _ACTION_RUN_ID_PATTERN.fullmatch(source_id):
+        return source_id
+
+    message_match = _ACTION_RUN_ID_PATTERN.search(user_message or "")
+    if message_match:
+        return message_match.group(0)
+    return None
+
+
+def _collect_tool_results_for_analysis(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    result_payload = record.get("result")
+    if not isinstance(result_payload, dict):
+        return []
+
+    collected: List[Dict[str, Any]] = []
+    raw_tool_results = result_payload.get("tool_results")
+    if isinstance(raw_tool_results, list):
+        for item in raw_tool_results:
+            if not isinstance(item, dict):
+                continue
+            result_data = item.get("result")
+            if not isinstance(result_data, dict):
+                continue
+            collected.append(
+                {
+                    "name": item.get("name"),
+                    "summary": item.get("summary"),
+                    "parameters": item.get("parameters"),
+                    "result": result_data,
+                }
+            )
+    if collected:
+        return collected
+
+    steps = result_payload.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            details = step.get("details")
+            if not isinstance(details, dict):
+                continue
+            result_data = details.get("result")
+            if not isinstance(result_data, dict):
+                continue
+            action_payload = step.get("action")
+            action_name = None
+            action_params = None
+            if isinstance(action_payload, dict):
+                action_name = action_payload.get("name")
+                action_params = action_payload.get("parameters")
+            collected.append(
+                {
+                    "name": action_name,
+                    "summary": details.get("summary"),
+                    "parameters": details.get("parameters") or action_params,
+                    "result": result_data,
+                }
+            )
+    return collected
+
+
+async def _build_analysis_only_chat_response(
+    *,
+    user_message: str,
+    context: Dict[str, Any],
+    session_id: Optional[str],
+    llm_provider: Optional[str] = None,
+) -> Optional[ChatResponse]:
+    if not context.get("analysis_only"):
+        return None
+
+    source_job_id = _extract_source_action_run_id(context, user_message)
+    if not source_job_id:
+        return ChatResponse(
+            response=(
+                "Analysis-only mode requires a valid `source_job_id` "
+                "(for example `act_xxx`)."
+            ),
+            suggestions=[],
+            actions=[],
+            metadata={
+                "analysis_only": True,
+                "status": "completed",
+            },
+        )
+
+    record = fetch_action_run(source_job_id)
+    if not record:
+        return ChatResponse(
+            response=f"Background job `{source_job_id}` was not found.",
+            suggestions=[],
+            actions=[],
+            metadata={
+                "analysis_only": True,
+                "status": "completed",
+                "source_job_id": source_job_id,
+                "source_job_status": "not_found",
+            },
+        )
+
+    tool_results = _collect_tool_results_for_analysis(record)
+    analysis_text: Optional[str] = None
+    if tool_results:
+        analysis_text = await _generate_tool_analysis(
+            user_message=user_message,
+            tool_results=tool_results,
+            session_id=session_id,
+            llm_provider=llm_provider,
+        )
+
+    result_payload = record.get("result")
+    if not isinstance(result_payload, dict):
+        result_payload = {}
+
+    if not analysis_text:
+        for key in ("analysis_text", "reply", "final_summary"):
+            candidate = result_payload.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                analysis_text = candidate.strip()
+                break
+
+    if not analysis_text:
+        status_text = str(record.get("status") or "unknown")
+        errors = record.get("errors")
+        if isinstance(errors, list) and errors:
+            error_text = "; ".join(str(item) for item in errors)
+        else:
+            error_text = "None"
+        analysis_text = (
+            f"Background job `{source_job_id}` status: {status_text}.\n"
+            "No structured tool output was available for deeper analysis.\n"
+            f"Reported errors: {error_text}."
+        )
+
+    metadata: Dict[str, Any] = {
+        "analysis_only": True,
+        "status": "completed",
+        "source_job_id": source_job_id,
+        "source_job_status": record.get("status"),
+        "source_job_created_at": record.get("created_at"),
+        "source_job_started_at": record.get("started_at"),
+        "source_job_finished_at": record.get("finished_at"),
+    }
+    source_plan_id = record.get("plan_id")
+    if source_plan_id is not None:
+        metadata["source_plan_id"] = source_plan_id
+    if isinstance(record.get("errors"), list):
+        metadata["source_errors"] = record.get("errors") or []
+    if tool_results:
+        metadata["tool_results"] = tool_results
+    final_summary = result_payload.get("final_summary")
+    if isinstance(final_summary, str) and final_summary.strip():
+        metadata["final_summary"] = final_summary.strip()
+
+    return ChatResponse(
+        response=analysis_text,
+        suggestions=[],
+        actions=[],
+        metadata=metadata,
+    )
+
+
 async def _generate_tool_analysis(
     user_message: str,
     tool_results: List[Dict[str, Any]],
     session_id: Optional[str] = None,
     llm_provider: Optional[str] = None,
 ) -> Optional[str]:
-    """
-    让 LLM 基于工具执行结果生成详细分析。
-    
-    Args:
-        user_message: 用户的原始问题
-        tool_results: 工具执行结果列表
-        session_id: 会话 ID（用于日志）
-        
-    Returns:
-        LLM 生成的总结文本，如果失败则返回 None
-    """
+    """Generate detailed analysis from tool outputs via LLM."""
     try:
         # 构建工具结果的描述
         tools_description = []
@@ -2813,9 +3012,9 @@ async def _generate_tool_analysis(
             result_data = tool_result.get("result", {})
             
             # 提取关键信息
-            tool_desc = f"{idx}. 工具: {tool_name}"
+            tool_desc = f"{idx}. Tool: {tool_name}"
             if summary:
-                tool_desc += f"\n   执行摘要: {summary}"
+                tool_desc += f"\n   Execution summary: {summary}"
             
             # 添加结果详情
             if isinstance(result_data, dict):
@@ -2861,25 +3060,25 @@ async def _generate_tool_analysis(
         tools_text = "\n\n".join(tools_description)
         
         analysis_requirements = [
-            "1. 给出完整、深入的分析，不要重复用户问题",
-            "2. 明确区分结论、依据、注意事项/风险",
-            "3. 若涉及 web_search，请逐条列出所有结果并说明价值",
-            "4. 若有错误或不确定性，说明原因并给出下一步建议",
-            "5. 输出不少于 6 条要点或 3 个自然段",
+            "1. Provide a complete and in-depth analysis without repeating the user question.",
+            "2. Clearly separate conclusions, evidence, and caveats/risks.",
+            "3. If `web_search` appears, enumerate all key results and explain their value.",
+            "4. If there are errors or uncertainties, explain why and provide next-step guidance.",
+            "5. Output at least 6 bullet points or 3 natural paragraphs.",
             "6. Use only fields present in the tool outputs; do not invent paths, modules, or metrics.",
             "7. If a field is missing, explicitly say it was not provided by the tool.",
             "8. Prefer factual summaries over speculation.",
         ]
 
         base_prompt = (
-            "你是资深分析助手。以下是用户问题与工具执行结果。\n"
-            "请输出详细分析正文，务必可直接作为最终回答展示。\n\n"
-            f"用户问题：{user_message}\n\n"
-            "工具执行结果：\n"
+            "You are a senior analysis assistant. Below are the user request and tool execution outputs.\n"
+            "Produce a detailed analysis body that can be shown directly as the final answer.\n\n"
+            f"User request: {user_message}\n\n"
+            "Tool execution outputs:\n"
             f"{tools_text}\n\n"
-            "要求：\n"
+            "Requirements:\n"
             + "\n".join(analysis_requirements)
-            + "\n\n输出分析："
+            + "\n\nAnalysis:"
         )
         llm_service = _get_llm_service_for_provider(llm_provider)
 
@@ -2897,9 +3096,7 @@ async def _generate_tool_summary(
     session_id: Optional[str] = None,
     llm_provider: Optional[str] = None,
 ) -> Optional[str]:
-    """
-    让 LLM 基于工具执行结果生成简短摘要（用于过程面板）。
-    """
+    """Generate a short LLM summary from tool execution outputs (for progress panel)."""
     try:
         tools_description = []
         for idx, tool_result in enumerate(tool_results, 1):
@@ -2912,10 +3109,10 @@ async def _generate_tool_summary(
 
         tools_text = "\n".join(tools_description)
         prompt = (
-            "你是项目助理，请根据工具执行情况给出简短摘要（1-3 句话）。\n"
-            f"用户问题：{user_message}\n"
-            f"工具执行概览：\n{tools_text}\n"
-            "输出摘要："
+            "You are a project assistant. Write a brief summary (1-3 sentences) based on tool execution status.\n"
+            f"User request: {user_message}\n"
+            f"Tool execution overview:\n{tools_text}\n"
+            "Summary:"
         )
         llm_service = _get_llm_service_for_provider(llm_provider)
         summary = await llm_service.chat_async(prompt)
@@ -2974,31 +3171,31 @@ async def _generate_action_analysis(
             if task_name:
                 lines.append(f"{idx}. {task_name}")
             if instruction:
-                lines.append(f"   - 说明: {instruction}")
+                lines.append(f"   - Instruction: {instruction}")
         tasks_text = "\n".join(lines)
 
         prompt = (
-            "你是项目分析助手。用户要求对任务拆解结果进行详细分析。"
-            "请基于拆解结果给出深入分析：覆盖范围是否充分、任务之间关系、"
-            "是否有遗漏、可进一步细化的方向（如有）。不要复述\u201c生成了X个子任务\u201d这类总结，"
-            "直接给出专业分析正文。\n"
-            "要求：至少 6 条要点或 3 个自然段；要点清晰、具体可执行。\n\n"
-            f"用户问题：{user_message}\n\n"
-            "拆解结果：\n"
+            "You are a project analysis assistant. The user asks for a detailed analysis of task decomposition results. "
+            "Based on the decomposition, analyze: coverage sufficiency, relationships between tasks, potential gaps, "
+            "and optional further refinements. Do not output shallow summaries like 'X subtasks were generated'. "
+            "Provide professional analysis directly.\n"
+            "Requirements: at least 6 bullet points or 3 natural paragraphs; make points clear, specific, and actionable.\n\n"
+            f"User request: {user_message}\n\n"
+            "Decomposition result:\n"
             f"{tasks_text}\n\n"
-            "请输出分析："
+            "Analysis:"
         )
     elif step_summaries:
         steps_text = "\n\n".join(step_summaries)
         prompt = (
-            "你是项目分析助手。用户请求分析后台任务的执行结果。"
-            "请基于以下执行步骤的输出，给出结构化的分析：主要发现、关键数据、"
-            "下一步建议。直接输出专业分析正文，不要说\u201c我来分析\u201d之类的开场白。\n"
-            "要求：内容具体、数据驱动、可操作。\n\n"
-            f"用户问题：{user_message}\n\n"
-            "执行结果：\n"
+            "You are a project analysis assistant. The user requests analysis of background-task execution results. "
+            "Based on the outputs below, provide structured analysis covering key findings, important data, and next-step suggestions. "
+            "Output professional analysis directly, without prefaces like 'I will analyze'.\n"
+            "Requirements: specific, data-driven, and actionable.\n\n"
+            f"User request: {user_message}\n\n"
+            "Execution outputs:\n"
             f"{steps_text}\n\n"
-            "请输出分析："
+            "Analysis:"
         )
     else:
         return None
@@ -3023,9 +3220,9 @@ def _build_brief_action_summary(steps: List["AgentStep"]) -> Optional[str]:
         if step.message:
             return step.message
         if step.action.name:
-            return f"已完成动作：{step.action.name}"
+            return f"Completed action: {step.action.name}"
         if step.action.kind:
-            return f"已完成动作：{step.action.kind}"
+            return f"Completed action: {step.action.kind}"
         return None
 
     names: List[str] = []
@@ -3035,14 +3232,14 @@ def _build_brief_action_summary(steps: List["AgentStep"]) -> Optional[str]:
         elif step.action.kind:
             names.append(step.action.kind)
     if not names:
-        return f"已完成 {len(steps)} 个动作。"
+        return f"Completed {len(steps)} actions."
     unique = []
     for name in names:
         if name not in unique:
             unique.append(name)
-    preview = "、".join(unique[:3])
-    suffix = " 等" if len(unique) > 3 else ""
-    return f"已完成 {len(steps)} 个动作：{preview}{suffix}。"
+    preview = ", ".join(unique[:3])
+    suffix = ", etc." if len(unique) > 3 else ""
+    return f"Completed {len(steps)} actions: {preview}{suffix}"
 
 
 async def _execute_action_run(run_id: str) -> None:
@@ -3197,6 +3394,7 @@ async def _execute_action_run(run_id: str) -> None:
         # 🔄 任务状态同步：优先使用 context 中的 task_id
         if "task_id" in context and "current_task_id" not in context:
             context["current_task_id"] = context["task_id"]
+            context["_current_task_source"] = "request"
             logger.info(
                 "[CHAT][ASYNC][TASK_SYNC] Using task_id from context: %s",
                 context["current_task_id"],
@@ -3206,6 +3404,7 @@ async def _execute_action_run(run_id: str) -> None:
             current_task_id = _get_session_current_task(record["session_id"])
             if current_task_id is not None:
                 context["current_task_id"] = current_task_id
+                context["_current_task_source"] = "session"
                 logger.info(
                     "[CHAT][ASYNC][TASK_SYNC] Using current_task_id from session: %s",
                     current_task_id,
@@ -4075,7 +4274,7 @@ class AgentResult(BaseModel):
                 label_parts.append(action.kind)
             if action.name:
                 label_parts.append(action.name)
-            header = "/".join(label_parts) if label_parts else f"步骤 {idx + 1}"
+            header = "/".join(label_parts) if label_parts else f"Step {idx + 1}"
             params = action.parameters or {}
             detail = (
                 params.get("instruction")
@@ -4083,7 +4282,7 @@ class AgentResult(BaseModel):
                 or params.get("title")
                 or step.message
             )
-            lines.append(f"- {header}: {detail or '已完成'}")
+            lines.append(f"- {header}: {detail or 'completed'}")
             subtasks = params.get("subtasks")
             if isinstance(subtasks, list):
                 for st in subtasks:
@@ -4096,9 +4295,9 @@ class AgentResult(BaseModel):
                         or None
                     )
                     if st_name:
-                        lines.append(f"  - 子任务: {st_name}")
+                        lines.append(f"  - Subtask: {st_name}")
                     if st_instr:
-                        lines.append(f"    · 说明: {st_instr}")
+                        lines.append(f"    · Instruction: {st_instr}")
         return "\n".join(lines) if lines else None
 
 
@@ -4199,459 +4398,37 @@ class StructuredChatAgent:
 
     async def handle(self, user_message: str) -> AgentResult:
         structured = await self._invoke_llm(user_message)
-        structured = await self._apply_experiment_fallback(structured)
-        structured = self._apply_plan_first_guardrail(structured)
-        structured = self._apply_phagescope_fallback(structured)
-        structured = self._apply_task_execution_followthrough_guardrail(structured)
-        structured = self._apply_completion_claim_guardrail(structured)
         return await self.execute_structured(structured)
 
     async def get_structured_response(self, user_message: str) -> LLMStructuredResponse:
         """Return the raw structured response without executing actions."""
         structured = await self._invoke_llm(user_message)
-        structured = await self._apply_experiment_fallback(structured)
-        structured = self._apply_plan_first_guardrail(structured)
-        structured = self._apply_phagescope_fallback(structured)
-        structured = self._apply_task_execution_followthrough_guardrail(structured)
-        return self._apply_completion_claim_guardrail(structured)
+        return structured
 
+    # Legacy compatibility hooks (no-op): keep signatures stable while enforcing
+    # the LLM-first policy with no post-hoc action rewrites.
     async def _apply_experiment_fallback(
         self, structured: LLMStructuredResponse
     ) -> LLMStructuredResponse:
-        """Guardrail: only allow manuscript_writer when the user explicitly asks to write a paper."""
-        user_message = self._current_user_message or ""
-        if not user_message.strip():
-            return structured
-
-        manuscript_actions = [
-            action
-            for action in structured.actions
-            if action.kind == "tool_operation" and action.name == "manuscript_writer"
-        ]
-        if not manuscript_actions:
-            return structured
-
-        if not self._explicit_manuscript_request(user_message):
-            structured.actions = [
-                action
-                for action in structured.actions
-                if not (action.kind == "tool_operation" and action.name == "manuscript_writer")
-            ]
         return structured
-
-    @staticmethod
-    def _explicit_manuscript_request(user_message: str) -> bool:
-        text = user_message.strip()
-        if not text:
-            return False
-        lowered = text.lower()
-
-        if re.search(r"\b(manuscript|paper)\b", lowered):
-            if re.search(r"\b(write|draft|revise|edit|polish|prepare)\b", lowered):
-                return True
-
-        if re.search(r"(写|撰写|生成|润色|修改|改写|完善).*(论文|稿件)", text):
-            return True
-        if re.search(r"(论文|稿件).*(写|撰写|生成|润色|修改|改写|完善)", text):
-            return True
-
-        return False
 
     def _apply_phagescope_fallback(
         self, structured: LLMStructuredResponse
     ) -> LLMStructuredResponse:
-        user_message = self._current_user_message or ""
-        if not user_message.strip():
-            return structured
-
-        def _wants_results(text: str) -> bool:
-            text_lower = text.lower()
-            triggers = [
-                "结果",
-                "分析",
-                "展示",
-                "report",
-                "result",
-                "results",
-                "quality",
-                "评估",
-                "指标",
-            ]
-            avoid = [
-                "列表",
-                "list",
-                "任务列表",
-                "task list",
-            ]
-            return any(token in text_lower for token in triggers) and not any(
-                token in text_lower for token in avoid
-            )
-
-        def _infer_result_kind(text: str) -> Optional[str]:
-            text_lower = text.lower()
-            if any(token in text_lower for token in ("quality", "质量", "评估", "checkv")):
-                return "quality"
-            if any(token in text_lower for token in ("protein", "proteins", "蛋白")):
-                return "proteins"
-            if any(token in text_lower for token in ("fasta", "序列")):
-                return "phagefasta"
-            if any(token in text_lower for token in ("tree", "系统树")):
-                return "tree"
-            if any(token in text_lower for token in ("detail", "详情")):
-                return "phage_detail"
-            if any(token in text_lower for token in ("phage", "噬菌体")):
-                return "phage"
-            return None
-
-        def _wants_download(text: str) -> bool:
-            tl = text.lower()
-            triggers = [
-                "下载",
-                "保存",
-                "落盘",
-                "导出",
-                "save_all",
-                "saveall",
-            ]
-            return any(token in tl for token in triggers)
-
-        def _wants_analysis(text: str) -> bool:
-            tl = text.lower()
-            triggers = [
-                "分析",
-                "解读",
-                "总结",
-                "interpret",
-                "analyze",
-                "analyse",
-            ]
-            return any(token in tl for token in triggers)
-
-        def _extract_taskid_from_text(text: str) -> Optional[str]:
-            # Support patterns like taskid=36322 / 任务 36322
-            m = re.search(r"(?:taskid\s*=?\s*|任务\s*)(\d{4,})", text, flags=re.IGNORECASE)
-            if m:
-                return m.group(1)
-            m = re.search(r"\b(\d{4,})\b", text)
-            if m:
-                return m.group(1)
-            return None
-
-        # Guardrail: for long-running PhageScope workflows, prefer submit-only in this turn.
-        # If the model emits submit + result/save_all/download in one response, keep submit only.
-        phagescope_actions = [
-            action
-            for action in structured.actions
-            if action.kind == "tool_operation" and action.name == "phagescope"
-        ]
-        submit_actions = [
-            action
-            for action in phagescope_actions
-            if isinstance(action.parameters, dict)
-            and str(action.parameters.get("action") or "").strip().lower() == "submit"
-        ]
-        if submit_actions and len(phagescope_actions) > 1:
-            explicit_taskid = _extract_taskid_from_text(user_message)
-            if not (explicit_taskid and (_wants_results(user_message) or _wants_download(user_message))):
-                submit_action = sorted(
-                    submit_actions,
-                    key=lambda item: (item.order if isinstance(item.order, int) else 10**9),
-                )[0]
-                normalized_submit = LLMAction.model_validate(submit_action.model_dump())
-                normalized_submit.order = 1
-                normalized_submit.blocking = True
-                structured.actions = [normalized_submit]
-                if structured.llm_reply and structured.llm_reply.message:
-                    structured.llm_reply.message = (
-                        "我会先把 PhageScope 任务提交到后台，不在本轮等待远端完成；"
-                        "提交后会返回 taskid 与后台运行状态。"
-                    )
-                return structured
-
-        # One-shot UX: when the user asks to download+analyze, inject a deterministic action chain:
-        # 1) phagescope save_all (partial 207 is acceptable)
-        # 2) read key files from the saved output directory
-        if _wants_download(user_message) and _wants_analysis(user_message):
-            taskid_text = _extract_taskid_from_text(user_message)
-            taskid_from_history = _extract_taskid_from_text(
-                " ".join(str(item.get("content") or "") for item in self.history[-6:])
-            )
-            taskid_value = taskid_text or taskid_from_history
-
-            try:
-                actions: List[LLMAction] = []
-                save_params: Dict[str, Any] = {"action": "save_all"}
-                if taskid_value:
-                    save_params["taskid"] = taskid_value
-                actions.append(
-                    LLMAction(
-                        kind="tool_operation",
-                        name="phagescope",
-                        parameters=save_params,
-                        blocking=True,
-                        order=1,
-                    )
-                )
-
-                # Read files (best-effort). Use placeholders from previous save_all result.
-                read_targets = [
-                    # Use *_rel paths so file_operations can resolve them safely as relative paths.
-                    ("summary", "{{ previous.summary_file_rel }}"),
-                    ("quality", "{{ previous.output_directory_rel }}/metadata/quality.json"),
-                    ("phage_info", "{{ previous.output_directory_rel }}/metadata/phage_info.json"),
-                    ("proteins_tsv", "{{ previous.output_directory_rel }}/annotation/proteins.tsv"),
-                    ("proteins_json", "{{ previous.output_directory_rel }}/annotation/proteins.json"),
-                ]
-                for idx, (label, path_tpl) in enumerate(read_targets, start=2):
-                    actions.append(
-                        LLMAction(
-                            kind="tool_operation",
-                            name="file_operations",
-                            parameters={"operation": "read", "path": path_tpl},
-                            blocking=True,
-                            order=idx,
-                            metadata={
-                                "label": label,
-                                "optional": True,
-                                "use_anchor": True,
-                                "preserve_previous": True,
-                            },
-                        )
-                    )
-
-                structured.actions = actions
-                if structured.llm_reply and structured.llm_reply.message:
-                    # Keep LLM wording but ensure it doesn't confuse users with tool details.
-                    structured.llm_reply.message = (
-                        "我会先把 PhageScope 结果下载到本地（即便部分结果缺失也会继续），"
-                        "然后读取关键文件并给出结构化解读。"
-                    )
-                return structured
-            except Exception:
-                # Fall back to the model's original actions.
-                return structured
-
-        if not _wants_results(user_message):
-            return structured
-
-        history_text = " ".join(
-            str(item.get("content") or "") for item in self.history[-6:]
-        )
-        inferred_kind = _infer_result_kind(user_message) or _infer_result_kind(history_text)
-
-        for action in structured.actions:
-            if action.kind != "tool_operation" or action.name != "phagescope":
-                continue
-            params = action.parameters or {}
-            action_value = params.get("action")
-            # Important: do NOT rewrite explicit task_detail/task_list into result.
-            # Users often ask for completion status, and converting to result_kind=phage_detail
-            # can hit remote endpoints that are not ready / error-prone.
-            if action_value == "result" and not params.get("result_kind"):
-                params = dict(params)
-                params["result_kind"] = inferred_kind or "quality"
-                action.parameters = params
-
         return structured
-
-    @staticmethod
-    def _extract_task_id_from_text(text: str) -> Optional[int]:
-        if not text:
-            return None
-        patterns = [
-            r"(?:task[_\s-]?id|task)\s*[#:=]?\s*(\d+)",
-            r"任务\s*[#:=]?\s*(\d+)",
-            r"#(\d+)",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if not match:
-                continue
-            try:
-                return int(match.group(1))
-            except (TypeError, ValueError):
-                continue
-        return None
-
-    @staticmethod
-    def _is_status_query_only(text: str) -> bool:
-        lowered = str(text or "").strip().lower()
-        if not lowered:
-            return False
-        status_tokens = (
-            "完成了",
-            "完成吗",
-            "完成没",
-            "done",
-            "status",
-            "进度",
-            "状态",
-            "更新了吗",
-            "好了没",
-            "结果呢",
-        )
-        execute_tokens = (
-            "执行",
-            "运行",
-            "开始",
-            "继续",
-            "重跑",
-            "重试",
-            "run",
-            "execute",
-            "start",
-            "rerun",
-            "resume",
-        )
-        has_status = any(token in lowered for token in status_tokens)
-        has_execute = any(token in lowered for token in execute_tokens)
-        return has_status and not has_execute
-
-    @staticmethod
-    def _reply_promises_execution(reply_text: str) -> bool:
-        lowered = str(reply_text or "").strip().lower()
-        if not lowered:
-            return False
-        promise_tokens = (
-            "我将",
-            "我会",
-            "马上",
-            "立即",
-            "接下来",
-            "i will",
-            "i'll",
-            "starting now",
-            "immediately",
-        )
-        action_tokens = (
-            "执行",
-            "运行",
-            "开始",
-            "撰写",
-            "写入",
-            "run",
-            "execute",
-            "start",
-            "draft",
-            "write",
-        )
-        return any(token in lowered for token in promise_tokens) and any(
-            token in lowered for token in action_tokens
-        )
 
     def _apply_task_execution_followthrough_guardrail(
         self,
         structured: LLMStructuredResponse,
     ) -> LLMStructuredResponse:
-        """Disabled: keyword-based intent override is architecturally unsound.
-
-        Modern agent systems (Cursor, Windsurf, Claude Code) trust the LLM's
-        action selection.  If the LLM returns no actions, the response is treated
-        as a text-only reply.  Execution intent should be guided via system
-        prompt, not injected by a post-hoc regex guardrail.
-
-        Keeping the method signature so callers don't break.
-        """
         return structured
-    def _resolve_followthrough_target_task_id(
-        self,
-        *,
-        tree: PlanTree,
-        user_message: str,
-        reply_text: str,
-    ) -> Optional[int]:
-        explicit_task_id = self._extract_task_id_from_text(user_message)
-        if explicit_task_id is not None and tree.has_node(explicit_task_id):
-            if not tree.children_ids(explicit_task_id):
-                return explicit_task_id
-            descendant = self._first_executable_atomic_descendant(tree, explicit_task_id)
-            if descendant is not None:
-                return descendant
-
-        raw_current_task_id = self.extra_context.get("current_task_id")
-        try:
-            current_task_id = int(raw_current_task_id) if raw_current_task_id is not None else None
-        except (TypeError, ValueError):
-            current_task_id = None
-        if current_task_id is not None and tree.has_node(current_task_id):
-            if not tree.children_ids(current_task_id):
-                node = tree.get_node(current_task_id)
-                if self._is_task_executable_status(node.status):
-                    return node.id
-            descendant = self._first_executable_atomic_descendant(tree, current_task_id)
-            if descendant is not None:
-                return descendant
-
-        keyword_text = "\n".join(
-            part.strip()
-            for part in (user_message, reply_text)
-            if isinstance(part, str) and part.strip()
-        )
-        keyword_match = self._match_atomic_task_by_keywords(tree, keyword_text)
-        if keyword_match is not None:
-            return keyword_match
-
-        for node in tree.nodes.values():
-            if tree.children_ids(node.id):
-                continue
-            if self._is_task_executable_status(node.status):
-                return node.id
-        return None
-
-    @staticmethod
-    def _looks_like_completion_claim(reply_text: str) -> bool:
-        lowered = str(reply_text or "").strip().lower()
-        if not lowered:
-            return False
-        claim_tokens = (
-            "已完成",
-            "完成了",
-            "全部完成",
-            "已创建",
-            "已生成",
-            "completed",
-            "all required files",
-            "files have been created",
-            "generated successfully",
-        )
-        return any(token in lowered for token in claim_tokens)
-
-    @staticmethod
-    def _extract_declared_absolute_paths(reply_text: str) -> List[str]:
-        if not reply_text:
-            return []
-        pattern = re.compile(r"(/(?:[^\s`\"'<>|])+)")
-        paths: List[str] = []
-        seen: set[str] = set()
-        # CJK and other non-filesystem characters indicate the "/" is part of
-        # natural language (e.g. "创建/拆分"), not a real file path.
-        _NON_PATH_RE = re.compile(r"[\u2E80-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFFEF\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u{20000}-\u{2FA1F}]|[^\x00-\x7F]{2}")
-        for match in pattern.findall(reply_text):
-            cleaned = match.rstrip(".,;:!?)]}")
-            if not cleaned.startswith("/"):
-                continue
-            # Skip matches that contain CJK or other clearly non-path characters
-            if _NON_PATH_RE.search(cleaned):
-                continue
-            # Must have at least one path separator depth (e.g. /foo/bar)
-            if cleaned.count("/") < 2:
-                continue
-            if cleaned in seen:
-                continue
-            seen.add(cleaned)
-            paths.append(cleaned)
-        return paths
 
     def _apply_completion_claim_guardrail(
         self,
         structured: LLMStructuredResponse,
     ) -> LLMStructuredResponse:
-        """Disabled: file-existence checks on LLM reply text caused repeated
-        false positives (CJK slashes, short paths, etc.).  The LLM is better
-        positioned to judge task completion status.  Keeping signature for
-        call-site compatibility.
-        """
         return structured
+
     @staticmethod
     def _is_task_executable_status(status: Optional[str]) -> bool:
         normalized = str(status or "pending").strip().lower()
@@ -4676,202 +4453,11 @@ class StructuredChatAgent:
                 return node.id
         return None
 
-    def _match_atomic_task_by_keywords(
-        self,
-        tree: PlanTree,
-        text: str,
-    ) -> Optional[int]:
-        merged = str(text or "").strip().lower()
-        if not merged:
-            return None
-
-        keyword_groups: Dict[str, Tuple[str, ...]] = {
-            "abstract": ("abstract", "摘要"),
-            "introduction": ("introduction", "intro", "引言"),
-            "methods": ("method", "methods", "方法"),
-            "experiment": ("experiment", "evaluation", "实验", "评估"),
-            "result": ("result", "results", "结果"),
-            "conclusion": ("conclusion", "总结", "结论"),
-            "reference": ("reference", "references", "bib", "参考文献"),
-        }
-        requested_sections = [
-            key
-            for key, aliases in keyword_groups.items()
-            if any(alias in merged for alias in aliases)
-        ]
-        if not requested_sections:
-            return None
-
-        candidates: List[Tuple[int, int]] = []
-        for node in tree.nodes.values():
-            if tree.children_ids(node.id):
-                continue
-            if not self._is_task_executable_status(node.status):
-                continue
-            node_text = f"{node.display_name()} {node.instruction or ''}".lower()
-            score = 0
-            for section in requested_sections:
-                aliases = keyword_groups.get(section, ())
-                if any(alias in node_text for alias in aliases):
-                    score += 1
-            if score > 0:
-                candidates.append((score, node.id))
-
-        if not candidates:
-            return None
-        candidates.sort(key=lambda row: (-row[0], row[1]))
-        return candidates[0][1]
-
-    @staticmethod
-    def _is_generic_plan_confirmation(text: str) -> bool:
-        raw = str(text or "").strip()
-        if not raw:
-            return False
-        normalized = re.sub(r"[\s，。,.!！?？]+", "", raw).lower()
-        generic_phrases = {
-            "ok",
-            "okay",
-            "yes",
-            "yep",
-            "sure",
-            "好的",
-            "好",
-            "可以",
-            "可以的",
-            "行",
-            "行的",
-            "创建吧",
-            "开始吧",
-            "执行吧",
-            "继续吧",
-            "可以创建吧",
-            "可以开始吧",
-            "可以执行吧",
-            "可以的创建吧",
-            "可以的开始吧",
-            "可以的执行吧",
-        }
-        return normalized in generic_phrases
-
-    def _infer_plan_seed_message(self, current_message: str) -> Optional[str]:
-        current = str(current_message or "").strip()
-        history = self.history or []
-        for item in reversed(history):
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "")).strip().lower()
-            if role != "user":
-                continue
-            content = str(item.get("content", "")).strip()
-            if not content:
-                continue
-            if current and content == current:
-                continue
-            if self._is_generic_plan_confirmation(content):
-                continue
-            return content
-        return None
-
     def _apply_plan_first_guardrail(
         self,
         structured: LLMStructuredResponse,
     ) -> LLMStructuredResponse:
-        """Disabled: keyword-based plan injection overrides the LLM's action
-        selection.  Plan creation should be guided by the system prompt (which
-        already instructs the model to create plans for multi-step work).
-        Keeping signature for call-site compatibility.
-        """
         return structured
-    @staticmethod
-    def _should_force_plan_first(
-        user_message: str,
-        tool_actions: Optional[List[LLMAction]] = None,
-    ) -> bool:
-        text = (user_message or "").strip()
-        lowered = text.lower()
-        if not lowered:
-            return False
-
-        project_keywords = (
-            "从0到1",
-            "完整",
-            "全流程",
-            "整个任务",
-            "综述",
-            "论文",
-            "项目",
-            "task graph",
-            "任务图谱",
-            "project",
-            "end-to-end",
-            "end to end",
-            "roadmap",
-            "research plan",
-            "manuscript",
-            "paper draft",
-            "review paper",
-        )
-        action_keywords = (
-            "完成",
-            "实现",
-            "产出",
-            "交付",
-            "构建",
-            "build",
-            "deliver",
-            "complete",
-            "implement",
-            "finish",
-        )
-        broad_execution_keywords = (
-            "一键",
-            "全部",
-            "全都",
-            "一次性",
-            "完整项目",
-            "whole project",
-            "full project",
-            "entire workflow",
-        )
-
-        has_project_signal = any(token in lowered for token in project_keywords)
-        has_action_signal = any(token in lowered for token in action_keywords)
-        long_request = len(text) >= 80
-
-        actions = list(tool_actions or [])
-        has_claude_action = any(action.name == "claude_code" for action in actions)
-        has_heavy_tool_mix = len(actions) >= 2
-
-        claude_task_texts: List[str] = []
-        for action in actions:
-            if action.name != "claude_code":
-                continue
-            params = action.parameters or {}
-            task_text = str(params.get("task") or "").strip().lower()
-            if task_text:
-                claude_task_texts.append(task_text)
-
-        claude_task_is_broad = any(
-            len(task_text) >= 120
-            or any(token in task_text for token in project_keywords)
-            or any(token in task_text for token in broad_execution_keywords)
-            for task_text in claude_task_texts
-        )
-        user_message_requests_broad_execution = any(
-            token in lowered for token in broad_execution_keywords
-        )
-
-        if has_project_signal and (has_action_signal or long_request):
-            return True
-        if has_claude_action and (
-            has_project_signal
-            or user_message_requests_broad_execution
-            or claude_task_is_broad
-        ):
-            return True
-        if has_claude_action and has_heavy_tool_mix and long_request:
-            return True
-        return False
 
     def _resolve_claude_code_task_context(self) -> Tuple[Optional[PlanNode], Optional[str]]:
         plan_id = self.plan_session.plan_id
@@ -4896,7 +4482,16 @@ class StructuredChatAgent:
             return None, "target_task_not_found"
 
         node = tree.get_node(task_id)
+        task_source = str(self.extra_context.get("_current_task_source") or "").strip().lower()
+        explicit_task_selected = (
+            self.extra_context.get("task_id") is not None
+            or task_source == "request"
+        )
         if tree.children_ids(task_id):
+            if task_source == "session" and not explicit_task_selected:
+                # Session-persisted composite/root task ids are often stale for ad-hoc requests.
+                # Require explicit task selection instead of silently redirecting to an arbitrary leaf.
+                return None, "target_task_not_atomic"
             atomic_task_id = self._first_executable_atomic_descendant(tree, task_id)
             if atomic_task_id is None:
                 return None, "target_task_not_atomic"
@@ -4912,6 +4507,34 @@ class StructuredChatAgent:
             )
 
         return node, None
+
+    def _should_route_claude_code_unscoped(self, context_error: Optional[str]) -> bool:
+        if not context_error:
+            return False
+        allow_raw = self.extra_context.get("allow_unscoped_claude_code", True)
+        if isinstance(allow_raw, str):
+            allow_unscoped = allow_raw.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            allow_unscoped = bool(allow_raw)
+        if not allow_unscoped:
+            return False
+
+        # If caller explicitly selected task_id in the request, keep strict plan-scoped execution.
+        if self.extra_context.get("task_id") is not None:
+            return False
+
+        source = str(self.extra_context.get("_current_task_source") or "").strip().lower()
+        if source == "request":
+            return False
+
+        return context_error in {
+            "missing_plan_binding",
+            "missing_target_task",
+            "invalid_target_task",
+            "plan_tree_unavailable",
+            "target_task_not_found",
+            "target_task_not_atomic",
+        }
 
     @staticmethod
     def _normalize_csv_arg(value: Any) -> Optional[str]:
@@ -4970,8 +4593,8 @@ class StructuredChatAgent:
             except (TypeError, ValueError):
                 score_text = ""
 
-            status_match = re.search(r"状态:\s*([^\n]+)", content)
-            key_match = re.search(r"##\s*关键发现\s*([\s\S]+)", content)
+            status_match = re.search(r"(?:状态|Status):\s*([^\n]+)", content)
+            key_match = re.search(r"##\s*(?:关键发现|Key Findings)\s*([\s\S]+)", content)
             key_text = ""
             if key_match:
                 key_text = key_match.group(1).splitlines()[0].strip()
@@ -5368,7 +4991,7 @@ class StructuredChatAgent:
         missing = save_result.get("missing_artifacts") or []
         missing_text = ""
         if isinstance(missing, list) and missing:
-            missing_text = f"（部分缺失：{', '.join(str(x) for x in missing)}）"
+            missing_text = f" (partial missing artifacts: {', '.join(str(x) for x in missing)})"
 
         # Parse key jsons (best-effort)
         phage_info = None
@@ -5451,14 +5074,14 @@ class StructuredChatAgent:
                 protein_count = None
 
         lines: List[str] = []
-        lines.append(f"已下载到：{output_dir}{missing_text}")
+        lines.append(f"Downloaded to: {output_dir}{missing_text}")
         if status_code == 207:
-            lines.append("提示：本次为 207（部分成功），核心结果可用，我已按可用结果继续解读。")
+            lines.append("Note: status code 207 (partial success). Core outputs are usable, so interpretation continues with available artifacts.")
 
         lines.append("")
-        lines.append("## 结构化解读")
+        lines.append("## Structured Interpretation")
         if isinstance(qsum, dict):
-            lines.append("- **质量指标**：")
+            lines.append("- **Quality metrics**:")
             lines.append(
                 "  - contig_id={cid}, length={clen}, gene_count={gc}, checkv_quality={cq}, miuvig_quality={mq}, completeness={comp}, contamination={cont}".format(
                     cid=qsum.get("contig_id"),
@@ -5471,61 +5094,152 @@ class StructuredChatAgent:
                 )
             )
         else:
-            lines.append("- **质量指标**：未能读取 `metadata/quality.json`，请检查该文件是否存在或是否被安全策略拦截。")
+            lines.append("- **Quality metrics**: `metadata/quality.json` could not be read. Verify file existence and security-policy access.")
 
-        lines.append("- **宿主/生活方式**：")
+        lines.append("- **Host/Lifestyle**:")
         if host or lifestyle or taxonomy:
             lines.append(f"  - host={host}, lifestyle={lifestyle}, taxonomy={taxonomy}")
             lines.append(f"  - length={length}, genes={genes}, gc_content={gc_content}")
         else:
-            lines.append("  - 未能读取 `metadata/phage_info.json` 或内容为空。")
+            lines.append("  - `metadata/phage_info.json` could not be read or is empty.")
 
-        lines.append("- **蛋白注释**：")
+        lines.append("- **Protein annotation**:")
         if protein_count is not None:
-            lines.append(f"  - 蛋白数量：{protein_count}")
+            lines.append(f"  - Protein count: {protein_count}")
         else:
-            lines.append("  - 蛋白数量：未能统计（可稍后补充读取 proteins.json/tsv）")
+            lines.append("  - Protein count: unavailable (can be re-evaluated from proteins.json/tsv later)")
         if top5:
-            lines.append("  - 前 5 条注释：")
+            lines.append("  - Top 5 annotations:")
             for i, item in enumerate(top5, 1):
                 lines.append(f"    {i}. {item}")
         else:
-            lines.append("  - 前 5 条注释：未能从 `annotation/proteins.tsv` 提取（可能缺失或读取失败）。")
+            lines.append("  - Top 5 annotations: could not be extracted from `annotation/proteins.tsv` (missing file or read failure).")
 
         return "\n".join(lines).strip()
 
-    def _should_use_deep_think(self, message: str) -> bool:
-        """Check if deep think mode should be activated."""
-        # Check explicit trigger
-        if message.startswith("/think ") or message.startswith("/深度") or message.startswith("/deep"):
-            return True
-        # Check context flag
+    async def _should_use_deep_think(self, message: str) -> bool:
+        """
+        LLM-routed DeepThink trigger.
+
+        Policy:
+        - explicit command always triggers
+        - explicit mode disables auto-routing
+        - all other routing decisions come from an LLM classifier (no keyword/regex fallback)
+        """
+        from app.services.foundation.settings import get_settings
+
+        settings = get_settings()
+        mode = str(getattr(settings, "deep_think_mode", "smart")).strip().lower()
+
+        # 1. Forced by context flag (highest priority).
         if self.extra_context.get("deep_think_enabled", False):
+            logger.info("[DEEP_THINK] Triggered by context override flag")
             return True
-        # Default: force DeepThink for plan creation / research planning.
-        # This prevents shallow plans and enables rubric-based self-optimization.
-        msg = (message or "").strip().lower()
+
+        msg = (message or "").strip()
         if not msg:
             return False
-        plan_keywords = (
-            "create plan",
-            "make a plan",
-            "plan for",
-            "research plan",
-            "project plan",
-            "roadmap",
-            "计划",
-            "研究计划",
-            "项目计划",
-            "任务计划",
-            "规划",
-            "拆解",
-            "分解",
-            "任务树",
+
+        # 2. Explicit command check (always enabled).
+        explicit_commands = ("/think", "/deep", "/深度", "/plan", "/分析", "/拆解")
+        for cmd in explicit_commands:
+            if msg.startswith(cmd):
+                logger.info("[DEEP_THINK] Triggered by explicit command '%s'", cmd)
+                return True
+
+        # 3. Explicit mode: no automatic routing.
+        if mode == "explicit":
+            logger.debug("[DEEP_THINK] Not triggered (mode=explicit, non-explicit message)")
+            return False
+
+        history_lines: List[str] = []
+        for item in self.history[-6:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "")).strip().lower() or "unknown"
+            content = str(item.get("content", "")).strip()
+            if content:
+                history_lines.append(f"{role}: {content}")
+        history_text = "\n".join(history_lines) if history_lines else "(none)"
+
+        router_prompt = f"""You are a strict router for DeepThink mode.
+
+Decide whether the next user message should be routed to DeepThink (iterative reasoning/tool exploration) or handled by the normal structured response path.
+
+Return JSON only:
+{{
+  "use_deep_think": true or false,
+  "confidence": 0.0-1.0,
+  "reason": "one short sentence"
+}}
+
+Set `use_deep_think=true` only when the request is genuinely complex and benefits from deep multi-step reasoning, e.g. open-ended research planning, ambiguous scientific analysis, or tasks requiring substantial tool orchestration.
+
+Set `use_deep_think=false` for simple chat, direct status checks, lightweight follow-ups, confirmations, or straightforward execution requests.
+
+Conversation history (recent):
+{history_text}
+
+User message:
+{msg}
+"""
+
+        model_override = self.extra_context.get("default_base_model")
+        try:
+            raw = await self.llm_service.chat_async(
+                router_prompt,
+                force_real=True,
+                model=model_override,
+            )
+        except Exception as exc:
+            logger.error("[DEEP_THINK] LLM router failed: %s", exc)
+            raise RuntimeError("DeepThink router LLM call failed in strict mode.") from exc
+
+        cleaned = self._strip_code_fence(str(raw or "").strip())
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise DeepThinkProtocolError(
+                "DeepThink router output is not a valid top-level JSON object."
+            )
+
+        payload_text = cleaned[start : end + 1]
+        try:
+            payload = json.loads(payload_text)
+        except Exception as exc:
+            raise DeepThinkProtocolError(
+                "DeepThink router returned invalid JSON payload."
+            ) from exc
+
+        raw_flag = payload.get("use_deep_think")
+        if not isinstance(raw_flag, bool):
+            raise DeepThinkProtocolError(
+                "DeepThink router JSON field `use_deep_think` must be a boolean."
+            )
+        use_deep_think = raw_flag
+
+        try:
+            confidence = float(payload.get("confidence"))
+        except (TypeError, ValueError) as exc:
+            raise DeepThinkProtocolError(
+                "DeepThink router JSON field `confidence` must be numeric."
+            ) from exc
+        confidence = max(0.0, min(1.0, confidence))
+        reason_raw = payload.get("reason")
+        if not isinstance(reason_raw, str) or not reason_raw.strip():
+            raise DeepThinkProtocolError(
+                "DeepThink router JSON field `reason` must be a non-empty string."
+            )
+        reason = reason_raw.strip()
+
+        logger.info(
+            "[DEEP_THINK] Routed by LLM (mode=%s, use_deep_think=%s, confidence=%.2f, reason=%s)",
+            mode,
+            use_deep_think,
+            confidence,
+            reason or "n/a",
         )
-        if any(k in msg for k in plan_keywords):
-            return True
-        return False
+        return use_deep_think
 
     async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
         """
@@ -5652,14 +5366,9 @@ class StructuredChatAgent:
 
                             return result
 
-                        fallback_result: Dict[str, Any] = {
-                            "success": bool(step.success),
-                            "tool": name,
-                            "message": step.message,
-                        }
-                        if isinstance(details, dict) and details:
-                            fallback_result["details"] = details
-                        return fallback_result
+                        raise DeepThinkProtocolError(
+                            "DeepThink tool wrapper expected a dict `result` payload from tool execution step."
+                        )
 
                     result = await execute_tool(name, **safe_params)
                     
@@ -5920,7 +5629,7 @@ class StructuredChatAgent:
         return "\n".join(prompt_parts)
 
     def _format_memories(self, memories: List[Dict[str, Any]]) -> str:
-        """格式化记忆列表为 prompt 中的文本"""
+        """Format memory records into prompt-ready context text."""
         if not memories:
             return ""
         
@@ -6222,6 +5931,7 @@ class StructuredChatAgent:
             )
 
         params = dict(action.parameters or {})
+        original_task: Optional[str] = None
 
         # 🔄 如果 LLM 指定了 target_task_id，优先使用它来更新任务状态
         target_task_id = params.pop("target_task_id", None)
@@ -6231,897 +5941,878 @@ class StructuredChatAgent:
             except (TypeError, ValueError):
                 pass
 
-        if tool_name == "web_search":
-            query = params.get("query")
-            if not isinstance(query, str) or not query.strip():
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="web_search requires a non-empty query.",
-                    details={"error": "missing_query", "tool": tool_name},
-                )
-
-            provider_value = params.get("provider")
-            normalized_provider = _normalize_search_provider(provider_value)
-            if not normalized_provider:
-                session_provider = _normalize_search_provider(
-                    self.extra_context.get("default_search_provider")
-                )
-                if session_provider:
-                    normalized_provider = session_provider
-                else:
-                    settings_provider = _normalize_search_provider(
-                        get_search_settings().default_provider
-                    )
-                    normalized_provider = settings_provider or "builtin"
-            params["provider"] = normalized_provider
-
-        elif tool_name == "file_operations":
-            operation = params.get("operation")
-            if not isinstance(operation, str) or not operation.strip():
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="file_operations requires a non-empty `operation` string.",
-                    details={"error": "invalid_operation", "tool": tool_name},
-                )
-            operation = operation.strip()
-            # Minimal validation for common operations.
-            if operation in {"read", "list", "delete", "exists", "info"}:
-                path = params.get("path")
-                if not isinstance(path, str) or not path.strip():
-                    return AgentStep(
-                        action=action,
-                        success=False,
-                        message=f"file_operations {operation} requires a non-empty `path` string.",
-                        details={"error": "missing_params", "tool": tool_name},
-                    )
-                clean_params = {"operation": operation, "path": path}
-                if operation == "list":
-                    pattern = params.get("pattern")
-                    if isinstance(pattern, str) and pattern.strip():
-                        clean_params["pattern"] = pattern
-                params = clean_params
-            elif operation in {"write"}:
-                path = params.get("path")
-                content = params.get("content")
-                if not isinstance(path, str) or not path.strip():
-                    return AgentStep(
-                        action=action,
-                        success=False,
-                        message="file_operations write requires a non-empty `path` string.",
-                        details={"error": "missing_params", "tool": tool_name},
-                    )
-                if content is None:
-                    content = ""
-                if not isinstance(content, str):
-                    content = str(content)
-                params = {"operation": operation, "path": path, "content": content}
-            elif operation in {"copy", "move"}:
-                path = params.get("path")
-                dest = params.get("destination")
-                if not isinstance(path, str) or not path.strip() or not isinstance(dest, str) or not dest.strip():
-                    return AgentStep(
-                        action=action,
-                        success=False,
-                        message=f"file_operations {operation} requires `path` and `destination`.",
-                        details={"error": "missing_params", "tool": tool_name},
-                    )
-                params = {"operation": operation, "path": path, "destination": dest}
-            else:
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message=f"file_operations does not support operation={operation!r}.",
-                    details={"error": "invalid_operation", "tool": tool_name},
-                )
-
-        elif tool_name == "graph_rag":
-            query = params.get("query")
-            if not isinstance(query, str) or not query.strip():
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="graph_rag requires a non-empty query.",
-                    details={"error": "missing_query", "tool": tool_name},
-                )
-
-            rag_settings = get_graph_rag_settings()
-
-            def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
-                try:
-                    parsed = int(value)
-                except (TypeError, ValueError):
-                    parsed = default
-                return max(minimum, min(parsed, maximum))
-
-            default_top_k = min(12, rag_settings.max_top_k)
-            default_hops = min(1, rag_settings.max_hops)
-
-            top_k = _safe_int(
-                params.get("top_k"),
-                default=default_top_k,
-                minimum=1,
-                maximum=rag_settings.max_top_k,
+        if tool_name == "claude_code":
+            prepared = await self._prepare_claude_code_params(
+                action=action,
+                tool_name=tool_name,
+                params=params,
             )
-            hops = _safe_int(
-                params.get("hops"),
-                default=default_hops,
-                minimum=0,
-                maximum=rag_settings.max_hops,
-            )
-            return_subgraph = params.get("return_subgraph")
-            if return_subgraph is None:
-                return_subgraph = True
-            else:
-                return_subgraph = bool(return_subgraph)
-
-            focus_raw = params.get("focus_entities")
-            focus_entities: List[str] = []
-            if isinstance(focus_raw, list):
-                for item in focus_raw:
-                    if isinstance(item, str) and item.strip():
-                        focus_entities.append(item.strip())
-
-            params = {
-                "query": query.strip(),
-                "top_k": top_k,
-                "hops": hops,
-                "return_subgraph": return_subgraph,
-                "focus_entities": focus_entities,
-            }
-
-        elif tool_name == "literature_pipeline":
-            query = params.get("query")
-            if not isinstance(query, str) or not query.strip():
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="literature_pipeline requires a non-empty `query` string.",
-                    details={"error": "missing_query", "tool": tool_name},
-                )
-            clean_params: Dict[str, Any] = {"query": query.strip()}
-            max_results = params.get("max_results")
-            if max_results is not None:
-                try:
-                    clean_params["max_results"] = int(max_results)
-                except (TypeError, ValueError):
-                    pass
-            out_dir = params.get("out_dir")
-            if isinstance(out_dir, str) and out_dir.strip():
-                clean_params["out_dir"] = out_dir.strip()
-            download_pdfs = params.get("download_pdfs")
-            if isinstance(download_pdfs, bool):
-                clean_params["download_pdfs"] = download_pdfs
-            max_pdfs = params.get("max_pdfs")
-            if max_pdfs is not None:
-                try:
-                    clean_params["max_pdfs"] = int(max_pdfs)
-                except (TypeError, ValueError):
-                    pass
-            user_agent = params.get("user_agent")
-            if isinstance(user_agent, str) and user_agent.strip():
-                clean_params["user_agent"] = user_agent.strip()
-            proxy = params.get("proxy")
-            if isinstance(proxy, str) and proxy.strip():
-                clean_params["proxy"] = proxy.strip()
-            params = clean_params
-
-        elif tool_name == "review_pack_writer":
-            topic = params.get("topic")
-            if not isinstance(topic, str) or not topic.strip():
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="review_pack_writer requires a non-empty `topic` string.",
-                    details={"error": "missing_topic", "tool": tool_name},
-                )
-            clean_params: Dict[str, Any] = {"topic": topic.strip()}
-            query = params.get("query")
-            if isinstance(query, str) and query.strip():
-                clean_params["query"] = query.strip()
-            out_dir = params.get("out_dir")
-            if isinstance(out_dir, str) and out_dir.strip():
-                clean_params["out_dir"] = out_dir.strip()
-            for int_key in ("max_results", "max_pdfs", "max_revisions"):
-                if int_key in params and params[int_key] is not None:
-                    try:
-                        clean_params[int_key] = int(params[int_key])
-                    except (TypeError, ValueError):
-                        pass
-            if "evaluation_threshold" in params and params["evaluation_threshold"] is not None:
-                try:
-                    clean_params["evaluation_threshold"] = float(params["evaluation_threshold"])
-                except (TypeError, ValueError):
-                    pass
-            for bool_key in ("download_pdfs", "keep_workspace"):
-                if isinstance(params.get(bool_key), bool):
-                    clean_params[bool_key] = params[bool_key]
-            output_path = params.get("output_path")
-            if isinstance(output_path, str) and output_path.strip():
-                clean_params["output_path"] = output_path.strip()
-            sections = params.get("sections")
-            if isinstance(sections, list):
-                clean_sections: List[str] = []
-                for item in sections:
-                    if isinstance(item, str) and item.strip():
-                        clean_sections.append(item.strip())
-                if clean_sections:
-                    clean_params["sections"] = clean_sections
-            task_value = params.get("task")
-            if isinstance(task_value, str) and task_value.strip():
-                clean_params["task"] = task_value.strip()
-            for key in (
-                "generation_model",
-                "evaluation_model",
-                "merge_model",
-                "generation_provider",
-                "evaluation_provider",
-                "merge_provider",
-                "user_agent",
-                "proxy",
-            ):
-                val = params.get(key)
-                if isinstance(val, str) and val.strip():
-                    clean_params[key] = val.strip()
-            params = clean_params
-
-        elif tool_name == "claude_code":
-            # Claude Code CLI - requires task parameter
-            task_value = params.get("task")
-            if not isinstance(task_value, str) or not task_value.strip():
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="claude_code requires a non-empty `task` string.",
-                    details={"error": "invalid_task", "tool": tool_name},
-                )
-
-            task_node, context_error = self._resolve_claude_code_task_context()
-            if context_error or task_node is None:
-                context_messages = {
-                    "missing_plan_binding": "claude_code execution requires a bound plan. Please create/bind a plan first.",
-                    "missing_target_task": "claude_code execution requires a target atomic task context. Please select or run a task first.",
-                    "invalid_target_task": "claude_code execution requires a valid numeric task id.",
-                    "plan_tree_unavailable": "Unable to load the current plan tree. Please retry after refreshing plan state.",
-                    "target_task_not_found": "The selected task was not found in the current plan.",
-                    "target_task_not_atomic": "claude_code can only execute atomic tasks. Please decompose this task and execute a leaf task.",
-                }
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message=context_messages.get(
-                        context_error or "",
-                        "claude_code execution requires a bound atomic task context.",
-                    ),
-                    details={
-                        "error": context_error or "missing_task_context",
-                        "tool": tool_name,
-                        "requires_plan_binding": True,
-                        "requires_atomic_task": True,
-                    },
-                )
-
-            # 🔍 A-mem集成：查询历史执行经验
-            original_task = task_value.strip()
-            amem_hints = ""
-            amem_experiences = []
-            
-            try:
-                from ..services.amem_client import get_amem_client
-                amem_client = get_amem_client()
-                
-                if amem_client.enabled:
-                    # 查询相似的历史执行经验
-                    amem_experiences = await amem_client.query_experiences(
-                        query=original_task,
-                        top_k=3
-                    )
-                    
-                    if amem_experiences:
-                        amem_hints = self._summarize_amem_experiences_for_cc(
-                            amem_experiences
-                        )
-                        logger.info(
-                            f"[AMEM] Injected compact hints from {len(amem_experiences)} historical experiences"
-                        )
-            except Exception as amem_err:
-                logger.warning(f"[AMEM] Failed to query experiences: {amem_err}")
-                # 继续执行，不影响主流程
-
-            # Optional: allowed_tools parameter
-            allowed_tools = self._normalize_csv_arg(params.get("allowed_tools"))
-
-            # Optional: add_dirs parameter
-            add_dirs = self._normalize_csv_arg(params.get("add_dirs"))
-
-            constrained_task = self._compose_claude_code_atomic_task_prompt(
-                task_node=task_node,
-                original_task=original_task,
-                amem_hints=amem_hints,
-            )
-
-            # Build final params (严格原子任务执行约束)
-            params = {
-                "task": constrained_task,
-            }
-            if allowed_tools:
-                params["allowed_tools"] = allowed_tools
-            if add_dirs:
-                params["add_dirs"] = add_dirs
-
-            # 会话/任务上下文信息，便于 runtime 归档与溯源
-            if self.session_id:
-                params["session_id"] = self.session_id
-            params["plan_id"] = task_node.plan_id
-            params["task_id"] = task_node.id
-
-            # 🚀 实时日志回调注入
-            # 获取当前上下文中的 job_id (在 _execute_action 中已经 set_current_job)
-            current_job_id = get_current_job()
-            # 如果没有找到 (例如同步调用)，尝试使用 sync_job_id
-            if not current_job_id:
-                current_job_id, _ = self._resolve_job_meta()
-            
-            if current_job_id:
-                async def log_stdout(line: str):
-                    """将 stdout 实时写入 job logs"""
-                    plan_decomposition_jobs.append_log(
-                        current_job_id,
-                        "stdout",
-                        line,
-                        {},
-                    )
-
-                async def log_stderr(line: str):
-                    """将 stderr 实时写入 job logs"""
-                    plan_decomposition_jobs.append_log(
-                        current_job_id,
-                        "stderr",
-                        line,
-                        {},
-                    )
-
-                params["on_stdout"] = log_stdout
-                params["on_stderr"] = log_stderr
-
-        elif tool_name == "document_reader":
-            operation = params.get("operation")
-            file_path = params.get("file_path")
-            
-            if not operation or not file_path:
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="document_reader requires `operation` and `file_path`.",
-                    details={"error": "missing_params", "tool": tool_name},
-                )
-            
-            # 验证操作类型
-            if operation not in [
-                "read_pdf",
-                "read_image",
-                "read_text",
-                "read_any",
-                "read_file",
-                "auto",
-            ]:
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message=f"Unsupported operation: {operation}",
-                    details={"error": "invalid_operation", "tool": tool_name},
-                )
-
-            params = {
-                "operation": operation,
-                "file_path": file_path,
-                "use_ocr": params.get("use_ocr", False),
-            }
-
-        elif tool_name == "vision_reader":
-            operation = params.get("operation")
-            image_path = params.get("image_path")
-
-            if not operation or not image_path:
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="vision_reader requires `operation` and `image_path`.",
-                    details={"error": "missing_params", "tool": tool_name},
-                )
-
-            page_number = params.get("page_number")
-            region = params.get("region")
-            question = params.get("question")
-            language = params.get("language")
-
-            clean_params: Dict[str, Any] = {
-                "operation": operation,
-                "image_path": image_path,
-            }
-            if isinstance(page_number, int):
-                clean_params["page_number"] = page_number
-            if isinstance(region, dict):
-                clean_params["region"] = region
-            if isinstance(question, str):
-                clean_params["question"] = question
-            if isinstance(language, str):
-                clean_params["language"] = language
-
-            params = clean_params
-
-        elif tool_name == "paper_replication":
-            # Paper replication ExperimentCard loader
-            exp_id = params.get("experiment_id")
-            if exp_id is None:
-                exp_id = "experiment_1"
-            elif not isinstance(exp_id, str):
-                try:
-                    exp_id = str(exp_id)
-                except Exception:
-                    exp_id = "experiment_1"
-
-            params = {"experiment_id": exp_id}
-
-        elif tool_name == "generate_experiment_card":
-            exp_id = params.get("experiment_id")
-            if exp_id is not None and not isinstance(exp_id, str):
-                exp_id = str(exp_id)
-            pdf_path = params.get("pdf_path")
-            if pdf_path is not None and not isinstance(pdf_path, str):
-                pdf_path = str(pdf_path)
-            code_root = params.get("code_root")
-            if code_root is not None and not isinstance(code_root, str):
-                code_root = str(code_root)
-            notes_val = params.get("notes")
-            if notes_val is not None and not isinstance(notes_val, str):
-                notes_val = str(notes_val)
-            overwrite_val = params.get("overwrite")
-            overwrite = False
-            if isinstance(overwrite_val, bool):
-                overwrite = overwrite_val
-            elif isinstance(overwrite_val, str):
-                overwrite = overwrite_val.strip().lower() in {"1", "true", "yes", "y"}
-
-            params = {
-                "experiment_id": exp_id,
-                "pdf_path": pdf_path,
-                "code_root": code_root,
-                "notes": notes_val,
-                "overwrite": overwrite,
-            }
+            if isinstance(prepared, AgentStep):
+                return prepared
+            params, original_task = prepared
 
         elif tool_name == "phagescope":
-            if "result_kind" not in params:
-                for alias in ("resultkind", "resultKind", "result_type", "resultType"):
-                    if alias in params and params[alias] is not None:
-                        params["result_kind"] = params[alias]
-                        break
-            if "taskid" not in params:
-                for alias in ("task_id", "taskId"):
-                    if alias in params and params[alias] is not None:
-                        params["taskid"] = params[alias]
-                        break
-            if "phageid" not in params:
-                for alias in ("phage_id", "phageId"):
-                    if alias in params and params[alias] is not None:
-                        params["phageid"] = params[alias]
-                        break
-            if "phageids" not in params:
-                for alias in ("phage_ids", "phageIds"):
-                    if alias in params and params[alias] is not None:
-                        params["phageids"] = params[alias]
-                        break
-
-            # Compat aliases used by some prompts/tool wrappers.
-            sequence_ids_value = None
-            for alias in ("sequence_ids", "sequenceIds", "sequence_id", "sequenceId", "idlist"):
-                if alias in params and params[alias] is not None:
-                    sequence_ids_value = params[alias]
-                    break
-            if sequence_ids_value is not None and not params.get("phageid") and not params.get("phageids"):
-                seq_items: List[str] = []
-                if isinstance(sequence_ids_value, (list, tuple, set)):
-                    seq_items = [str(v).strip() for v in sequence_ids_value if str(v).strip()]
-                elif isinstance(sequence_ids_value, str):
-                    raw = sequence_ids_value.strip()
-                    if raw:
-                        parsed = None
-                        if raw.startswith("["):
-                            try:
-                                parsed = json.loads(raw.replace("'", '"'))
-                            except Exception:
-                                parsed = None
-                        if isinstance(parsed, list):
-                            seq_items = [str(v).strip() for v in parsed if str(v).strip()]
-                        else:
-                            normalized = raw.replace(",", ";").replace("\n", ";")
-                            seq_items = [chunk.strip() for chunk in normalized.split(";") if chunk.strip()]
-                else:
-                    text = str(sequence_ids_value).strip()
-                    if text:
-                        seq_items = [text]
-                if seq_items:
-                    params["phageid"] = seq_items[0] if len(seq_items) == 1 else json.dumps(seq_items, ensure_ascii=False)
-                    params["phageids"] = ";".join(seq_items)
-
-            action_value = params.get("action")
-            if not isinstance(action_value, str) or not action_value.strip():
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="phagescope requires a non-empty `action` string.",
-                    details={"error": "missing_action", "tool": tool_name},
-                )
-
-            clean_params: Dict[str, Any] = {
-                "action": action_value.strip(),
-            }
-            for key in (
-                "base_url",
-                "token",
-                "timeout",
-                "phageid",
-                "phageids",
-                "sequence_ids",
-                "inputtype",
-                "analysistype",
-                "userid",
-                "modulelist",
-                "rundemo",
-                "taskid",
-                "modulename",
-                "result_kind",
-                "module",
-                "page",
-                "pagesize",
-                "seq_type",
-                "download_path",
-                "save_path",
-                "preview_bytes",
-                "wait",
-                "poll_interval",
-                "poll_timeout",
-                "sequence",
-                "file_path",
-            ):
-                if key in params and params[key] is not None:
-                    clean_params[key] = params[key]
-
-            for int_key in ("page", "pagesize", "preview_bytes"):
-                if int_key in clean_params:
-                    try:
-                        clean_params[int_key] = int(clean_params[int_key])
-                    except (TypeError, ValueError):
-                        clean_params.pop(int_key, None)
-
-            if "timeout" in clean_params:
-                try:
-                    clean_params["timeout"] = float(clean_params["timeout"])
-                except (TypeError, ValueError):
-                    clean_params.pop("timeout", None)
-
-            for float_key in ("poll_interval", "poll_timeout"):
-                if float_key in clean_params:
-                    try:
-                        clean_params[float_key] = float(clean_params[float_key])
-                    except (TypeError, ValueError):
-                        clean_params.pop(float_key, None)
-
-            if "wait" in clean_params and not isinstance(clean_params.get("wait"), bool):
-                wait_value = str(clean_params.get("wait", "")).strip().lower()
-                clean_params["wait"] = wait_value in {"1", "true", "yes", "y", "on"}
-
-            if isinstance(clean_params.get("rundemo"), bool):
-                clean_params["rundemo"] = "true" if clean_params["rundemo"] else "false"
-
-            action_value = clean_params.get("action")
-            if action_value in {"result", "quality", "task_detail", "save_all"} and "taskid" in clean_params:
-                try:
-                    int(str(clean_params.get("taskid")).strip())
-                except (TypeError, ValueError):
-                    clean_params.pop("taskid", None)
-            if (
-                action_value in {"result", "quality", "task_detail", "save_all"}
-                and not clean_params.get("taskid")
-                and self.session_id
-            ):
-                cached_taskid = _lookup_phagescope_task_memory(
-                    self.session_id,
-                    userid=clean_params.get("userid"),
-                    phageid=clean_params.get("phageid"),
-                    modulelist=clean_params.get("modulelist"),
-                )
-                if cached_taskid:
-                    clean_params["taskid"] = cached_taskid
-
-            if action_value == "quality" or (
-                action_value == "result"
-                and str(clean_params.get("result_kind") or "").strip().lower()
-                == "quality"
-            ):
-                clean_params.setdefault("wait", True)
-                clean_params.setdefault("poll_interval", 2.0)
-                clean_params.setdefault("poll_timeout", 120.0)
-
-            params = clean_params
-
-        elif tool_name == "manuscript_writer":
-            task_value = params.get("task")
-            output_path = params.get("output_path")
-            if not isinstance(task_value, str) or not task_value.strip():
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="manuscript_writer requires a non-empty `task` string.",
-                    details={"error": "invalid_task", "tool": tool_name},
-                )
-            if not isinstance(output_path, str) or not output_path.strip():
-                return AgentStep(
-                    action=action,
-                    success=False,
-                    message="manuscript_writer requires a non-empty `output_path` string.",
-                    details={"error": "missing_output_path", "tool": tool_name},
-                )
-
-            context_paths = params.get("context_paths") or []
-            if isinstance(context_paths, str):
-                context_paths = [context_paths]
-            if not isinstance(context_paths, list):
-                context_paths = []
-
-            analysis_path = params.get("analysis_path")
-            if analysis_path is not None and not isinstance(analysis_path, str):
-                analysis_path = str(analysis_path)
-
-            max_context_bytes = params.get("max_context_bytes")
-            if max_context_bytes is not None:
-                try:
-                    max_context_bytes = int(max_context_bytes)
-                except (TypeError, ValueError):
-                    max_context_bytes = None
-
-            params = {
-                "task": task_value,
-                "output_path": output_path,
-                "context_paths": context_paths,
-            }
-            if analysis_path:
-                params["analysis_path"] = analysis_path
-            if max_context_bytes:
-                params["max_context_bytes"] = max_context_bytes
-            if params.get("context_paths") is None:
-                params["context_paths"] = []
-
-            sections = params.get("sections")
-            if sections is None:
-                sections = action.parameters.get("sections")
-            if isinstance(sections, str):
-                sections = [sections]
-            if isinstance(sections, list):
-                params["sections"] = sections
-
-            max_revisions = action.parameters.get("max_revisions")
-            if max_revisions is not None:
-                params["max_revisions"] = max_revisions
-
-            evaluation_threshold = action.parameters.get("evaluation_threshold")
-            if evaluation_threshold is not None:
-                params["evaluation_threshold"] = evaluation_threshold
-
-            generation_model = action.parameters.get("generation_model")
-            if generation_model is not None:
-                params["generation_model"] = generation_model
-            evaluation_model = action.parameters.get("evaluation_model")
-            if evaluation_model is not None:
-                params["evaluation_model"] = evaluation_model
-            merge_model = action.parameters.get("merge_model")
-            if merge_model is not None:
-                params["merge_model"] = merge_model
-
-            generation_provider = action.parameters.get("generation_provider")
-            if generation_provider is not None:
-                params["generation_provider"] = generation_provider
-            evaluation_provider = action.parameters.get("evaluation_provider")
-            if evaluation_provider is not None:
-                params["evaluation_provider"] = evaluation_provider
-            merge_provider = action.parameters.get("merge_provider")
-            if merge_provider is not None:
-                params["merge_provider"] = merge_provider
-
-            if self.session_id:
-                params["session_id"] = self.session_id
+            prepared = self._prepare_phagescope_params(
+                action=action,
+                tool_name=tool_name,
+                params=params,
+            )
+            if isinstance(prepared, AgentStep):
+                return prepared
+            params = prepared
 
         else:
+            prepared = self._prepare_standard_tool_params(
+                action=action,
+                tool_name=tool_name,
+                params=params,
+            )
+            if isinstance(prepared, AgentStep):
+                return prepared
+            params = prepared
+
+        execution_outcome = await self._execute_tool_with_runtime_progress(
+            action=action,
+            tool_name=tool_name,
+            params=params,
+        )
+        if isinstance(execution_outcome, AgentStep):
+            return execution_outcome
+        raw_result = execution_outcome
+
+        return self._finalize_tool_action_step(
+            action=action,
+            tool_name=tool_name,
+            params=params,
+            raw_result=raw_result,
+            original_task=original_task,
+        )
+
+    def _prepare_standard_tool_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Dict[str, Any], AgentStep]:
+        if tool_name == "web_search":
+            return self._prepare_web_search_params(action, tool_name, params)
+        if tool_name == "file_operations":
+            return self._prepare_file_operations_params(action, tool_name, params)
+        if tool_name == "graph_rag":
+            return self._prepare_graph_rag_params(action, tool_name, params)
+        if tool_name == "literature_pipeline":
+            return self._prepare_literature_pipeline_params(action, tool_name, params)
+        if tool_name == "review_pack_writer":
+            return self._prepare_review_pack_writer_params(action, tool_name, params)
+        if tool_name == "document_reader":
+            return self._prepare_document_reader_params(action, tool_name, params)
+        if tool_name == "vision_reader":
+            return self._prepare_vision_reader_params(action, tool_name, params)
+        if tool_name == "paper_replication":
+            return self._prepare_paper_replication_params(params)
+        if tool_name == "generate_experiment_card":
+            return self._prepare_generate_experiment_card_params(params)
+        if tool_name == "manuscript_writer":
+            return self._prepare_manuscript_writer_params(action, tool_name, params)
+
+        return AgentStep(
+            action=action,
+            success=False,
+            message=f"Tool {tool_name} is not supported yet.",
+            details={"error": "unsupported_tool", "tool": tool_name},
+        )
+
+    def _prepare_web_search_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Dict[str, Any], AgentStep]:
+        query = params.get("query")
+        if not isinstance(query, str) or not query.strip():
             return AgentStep(
                 action=action,
                 success=False,
-                message=f"Tool {tool_name} is not supported yet.",
-                details={"error": "unsupported_tool", "tool": tool_name},
+                message="web_search requires a non-empty query.",
+                details={"error": "missing_query", "tool": tool_name},
             )
 
-        try:
-            # PhageScope: provide elegant progress during wait/poll (job_update -> stats.tool_progress)
-            if tool_name == "phagescope":
-                action_value = str(params.get("action") or "").strip().lower()
-                wait_value = params.get("wait") is True
-                taskid_value = params.get("taskid")
-                if wait_value and action_value in {"result", "quality"} and taskid_value:
-                    import time as _time
-                    import json as _json
-
-                    def _extract_task_status(detail_result: Any) -> str:
-                        if not isinstance(detail_result, dict):
-                            return "unknown"
-                        payload = detail_result.get("data")
-                        if isinstance(payload, dict):
-                            results = payload.get("results")
-                            if isinstance(results, dict):
-                                for k in ("status", "task_status", "state", "taskstatus"):
-                                    v = results.get(k)
-                                    if isinstance(v, str) and v.strip():
-                                        return v.strip()
-                        return "unknown"
-
-                    def _extract_task_detail_dict(detail_result: Any) -> Optional[Dict[str, Any]]:
-                        if not isinstance(detail_result, dict):
-                            return None
-                        payload = detail_result.get("data")
-                        if not isinstance(payload, dict):
-                            return None
-                        # phagescope_handler attaches parsed_task_detail when possible
-                        parsed = payload.get("parsed_task_detail")
-                        if isinstance(parsed, dict):
-                            return parsed
-                        # sometimes nested under results.task_detail
-                        results = payload.get("results")
-                        if isinstance(results, dict):
-                            td = results.get("task_detail")
-                            if isinstance(td, dict):
-                                return td
-                            if isinstance(td, str) and td.strip():
-                                try:
-                                    parsed_td = _json.loads(td)
-                                    if isinstance(parsed_td, dict):
-                                        return parsed_td
-                                except Exception:
-                                    return None
-                        return None
-
-                    def _module_status_upper(value: Any) -> Optional[str]:
-                        if not isinstance(value, str):
-                            return None
-                        v = value.strip()
-                        return v.upper() if v else None
-
-                    poll_timeout = float(params.get("poll_timeout") or 120.0)
-                    poll_interval = float(params.get("poll_interval") or 2.0)
-                    start = _time.monotonic()
-
-                    # Avoid the tool's internal polling; we do it here so we can stream progress
-                    attempt_params = dict(params)
-                    attempt_params["wait"] = False
-
-                    raw_result = None
-                    last_status = "queued"
-                    while True:
-                        elapsed = _time.monotonic() - start
-                        denom = poll_timeout if poll_timeout > 0 else 1.0
-                        time_percent = int(max(0.0, min(1.0, elapsed / denom)) * 100)
-
-                        # best-effort task status
-                        modules_payload: Optional[List[Dict[str, Any]]] = None
-                        counts_payload: Optional[Dict[str, int]] = None
-                        try:
-                            detail = await execute_tool(
-                                "phagescope",
-                                action="task_detail",
-                                taskid=str(taskid_value),
-                                base_url=params.get("base_url"),
-                                token=params.get("token"),
-                                timeout=min(float(params.get("timeout") or 60.0), 40.0),
-                            )
-                            last_status = _extract_task_status(detail)
-                            task_detail = _extract_task_detail_dict(detail)
-                            if isinstance(task_detail, dict):
-                                queue = task_detail.get("task_que")
-                                if isinstance(queue, list) and queue:
-                                    modules: List[Dict[str, Any]] = []
-                                    done = 0
-                                    total = 0
-                                    for item in queue:
-                                        if not isinstance(item, dict):
-                                            continue
-                                        name = item.get("module")
-                                        if not isinstance(name, str) or not name.strip():
-                                            continue
-                                        status_raw = (
-                                            item.get("module_satus")
-                                            or item.get("module_status")
-                                            or item.get("status")
-                                        )
-                                        status_upper = _module_status_upper(status_raw) or "UNKNOWN"
-                                        is_done: Optional[bool] = None
-                                        if status_upper in {"COMPLETED", "SUCCESS", "SUCCEEDED", "DONE", "FINISHED"}:
-                                            is_done = True
-                                        elif status_upper in {"FAILED", "ERROR"}:
-                                            is_done = False
-                                        modules.append(
-                                            {
-                                                "name": name.strip(),
-                                                "status": str(status_raw) if status_raw is not None else status_upper,
-                                                "done": is_done,
-                                            }
-                                        )
-                                        total += 1
-                                        if is_done is True:
-                                            done += 1
-                                    if total > 0:
-                                        modules_payload = modules
-                                        counts_payload = {"done": done, "total": total}
-                        except Exception:
-                            # keep last_status
-                            pass
-
-                        # Prefer module-based percent when available; otherwise fallback to time-based percent.
-                        percent = time_percent
-                        if counts_payload and counts_payload.get("total"):
-                            percent = int(round((counts_payload["done"] / max(1, counts_payload["total"])) * 100))
-                            percent = max(0, min(100, percent))
-
-                        plan_decomposition_jobs.update_stats_from_context(
-                            {
-                                "tool_progress": {
-                                    "tool": "phagescope",
-                                    "taskid": str(taskid_value),
-                                    "percent": percent,
-                                    "status": last_status,
-                                    "phase": "poll",
-                                    **({"modules": modules_payload} if modules_payload is not None else {}),
-                                    **({"counts": counts_payload} if counts_payload is not None else {}),
-                                }
-                            }
-                        )
-
-                        # try fetch result
-                        raw_result = await execute_tool(tool_name, **attempt_params)
-                        if isinstance(raw_result, dict) and raw_result.get("success") is True:
-                            plan_decomposition_jobs.update_stats_from_context(
-                                {
-                                    "tool_progress": {
-                                        "tool": "phagescope",
-                                        "taskid": str(taskid_value),
-                                        "percent": 100,
-                                        "status": last_status or "Success",
-                                        "phase": "done",
-                                    }
-                                }
-                            )
-                            break
-
-                        upper = str(last_status or "").strip().upper()
-                        if upper in {"FAILED", "ERROR"}:
-                            break
-                        if elapsed >= poll_timeout:
-                            raw_result = {
-                                "success": False,
-                                "status_code": 408,
-                                "action": action_value,
-                                "taskid": str(taskid_value),
-                                "error": f"Result not ready within {poll_timeout:.0f}s. Retry later with taskid={taskid_value}.",
-                                "polling": {
-                                    "waited": True,
-                                    "poll_timeout": poll_timeout,
-                                    "poll_interval": poll_interval,
-                                },
-                            }
-                            break
-                        await asyncio.sleep(max(0.2, poll_interval))
-                else:
-                    raw_result = await execute_tool(tool_name, **params)
+        provider_value = params.get("provider")
+        normalized_provider = _normalize_search_provider(provider_value)
+        if not normalized_provider:
+            session_provider = _normalize_search_provider(
+                self.extra_context.get("default_search_provider")
+            )
+            if session_provider:
+                normalized_provider = session_provider
             else:
-                raw_result = await execute_tool(tool_name, **params)
+                settings_provider = _normalize_search_provider(
+                    get_search_settings().default_provider
+                )
+                normalized_provider = settings_provider or "builtin"
+        params["provider"] = normalized_provider
+        return params
+
+    def _prepare_file_operations_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Dict[str, Any], AgentStep]:
+        operation = params.get("operation")
+        if not isinstance(operation, str) or not operation.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="file_operations requires a non-empty `operation` string.",
+                details={"error": "invalid_operation", "tool": tool_name},
+            )
+        operation = operation.strip()
+        # Minimal validation for common operations.
+        if operation in {"read", "list", "delete", "exists", "info"}:
+            path = params.get("path")
+            if not isinstance(path, str) or not path.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message=f"file_operations {operation} requires a non-empty `path` string.",
+                    details={"error": "missing_params", "tool": tool_name},
+                )
+            clean_params = {"operation": operation, "path": path}
+            if operation == "list":
+                pattern = params.get("pattern")
+                if isinstance(pattern, str) and pattern.strip():
+                    clean_params["pattern"] = pattern
+            return clean_params
+        if operation in {"write"}:
+            path = params.get("path")
+            content = params.get("content")
+            if not isinstance(path, str) or not path.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="file_operations write requires a non-empty `path` string.",
+                    details={"error": "missing_params", "tool": tool_name},
+                )
+            if content is None:
+                content = ""
+            if not isinstance(content, str):
+                content = str(content)
+            return {"operation": operation, "path": path, "content": content}
+        if operation in {"copy", "move"}:
+            path = params.get("path")
+            dest = params.get("destination")
+            if not isinstance(path, str) or not path.strip() or not isinstance(dest, str) or not dest.strip():
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message=f"file_operations {operation} requires `path` and `destination`.",
+                    details={"error": "missing_params", "tool": tool_name},
+                )
+            return {"operation": operation, "path": path, "destination": dest}
+        return AgentStep(
+            action=action,
+            success=False,
+            message=f"file_operations does not support operation={operation!r}.",
+            details={"error": "invalid_operation", "tool": tool_name},
+        )
+
+    def _prepare_graph_rag_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Dict[str, Any], AgentStep]:
+        query = params.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="graph_rag requires a non-empty query.",
+                details={"error": "missing_query", "tool": tool_name},
+            )
+
+        rag_settings = get_graph_rag_settings()
+
+        def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                parsed = default
+            return max(minimum, min(parsed, maximum))
+
+        default_top_k = min(12, rag_settings.max_top_k)
+        default_hops = min(1, rag_settings.max_hops)
+
+        top_k = _safe_int(
+            params.get("top_k"),
+            default=default_top_k,
+            minimum=1,
+            maximum=rag_settings.max_top_k,
+        )
+        hops = _safe_int(
+            params.get("hops"),
+            default=default_hops,
+            minimum=0,
+            maximum=rag_settings.max_hops,
+        )
+        return_subgraph = params.get("return_subgraph")
+        if return_subgraph is None:
+            return_subgraph = True
+        else:
+            return_subgraph = bool(return_subgraph)
+
+        focus_raw = params.get("focus_entities")
+        focus_entities: List[str] = []
+        if isinstance(focus_raw, list):
+            for item in focus_raw:
+                if isinstance(item, str) and item.strip():
+                    focus_entities.append(item.strip())
+
+        return {
+            "query": query.strip(),
+            "top_k": top_k,
+            "hops": hops,
+            "return_subgraph": return_subgraph,
+            "focus_entities": focus_entities,
+        }
+
+    def _prepare_literature_pipeline_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Dict[str, Any], AgentStep]:
+        query = params.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="literature_pipeline requires a non-empty `query` string.",
+                details={"error": "missing_query", "tool": tool_name},
+            )
+        clean_params: Dict[str, Any] = {"query": query.strip()}
+        max_results = params.get("max_results")
+        if max_results is not None:
+            try:
+                clean_params["max_results"] = int(max_results)
+            except (TypeError, ValueError):
+                pass
+        out_dir = params.get("out_dir")
+        if isinstance(out_dir, str) and out_dir.strip():
+            clean_params["out_dir"] = out_dir.strip()
+        download_pdfs = params.get("download_pdfs")
+        if isinstance(download_pdfs, bool):
+            clean_params["download_pdfs"] = download_pdfs
+        max_pdfs = params.get("max_pdfs")
+        if max_pdfs is not None:
+            try:
+                clean_params["max_pdfs"] = int(max_pdfs)
+            except (TypeError, ValueError):
+                pass
+        user_agent = params.get("user_agent")
+        if isinstance(user_agent, str) and user_agent.strip():
+            clean_params["user_agent"] = user_agent.strip()
+        proxy = params.get("proxy")
+        if isinstance(proxy, str) and proxy.strip():
+            clean_params["proxy"] = proxy.strip()
+        return clean_params
+
+    def _prepare_review_pack_writer_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Dict[str, Any], AgentStep]:
+        topic = params.get("topic")
+        if not isinstance(topic, str) or not topic.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="review_pack_writer requires a non-empty `topic` string.",
+                details={"error": "missing_topic", "tool": tool_name},
+            )
+        clean_params: Dict[str, Any] = {"topic": topic.strip()}
+        query = params.get("query")
+        if isinstance(query, str) and query.strip():
+            clean_params["query"] = query.strip()
+        out_dir = params.get("out_dir")
+        if isinstance(out_dir, str) and out_dir.strip():
+            clean_params["out_dir"] = out_dir.strip()
+        for int_key in ("max_results", "max_pdfs", "max_revisions"):
+            if int_key in params and params[int_key] is not None:
+                try:
+                    clean_params[int_key] = int(params[int_key])
+                except (TypeError, ValueError):
+                    pass
+        if "evaluation_threshold" in params and params["evaluation_threshold"] is not None:
+            try:
+                clean_params["evaluation_threshold"] = float(params["evaluation_threshold"])
+            except (TypeError, ValueError):
+                pass
+        for bool_key in ("download_pdfs", "keep_workspace"):
+            if isinstance(params.get(bool_key), bool):
+                clean_params[bool_key] = params[bool_key]
+        output_path = params.get("output_path")
+        if isinstance(output_path, str) and output_path.strip():
+            clean_params["output_path"] = output_path.strip()
+        sections = params.get("sections")
+        if isinstance(sections, list):
+            clean_sections: List[str] = []
+            for item in sections:
+                if isinstance(item, str) and item.strip():
+                    clean_sections.append(item.strip())
+            if clean_sections:
+                clean_params["sections"] = clean_sections
+        task_value = params.get("task")
+        if isinstance(task_value, str) and task_value.strip():
+            clean_params["task"] = task_value.strip()
+        for key in (
+            "generation_model",
+            "evaluation_model",
+            "merge_model",
+            "generation_provider",
+            "evaluation_provider",
+            "merge_provider",
+            "user_agent",
+            "proxy",
+        ):
+            val = params.get(key)
+            if isinstance(val, str) and val.strip():
+                clean_params[key] = val.strip()
+        return clean_params
+
+    def _prepare_document_reader_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Dict[str, Any], AgentStep]:
+        operation = params.get("operation")
+        file_path = params.get("file_path")
+
+        if not operation or not file_path:
+            return AgentStep(
+                action=action,
+                success=False,
+                message="document_reader requires `operation` and `file_path`.",
+                details={"error": "missing_params", "tool": tool_name},
+            )
+
+        # Validate operation type.
+        if operation not in [
+            "read_pdf",
+            "read_image",
+            "read_text",
+            "read_any",
+            "read_file",
+            "auto",
+        ]:
+            return AgentStep(
+                action=action,
+                success=False,
+                message=f"Unsupported operation: {operation}",
+                details={"error": "invalid_operation", "tool": tool_name},
+            )
+
+        return {
+            "operation": operation,
+            "file_path": file_path,
+            "use_ocr": params.get("use_ocr", False),
+        }
+
+    def _prepare_vision_reader_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Dict[str, Any], AgentStep]:
+        operation = params.get("operation")
+        image_path = params.get("image_path")
+
+        if not operation or not image_path:
+            return AgentStep(
+                action=action,
+                success=False,
+                message="vision_reader requires `operation` and `image_path`.",
+                details={"error": "missing_params", "tool": tool_name},
+            )
+
+        page_number = params.get("page_number")
+        region = params.get("region")
+        question = params.get("question")
+        language = params.get("language")
+
+        clean_params: Dict[str, Any] = {
+            "operation": operation,
+            "image_path": image_path,
+        }
+        if isinstance(page_number, int):
+            clean_params["page_number"] = page_number
+        if isinstance(region, dict):
+            clean_params["region"] = region
+        if isinstance(question, str):
+            clean_params["question"] = question
+        if isinstance(language, str):
+            clean_params["language"] = language
+
+        return clean_params
+
+    @staticmethod
+    def _prepare_paper_replication_params(params: Dict[str, Any]) -> Dict[str, Any]:
+        # Paper replication ExperimentCard loader
+        exp_id = params.get("experiment_id")
+        if exp_id is None:
+            exp_id = "experiment_1"
+        elif not isinstance(exp_id, str):
+            try:
+                exp_id = str(exp_id)
+            except Exception:
+                exp_id = "experiment_1"
+
+        return {"experiment_id": exp_id}
+
+    @staticmethod
+    def _prepare_generate_experiment_card_params(params: Dict[str, Any]) -> Dict[str, Any]:
+        exp_id = params.get("experiment_id")
+        if exp_id is not None and not isinstance(exp_id, str):
+            exp_id = str(exp_id)
+        pdf_path = params.get("pdf_path")
+        if pdf_path is not None and not isinstance(pdf_path, str):
+            pdf_path = str(pdf_path)
+        code_root = params.get("code_root")
+        if code_root is not None and not isinstance(code_root, str):
+            code_root = str(code_root)
+        notes_val = params.get("notes")
+        if notes_val is not None and not isinstance(notes_val, str):
+            notes_val = str(notes_val)
+        overwrite_val = params.get("overwrite")
+        overwrite = False
+        if isinstance(overwrite_val, bool):
+            overwrite = overwrite_val
+        elif isinstance(overwrite_val, str):
+            overwrite = overwrite_val.strip().lower() in {"1", "true", "yes", "y"}
+
+        return {
+            "experiment_id": exp_id,
+            "pdf_path": pdf_path,
+            "code_root": code_root,
+            "notes": notes_val,
+            "overwrite": overwrite,
+        }
+
+    def _prepare_manuscript_writer_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Dict[str, Any], AgentStep]:
+        task_value = params.get("task")
+        output_path = params.get("output_path")
+        if not isinstance(task_value, str) or not task_value.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="manuscript_writer requires a non-empty `task` string.",
+                details={"error": "invalid_task", "tool": tool_name},
+            )
+        if not isinstance(output_path, str) or not output_path.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="manuscript_writer requires a non-empty `output_path` string.",
+                details={"error": "missing_output_path", "tool": tool_name},
+            )
+
+        context_paths = params.get("context_paths") or []
+        if isinstance(context_paths, str):
+            context_paths = [context_paths]
+        if not isinstance(context_paths, list):
+            context_paths = []
+
+        analysis_path = params.get("analysis_path")
+        if analysis_path is not None and not isinstance(analysis_path, str):
+            analysis_path = str(analysis_path)
+
+        max_context_bytes = params.get("max_context_bytes")
+        if max_context_bytes is not None:
+            try:
+                max_context_bytes = int(max_context_bytes)
+            except (TypeError, ValueError):
+                max_context_bytes = None
+
+        clean_params = {
+            "task": task_value,
+            "output_path": output_path,
+            "context_paths": context_paths,
+        }
+        if analysis_path:
+            clean_params["analysis_path"] = analysis_path
+        if max_context_bytes:
+            clean_params["max_context_bytes"] = max_context_bytes
+        if clean_params.get("context_paths") is None:
+            clean_params["context_paths"] = []
+
+        sections = clean_params.get("sections")
+        if sections is None:
+            sections = action.parameters.get("sections")
+        if isinstance(sections, str):
+            sections = [sections]
+        if isinstance(sections, list):
+            clean_params["sections"] = sections
+
+        max_revisions = action.parameters.get("max_revisions")
+        if max_revisions is not None:
+            clean_params["max_revisions"] = max_revisions
+
+        evaluation_threshold = action.parameters.get("evaluation_threshold")
+        if evaluation_threshold is not None:
+            clean_params["evaluation_threshold"] = evaluation_threshold
+
+        generation_model = action.parameters.get("generation_model")
+        if generation_model is not None:
+            clean_params["generation_model"] = generation_model
+        evaluation_model = action.parameters.get("evaluation_model")
+        if evaluation_model is not None:
+            clean_params["evaluation_model"] = evaluation_model
+        merge_model = action.parameters.get("merge_model")
+        if merge_model is not None:
+            clean_params["merge_model"] = merge_model
+
+        generation_provider = action.parameters.get("generation_provider")
+        if generation_provider is not None:
+            clean_params["generation_provider"] = generation_provider
+        evaluation_provider = action.parameters.get("evaluation_provider")
+        if evaluation_provider is not None:
+            clean_params["evaluation_provider"] = evaluation_provider
+        merge_provider = action.parameters.get("merge_provider")
+        if merge_provider is not None:
+            clean_params["merge_provider"] = merge_provider
+
+        if self.session_id:
+            clean_params["session_id"] = self.session_id
+
+        return clean_params
+
+    def _prepare_phagescope_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Dict[str, Any], AgentStep]:
+        if "result_kind" not in params:
+            for alias in ("resultkind", "resultKind", "result_type", "resultType"):
+                if alias in params and params[alias] is not None:
+                    params["result_kind"] = params[alias]
+                    break
+        if "taskid" not in params:
+            for alias in ("task_id", "taskId"):
+                if alias in params and params[alias] is not None:
+                    params["taskid"] = params[alias]
+                    break
+        if "phageid" not in params:
+            for alias in ("phage_id", "phageId"):
+                if alias in params and params[alias] is not None:
+                    params["phageid"] = params[alias]
+                    break
+        if "phageids" not in params:
+            for alias in ("phage_ids", "phageIds"):
+                if alias in params and params[alias] is not None:
+                    params["phageids"] = params[alias]
+                    break
+
+        # Compat aliases used by some prompts/tool wrappers.
+        sequence_ids_value = None
+        for alias in ("sequence_ids", "sequenceIds", "sequence_id", "sequenceId", "idlist"):
+            if alias in params and params[alias] is not None:
+                sequence_ids_value = params[alias]
+                break
+        if sequence_ids_value is not None and not params.get("phageid") and not params.get("phageids"):
+            seq_items: List[str] = []
+            if isinstance(sequence_ids_value, (list, tuple, set)):
+                seq_items = [str(v).strip() for v in sequence_ids_value if str(v).strip()]
+            elif isinstance(sequence_ids_value, str):
+                raw = sequence_ids_value.strip()
+                if raw:
+                    parsed = None
+                    if raw.startswith("["):
+                        try:
+                            parsed = json.loads(raw.replace("'", '"'))
+                        except Exception:
+                            parsed = None
+                    if isinstance(parsed, list):
+                        seq_items = [str(v).strip() for v in parsed if str(v).strip()]
+                    else:
+                        normalized = raw.replace(",", ";").replace("\n", ";")
+                        seq_items = [chunk.strip() for chunk in normalized.split(";") if chunk.strip()]
+            else:
+                text = str(sequence_ids_value).strip()
+                if text:
+                    seq_items = [text]
+            if seq_items:
+                params["phageid"] = seq_items[0] if len(seq_items) == 1 else json.dumps(seq_items, ensure_ascii=False)
+                params["phageids"] = ";".join(seq_items)
+
+        action_value = params.get("action")
+        if not isinstance(action_value, str) or not action_value.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="phagescope requires a non-empty `action` string.",
+                details={"error": "missing_action", "tool": tool_name},
+            )
+
+        clean_params: Dict[str, Any] = {
+            "action": action_value.strip(),
+        }
+        for key in (
+            "base_url",
+            "token",
+            "timeout",
+            "phageid",
+            "phageids",
+            "sequence_ids",
+            "inputtype",
+            "analysistype",
+            "userid",
+            "modulelist",
+            "rundemo",
+            "taskid",
+            "modulename",
+            "result_kind",
+            "module",
+            "page",
+            "pagesize",
+            "seq_type",
+            "download_path",
+            "save_path",
+            "session_id",
+            "preview_bytes",
+            "wait",
+            "poll_interval",
+            "poll_timeout",
+            "sequence",
+            "file_path",
+        ):
+            if key in params and params[key] is not None:
+                clean_params[key] = params[key]
+
+        for int_key in ("page", "pagesize", "preview_bytes"):
+            if int_key in clean_params:
+                try:
+                    clean_params[int_key] = int(clean_params[int_key])
+                except (TypeError, ValueError):
+                    clean_params.pop(int_key, None)
+
+        if "timeout" in clean_params:
+            try:
+                clean_params["timeout"] = float(clean_params["timeout"])
+            except (TypeError, ValueError):
+                clean_params.pop("timeout", None)
+
+        for float_key in ("poll_interval", "poll_timeout"):
+            if float_key in clean_params:
+                try:
+                    clean_params[float_key] = float(clean_params[float_key])
+                except (TypeError, ValueError):
+                    clean_params.pop(float_key, None)
+
+        if "wait" in clean_params and not isinstance(clean_params.get("wait"), bool):
+            wait_value = str(clean_params.get("wait", "")).strip().lower()
+            clean_params["wait"] = wait_value in {"1", "true", "yes", "y", "on"}
+
+        if isinstance(clean_params.get("rundemo"), bool):
+            clean_params["rundemo"] = "true" if clean_params["rundemo"] else "false"
+
+        action_value = clean_params.get("action")
+        if action_value in {"result", "quality", "task_detail", "save_all"} and "taskid" in clean_params:
+            try:
+                int(str(clean_params.get("taskid")).strip())
+            except (TypeError, ValueError):
+                clean_params.pop("taskid", None)
+        if (
+            action_value in {"result", "quality", "task_detail", "save_all"}
+            and not clean_params.get("taskid")
+            and self.session_id
+        ):
+            cached_taskid = _lookup_phagescope_task_memory(
+                self.session_id,
+                userid=clean_params.get("userid"),
+                phageid=clean_params.get("phageid"),
+                modulelist=clean_params.get("modulelist"),
+            )
+            if cached_taskid:
+                clean_params["taskid"] = cached_taskid
+
+        if action_value == "quality" or (
+            action_value == "result"
+            and str(clean_params.get("result_kind") or "").strip().lower()
+            == "quality"
+        ):
+            clean_params.setdefault("wait", True)
+            clean_params.setdefault("poll_interval", 2.0)
+            clean_params.setdefault("poll_timeout", 120.0)
+
+        if self.session_id:
+            clean_params["session_id"] = self.session_id
+
+        return clean_params
+
+    async def _prepare_claude_code_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Tuple[Dict[str, Any], Optional[str]], AgentStep]:
+        # Claude Code CLI - requires task parameter
+        task_value = params.get("task")
+        if not isinstance(task_value, str) or not task_value.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="claude_code requires a non-empty `task` string.",
+                details={"error": "invalid_task", "tool": tool_name},
+            )
+
+        original_task = task_value.strip()
+
+        # Optional: allowed_tools parameter
+        allowed_tools = self._normalize_csv_arg(params.get("allowed_tools"))
+
+        # Optional: add_dirs parameter
+        add_dirs = self._normalize_csv_arg(params.get("add_dirs"))
+
+        task_node, context_error = self._resolve_claude_code_task_context()
+        if context_error or task_node is None:
+            if self._should_route_claude_code_unscoped(context_error):
+                logger.info(
+                    "[CLAUDE_CODE] Routing to unscoped execution (reason=%s, source=%s)",
+                    context_error,
+                    self.extra_context.get("_current_task_source"),
+                )
+                prepared_params: Dict[str, Any] = {
+                    "task": original_task,
+                    "require_task_context": False,
+                    "auth_mode": "api_env",
+                    "setting_sources": "project",
+                }
+                if allowed_tools:
+                    prepared_params["allowed_tools"] = allowed_tools
+                if add_dirs:
+                    prepared_params["add_dirs"] = add_dirs
+                if self.session_id:
+                    prepared_params["session_id"] = self.session_id
+                return prepared_params, original_task
+
+            context_messages = {
+                "missing_plan_binding": "claude_code execution requires a bound plan. Please create/bind a plan first.",
+                "missing_target_task": "claude_code execution requires a target atomic task context. Please select or run a task first.",
+                "invalid_target_task": "claude_code execution requires a valid numeric task id.",
+                "plan_tree_unavailable": "Unable to load the current plan tree. Please retry after refreshing plan state.",
+                "target_task_not_found": "The selected task was not found in the current plan.",
+                "target_task_not_atomic": "claude_code can only execute atomic tasks. Please decompose this task and execute a leaf task.",
+            }
+            return AgentStep(
+                action=action,
+                success=False,
+                message=context_messages.get(
+                    context_error or "",
+                    "claude_code execution requires a bound atomic task context.",
+                ),
+                details={
+                    "error": context_error or "missing_task_context",
+                    "tool": tool_name,
+                    "requires_plan_binding": True,
+                    "requires_atomic_task": True,
+                },
+            )
+
+        # A-mem integration: query similar historical experiences.
+        amem_hints = ""
+        amem_experiences = []
+
+        try:
+            from ..services.amem_client import get_amem_client
+            amem_client = get_amem_client()
+
+            if amem_client.enabled:
+                amem_experiences = await amem_client.query_experiences(
+                    query=original_task,
+                    top_k=3
+                )
+
+                if amem_experiences:
+                    amem_hints = self._summarize_amem_experiences_for_cc(
+                        amem_experiences
+                    )
+                    logger.info(
+                        f"[AMEM] Injected compact hints from {len(amem_experiences)} historical experiences"
+                    )
+        except Exception as amem_err:
+            logger.warning(f"[AMEM] Failed to query experiences: {amem_err}")
+
+        constrained_task = self._compose_claude_code_atomic_task_prompt(
+            task_node=task_node,
+            original_task=original_task,
+            amem_hints=amem_hints,
+        )
+
+        # Build final params (strict atomic-task execution constraint)
+        prepared_params: Dict[str, Any] = {
+            "task": constrained_task,
+            "auth_mode": "api_env",
+            "setting_sources": "project",
+        }
+        if allowed_tools:
+            prepared_params["allowed_tools"] = allowed_tools
+        if add_dirs:
+            prepared_params["add_dirs"] = add_dirs
+
+        # Session/task context for runtime tracing.
+        if self.session_id:
+            prepared_params["session_id"] = self.session_id
+        prepared_params["plan_id"] = task_node.plan_id
+        prepared_params["task_id"] = task_node.id
+
+        # Real-time log callback injection.
+        current_job_id = get_current_job()
+        if not current_job_id:
+            current_job_id, _ = self._resolve_job_meta()
+
+        if current_job_id:
+            async def log_stdout(line: str):
+                """Write stdout lines to job logs in real time."""
+                plan_decomposition_jobs.append_log(
+                    current_job_id,
+                    "stdout",
+                    line,
+                    {},
+                )
+
+            async def log_stderr(line: str):
+                """Write stderr lines to job logs in real time."""
+                plan_decomposition_jobs.append_log(
+                    current_job_id,
+                    "stderr",
+                    line,
+                    {},
+                )
+
+            prepared_params["on_stdout"] = log_stdout
+            prepared_params["on_stderr"] = log_stderr
+
+        return prepared_params, original_task
+
+    async def _execute_tool_with_runtime_progress(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Any, AgentStep]:
+        try:
+            if self._should_use_phagescope_runtime_polling(tool_name, params):
+                return await self._execute_phagescope_with_runtime_polling(params)
+            return await execute_tool(tool_name, **params)
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception(
                 "Tool %s execution failed for session %s: %s",
@@ -7136,159 +6827,463 @@ class StructuredChatAgent:
                 details={"error": str(exc), "tool": tool_name},
             )
 
-        sanitized = self._sanitize_tool_result(tool_name, raw_result)
-        # For optional local file reads (e.g., one-shot phagescope download+analyze),
-        # treat read failures as non-fatal and continue the chain.
-        try:
-            is_optional = (
-                isinstance(action.metadata, dict) and bool(action.metadata.get("optional"))
+    @staticmethod
+    def _should_use_phagescope_runtime_polling(
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> bool:
+        if tool_name != "phagescope":
+            return False
+        action_value = str(params.get("action") or "").strip().lower()
+        wait_value = params.get("wait") is True
+        taskid_value = params.get("taskid")
+        return bool(wait_value and action_value in {"result", "quality"} and taskid_value)
+
+    @staticmethod
+    def _extract_phagescope_task_status(detail_result: Any) -> str:
+        if not isinstance(detail_result, dict):
+            return "unknown"
+        payload = detail_result.get("data")
+        if isinstance(payload, dict):
+            results = payload.get("results")
+            if isinstance(results, dict):
+                for key in ("status", "task_status", "state", "taskstatus"):
+                    value = results.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+        return "unknown"
+
+    @staticmethod
+    def _extract_phagescope_task_detail_dict(
+        detail_result: Any,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(detail_result, dict):
+            return None
+        payload = detail_result.get("data")
+        if not isinstance(payload, dict):
+            return None
+        parsed = payload.get("parsed_task_detail")
+        if isinstance(parsed, dict):
+            return parsed
+        results = payload.get("results")
+        if isinstance(results, dict):
+            task_detail = results.get("task_detail")
+            if isinstance(task_detail, dict):
+                return task_detail
+            if isinstance(task_detail, str) and task_detail.strip():
+                try:
+                    parsed_task_detail = json.loads(task_detail)
+                    if isinstance(parsed_task_detail, dict):
+                        return parsed_task_detail
+                except Exception:
+                    return None
+        return None
+
+    @staticmethod
+    def _normalize_phagescope_module_status(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized.upper() if normalized else None
+
+    def _extract_phagescope_module_progress(
+        self,
+        detail_result: Any,
+    ) -> Tuple[Optional[List[Dict[str, Any]]], Optional[Dict[str, int]]]:
+        task_detail = self._extract_phagescope_task_detail_dict(detail_result)
+        if not isinstance(task_detail, dict):
+            return None, None
+        queue = task_detail.get("task_que")
+        if not isinstance(queue, list) or not queue:
+            return None, None
+
+        modules: List[Dict[str, Any]] = []
+        done = 0
+        total = 0
+        for item in queue:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("module")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            status_raw = (
+                item.get("module_satus")
+                or item.get("module_status")
+                or item.get("status")
             )
-            if (
-                tool_name == "file_operations"
-                and is_optional
-                and isinstance(params, dict)
-                and params.get("operation") == "read"
-                and isinstance(sanitized, dict)
-                and sanitized.get("success") is False
-            ):
-                patched = dict(sanitized)
-                patched["optional"] = True
-                patched["optional_error"] = patched.get("error") or "read_failed"
-                patched["success"] = True
-                sanitized = patched
-        except Exception:
-            pass
+            status_upper = self._normalize_phagescope_module_status(status_raw) or "UNKNOWN"
+            is_done: Optional[bool] = None
+            if status_upper in {"COMPLETED", "SUCCESS", "SUCCEEDED", "DONE", "FINISHED"}:
+                is_done = True
+            elif status_upper in {"FAILED", "ERROR"}:
+                is_done = False
+            modules.append(
+                {
+                    "name": name.strip(),
+                    "status": str(status_raw) if status_raw is not None else status_upper,
+                    "done": is_done,
+                }
+            )
+            total += 1
+            if is_done is True:
+                done += 1
+        if total <= 0:
+            return None, None
+        return modules, {"done": done, "total": total}
+
+    @staticmethod
+    def _build_phagescope_poll_timeout_result(
+        action_value: str,
+        taskid_value: Any,
+        poll_timeout: float,
+        poll_interval: float,
+    ) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "status_code": 408,
+            "action": action_value,
+            "taskid": str(taskid_value),
+            "error": (
+                f"Result not ready within {poll_timeout:.0f}s. "
+                f"Retry later with taskid={taskid_value}."
+            ),
+            "polling": {
+                "waited": True,
+                "poll_timeout": poll_timeout,
+                "poll_interval": poll_interval,
+            },
+        }
+
+    async def _execute_phagescope_with_runtime_polling(
+        self,
+        params: Dict[str, Any],
+    ) -> Any:
+        import time as _time
+
+        action_value = str(params.get("action") or "").strip().lower()
+        taskid_value = params.get("taskid")
+        poll_timeout = float(params.get("poll_timeout") or 120.0)
+        poll_interval = float(params.get("poll_interval") or 2.0)
+        start = _time.monotonic()
+
+        attempt_params = dict(params)
+        attempt_params["wait"] = False
+
+        raw_result: Any = None
+        last_status = "queued"
+        while True:
+            elapsed = _time.monotonic() - start
+            denom = poll_timeout if poll_timeout > 0 else 1.0
+            time_percent = int(max(0.0, min(1.0, elapsed / denom)) * 100)
+
+            modules_payload: Optional[List[Dict[str, Any]]] = None
+            counts_payload: Optional[Dict[str, int]] = None
+            try:
+                detail = await execute_tool(
+                    "phagescope",
+                    action="task_detail",
+                    taskid=str(taskid_value),
+                    base_url=params.get("base_url"),
+                    token=params.get("token"),
+                    timeout=min(float(params.get("timeout") or 60.0), 40.0),
+                )
+                last_status = self._extract_phagescope_task_status(detail)
+                modules_payload, counts_payload = self._extract_phagescope_module_progress(detail)
+            except Exception:
+                pass
+
+            percent = time_percent
+            if counts_payload and counts_payload.get("total"):
+                percent = int(round((counts_payload["done"] / max(1, counts_payload["total"])) * 100))
+                percent = max(0, min(100, percent))
+
+            plan_decomposition_jobs.update_stats_from_context(
+                {
+                    "tool_progress": {
+                        "tool": "phagescope",
+                        "taskid": str(taskid_value),
+                        "percent": percent,
+                        "status": last_status,
+                        "phase": "poll",
+                        **({"modules": modules_payload} if modules_payload is not None else {}),
+                        **({"counts": counts_payload} if counts_payload is not None else {}),
+                    }
+                }
+            )
+
+            raw_result = await execute_tool("phagescope", **attempt_params)
+            if isinstance(raw_result, dict) and raw_result.get("success") is True:
+                plan_decomposition_jobs.update_stats_from_context(
+                    {
+                        "tool_progress": {
+                            "tool": "phagescope",
+                            "taskid": str(taskid_value),
+                            "percent": 100,
+                            "status": last_status or "Success",
+                            "phase": "done",
+                        }
+                    }
+                )
+                break
+
+            upper = str(last_status or "").strip().upper()
+            if upper in {"FAILED", "ERROR"}:
+                break
+            if elapsed >= poll_timeout:
+                raw_result = self._build_phagescope_poll_timeout_result(
+                    action_value=action_value,
+                    taskid_value=taskid_value,
+                    poll_timeout=poll_timeout,
+                    poll_interval=poll_interval,
+                )
+                break
+            await asyncio.sleep(max(0.2, poll_interval))
+        return raw_result
+
+    def _finalize_tool_action_step(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+        raw_result: Any,
+        original_task: Optional[str],
+    ) -> AgentStep:
+        sanitized = self._sanitize_tool_result(tool_name, raw_result)
         summary = self._summarize_tool_result(tool_name, sanitized)
         self._append_recent_tool_result(tool_name, summary, sanitized)
 
-        storage_info = None
-        if self.session_id:
-            action_payload = {
-                "kind": action.kind,
-                "name": action.name,
-                "order": action.order,
-                "blocking": action.blocking,
-                "parameters": self._drop_callables(params),
-            }
-            try:
-                storage_info = store_tool_output(
-                    session_id=self.session_id,
-                    job_id=get_current_job(),
-                    action=action_payload,
-                    tool_name=tool_name,
-                    raw_result=raw_result,
-                    summary=summary,
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning(
-                    "Failed to store tool output for %s in session %s: %s",
-                    tool_name,
-                    self.session_id,
-                    exc,
-                )
-
-        # Attach stored output paths back to agent/tool result (no manual copy needed)
-        if storage_info is not None and self.session_id:
-            try:
-                from app.services.upload_storage import ensure_session_dir
-                from pathlib import Path
-
-                session_root = ensure_session_dir(self.session_id)
-
-                def _abs(rel: Optional[str]) -> Optional[str]:
-                    if not rel:
-                        return None
-                    try:
-                        return str((session_root / Path(rel)).resolve())
-                    except Exception:
-                        return str(session_root / Path(rel))
-
-                storage_payload: Dict[str, Any] = {
-                    "session_id": self.session_id,
-                    "job_id": get_current_job(),
-                    "tool": tool_name,
-                    "step_order": action.order,
-                    "output_dir": _abs(getattr(storage_info, "output_dir", None)),
-                    "result_path": _abs(getattr(storage_info, "result_path", None)),
-                    "manifest_path": _abs(getattr(storage_info, "manifest_path", None)),
-                    "preview_path": _abs(getattr(storage_info, "preview_path", None)),
-                }
-                # Also keep relative paths for portability (optional)
-                storage_payload_rel: Dict[str, Any] = {
-                    "output_dir": getattr(storage_info, "output_dir", None),
-                    "result_path": getattr(storage_info, "result_path", None),
-                    "manifest_path": getattr(storage_info, "manifest_path", None),
-                    "preview_path": getattr(storage_info, "preview_path", None),
-                }
-                storage_payload["relative"] = storage_payload_rel
-
-                if isinstance(raw_result, dict):
-                    raw_result.setdefault("storage", storage_payload)
-                if isinstance(sanitized, dict):
-                    sanitized.setdefault("storage", storage_payload)
-
-                # Persist latest output location for later retrieval
-                def _updater(metadata: Dict[str, Any]) -> Dict[str, Any]:
-                    metadata["phagescope_last_output"] = storage_payload
-                    items = metadata.get("phagescope_recent_outputs")
-                    if not isinstance(items, list):
-                        items = []
-                    # de-dup by result_path
-                    rp = storage_payload.get("result_path")
-                    items = [it for it in items if not (isinstance(it, dict) and it.get("result_path") == rp)]
-                    items.insert(0, storage_payload)
-                    metadata["phagescope_recent_outputs"] = items[:10]
-                    return metadata
-
-                if tool_name == "phagescope":
-                    _update_session_metadata(self.session_id, _updater)
-                    # Make it available to the current agent loop immediately
-                    self.extra_context["phagescope_last_output"] = storage_payload
-            except Exception as exc:  # pragma: no cover - best-effort
-                logger.debug("Failed to attach phagescope storage paths: %s", exc)
-
-        if tool_name == "phagescope" and self.session_id:
-            action_value = params.get("action")
-            if action_value == "submit" and sanitized.get("success"):
-                try:
-                    _record_phagescope_task_memory(self.session_id, params, sanitized)
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.debug(
-                        "Failed to record phagescope task memory for %s: %s",
-                        self.session_id,
-                        exc,
-                    )
+        storage_info = self._store_tool_output_artifacts(
+            action=action,
+            tool_name=tool_name,
+            params=params,
+            raw_result=raw_result,
+            summary=summary,
+        )
+        self._attach_storage_payload_to_tool_result(
+            action=action,
+            tool_name=tool_name,
+            storage_info=storage_info,
+            raw_result=raw_result,
+            sanitized=sanitized,
+        )
+        self._maybe_record_phagescope_submit_memory(tool_name, params, sanitized)
 
         success = sanitized.get("success", True)
-        deliverable_report = None
-        if self.session_id:
-            publish_task_id: Optional[int] = None
-            publish_task_name: Optional[str] = None
-            publish_task_instruction: Optional[str] = None
-            try:
-                current_task_id = self.extra_context.get("current_task_id")
-                if current_task_id is not None:
-                    publish_task_id = int(current_task_id)
-            except (TypeError, ValueError):
-                publish_task_id = None
+        deliverable_report = self._publish_tool_deliverables(
+            action=action,
+            tool_name=tool_name,
+            raw_result=raw_result,
+            summary=summary,
+            success=success,
+        )
+        message = self._build_tool_action_message(
+            tool_name=tool_name,
+            summary=summary,
+            success=success,
+        )
+        self._maybe_schedule_claude_code_amem_save(
+            tool_name=tool_name,
+            original_task=original_task,
+            sanitized=sanitized,
+            summary=summary,
+        )
+        self._sync_task_status_after_tool_execution(
+            tool_name=tool_name,
+            success=success,
+            summary=summary,
+            message=message,
+            params=params,
+        )
 
-            if publish_task_id is not None and self.plan_session.plan_id is not None:
+        return AgentStep(
+            action=action,
+            success=bool(success),
+            message=message,
+            details={
+                "tool": tool_name,
+                "parameters": self._drop_callables(params),
+                "result": sanitized,
+                "summary": summary,
+                "storage": storage_info.__dict__ if storage_info else None,
+                "deliverables": deliverable_report.to_dict() if deliverable_report else None,
+            },
+        )
+
+    def _store_tool_output_artifacts(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+        raw_result: Any,
+        summary: str,
+    ) -> Optional[Any]:
+        if not self.session_id:
+            return None
+        action_payload = {
+            "kind": action.kind,
+            "name": action.name,
+            "order": action.order,
+            "blocking": action.blocking,
+            "parameters": self._drop_callables(params),
+        }
+        try:
+            return store_tool_output(
+                session_id=self.session_id,
+                job_id=get_current_job(),
+                action=action_payload,
+                tool_name=tool_name,
+                raw_result=raw_result,
+                summary=summary,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Failed to store tool output for %s in session %s: %s",
+                tool_name,
+                self.session_id,
+                exc,
+            )
+        return None
+
+    def _attach_storage_payload_to_tool_result(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        storage_info: Optional[Any],
+        raw_result: Any,
+        sanitized: Dict[str, Any],
+    ) -> None:
+        if storage_info is None or not self.session_id:
+            return
+        try:
+            from app.services.upload_storage import ensure_session_dir
+
+            session_root = ensure_session_dir(self.session_id)
+
+            def _abs(rel: Optional[str]) -> Optional[str]:
+                if not rel:
+                    return None
                 try:
-                    tree = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id)
-                    if tree.has_node(publish_task_id):
-                        task_node = tree.get_node(publish_task_id)
-                        publish_task_name = task_node.display_name()
-                        publish_task_instruction = task_node.instruction
-                except Exception as exc:  # pragma: no cover - best-effort
-                    logger.debug(
-                        "Unable to resolve task context for deliverable publish in session %s: %s",
-                        self.session_id,
-                        exc,
-                    )
+                    return str((session_root / Path(rel)).resolve())
+                except Exception:
+                    return str(session_root / Path(rel))
 
+            storage_payload: Dict[str, Any] = {
+                "session_id": self.session_id,
+                "job_id": get_current_job(),
+                "tool": tool_name,
+                "step_order": action.order,
+                "output_dir": _abs(getattr(storage_info, "output_dir", None)),
+                "result_path": _abs(getattr(storage_info, "result_path", None)),
+                "manifest_path": _abs(getattr(storage_info, "manifest_path", None)),
+                "preview_path": _abs(getattr(storage_info, "preview_path", None)),
+            }
+            storage_payload["relative"] = {
+                "output_dir": getattr(storage_info, "output_dir", None),
+                "result_path": getattr(storage_info, "result_path", None),
+                "manifest_path": getattr(storage_info, "manifest_path", None),
+                "preview_path": getattr(storage_info, "preview_path", None),
+            }
+
+            if isinstance(raw_result, dict):
+                raw_result.setdefault("storage", storage_payload)
+            if isinstance(sanitized, dict):
+                sanitized.setdefault("storage", storage_payload)
+
+            if tool_name == "phagescope":
+                self._update_phagescope_output_metadata(storage_payload)
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.debug("Failed to attach phagescope storage paths: %s", exc)
+
+    def _update_phagescope_output_metadata(self, storage_payload: Dict[str, Any]) -> None:
+        if not self.session_id:
+            return
+
+        def _updater(metadata: Dict[str, Any]) -> Dict[str, Any]:
+            metadata["phagescope_last_output"] = storage_payload
+            items = metadata.get("phagescope_recent_outputs")
+            if not isinstance(items, list):
+                items = []
+            result_path = storage_payload.get("result_path")
+            items = [
+                item for item in items
+                if not (isinstance(item, dict) and item.get("result_path") == result_path)
+            ]
+            items.insert(0, storage_payload)
+            metadata["phagescope_recent_outputs"] = items[:10]
+            return metadata
+
+        _update_session_metadata(self.session_id, _updater)
+        self.extra_context["phagescope_last_output"] = storage_payload
+
+    def _maybe_record_phagescope_submit_memory(
+        self,
+        tool_name: str,
+        params: Dict[str, Any],
+        sanitized: Dict[str, Any],
+    ) -> None:
+        if tool_name != "phagescope" or not self.session_id:
+            return
+        action_value = params.get("action")
+        if action_value != "submit" or not sanitized.get("success"):
+            return
+        try:
+            _record_phagescope_task_memory(self.session_id, params, sanitized)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                "Failed to record phagescope task memory for %s: %s",
+                self.session_id,
+                exc,
+            )
+
+    def _resolve_deliverable_publish_task_context(
+        self,
+    ) -> Tuple[Optional[int], Optional[str], Optional[str]]:
+        publish_task_id: Optional[int] = None
+        publish_task_name: Optional[str] = None
+        publish_task_instruction: Optional[str] = None
+
+        try:
+            current_task_id = self.extra_context.get("current_task_id")
+            if current_task_id is not None:
+                publish_task_id = int(current_task_id)
+        except (TypeError, ValueError):
+            publish_task_id = None
+
+        if publish_task_id is None or self.plan_session.plan_id is None:
+            return publish_task_id, publish_task_name, publish_task_instruction
+
+        try:
+            tree = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id)
+            if tree.has_node(publish_task_id):
+                task_node = tree.get_node(publish_task_id)
+                publish_task_name = task_node.display_name()
+                publish_task_instruction = task_node.instruction
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.debug(
+                "Unable to resolve task context for deliverable publish in session %s: %s",
+                self.session_id,
+                exc,
+            )
+
+        return publish_task_id, publish_task_name, publish_task_instruction
+
+    def _publish_tool_deliverables(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        raw_result: Any,
+        summary: str,
+        success: Any,
+    ) -> Optional[Any]:
+        if self.session_id:
             try:
                 publish_payload = self._drop_callables(raw_result)
-                deliverable_report = get_deliverable_publisher().publish_from_tool_result(
+                (
+                    publish_task_id,
+                    publish_task_name,
+                    publish_task_instruction,
+                ) = self._resolve_deliverable_publish_task_context()
+                return get_deliverable_publisher().publish_from_tool_result(
                     session_id=self.session_id,
                     tool_name=tool_name,
                     raw_result=publish_payload,
@@ -7313,314 +7308,365 @@ class StructuredChatAgent:
                     tool_name,
                     exc,
                 )
+        return None
 
+    @staticmethod
+    def _build_tool_action_message(tool_name: str, summary: str, success: Any) -> str:
         if success is False:
-            message = summary or f"{tool_name} failed to execute."
-        else:
-            message = summary or f"{tool_name} finished execution."
+            return summary or f"{tool_name} failed to execute."
+        return summary or f"{tool_name} finished execution."
 
-        # 💾 A-mem集成：保存执行结果（异步，不阻塞主流程）
-        if tool_name == "claude_code":
-            try:
-                from ..services.amem_client import get_amem_client
-                amem_client = get_amem_client()
-                
-                if amem_client.enabled:
-                    # 异步保存到A-mem
-                    asyncio.create_task(
-                        amem_client.save_execution(
-                            task=original_task,  # 使用原始任务描述
-                            result=sanitized,
-                            session_id=self.session_id,
-                            plan_id=self.plan_session.plan_id,
-                            key_findings=summary  # 将总结作为关键发现
-                        )
+    def _maybe_schedule_claude_code_amem_save(
+        self,
+        tool_name: str,
+        original_task: Optional[str],
+        sanitized: Dict[str, Any],
+        summary: str,
+    ) -> None:
+        if tool_name != "claude_code":
+            return
+        try:
+            from ..services.amem_client import get_amem_client
+
+            amem_client = get_amem_client()
+            if amem_client.enabled:
+                asyncio.create_task(
+                    amem_client.save_execution(
+                        task=original_task,
+                        result=sanitized,
+                        session_id=self.session_id,
+                        plan_id=self.plan_session.plan_id,
+                        key_findings=summary,
                     )
-                    logger.info("[AMEM] Scheduled execution result save")
-            except Exception as amem_err:
-                logger.warning(f"[AMEM] Failed to schedule save: {amem_err}")
-                # 不影响主流程
+                )
+                logger.info("[AMEM] Scheduled execution result save")
+        except Exception as amem_err:
+            logger.warning(f"[AMEM] Failed to schedule save: {amem_err}")
 
-        # 🔄 任务状态同步：如果有关联的 current_task_id，更新任务状态
+    def _sync_task_status_after_tool_execution(
+        self,
+        tool_name: str,
+        success: Any,
+        summary: str,
+        message: str,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if (
+            tool_name == "claude_code"
+            and isinstance(params, dict)
+            and params.get("require_task_context") is False
+        ):
+            logger.info(
+                "[TASK_SYNC] Skipping task status sync for unscoped claude_code execution"
+            )
+            return
+
         current_task_id = self.extra_context.get("current_task_id")
-        if current_task_id is not None and self.plan_session.plan_id is not None:
-            try:
-                new_status = "completed" if success else "failed"
-                task_id_int = int(current_task_id)
-                
-                # 更新当前任务状态
-                self.plan_session.repo.update_task(
+        if current_task_id is None or self.plan_session.plan_id is None:
+            return
+        try:
+            new_status = "completed" if success else "failed"
+            task_id_int = int(current_task_id)
+
+            self.plan_session.repo.update_task(
+                self.plan_session.plan_id,
+                task_id_int,
+                status=new_status,
+                execution_result=summary or message,
+            )
+            logger.info(
+                "[TASK_SYNC] Updated task %s status to %s after tool %s execution",
+                current_task_id,
+                new_status,
+                tool_name,
+            )
+
+            if new_status == "completed":
+                cascade_result = f"Completed as part of parent task #{task_id_int}"
+                descendants_updated = self.plan_session.repo.cascade_update_descendants_status(
                     self.plan_session.plan_id,
                     task_id_int,
                     status=new_status,
-                    execution_result=summary or message,
+                    execution_result=cascade_result,
                 )
-                logger.info(
-                    "[TASK_SYNC] Updated task %s status to %s after tool %s execution",
-                    current_task_id,
-                    new_status,
-                    tool_name,
-                )
-                
-                # 🔄 级联更新：如果是 root 任务完成，也更新所有子任务
-                if new_status == "completed":
-                    cascade_result = f"Completed as part of parent task #{task_id_int}"
-                    descendants_updated = self.plan_session.repo.cascade_update_descendants_status(
-                        self.plan_session.plan_id,
-                        task_id_int,
-                        status=new_status,
-                        execution_result=cascade_result,
+                if descendants_updated > 0:
+                    logger.info(
+                        "[TASK_SYNC] Cascade updated %d descendant tasks to %s",
+                        descendants_updated,
+                        new_status,
                     )
-                    if descendants_updated > 0:
-                        logger.info(
-                            "[TASK_SYNC] Cascade updated %d descendant tasks to %s",
-                            descendants_updated,
-                            new_status,
-                        )
-                
-                self._dirty = True
-            except Exception as sync_err:
-                logger.warning(
-                    "[TASK_SYNC] Failed to update task %s status: %s",
-                    current_task_id,
-                    sync_err,
-                )
 
-        return AgentStep(
-            action=action,
-            success=bool(success),
-            message=message,
-            details={
-                "tool": tool_name,
-                "parameters": self._drop_callables(params),
-                "result": sanitized,
-                "summary": summary,
-                "storage": storage_info.__dict__ if storage_info else None,
-                "deliverables": deliverable_report.to_dict() if deliverable_report else None,
-            },
-        )
+            self._dirty = True
+        except Exception as sync_err:
+            logger.warning(
+                "[TASK_SYNC] Failed to update task %s status: %s",
+                current_task_id,
+                sync_err,
+            )
 
     async def _handle_plan_action(self, action: LLMAction) -> AgentStep:
         params = action.parameters or {}
         if action.name == "create_plan":
-            title = params.get("title")
-            goal = params.get("goal")
-            if not title:
-                if isinstance(goal, str) and goal.strip():
-                    title = goal.strip()[:80]
-                else:
-                    title = f"Plan-{self.conversation_id or 'new'}"
-            description = params.get("description")
-            owner = params.get("owner")
-            metadata = params.get("metadata")
-            if metadata is None:
-                metadata = {}
-            if not isinstance(metadata, dict):
-                metadata = {}
-            # Ensure plan origin is recorded for later comparison (standard vs deepthink).
-            metadata.setdefault("plan_origin", "standard")
-            metadata.setdefault("created_by", "structured_agent")
-            # First create an empty plan record
-            new_tree = self.plan_session.repo.create_plan(
-                title=title,
-                owner=owner,
-                description=description,
-                metadata=metadata,
-            )
-            
-            # Create a ROOT task first - enforce a single root node for the plan
-            raw_tasks = params.get("tasks")
-            root_node = self.plan_session.repo.create_task(
-                new_tree.id,
-                name=title,
-                status="pending",
-                instruction=description or f"Root task for plan: {title}",
-                parent_id=None,  # ROOT has no parent
-                metadata={"is_root": True, "task_type": "root"},
-            )
-            root_task_id: Optional[int] = root_node.id
-            logger.info("Created ROOT task %s for plan %s", root_task_id, new_tree.id)
-            
-            # If the caller provided an explicit task list, materialize it immediately
-            created_seed_tasks: List[Any] = []
-            if isinstance(raw_tasks, list) and raw_tasks:
-                for idx, t in enumerate(raw_tasks):
-                    if not isinstance(t, dict):
-                        continue
-                    instr_raw = t.get("instruction") or t.get("description") or ""
-                    try:
-                        instruction = str(instr_raw).strip()
-                    except Exception:
-                        instruction = ""
-                    name_raw = t.get("name") or t.get("title")
-                    name: str
-                    if isinstance(name_raw, str) and name_raw.strip():
-                        name = name_raw.strip()
-                    else:
-                        # Derive a short step name from the instruction when no explicit name is given
-                        base = instruction.strip()
-                        if "。" in base:
-                            base = base.split("。", 1)[0]
-                        elif "." in base:
-                            base = base.split(".", 1)[0]
-                        elif "\n" in base:
-                            base = base.split("\n", 1)[0]
-                        base = base[:40] if base else f"Step {idx + 1}"
-                        name = f"Step {idx + 1}: {base}" if base else f"Step {idx + 1}"
-
-                    status_raw = t.get("status") or "pending"
-                    if not isinstance(status_raw, str):
-                        status = str(status_raw).strip() or "pending"
-                    else:
-                        status = status_raw.strip() or "pending"
-
-                    parent_id_raw = t.get("parent_id")
-                    # Default to ROOT task if no parent_id is specified
-                    parent_id = root_task_id
-                    if parent_id_raw is not None:
-                        try:
-                            parent_id = int(parent_id_raw)
-                        except (TypeError, ValueError):
-                            parent_id = root_task_id  # Fall back to ROOT if invalid
-                    # Enforce single root: if resolved parent_id is None, force to root_task_id
-                    if parent_id is None:
-                        parent_id = root_task_id
-
-                    deps_raw = t.get("dependencies")
-                    deps: Optional[List[int]] = None
-                    if isinstance(deps_raw, list):
-                        tmp: List[int] = []
-                        for d in deps_raw:
-                            try:
-                                tmp.append(int(d))
-                            except (TypeError, ValueError):
-                                continue
-                        deps = tmp or None
-
-                    meta_raw = t.get("metadata")
-                    meta = meta_raw if isinstance(meta_raw, dict) else None
-
-                    try:
-                        node = self.plan_session.repo.create_task(
-                            new_tree.id,
-                            name=name,
-                            status=status,
-                            instruction=instruction or None,
-                            parent_id=parent_id,
-                            metadata=meta,
-                            dependencies=deps,
-                        )
-                        created_seed_tasks.append(node)
-                    except Exception as exc:  # pragma: no cover - defensive
-                        logger.warning(
-                            "Failed to create seed task for plan %s: %s", new_tree.id, exc
-                        )
-
-            # Bind session to the new plan and refresh the in-memory tree so that
-            # any seed tasks are immediately visible to the caller and UI.
-            self.plan_session.bind(new_tree.id)
-            self._refresh_plan_tree(force_reload=True)
-            effective_tree = self.plan_tree or new_tree
-            self.plan_tree = effective_tree
-            self.extra_context["plan_id"] = effective_tree.id
-            message = f'Created and bound new plan #{effective_tree.id} "{effective_tree.title}".'
-            if created_seed_tasks:
-                message += f" Seeded with {len(created_seed_tasks)} top-level task(s) from the proposed plan."
-            details = {
-                "plan_id": effective_tree.id,
-                "title": effective_tree.title,
-                "task_count": effective_tree.node_count(),
-            }
-            if created_seed_tasks:
-                details["seed_tasks"] = [node.model_dump() for node in created_seed_tasks]
-            self._dirty = True
-
-            decomposition_info = self._auto_decompose_plan(new_tree.id)
-            if decomposition_info:
-                job = decomposition_info.get("job")
-                summary = decomposition_info.get("result")
-                if job is not None:
-                    job_payload = job.to_payload()
-                    details["decomposition_job"] = job_payload
-                    details["target_task_name"] = new_tree.title
-                    message += " Automatic decomposition has been submitted for background execution."
-                elif summary is not None:
-                    created_count = len(summary.created_tasks)
-                    details["decomposition"] = {
-                        "created": [
-                            node.model_dump() for node in summary.created_tasks
-                        ],
-                        "failed_nodes": summary.failed_nodes,
-                        "stopped_reason": summary.stopped_reason,
-                        "stats": summary.stats,
-                    }
-                    if created_count:
-                        message += f" Automatic decomposition produced {created_count} tasks."
-                    else:
-                        message += " Automatic decomposition finished without creating new tasks."
-            elif self._decomposition_notes:
-                details["decomposition_notes"] = list(self._decomposition_notes)
-
-            return AgentStep(
-                action=action, success=True, message=message, details=details
-            )
+            return self._handle_create_plan_action(action, params)
 
         if action.name == "list_plans":
-            plans = self.plan_session.list_plans()
-            details = {"plans": [plan.model_dump() for plan in plans]}
-            message = "Available plans have been listed." if plans else "No plans are currently available."
-            return AgentStep(
-                action=action, success=True, message=message, details=details
-            )
+            return self._handle_list_plans_action(action)
 
         if action.name == "execute_plan":
-            tree = self._require_plan_bound()
-            if self.plan_executor is None:
-                raise ValueError("Plan executor is not enabled in this environment.")
-            # 构建会话上下文，传递给 Plan 执行器
-            session_ctx = {
-                "session_id": self.session_id,  # 用于工具调用
-                "user_message": self._current_user_message if hasattr(self, "_current_user_message") else None,
-                "chat_history": self.history,
-                "recent_tool_results": self.extra_context.get("recent_tool_results", []),
-            }
-            exec_config = ExecutionConfig(session_context=session_ctx)
-            summary = await asyncio.to_thread(self.plan_executor.execute_plan, tree.id, config=exec_config)
-            executed_count = len(summary.executed_task_ids)
-            failed_count = len(summary.failed_task_ids)
-            skipped_count = len(summary.skipped_task_ids)
-            parts = [f"Plan #{tree.id} finished execution"]
-            parts.append(f"Succeeded tasks: {executed_count}")
-            if failed_count:
-                parts.append(f"Failed tasks: {failed_count}")
-            if skipped_count:
-                parts.append(f"Skipped tasks: {skipped_count}")
-            message = "，".join(parts) + "。"
-            details = summary.to_dict()
-            success = failed_count == 0 and skipped_count == 0
-            self._refresh_plan_tree(force_reload=True)
-            return AgentStep(
-                action=action, success=success, message=message, details=details
-            )
+            return await self._handle_execute_plan_action(action)
 
         if action.name == "delete_plan":
-            plan_id_param = params.get("plan_id") or self.plan_session.plan_id
-            plan_id = self._coerce_int(plan_id_param, "plan_id")
-            self.plan_session.repo.delete_plan(plan_id)
-            detached = False
-            if self.plan_session.plan_id == plan_id:
-                self.plan_session.detach()
-                self.plan_tree = None
-                self.extra_context.pop("plan_id", None)
-                detached = True
-            self._dirty = False
-            message = f"Plan #{plan_id} has been deleted."
-            details = {"plan_id": plan_id, "detached": detached}
-            return AgentStep(
-                action=action, success=True, message=message, details=details
-            )
+            return self._handle_delete_plan_action(action, params)
 
         return self._handle_unknown_action(action)
+
+    def _handle_create_plan_action(
+        self,
+        action: LLMAction,
+        params: Dict[str, Any],
+    ) -> AgentStep:
+        title = params.get("title")
+        goal = params.get("goal")
+        if not title:
+            if isinstance(goal, str) and goal.strip():
+                title = goal.strip()[:80]
+            else:
+                title = f"Plan-{self.conversation_id or 'new'}"
+        description = params.get("description")
+        owner = params.get("owner")
+        metadata = params.get("metadata")
+        if metadata is None:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        # Ensure plan origin is recorded for later comparison (standard vs deepthink).
+        metadata.setdefault("plan_origin", "standard")
+        metadata.setdefault("created_by", "structured_agent")
+        # First create an empty plan record
+        new_tree = self.plan_session.repo.create_plan(
+            title=title,
+            owner=owner,
+            description=description,
+            metadata=metadata,
+        )
+
+        # Create a ROOT task first - enforce a single root node for the plan
+        raw_tasks = params.get("tasks")
+        root_node = self.plan_session.repo.create_task(
+            new_tree.id,
+            name=title,
+            status="pending",
+            instruction=description or f"Root task for plan: {title}",
+            parent_id=None,  # ROOT has no parent
+            metadata={"is_root": True, "task_type": "root"},
+        )
+        root_task_id: Optional[int] = root_node.id
+        logger.info("Created ROOT task %s for plan %s", root_task_id, new_tree.id)
+
+        created_seed_tasks = self._create_seed_tasks_for_new_plan(
+            plan_id=new_tree.id,
+            raw_tasks=raw_tasks,
+            root_task_id=root_task_id,
+        )
+
+        # Bind session to the new plan and refresh the in-memory tree so that
+        # any seed tasks are immediately visible to the caller and UI.
+        self.plan_session.bind(new_tree.id)
+        self._refresh_plan_tree(force_reload=True)
+        effective_tree = self.plan_tree or new_tree
+        self.plan_tree = effective_tree
+        self.extra_context["plan_id"] = effective_tree.id
+        message = f'Created and bound new plan #{effective_tree.id} "{effective_tree.title}".'
+        if created_seed_tasks:
+            message += f" Seeded with {len(created_seed_tasks)} top-level task(s) from the proposed plan."
+        details = {
+            "plan_id": effective_tree.id,
+            "title": effective_tree.title,
+            "task_count": effective_tree.node_count(),
+        }
+        if created_seed_tasks:
+            details["seed_tasks"] = [node.model_dump() for node in created_seed_tasks]
+        self._dirty = True
+
+        message = self._append_create_plan_decomposition_details(
+            plan_id=new_tree.id,
+            plan_title=new_tree.title,
+            details=details,
+            message=message,
+        )
+
+        return AgentStep(
+            action=action, success=True, message=message, details=details
+        )
+
+    def _create_seed_tasks_for_new_plan(
+        self,
+        plan_id: int,
+        raw_tasks: Any,
+        root_task_id: Optional[int],
+    ) -> List[Any]:
+        created_seed_tasks: List[Any] = []
+        if not isinstance(raw_tasks, list) or not raw_tasks:
+            return created_seed_tasks
+
+        for idx, task_item in enumerate(raw_tasks):
+            if not isinstance(task_item, dict):
+                continue
+            instr_raw = task_item.get("instruction") or task_item.get("description") or ""
+            try:
+                instruction = str(instr_raw).strip()
+            except Exception:
+                instruction = ""
+            name_raw = task_item.get("name") or task_item.get("title")
+            name: str
+            if isinstance(name_raw, str) and name_raw.strip():
+                name = name_raw.strip()
+            else:
+                base = instruction.strip()
+                if "。" in base:
+                    base = base.split("。", 1)[0]
+                elif "." in base:
+                    base = base.split(".", 1)[0]
+                elif "\n" in base:
+                    base = base.split("\n", 1)[0]
+                base = base[:40] if base else f"Step {idx + 1}"
+                name = f"Step {idx + 1}: {base}" if base else f"Step {idx + 1}"
+
+            status_raw = task_item.get("status") or "pending"
+            if not isinstance(status_raw, str):
+                status = str(status_raw).strip() or "pending"
+            else:
+                status = status_raw.strip() or "pending"
+
+            parent_id_raw = task_item.get("parent_id")
+            parent_id = root_task_id
+            if parent_id_raw is not None:
+                try:
+                    parent_id = int(parent_id_raw)
+                except (TypeError, ValueError):
+                    parent_id = root_task_id
+            if parent_id is None:
+                parent_id = root_task_id
+
+            deps_raw = task_item.get("dependencies")
+            deps: Optional[List[int]] = None
+            if isinstance(deps_raw, list):
+                tmp: List[int] = []
+                for dep in deps_raw:
+                    try:
+                        tmp.append(int(dep))
+                    except (TypeError, ValueError):
+                        continue
+                deps = tmp or None
+
+            meta_raw = task_item.get("metadata")
+            meta = meta_raw if isinstance(meta_raw, dict) else None
+
+            try:
+                node = self.plan_session.repo.create_task(
+                    plan_id,
+                    name=name,
+                    status=status,
+                    instruction=instruction or None,
+                    parent_id=parent_id,
+                    metadata=meta,
+                    dependencies=deps,
+                )
+                created_seed_tasks.append(node)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed to create seed task for plan %s: %s", plan_id, exc
+                )
+        return created_seed_tasks
+
+    def _append_create_plan_decomposition_details(
+        self,
+        plan_id: int,
+        plan_title: str,
+        details: Dict[str, Any],
+        message: str,
+    ) -> str:
+        decomposition_info = self._auto_decompose_plan(plan_id)
+        if decomposition_info:
+            job = decomposition_info.get("job")
+            summary = decomposition_info.get("result")
+            if job is not None:
+                details["decomposition_job"] = job.to_payload()
+                details["target_task_name"] = plan_title
+                return message + " Automatic decomposition has been submitted for background execution."
+            if summary is not None:
+                created_count = len(summary.created_tasks)
+                details["decomposition"] = {
+                    "created": [node.model_dump() for node in summary.created_tasks],
+                    "failed_nodes": summary.failed_nodes,
+                    "stopped_reason": summary.stopped_reason,
+                    "stats": summary.stats,
+                }
+                if created_count:
+                    return message + f" Automatic decomposition produced {created_count} tasks."
+                return message + " Automatic decomposition finished without creating new tasks."
+        elif self._decomposition_notes:
+            details["decomposition_notes"] = list(self._decomposition_notes)
+        return message
+
+    def _handle_list_plans_action(self, action: LLMAction) -> AgentStep:
+        plans = self.plan_session.list_plans()
+        details = {"plans": [plan.model_dump() for plan in plans]}
+        message = "Available plans have been listed." if plans else "No plans are currently available."
+        return AgentStep(
+            action=action, success=True, message=message, details=details
+        )
+
+    async def _handle_execute_plan_action(self, action: LLMAction) -> AgentStep:
+        tree = self._require_plan_bound()
+        if self.plan_executor is None:
+            raise ValueError("Plan executor is not enabled in this environment.")
+        # 构建会话上下文，传递给 Plan 执行器
+        session_ctx = {
+            "session_id": self.session_id,  # 用于工具调用
+            "user_message": self._current_user_message if hasattr(self, "_current_user_message") else None,
+            "chat_history": self.history,
+            "recent_tool_results": self.extra_context.get("recent_tool_results", []),
+        }
+        exec_config = ExecutionConfig(session_context=session_ctx)
+        summary = await asyncio.to_thread(self.plan_executor.execute_plan, tree.id, config=exec_config)
+        executed_count = len(summary.executed_task_ids)
+        failed_count = len(summary.failed_task_ids)
+        skipped_count = len(summary.skipped_task_ids)
+        parts = [f"Plan #{tree.id} finished execution"]
+        parts.append(f"Succeeded tasks: {executed_count}")
+        if failed_count:
+            parts.append(f"Failed tasks: {failed_count}")
+        if skipped_count:
+            parts.append(f"Skipped tasks: {skipped_count}")
+        message = "，".join(parts) + "。"
+        details = summary.to_dict()
+        success = failed_count == 0 and skipped_count == 0
+        self._refresh_plan_tree(force_reload=True)
+        return AgentStep(
+            action=action, success=success, message=message, details=details
+        )
+
+    def _handle_delete_plan_action(
+        self,
+        action: LLMAction,
+        params: Dict[str, Any],
+    ) -> AgentStep:
+        plan_id_param = params.get("plan_id") or self.plan_session.plan_id
+        plan_id = self._coerce_int(plan_id_param, "plan_id")
+        self.plan_session.repo.delete_plan(plan_id)
+        detached = False
+        if self.plan_session.plan_id == plan_id:
+            self.plan_session.detach()
+            self.plan_tree = None
+            self.extra_context.pop("plan_id", None)
+            detached = True
+        self._dirty = False
+        message = f"Plan #{plan_id} has been deleted."
+        details = {"plan_id": plan_id, "detached": detached}
+        return AgentStep(
+            action=action, success=True, message=message, details=details
+        )
 
     def _handle_task_action(self, action: LLMAction) -> AgentStep:
         params = action.parameters or {}
@@ -8653,7 +8699,7 @@ class StructuredChatAgent:
     def _truncate_large_fields(
         self, data: Any, max_field_length: int = 1000, current_depth: int = 0
     ) -> Any:
-        """递归截断大文本字段，保留结构"""
+        """Recursively truncate large text fields while preserving structure."""
         if current_depth > 5:  # 防止过深递归
             return "...[nested data truncated]"
         

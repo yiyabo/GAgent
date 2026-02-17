@@ -16,6 +16,11 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 import { ENV } from '@/config/env';
 import { planTreeApi } from '@api/planTree';
 import type { ActionLogEntry, DecompositionJobStatus, JobLogEvent } from '@/types';
+import {
+  computePlanDecomposeProgress,
+  computePlanExecuteProgress,
+  computeToolProgressSnapshot,
+} from '@utils/jobProgress';
 import { dispatchPlanSyncEvent } from '@utils/planSyncEvents';
 
 dayjs.extend(relativeTime);
@@ -122,12 +127,6 @@ const jobTypeMeta: Record<
     label: '后台任务日志',
     color: 'geekblue',
   },
-};
-
-const toNumber = (value: unknown): number | null => {
-  if (value === null || value === undefined) return null;
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : null;
 };
 
 type StreamMessage =
@@ -781,104 +780,215 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
     return null;
   };
 
-  const progressContext = React.useMemo(() => {
+  const progressSourceJob = React.useMemo(
+    () => ({
+      status,
+      stats,
+      params: jobParams,
+      logs,
+    }),
+    [jobParams, logs, stats, status]
+  );
+
+  const decomposeProgressContext = React.useMemo(() => {
     if (jobType !== 'plan_decompose') return null;
-    const totalBudget =
-      toNumber(jobParams?.node_budget) ??
-      toNumber(stats?.node_budget);
-    let remainingBudget: number | null = null;
-    let queueRemaining: number | null = null;
-    for (let idx = logs.length - 1; idx >= 0; idx -= 1) {
-      const metadata = logs[idx]?.metadata;
-      if (!metadata || typeof metadata !== 'object') continue;
-      if (remainingBudget === null) {
-        remainingBudget = toNumber((metadata as Record<string, any>).budget_remaining);
-      }
-      if (queueRemaining === null) {
-        queueRemaining = toNumber((metadata as Record<string, any>).queue_remaining);
-      }
-      if (remainingBudget !== null || queueRemaining !== null) {
-        break;
-      }
-    }
-    const consumedFromStats = toNumber(stats?.consumed_budget);
-    const consumedBudget =
-      consumedFromStats ??
-      (totalBudget !== null && remainingBudget !== null
-        ? Math.max(0, totalBudget - remainingBudget)
-        : null);
-    const percentRaw =
-      totalBudget !== null && totalBudget > 0 && consumedBudget !== null
-        ? Math.round((consumedBudget / totalBudget) * 100)
-        : null;
-    const percent =
-      percentRaw !== null ? Math.max(0, Math.min(100, percentRaw)) : null;
-    return {
-      totalBudget,
-      consumedBudget,
-      remainingBudget,
-      queueRemaining,
-      percent,
-    };
-  }, [jobParams, jobType, logs, stats]);
+    return computePlanDecomposeProgress(progressSourceJob);
+  }, [jobType, progressSourceJob]);
+
+  const executeProgressContext = React.useMemo(() => {
+    if (jobType !== 'plan_execute') return null;
+    return computePlanExecuteProgress(progressSourceJob);
+  }, [jobType, progressSourceJob]);
+
+  const toolProgressContext = React.useMemo(
+    () => computeToolProgressSnapshot(progressSourceJob),
+    [progressSourceJob]
+  );
 
   const renderProgressBar = () => {
-    if (jobType !== 'plan_decompose') return null;
     const isFinal = FINAL_STATUSES.has(status);
-    const percent =
-      progressContext?.percent !== null && progressContext?.percent !== undefined
-        ? progressContext.percent
-        : isFinal
-          ? 100
-          : 0;
-    const progressStatus =
-      status === 'failed' ? 'exception' : isFinal ? 'success' : 'active';
-    const showBudget =
-      progressContext?.totalBudget !== null &&
-      progressContext?.totalBudget !== undefined &&
-      progressContext?.consumedBudget !== null &&
-      progressContext?.consumedBudget !== undefined;
-    const detailParts: string[] = [];
-    if (showBudget) {
-      detailParts.push(
-        `已处理 ${Math.max(0, Math.round(progressContext!.consumedBudget!))}/${Math.round(
-          progressContext!.totalBudget!
-        )}`
+
+    if (jobType === 'plan_decompose') {
+      const percent =
+        decomposeProgressContext?.percent !== null &&
+        decomposeProgressContext?.percent !== undefined
+          ? decomposeProgressContext.percent
+          : isFinal
+            ? 100
+            : 0;
+      const progressStatus =
+        status === 'failed' ? 'exception' : isFinal ? 'success' : 'active';
+      const showBudget =
+        decomposeProgressContext?.totalBudget !== null &&
+        decomposeProgressContext?.totalBudget !== undefined &&
+        decomposeProgressContext?.consumedBudget !== null &&
+        decomposeProgressContext?.consumedBudget !== undefined;
+      const detailParts: string[] = [];
+      if (showBudget) {
+        detailParts.push(
+          `已处理 ${Math.max(0, Math.round(decomposeProgressContext!.consumedBudget!))}/${Math.round(
+            decomposeProgressContext!.totalBudget!
+          )}`
+        );
+      }
+      if (
+        decomposeProgressContext?.queueRemaining !== null &&
+        decomposeProgressContext?.queueRemaining !== undefined
+      ) {
+        detailParts.push(`队列剩余 ${Math.max(0, Math.round(decomposeProgressContext.queueRemaining))}`);
+      }
+      const detailText = detailParts.length ? detailParts.join(' · ') : null;
+      return (
+        <div style={{ width: '100%' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            拆解进度
+          </Text>
+          <Progress
+            percent={percent}
+            status={progressStatus as any}
+            size="small"
+            showInfo
+            format={() => {
+              if (
+                decomposeProgressContext?.percent !== null &&
+                decomposeProgressContext?.percent !== undefined
+              ) {
+                return `${percent}%`;
+              }
+              if (status === 'failed') return '失败';
+              if (isFinal) return '完成';
+              return '估算中';
+            }}
+          />
+          {detailText && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {detailText}
+            </Text>
+          )}
+        </div>
       );
     }
-    if (
-      progressContext?.queueRemaining !== null &&
-      progressContext?.queueRemaining !== undefined
-    ) {
-      detailParts.push(`队列剩余 ${Math.max(0, Math.round(progressContext.queueRemaining))}`);
-    }
-    const detailText = detailParts.length ? detailParts.join(' · ') : null;
-    return (
-      <div style={{ width: '100%' }}>
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          拆解进度
-        </Text>
-        <Progress
-          percent={percent}
-          status={progressStatus as any}
-          size="small"
-          showInfo
-          format={() => {
-            if (progressContext?.percent !== null && progressContext?.percent !== undefined) {
-              return `${percent}%`;
-            }
-            if (status === 'failed') return '失败';
-            if (isFinal) return '完成';
-            return '估算中';
-          }}
-        />
-        {detailText && (
+
+    if (jobType === 'plan_execute') {
+      const percent =
+        executeProgressContext?.percent !== null &&
+        executeProgressContext?.percent !== undefined
+          ? executeProgressContext.percent
+          : isFinal
+            ? 100
+            : 0;
+      const progressStatus =
+        status === 'failed' ? 'exception' : isFinal ? 'success' : 'active';
+      const detailParts: string[] = [];
+      if (
+        executeProgressContext?.totalSteps !== null &&
+        executeProgressContext?.totalSteps !== undefined
+      ) {
+        detailParts.push(
+          `已完成 ${Math.max(0, executeProgressContext.doneSteps)}/${Math.max(
+            1,
+            executeProgressContext.totalSteps
+          )}`
+        );
+      }
+      if (executeProgressContext) {
+        detailParts.push(
+          `成功 ${executeProgressContext.executed} · 失败 ${executeProgressContext.failed} · 跳过 ${executeProgressContext.skipped}`
+        );
+      }
+      if (
+        executeProgressContext?.currentStep !== null &&
+        executeProgressContext?.currentStep !== undefined &&
+        !isFinal
+      ) {
+        const stepText =
+          executeProgressContext.totalSteps && executeProgressContext.totalSteps > 0
+            ? `${Math.max(1, Math.round(executeProgressContext.currentStep))}/${Math.round(
+                executeProgressContext.totalSteps
+              )}`
+            : `${Math.max(1, Math.round(executeProgressContext.currentStep))}`;
+        detailParts.push(`当前步骤 ${stepText}`);
+      }
+      if (
+        executeProgressContext?.currentTaskId !== null &&
+        executeProgressContext?.currentTaskId !== undefined &&
+        !isFinal
+      ) {
+        detailParts.push(`任务 #${Math.round(executeProgressContext.currentTaskId)}`);
+      }
+      const detailText = detailParts.length ? detailParts.join(' · ') : null;
+      return (
+        <div style={{ width: '100%' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            {detailText}
+            执行进度
           </Text>
-        )}
-      </div>
-    );
+          <Progress
+            percent={percent}
+            status={progressStatus as any}
+            size="small"
+            showInfo
+            format={() => {
+              if (
+                executeProgressContext?.percent !== null &&
+                executeProgressContext?.percent !== undefined
+              ) {
+                return `${percent}%`;
+              }
+              if (status === 'failed') return '失败';
+              if (isFinal) return '完成';
+              return '估算中';
+            }}
+          />
+          {detailText && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {detailText}
+            </Text>
+          )}
+        </div>
+      );
+    }
+
+    if (toolProgressContext && toolProgressContext.percent !== null) {
+      const progressStatus =
+        status === 'failed' ? 'exception' : isFinal ? 'success' : 'active';
+      const toolLabel = toolProgressContext.tool ? toolProgressContext.tool : '工具';
+      const detailParts: string[] = [];
+      if (toolProgressContext.status) {
+        detailParts.push(`状态 ${toolProgressContext.status}`);
+      }
+      if (toolProgressContext.phase) {
+        detailParts.push(`阶段 ${toolProgressContext.phase}`);
+      }
+      if (
+        toolProgressContext.done !== null &&
+        toolProgressContext.total !== null &&
+        toolProgressContext.total > 0
+      ) {
+        detailParts.push(`进度 ${toolProgressContext.done}/${toolProgressContext.total}`);
+      }
+      const detailText = detailParts.length > 0 ? detailParts.join(' · ') : null;
+      return (
+        <div style={{ width: '100%' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {toolLabel} 进度
+          </Text>
+          <Progress
+            percent={toolProgressContext.percent}
+            status={progressStatus as any}
+            size="small"
+            showInfo
+            format={() => `${toolProgressContext.percent}%`}
+          />
+          {detailText && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {detailText}
+            </Text>
+          )}
+        </div>
+      );
+    }
+
+    return null;
   };
 
   return (

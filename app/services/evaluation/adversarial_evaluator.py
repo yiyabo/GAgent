@@ -58,14 +58,15 @@ class ContentGenerator:
             response = self.llm_client.chat([{"role": "user", "content": generation_prompt}])
 
             content = response.get("content", "").strip()
+            if not content:
+                raise RuntimeError("Adversarial generator produced empty initial content.")
             self.generation_history.append({"type": "initial", "content": content, "timestamp": datetime.now()})
 
             return content
 
         except Exception as e:
             logger.error(f"Initial content generation failed: {e}")
-            error_msg = prompt_manager.get("adversarial.generator.error_message")
-            return f"{error_msg} {str(e)}"
+            raise RuntimeError("Initial content generation failed in strict mode.") from e
 
     def improve_content(
         self, original_content: str, criticisms: List[Dict[str, Any]], task_context: Dict[str, Any]
@@ -113,6 +114,8 @@ class ContentGenerator:
             response = self.llm_client.chat([{"role": "user", "content": improvement_prompt}])
 
             improved_content = response.get("content", "").strip()
+            if not improved_content:
+                raise RuntimeError("Adversarial improver returned empty content.")
             self.generation_history.append(
                 {
                     "type": "improvement",
@@ -127,7 +130,7 @@ class ContentGenerator:
 
         except Exception as e:
             logger.error(f"Content improvement failed: {e}")
-            return original_content  # Fallback to original
+            raise RuntimeError("Content improvement failed in strict mode.") from e
 
 
 class ContentCritic:
@@ -230,7 +233,7 @@ Please return critique results in JSON format:
                             "type": "minor",
                             "issue": issue.get("issue", ""),
                             "suggestion": issue.get("suggestion", ""),
-                            "severity": "低",
+                            "severity": "low",
                         }
                     )
 
@@ -248,51 +251,21 @@ Please return critique results in JSON format:
                 return criticisms
             else:
                 logger.warning("Could not parse critic JSON response")
-                return self._fallback_criticism(content, task_context)
+                raise RuntimeError("Critic response is not valid JSON in strict mode.")
 
         except json.JSONDecodeError as e:
             logger.error(f"JSON parsing error in criticism: {e}")
-            return self._fallback_criticism(content, task_context)
+            raise RuntimeError("Critic JSON parsing failed in strict mode.") from e
         except Exception as e:
             logger.error(f"Content criticism failed: {e}")
-            return self._fallback_criticism(content, task_context)
+            raise RuntimeError("Content criticism failed in strict mode.") from e
 
     def _fallback_criticism(self, content: str, task_context: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Fallback criticism when LLM fails"""
-
-        word_count = len(content.split())
-
-        criticisms = []
-
-        # Basic length criticism
-        if word_count < 100:
-            criticisms.append(
-                {
-                    "type": "major",
-                    "category": "完整性",
-                    "issue": "内容过于简短",
-                    "severity": "高",
-                    "suggestion": "增加更多详细信息和解释",
-                    "evidence": f"当前仅有{word_count}词",
-                }
-            )
-        elif word_count > 500:
-            criticisms.append(
-                {"type": "minor", "issue": "内容可能过于冗长", "suggestion": "考虑精简内容，突出重点", "severity": "低"}
-            )
-
-        # Basic structure criticism
-        if content.count("\n\n") < 1:
-            criticisms.append(
-                {
-                    "type": "minor",
-                    "issue": "缺乏段落结构",
-                    "suggestion": "将内容分成多个段落以提高可读性",
-                    "severity": "中",
-                }
-            )
-
-        return criticisms
+        """Fallback criticism is disabled by policy."""
+        _ = (content, task_context)
+        raise RuntimeError(
+            "Fallback criticism is disabled. Use strict critic output only."
+        )
 
 
 class AdversarialEvaluator(LLMBasedEvaluator):
@@ -307,8 +280,13 @@ class AdversarialEvaluator(LLMBasedEvaluator):
         return "adversarial"
 
     def adversarial_evaluate(
-        self, content: str, task_context: Dict[str, Any], max_rounds: int = 3, improvement_threshold: float = 0.1
-    ) -> Dict[str, Any]:
+        self,
+        content: str,
+        task_context: Dict[str, Any],
+        max_rounds: int = 3,
+        improvement_threshold: float = 0.1,
+        iteration: int = 0,
+    ) -> EvaluationResult:
         """
         Run adversarial evaluation with multiple rounds of generator vs critic
 
@@ -319,7 +297,7 @@ class AdversarialEvaluator(LLMBasedEvaluator):
             improvement_threshold: Minimum improvement required to continue
 
         Returns:
-            Dict with adversarial evaluation results
+            EvaluationResult with adversarial assessment metadata
         """
 
         logger.info(f"Starting adversarial evaluation with {max_rounds} max rounds")
@@ -378,25 +356,59 @@ class AdversarialEvaluator(LLMBasedEvaluator):
         # Generate final assessment
         final_assessment = self._generate_final_assessment(rounds, best_content, task_context)
 
-        result = {
-            "best_content": best_content,
-            "best_robustness_score": best_robustness_score,
+        overall_score = max(0.0, min(1.0, float(best_robustness_score)))
+        dimensions = EvaluationDimensions(
+            relevance=overall_score,
+            completeness=overall_score,
+            accuracy=overall_score,
+            clarity=overall_score,
+            coherence=overall_score,
+            scientific_rigor=overall_score,
+        )
+
+        suggestions: List[str] = []
+        recommendation = str(final_assessment.get("recommendation") or "").strip()
+        if recommendation:
+            suggestions.append(recommendation)
+
+        common_issues = final_assessment.get("most_common_issues")
+        if isinstance(common_issues, list):
+            for item in common_issues[:3]:
+                if isinstance(item, (list, tuple)) and item:
+                    category = str(item[0]).strip()
+                    if category:
+                        suggestions.append(
+                            f"Address recurring issue category: {category}."
+                        )
+
+        additional_metadata = {
             "rounds_completed": len(rounds),
             "total_rounds": max_rounds,
             "adversarial_rounds": rounds,
             "final_assessment": final_assessment,
-            "metadata": {
-                "evaluation_method": "adversarial",
-                "generator_generations": len(self.generator.generation_history),
-                "critic_analyses": len(self.critic.criticism_history),
-                "total_criticisms": sum(r["criticism_count"] for r in rounds),
-                "average_robustness": sum(r["robustness_score"] for r in rounds) / len(rounds) if rounds else 0.0,
-            },
+            "generator_generations": len(self.generator.generation_history),
+            "critic_analyses": len(self.critic.criticism_history),
+            "total_criticisms": sum(r["criticism_count"] for r in rounds),
+            "average_robustness": sum(r["robustness_score"] for r in rounds)
+            / len(rounds)
+            if rounds
+            else 0.0,
+            "best_content": best_content,
+            "best_robustness_score": overall_score,
+            "robustness_score": overall_score,
+            "converged": bool(final_assessment.get("convergence_achieved", False)),
+            "final_criticism": recommendation,
         }
 
         logger.info(f"Adversarial evaluation completed: {len(rounds)} rounds, best score: {best_robustness_score:.3f}")
 
-        return result
+        return self.create_evaluation_result(
+            overall_score=overall_score,
+            dimensions=dimensions,
+            suggestions=suggestions,
+            iteration=iteration,
+            additional_metadata=additional_metadata,
+        )
 
     def _calculate_robustness_score(self, criticisms: List[Dict[str, Any]]) -> float:
         """Calculate robustness score based on criticisms"""
@@ -406,14 +418,17 @@ class AdversarialEvaluator(LLMBasedEvaluator):
 
         # Weight criticisms by severity
         severity_weights = {
-            "高": 0.3,  # High severity has more impact
-            "中": 0.1,  # Medium severity
-            "低": 0.05,  # Low severity
+            "high": 0.3,  # High severity has more impact
+            "medium": 0.1,  # Medium severity
+            "low": 0.05,  # Low severity
+            "高": 0.3,  # Backward-compatible severity labels
+            "中": 0.1,
+            "低": 0.05,
         }
 
         total_penalty = 0.0
         for criticism in criticisms:
-            severity = criticism.get("severity", "中")
+            severity = str(criticism.get("severity", "medium")).strip().lower()
             penalty = severity_weights.get(severity, 0.1)
             total_penalty += penalty
 
@@ -428,7 +443,7 @@ class AdversarialEvaluator(LLMBasedEvaluator):
         """Generate final assessment of adversarial evaluation"""
 
         if not rounds:
-            return {"error": "No rounds completed"}
+            raise RuntimeError("Adversarial evaluation produced no rounds.")
 
         total_criticisms = sum(r["criticism_count"] for r in rounds)
         final_score = rounds[-1]["robustness_score"]
@@ -446,7 +461,7 @@ class AdversarialEvaluator(LLMBasedEvaluator):
 
         criticism_categories = {}
         for criticism in all_criticisms:
-            category = criticism.get("category", "其他")
+            category = criticism.get("category", "other")
             criticism_categories[category] = criticism_categories.get(category, 0) + 1
 
         assessment = {
@@ -467,13 +482,13 @@ class AdversarialEvaluator(LLMBasedEvaluator):
         """Generate recommendation based on adversarial results"""
 
         if final_score >= 0.9:
-            return "内容质量优秀，通过了严格的对抗性测试"
+            return "Content quality is excellent and passed strict adversarial review."
         elif final_score >= 0.7:
-            return "内容质量良好，但仍有改进空间"
+            return "Content quality is good, but there is still room for improvement."
         elif final_score >= 0.5:
-            return "内容质量中等，需要重点改进主要问题"
+            return "Content quality is moderate; major issues should be improved."
         else:
-            return "内容质量不足，建议重新设计和编写"
+            return "Content quality is insufficient; redesign and rewrite are recommended."
 
 
 def get_adversarial_evaluator(config: Optional[EvaluationConfig] = None) -> AdversarialEvaluator:

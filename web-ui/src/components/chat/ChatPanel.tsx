@@ -146,7 +146,7 @@ const ChatPanel: React.FC = () => {
   const handleBaseModelChange = async (value: string | undefined) => {
     try {
       await setDefaultBaseModel(
-        (value as 'qwen3-max-2026-01-23' | 'qwen-turbo') ?? null
+        (value as 'qwen3.5-plus' | 'qwen3-max-2026-01-23' | 'qwen-turbo') ?? null
       );
     } catch (error) {
       console.error('切换基座模型失败:', error);
@@ -180,6 +180,7 @@ const ChatPanel: React.FC = () => {
   ];
 
   const baseModelOptions = [
+    { label: 'Qwen3.5-Plus', value: 'qwen3.5-plus' },
     { label: 'Qwen3-Max (2026-01-23)', value: 'qwen3-max-2026-01-23' },
     { label: 'Qwen-Turbo', value: 'qwen-turbo' },
   ];

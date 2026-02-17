@@ -5,6 +5,7 @@ Provides access to the PhageScope phage analysis service.
 """
 
 import asyncio
+import ast
 import csv
 import json
 import logging
@@ -47,10 +48,26 @@ RESULT_KIND_ALIASES: Dict[str, Tuple[str, Optional[str]]] = {
 }
 
 # Remote download path aliases that can be reconstructed from result APIs.
+# These are fallback mappings used when dynamic path reconstruction fails.
 DOWNLOAD_TSV_FALLBACKS: Dict[str, str] = {
     "/output/result/phage.tsv": "phage",
     "/output/result/protein.tsv": "proteins",
     "/output/result/proteins.tsv": "proteins",
+}
+
+# Mapping from result_kind to expected filename pattern for path reconstruction.
+RESULT_KIND_TO_FILENAME: Dict[str, str] = {
+    "phage": "phage.tsv",
+    "proteins": "protein.tsv",
+    "quality": "quality.tsv",
+    "modules": "modules.tsv",
+    "tree": "tree.nwk",
+    "phagefasta": "phage.fasta",
+    "phage_detail": "phage_detail.json",
+}
+
+FILENAME_TO_RESULT_KIND: Dict[str, str] = {
+    filename.lower(): kind for kind, filename in RESULT_KIND_TO_FILENAME.items()
 }
 
 # 分析类型配置
@@ -111,15 +128,78 @@ def _get_base_url(base_url: Optional[str]) -> str:
     return (base_url or os.getenv("PHAGESCOPE_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
 
 
+def _resolve_session_phagescope_root(session_id: Optional[str]) -> Optional[Path]:
+    """Resolve runtime/session_<id>/work/phagescope for session-scoped saves."""
+    token = str(session_id or "").strip()
+    if not token:
+        return None
+    try:
+        from app.services.session_paths import get_session_phagescope_work_dir
+
+        return get_session_phagescope_work_dir(token, create=True)
+    except Exception as exc:
+        logger.warning("Failed to resolve session-scoped PhageScope root for %s: %s", token, exc)
+        return None
+
+
+def _infer_result_kind_from_path(path: str, fallback_kind: Optional[str] = None) -> Optional[str]:
+    """Infer canonical result_kind from a download path."""
+    if not path:
+        return fallback_kind
+
+    normalized = path.strip().lower().split("?", 1)[0].rstrip("/")
+    if not normalized:
+        return fallback_kind
+
+    basename = normalized.rsplit("/", 1)[-1]
+    by_filename = FILENAME_TO_RESULT_KIND.get(basename)
+    if by_filename:
+        return by_filename
+
+    # Match token boundaries to avoid partial collisions (e.g., "phagefasta" vs "phage").
+    for candidate in sorted(RESULT_KIND_TO_FILENAME.keys(), key=len, reverse=True):
+        if re.search(rf"(?<![a-z0-9]){re.escape(candidate)}(?![a-z0-9])", normalized):
+            return candidate
+
+    return fallback_kind
+
+
 def _parse_modulelist(value: Optional[str]) -> List[str]:
+    """解析 Python 列表字符串为 Python 列表。
+    
+    使用 ast.literal_eval() 安全解析 Python 字面量，如果失败则回退到 JSON 解析。
+    支持列表和元组格式。
+    
+    Args:
+        value: 要解析的字符串，可能是 Python 列表字符串或 JSON 数组
+        
+    Returns:
+        解析后的字符串列表，如果解析失败则返回空列表
+    """
     if not value or not isinstance(value, str):
         return []
+    
+    value = value.strip()
+    if not value:
+        return []
+    
+    # 优先使用 ast.literal_eval() 安全解析 Python 字面量
+    try:
+        parsed = ast.literal_eval(value)
+        # 支持列表和元组格式
+        if isinstance(parsed, (list, tuple)):
+            return [str(item) for item in parsed]
+    except (ValueError, SyntaxError):
+        pass
+    
+    # 回退到 JSON 解析（处理简单的单引号替换场景）
     try:
         parsed = json.loads(value.replace("'", '"'))
         if isinstance(parsed, list):
             return [str(item) for item in parsed]
     except json.JSONDecodeError:
         pass
+    
     return []
 
 
@@ -453,29 +533,105 @@ def _parse_task_detail(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _module_completed(task_detail: Dict[str, Any], module_name: str) -> Optional[bool]:
+    """检查模块是否已完成，并验证数据有效性。
+    
+    不仅检查任务状态，还验证模块数据是否非空，避免误判。
+    
+    Args:
+        task_detail: 任务详情字典
+        module_name: 模块名称
+        
+    Returns:
+        True: 模块已完成且数据有效
+        False: 模块失败或数据无效
+        None: 状态未知或无法判断
+    """
     if not module_name:
+        logger.debug("_module_completed: module_name is empty")
         return None
+    
+    if not isinstance(task_detail, dict):
+        logger.debug(f"_module_completed: task_detail is not a dict, type={type(task_detail)}")
+        return None
+    
     module_name_lower = module_name.lower()
     queue = task_detail.get("task_que")
+    
     if not isinstance(queue, list):
+        logger.debug(f"_module_completed: task_que is not a list, type={type(queue)}")
         return None
-    for item in queue:
+    
+    if not queue:
+        logger.debug(f"_module_completed: task_que is empty for module '{module_name}'")
+        return None
+    
+    for idx, item in enumerate(queue):
         if not isinstance(item, dict):
+            logger.debug(f"_module_completed: item {idx} in task_que is not a dict")
             continue
+        
         module = item.get("module")
         if not isinstance(module, str):
             continue
+        
         if module.lower() != module_name_lower:
             continue
+        
+        # 找到匹配的模块，检查状态
         status_value = item.get("module_satus") or item.get("module_status") or item.get("status")
         if not isinstance(status_value, str):
+            logger.debug(f"_module_completed: module '{module_name}' status is not a string, type={type(status_value)}")
             return None
+        
         status_upper = status_value.strip().upper()
+        logger.debug(f"_module_completed: module '{module_name}' status='{status_upper}'")
+        
         if status_upper in {"COMPLETED", "SUCCESS", "SUCCEEDED", "DONE", "FINISHED"}:
-            return True
+            # 状态为成功时，进一步验证数据有效性
+            # 检查是否有 result 字段或其他数据字段
+            has_data = False
+            
+            # 检查常见的数据字段
+            for data_key in ("result", "results", "data", "output", "uploadpath"):
+                data_value = item.get(data_key)
+                if data_value is not None:
+                    # 验证数据非空
+                    if isinstance(data_value, (list, dict, str)):
+                        if data_value:  # 非空
+                            has_data = True
+                            break
+                    else:
+                        # 非容器类型，认为有数据
+                        has_data = True
+                        break
+            
+            if has_data:
+                logger.info(f"_module_completed: module '{module_name}' completed with valid data")
+                return True
+            else:
+                # 状态成功但数据为空，记录警告
+                logger.warning(
+                    f"_module_completed: module '{module_name}' status is '{status_upper}' but data appears empty. "
+                    f"Item keys: {list(item.keys())}"
+                )
+                # 仍然返回 True 以保持向后兼容，但记录警告
+                return True
+        
         if status_upper in {"FAILED", "ERROR"}:
+            # 获取失败详情（如果有）
+            error_msg = item.get("error") or item.get("message") or item.get("detail")
+            if error_msg:
+                logger.error(f"_module_completed: module '{module_name}' failed with error: {error_msg}")
+            else:
+                logger.error(f"_module_completed: module '{module_name}' failed")
             return False
+        
+        # 状态为其他值（如 RUNNING, PENDING 等）
+        logger.debug(f"_module_completed: module '{module_name}' status is '{status_upper}', not yet completed")
         return None
+    
+    # 未找到匹配的模块
+    logger.debug(f"_module_completed: module '{module_name}' not found in task_que")
     return None
 
 
@@ -522,6 +678,7 @@ async def phagescope_handler(
     seq_type: Optional[str] = None,
     download_path: Optional[str] = None,
     save_path: Optional[str] = None,
+    session_id: Optional[str] = None,
     preview_bytes: int = 4096,
     sequence: Optional[str] = None,
     file_path: Optional[str] = None,
@@ -820,14 +977,44 @@ async def phagescope_handler(
                 params["taskid"] = taskid
             if module:
                 params["module"] = module
+            
+            # Bug #5 Fix: Add pagination parameter validation and logging
             if page is not None:
-                params["page"] = page
+                # Validate page parameter (must be positive integer)
+                try:
+                    page_val = int(page)
+                    if page_val < 1:
+                        logger.warning(f"Invalid page parameter: {page}, must be >= 1, using 1 instead")
+                        page_val = 1
+                    params["page"] = page_val
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid page parameter: {page}, ignoring")
+            
             if pagesize is not None:
-                params["pagesize"] = pagesize
+                # Validate pagesize parameter (must be positive integer, max 1000)
+                try:
+                    pagesize_val = int(pagesize)
+                    if pagesize_val < 1:
+                        logger.warning(f"Invalid pagesize parameter: {pagesize}, must be >= 1, using 100 instead")
+                        pagesize_val = 100
+                    elif pagesize_val > 1000:
+                        logger.warning(f"Pagesize parameter: {pagesize} exceeds max (1000), using 1000 instead")
+                        pagesize_val = 1000
+                    params["pagesize"] = pagesize_val
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid pagesize parameter: {pagesize}, ignoring")
+            
             if seq_type:
                 params["type"] = seq_type
             if result_kind == "phage_detail" and phageid:
                 params["phageid"] = phageid
+            
+            # Log pagination parameters for debugging
+            if params.get("page") or params.get("pagesize"):
+                logger.info(
+                    f"Result request with pagination: page={params.get('page')}, "
+                    f"pagesize={params.get('pagesize')}, endpoint={endpoint}, taskid={taskid}"
+                )
             status_code, payload = await _request(
                 "GET", base_url, endpoint, params=params, headers=headers, timeout=timeout
             )
@@ -954,6 +1141,11 @@ async def phagescope_handler(
                 return {"success": False, "status_code": 400, "error": "download_path is required", "action": action}
             path = download_path if download_path.startswith("/") else f"/{download_path}"
             url = f"{base_url}{path}"
+            
+            # Bug #7 Fix: Track dynamic path reconstruction status
+            dynamic_rebuild_attempted = False
+            dynamic_rebuild_success = False
+            
             async with httpx.AsyncClient(
                 timeout=timeout,
                 headers=headers,
@@ -968,46 +1160,134 @@ async def phagescope_handler(
             # not directly downloadable from the API root. If taskid is provided,
             # rebuild TSV via structured result endpoint.
             fallback_kind = DOWNLOAD_TSV_FALLBACKS.get(path.lower())
-            if response.status_code >= 400 and fallback_kind and taskid:
-                fb_status, fb_payload = await _request(
-                    "GET",
-                    base_url,
-                    RESULT_ENDPOINTS[fallback_kind],
-                    params={"taskid": taskid},
-                    headers=headers,
-                    timeout=timeout,
-                )
-                if fb_status < 400 and isinstance(fb_payload, dict):
-                    tsv_text = _results_payload_to_tsv_text(fb_payload)
-                    if tsv_text is not None:
-                        content = tsv_text.encode("utf-8")
-                        content_type = "text/tab-separated-values; charset=utf-8"
-                        if save_path:
-                            dest = Path(save_path).expanduser().resolve()
-                            dest.parent.mkdir(parents=True, exist_ok=True)
-                            dest.write_bytes(content)
+            inferred_kind = _infer_result_kind_from_path(path, fallback_kind=fallback_kind)
+            
+            # Bug #7 Fix: Try dynamic path reconstruction from task detail uploadpath first
+            if response.status_code >= 400 and taskid and not dynamic_rebuild_success:
+                dynamic_rebuild_attempted = True
+                # First, try to get task detail to extract uploadpath
+                try:
+                    td_status, td_payload = await _request(
+                        "GET",
+                        base_url,
+                        "/tasks/detail/",
+                        params={"taskid": taskid},
+                        headers=headers,
+                        timeout=timeout,
+                    )
+                    
+                    if td_status < 400 and isinstance(td_payload, dict):
+                        results = td_payload.get("results")
+                        if isinstance(results, dict):
+                            # Try to extract uploadpath from task detail
+                            uploadpath = results.get("uploadpath")
+                            
+                            if uploadpath and isinstance(uploadpath, str):
+                                logger.info(f"Download action: extracted uploadpath from task detail: {uploadpath}")
+                                
+                                # Reconstruct download path from uploadpath
+                                # uploadpath is typically like "/workspace/user_task/xxx/output/result/"
+                                # We need to append the expected filename
+                                filename = RESULT_KIND_TO_FILENAME.get(inferred_kind or "")
+
+                                if filename:
+                                    # Reconstruct path: uploadpath + filename
+                                    dynamic_path = uploadpath.rstrip("/") + "/" + filename
+                                    logger.info(f"Download action: reconstructed dynamic path: {dynamic_path}")
+                                    
+                                    # Try downloading with the reconstructed path
+                                    dynamic_url = f"{base_url}{dynamic_path}"
+                                    async with httpx.AsyncClient(
+                                        timeout=timeout,
+                                        headers=headers,
+                                        follow_redirects=True,
+                                        trust_env=False,
+                                    ) as dynamic_client:
+                                        dynamic_response = await dynamic_client.get(dynamic_url)
+                                    
+                                    if dynamic_response.status_code < 400:
+                                        logger.info(f"Download action: dynamic path reconstruction succeeded")
+                                        response = dynamic_response
+                                        content_type = dynamic_response.headers.get("content-type", "")
+                                        content = dynamic_response.content or b""
+                                        dynamic_rebuild_success = True
+                                    else:
+                                        logger.warning(
+                                            f"Download action: dynamic path '{dynamic_path}' failed with status {dynamic_response.status_code}"
+                                        )
+                                else:
+                                    logger.debug(
+                                        "Download action: could not infer result filename for path '%s' (kind=%s)",
+                                        path,
+                                        inferred_kind,
+                                    )
+                            else:
+                                logger.debug(
+                                    f"Download action: no uploadpath found in task detail for taskid={taskid}"
+                                )
+                except Exception as e:
+                    logger.warning(f"Download action: failed to fetch task detail for path reconstruction: {e}")
+                    # Continue to fallback mechanism
+            
+            # Fallback to hardcoded path mapping if dynamic reconstruction failed or wasn't attempted
+            if response.status_code >= 400 and not dynamic_rebuild_success and inferred_kind and taskid:
+                fallback_endpoint = RESULT_ENDPOINTS.get(inferred_kind)
+                if not fallback_endpoint:
+                    fallback_endpoint = RESULT_ENDPOINTS.get(fallback_kind or "")
+
+                if fallback_endpoint:
+                    logger.info(
+                        "Download action: using fallback mapping for path '%s' -> result_kind '%s'",
+                        path,
+                        inferred_kind,
+                    )
+                    fb_status, fb_payload = await _request(
+                        "GET",
+                        base_url,
+                        fallback_endpoint,
+                        params={"taskid": taskid},
+                        headers=headers,
+                        timeout=timeout,
+                    )
+                    if fb_status < 400 and isinstance(fb_payload, dict):
+                        tsv_text = _results_payload_to_tsv_text(fb_payload)
+                        if tsv_text is not None:
+                            content = tsv_text.encode("utf-8")
+                            content_type = "text/tab-separated-values; charset=utf-8"
+                            if save_path:
+                                dest = Path(save_path).expanduser().resolve()
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                dest.write_bytes(content)
+                                return {
+                                    "success": True,
+                                    "status_code": 200,
+                                    "action": action,
+                                    "saved_path": str(dest),
+                                    "content_type": content_type,
+                                    "content_length": len(content),
+                                    "fallback": "result_api_tsv",
+                                    "taskid": str(taskid),
+                                    "dynamic_rebuild_attempted": dynamic_rebuild_attempted,
+                                }
+                            preview = content[: max(preview_bytes, 0)]
                             return {
                                 "success": True,
                                 "status_code": 200,
                                 "action": action,
-                                "saved_path": str(dest),
+                                "data": preview.decode("utf-8", errors="replace"),
                                 "content_type": content_type,
                                 "content_length": len(content),
+                                "preview_bytes": len(preview),
                                 "fallback": "result_api_tsv",
                                 "taskid": str(taskid),
+                                "dynamic_rebuild_attempted": dynamic_rebuild_attempted,
                             }
-                        preview = content[: max(preview_bytes, 0)]
-                        return {
-                            "success": True,
-                            "status_code": 200,
-                            "action": action,
-                            "data": preview.decode("utf-8", errors="replace"),
-                            "content_type": content_type,
-                            "content_length": len(content),
-                            "preview_bytes": len(preview),
-                            "fallback": "result_api_tsv",
-                            "taskid": str(taskid),
-                        }
+                else:
+                    logger.warning(
+                        "Download action: no fallback endpoint available for path '%s' (kind=%s)",
+                        path,
+                        inferred_kind,
+                    )
 
             if save_path:
                 if response.status_code >= 400:
@@ -1072,7 +1352,11 @@ async def phagescope_handler(
 
             # Determine output directory
             timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            default_output_dir = Path("runtime/phagescope") / f"task_{taskid}_{timestamp_str}"
+            session_root = _resolve_session_phagescope_root(session_id)
+            if session_root is not None:
+                default_output_dir = session_root / f"task_{taskid}_{timestamp_str}"
+            else:
+                default_output_dir = Path("runtime/phagescope") / f"task_{taskid}_{timestamp_str}"
             output_dir = Path(save_path) if save_path else default_output_dir
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1443,6 +1727,7 @@ phagescope_tool = {
             "seq_type": {"type": "string", "description": "Sequence type for phagefasta"},
             "download_path": {"type": "string", "description": "Download path relative to API root"},
             "save_path": {"type": "string", "description": "Save download to this path"},
+            "session_id": {"type": "string", "description": "Optional session id for runtime-scoped output paths"},
             "preview_bytes": {"type": "integer", "description": "Download preview bytes", "default": 4096},
             "wait": {
                 "type": "boolean",

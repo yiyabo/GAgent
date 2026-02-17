@@ -79,19 +79,21 @@ class _BaseAssembler:
         header: str,
         instructions: str,
         force_real: bool,
-    ) -> Tuple[Optional[str], str]:
+    ) -> Tuple[str, str]:
         prompt = self._build_prompt(task, sections, header=header, instructions=instructions)
         try:
             response = self.llm_service.chat(prompt, force_real=force_real)
             return response, prompt
-        except Exception as exc:  # pragma: no cover - defensive fallback
-            logger.warning(
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error(
                 "LLM assembly failed for task %s (%s): %s",
                 task.get("id"),
                 task.get("name"),
                 exc,
             )
-            return None, prompt
+            raise RuntimeError(
+                f"LLM assembly failed for task {task.get('id')} ({task.get('name')})."
+            ) from exc
 
 
 class CompositeAssembler(_BaseAssembler):
@@ -133,7 +135,12 @@ class CompositeAssembler(_BaseAssembler):
         prompt_used: Optional[str] = None
         fallback_used = False
 
-        if sections and used_llm:
+        if not sections:
+            raise ValueError(
+                "Composite assembly requires completed atomic child outputs; none were found."
+            )
+
+        if used_llm:
             header = "You are an experienced execution coordinator who must consolidate multiple atomic task results."
             instructions = (
                 "Combine the child deliverables into a coherent section, avoid duplication, and add transitions when needed."
@@ -147,17 +154,17 @@ class CompositeAssembler(_BaseAssembler):
                 force_real=force_real,
             )
             prompt_used = prompt
-            if llm_output:
-                assembled_content = llm_output.strip()
-            else:
-                assembled_content = self._simple_concat(sections, "\n\n")
-                fallback_used = True
+            assembled_content = (llm_output or "").strip()
+            if not assembled_content:
+                raise ValueError(
+                    f"Composite LLM assembly returned empty output for task {composite_task_id}."
+                )
         else:
-            if not sections:
-                assembled_content = "No child outputs are available yet; re-run assembly after all atomic tasks complete."
-            else:
-                assembled_content = self._simple_concat(sections, "\n\n")
-            fallback_used = not sections or not used_llm
+            assembled_content = self._simple_concat(sections, "\n\n").strip()
+            if not assembled_content:
+                raise ValueError(
+                    f"Composite CONCAT assembly returned empty output for task {composite_task_id}."
+                )
 
         artifacts = {
             "children": child_ids,
@@ -245,7 +252,12 @@ class RootAssembler(_BaseAssembler):
         fallback_used = False
         prompt_used: Optional[str] = None
 
-        if sections and used_llm:
+        if not sections:
+            raise ValueError(
+                "Root assembly requires completed composite child outputs; none were found."
+            )
+
+        if used_llm:
             header = "You are a senior delivery expert who must merge several composite sections into a unified final deliverable."
             instructions = (
                 "Produce a structured final result with clear sections or bullet points while keeping the overall narrative coherent."
@@ -261,14 +273,15 @@ class RootAssembler(_BaseAssembler):
             prompt_used = prompt
             final_report = (llm_output or "").strip()
             if not final_report:
-                final_report = self._simple_concat(sections, "\n\n---\n\n")
-                fallback_used = True
+                raise ValueError(
+                    f"Root LLM assembly returned empty output for task {root_task_id}."
+                )
         else:
-            if not sections:
-                final_report = "No composite outputs are available, so the final deliverable cannot yet be generated."
-            else:
-                final_report = self._simple_concat(sections, "\n\n---\n\n")
-            fallback_used = not sections or not used_llm
+            final_report = self._simple_concat(sections, "\n\n---\n\n").strip()
+            if not final_report:
+                raise ValueError(
+                    f"Root CONCAT assembly returned empty output for task {root_task_id}."
+                )
 
         artifacts = {
             "composites": composite_ids,

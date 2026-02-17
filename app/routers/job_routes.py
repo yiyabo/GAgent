@@ -68,6 +68,13 @@ class BackgroundTaskItem(BaseModel):
     remote_status: Optional[str] = None
     phase: Optional[str] = None
     counts: Optional[Dict[str, int]] = None
+    progress_percent: Optional[int] = None
+    progress_status: Optional[str] = None
+    progress_text: Optional[str] = None
+    current_step: Optional[int] = None
+    total_steps: Optional[int] = None
+    done_steps: Optional[int] = None
+    current_task_id: Optional[int] = None
     error: Optional[str] = None
 
 
@@ -277,6 +284,147 @@ def _normalize_status(raw_status: Any) -> str:
     return value or "queued"
 
 
+def _to_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        text = str(value).strip()
+        if not text:
+            return None
+        if "." in text:
+            return int(float(text))
+        return int(text)
+    except Exception:
+        return None
+
+
+def _clamp_progress_percent(percent_raw: Optional[int], normalized_status: str) -> Optional[int]:
+    if percent_raw is None:
+        if normalized_status in {"succeeded", "failed"}:
+            return 100
+        return None
+
+    percent = max(0, min(100, int(percent_raw)))
+    if normalized_status in {"running", "queued"} and percent >= 100:
+        percent = 99
+    if normalized_status in {"succeeded", "failed"}:
+        percent = 100
+    return percent
+
+
+def _extract_item_progress(
+    *,
+    category: str,
+    status: Any,
+    job_payload: Optional[Dict[str, Any]],
+    phage_progress: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized_status = _normalize_status(status)
+    payload = job_payload if isinstance(job_payload, dict) else {}
+    stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    job_type = str(payload.get("job_type") or "").strip().lower()
+
+    percent_raw: Optional[int] = None
+    progress_text: Optional[str] = None
+    current_step: Optional[int] = None
+    total_steps: Optional[int] = None
+    done_steps: Optional[int] = None
+    current_task_id: Optional[int] = None
+
+    # Generic tool progress fallback (works for phagescope and future tools).
+    tool_progress = stats.get("tool_progress") if isinstance(stats.get("tool_progress"), dict) else {}
+    if tool_progress:
+        percent_raw = _to_int(tool_progress.get("percent"))
+        counts = tool_progress.get("counts")
+        if isinstance(counts, dict):
+            done = _to_int(counts.get("done"))
+            total = _to_int(counts.get("total"))
+            if done is not None and total is not None and total > 0:
+                done_steps = done
+                total_steps = total
+                if percent_raw is None:
+                    percent_raw = int(round((min(done, total) / total) * 100))
+                progress_text = f"{done}/{total}"
+
+    if job_type == "plan_execute":
+        executed = max(0, _to_int(stats.get("executed")) or 0)
+        failed = max(0, _to_int(stats.get("failed")) or 0)
+        skipped = max(0, _to_int(stats.get("skipped")) or 0)
+        done = executed + failed + skipped
+        total = _to_int(stats.get("total_steps"))
+        if total is None:
+            total = _to_int(params.get("total_steps"))
+        if total is None:
+            total = _to_int(params.get("steps"))
+        current_step = _to_int(stats.get("current_step"))
+        current_task_id = _to_int(stats.get("current_task_id"))
+        if total is not None and total > 0:
+            total_steps = total
+            done_steps = done
+            if percent_raw is None:
+                percent_raw = _to_int(stats.get("progress_percent"))
+            if percent_raw is None:
+                percent_raw = int(round((min(done, total) / total) * 100))
+            progress_text = f"{done}/{total}"
+
+    if job_type == "plan_decompose" or category == "task_creation":
+        node_budget = _to_int(params.get("node_budget"))
+        if node_budget is None:
+            node_budget = _to_int(stats.get("node_budget"))
+        consumed_budget = _to_int(stats.get("consumed_budget"))
+        queue_remaining = _to_int(stats.get("queue_remaining"))
+        if node_budget is not None and node_budget > 0 and consumed_budget is not None:
+            if percent_raw is None:
+                percent_raw = int(round((min(consumed_budget, node_budget) / node_budget) * 100))
+            progress_text = f"{consumed_budget}/{node_budget}"
+        elif queue_remaining is not None and normalized_status in {"running", "queued"}:
+            progress_text = f"queue {queue_remaining}"
+
+    if category == "phagescope":
+        phage = phage_progress if isinstance(phage_progress, dict) else {}
+        counts = phage.get("counts")
+        if isinstance(counts, dict):
+            done = _to_int(counts.get("done"))
+            total = _to_int(counts.get("total"))
+            if done is not None and total is not None and total > 0:
+                done_steps = done
+                total_steps = total
+                if percent_raw is None:
+                    percent_raw = int(round((min(done, total) / total) * 100))
+                progress_text = f"{done}/{total}"
+        if not progress_text:
+            remote_status = phage.get("remote_status")
+            if isinstance(remote_status, str) and remote_status.strip():
+                progress_text = remote_status.strip()
+
+    percent = _clamp_progress_percent(percent_raw, normalized_status)
+    if percent is None and normalized_status in {"running", "queued", "succeeded", "failed"}:
+        percent = 100 if normalized_status in {"succeeded", "failed"} else 0
+
+    out: Dict[str, Any] = {
+        "progress_percent": percent,
+        "progress_status": normalized_status,
+    }
+    if progress_text:
+        out["progress_text"] = progress_text
+    if current_step is not None:
+        out["current_step"] = current_step
+    if total_steps is not None:
+        out["total_steps"] = total_steps
+    if done_steps is not None:
+        out["done_steps"] = done_steps
+    if current_task_id is not None:
+        out["current_task_id"] = current_task_id
+    return out
+
+
 def _append_item(group: BackgroundTaskGroup, item: BackgroundTaskItem) -> None:
     group.items.append(item)
     group.total += 1
@@ -463,6 +611,9 @@ def get_background_task_board(
             continue
 
         label = _extract_first_action_label(actions) or _default_label(category)
+        phage_progress: Dict[str, Any] = {}
+        if category == "phagescope":
+            phage_progress = _extract_phagescope_progress(job_payload)
         item_payload: Dict[str, Any] = {
             "category": category,
             "job_id": job_id,
@@ -476,8 +627,16 @@ def get_background_task_board(
             "finished_at": row["finished_at"] or job_payload.get("finished_at"),
             "error": job_payload.get("error"),
         }
-        if category == "phagescope":
-            item_payload.update(_extract_phagescope_progress(job_payload))
+        if phage_progress:
+            item_payload.update(phage_progress)
+        item_payload.update(
+            _extract_item_progress(
+                category=category,
+                status=status,
+                job_payload=job_payload,
+                phage_progress=phage_progress,
+            )
+        )
 
         _append_item(groups[category], BackgroundTaskItem(**item_payload))
         seen.add(job_id)
@@ -521,6 +680,11 @@ def get_background_task_board(
             created_at=job_payload.get("created_at"),
             started_at=job_payload.get("started_at"),
             finished_at=job_payload.get("finished_at"),
+            **_extract_item_progress(
+                category="task_creation",
+                status=status,
+                job_payload=job_payload,
+            ),
             error=job_payload.get("error"),
         )
         _append_item(groups["task_creation"], item)

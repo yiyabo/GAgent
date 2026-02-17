@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .dag_models import DAG, DAGNode
 from .plan_models import PlanNode, PlanTree
@@ -203,6 +203,11 @@ class TreeSimplifier:
             description=tree.description,
         )
 
+        # Bug #9 Fix: 处理空计划的边界情况
+        if not tree.nodes:
+            logger.info(f"tree_to_dag: Plan #{tree.id} has no nodes, returning empty DAG")
+            return dag
+
         # 转换所有节点
         for node_id, plan_node in tree.nodes.items():
             dag_node = DAGNode(
@@ -226,6 +231,10 @@ class TreeSimplifier:
                 if child_id in dag.nodes:
                     dag.nodes[parent_id].child_ids.add(child_id)
                     dag.nodes[child_id].parent_ids.add(parent_id)
+
+        # Bug #9 Fix: 记录单节点计划的情况
+        if len(dag.nodes) == 1:
+            logger.info(f"tree_to_dag: Plan #{tree.id} has single node, returning DAG with 1 node")
 
         return dag
 
@@ -355,6 +364,15 @@ class TreeSimplifier:
             简化后的DAG结构
         """
         # 1. 转换为DAG
+        # Bug #9 Fix: 处理空计划和单节点计划的边界情况
+        if not tree.nodes:
+            logger.info(f"simplify: Plan #{tree.id} has no nodes, returning empty DAG")
+            return self.tree_to_dag(tree)
+        
+        if len(tree.nodes) == 1:
+            logger.info(f"simplify: Plan #{tree.id} has single node, returning as-is")
+            return self.tree_to_dag(tree)
+
         dag = self.tree_to_dag(tree)
 
         original_count = dag.node_count()

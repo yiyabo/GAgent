@@ -258,67 +258,18 @@ class MultiExpertEvaluator(LLMBasedEvaluator):
             return None
         except Exception as e:
             logger.error(f"Expert evaluation error: {e}")
-            # Fallback to basic expert-specific evaluation
-            return self._fallback_expert_evaluation(expert_role, content, task_context)
+            raise RuntimeError(
+                f"Expert evaluation failed for role={expert_role.name}: {e}"
+            ) from e
 
     def _fallback_expert_evaluation(
         self, expert_role: ExpertRole, content: str, task_context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Fallback evaluation when LLM is unavailable"""
-
-        word_count = len(content.split())
-        content_lower = content.lower()
-
-        # Basic scoring based on expert focus
-        base_score = 0.6  # Conservative baseline
-
-        # Expert-specific adjustments using English keywords
-        expert_keywords = getattr(expert_role, "keywords", [])
-        if expert_keywords:
-            keyword_score = sum(1 for keyword in expert_keywords if keyword.lower() in content_lower) / len(
-                expert_keywords
-            )
-            base_score = max(base_score, 0.5 + keyword_score * 0.3)
-
-        # Length adjustment
-        length_factor = min(word_count / 100, 1.0)  # Optimal around 100 words
-        adjusted_score = base_score * (0.7 + 0.3 * length_factor)
-
-        # Get fallback messages from prompt manager
-        try:
-            fallback_msg = prompt_manager.get(
-                "expert_evaluation.fallback_messages.content_relevant", expert_name=expert_role.name
-            )
-        except:
-            fallback_msg = f"Content relevant to {expert_role.name}'s focus areas"
-
-        try:
-            llm_unavailable_msg = prompt_manager.get("expert_evaluation.fallback_messages.llm_unavailable")
-        except:
-            llm_unavailable_msg = "LLM evaluation unavailable, using basic evaluation"
-
-        try:
-            improvement_msg = prompt_manager.get(
-                "expert_evaluation.fallback_messages.improvement_suggestion", expert_name=expert_role.name
-            )
-        except:
-            improvement_msg = f"Recommend further refinement from {expert_role.name} perspective"
-
-        return {
-            "expert_role": expert_role.name,
-            "relevance": min(adjusted_score + 0.1, 1.0),
-            "completeness": max(adjusted_score - 0.1, 0.1),
-            "accuracy": base_score,
-            "practicality": base_score,
-            "innovation": max(base_score - 0.2, 0.1),
-            "risk_assessment": 0.7,  # Conservative risk assessment
-            "overall_score": adjusted_score,
-            "key_strengths": [fallback_msg],
-            "major_concerns": [llm_unavailable_msg],
-            "specific_suggestions": [improvement_msg],
-            "confidence_level": 0.5,  # Low confidence for fallback
-            "evaluation_method": "fallback",
-        }
+        """Fallback expert scoring is disabled by policy."""
+        _ = (expert_role, content, task_context)
+        raise RuntimeError(
+            "Fallback expert evaluation is disabled. Use strict LLM expert output only."
+        )
 
     def _generate_expert_consensus(
         self, expert_evaluations: Dict[str, Dict[str, Any]], expert_weights: Dict[str, float]

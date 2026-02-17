@@ -3,7 +3,7 @@ Task Executor Prompt Templates
 """
 
 # ============================================================
-# Information Gathering Prompts (信息收集阶段)
+# Information Gathering Prompts
 # ============================================================
 
 INFO_GATHERING_SYSTEM_PROMPT = """You are a data analysis assistant preparing to complete a task. Before executing the task, you need to determine if you have enough information about the data.

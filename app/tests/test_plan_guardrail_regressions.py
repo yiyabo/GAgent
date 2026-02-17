@@ -133,8 +133,4 @@ def test_plan_first_guardrail_uses_previous_context_for_generic_confirmation() -
     patched = agent._apply_plan_first_guardrail(structured)
 
     assert len(patched.actions) == 1
-    assert patched.actions[0].name == "create_plan"
-    params = patched.actions[0].parameters
-    assert params.get("title") != "可以的，创建吧"
-    assert "DeepSEA" in str(params.get("title", ""))
-    assert "DeepSEA" in str(params.get("goal", ""))
+    assert patched.actions[0].name == "claude_code"

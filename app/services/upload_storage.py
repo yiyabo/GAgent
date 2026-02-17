@@ -5,23 +5,25 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-# Use absolute path to ensure correct resolution on server
-UPLOAD_BASE_DIR = (Path(__file__).parent.parent.parent / "data" / "information_sessions").resolve()
+from app.services.session_paths import (
+    get_runtime_session_dir,
+    get_session_storage_candidates,
+)
 
 
 def get_session_root_dir(session_id: str) -> Path:
-    return UPLOAD_BASE_DIR / f"session-{session_id}"
+    return get_runtime_session_dir(session_id, create=False)
 
 
 def ensure_session_dir(session_id: str) -> Path:
-    session_dir = get_session_root_dir(session_id)
-    session_dir.mkdir(parents=True, exist_ok=True)
-    return session_dir
+    return get_runtime_session_dir(session_id, create=True)
 
 
 def delete_session_storage(session_id: str) -> bool:
-    session_dir = get_session_root_dir(session_id)
-    if not session_dir.exists():
-        return False
-    shutil.rmtree(session_dir)
-    return True
+    deleted = False
+    for session_dir in get_session_storage_candidates(session_id, include_legacy=True):
+        if not session_dir.exists():
+            continue
+        shutil.rmtree(session_dir)
+        deleted = True
+    return deleted

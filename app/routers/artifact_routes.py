@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.config.deliverable_config import get_deliverable_settings
+from app.services.session_paths import normalize_session_base
 
 from . import register_router
 
@@ -84,16 +85,7 @@ class DeliverableManifestResponse(BaseModel):
 
 
 def _strip_session_prefixes(value: str) -> str:
-    token = (value or "").strip()
-    while True:
-        if token.startswith("session_"):
-            token = token[len("session_"):]
-            continue
-        if token.startswith("session-"):
-            token = token[len("session-"):]
-            continue
-        break
-    return token
+    return normalize_session_base(value)
 
 
 def _find_session_candidates(root: Path, *, session_base: str) -> List[Path]:
@@ -127,8 +119,11 @@ def _candidate_score(candidate: Path, *, purpose: str, source: str) -> Tuple[int
     if purpose == "raw":
         if tool_outputs.exists():
             score += 100
-        if source == "info":
+        # New writes are runtime-first; keep info root as legacy fallback.
+        if source == "runtime":
             score += 20
+        elif source == "info":
+            score += 5
         if deliverables_manifest.exists() or deliverables_latest.exists():
             score += 5
     elif purpose == "deliverables":
