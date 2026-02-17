@@ -190,6 +190,9 @@ async def result_interpreter_handler(
             result = await claude_code_handler(
                 task=task,
                 add_dirs=add_dirs,
+                auth_mode="api_env",
+                setting_sources="project",
+                require_task_context=False,
             )
 
             # 复制 Claude Code 产出到 work_dir

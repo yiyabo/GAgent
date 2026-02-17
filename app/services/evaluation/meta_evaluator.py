@@ -259,20 +259,20 @@ class MetaEvaluator(LLMBasedEvaluator):
         eval_summary = self._prepare_evaluation_summary(evaluation_history)
 
         evaluation_aspects = [
-            "**评估准确性**: 评估结果是否准确反映内容质量？",
-            "**评估全面性**: 评估维度是否全面覆盖内容质量要素？",
-            "**评估一致性**: 多次评估结果是否保持一致？",
-            "**评估客观性**: 评估过程是否客观，避免主观偏见？",
-            "**评估实用性**: 评估建议是否具有实际指导价值？",
+            "**Evaluation Accuracy**: Do the evaluation results accurately reflect content quality?",
+            "**Evaluation Coverage**: Do the dimensions comprehensively cover quality factors?",
+            "**Evaluation Consistency**: Are repeated evaluation outcomes consistent?",
+            "**Evaluation Objectivity**: Is the process objective and free of subjective bias?",
+            "**Evaluation Utility**: Are the suggestions practically useful for revision?",
         ]
 
         specific_instructions = f"""
-作为评估质量专家，请对以下评估过程进行元认知分析。
+You are an evaluation-quality expert. Perform a meta-cognitive analysis of the evaluation process below.
 
-评估历史摘要：
+Evaluation history summary:
 {eval_summary}
 
-请以JSON格式返回分析结果：
+Return results in JSON format:
 {{
     "accuracy_assessment": 0.8,
     "comprehensiveness_assessment": 0.7,
@@ -280,9 +280,9 @@ class MetaEvaluator(LLMBasedEvaluator):
     "objectivity_assessment": 0.8,
     "utility_assessment": 0.7,
     "overall_meta_score": 0.78,
-    "key_strengths": ["优势1", "优势2"],
-    "improvement_areas": ["改进点1", "改进点2"],
-    "meta_insights": ["洞察1", "洞察2"],
+    "key_strengths": ["Strength 1", "Strength 2"],
+    "improvement_areas": ["Improvement area 1", "Improvement area 2"],
+    "meta_insights": ["Insight 1", "Insight 2"],
     "confidence_level": 0.85
 }}
 """
@@ -294,13 +294,17 @@ class MetaEvaluator(LLMBasedEvaluator):
         required_fields = ["accuracy_assessment", "consistency_assessment", "overall_meta_score"]
         result = self.call_llm_with_json_parsing(meta_prompt, required_fields)
 
-        return result if result else self._fallback_llm_meta_evaluation()
+        if result:
+            return result
+        raise RuntimeError(
+            "LLM meta-evaluation failed: no valid structured payload was produced."
+        )
 
     def _prepare_evaluation_summary(self, evaluation_history: List[Dict[str, Any]]) -> str:
         """Prepare a summary of evaluation history for LLM"""
 
         if not evaluation_history:
-            return "无评估历史"
+            return "No evaluation history available."
 
         summary_lines = []
         for i, eval_data in enumerate(evaluation_history, 1):
@@ -309,27 +313,17 @@ class MetaEvaluator(LLMBasedEvaluator):
             needs_revision = eval_data.get("needs_revision", False)
 
             summary_lines.append(
-                f"第{i}轮: 评分{score:.2f}, {suggestions_count}条建议, "
-                f"{'需要修订' if needs_revision else '质量达标'}"
+                f"Round {i}: score {score:.2f}, {suggestions_count} suggestions, "
+                f"{'revision needed' if needs_revision else 'quality acceptable'}"
             )
 
         return "\n".join(summary_lines)
 
     def _fallback_llm_meta_evaluation(self) -> Dict[str, Any]:
-        """Fallback meta-evaluation when LLM is unavailable"""
-        return {
-            "accuracy_assessment": 0.6,
-            "comprehensiveness_assessment": 0.6,
-            "consistency_assessment": 0.6,
-            "objectivity_assessment": 0.6,
-            "utility_assessment": 0.6,
-            "overall_meta_score": 0.6,
-            "key_strengths": ["基础评估功能正常"],
-            "improvement_areas": ["LLM元评估不可用"],
-            "meta_insights": ["建议检查LLM连接"],
-            "confidence_level": 0.3,
-            "evaluation_method": "fallback",
-        }
+        """Fallback meta-evaluation is disabled by policy."""
+        raise RuntimeError(
+            "Fallback meta-evaluation is disabled. Use strict LLM meta-evaluation output only."
+        )
 
     def _calculate_meta_scores(
         self, consistency_analysis: Dict[str, Any], bias_analysis: Dict[str, Any], llm_meta_evaluation: Dict[str, Any]

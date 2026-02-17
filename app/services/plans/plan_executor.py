@@ -186,7 +186,7 @@ When a task requires tool execution, request one of these tools:
 
 **SPECIALIZED:**
 - phagescope: PhageScope platform operations (submit jobs, check status, fetch results)
-  Parameters: {"action": "submit|task_list|task_detail|task_log|result|quality|download|save_all", ...}
+  Parameters: {"action": "submit|task_list|task_detail|task_log|result|quality|download|save_all", optional "session_id", ...}
   IMPORTANT: submit is async and should return taskid quickly. For long-running jobs, prefer submit now and check status later.
 - manuscript_writer: Generate research manuscripts
   Parameters: {"task": "<writing task>", "output_path": "<path>"}
@@ -1050,11 +1050,7 @@ class PlanExecutor:
             )
             return response.content
         except Exception as exc:
-            logger.warning("Failed to generate plan summary via LLM: %s", exc)
-            # Fallback: simple text summary
-            fallback = f"Plan '{tree.title}' completed with {len(completed_results)} tasks.\n"
-            fallback += f"Completed: {len(summary.executed_task_ids)}, Failed: {len(summary.failed_task_ids)}, Skipped: {len(summary.skipped_task_ids)}"
-            return fallback
+            raise RuntimeError("LLM plan summary generation failed.") from exc
 
     def _execute_tool_call(
         self,
@@ -1082,6 +1078,15 @@ class PlanExecutor:
         # 规范化任务上下文参数，避免把不受支持的参数透传给工具 handler。
         # claude_code 使用 task_id/plan_id；历史遗留 target_task_id 统一转换。
         if tool_name == "claude_code":
+            for key in (
+                "require_task_context",
+                "skip_permissions",
+                "output_format",
+                "model",
+                "setting_sources",
+                "auth_mode",
+            ):
+                params.pop(key, None)
             legacy_target_task_id = params.pop("target_task_id", None)
             if params.get("task_id") is None:
                 params["task_id"] = (
@@ -1091,6 +1096,9 @@ class PlanExecutor:
                 )
             if params.get("plan_id") is None:
                 params["plan_id"] = node.plan_id
+            params["require_task_context"] = True
+            params["auth_mode"] = "api_env"
+            params["setting_sources"] = "project"
         else:
             params.pop("target_task_id", None)
         

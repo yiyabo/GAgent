@@ -2,10 +2,10 @@
 """
 A-mem (Agentic Memory) Client Service
 
-提供与A-mem记忆系统的集成接口，用于：
-- 查询历史执行经验
-- 保存新的执行结果
-- 支持Claude Code执行的经验积累
+Provides integration with the A-mem service for:
+- querying historical execution experiences
+- saving new execution outcomes
+- accumulating Claude Code execution knowledge
 """
 
 import logging
@@ -17,10 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class AMemClient:
-    """A-mem记忆系统客户端
-    
-    通过HTTP API与独立运行的A-mem服务通信
-    """
+    """Client for the A-mem memory service via HTTP API."""
     
     def __init__(
         self,
@@ -28,12 +25,12 @@ class AMemClient:
         timeout: float = 10.0,
         enabled: bool = True
     ):
-        """初始化A-mem客户端
-        
+        """Initialize the A-mem client.
+
         Args:
-            base_url: A-mem API服务地址
-            timeout: 请求超时时间（秒）
-            enabled: 是否启用A-mem功能
+            base_url: Base URL of the A-mem API.
+            timeout: Request timeout in seconds.
+            enabled: Whether A-mem integration is enabled.
         """
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
@@ -46,30 +43,26 @@ class AMemClient:
             logger.info("A-mem client disabled")
     
     async def _get_client(self) -> httpx.AsyncClient:
-        """获取或创建HTTP客户端"""
+        """Get or lazily create the HTTP client."""
         if self._client is None:
-            # 使用自定义transport避免连接问题
+            # Use explicit transport settings to reduce connection instability.
             transport = httpx.AsyncHTTPTransport(retries=0)
             self._client = httpx.AsyncClient(
                 transport=transport,
                 timeout=self.timeout,
-                http2=False,  # 禁用HTTP/2，使用HTTP/1.1
+                http2=False,  # Force HTTP/1.1 for compatibility.
                 limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
             )
         return self._client
     
     async def close(self):
-        """关闭HTTP客户端"""
+        """Close and release the HTTP client."""
         if self._client is not None:
             await self._client.aclose()
             self._client = None
     
     async def health_check(self) -> bool:
-        """检查A-mem服务是否可用
-        
-        Returns:
-            bool: 服务是否健康
-        """
+        """Check whether the A-mem service is healthy."""
         if not self.enabled:
             return False
         
@@ -87,23 +80,7 @@ class AMemClient:
         top_k: int = 3,
         context_filter: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """查询相似的执行经验
-        
-        Args:
-            query: 查询文本（任务描述）
-            top_k: 返回结果数量
-            context_filter: 可选的上下文过滤器
-        
-        Returns:
-            List[Dict]: 相关记忆列表，每个包含：
-                - id: 记忆ID
-                - content: 记忆内容
-                - context: 上下文
-                - keywords: 关键词列表
-                - tags: 标签列表
-                - timestamp: 时间戳
-                - score: 相似度分数
-        """
+        """Query semantically similar execution experiences."""
         if not self.enabled:
             return []
         
@@ -113,7 +90,7 @@ class AMemClient:
                 f"{self.base_url}/query_memory",
                 json={
                     "query": query,
-                    "top_k": min(top_k, 10)  # 限制最大返回数量
+                    "top_k": min(top_k, 10)  # Cap returned results.
                 }
             )
             
@@ -138,38 +115,27 @@ class AMemClient:
         plan_id: Optional[int] = None,
         **metadata
     ) -> Optional[str]:
-        """保存执行结果到A-mem
-        
-        Args:
-            task: 任务描述
-            result: 执行结果字典
-            session_id: 会话ID
-            plan_id: 计划ID
-            **metadata: 额外的元数据
-        
-        Returns:
-            Optional[str]: 记忆ID，失败返回None
-        """
+        """Persist execution output to A-mem."""
         if not self.enabled:
             return None
         
         try:
-            # 格式化执行记忆内容
+            # Build structured memory content.
             content = self._format_execution_memory(task, result, session_id, plan_id, metadata)
             
-            # 提取标签
+            # Base tags.
             tags = ["claude_code", "execution"]
             if result.get("success"):
                 tags.append("success")
             else:
                 tags.append("failure")
             
-            # 添加自定义标签
+            # Merge custom tags.
             if "tags" in metadata:
                 tags.extend(metadata["tags"])
             
-            # 生成上下文
-            context = metadata.get("context", "代码执行经验")
+            # Build memory context.
+            context = metadata.get("context", "Code execution experience")
             
             client = await self._get_client()
             response = await client.post(
@@ -203,43 +169,40 @@ class AMemClient:
         plan_id: Optional[int],
         metadata: Dict[str, Any]
     ) -> str:
-        """格式化执行记忆内容
-        
-        创建结构化的记忆内容，便于后续检索和理解
-        """
+        """Format execution memory content into a structured record."""
         lines = [
-            "# Claude Code执行记录",
+            "# Claude Code Execution Record",
             "",
-            "## 任务描述",
+            "## Task Description",
             task,
             "",
-            "## 执行结果",
-            f"状态: {'✅ 成功' if result.get('success') else '❌ 失败'}",
+            "## Execution Result",
+            f"Status: {'✅ Success' if result.get('success') else '❌ Failed'}",
         ]
         
-        # 添加工作目录信息
+        # Attach working-directory metadata.
         if "working_directory" in result:
-            lines.append(f"工作目录: {result['working_directory']}")
+            lines.append(f"Working directory: {result['working_directory']}")
         
         if "task_directory" in result:
-            lines.append(f"任务目录: {result['task_directory']}")
+            lines.append(f"Task directory: {result['task_directory']}")
         
-        # 添加输出信息
+        # Attach output streams.
         if result.get("stdout"):
             stdout = result["stdout"]
             if len(stdout) > 500:
                 stdout = stdout[:500] + "...(truncated)"
             lines.extend([
                 "",
-                "## 标准输出",
+                "## Standard Output",
                 stdout
             ])
         
-        # 添加错误信息
+        # Attach error details.
         if result.get("error"):
             lines.extend([
                 "",
-                "## 错误信息",
+                "## Error Message",
                 str(result["error"])
             ])
         
@@ -249,75 +212,71 @@ class AMemClient:
                 stderr = stderr[:300] + "...(truncated)"
             lines.extend([
                 "",
-                "## 错误输出",
+                "## Standard Error",
                 stderr
             ])
         
-        # 添加元数据
+        # Attach metadata.
         if session_id:
-            lines.append(f"\n会话ID: {session_id}")
+            lines.append(f"\nSession ID: {session_id}")
         if plan_id:
-            lines.append(f"计划ID: {plan_id}")
+            lines.append(f"Plan ID: {plan_id}")
         
-        # 添加关键发现
+        # Attach key findings.
         if "key_findings" in metadata:
             lines.extend([
                 "",
-                "## 关键发现",
+                "## Key Findings",
                 metadata["key_findings"]
             ])
         
         return "\n".join(lines)
     
     def format_experiences_for_llm(self, experiences: List[Dict[str, Any]]) -> str:
-        """格式化历史经验供LLM参考
+        """Format historical experiences for LLM reference.
         
         Args:
-            experiences: 从A-mem查询到的经验列表
+            experiences: Experience entries returned by A-mem.
         
         Returns:
-            str: 格式化的经验文本
+            Formatted context text for LLM prompts.
         """
         if not experiences:
             return ""
         
-        lines = ["以下是相关的历史执行经验，供参考：", ""]
+        lines = ["Relevant historical execution experiences for reference:", ""]
         
         for i, exp in enumerate(experiences, 1):
-            lines.append(f"### 经验 {i} (相似度: {exp.get('score', 0):.2f})")
+            lines.append(f"### Experience {i} (similarity: {exp.get('score', 0):.2f})")
             lines.append(exp.get("content", ""))
             
-            # 添加关键词和标签
+            # Append keywords and tags.
             keywords = exp.get("keywords", [])
             tags = exp.get("tags", [])
             if keywords:
-                lines.append(f"\n关键词: {', '.join(keywords)}")
+                lines.append(f"\nKeywords: {', '.join(keywords)}")
             if tags:
-                lines.append(f"标签: {', '.join(tags)}")
+                lines.append(f"Tags: {', '.join(tags)}")
             
             lines.append("\n---\n")
         
         return "\n".join(lines)
 
 
-# 全局A-mem客户端实例
+# Global singleton A-mem client instance.
 _amem_client: Optional[AMemClient] = None
 
 
 def get_amem_client() -> AMemClient:
-    """获取全局A-mem客户端实例
-    
-    Returns:
-        AMemClient: A-mem客户端实例
-    """
+    """Get the global singleton A-mem client instance."""
     global _amem_client
     
     if _amem_client is None:
-        # 从配置读取设置
+        # Read configuration.
         from app.services.foundation.settings import get_settings
         settings = get_settings()
         
-        # 检查是否启用A-mem
+        # Resolve A-mem settings.
         amem_enabled = getattr(settings, "amem_enabled", False)
         amem_url = getattr(settings, "amem_url", "http://localhost:8001")
         
@@ -330,7 +289,7 @@ def get_amem_client() -> AMemClient:
 
 
 async def close_amem_client():
-    """关闭全局A-mem客户端"""
+    """Close and clear the global A-mem client."""
     global _amem_client
     if _amem_client is not None:
         await _amem_client.close()

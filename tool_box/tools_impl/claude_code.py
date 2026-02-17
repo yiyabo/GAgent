@@ -9,11 +9,14 @@ import logging
 import subprocess
 import json
 import hashlib
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Awaitable, Sequence
 import asyncio
+from uuid import uuid4
 from app.services.plans.decomposition_jobs import get_current_job, log_job_event
+from app.services.session_paths import get_runtime_root, get_runtime_session_dir
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +103,285 @@ def _detect_scope_blocked(stdout: str, output_data: Optional[Dict[str, Any]]) ->
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 
 # Claude Code runtime directory
-_RUNTIME_DIR = _PROJECT_ROOT / "runtime"
+_RUNTIME_DIR = get_runtime_root()
 _LOG_DIR = _RUNTIME_DIR / "claude_code_logs"
+
+# Strict execution boundary: only a constrained subset of tools is allowed.
+_HARD_ALLOWED_TOOL_NAMES: Sequence[str] = (
+    "Bash",
+    "BashOutput",
+    "Edit",
+    "MultiEdit",
+    "Read",
+    "Write",
+    "Glob",
+    "Grep",
+    "LS",
+    "NotebookRead",
+    "NotebookEdit",
+)
+_DEFAULT_ALLOWED_TOOL_NAMES: Sequence[str] = (
+    "Bash",
+    "BashOutput",
+    "Edit",
+    "MultiEdit",
+    "Read",
+    "Write",
+    "Glob",
+    "Grep",
+    "LS",
+)
+_HARD_ALLOWED_TOOL_MAP = {name.lower(): name for name in _HARD_ALLOWED_TOOL_NAMES}
+_DEFAULT_SETTING_SOURCES = "project,local"
+_DEFAULT_API_SETTING_SOURCES = "project"
+_DEFAULT_AUTH_MODE = "api_env"
+_SUPPORTED_SETTING_SOURCES = {"user", "project", "local"}
+_SUPPORTED_AUTH_MODES = {"claude_login", "api_env"}
+_DEFAULT_API_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic"
+_DEFAULT_API_MODEL = "qwen3.5-plus"
+_CLAUDE_ENV_KEYS_FOR_LOGIN_MODE: Sequence[str] = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_AUTH_TOKEN",
+)
+_CLAUDE_ENV_ALIAS_FOR_API_MODE: Sequence[tuple[str, str]] = (
+    ("CLAUDE_CODE_API_KEY", "ANTHROPIC_API_KEY"),
+    ("CLAUDE_CODE_BASE_URL", "ANTHROPIC_BASE_URL"),
+    ("CLAUDE_CODE_AUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"),
+    ("CLAUDE_CODE_API_MODEL", "ANTHROPIC_MODEL"),
+)
+
+
+def _resolve_allowed_tools(value: Any) -> List[str]:
+    source = _normalize_csv_values(value) or list(_DEFAULT_ALLOWED_TOOL_NAMES)
+    resolved: List[str] = []
+    seen = set()
+    dropped: List[str] = []
+    for token in source:
+        raw = str(token).strip()
+        if not raw:
+            continue
+        canonical = _HARD_ALLOWED_TOOL_MAP.get(raw.lower())
+        if canonical is None:
+            dropped.append(raw)
+            continue
+        key = canonical.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(canonical)
+    if dropped:
+        logger.warning(
+            "Dropped disallowed Claude Code tools from allowlist: %s",
+            ", ".join(dropped),
+        )
+    return resolved
+
+
+def _resolve_setting_sources(value: Any, *, auth_mode: Optional[str] = None) -> Optional[str]:
+    raw = ""
+    if value is not None:
+        raw = str(value).strip()
+    if not raw:
+        raw = str(os.getenv("CLAUDE_CODE_SETTING_SOURCES", "")).strip()
+    if not raw and str(auth_mode or "").strip().lower() == "api_env":
+        raw = str(os.getenv("CLAUDE_CODE_API_SETTING_SOURCES", "")).strip()
+        if not raw:
+            raw = _DEFAULT_API_SETTING_SOURCES
+    if not raw:
+        raw = _DEFAULT_SETTING_SOURCES
+
+    if raw.lower() in {"none", "off", "disabled", "disable"}:
+        return None
+
+    resolved: List[str] = []
+    seen = set()
+    for token in _normalize_csv_values(raw):
+        key = token.lower()
+        if key not in _SUPPORTED_SETTING_SOURCES:
+            logger.warning("Ignoring unsupported Claude setting source: %s", token)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(key)
+
+    if not resolved:
+        return None
+    return ",".join(resolved)
+
+
+def _resolve_auth_mode(value: Any) -> str:
+    raw = ""
+    if value is not None:
+        raw = str(value).strip().lower()
+    if not raw:
+        raw = str(os.getenv("CLAUDE_CODE_AUTH_MODE", "")).strip().lower()
+    if not raw:
+        return _DEFAULT_AUTH_MODE
+    if raw in {"claude", "claude_pro", "login"}:
+        raw = "claude_login"
+    if raw in _SUPPORTED_AUTH_MODES:
+        return raw
+    logger.warning(
+        "Unsupported CLAUDE_CODE_AUTH_MODE '%s'; falling back to %s.",
+        raw,
+        _DEFAULT_AUTH_MODE,
+    )
+    return _DEFAULT_AUTH_MODE
+
+
+def _build_claude_subprocess_env(auth_mode: str) -> Dict[str, str]:
+    env_map = dict(os.environ)
+    if auth_mode == "claude_login":
+        for key in _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE:
+            env_map.pop(key, None)
+    elif auth_mode == "api_env":
+        # In API mode, build a deterministic runtime env and never inherit login credentials.
+        for key in _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE:
+            env_map.pop(key, None)
+        for source_key, target_key in _CLAUDE_ENV_ALIAS_FOR_API_MODE:
+            value = str(os.getenv(source_key, "")).strip()
+            if value:
+                env_map[target_key] = value
+
+        if not env_map.get("ANTHROPIC_API_KEY"):
+            qwen_api_key = str(os.getenv("QWEN_API_KEY", "")).strip()
+            if qwen_api_key:
+                env_map["ANTHROPIC_API_KEY"] = qwen_api_key
+        if not env_map.get("ANTHROPIC_BASE_URL"):
+            env_map["ANTHROPIC_BASE_URL"] = (
+                str(os.getenv("CLAUDE_CODE_API_BASE_URL", "")).strip()
+                or _DEFAULT_API_BASE_URL
+            )
+        if not env_map.get("ANTHROPIC_MODEL"):
+            env_map["ANTHROPIC_MODEL"] = (
+                str(os.getenv("QWEN_MODEL", "")).strip()
+                or _DEFAULT_API_MODEL
+            )
+
+        # Avoid auth conflict in API mode: prefer API key when both exist; only keep
+        # ANTHROPIC_AUTH_TOKEN when explicitly provided via CLAUDE_CODE_AUTH_TOKEN.
+        if env_map.get("ANTHROPIC_API_KEY"):
+            env_map.pop("ANTHROPIC_AUTH_TOKEN", None)
+        else:
+            explicit_auth_token = str(os.getenv("CLAUDE_CODE_AUTH_TOKEN", "")).strip()
+            if explicit_auth_token:
+                env_map["ANTHROPIC_AUTH_TOKEN"] = explicit_auth_token
+            else:
+                env_map.pop("ANTHROPIC_AUTH_TOKEN", None)
+    return env_map
+
+
+def _validate_api_mode_config(env_map: Dict[str, str]) -> Optional[str]:
+    api_key = str(env_map.get("ANTHROPIC_API_KEY", "")).strip()
+    auth_token = str(env_map.get("ANTHROPIC_AUTH_TOKEN", "")).strip()
+    if api_key or auth_token:
+        return None
+    return (
+        "Claude Code API mode requires credentials. "
+        "Set CLAUDE_CODE_API_KEY or QWEN_API_KEY."
+    )
+
+
+def _coerce_positive_int(value: Any, *, field_name: str) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be an integer")
+    if parsed <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return parsed
+
+
+def _validate_scope_contract(
+    *,
+    plan_id: Optional[int],
+    task_id: Optional[int],
+    require_task_context: bool,
+) -> Optional[str]:
+    if not require_task_context:
+        return None
+    if plan_id is None:
+        return "Missing plan_id for strict atomic execution."
+    if task_id is None:
+        return "Missing task_id for strict atomic execution."
+    return None
+
+
+def _resolve_runtime_session_dir(session_id: Optional[str]) -> Path:
+    token = str(session_id or "").strip()
+    if not token:
+        adhoc_dir = (_RUNTIME_DIR / "session_adhoc").resolve()
+        adhoc_dir.mkdir(parents=True, exist_ok=True)
+        return adhoc_dir
+    return get_runtime_session_dir(token, create=True)
+
+
+def _collect_run_artifacts(
+    *,
+    run_dir: Path,
+    subdirs: Sequence[str],
+    max_files: int = 2000,
+) -> List[str]:
+    collected: List[str] = []
+    seen = set()
+    for name in subdirs:
+        root = (run_dir / str(name)).resolve()
+        if not root.exists() or not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            resolved = str(path.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            collected.append(resolved)
+            if len(collected) >= max_files:
+                return collected
+    return collected
+
+
+def _is_path_within(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _sanitize_task_dir_component(value: str) -> str:
+    token = str(value or "").strip().lower()
+    if not token:
+        return "llm_task"
+
+    normalized_chars: List[str] = []
+    prev_is_sep = False
+    for ch in token:
+        if ("a" <= ch <= "z") or ("0" <= ch <= "9"):
+            normalized_chars.append(ch)
+            prev_is_sep = False
+            continue
+        if ch in {"_", "-", " ", "/", "\\", ".", ":"}:
+            if not prev_is_sep:
+                normalized_chars.append("_")
+                prev_is_sep = True
+            continue
+        # Drop other punctuation and unicode symbols.
+        if not prev_is_sep:
+            normalized_chars.append("_")
+            prev_is_sep = True
+
+    sanitized = "".join(normalized_chars).strip("_")
+    if not sanitized:
+        return "llm_task"
+    if len(sanitized) > 80:
+        sanitized = sanitized[:80].rstrip("_")
+    return sanitized or "llm_task"
 
 
 async def _generate_task_dir_name_llm(task: str) -> str:
@@ -144,7 +424,7 @@ Directory name:"""
         loop = asyncio.get_event_loop()
         llm_response = await loop.run_in_executor(None, client.chat, prompt)
         
-        # Clean and validate LLM response
+        # Clean and validate LLM response.
         dir_name = llm_response.strip().lower()
         
         # Remove any extra text (LLM might add explanation)
@@ -156,9 +436,8 @@ Directory name:"""
             if dir_name.startswith(prefix):
                 dir_name = dir_name[len(prefix):].strip()
         
-        # Ensure it's a valid directory name (basic sanitization without regex)
-        # Replace spaces with underscores
-        dir_name = dir_name.replace(' ', '_')
+        # Ensure a filesystem-safe directory name component.
+        dir_name = _sanitize_task_dir_component(dir_name)
         
         # If LLM failed to generate a valid name, use a fallback
         if not dir_name or len(dir_name) < 3:
@@ -166,7 +445,7 @@ Directory name:"""
             # Use a simple hash-based name as last resort
             dir_name = "llm_task"
         
-        # Add hash to ensure uniqueness
+        # Add hash to keep semantic grouping stable while avoiding collisions.
         task_hash = hashlib.md5(task.encode('utf-8')).hexdigest()[:6]
         
         return f"{dir_name}_{task_hash}"
@@ -188,6 +467,10 @@ async def claude_code_handler(
     session_id: Optional[str] = None,
     plan_id: Optional[int] = None,
     task_id: Optional[int] = None,
+    model: Optional[str] = None,
+    setting_sources: Optional[str] = None,
+    auth_mode: Optional[str] = None,
+    require_task_context: bool = True,
     on_stdout: Optional[Callable[[str], Awaitable[None]]] = None,
     on_stderr: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
@@ -203,6 +486,10 @@ async def claude_code_handler(
         session_id: Session ID for workspace isolation
         plan_id: Plan ID for workspace isolation
         task_id: Task ID for workspace isolation
+        model: Optional explicit Claude model (or env CLAUDE_CODE_MODEL)
+        setting_sources: Optional sources for Claude settings loading
+        auth_mode: "api_env" (default) or "claude_login"
+        require_task_context: Whether to require plan/task binding for strict atomic execution
         on_stdout: Async callback for stdout lines
         on_stderr: Async callback for stderr lines
         
@@ -214,35 +501,67 @@ async def claude_code_handler(
     log_lock = asyncio.Lock()
 
     try:
+        try:
+            resolved_plan_id = _coerce_positive_int(plan_id, field_name="plan_id")
+            resolved_task_id = _coerce_positive_int(task_id, field_name="task_id")
+        except ValueError as exc:
+            return {
+                "success": False,
+                "error": f"Invalid task context: {exc}",
+                "task": task,
+            }
+
+        scope_error = _validate_scope_contract(
+            plan_id=resolved_plan_id,
+            task_id=resolved_task_id,
+            require_task_context=require_task_context,
+        )
+        if scope_error:
+            return {
+                "success": False,
+                "error": scope_error,
+                "blocked_by_scope_guardrail": True,
+                "blocked_reason": "missing_atomic_context",
+                "task": task,
+            }
+
         # Ensure runtime directory exists
         _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Session-level directory: All tasks are placed under session_<id>/
-        session_label = f"session_{session_id}" if session_id else "session_adhoc"
-        session_dir = _RUNTIME_DIR / session_label
-        session_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            session_dir = _resolve_runtime_session_dir(session_id)
+        except ValueError as exc:
+            return {
+                "success": False,
+                "error": f"Invalid session_id: {exc}",
+                "task": task,
+            }
 
-        # Task-level directory: Each task has its own directory with only result/code/data/docs subdirectories
-        run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        # Keep a stable per-task root and isolate each execution by run_<timestamp>.
+        run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f") + f"_{uuid4().hex[:8]}"
         task_dir_base = None
-        if task_id is not None:
-            task_dir_base = f"task{task_id}"
-            if plan_id is not None:
-                task_dir_base = f"plan{plan_id}_{task_dir_base}"
+        if resolved_task_id is not None:
+            task_dir_base = f"task{resolved_task_id}"
+            if resolved_plan_id is not None:
+                task_dir_base = f"plan{resolved_plan_id}_{task_dir_base}"
         else:
             task_dir_name = await _generate_task_dir_name_llm(task)
-            if plan_id is not None:
-                task_dir_name = f"plan{plan_id}_{task_dir_name}"
-            task_dir_base = f"{task_dir_name}_{run_id}"
+            if resolved_plan_id is not None:
+                task_dir_name = f"plan{resolved_plan_id}_{task_dir_name}"
+            task_dir_base = task_dir_name
 
-        task_work_dir = session_dir / task_dir_base
+        task_root_dir = session_dir / task_dir_base
+        task_root_dir.mkdir(parents=True, exist_ok=True)
+
+        run_dir_name = f"run_{run_id}"
+        task_work_dir = task_root_dir / run_dir_name
         task_work_dir.mkdir(parents=True, exist_ok=True)
 
         task_subdirs = ["results", "code", "data", "docs"]
         for subdir in task_subdirs:
             (task_work_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-        file_prefix = f"run_{run_id}"
+        file_prefix = run_dir_name
 
         logger.info(f"Using task workspace: {task_work_dir}")
 
@@ -265,8 +584,37 @@ async def claude_code_handler(
             logger.warning(f"Failed to initialize Claude Code log file: {log_exc}")
         
         # Normalize optional CLI params (supports both string and list inputs)
-        normalized_allowed_tools = _normalize_csv_values(allowed_tools)
+        normalized_allowed_tools = _resolve_allowed_tools(allowed_tools)
+        if not normalized_allowed_tools:
+            return {
+                "success": False,
+                "error": "No allowed tools remain after strict allowlist filtering.",
+                "task": task,
+            }
         normalized_add_dirs = _normalize_csv_values(add_dirs)
+        effective_auth_mode = _resolve_auth_mode(auth_mode)
+        subprocess_env = _build_claude_subprocess_env(effective_auth_mode)
+        if effective_auth_mode == "api_env":
+            api_mode_error = _validate_api_mode_config(subprocess_env)
+            if api_mode_error:
+                return {
+                    "success": False,
+                    "error": api_mode_error,
+                    "task": task,
+                }
+        effective_model = (
+            str(
+                model
+                or os.getenv("CLAUDE_CODE_MODEL", "")
+                or os.getenv("CLAUDE_CODE_API_MODEL", "")
+                or subprocess_env.get("ANTHROPIC_MODEL", "")
+            ).strip()
+            or None
+        )
+        effective_setting_sources = _resolve_setting_sources(
+            setting_sources,
+            auth_mode=effective_auth_mode,
+        )
 
         # Process additional directories to allow access, convert to absolute paths
         allowed_dirs = []
@@ -285,15 +633,30 @@ async def claude_code_handler(
         if normalized_add_dirs:
             for dir_path in normalized_add_dirs:
                 dir_path = dir_path.strip()
-                # Check if already an absolute path
-                if Path(dir_path).is_absolute():
-                    if dir_path not in allowed_dirs:
-                        allowed_dirs.append(dir_path)
-                else:
-                    # Convert relative path to absolute
-                    abs_path = _PROJECT_ROOT / dir_path
-                    if str(abs_path) not in allowed_dirs:
-                        allowed_dirs.append(str(abs_path))
+                candidate = Path(dir_path)
+                if not candidate.is_absolute():
+                    candidate = _PROJECT_ROOT / dir_path
+                try:
+                    resolved = candidate.resolve()
+                except Exception:
+                    logger.warning("Ignoring invalid add_dir path: %s", dir_path)
+                    continue
+                if not resolved.exists() or not resolved.is_dir():
+                    logger.warning("Ignoring non-directory add_dir path: %s", resolved)
+                    continue
+                if require_task_context:
+                    if not (
+                        _is_path_within(resolved, _PROJECT_ROOT)
+                        or _is_path_within(resolved, session_dir)
+                    ):
+                        logger.warning(
+                            "Ignoring add_dir outside strict task scope: %s",
+                            resolved,
+                        )
+                        continue
+                resolved_str = str(resolved)
+                if resolved_str not in allowed_dirs:
+                    allowed_dirs.append(resolved_str)
             
         # Build concise task prompt with skills info and execution directive
         # Get available skills for reference
@@ -346,10 +709,14 @@ async def claude_code_handler(
             '--output-format', output_format,
             '--max-turns', '50',  # Allow more turns for complex tasks
         ]
+
+        if effective_model:
+            cmd.extend(['--model', effective_model])
+        if effective_setting_sources:
+            cmd.extend(['--setting-sources', effective_setting_sources])
         
-        # Add tool restrictions
-        if normalized_allowed_tools:
-            cmd.extend(['--allowed-tools', ",".join(normalized_allowed_tools)])
+        # Enforce strict allowlist; never run Claude with unrestricted tool set.
+        cmd.extend(['--allowed-tools', ",".join(normalized_allowed_tools)])
         
         # Add directory access permissions (paths relative to project root)
         for abs_path in allowed_dirs:
@@ -365,6 +732,7 @@ async def claude_code_handler(
         process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(task_work_dir),
+            env=subprocess_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             # No timeout limit for long-running tasks
@@ -425,6 +793,8 @@ async def claude_code_handler(
         blocked_detail = _detect_scope_blocked(stdout, output_data)
         if blocked_detail:
             success = False
+
+        produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
         
         if log_file:
             try:
@@ -437,8 +807,14 @@ async def claude_code_handler(
         result_payload = {
             "tool": "claude_code",
             "task": task,
+            "plan_id": resolved_plan_id,
+            "task_id": resolved_task_id,
+            "require_task_context": require_task_context,
             "task_directory": task_dir_base,
             "task_directory_full": str(task_work_dir),
+            "task_root_directory": str(task_root_dir),
+            "run_directory": str(task_work_dir),
+            "run_id": run_id,
             "task_subdirectories": task_subdirs,
             "file_prefix": file_prefix,
             "session_directory": str(session_dir),
@@ -450,6 +826,12 @@ async def claude_code_handler(
             "execution_mode": "claude_code_local",
             "working_directory": str(task_work_dir),
             "log_path": str(log_path) if log_path else None,
+            "allowed_tools_effective": normalized_allowed_tools,
+            "claude_model_effective": effective_model,
+            "claude_setting_sources_effective": effective_setting_sources,
+            "claude_auth_mode_effective": effective_auth_mode,
+            "produced_files": produced_files,
+            "produced_files_count": len(produced_files),
         }
         if blocked_detail:
             result_payload["blocked_by_scope_guardrail"] = True
@@ -490,10 +872,9 @@ async def claude_code_handler(
 claude_code_tool = {
     "name": "claude_code",
     "description": (
-        "**PRIMARY TOOL FOR COMPLEX CODING TASKS** - Execute tasks using Claude Code (Anthropic's official AI assistant) with full local file access. "
-        "Claude is an expert-level AI that excels at: analyzing codebases, writing production-quality code, training ML models, data analysis, debugging, and solving multi-step problems. "
-        "RECOMMENDED FOR: machine learning tasks, data science projects, complex file processing, code generation, and any task requiring deep understanding and reasoning. "
-        "Has access to Bash, Edit, file operations, and other advanced tools. Works directly in your project directory with full file system access."
+        "**PRIMARY TOOL FOR COMPLEX CODING TASKS** - Execute one atomic implementation task using Claude Code. "
+        "The runtime enforces a strict tool allowlist and task-scoped workspace isolation. "
+        "Use this for data analysis, code generation, model implementation, debugging, and multi-step engineering execution."
     ),
     "parameters": {
         "type": "object",
@@ -504,7 +885,7 @@ claude_code_tool = {
             },
             "allowed_tools": {
                 "type": "string",
-                "description": "Comma-separated list of allowed tools (e.g. 'Bash,Edit'). Leave empty to allow all."
+                "description": "Optional comma-separated allowlist request (e.g. 'Bash,Edit'). Values are always filtered by the hard allowlist."
             },
             "add_dirs": {
                 "type": "string",

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,6 +38,285 @@ def _truncate(text: str, limit: int) -> Tuple[str, Dict[str, Any]]:
     return text[:limit], {"truncated": True, "original_len": original_len, "new_len": limit}
 
 
+def _detect_content_format(text: str) -> str:
+    """Detect the format of the content to apply appropriate truncation strategy.
+    
+    Args:
+        text: The text to analyze
+        
+    Returns:
+        One of: "json", "tsv", "csv", "xml", "html", "markdown", "text"
+    """
+    text = text.strip() if text else ""
+    if not text:
+        return "text"
+    
+    # Check for JSON format
+    if text.startswith("{") or text.startswith("["):
+        try:
+            json.loads(text)
+            return "json"
+        except json.JSONDecodeError:
+            # Might be partial JSON, still try JSON-aware truncation
+            if '"' in text and (":" in text or text.startswith("[") or text.startswith("{")):
+                return "json"
+    
+    # Check for TSV format (tabs present and consistent column count)
+    if "\t" in text:
+        lines = text.split("\n")
+        if len(lines) > 1:
+            tab_counts = [line.count("\t") for line in lines[:min(10, len(lines))]]
+            if tab_counts and all(c == tab_counts[0] for c in tab_counts):
+                return "tsv"
+    
+    # Check for CSV format (commas present and consistent column count)
+    if "," in text and "\t" not in text:
+        lines = text.split("\n")
+        if len(lines) > 1:
+            comma_counts = [line.count(",") for line in lines[:min(10, len(lines))]]
+            if comma_counts and all(c == comma_counts[0] for c in comma_counts):
+                return "csv"
+    
+    # Check for XML/HTML format
+    if text.startswith("<") and ">" in text:
+        if text.lower().startswith("<!doctype") or text.lower().startswith("<html"):
+            return "html"
+        return "xml"
+    
+    # Check for Markdown format
+    if any(text.startswith(marker) for marker in ["#", "-", "*", "```", "~~~"]):
+        return "markdown"
+    
+    return "text"
+
+
+def _truncate_json(text: str, limit: int) -> Tuple[str, Dict[str, Any]]:
+    """Truncate JSON content at object/array boundaries to maintain valid structure.
+    
+    Strategy:
+    1. If content already fits, return as-is
+    2. Find the last complete object/array boundary before limit
+    3. Close any open brackets/braces to maintain validity
+    """
+    text = text or ""
+    original_len = len(text)
+    limit = max(0, int(limit)) if limit is not None else original_len
+    
+    if original_len <= limit:
+        return text, {"truncated": False, "original_len": original_len, "new_len": original_len}
+    
+    # Find the best truncation point within the limit
+    # Look for the last complete JSON value before the limit
+    window = text[:limit]
+    
+    # Track bracket/brace depth
+    depth = 0
+    in_string = False
+    escape_next = False
+    last_valid_end = 0
+    
+    for i, char in enumerate(window):
+        if escape_next:
+            escape_next = False
+            continue
+        
+        if char == "\\":
+            escape_next = True
+            continue
+        
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        
+        if not in_string:
+            if char in "{[":
+                depth += 1
+                last_valid_end = i + 1
+            elif char in "}]":
+                depth -= 1
+                if depth == 0:
+                    last_valid_end = i + 1
+            elif char in ",":
+                if depth == 0:
+                    last_valid_end = i + 1
+    
+    # If we found a valid boundary, use it
+    if last_valid_end > 0:
+        truncated = window[:last_valid_end].rstrip()
+    else:
+        # Fallback: just cut at limit and try to close brackets
+        truncated = window.rstrip()
+    
+    # Try to close any open brackets/braces
+    open_braces = truncated.count("{") - truncated.count("}")
+    open_brackets = truncated.count("[") - truncated.count("]")
+    
+    # Close in reverse order
+    closing = ""
+    if open_brackets > 0:
+        closing = "]" * open_brackets + closing
+    if open_braces > 0:
+        closing = "}" * open_braces + closing
+    
+    if closing:
+        # Add closing characters, but respect the limit
+        available = limit - len(truncated)
+        if available >= len(closing):
+            truncated = truncated + closing
+        else:
+            # Can't close properly, fallback to raw truncation
+            truncated = text[:limit]
+    
+    return truncated, {
+        "truncated": True,
+        "original_len": original_len,
+        "new_len": len(truncated),
+        "format": "json",
+        "closures_added": len(closing) if closing else 0,
+    }
+
+
+def _truncate_tsv(text: str, limit: int) -> Tuple[str, Dict[str, Any]]:
+    """Truncate TSV content at row boundaries to maintain valid structure.
+    
+    Strategy:
+    1. Always include the header row
+    2. Add complete rows until the limit is reached
+    3. Never cut a row in the middle
+    """
+    text = text or ""
+    original_len = len(text)
+    limit = max(0, int(limit)) if limit is not None else original_len
+    
+    if original_len <= limit:
+        return text, {"truncated": False, "original_len": original_len, "new_len": original_len}
+    
+    lines = text.split("\n")
+    if not lines:
+        return text, {"truncated": False, "original_len": original_len, "new_len": original_len}
+
+    if limit <= 0:
+        return "", {
+            "truncated": True,
+            "original_len": original_len,
+            "new_len": 0,
+            "format": "tsv",
+            "rows_kept": 0,
+            "rows_dropped": len(lines),
+        }
+
+    # Always include header
+    header = lines[0]
+    if len(header) > limit:
+        truncated_header, meta = _truncate(header, limit)
+        return truncated_header, {
+            "truncated": True,
+            "original_len": original_len,
+            "new_len": len(truncated_header),
+            "format": "tsv",
+            "rows_kept": 1 if truncated_header else 0,
+            "rows_dropped": max(len(lines) - (1 if truncated_header else 0), 0),
+            "header_truncated": bool(meta.get("truncated")),
+        }
+
+    result_lines = [header]
+    current_len = len(header)
+
+    # Add complete rows while under limit
+    for line in lines[1:]:
+        line_len = len(line) + 1
+        if current_len + line_len <= limit:
+            result_lines.append(line)
+            current_len += line_len
+        else:
+            break
+    
+    truncated = "\n".join(result_lines)
+    rows_kept = len(result_lines)
+    rows_dropped = len(lines) - rows_kept
+    
+    return truncated, {
+        "truncated": rows_dropped > 0,
+        "original_len": original_len,
+        "new_len": len(truncated),
+        "format": "tsv",
+        "rows_kept": rows_kept,
+        "rows_dropped": rows_dropped,
+    }
+
+
+def _truncate_csv(text: str, limit: int) -> Tuple[str, Dict[str, Any]]:
+    """Truncate CSV content at row boundaries to maintain valid structure.
+    
+    Similar to TSV but handles quoted fields with embedded newlines.
+    """
+    text = text or ""
+    original_len = len(text)
+    limit = max(0, int(limit)) if limit is not None else original_len
+    
+    if original_len <= limit:
+        return text, {"truncated": False, "original_len": original_len, "new_len": original_len}
+    
+    # Simple approach: keep whole lines until the budget is exhausted.
+    lines = text.split("\n")
+    result_lines = []
+    current_len = 0
+    for line in lines:
+        line_len = len(line) + 1
+
+        if current_len + line_len > limit:
+            break
+
+        result_lines.append(line)
+        current_len += line_len
+
+    truncated = "\n".join(result_lines)
+    rows_kept = len(result_lines)
+    rows_dropped = len(lines) - rows_kept
+    
+    return truncated, {
+        "truncated": rows_dropped > 0,
+        "original_len": original_len,
+        "new_len": len(truncated),
+        "format": "csv",
+        "rows_kept": rows_kept,
+        "rows_dropped": rows_dropped,
+    }
+
+
+def _truncate_format_aware(text: str, limit: int, strategy: str = "truncate") -> Tuple[str, Dict[str, Any]]:
+    """Truncate text while respecting its format boundaries.
+    
+    Args:
+        text: The text to truncate
+        limit: Maximum length
+        strategy: Fallback strategy ("truncate" or "sentence")
+        
+    Returns:
+        Tuple of (truncated_text, metadata)
+    """
+    text = text or ""
+    original_len = len(text)
+    limit = max(0, int(limit)) if limit is not None else original_len
+    
+    if original_len <= limit:
+        return text, {"truncated": False, "original_len": original_len, "new_len": original_len}
+    
+    # Detect format and apply appropriate truncation
+    fmt = _detect_content_format(text)
+    
+    if fmt == "json":
+        return _truncate_json(text, limit)
+    elif fmt == "tsv":
+        return _truncate_tsv(text, limit)
+    elif fmt == "csv":
+        return _truncate_csv(text, limit)
+    elif strategy == "sentence":
+        return _truncate_sentencewise(text, limit)
+    else:
+        return _truncate(text, limit)
+
+
 def _truncate_sentencewise(text: str, limit: int) -> Tuple[str, Dict[str, Any]]:
     """Rule-based summarizer that prefers sentence boundaries within the limit.
 
@@ -66,12 +346,50 @@ def _truncate_sentencewise(text: str, limit: int) -> Tuple[str, Dict[str, Any]]:
 
 
 def _summarize(text: str, limit: int, strategy: str) -> Tuple[str, Dict[str, Any]]:
-    strat = (strategy or "truncate").lower()
-    if strat == "sentence":
+    """Summarize/truncate text using format-aware truncation.
+    
+    Args:
+        text: The text to summarize
+        limit: Maximum length
+        strategy: Truncation strategy
+            - "truncate": Raw character truncation
+            - "sentence": Prefer sentence boundaries
+            - "format_aware": Auto-detect format and truncate appropriately (default)
+    
+    Returns:
+        Tuple of (truncated_text, metadata)
+    """
+    strat = (strategy or "format_aware").lower()
+    
+    # Use format-aware truncation by default or when explicitly requested
+    if strat in ("format_aware", "auto", "smart"):
+        out, meta = _truncate_format_aware(text, limit, strategy="sentence")
+        meta["strategy"] = "format_aware"
+    elif strat == "sentence":
         out, meta = _truncate_sentencewise(text, limit)
+        meta["strategy"] = "sentence"
     else:
-        out, meta = _truncate(text, limit)
-    meta["strategy"] = "sentence" if strat == "sentence" else "truncate"
+        # For "truncate" or unknown strategies, use format-aware as fallback
+        out, meta = _truncate_format_aware(text, limit, strategy="truncate")
+        meta["strategy"] = "truncate"
+    
+    # Add format detection info to metadata
+    if "format" not in meta:
+        meta["format"] = _detect_content_format(text)
+    
+    # Log truncation details when debug is enabled
+    if _debug_on() and meta.get("truncated"):
+        _BUD_LOGGER.debug(
+            {
+                "event": "summarize.truncated",
+                "strategy": meta.get("strategy"),
+                "format": meta.get("format"),
+                "original_len": meta.get("original_len"),
+                "new_len": meta.get("new_len"),
+                "reduction_ratio": round(1 - meta.get("new_len", 0) / max(meta.get("original_len", 1), 1), 2),
+            }
+        )
+    
     return out, meta
 
 

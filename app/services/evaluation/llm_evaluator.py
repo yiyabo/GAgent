@@ -137,9 +137,10 @@ class LLMEvaluator(LLMBasedEvaluator):
                 coherence=float(scores.get("coherence", 0.5)),
                 scientific_rigor=float(scores.get("scientific_rigor", 0.5)),
             )
-        else:
-            logger.warning("LLM evaluation failed, using fallback")
-            return self.generate_fallback_dimensions(content)
+
+        raise RuntimeError(
+            "LLM evaluation failed: no valid structured score payload was produced."
+        )
 
     def _llm_generate_suggestions(
         self, content: str, dimensions: EvaluationDimensions, task_context: Dict[str, Any]

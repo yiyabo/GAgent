@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
+# 设置 Hugging Face 镜像源（解决国内访问问题）
+export HF_ENDPOINT=https://hf-mirror.com
+echo "🌐 Using Hugging Face mirror: ${HF_ENDPOINT}"
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT_DIR/log"
 

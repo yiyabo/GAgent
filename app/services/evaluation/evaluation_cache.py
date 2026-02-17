@@ -85,20 +85,47 @@ class EvaluationCache:
         task_context: Dict[str, Any],
         evaluation_method: str,
         config_params: Optional[Dict[str, Any]] = None,
+        dimensions: Optional[Dict[str, Any]] = None,
+        model_version: Optional[str] = None,
     ) -> str:
-        """Generate unique cache key for evaluation request"""
+        """Generate unique cache key for evaluation request.
+        
+        Bug #10 Fix: Include all parameters that affect evaluation results.
+        
+        Parameters included in cache key:
+        - content: The content being evaluated
+        - evaluation_method: The method used for evaluation
+        - dimensions: Evaluation dimensions/criteria
+        - config_params: Configuration parameters
+        - model_version: LLM model version used
+        - task_context: Relevant task context
+        
+        Returns:
+            SHA256 hash of all components
+        """
 
         # Create content hash
         content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
 
-        # Create context hash (only include relevant fields)
+        # Create context hash (include all relevant fields)
+        # Bug #10 Fix: Include more context fields that may affect evaluation
         context_for_hash = {
             "name": task_context.get("name", ""),
             "task_type": task_context.get("task_type", ""),
             "task_id": task_context.get("task_id", ""),
+            "session_id": task_context.get("session_id", ""),
+            "user_id": task_context.get("user_id", ""),
+            "plan_id": task_context.get("plan_id", ""),
         }
         context_str = json.dumps(context_for_hash, sort_keys=True)
         context_hash = hashlib.md5(context_str.encode("utf-8")).hexdigest()
+
+        # Include evaluation dimensions if provided
+        # Bug #10 Fix: Dimensions directly affect evaluation results
+        dimensions_hash = ""
+        if dimensions:
+            dimensions_str = json.dumps(dimensions, sort_keys=True)
+            dimensions_hash = hashlib.md5(dimensions_str.encode("utf-8")).hexdigest()
 
         # Include config parameters if provided
         config_hash = ""
@@ -106,9 +133,27 @@ class EvaluationCache:
             config_str = json.dumps(config_params, sort_keys=True)
             config_hash = hashlib.md5(config_str.encode("utf-8")).hexdigest()
 
+        # Include model version if provided
+        # Bug #10 Fix: Different models may produce different evaluations
+        model_version_hash = ""
+        if model_version:
+            model_version_hash = hashlib.md5(model_version.encode("utf-8")).hexdigest()
+
         # Combine all components
-        cache_key_data = f"{evaluation_method}:{content_hash}:{context_hash}:{config_hash}"
+        # Bug #10 Fix: Include dimensions_hash and model_version_hash
+        cache_key_data = (
+            f"{evaluation_method}:{content_hash}:{context_hash}:"
+            f"{dimensions_hash}:{config_hash}:{model_version_hash}"
+        )
         cache_key = hashlib.sha256(cache_key_data.encode("utf-8")).hexdigest()
+
+        # Log cache key generation for debugging
+        logger.debug(
+            f"Generated cache key: {cache_key[:16]}... "
+            f"(method={evaluation_method}, content_len={len(content)}, "
+            f"dimensions={dimensions is not None}, config={config_params is not None}, "
+            f"model_version={model_version})"
+        )
 
         return cache_key
 
@@ -119,6 +164,8 @@ class EvaluationCache:
         evaluation_method: str,
         config_params: Optional[Dict[str, Any]] = None,
         max_age_hours: int = 24,
+        dimensions: Optional[Dict[str, Any]] = None,
+        model_version: Optional[str] = None,
     ) -> Optional[EvaluationResult]:
         """
         Retrieve cached evaluation result
@@ -129,6 +176,8 @@ class EvaluationCache:
             evaluation_method: Method used for evaluation
             config_params: Configuration parameters used
             max_age_hours: Maximum age of cached result in hours
+            dimensions: Evaluation dimensions/criteria (affects cache key)
+            model_version: LLM model version used (affects cache key)
 
         Returns:
             Cached EvaluationResult or None if not found/expired
@@ -137,7 +186,11 @@ class EvaluationCache:
         with self._lock:
             self.cache_stats["total_requests"] += 1
 
-            cache_key = self._generate_cache_key(content, task_context, evaluation_method, config_params)
+            # Bug #10 Fix: Pass dimensions and model_version to cache key generation
+            cache_key = self._generate_cache_key(
+                content, task_context, evaluation_method, config_params,
+                dimensions=dimensions, model_version=model_version
+            )
 
             # Check memory cache first
             if cache_key in self.memory_cache:
@@ -212,6 +265,8 @@ class EvaluationCache:
         evaluation_result: EvaluationResult,
         config_params: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        dimensions: Optional[Dict[str, Any]] = None,
+        model_version: Optional[str] = None,
     ) -> bool:
         """
         Cache evaluation result
@@ -223,6 +278,8 @@ class EvaluationCache:
             evaluation_result: Result to cache
             config_params: Configuration parameters used
             metadata: Additional metadata to store
+            dimensions: Evaluation dimensions/criteria (affects cache key)
+            model_version: LLM model version used (affects cache key)
 
         Returns:
             True if successfully cached, False otherwise
@@ -230,7 +287,11 @@ class EvaluationCache:
 
         try:
             with self._lock:
-                cache_key = self._generate_cache_key(content, task_context, evaluation_method, config_params)
+                # Bug #10 Fix: Pass dimensions and model_version to cache key generation
+                cache_key = self._generate_cache_key(
+                    content, task_context, evaluation_method, config_params,
+                    dimensions=dimensions, model_version=model_version
+                )
 
                 # Serialize evaluation result
                 result_json = self._serialize_evaluation_result(evaluation_result)

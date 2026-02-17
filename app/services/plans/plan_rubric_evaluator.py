@@ -582,75 +582,78 @@ def _aggregate_scores(
     return dim_scores_0_100, round(_clamp(overall, 0.0, 100.0), 2)
 
 
-def _fallback_rule_only_scores(tree: PlanTree) -> Tuple[RubricScores, RubricEvidence, Dict[str, Any]]:
-    """
-    Rule-only fallback: deterministic, conservative scoring based on signals.
-    Intended only when evaluator LLM is unavailable.
-    """
-    evidence = _build_rule_evidence(tree)
-    s = evidence.get("text_signals", {}) or {}
-    d = evidence.get("dependency_signals", {}) or {}
-    counts = evidence.get("node_counts", {}) or {}
-    non_root = max(int(counts.get("non_root_nodes", 0) or 0), 1)
+def _build_zeroed_rubric_payload(
+    rubric: Dict[str, Any],
+) -> Tuple[RubricScores, RubricEvidence, Dict[str, float]]:
+    sub_scores: RubricScores = {}
+    evidence: RubricEvidence = {}
+    dim_scores: Dict[str, float] = {}
+    for dim, dim_data in rubric.items():
+        keys = list((dim_data.get("subcriteria") or {}).keys())
+        sub_scores[dim] = {k: 0.0 for k in keys}
+        evidence[dim] = {k: [] for k in keys}
+        dim_scores[dim] = 0.0
+    return sub_scores, evidence, dim_scores
 
-    # Map signals to 0-1 subcriteria conservatively.
-    ratio = lambda k: _clamp((_safe_float(s.get(k), 0.0) / non_root), 0.0, 1.0)
 
-    cycle_penalty = 1.0 if not d.get("cycle_suspected") else 0.3
-    orphan_penalty = 1.0 if not d.get("orphan_dependencies") else 0.3
-    _self_dep_penalty = 1.0 if not d.get("self_dependencies") else 0.3
-
-    broad_ratio = _clamp(_safe_float(len(s.get("broad_slogan_like_tasks", []) or []), 0.0) / non_root, 0.0, 1.0)
-    short_ratio = _clamp(_safe_float(len(s.get("short_or_missing_instruction_tasks", []) or []), 0.0) / non_root, 0.0, 1.0)
-
-    # Heuristics: these are intentionally strict.
-    sub: RubricScores = {
-        "contextual_completeness": {
-            "C1": ratio("why_marker_tasks"),
-            "C2": ratio("why_marker_tasks") * 0.9,
-            "C3": ratio("assumption_marker_tasks"),
-            "C4": ratio("ordering_marker_tasks"),
-            "C5": ratio("alternative_marker_tasks") * 0.9,
+def _build_unavailable_rubric_result(
+    *,
+    tree: PlanTree,
+    rubric: Dict[str, Any],
+    evaluator_provider: str,
+    evaluator_model: str,
+    evaluated_at: str,
+    rule_evidence: Dict[str, Any],
+    reason: str,
+    revision_hint: str,
+) -> PlanRubricResult:
+    sub_scores, evidence, dim_scores = _build_zeroed_rubric_payload(rubric)
+    return PlanRubricResult(
+        plan_id=tree.id,
+        rubric_version=RUBRIC_VERSION,
+        evaluator_provider=evaluator_provider,
+        evaluator_model=evaluator_model,
+        evaluated_at=evaluated_at,
+        overall_score=0.0,
+        dimension_scores=dim_scores,
+        subcriteria_scores=sub_scores,
+        evidence=evidence,
+        feedback={
+            "status": "evaluation_unavailable",
+            "strengths": [],
+            "weaknesses": [reason],
+            "actionable_revisions": [revision_hint],
         },
-        "accuracy": {
-            "A1": ratio("tool_named_tasks") * 0.75 + 0.2 * cycle_penalty,
-            "A2": 0.6 * cycle_penalty,
-            "A3": 0.7 * cycle_penalty,
-            "A4": 0.7 * orphan_penalty,
-            "A5": 0.55 + 0.25 * ratio("tool_named_tasks"),
-        },
-        "task_granularity_atomicity": {
-            "G1": _clamp(1.0 - broad_ratio, 0.0, 1.0),
-            "G2": _clamp(1.0 - short_ratio, 0.0, 1.0),
-            "G3": _clamp(1.0 - broad_ratio, 0.0, 1.0),
-            "G4": _clamp(1.0 - _clamp(_safe_float(d.get("avg_deps_per_task"), 0.0) / 3.0, 0.0, 1.0), 0.0, 1.0),
-            "G5": _clamp(1.0 - _clamp(_safe_float(len(s.get("duplicate_task_names", []) or []), 0.0) / 8.0, 0.0, 1.0), 0.0, 1.0),
-        },
-        "reproducibility_parameterization": {
-            "R1": ratio("tool_named_tasks"),
-            "R2": ratio("io_specified_tasks"),
-            "R3": _clamp(_safe_float(s.get("metrics_qc_tasks"), 0.0) / non_root, 0.0, 1.0) * 0.7,
-            "R4": ratio("data_source_tasks"),
-            "R5": _clamp(1.0 - short_ratio, 0.0, 1.0),
-        },
-        "scientific_rigor": {
-            "S1": ratio("metrics_qc_tasks") * 0.8,
-            "S2": ratio("metrics_qc_tasks") * 0.85,
-            "S3": ratio("metrics_qc_tasks") * 0.75,
-            "S4": ratio("metrics_qc_tasks") * 0.7,
-            "S5": ratio("metrics_qc_tasks") * 0.6,
-        },
-    }
+        rule_evidence=rule_evidence,
+    )
 
-    # Clamp all
-    for dim, subs in sub.items():
-        for k, v in list(subs.items()):
-            subs[k] = round(_clamp(_safe_float(v, 0.0), 0.0, 1.0), 3)
 
-    evid: RubricEvidence = {}
-    for dim, subs in rubric_definition_en().items():
-        evid[dim] = {k: [] for k in subs.get("subcriteria", {}).keys()}
-    return sub, evid, evidence
+def _validate_rubric_payload_shape(
+    payload: Dict[str, Any],
+    rubric: Dict[str, Any],
+) -> Optional[str]:
+    incoming_sub = payload.get("subcriteria_scores")
+    incoming_evidence = payload.get("evidence")
+
+    if not isinstance(incoming_sub, dict):
+        return "Missing or invalid `subcriteria_scores` object."
+    if not isinstance(incoming_evidence, dict):
+        return "Missing or invalid `evidence` object."
+
+    for dim, dim_data in rubric.items():
+        dim_sub = incoming_sub.get(dim)
+        dim_evidence = incoming_evidence.get(dim)
+        if not isinstance(dim_sub, dict):
+            return f"Missing dimension in subcriteria_scores: {dim}"
+        if not isinstance(dim_evidence, dict):
+            return f"Missing dimension in evidence: {dim}"
+        for key in (dim_data.get("subcriteria") or {}).keys():
+            if key not in dim_sub:
+                return f"Missing subcriteria score: {dim}.{key}"
+            if key not in dim_evidence:
+                return f"Missing evidence list: {dim}.{key}"
+
+    return None
 
 
 def evaluate_plan_rubric(
@@ -666,8 +669,9 @@ def evaluate_plan_rubric(
     """
     Evaluate a plan using the 5-dimension rubric.
 
-    - Primary path: use an independent evaluator LLM (Qwen) to score subcriteria and provide evidence.
-    - Fallback path: deterministic, conservative rule-only scoring if evaluator is unavailable.
+    Uses an independent evaluator LLM (Qwen) to score subcriteria and provide evidence.
+    If evaluator output is unavailable/invalid, returns an explicit "evaluation_unavailable" result
+    with zero scores (no heuristic fallback scoring).
 
     Output is always English (textual feedback/evidence).
     """
@@ -685,30 +689,18 @@ def evaluate_plan_rubric(
             client = None
 
     if client is None or not getattr(client, "api_key", None) or not getattr(client, "url", None):
-        sub_scores, evidence, rule_only = _fallback_rule_only_scores(tree)
-        dim_scores, overall = _aggregate_scores(
-            sub_scores, dim_weights=dim_weights, sub_weights=sub_weights
-        )
-        return PlanRubricResult(
-            plan_id=tree.id,
-            rubric_version=RUBRIC_VERSION,
+        return _build_unavailable_rubric_result(
+            tree=tree,
+            rubric=rubric,
             evaluator_provider=evaluator_provider,
             evaluator_model=evaluator_model or "unavailable",
             evaluated_at=evaluated_at,
-            overall_score=overall,
-            dimension_scores=dim_scores,
-            subcriteria_scores=sub_scores,
-            evidence=evidence,
-            feedback={
-                "strengths": [],
-                "weaknesses": [
-                    "Evaluator model unavailable; produced a conservative rule-only estimate."
-                ],
-                "actionable_revisions": [
-                    "Configure evaluator provider credentials (QWEN_API_KEY/QWEN_API_URL/QWEN_MODEL) to enable strict rubric scoring.",
-                ],
-            },
-            rule_evidence=rule_only,
+            rule_evidence=rule_evidence,
+            reason="Evaluator model is unavailable; strict rubric scoring could not run.",
+            revision_hint=(
+                "Configure evaluator provider credentials "
+                "(QWEN_API_KEY/QWEN_API_URL/QWEN_MODEL) and retry."
+            ),
         )
 
     # Build strict JSON schema prompt (English only)
@@ -777,30 +769,28 @@ Your job is to score each subcriterion and provide concrete evidence.
         parsed = None
 
     if not isinstance(parsed, dict):
-        sub_scores, evidence, rule_only = _fallback_rule_only_scores(tree)
-        dim_scores, overall = _aggregate_scores(
-            sub_scores, dim_weights=dim_weights, sub_weights=sub_weights
-        )
-        return PlanRubricResult(
-            plan_id=tree.id,
-            rubric_version=RUBRIC_VERSION,
+        return _build_unavailable_rubric_result(
+            tree=tree,
+            rubric=rubric,
             evaluator_provider=str(getattr(client, "provider", evaluator_provider)),
             evaluator_model=str(getattr(client, "model", evaluator_model or "unknown")),
             evaluated_at=evaluated_at,
-            overall_score=overall,
-            dimension_scores=dim_scores,
-            subcriteria_scores=sub_scores,
-            evidence=evidence,
-            feedback={
-                "strengths": [],
-                "weaknesses": [
-                    "Evaluator returned an invalid response; produced a conservative rule-only estimate."
-                ],
-                "actionable_revisions": [
-                    "Retry evaluation with a stable evaluator model outputting strict JSON."
-                ],
-            },
-            rule_evidence=rule_only,
+            rule_evidence=rule_evidence,
+            reason="Evaluator returned invalid JSON; strict rubric scoring was aborted.",
+            revision_hint="Retry with a stable evaluator model that returns strict JSON matching the schema.",
+        )
+
+    payload_shape_error = _validate_rubric_payload_shape(parsed, rubric)
+    if payload_shape_error:
+        return _build_unavailable_rubric_result(
+            tree=tree,
+            rubric=rubric,
+            evaluator_provider=str(getattr(client, "provider", evaluator_provider)),
+            evaluator_model=str(getattr(client, "model", evaluator_model or "unknown")),
+            evaluated_at=evaluated_at,
+            rule_evidence=rule_evidence,
+            reason=f"Evaluator payload schema mismatch: {payload_shape_error}",
+            revision_hint="Retry evaluation with strict schema adherence enabled.",
         )
 
     # Validate & normalize

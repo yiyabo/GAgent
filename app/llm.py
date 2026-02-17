@@ -67,15 +67,15 @@ class LLMClient(LLMProvider):
             env_model = os.getenv("QWEN_MODEL")
             self.api_key = api_key or env_api_key or settings.qwen_api_key
             self.url = url or env_url or settings.qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-            selected_model = model or env_model or settings.qwen_model or "qwen-turbo"
+            selected_model = model or env_model or settings.qwen_model or "qwen3.5-plus"
             selected_model_str = str(selected_model).strip().lower()
             if selected_model_str and not selected_model_str.startswith("qwen"):
                 logger.warning(
                     "Model '%s' is not a Qwen-series model; forcing model='%s'",
                     selected_model,
-                    settings.qwen_model or "qwen-turbo",
+                    settings.qwen_model or "qwen3.5-plus",
                 )
-                selected_model = settings.qwen_model or "qwen-turbo"
+                selected_model = settings.qwen_model or "qwen3.5-plus"
             self.model = selected_model
         elif provider_name == "kimi":
             # Kimi (Moonshot) via OpenAI-compatible endpoints (e.g., 百炼/compatible-mode)
@@ -137,7 +137,7 @@ class LLMClient(LLMProvider):
                 or settings.qwen_api_url
                 or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
             )
-            self.model = model or env_model or settings.qwen_model or "qwen-turbo"
+            self.model = model or env_model or settings.qwen_model or "qwen3.5-plus"
         
         self.timeout = timeout or settings.glm_request_timeout
         # 🚫 科研项目要求：强制禁用Mock模式，必须使用真实API

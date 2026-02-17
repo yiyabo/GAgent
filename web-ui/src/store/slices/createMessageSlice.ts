@@ -463,7 +463,14 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
                         const planIdValue = finalPlanIdCandidate ?? state.currentPlanId ?? null;
                         const planTitleValue = finalPlanTitle ?? state.currentPlanTitle ?? null;
                         const updatedSession = state.currentSession ? { ...state.currentSession, plan_id: planIdValue, plan_title: planTitleValue } : null;
-                        return { currentPlanId: planIdValue, currentPlanTitle: planTitleValue, currentSession, sessions: updatedSession ? state.sessions.map(s => s.id === updatedSession.id ? updatedSession : s) : state.sessions };
+                        return {
+                            currentPlanId: planIdValue,
+                            currentPlanTitle: planTitleValue,
+                            currentSession: updatedSession ?? state.currentSession,
+                            sessions: updatedSession
+                                ? state.sessions.map(s => s.id === updatedSession.id ? updatedSession : s)
+                                : state.sessions
+                        };
                     });
 
                     const sessionAfter = get().currentSession;
@@ -731,7 +738,17 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
                 const taskIdValue = resolvedTaskId ?? state.currentTaskId ?? null;
                 const workflowValue = resolvedWorkflowId ?? state.currentWorkflowId ?? null;
                 const updatedSession = state.currentSession ? { ...state.currentSession, plan_id: planIdValue, plan_title: planTitleValue, current_task_id: taskIdValue, current_task_name: resolvedTaskName ?? state.currentSession.current_task_name ?? null, workflow_id: workflowValue } : null;
-                return { currentPlanId: planIdValue, currentPlanTitle: planTitleValue, currentTaskId: taskIdValue, currentTaskName: resolvedTaskName ?? state.currentTaskName ?? null, currentWorkflowId: workflowValue, currentSession, sessions: updatedSession ? state.sessions.map(s => s.id === updatedSession.id ? updatedSession : s) : state.sessions };
+                return {
+                    currentPlanId: planIdValue,
+                    currentPlanTitle: planTitleValue,
+                    currentTaskId: taskIdValue,
+                    currentTaskName: resolvedTaskName ?? state.currentTaskName ?? null,
+                    currentWorkflowId: workflowValue,
+                    currentSession: updatedSession ?? state.currentSession,
+                    sessions: updatedSession
+                        ? state.sessions.map(s => s.id === updatedSession.id ? updatedSession : s)
+                        : state.sessions
+                };
             });
 
             const sessionAfter = get().currentSession;

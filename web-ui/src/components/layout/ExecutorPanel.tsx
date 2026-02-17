@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import { Button, Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Progress, Space, Tag, Tooltip, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { planTreeApi } from '@api/planTree';
@@ -117,6 +117,115 @@ const formatRelativeTime = (time?: string | null): string => {
   if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}分钟前`;
   if (diffMs < 86400000) return `${Math.floor(diffMs / 3600000)}小时前`;
   return `${Math.floor(diffMs / 86400000)}天前`;
+};
+
+const clampPercent = (value: number): number => {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+};
+
+const toProgressStatus = (status: string): 'normal' | 'active' | 'success' | 'exception' => {
+  const normalized = normalizeJobStatus(status);
+  if (normalized === 'running') return 'active';
+  if (normalized === 'completed') return 'success';
+  if (normalized === 'failed') return 'exception';
+  return 'normal';
+};
+
+const getProgressText = (item: BackgroundTaskItem): string | null => {
+  const parts: string[] = [];
+
+  if (typeof item.progress_text === 'string' && item.progress_text.trim()) {
+    parts.push(item.progress_text.trim());
+  } else if (
+    typeof item.done_steps === 'number' &&
+    Number.isFinite(item.done_steps) &&
+    typeof item.total_steps === 'number' &&
+    Number.isFinite(item.total_steps) &&
+    item.total_steps > 0
+  ) {
+    parts.push(`${Math.max(0, Math.round(item.done_steps))}/${Math.max(0, Math.round(item.total_steps))}`);
+  } else if (
+    item.counts &&
+    typeof item.counts.done === 'number' &&
+    Number.isFinite(item.counts.done) &&
+    typeof item.counts.total === 'number' &&
+    Number.isFinite(item.counts.total) &&
+    item.counts.total > 0
+  ) {
+    parts.push(`${Math.max(0, Math.round(item.counts.done))}/${Math.max(0, Math.round(item.counts.total))}`);
+  }
+
+  if (
+    typeof item.current_step === 'number' &&
+    Number.isFinite(item.current_step) &&
+    item.current_step > 0
+  ) {
+    if (
+      typeof item.total_steps === 'number' &&
+      Number.isFinite(item.total_steps) &&
+      item.total_steps > 0
+    ) {
+      parts.push(`step ${Math.round(item.current_step)}/${Math.round(item.total_steps)}`);
+    } else {
+      parts.push(`step ${Math.round(item.current_step)}`);
+    }
+  }
+
+  if (
+    typeof item.current_task_id === 'number' &&
+    Number.isFinite(item.current_task_id) &&
+    item.current_task_id > 0
+  ) {
+    parts.push(`task #${Math.round(item.current_task_id)}`);
+  }
+
+  if (!parts.length) return null;
+  return parts.join(' · ');
+};
+
+const resolveItemProgress = (
+  item: BackgroundTaskItem
+): { percent: number; status: 'normal' | 'active' | 'success' | 'exception'; text: string | null } => {
+  const status = toProgressStatus(item.progress_status || item.status || 'queued');
+  const explicitPercent =
+    typeof item.progress_percent === 'number' && Number.isFinite(item.progress_percent)
+      ? clampPercent(item.progress_percent)
+      : null;
+
+  let fallbackPercent: number | null = null;
+  if (
+    typeof item.done_steps === 'number' &&
+    Number.isFinite(item.done_steps) &&
+    typeof item.total_steps === 'number' &&
+    Number.isFinite(item.total_steps) &&
+    item.total_steps > 0
+  ) {
+    fallbackPercent = clampPercent((item.done_steps / item.total_steps) * 100);
+  } else if (
+    item.counts &&
+    typeof item.counts.done === 'number' &&
+    Number.isFinite(item.counts.done) &&
+    typeof item.counts.total === 'number' &&
+    Number.isFinite(item.counts.total) &&
+    item.counts.total > 0
+  ) {
+    fallbackPercent = clampPercent((item.counts.done / item.counts.total) * 100);
+  }
+
+  let percent = explicitPercent ?? fallbackPercent ?? 0;
+  if (status === 'active' && percent >= 100) {
+    percent = 99;
+  }
+  if (status === 'success' || status === 'exception') {
+    percent = 100;
+  }
+
+  return {
+    percent,
+    status,
+    text: getProgressText(item),
+  };
 };
 
 const ExecutorPanel: React.FC = () => {
@@ -273,6 +382,7 @@ const ExecutorPanel: React.FC = () => {
                   {group.items.map((item) => {
                     const normalized = normalizeJobStatus(item.status);
                     const duration = formatDuration(item.started_at, item.finished_at);
+                    const progress = resolveItemProgress(item);
                     const remoteMeta =
                       item.category === 'phagescope'
                         ? [item.remote_status, item.phase].filter((v) => typeof v === 'string' && v.trim()).join(' / ')
@@ -297,6 +407,19 @@ const ExecutorPanel: React.FC = () => {
                           {item.error ? (
                             <div className="task-content-meta task-content-error">{item.error}</div>
                           ) : null}
+                          <div className="task-progress-wrap">
+                            <Progress
+                              percent={progress.percent}
+                              status={progress.status}
+                              size="small"
+                              showInfo={false}
+                              strokeLinecap="round"
+                            />
+                            <div className="task-progress-meta">
+                              <span className="task-progress-percent">{progress.percent}%</span>
+                              {progress.text ? <span className="task-progress-text">{progress.text}</span> : null}
+                            </div>
+                          </div>
                         </td>
                         <td className="task-status">
                           <span className={`task-status-dot ${normalized}`} />

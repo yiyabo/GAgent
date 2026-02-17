@@ -1,11 +1,15 @@
 """Legacy context utilities placeholder.
 
 The new workflow embeds PlanTree information directly in prompts, making the
-old context aggregation stack obsolete.  Importing this module now raises a
-runtime error to prevent accidental use of outdated logic.
+old context aggregation stack obsolete.
+
+Note: The gather_context function in context.py is still available for backward
+compatibility, but new code should use the PlanTree prompt embedding workflow.
 """
 
-raise RuntimeError(
-    "Context utilities have been retired. Use the PlanTree prompt embedding "
-    "workflow instead of legacy gather_context APIs."
-)
+# Re-export gather_context for backward compatibility
+# New code should use PlanTree prompt embedding workflow instead
+from .context import gather_context  # noqa: F401
+from .context_budget import apply_budget  # noqa: F401
+
+__all__ = ["gather_context", "apply_budget"]

@@ -10,7 +10,7 @@ import time
 from typing import Any, Dict, Optional
 
 from ..interfaces import TaskRepository
-from ..models import EvaluationConfig, TaskExecutionResult
+from ..models import EvaluationConfig, EvaluationResult, TaskExecutionResult
 from ..services.evaluation.adversarial_evaluator import get_adversarial_evaluator
 from ..services.evaluation.evaluation_supervisor import monitor_evaluation
 from .base_executor import BaseTaskExecutor
@@ -47,6 +47,11 @@ class AdversarialExecutionStrategy:
         - Critic finds flaws and provides feedback
         - Iterative adversarial loop until convergence
         """
+        if max_iterations < 1:
+            raise ValueError("max_iterations must be >= 1 for adversarial execution.")
+        if max_rounds < 1:
+            raise ValueError("max_rounds must be >= 1 for adversarial execution.")
+
         start_time = time.time()
         task_id, name = self.base_executor.get_task_id_and_name(task)
 
@@ -112,12 +117,12 @@ class AdversarialExecutionStrategy:
         current_prompt = initial_prompt
 
         for iteration in range(max_iterations):
+            logger.info(f"Adversarial evaluation - Task {task_id} iteration {iteration + 1}/{max_iterations}")
+
+            # Generate initial content for this iteration
+            content = self.base_executor.execute_llm_chat(current_prompt)
+
             try:
-                logger.info(f"Adversarial evaluation - Task {task_id} iteration {iteration + 1}/{max_iterations}")
-
-                # Generate initial content for this iteration
-                content = self.base_executor.execute_llm_chat(current_prompt)
-
                 # Run adversarial evaluation with multiple rounds
                 evaluation = self.adversarial_evaluator.adversarial_evaluate(
                     content=content,
@@ -126,57 +131,62 @@ class AdversarialExecutionStrategy:
                     improvement_threshold=improvement_threshold,
                     iteration=iteration,
                 )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Adversarial evaluation iteration {iteration + 1} failed for task {task_id}."
+                ) from exc
 
-                # Store evaluation history
-                self._store_evaluation_history(task_id, iteration, evaluation.content or content, evaluation)
+            final_content = self._extract_best_content(content, evaluation)
 
+            # Store evaluation history
+            self._store_evaluation_history(task_id, iteration, final_content, evaluation)
+
+            logger.info(
+                f"Task {task_id} iteration {iteration + 1} adversarial score: {evaluation.overall_score:.3f}"
+            )
+
+            # Log adversarial details if available
+            if evaluation.metadata:
+                rounds_completed = evaluation.metadata.get("rounds_completed", 0)
+                final_criticism = evaluation.metadata.get("final_criticism", "None")
+                logger.debug(f"Adversarial rounds completed: {rounds_completed}")
+                if final_criticism and final_criticism != "None":
+                    logger.debug(f"Final criticism: {final_criticism[:100]}...")
+
+            # Check quality threshold
+            if evaluation.overall_score >= quality_threshold:
                 logger.info(
-                    f"Task {task_id} iteration {iteration + 1} adversarial score: {evaluation.overall_score:.3f}"
+                    f"Task {task_id} reached adversarial evaluation threshold: {evaluation.overall_score:.3f}"
+                )
+                return TaskExecutionResult(
+                    task_id=task_id,
+                    status="done",
+                    content=final_content,
+                    evaluation=evaluation,
+                    iterations=iteration + 1,
                 )
 
-                # Log adversarial details if available
-                if evaluation.metadata:
-                    rounds_completed = evaluation.metadata.get("rounds_completed", 0)
-                    final_criticism = evaluation.metadata.get("final_criticism", "None")
-                    logger.debug(f"Adversarial rounds completed: {rounds_completed}")
-                    if final_criticism and final_criticism != "None":
-                        logger.debug(f"Final criticism: {final_criticism[:100]}...")
+            # Track best result
+            if best_evaluation is None or evaluation.overall_score > best_evaluation.overall_score:
+                best_content = final_content
+                best_evaluation = evaluation
 
-                # Use the improved content from adversarial process
-                final_content = evaluation.content or content
+            # Build adversarial-informed revision prompt for next iteration
+            if iteration < max_iterations - 1:
+                current_prompt = self._build_adversarial_revision_prompt(
+                    initial_prompt, final_content, evaluation, iteration
+                )
 
-                # Check quality threshold
-                if evaluation.overall_score >= quality_threshold:
-                    logger.info(
-                        f"Task {task_id} reached adversarial evaluation threshold: {evaluation.overall_score:.3f}"
-                    )
-                    return TaskExecutionResult(
-                        task_id=task_id,
-                        status="done",
-                        content=final_content,
-                        evaluation=evaluation,
-                        iterations=iteration + 1,
-                    )
+        if best_evaluation is None:
+            raise RuntimeError(
+                f"Adversarial execution produced no valid evaluation result for task {task_id}."
+            )
 
-                # Track best result
-                if best_evaluation is None or evaluation.overall_score > best_evaluation.overall_score:
-                    best_content = final_content
-                    best_evaluation = evaluation
-
-                # Build adversarial-informed revision prompt for next iteration
-                if iteration < max_iterations - 1:
-                    current_prompt = self._build_adversarial_revision_prompt(
-                        initial_prompt, final_content, evaluation, iteration
-                    )
-
-            except Exception as e:
-                logger.error(f"Adversarial evaluation iteration {iteration + 1} failed for task {task_id}: {e}")
-                continue
-
-        # Return best result
+        # Return best result when threshold was not reached.
         final_status = "done" if best_content else "failed"
-        if best_evaluation:
-            logger.warning(f"Task {task_id} completed with best adversarial score: {best_evaluation.overall_score:.3f}")
+        logger.warning(
+            f"Task {task_id} completed with best adversarial score: {best_evaluation.overall_score:.3f}"
+        )
 
         return TaskExecutionResult(
             task_id=task_id,
@@ -185,6 +195,14 @@ class AdversarialExecutionStrategy:
             evaluation=best_evaluation,
             iterations=max_iterations,
         )
+
+    @staticmethod
+    def _extract_best_content(default_content: str, evaluation: EvaluationResult) -> str:
+        if evaluation.metadata and isinstance(evaluation.metadata, dict):
+            best = evaluation.metadata.get("best_content")
+            if isinstance(best, str) and best.strip():
+                return best
+        return default_content
 
     def _build_adversarial_prompt(self, task_name: str) -> str:
         """Build prompt optimized for adversarial evaluation."""

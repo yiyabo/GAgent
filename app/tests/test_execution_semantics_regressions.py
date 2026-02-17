@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.routers import chat_routes
 from app.routers.chat_routes import AgentStep, StructuredChatAgent
 from app.services.llm.structured_response import (
     LLMAction,
@@ -189,3 +190,40 @@ def test_rerun_task_step_marks_failure_on_skipped_status() -> None:
 
     assert step.success is False
     assert step.message == "Task [23] was skipped."
+
+
+def test_optional_file_read_failure_remains_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = None
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        assert name == "file_operations"
+        return {
+            "operation": "read",
+            "path": kwargs.get("path"),
+            "success": False,
+            "error": "read_failed",
+        }
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="file_operations",
+        parameters={"operation": "read", "path": "/tmp/missing.txt"},
+        order=1,
+        metadata={"optional": True},
+    )
+
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is False
+    assert isinstance(step.details, dict)
+    result = step.details.get("result")
+    assert isinstance(result, dict)
+    assert result.get("success") is False
