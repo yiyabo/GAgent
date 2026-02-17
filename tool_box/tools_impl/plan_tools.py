@@ -281,7 +281,11 @@ async def _review_plan(plan_id: Optional[int]) -> Dict[str, Any]:
         # -----------------------------
         # Rubric evaluation (strict, English)
         # -----------------------------
-        rubric_result = evaluate_plan_rubric(plan_tree, evaluator_provider="kimi")
+        rubric_result = evaluate_plan_rubric(
+            plan_tree,
+            evaluator_provider="qwen",
+            evaluator_model="qwen3.5-plus",
+        )
 
         # Persist evaluation into plan metadata (merge, do not overwrite).
         merged_meta: Dict[str, Any] = dict(getattr(plan_tree, "metadata", None) or {})

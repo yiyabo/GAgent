@@ -244,6 +244,49 @@ def _run_task_chain_job(
     failed: List[int] = []
     skipped: List[int] = []
     step_summaries: List[Dict[str, Any]] = []
+    total_steps = len(task_order)
+
+    def _build_progress_stats(
+        *,
+        current_step: Optional[int] = None,
+        current_task_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        done_steps = len(executed) + len(failed) + len(skipped)
+        progress_percent = 0
+        if total_steps > 0:
+            progress_percent = int(round((min(done_steps, total_steps) / total_steps) * 100))
+            if done_steps < total_steps:
+                progress_percent = max(0, min(99, progress_percent))
+            else:
+                progress_percent = 100
+
+        stats_payload: Dict[str, Any] = {
+            "executed": len(executed),
+            "failed": len(failed),
+            "skipped": len(skipped),
+            "done": done_steps,
+            "total_steps": total_steps,
+            "progress_percent": progress_percent,
+        }
+        if current_step is not None:
+            stats_payload["current_step"] = current_step
+        if current_task_id is not None:
+            stats_payload["current_task_id"] = current_task_id
+        return stats_payload
+
+    def _publish_progress(
+        *,
+        current_step: Optional[int] = None,
+        current_task_id: Optional[int] = None,
+    ) -> None:
+        plan_decomposition_jobs.update_stats(
+            job_id,
+            _build_progress_stats(
+                current_step=current_step,
+                current_task_id=current_task_id,
+            ),
+        )
+
     try:
         plan_decomposition_jobs.mark_running(job_id)
         log_job_event(
@@ -255,6 +298,10 @@ def _run_task_chain_job(
                 "steps": len(task_order),
                 "task_order": task_order,
             },
+        )
+        _publish_progress(
+            current_step=0,
+            current_task_id=task_order[0] if task_order else None,
         )
 
         session_ctx = {
@@ -276,6 +323,7 @@ def _run_task_chain_job(
                     "task_id": task_id,
                 },
             )
+            _publish_progress(current_step=idx, current_task_id=task_id)
 
             try:
                 exec_config = ExecutionConfig(session_context=session_ctx)
@@ -286,6 +334,7 @@ def _run_task_chain_job(
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 failed.append(task_id)
+                _publish_progress(current_step=idx, current_task_id=task_id)
                 error = f"Task #{task_id} raised an exception: {exc}"
                 log_job_event(
                     "error",
@@ -305,10 +354,10 @@ def _run_task_chain_job(
                         "steps": step_summaries,
                     },
                     stats={
-                        "executed": len(executed),
-                        "failed": len(failed),
-                        "skipped": len(skipped),
-                        "total_steps": len(task_order),
+                        **_build_progress_stats(
+                            current_step=idx,
+                            current_task_id=task_id,
+                        ),
                     },
                 )
                 return
@@ -323,9 +372,11 @@ def _run_task_chain_job(
 
             if result.status == "completed":
                 executed.append(task_id)
+                _publish_progress(current_step=idx, current_task_id=task_id)
                 continue
             if result.status == "skipped":
                 skipped.append(task_id)
+                _publish_progress(current_step=idx, current_task_id=task_id)
                 error = (
                     f"Task #{task_id} was skipped (likely blocked by dependencies); stopping the chain."
                 )
@@ -347,15 +398,16 @@ def _run_task_chain_job(
                         "steps": step_summaries,
                     },
                     stats={
-                        "executed": len(executed),
-                        "failed": len(failed),
-                        "skipped": len(skipped),
-                        "total_steps": len(task_order),
+                        **_build_progress_stats(
+                            current_step=idx,
+                            current_task_id=task_id,
+                        ),
                     },
                 )
                 return
 
             failed.append(task_id)
+            _publish_progress(current_step=idx, current_task_id=task_id)
             error = f"Task #{task_id} failed; stopping the chain."
             log_job_event(
                 "error",
@@ -375,14 +427,18 @@ def _run_task_chain_job(
                     "steps": step_summaries,
                 },
                 stats={
-                    "executed": len(executed),
-                    "failed": len(failed),
-                    "skipped": len(skipped),
-                    "total_steps": len(task_order),
+                    **_build_progress_stats(
+                        current_step=idx,
+                        current_task_id=task_id,
+                    ),
                 },
             )
             return
 
+        _publish_progress(
+            current_step=total_steps,
+            current_task_id=task_order[-1] if task_order else None,
+        )
         plan_decomposition_jobs.mark_success(
             job_id,
             result={
@@ -395,10 +451,10 @@ def _run_task_chain_job(
                 "steps": step_summaries,
             },
             stats={
-                "executed": len(executed),
-                "failed": len(failed),
-                "skipped": len(skipped),
-                "total_steps": len(task_order),
+                **_build_progress_stats(
+                    current_step=total_steps,
+                    current_task_id=task_order[-1] if task_order else None,
+                ),
             },
         )
     finally:

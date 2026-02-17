@@ -18,6 +18,7 @@ import { useTasksStore } from '@store/tasks';
 import { useChatStore } from '@store/chat';
 import { useLayoutStore } from '@store/layout';
 import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
+import { computePlanDecomposeProgress } from '@utils/jobProgress';
 import { planTreeApi } from '@api/planTree';
 import ExecutorPanel from './ExecutorPanel';
 import ArtifactsPanel from './ArtifactsPanel';
@@ -188,64 +189,8 @@ const DAGSidebar: React.FC = () => {
     if (!latestDecomposeJob?.jobId) return null;
     const snapshot = (decomposeSnapshot as Record<string, any> | null) ?? latestDecomposeJob.initialJob ?? null;
     if (!snapshot) return null;
-	    const stats = (snapshot.stats ?? {}) as Record<string, any>;
-	    const params = (snapshot.params ?? {}) as Record<string, any>;
-	    const logs = Array.isArray(snapshot.logs) ? snapshot.logs : [];
-	    const totalBudget = toNumber(params.node_budget) ?? toNumber(stats.node_budget);
-	    let remainingBudget: number | null = null;
-	    let queueRemaining: number | null = toNumber(stats.queue_remaining);
-	    let createdCount: number | null = null;
-	    let processedCount: number | null = null;
-	    for (let idx = logs.length - 1; idx >= 0; idx -= 1) {
-	      const metadata = logs[idx]?.metadata as Record<string, any> | undefined;
-	      if (!metadata) continue;
-	      if (remainingBudget === null) {
-	        remainingBudget = toNumber(metadata.budget_remaining);
-	      }
-	      if (queueRemaining === null) {
-	        queueRemaining = toNumber(metadata.queue_remaining);
-	      }
-	      if (createdCount === null) {
-	        createdCount = toNumber(metadata.created_count ?? metadata.createdCount);
-	      }
-	      if (processedCount === null) {
-	        processedCount = toNumber(metadata.processed_count ?? metadata.processedCount);
-	      }
-	      if (
-	        (remainingBudget !== null || totalBudget === null) &&
-	        queueRemaining !== null &&
-	        createdCount !== null &&
-	        processedCount !== null
-	      ) {
-	        break;
-	      }
-	    }
-	    const consumedFromStats = toNumber(stats.consumed_budget);
-	    const consumedBudget =
-	      consumedFromStats ??
-	      (totalBudget !== null && remainingBudget !== null
-	        ? Math.max(0, totalBudget - remainingBudget)
-	        : createdCount !== null
-	          ? Math.max(0, Math.round(createdCount))
-	        : null);
-	    const percentRaw =
-	      totalBudget !== null && totalBudget > 0 && consumedBudget !== null
-	        ? Math.round((consumedBudget / totalBudget) * 100)
-	        : processedCount !== null && queueRemaining !== null
-	          ? Math.round((processedCount / Math.max(1, processedCount + queueRemaining + 1)) * 100)
-	        : null;
-	    const percent =
-	      percentRaw !== null ? Math.max(0, Math.min(100, percentRaw)) : null;
-	    return {
-	      status: snapshot.status as string,
-	      percent,
-	      totalBudget,
-	      consumedBudget,
-	      queueRemaining,
-	      createdCount,
-	      processedCount,
-	    };
-	  }, [decomposeSnapshot, latestDecomposeJob]);
+    return computePlanDecomposeProgress(snapshot);
+  }, [decomposeSnapshot, latestDecomposeJob]);
 
   const planEvaluation = useMemo(() => {
     const meta = (planTree?.metadata ?? {}) as Record<string, any>;

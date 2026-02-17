@@ -255,7 +255,21 @@ class SessionTitleService:
             return ""
         cleaned = re.sub(r"\s+", " ", str(text)).strip()
         # Drop leading prompt words
-        drop_prefixes = ("帮我", "请帮我", "请", "我想", "希望", "能否", "需要")
+        drop_prefixes = (
+            "帮我",
+            "请帮我",
+            "请",
+            "我想",
+            "希望",
+            "能否",
+            "需要",
+            "help me",
+            "please",
+            "i want to",
+            "i need",
+            "could you",
+            "can you",
+        )
         for prefix in drop_prefixes:
             if cleaned.startswith(prefix) and len(cleaned) > len(prefix) + 2:
                 cleaned = cleaned[len(prefix) :].strip()
@@ -272,4 +286,4 @@ class SessionTitleService:
         return text[: limit - 1].rstrip("，,、.。;；!?！？」》）") + "…"
 
     def _default_title(self, session_id: str) -> str:
-        return f"会话 {session_id[-8:]}"
+        return f"Session {session_id[-8:]}"

@@ -190,9 +190,9 @@ async def delete_session(session_id: str):
             
             try:
                 if delete_session_storage(session_id):
-                    logger.info("Deleted session uploads for %s", session_id)
+                    logger.info("Deleted session storage for %s", session_id)
             except Exception as e:
-                logger.warning("Failed to delete session uploads for %s: %s", session_id, e)
+                logger.warning("Failed to delete session storage for %s: %s", session_id, e)
 
             return {
                 "message": f"Session deleted successfully",

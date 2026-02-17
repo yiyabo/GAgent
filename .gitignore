@@ -42,3 +42,8 @@ web-ui/dist/index.html
 
 # docs
 docs_summary
+docs_summary.zip
+
+# local Claude worktrees / external reference checkout
+.claude/worktrees/
+reference/result-interpreter/

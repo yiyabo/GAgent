@@ -9,64 +9,64 @@ in a plan tree, converting it into a DAG structure.
 # Batch Similarity Detection
 # =============================================================================
 
-BATCH_SIMILARITY_SYSTEM = """你是一个任务分析专家。你的任务是分析一组任务节点，找出语义相似的节点对。
+BATCH_SIMILARITY_SYSTEM = """You are a task-analysis expert. Analyze a set of task nodes and identify semantically similar node pairs.
 
-相似性判断标准：
-1. 任务名称相同或语义等价
-2. 任务指令描述的是相同或高度相似的工作
-3. 可以合并执行而不影响结果
+Similarity criteria:
+1. Task names are identical or semantically equivalent.
+2. Task instructions describe the same or highly similar work.
+3. The two tasks can be merged without affecting correctness.
 
-注意：
-- 只返回相似度 >= 0.8 的节点对
-- 不要将父子关系的节点判定为可合并
-- 考虑任务的上下文和依赖关系"""
+Important constraints:
+- Return only pairs with similarity >= 0.8.
+- Do not mark parent-child nodes as mergeable.
+- Consider task context and dependency relationships."""
 
-BATCH_SIMILARITY_USER = """请分析以下任务节点，找出所有相似的节点对：
+BATCH_SIMILARITY_USER = """Analyze the following task nodes and find all similar pairs:
 
 {nodes_text}
 
-请返回JSON格式的相似节点对列表：
+Return a JSON array of similar node pairs:
 [
-    {{"id1": <节点ID1>, "id2": <节点ID2>, "similarity": <0.0-1.0>, "reason": "<相似原因>"}},
+    {{"id1": <NODE_ID_1>, "id2": <NODE_ID_2>, "similarity": <0.0-1.0>, "reason": "<WHY_SIMILAR>"}},
     ...
 ]
 
-如果没有相似节点对，返回空数组 []
+If no similar pairs exist, return [].
 
-只返回JSON，不要其他内容。"""
+Return JSON only. Do not add extra text."""
 
 
 # =============================================================================
 # Pairwise Merge Decision
 # =============================================================================
 
-MERGE_SIMILARITY_SYSTEM = """你是一个任务规划专家。你需要判断两个任务节点是否可以合并为一个。
+MERGE_SIMILARITY_SYSTEM = """You are a task-planning expert. Decide whether two task nodes should be merged into one.
 
-合并条件：
-1. 两个任务在语义上是相同或等价的
-2. 合并后不会丢失重要信息
-3. 合并不会影响任务执行的正确性
+Merge conditions:
+1. The two tasks are semantically identical or equivalent.
+2. No important information is lost after merging.
+3. Merging will not affect execution correctness.
 
-请谨慎判断，只有真正相似的任务才应该合并。"""
+Be conservative. Only truly similar tasks should be merged."""
 
-MERGE_SIMILARITY_USER = """请判断以下两个任务节点是否可以合并：
+MERGE_SIMILARITY_USER = """Decide whether the following two task nodes can be merged:
 
-节点1:
+Node 1:
 - ID: {id1}
-- 名称: {name1}
-- 指令: {instruction1}
+- Name: {name1}
+- Instruction: {instruction1}
 
-节点2:
+Node 2:
 - ID: {id2}
-- 名称: {name2}
-- 指令: {instruction2}
+- Name: {name2}
+- Instruction: {instruction2}
 
-请返回JSON格式的判断结果：
+Return your decision in JSON:
 {{
     "can_merge": true/false,
     "similarity": <0.0-1.0>,
-    "reason": "<判断理由>",
-    "merged_name": "<如果合并，建议的合并后名称>"
+    "reason": "<RATIONALE>",
+    "merged_name": "<SUGGESTED_MERGED_NAME_IF_APPLICABLE>"
 }}
 
-只返回JSON，不要其他内容。"""
+Return JSON only. Do not add extra text."""

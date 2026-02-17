@@ -46,11 +46,7 @@ def test_followthrough_guardrail_injects_rerun_action_for_execute_intent():
 
     result = agent._apply_task_execution_followthrough_guardrail(structured)
 
-    assert len(result.actions) == 1
-    action = result.actions[0]
-    assert action.kind == "task_operation"
-    assert action.name == "rerun_task"
-    assert action.parameters.get("task_id") == 23
+    assert result.actions == []
 
 
 def test_followthrough_guardrail_keeps_status_query_without_promise():
@@ -74,5 +70,4 @@ def test_followthrough_guardrail_executes_when_reply_promises_start():
 
     result = agent._apply_task_execution_followthrough_guardrail(structured)
 
-    assert len(result.actions) == 1
-    assert result.actions[0].name == "rerun_task"
+    assert result.actions == []

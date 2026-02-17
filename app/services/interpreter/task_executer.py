@@ -148,70 +148,73 @@ class TaskExecutor:
 
         self.data_file_paths = data_file_paths
 
-        # 获取数据文件所在目录
+        # Resolve data directory from the first staged file path.
         data_path = Path(data_file_paths[0]).resolve()
         self.data_dir = str(data_path.parent)
-        self.data_filenames = [Path(fp).name for fp in data_file_paths]  # 纯文件名列表
+        self.data_filenames = [Path(fp).name for fp in data_file_paths]  # Filenames only.
 
-        # 设置输出目录
+        # Configure output directory.
         if output_dir:
             self.output_dir = str(Path(output_dir).resolve())
-            # 确保输出目录存在
+            # Ensure output directory exists.
             Path(self.output_dir).mkdir(parents=True, exist_ok=True)
         else:
             self.output_dir = self.data_dir
 
-        # 解析所有数据文件的元数据
+        # Parse metadata for all datasets.
         self.metadata_list: List[DatasetMetadata] = []
         for fp in data_file_paths:
-            logger.info(f"正在解析数据文件元数据: {fp}")
+            logger.info(f"Parsing dataset metadata: {fp}")
             metadata = DataProcessor.get_metadata(fp)
             self.metadata_list.append(metadata)
-            logger.info(f"元数据解析完成: {metadata.filename} - {metadata.total_rows}行 x {metadata.total_columns}列")
+            logger.info(
+                f"Metadata parsed: {metadata.filename} - "
+                f"{metadata.total_rows} rows x {metadata.total_columns} columns"
+            )
 
-        # 初始化LLM服务（仅用于任务类型判断和文本任务）
+        # Initialize LLM service (used for task type classification and text-only tasks).
         self.llm_service = llm_service or get_llm_service()
 
-        # Claude Code 会话隔离参数
+        # Claude Code workspace isolation parameters.
         self.session_id = session_id
         self.plan_id = plan_id
 
-        # 初始化 Skills 管理器（确保 skills 已同步到 ~/.claude/skills/）
-        # Claude Code 会自动加载并根据任务语义决定使用哪些 skills
+        # Initialize Skills manager (ensures skills are synced to ~/.claude/skills/).
+        # Claude Code can then load skills automatically based on task semantics.
         try:
             self.skills_loader = get_skills_loader(auto_sync=True)
             skills_count = len(self.skills_loader.list_skills())
-            logger.info(f"Skills 已同步，共 {skills_count} 个 skills 可用")
+            logger.info(f"Skills synced successfully; {skills_count} skills available")
         except Exception as e:
-            logger.warning(f"Skills 初始化失败（不影响核心功能）: {e}")
+            logger.warning(f"Skills initialization failed (non-blocking): {e}")
             self.skills_loader = None
 
-        logger.info(f"TaskExecutor 初始化: data_dir={self.data_dir}, output_dir={self.output_dir}")
+        logger.info(f"TaskExecutor initialized: data_dir={self.data_dir}, output_dir={self.output_dir}")
 
     def cleanup(self) -> None:
-        """清理临时目录（如果存在）"""
+        """Clean up the temporary staging directory if it exists."""
         if self._staging_dir and os.path.isdir(self._staging_dir):
             try:
                 shutil.rmtree(self._staging_dir)
-                logger.info(f"已清理临时目录: {self._staging_dir}")
+                logger.info(f"Removed temporary staging directory: {self._staging_dir}")
             except Exception as e:
-                logger.warning(f"清理临时目录失败: {self._staging_dir}, 错误: {e}")
+                logger.warning(f"Failed to remove staging directory {self._staging_dir}: {e}")
             finally:
                 self._staging_dir = None
 
     def __del__(self):
-        """析构时自动清理临时目录"""
+        """Automatically clean up staging resources on object destruction."""
         self.cleanup()
 
     def _format_datasets_summary(self) -> str:
-        """格式化所有数据集的摘要信息"""
+        """Format a concise summary for all datasets."""
         summaries = []
         for i, metadata in enumerate(self.metadata_list, 1):
-            summary = f"""### 数据集 {i}: {metadata.filename}
-- 格式: {metadata.file_format}
-- 行数: {metadata.total_rows}
-- 列数: {metadata.total_columns}
-- 数据样例(sample size: 3*3): {"; ".join(
+            summary = f"""### Dataset {i}: {metadata.filename}
+- Format: {metadata.file_format}
+- Rows: {metadata.total_rows}
+- Columns: {metadata.total_columns}
+- Sample values (first 3 columns x 3 values): {"; ".join(
             f"{col.name}: {col.sample_values[:3]}"
             for col in metadata.columns[:3]
         )}"""
@@ -219,17 +222,8 @@ class TaskExecutor:
         return "\n\n".join(summaries)
 
     def _analyze_task_type(self, task_title: str, task_description: str) -> TaskType:
-        """
-        使用LLM分析任务类型，判断是否需要编写代码
-        
-        Args:
-            task_title: 任务标题
-            task_description: 任务描述
-            
-        Returns:
-            TaskType: 任务类型
-        """
-        # 构建用户提示词
+        """Use the LLM to classify whether the task requires code execution."""
+        # Build user prompt.
         datasets_summary = self._format_datasets_summary()
         user_prompt = TASK_TYPE_USER_PROMPT_TEMPLATE.format(
             datasets_info=datasets_summary,
@@ -243,10 +237,10 @@ class TaskExecutor:
             response = self.llm_service.chat(prompt=full_prompt)
             response_text = response.strip()
             
-            # 尝试解析JSON
+            # Try to parse JSON.
             import json
             
-            # 清理可能的markdown标记
+            # Strip optional markdown fences.
             if response_text.startswith("```"):
                 lines = response_text.splitlines()
                 if lines: lines.pop(0)
@@ -254,7 +248,7 @@ class TaskExecutor:
                     lines.pop()
                 response_text = "\n".join(lines).strip()
             
-            # 尝试找到JSON
+            # Find the JSON object.
             start = response_text.find("{")
             end = response_text.rfind("}")
             if start != -1 and end != -1:
@@ -263,17 +257,17 @@ class TaskExecutor:
                 task_type_str = result.get("task_type", "code_required")
                 
                 if task_type_str == "text_only":
-                    logger.info(f"任务类型判断 (LLM): TEXT_ONLY")
+                    logger.info("Task type classification (LLM): TEXT_ONLY")
                     return TaskType.TEXT_ONLY
                 else:
-                    logger.info(f"任务类型判断 (LLM): CODE_REQUIRED")
+                    logger.info("Task type classification (LLM): CODE_REQUIRED")
                     return TaskType.CODE_REQUIRED
             
         except Exception as e:
-            logger.warning(f"LLM任务类型判断失败: {e}，默认使用CODE_REQUIRED")
+            logger.warning(f"LLM task classification failed: {e}; defaulting to CODE_REQUIRED")
         
-        # 默认认为需要代码
-        logger.info(f"任务类型判断: CODE_REQUIRED (默认)")
+        # Default to code-required for safety.
+        logger.info("Task type classification: CODE_REQUIRED (default)")
         return TaskType.CODE_REQUIRED
 
     async def _select_skills_for_task(
@@ -281,18 +275,7 @@ class TaskExecutor:
         task_title: str,
         task_description: str
     ) -> List[str]:
-        """
-        使用 LLM 语义理解自动选择相关 skills
-
-        完全基于 LLM 判断，不使用任何关键词匹配或正则表达式。
-
-        Args:
-            task_title: 任务标题
-            task_description: 任务描述
-
-        Returns:
-            选中的 skill 名称列表
-        """
+        """Use LLM semantic understanding to select relevant skills."""
         if not self.skills_loader:
             return []
 
@@ -304,7 +287,7 @@ class TaskExecutor:
             )
             return selected
         except Exception as e:
-            logger.warning(f"LLM skill 选择失败: {e}")
+            logger.warning(f"LLM skill selection failed: {e}")
             return []
 
     async def _execute_code_task(
@@ -316,96 +299,83 @@ class TaskExecutor:
         task_id: Optional[int] = None,
         use_skill_hints: bool = True,
     ) -> TaskExecutionResult:
-        """
-        使用 Claude Code 执行需要代码的任务
-
-        Claude Code 会自主完成：
-        - 代码生成
-        - 代码执行
-        - 错误修复和重试
-        - 信息收集（如需要）
-
-        Skills 集成：
-        - Skills 已同步到 ~/.claude/skills/，Claude Code 会自动加载
-        - 可选：使用 LLM 选择相关 skills 并在任务描述中提示
-
-        Args:
-            task_title: 任务标题
-            task_description: 任务描述
-            subtask_results: 子任务结果
-            is_visualization: 是否为可视化任务
-            task_id: 任务ID（用于工作区隔离）
-            use_skill_hints: 是否在任务描述中添加 skill 提示
-        """
+        """Execute a code-required task through Claude Code."""
         from tool_box.tools_impl.claude_code import claude_code_handler
 
-        logger.info(f"使用 Claude Code 执行任务: {task_title}")
+        logger.info(f"Executing task with Claude Code: {task_title}")
 
-        # 可选：使用 LLM 选择相关 skills
+        # Optionally ask LLM to select relevant skills.
         skill_hints = ""
         if use_skill_hints and self.skills_loader:
             selected_skills = await self._select_skills_for_task(task_title, task_description)
             if selected_skills:
-                skill_hints = f"\n## 推荐参考的 Skills:\n"
-                skill_hints += f"以下 skills 可能对此任务有帮助，请根据需要参考使用：\n"
+                skill_hints = "\n## Suggested Skills\n"
+                skill_hints += "The following skills may help with this task:\n"
                 for skill_name in selected_skills:
                     skill_hints += f"- {skill_name}\n"
-                logger.info(f"LLM 选择的 skills: {selected_skills}")
+                logger.info(f"LLM selected skills: {selected_skills}")
 
-        # 构建增强的任务描述
+        # Build enriched task description.
         datasets_summary = self._format_datasets_summary()
 
-        # 构建数据文件绝对路径列表
+        # Build absolute data file list.
         data_files_info = '\n'.join([f"  - {fp}" for fp in self.data_file_paths])
 
-        enhanced_task = f"""## 任务: {task_title}
+        enhanced_task = f"""## Task: {task_title}
 
-## 任务描述:
+## Task Description
 {task_description}
 
-## 数据文件信息:
+## Dataset Summary
 {datasets_summary}
 
-## 数据文件路径（请使用这些绝对路径读取数据）:
+## Data File Paths (use these absolute paths)
 {data_files_info}
 
-## 目录信息:
-- 数据目录: {self.data_dir}
-- 输出目录: {self.output_dir}
+## Directory Info
+- Data directory: {self.data_dir}
+- Output directory: {self.output_dir}
 """
 
-        # 添加 skill 提示
+        # Append optional skill hints.
         if skill_hints:
             enhanced_task += skill_hints
 
         if subtask_results:
-            enhanced_task += f"\n## 子任务执行结果（可作为参考）:\n{subtask_results}\n"
+            enhanced_task += f"\n## Subtask Results (for reference)\n{subtask_results}\n"
 
         if is_visualization:
-            enhanced_task += "\n## 特殊要求:\n请生成可视化图表，并将图片保存到输出目录。\n"
+            enhanced_task += (
+                "\n## Visualization Requirement\n"
+                "Generate the requested visualizations and save image outputs to the output directory.\n"
+            )
 
-        # 构建允许访问的目录列表
+        # Build allowed directory list.
         add_dirs_list = [self.data_dir]
         if self.output_dir != self.data_dir:
             add_dirs_list.append(self.output_dir)
         add_dirs = ",".join(add_dirs_list)
 
-        # 调用 Claude Code 执行任务
+        # Invoke Claude Code.
         try:
+            strict_task_context = self.plan_id is not None and task_id is not None
             result = await claude_code_handler(
                 task=enhanced_task,
                 add_dirs=add_dirs,
                 session_id=self.session_id,
                 plan_id=self.plan_id,
                 task_id=task_id,
+                auth_mode="api_env",
+                setting_sources="project",
+                require_task_context=strict_task_context,
             )
 
             success = result.get("success", False)
             stdout = result.get("stdout", "")
             stderr = result.get("stderr", "")
 
-            # 复制 Claude Code 产出文件到 output_dir
-            # 处理所有4个子目录: results/, code/, data/, docs/
+            # Copy Claude Code artifacts to output_dir.
+            # Handle all 4 sub-directories: results/, code/, data/, docs/.
             task_dir = result.get("task_directory_full", "")
             if task_dir and self.output_dir:
                 subdirs_to_copy = ["results", "code", "data", "docs"]
@@ -417,14 +387,14 @@ class TaskExecutor:
                         for f in src_dir.iterdir():
                             if f.is_file():
                                 shutil.copy2(f, dst_dir / f.name)
-                        logger.info(f"已复制产出文件从 {src_dir} 到 {dst_dir}")
+                        logger.info(f"Copied artifacts from {src_dir} to {dst_dir}")
 
-            # 解析输出，尝试提取可视化信息
+            # Parse output and infer visualization metadata.
             has_visualization = False
             visualization_purpose = None
             visualization_analysis = None
 
-            # 检查是否生成了图片文件
+            # Detect generated image files.
             task_dir = result.get("task_directory_full", "")
             if task_dir:
                 result_dir = Path(task_dir) / "results"
@@ -434,16 +404,16 @@ class TaskExecutor:
                                    if f.is_file() and f.suffix.lower() in image_extensions]
                     if image_files:
                         has_visualization = True
-                        visualization_purpose = f"任务 '{task_title}' 生成的可视化"
+                        visualization_purpose = f"Visualization generated for task '{task_title}'"
 
             return TaskExecutionResult(
                 task_type=TaskType.CODE_REQUIRED,
                 success=success,
-                final_code=None,  # Claude Code 自主管理代码
-                code_description=f"由 Claude Code 自主完成任务: {task_title}",
+                final_code=None,  # Claude Code manages generated code internally.
+                code_description=f"Task completed by Claude Code: {task_title}",
                 code_output=stdout,
                 code_error=stderr if stderr else None,
-                total_attempts=1,  # Claude Code 内部处理重试
+                total_attempts=1,  # Retries are handled internally by Claude Code.
                 has_visualization=has_visualization,
                 visualization_purpose=visualization_purpose,
                 visualization_analysis=visualization_analysis,
@@ -451,11 +421,11 @@ class TaskExecutor:
             )
 
         except Exception as e:
-            logger.error(f"Claude Code 执行失败: {e}")
+            logger.error(f"Claude Code execution failed: {e}")
             return TaskExecutionResult(
                 task_type=TaskType.CODE_REQUIRED,
                 success=False,
-                error_message=f"Claude Code 执行失败: {str(e)}"
+                error_message=f"Claude Code execution failed: {str(e)}"
             )
 
     def _execute_text_task(
@@ -465,9 +435,7 @@ class TaskExecutor:
         subtask_results: str = "",
         gathered_info: str = ""
     ) -> TaskExecutionResult:
-        """
-        执行纯文本任务（不需要代码）
-        """
+        """Execute a text-only task without writing code."""
         datasets_detail = self._format_all_datasets_detail()
         prompt = TEXT_TASK_PROMPT_TEMPLATE.format(
             datasets_info=datasets_detail,
@@ -486,26 +454,26 @@ class TaskExecutor:
         )
 
     def _format_all_datasets_detail(self) -> str:
-        """格式化所有数据集的详细信息（包含列信息）"""
+        """Format detailed dataset information, including column-level details."""
         details = []
         for i, metadata in enumerate(self.metadata_list, 1):
             cols_text = self._format_columns_for_metadata(metadata)
-            detail = f"""### 数据集 {i}: {metadata.filename}
-- 格式: {metadata.file_format}
-- 行数: {metadata.total_rows}
-- 列数: {metadata.total_columns}
-- 列信息:
+            detail = f"""### Dataset {i}: {metadata.filename}
+- Format: {metadata.file_format}
+- Rows: {metadata.total_rows}
+- Columns: {metadata.total_columns}
+- Column Details:
 {cols_text}"""
             details.append(detail)
         return "\n\n".join(details)
 
     def _format_columns_for_metadata(self, metadata: DatasetMetadata) -> str:
-        """格式化单个数据集的列信息"""
+        """Format column details for a single dataset."""
         lines = []
         for col in metadata.columns[:20]:
-            lines.append(f"  - {col.name} ({col.dtype}): 样例值 {col.sample_values[:3]}")
+            lines.append(f"  - {col.name} ({col.dtype}): sample values {col.sample_values[:3]}")
         if len(metadata.columns) > 20:
-            lines.append(f"  ... (还有 {len(metadata.columns) - 20} 列)")
+            lines.append(f"  ... ({len(metadata.columns) - 20} more columns)")
         return "\n".join(lines)
 
     async def execute(
@@ -514,44 +482,26 @@ class TaskExecutor:
         task_description: str,
         subtask_results: str = "",
         force_code: Optional[bool] = None,
-        skip_info_gathering: bool = True,  # 默认跳过，Claude Code 自主处理
+        skip_info_gathering: bool = True,  # Deprecated: Claude Code handles this internally.
         is_visualization: bool = False,
         task_id: Optional[int] = None,
     ) -> TaskExecutionResult:
-        """
-        执行任务的主入口（异步版本）
-        自动判断任务类型并执行相应的处理流程。
+        """Main async entrypoint for executing a task."""
+        logger.info(f"Starting task execution: {task_title}")
 
-        对于 CODE_REQUIRED 任务，使用 Claude Code 自主完成：
-        - 信息收集（如需要）
-        - 代码生成
-        - 代码执行
-        - 错误修复和重试
-
-        Args:
-            task_title: 任务标题
-            task_description: 任务描述
-            subtask_results: 子任务结果（用于非叶子节点）
-            force_code: 强制指定任务类型（True=代码任务, False=文本任务, None=自动判断）
-            skip_info_gathering: [已废弃] Claude Code 自主处理信息收集
-            is_visualization: 是否为可视化任务
-            task_id: 任务ID（用于工作区隔离）
-        """
-        logger.info(f"开始执行任务: {task_title}")
-
-        # 判断任务类型
+        # Determine task type.
         if force_code is True:
             task_type = TaskType.CODE_REQUIRED
-            logger.info("任务类型: CODE_REQUIRED (强制指定)")
+            logger.info("Task type: CODE_REQUIRED (forced)")
         elif force_code is False:
             task_type = TaskType.TEXT_ONLY
-            logger.info("任务类型: TEXT_ONLY (强制指定)")
+            logger.info("Task type: TEXT_ONLY (forced)")
         else:
             task_type = self._analyze_task_type(task_title, task_description)
 
-        # 根据任务类型执行
+        # Execute by task type.
         if task_type == TaskType.CODE_REQUIRED:
-            # 使用 Claude Code 执行代码任务
+            # Use Claude Code for code-required tasks.
             result = await self._execute_code_task(
                 task_title,
                 task_description,
@@ -560,7 +510,7 @@ class TaskExecutor:
                 task_id=task_id,
             )
         else:
-            # 文本任务仍使用 LLM 直接处理
+            # Text-only tasks are handled directly by LLM.
             result = self._execute_text_task(
                 task_title,
                 task_description,
@@ -568,7 +518,7 @@ class TaskExecutor:
                 gathered_info=""
             )
 
-        logger.info(f"任务执行完成: success={result.success}")
+        logger.info(f"Task execution finished: success={result.success}")
 
         # 注意：不再在此处调用 cleanup()
         # 当 PlanExecutorInterpreter 复用同一个 TaskExecutor 执行多个节点时，

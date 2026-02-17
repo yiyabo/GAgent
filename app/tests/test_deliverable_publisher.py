@@ -183,6 +183,33 @@ def test_publish_scans_task_directory_not_session_root(tmp_path: Path):
     assert not (latest_root / "code" / "noise.py").exists()
 
 
+def test_publish_prefers_produced_files_over_directory_scan(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    runtime_session = tmp_path / "runtime" / "session_session_alpha"
+    task_root = runtime_session / "plan7_task11"
+    old_file = task_root / "run_older" / "code" / "noise.py"
+    new_file = task_root / "run_new" / "code" / "intro.py"
+    old_file.parent.mkdir(parents=True, exist_ok=True)
+    new_file.parent.mkdir(parents=True, exist_ok=True)
+    old_file.write_text("print('old')\n", encoding="utf-8")
+    new_file.write_text("print('new')\n", encoding="utf-8")
+
+    report = publisher.publish_from_tool_result(
+        session_id="session_alpha",
+        tool_name="claude_code",
+        raw_result={
+            "task_directory_full": str(task_root),
+            "produced_files": [str(new_file)],
+        },
+        summary="Generated code in this run.",
+    )
+
+    assert report is not None
+    latest_root = tmp_path / "runtime" / "session_alpha" / "deliverables" / "latest"
+    assert (latest_root / "code" / "intro.py").exists()
+    assert not (latest_root / "code" / "noise.py").exists()
+
+
 def test_publish_skips_failed_tool_results(tmp_path: Path):
     publisher = _build_publisher(tmp_path)
     source = tmp_path / "workspace" / "analysis.py"

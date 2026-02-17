@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from uuid import uuid4
 
 from app.config.deliverable_config import DeliverableSettings, get_deliverable_settings
+from app.services.session_paths import normalize_session_base
 
 from .paper_builder import PaperBuilder
 
@@ -115,6 +116,8 @@ PATH_HINT_KEYS = {
     "output_dir",
     "task_directory",
     "task_directory_full",
+    "task_root_directory",
+    "run_directory",
     "working_directory",
     "session_directory",
     "log_path",
@@ -125,11 +128,24 @@ PATH_CONTAINER_KEYS = {
     "files",
     "generated_files",
     "outputs",
+    "produced_files",
     "saved_files",
 }
 
 MAX_PATH_CANDIDATE_LENGTH = 1024
 PATH_LIST_KEYS = {"paths", "files", "directories", "dirs", "file_paths"}
+EXPLICIT_FILE_LIST_KEYS = {
+    "produced_files",
+    "generated_files",
+}
+EXPLICIT_FILE_ITEM_KEYS = {
+    "path",
+    "file",
+    "file_path",
+    "output_path",
+    "save_path",
+    "result_path",
+}
 
 TEXT_DELIVERABLE_TOOLS = {
     "claude_code",
@@ -200,16 +216,7 @@ class DeliverablePublisher:
 
     @staticmethod
     def _normalize_session_base(value: str) -> str:
-        token = str(value or "").strip()
-        while True:
-            if token.startswith("session_"):
-                token = token[len("session_"):]
-                continue
-            if token.startswith("session-"):
-                token = token[len("session-"):]
-                continue
-            break
-        return token
+        return normalize_session_base(value)
 
     def publish_from_tool_result(
         self,
@@ -256,8 +263,20 @@ class DeliverablePublisher:
         }
         items: List[Dict[str, Any]] = []
 
-        path_candidates = self._extract_path_candidates(raw_result)
-        resolved_files = self._resolve_files(path_candidates=path_candidates, session_dir=session_dir)
+        explicit_file_candidates = self._extract_explicit_file_candidates(raw_result)
+        if explicit_file_candidates:
+            resolved_files = self._resolve_files(
+                path_candidates=explicit_file_candidates,
+                session_dir=session_dir,
+                allow_directories=False,
+            )
+        else:
+            path_candidates = self._extract_path_candidates(raw_result)
+            resolved_files = self._resolve_files(
+                path_candidates=path_candidates,
+                session_dir=session_dir,
+                allow_directories=True,
+            )
         for file_path in resolved_files:
             module = self._classify_module(file_path)
             if module is None:
@@ -404,6 +423,54 @@ class DeliverablePublisher:
             manifest_path=str(latest_manifest_path),
             paper_status=paper_status,
         )
+
+    def _extract_explicit_file_candidates(self, payload: Any) -> List[str]:
+        found: Set[str] = set()
+
+        def _collect(value: Any) -> None:
+            if isinstance(value, str):
+                candidate = value.strip()
+                if candidate and self._is_path_like(candidate, key_hint="produced_files"):
+                    found.add(candidate)
+                return
+            if isinstance(value, dict):
+                for key in EXPLICIT_FILE_ITEM_KEYS:
+                    entry = value.get(key)
+                    if isinstance(entry, str):
+                        candidate = entry.strip()
+                        if candidate and self._is_path_like(candidate, key_hint=key):
+                            found.add(candidate)
+                return
+
+        def _visit(value: Any, key: Optional[str] = None) -> None:
+            if value is None:
+                return
+            if isinstance(value, dict):
+                for item_key, item_value in value.items():
+                    lowered = str(item_key).strip().lower()
+                    if lowered in EXPLICIT_FILE_LIST_KEYS:
+                        if isinstance(item_value, dict):
+                            for nested in item_value.values():
+                                _collect(nested)
+                        elif isinstance(item_value, (list, tuple, set)):
+                            for nested in item_value:
+                                _collect(nested)
+                        else:
+                            _collect(item_value)
+                    if isinstance(item_value, (dict, list, tuple, set)):
+                        _visit(item_value, key=lowered)
+                return
+            if isinstance(value, (list, tuple, set)):
+                if key in EXPLICIT_FILE_LIST_KEYS:
+                    for item in value:
+                        _collect(item)
+                    return
+                for item in value:
+                    if isinstance(item, (dict, list, tuple, set)):
+                        _visit(item, key=key)
+
+        _visit(payload, key=None)
+        return sorted(found)
 
     def _extract_path_candidates(self, payload: Any) -> List[str]:
         found: Set[str] = set()
@@ -594,7 +661,13 @@ class DeliverablePublisher:
             )
         return sorted(merged, key=lambda item: (str(item.get("module")), str(item.get("path"))))
 
-    def _resolve_files(self, *, path_candidates: Iterable[str], session_dir: Path) -> List[Path]:
+    def _resolve_files(
+        self,
+        *,
+        path_candidates: Iterable[str],
+        session_dir: Path,
+        allow_directories: bool = True,
+    ) -> List[Path]:
         files: List[Path] = []
         seen: Set[Path] = set()
         for candidate in path_candidates:
@@ -607,6 +680,8 @@ class DeliverablePublisher:
                     files.append(resolved)
                 continue
             if resolved.is_dir():
+                if not allow_directories:
+                    continue
                 if not self._should_scan_directory(resolved, session_dir=session_dir):
                     continue
                 count = 0

@@ -78,18 +78,21 @@ def _inject_root_brief_to_prompt(original_prompt: str, task_id: int, repo: TaskR
         if root:
             root_name = root.get("name", "")
             root_prompt = repo.get_task_input_prompt(root.get("id")) or ""
-            root_brief = f"[ROOT主题] {root_name}\n[核心目标] {root_prompt[:500]}\n\n"
+            root_brief = f"[ROOT TOPIC] {root_name}\n[CORE OBJECTIVE] {root_prompt[:500]}\n\n"
         
         # Get parent task
         parent = repo.get_parent(task_id)
         if parent:
             parent_name = parent.get("name", "")
-            parent_chain = f"[父任务] {parent_name}\n\n"
+            parent_chain = f"[PARENT TASK] {parent_name}\n\n"
     except Exception as e:
         _DECOMP_LOGGER.warning(f"Failed to inject root brief: {e}")
     
     # Add explicit theme constraint
-    theme_constraint = "\n\n⚠️ 重要约束：所有内容必须紧扣上述ROOT主题，不得偏离。若信息不足，优先提问澄清。\n"
+    theme_constraint = (
+        "\n\nIMPORTANT CONSTRAINT: Keep all content tightly aligned with the ROOT TOPIC above. "
+        "Do not drift. If information is insufficient, ask clarifying questions first.\n"
+    )
     
     return f"{root_brief}{parent_chain}{original_prompt}{theme_constraint}"
 
@@ -263,7 +266,7 @@ def decompose_task(
         decomp_prompt = _build_decomposition_prompt(task_name, task_prompt, task_type, max_subtasks)
 
         # 调用规划服务生成子任务
-        plan_payload = {"goal": decomp_prompt, "title": f"分解_{task_name}", "sections": max_subtasks}
+        plan_payload = {"goal": decomp_prompt, "title": f"decomposition_{task_name}", "sections": max_subtasks}
         plan_result = propose_plan_service(plan_payload)
 
         # 检查规划服务结果
@@ -277,7 +280,7 @@ def decompose_task(
         # 创建子任务
         created_subtasks = []
         for i, subtask in enumerate(subtasks[:max_subtasks]):
-            subtask_name = subtask.get("name", f"子任务 {i+1}")
+            subtask_name = subtask.get("name", f"Subtask {i+1}")
             subtask_priority = subtask.get("priority", 100 + i * 10)
 
             # 确定子任务类型
@@ -309,23 +312,26 @@ def decompose_task(
                 enhanced_prompt = _inject_root_brief_to_prompt(subtask_prompt, task_id, repo)
                 repo.upsert_task_input(subtask_id, enhanced_prompt)
 
-            # 新增：为COMPOSITE/ATOMIC自动创建结果目录或占位md文件
+            # Initialize result placeholders for COMPOSITE/ATOMIC tasks.
             try:
                 child_info = repo.get_task_info(subtask_id)
                 child_path = get_task_file_path(child_info, repo)
-                # COMPOSITE → 目录 + summary.md
+                # COMPOSITE -> directory + summary.md
                 if child_info.get("task_type") == "composite":
                     if ensure_task_directory(child_path):
                         summary_md = os.path.join(child_path, "summary.md")
                         if not os.path.exists(summary_md):
                             with open(summary_md, "w", encoding="utf-8") as f:
-                                f.write(f"# {subtask_name} — 阶段总结\n\n此文档将聚合该 COMPOSITE 下所有 ATOMIC 的输出，以形成阶段总结。\n")
-                # ATOMIC → 文件占位
+                                f.write(
+                                    f"# {subtask_name} - Stage Summary\n\n"
+                                    "This document aggregates outputs from all ATOMIC tasks under this COMPOSITE task.\n"
+                                )
+                # ATOMIC -> file placeholder
                 elif child_info.get("task_type") == "atomic":
                     ensure_task_directory(child_path)
                     if not os.path.exists(child_path):
                         with open(child_path, "w", encoding="utf-8") as f:
-                            f.write(f"# {subtask_name}\n\n(自动生成的任务文档，执行完成后将写入内容)\n")
+                            f.write(f"# {subtask_name}\n\n(Auto-generated task document. Execution output will be written here.)\n")
             except Exception as e:
                 _DECOMP_LOGGER.warning({
                     "event": "decompose_task.files_init_failed",

@@ -253,7 +253,7 @@ if __name__ == "__main__":
 
     settings = get_settings()
     project_root = Path(__file__).parent.parent.resolve()
-    reload_enabled = parse_bool(os.getenv("BACKEND_RELOAD"), default=False)
+    reload_enabled = parse_bool(os.getenv("BACKEND_RELOAD"), default=True)
 
     run_kwargs = {
         "host": settings.backend_host,
@@ -273,10 +273,14 @@ if __name__ == "__main__":
                     "tool_box/**/*.py",
                 ],
                 "reload_excludes": [
+                    str(project_root / "runtime"),
+                    str(project_root / "data"),
                     "runtime/**",
+                    "**/runtime/**",
+                    "data/**",
+                    "**/data/**",
                     "*.db",
                     "*.sqlite",
-                    "data/*",
                 ],
             }
         )

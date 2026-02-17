@@ -52,6 +52,25 @@ def test_resolve_session_dir_handles_repeated_prefixes(
     assert resolved == legacy_runtime_session.resolve()
 
 
+def test_resolve_session_dir_prefers_runtime_for_raw_when_both_have_tool_outputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    info_root = tmp_path / "information_sessions"
+    runtime_session = runtime_root / "session_abc123"
+    info_session = info_root / "session-session_abc123"
+
+    (runtime_session / "tool_outputs").mkdir(parents=True, exist_ok=True)
+    (info_session / "tool_outputs").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", info_root)
+
+    resolved = artifact_routes._resolve_session_dir("session_abc123", purpose="raw")
+    assert resolved == runtime_session.resolve()
+
+
 def test_list_deliverables_returns_empty_when_session_missing(monkeypatch) -> None:
     def _raise_not_found(*args, **kwargs):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="missing")

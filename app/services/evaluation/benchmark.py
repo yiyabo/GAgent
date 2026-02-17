@@ -45,18 +45,19 @@ def _to_int(val: Any, default: int) -> int:
 
 def _create_report_tasks(topic: str, sections: int) -> List[int]:
     titles = [
-        f"[{topic}] 背景与现状",
-        f"[{topic}] 数据与方法",
-        f"[{topic}] 关键发现",
-        f"[{topic}] 风险与局限",
-        f"[{topic}] 建议与展望",
+        f"[{topic}] Background and Current State",
+        f"[{topic}] Data and Methods",
+        f"[{topic}] Key Findings",
+        f"[{topic}] Risks and Limitations",
+        f"[{topic}] Recommendations and Outlook",
     ][: max(1, sections)]
 
     ids: List[int] = []
     for idx, title in enumerate(titles, 1):
         tid = default_repo.create_task(name=title, status="pending", priority=idx * 10, task_type="atomic")
         prompt = (
-            f"请撰写主题《{topic}》的分析报告章节：{title}.\n" "要求：客观、结构清晰、含数据/指标/案例，500-800字。"
+            f"Write an analysis report section for the topic '{topic}': {title}.\n"
+            "Requirements: objective tone, clear structure, include data/metrics/cases, about 500-800 words."
         )
         default_repo.upsert_task_input(tid, prompt)
         ids.append(tid)

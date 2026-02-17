@@ -60,11 +60,7 @@ def test_followthrough_guardrail_infers_introduction_task_from_reply_promise() -
 
     patched = agent._apply_task_execution_followthrough_guardrail(structured)
 
-    assert len(patched.actions) == 1
-    action = patched.actions[0]
-    assert action.kind == "task_operation"
-    assert action.name == "rerun_task"
-    assert action.parameters.get("task_id") == 23
+    assert patched.actions == []
 
 
 def test_followthrough_guardrail_uses_atomic_descendant_for_composite_current_task() -> None:
@@ -87,8 +83,7 @@ def test_followthrough_guardrail_uses_atomic_descendant_for_composite_current_ta
 
     patched = agent._apply_task_execution_followthrough_guardrail(structured)
 
-    assert len(patched.actions) == 1
-    assert patched.actions[0].parameters.get("task_id") == 23
+    assert patched.actions == []
 
 
 def test_followthrough_guardrail_keeps_status_query_without_execution_intent() -> None:

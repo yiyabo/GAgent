@@ -81,29 +81,40 @@ class AtomicExecutor:
         return calls
 
     def _run_async(self, coro):
-        """Execute async coroutine from sync context, falling back to a helper thread."""
+        """Execute async coroutine from sync context.
 
+        Uses asyncio.run() when no event loop is running.
+        If a loop is already running in this thread, execute the coroutine in a
+        helper thread with its own event loop to avoid deadlock.
+        """
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
+            # No running loop, safe to use asyncio.run().
             return asyncio.run(coro)
 
         result_box: Dict[str, Any] = {}
-        error_box: Dict[str, Exception] = {}
+        error_box: Dict[str, BaseException] = {}
 
-        def _runner():
+        def _runner() -> None:
             try:
-                result_box["result"] = asyncio.run(coro)
-            except Exception as exc:  # pragma: no cover - defensive path
+                result_box["value"] = asyncio.run(coro)
+            except BaseException as exc:  # pragma: no cover - defensive path
                 error_box["error"] = exc
 
         thread = threading.Thread(target=_runner, daemon=True)
         thread.start()
-        thread.join()
+        thread.join(timeout=300)
 
-        if error_box:
-            raise error_box["error"]
-        return result_box.get("result")
+        if thread.is_alive():
+            raise RuntimeError("Async operation timed out after 5 minutes")
+        if "error" in error_box:
+            raise RuntimeError(f"Async operation failed: {error_box['error']}") from error_box["error"]
+
+        try:
+            return result_box["value"]
+        except KeyError as exc:  # pragma: no cover - defensive path
+            raise RuntimeError("Async operation completed without a result") from exc
 
     def _format_tool_result(self, tool_name: str, raw_result: Any) -> str:
         if raw_result is None:
@@ -176,28 +187,43 @@ class AtomicExecutor:
         return base_prompt
 
     def _call_llm_with_retries(self, prompt: str, *, force_real: bool = True) -> Dict[str, Any]:
+        """Call LLM with retry logic.
+        
+        Returns:
+            Dict with 'response' and 'attempts' keys
+            
+        Raises:
+            RuntimeError: When all retries are exhausted and LLM returns empty/no response
+        """
         attempts = max(1, self.retry_attempts + 1)
         last_error: Optional[Exception] = None
         response_text: Optional[str] = None
+        empty_response_count = 0
 
         for attempt in range(1, attempts + 1):
             try:
                 response_text = self.llm_service.chat(prompt, force_real=force_real)
                 if response_text and response_text.strip():
                     return {"response": response_text, "attempts": attempt}
+                empty_response_count += 1
                 logger.warning("LLM returned empty output on attempt %s/%s", attempt, attempts)
             except Exception as exc:  # pragma: no cover - defensive path
                 last_error = exc
                 logger.warning("LLM call failed on attempt %s/%s: %s", attempt, attempts, exc)
             time.sleep(self.retry_backoff * attempt if self.retry_backoff else 0.0)
 
+        # Build detailed error message
+        error_msg = f"LLM failed to produce valid output after {attempts} attempt(s). "
         if last_error:
-            logger.error("LLM execution failed after %s attempts: %s", attempts, last_error)
-            raise last_error
-
-        fallback = "Unable to generate a response after multiple attempts. Please review the task context and retry."
-        logger.error("LLM produced empty output after %s attempts; using fallback text", attempts)
-        return {"response": fallback, "attempts": attempts}
+            error_msg += f"Last error: {last_error}"
+        else:
+            error_msg += f"LLM returned empty response {empty_response_count} times."
+        
+        logger.error(error_msg)
+        
+        # Raise exception instead of returning fallback text
+        # This ensures the task status is correctly set to 'failed'
+        raise RuntimeError(error_msg)
 
     def _auto_assemble_upstream(self, task: Dict[str, Any], *, force_real: bool) -> List[Dict[str, Any]]:
         assemblies: List[Dict[str, Any]] = []

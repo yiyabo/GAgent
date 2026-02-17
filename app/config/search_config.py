@@ -21,7 +21,7 @@ class SearchSettings:
     # Builtin（模型内置搜索）配置
     qwen_api_key: Optional[str] = None
     qwen_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-    qwen_model: str = "qwen-turbo"
+    qwen_model: str = "qwen3.5-plus"
 
     glm_api_key: Optional[str] = None
     glm_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -66,7 +66,7 @@ def get_search_settings() -> SearchSettings:
 
     qwen_api_key = _env("QWEN_API_KEY")
     qwen_api_url = _env("QWEN_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
-    qwen_model = _env("QWEN_MODEL", "qwen-turbo")
+    qwen_model = _env("QWEN_MODEL", "qwen3.5-plus")
 
     glm_api_key = _env("GLM_API_KEY")
     glm_api_url = _env("GLM_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
@@ -107,7 +107,7 @@ def get_search_settings() -> SearchSettings:
         builtin_provider=builtin_provider or "qwen",
         qwen_api_key=qwen_api_key,
         qwen_api_url=qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        qwen_model=qwen_model or "qwen-turbo",
+        qwen_model=qwen_model or "qwen3.5-plus",
         glm_api_key=glm_api_key,
         glm_api_url=glm_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         glm_model=glm_model or "qwen3-max-2026-01-23",

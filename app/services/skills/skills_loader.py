@@ -333,45 +333,33 @@ Base directory: {skill.directory}
         task_description: str,
         llm_service
     ) -> List[str]:
-        """
-        使用 LLM 语义理解自动选择相关 skills
-
-        完全基于 LLM 判断，不使用任何关键词匹配或正则表达式。
-
-        Args:
-            task_title: 任务标题
-            task_description: 任务描述
-            llm_service: LLM 服务实例
-
-        Returns:
-            选中的 skill 名称列表
-        """
+        """Use semantic LLM reasoning to select relevant skills for a task."""
         if not self._available_skills:
             logger.info("No skills available for selection")
             return []
 
-        # 获取所有可用 skills 的摘要
+        # Build summary of available skills.
         skills_summary = self.get_skills_summary_for_llm()
 
-        prompt = f"""你是一个 skill 选择器。根据任务内容，从可用的 skills 中选择最相关的。
+        prompt = f"""You are a skill selector. Choose the most relevant skills for the current task.
 
-## 可用的 Skills:
+## Available Skills
 {skills_summary}
 
-## 当前任务:
-标题: {task_title}
-描述: {task_description}
+## Current Task
+Title: {task_title}
+Description: {task_description}
 
-## 要求:
-1. 分析任务的语义内容和目标
-2. 判断哪些 skills 对完成此任务有帮助
-3. 可以选择多个 skills，也可以不选择任何 skill
-4. 只返回 JSON 格式，不要有任何其他文字
+## Requirements
+1. Analyze the task semantics and objective.
+2. Select only skills that materially help task completion.
+3. You may select multiple skills, or none.
+4. Return JSON only; do not include extra text.
 
-## 返回格式:
+## Response Format
 {{"selected_skills": ["skill-name-1", "skill-name-2"]}}
 
-如果没有相关的 skill，返回:
+If no skills are relevant, return:
 {{"selected_skills": []}}
 """
 
