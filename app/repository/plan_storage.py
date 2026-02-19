@@ -820,3 +820,94 @@ def fix_stale_jobs_on_startup() -> int:
         logger.info("Fixed %d stale jobs on startup", fixed_count)
     
     return fixed_count
+
+
+# ---------------------------------------------------------------------------
+# PhageScope tracking recovery helpers
+# ---------------------------------------------------------------------------
+
+def record_phagescope_tracking(
+    *,
+    job_id: str,
+    session_id: str,
+    plan_id: Any,
+    remote_taskid: str,
+    modulelist: Optional[List[str]] = None,
+    poll_interval: float = 30.0,
+    poll_timeout: float = 172800.0,
+) -> None:
+    """Persist a phagescope tracking entry so the polling thread can be
+    restarted after a server restart."""
+    from app.database import get_db
+    try:
+        with get_db() as conn:
+            conn.execute(
+                """
+                INSERT INTO phagescope_tracking
+                    (job_id, session_id, plan_id, remote_taskid,
+                     modulelist, poll_interval, poll_timeout, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    status='running',
+                    remote_taskid=excluded.remote_taskid,
+                    modulelist=excluded.modulelist
+                """,
+                (
+                    job_id,
+                    session_id,
+                    plan_id,
+                    remote_taskid,
+                    json.dumps(modulelist or []),
+                    float(poll_interval),
+                    float(poll_timeout),
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+    except Exception as exc:
+        logger.warning("Failed to record phagescope tracking for %s: %s", job_id, exc)
+
+
+def update_phagescope_tracking_status(job_id: str, status: str) -> None:
+    """Mark a phagescope tracking entry as succeeded or failed."""
+    from app.database import get_db
+    try:
+        with get_db() as conn:
+            conn.execute(
+                """
+                UPDATE phagescope_tracking
+                SET status=?, finished_at=?
+                WHERE job_id=?
+                """,
+                (status, datetime.utcnow().isoformat(), job_id),
+            )
+    except Exception as exc:
+        logger.warning("Failed to update phagescope tracking status for %s: %s", job_id, exc)
+
+
+def get_running_phagescope_trackings() -> List[dict]:
+    """Return all phagescope tracking entries with status='running'.
+    Used at startup to resume polling threads."""
+    from app.database import get_db
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                """
+                SELECT job_id, session_id, plan_id, remote_taskid,
+                       modulelist, poll_interval, poll_timeout, created_at
+                FROM phagescope_tracking
+                WHERE status = 'running'
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+            result = []
+            for row in rows:
+                entry = dict(row)
+                try:
+                    entry["modulelist"] = json.loads(entry["modulelist"] or "[]")
+                except Exception:
+                    entry["modulelist"] = []
+                result.append(entry)
+            return result
+    except Exception as exc:
+        logger.warning("Failed to fetch running phagescope trackings: %s", exc)
+        return []

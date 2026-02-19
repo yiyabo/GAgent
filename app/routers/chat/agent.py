@@ -1,0 +1,1044 @@
+"""Structured chat agent core orchestration logic."""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import json
+import logging
+import re
+from dataclasses import replace
+from datetime import datetime
+from typing import Any, AsyncIterator, Dict, List, Optional
+from uuid import uuid4
+
+from app.config.executor_config import get_executor_settings
+from app.repository.chat_action_runs import create_action_run, fetch_action_run, update_action_run
+from app.repository.plan_storage import append_action_log_entry, update_decomposition_job_status
+from app.llm import LLMClient
+from app.services.llm.decomposer_service import PlanDecomposerLLMService
+from app.services.llm.llm_service import LLMService, get_llm_service
+from app.services.llm.structured_response import LLMAction, LLMStructuredResponse, schema_as_json
+from app.services.plans.decomposition_jobs import (
+    get_current_job,
+    log_job_event,
+    plan_decomposition_jobs,
+    reset_current_job,
+    set_current_job,
+    start_phagescope_track_job_thread,
+)
+from app.services.plans.plan_decomposer import DecompositionResult, PlanDecomposer
+from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService
+from app.services.plans.plan_session import PlanSession
+from app.services.session_title_service import SessionNotFoundError
+from app.services.upload_storage import delete_session_storage
+from app.services.deep_think_agent import DeepThinkAgent, ThinkingStep, DeepThinkResult
+from tool_box import execute_tool
+
+from .action_execution import (
+    append_summary_to_reply as _append_summary_to_reply_fn,
+    build_actions_summary as _build_actions_summary_fn,
+    log_action_event as _log_action_event_fn,
+    resolve_job_meta as _resolve_job_meta_fn,
+    truncate_summary_text as _truncate_summary_text_fn,
+)
+from .action_handlers import (
+    handle_context_request as _handle_context_request_fn,
+    handle_plan_action as _handle_plan_action_fn,
+    handle_system_action as _handle_system_action_fn,
+    handle_task_action as _handle_task_action_fn,
+    handle_tool_action as _handle_tool_action_fn,
+    handle_unknown_action as _handle_unknown_action_fn,
+    maybe_synthesize_phagescope_saveall_analysis as _maybe_synthesize_phagescope_saveall_analysis_fn,
+)
+from .claude_code_helpers import (
+    compose_claude_code_atomic_task_prompt as _compose_claude_code_atomic_task_prompt_fn,
+    normalize_csv_arg as _normalize_csv_arg_fn,
+    resolve_action_placeholders as _resolve_action_placeholders_fn,
+    resolve_claude_code_task_context as _resolve_claude_code_task_context_fn,
+    resolve_placeholders_in_value as _resolve_placeholders_in_value_fn,
+    resolve_previous_path as _resolve_previous_path_fn,
+    summarize_amem_experiences_for_cc as _summarize_amem_experiences_for_cc_fn,
+)
+from .guardrail_handlers import (
+    apply_completion_claim_guardrail as _apply_completion_claim_guardrail_fn,
+    apply_experiment_fallback as _apply_experiment_fallback_fn,
+    apply_phagescope_fallback as _apply_phagescope_fallback_fn,
+    apply_plan_first_guardrail as _apply_plan_first_guardrail_fn,
+    apply_task_execution_followthrough_guardrail as _apply_task_execution_followthrough_guardrail_fn,
+    first_executable_atomic_descendant as _first_executable_atomic_descendant_fn,
+    infer_plan_seed_message as _infer_plan_seed_message_fn,
+    match_atomic_task_by_keywords as _match_atomic_task_by_keywords_fn,
+    resolve_followthrough_target_task_id as _resolve_followthrough_target_task_id_fn,
+)
+from .guardrails import (
+    explicit_manuscript_request as _explicit_manuscript_request_fn,
+    extract_declared_absolute_paths as _extract_declared_absolute_paths_fn,
+    extract_task_id_from_text as _extract_task_id_from_text_fn,
+    is_generic_plan_confirmation as _is_generic_plan_confirmation_fn,
+    is_status_query_only as _is_status_query_only_fn,
+    is_task_executable_status as _is_task_executable_status_fn,
+    looks_like_completion_claim as _looks_like_completion_claim_fn,
+    reply_promises_execution as _reply_promises_execution_fn,
+    should_force_plan_first as _should_force_plan_first_fn,
+)
+from .models import AgentResult, AgentStep
+from .plan_helpers import (
+    auto_decompose_plan as _auto_decompose_plan_fn,
+    build_suggestions as _build_suggestions_fn,
+    coerce_int as _coerce_int_fn,
+    persist_if_dirty as _persist_if_dirty_fn,
+    refresh_plan_tree as _refresh_plan_tree_fn,
+    require_plan_bound as _require_plan_bound_fn,
+)
+from .prompt_builder import (
+    build_prompt as _build_prompt_fn,
+    compose_action_catalog as _compose_action_catalog_fn,
+    compose_guidelines as _compose_guidelines_fn,
+    compose_plan_catalog as _compose_plan_catalog_fn,
+    compose_plan_status as _compose_plan_status_fn,
+    format_history as _format_history_fn,
+    format_memories as _format_memories_fn,
+    get_structured_agent_prompts as _get_structured_agent_prompts_fn,
+    should_use_deep_think as _should_use_deep_think_fn,
+    strip_code_fence as _strip_code_fence_fn,
+)
+from .background import _sse_message
+from .services import app_settings, decomposer_settings, plan_repository
+from .session_helpers import (
+    _derive_conversation_id,
+    _extract_taskid_from_result,
+    _get_session_current_task,
+    _get_session_settings,
+    _lookup_phagescope_task_memory,
+    _normalize_base_model,
+    _normalize_llm_provider,
+    _normalize_modulelist_value,
+    _normalize_search_provider,
+    _record_phagescope_task_memory,
+    _save_chat_message,
+    _set_session_plan_id,
+)
+
+logger = logging.getLogger(__name__)
+
+class StructuredChatAgent:
+    """Plan conversation agent using a structured schema."""
+
+    MAX_HISTORY = 30
+    PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*previous\.([^\}]+)\s*\}\}")
+
+    def __init__(
+        self,
+        *,
+        mode: Optional[str] = "assistant",
+        plan_session: Optional[PlanSession] = None,
+        plan_decomposer: Optional[PlanDecomposer] = None,
+        plan_executor: Optional[PlanExecutor] = None,
+        session_id: Optional[str] = None,
+        conversation_id: Optional[int] = None,
+        history: Optional[List[Dict[str, str]]] = None,
+        extra_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.mode = mode or "assistant"
+        self.session_id = session_id
+        self.conversation_id = conversation_id
+        self.history = history or []
+        self.extra_context = extra_context or {}
+        provider = _normalize_search_provider(
+            self.extra_context.get("default_search_provider")
+        )
+        if provider:
+            self.extra_context["default_search_provider"] = provider
+        elif "default_search_provider" in self.extra_context:
+            self.extra_context.pop("default_search_provider", None)
+        base_model = _normalize_base_model(
+            self.extra_context.get("default_base_model")
+        )
+        if base_model:
+            self.extra_context["default_base_model"] = base_model
+        elif "default_base_model" in self.extra_context:
+            self.extra_context.pop("default_base_model", None)
+        llm_provider = _normalize_llm_provider(
+            self.extra_context.get("default_llm_provider")
+        )
+        if llm_provider:
+            self.extra_context["default_llm_provider"] = llm_provider
+        elif "default_llm_provider" in self.extra_context:
+            self.extra_context.pop("default_llm_provider", None)
+
+        override_llm_service: Optional[LLMService] = None
+        if llm_provider:
+            override_llm_service = LLMService(LLMClient(provider=llm_provider))
+
+        self.plan_session = plan_session or PlanSession(repo=plan_repository)
+        self.plan_tree = self.plan_session.current_tree()
+        self.schema_json = schema_as_json()
+        self.llm_service = override_llm_service or get_llm_service()
+
+        if override_llm_service:
+            override_decomposer_settings = decomposer_settings
+            if base_model:
+                override_decomposer_settings = replace(
+                    override_decomposer_settings, model=base_model
+                )
+            override_executor_settings = get_executor_settings()
+            if base_model:
+                override_executor_settings = replace(
+                    override_executor_settings, model=base_model
+                )
+            decomposer_llm = PlanDecomposerLLMService(
+                llm=override_llm_service, settings=override_decomposer_settings
+            )
+            self.plan_decomposer = PlanDecomposer(
+                repo=self.plan_session.repo,
+                llm_service=decomposer_llm,
+                settings=override_decomposer_settings,
+            )
+            executor_llm = PlanExecutorLLMService(
+                llm=override_llm_service, settings=override_executor_settings
+            )
+            self.plan_executor = PlanExecutor(
+                repo=self.plan_session.repo,
+                llm_service=executor_llm,
+                settings=override_executor_settings,
+            )
+        else:
+            self.plan_decomposer = plan_decomposer
+            self.plan_executor = plan_executor
+        self.decomposer_settings = decomposer_settings
+        self._last_decomposition: Optional[DecompositionResult] = None
+        self._decomposition_errors: List[str] = []
+        self._decomposition_notes: List[str] = []
+        self._dirty = False
+        self._sync_job_id: Optional[str] = None
+        self._current_user_message: Optional[str] = None
+        self._include_action_summary = getattr(
+            app_settings, "chat_include_action_summary", True
+        )
+
+    async def handle(self, user_message: str) -> AgentResult:
+        structured = await self._invoke_llm(user_message)
+        structured = await self._apply_experiment_fallback(structured)
+        structured = self._apply_plan_first_guardrail(structured)
+        structured = self._apply_phagescope_fallback(structured)
+        structured = self._apply_task_execution_followthrough_guardrail(structured)
+        structured = self._apply_completion_claim_guardrail(structured)
+        return await self.execute_structured(structured)
+
+    async def get_structured_response(self, user_message: str) -> LLMStructuredResponse:
+        """Return the raw structured response without executing actions."""
+        structured = await self._invoke_llm(user_message)
+        structured = await self._apply_experiment_fallback(structured)
+        structured = self._apply_plan_first_guardrail(structured)
+        structured = self._apply_phagescope_fallback(structured)
+        structured = self._apply_task_execution_followthrough_guardrail(structured)
+        return self._apply_completion_claim_guardrail(structured)
+
+    # -----------------------------------------------------------------------
+    # Guardrail predicates (static) – extracted to chat/guardrails.py
+    # -----------------------------------------------------------------------
+    _explicit_manuscript_request = staticmethod(_explicit_manuscript_request_fn)
+    _extract_task_id_from_text = staticmethod(_extract_task_id_from_text_fn)
+    _extract_declared_absolute_paths = staticmethod(_extract_declared_absolute_paths_fn)
+    _is_generic_plan_confirmation = staticmethod(_is_generic_plan_confirmation_fn)
+    _is_status_query_only = staticmethod(_is_status_query_only_fn)
+    _is_task_executable_status = staticmethod(_is_task_executable_status_fn)
+    _looks_like_completion_claim = staticmethod(_looks_like_completion_claim_fn)
+    _reply_promises_execution = staticmethod(_reply_promises_execution_fn)
+    _should_force_plan_first = staticmethod(_should_force_plan_first_fn)
+
+    # -----------------------------------------------------------------------
+    # Guardrail handlers (instance) – extracted to chat/guardrail_handlers.py
+    # -----------------------------------------------------------------------
+    async def _apply_experiment_fallback(
+        self, structured: LLMStructuredResponse
+    ) -> LLMStructuredResponse:
+        return await _apply_experiment_fallback_fn(self, structured)
+
+    def _apply_phagescope_fallback(
+        self, structured: LLMStructuredResponse
+    ) -> LLMStructuredResponse:
+        return _apply_phagescope_fallback_fn(self, structured)
+
+    def _apply_task_execution_followthrough_guardrail(
+        self, structured: LLMStructuredResponse,
+    ) -> LLMStructuredResponse:
+        return _apply_task_execution_followthrough_guardrail_fn(self, structured)
+
+    def _resolve_followthrough_target_task_id(
+        self, *, tree, user_message, reply_text,
+    ):
+        return _resolve_followthrough_target_task_id_fn(
+            self, tree=tree, user_message=user_message, reply_text=reply_text,
+        )
+
+    def _apply_completion_claim_guardrail(
+        self, structured: LLMStructuredResponse,
+    ) -> LLMStructuredResponse:
+        return _apply_completion_claim_guardrail_fn(self, structured)
+
+    def _first_executable_atomic_descendant(self, tree, parent_task_id):
+        return _first_executable_atomic_descendant_fn(tree, parent_task_id)
+
+    def _match_atomic_task_by_keywords(self, tree, text):
+        return _match_atomic_task_by_keywords_fn(tree, text)
+
+    def _infer_plan_seed_message(self, current_message):
+        return _infer_plan_seed_message_fn(self, current_message)
+
+    def _apply_plan_first_guardrail(
+        self, structured: LLMStructuredResponse,
+    ) -> LLMStructuredResponse:
+        return _apply_plan_first_guardrail_fn(self, structured)
+
+
+    def _resolve_claude_code_task_context(self):
+        return _resolve_claude_code_task_context_fn(self)
+
+    _normalize_csv_arg = staticmethod(_normalize_csv_arg_fn)
+
+    _summarize_amem_experiences_for_cc = staticmethod(_summarize_amem_experiences_for_cc_fn)
+
+    _compose_claude_code_atomic_task_prompt = staticmethod(_compose_claude_code_atomic_task_prompt_fn)
+
+    def _resolve_previous_path(self, previous_result, path):
+        return _resolve_previous_path_fn(previous_result, path)
+
+    def _resolve_placeholders_in_value(self, value, previous_result):
+        return _resolve_placeholders_in_value_fn(value, previous_result)
+
+    def _resolve_action_placeholders(self, action, previous_result):
+        return _resolve_action_placeholders_fn(action, previous_result)
+
+    async def execute_structured(
+        self, structured: LLMStructuredResponse
+    ) -> AgentResult:
+        steps: List[AgentStep] = []
+        errors: List[str] = []
+        try:
+            job_id, job_type = self._resolve_job_meta()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed to resolve job metadata: %s", exc)
+            job_id = None
+            job_type = "chat_action"
+
+        previous_result: Optional[Dict[str, Any]] = None
+        anchor_result: Optional[Dict[str, Any]] = None
+        for action in structured.sorted_actions():
+            placeholder_source = previous_result
+            if isinstance(action.metadata, dict) and action.metadata.get("use_anchor") and anchor_result:
+                placeholder_source = anchor_result
+            action = self._resolve_action_placeholders(action, placeholder_source)
+            if (
+                action.kind == "tool_operation"
+                and action.name == "phagescope"
+                and isinstance(action.parameters, dict)
+                and steps
+            ):
+                last_step = steps[-1]
+                last_params = (
+                    last_step.details.get("parameters")
+                    if isinstance(last_step.details, dict)
+                    else None
+                )
+                if (
+                    last_step.action.kind == "tool_operation"
+                    and last_step.action.name == "phagescope"
+                    and last_step.success
+                    and isinstance(last_params, dict)
+                    and last_params.get("action") == "submit"
+                ):
+                    current_action = action.parameters.get("action")
+                    if current_action in {"result", "quality", "save_all", "download"}:
+                        patched = dict(action.parameters)
+                        taskid_value = patched.get("taskid")
+                        if taskid_value is not None:
+                            try:
+                                int(str(taskid_value).strip())
+                            except (TypeError, ValueError):
+                                patched.pop("taskid", None)
+                        if not patched.get("taskid") and previous_result:
+                            extracted_taskid = _extract_taskid_from_result(previous_result)
+                            if extracted_taskid:
+                                patched["taskid"] = extracted_taskid
+                        # Do not block on immediate result retrieval after submit.
+                        # Convert follow-up actions to a lightweight status query.
+                        patched["action"] = "task_detail"
+                        patched.pop("result_kind", None)
+                        patched.pop("download_path", None)
+                        patched.pop("save_path", None)
+                        patched.pop("wait", None)
+                        patched.pop("poll_interval", None)
+                        patched.pop("poll_timeout", None)
+                        action.parameters = patched
+            retry_limit = 0
+            backoff_sec = 0.0
+            if action.retry_policy is not None:
+                retry_limit = max(0, int(action.retry_policy.max_retries))
+                backoff_sec = max(0.0, float(action.retry_policy.backoff_sec))
+
+            attempt = 0
+            step: Optional[AgentStep] = None
+            while attempt <= retry_limit:
+                attempt += 1
+                try:
+                    step = await self._execute_action(action)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception("Action execution failed: %s", exc)
+                    step = AgentStep(
+                        action=action,
+                        success=False,
+                        message=f"Action execution failed: {exc}",
+                        details={"exception": type(exc).__name__},
+                    )
+
+                if step.success or attempt > retry_limit:
+                    break
+
+                retry_message = (
+                    f"Action {action.kind}/{action.name} failed on attempt "
+                    f"{attempt}/{retry_limit + 1}; retrying."
+                )
+                errors.append(retry_message)
+                logger.warning(retry_message)
+                if backoff_sec > 0:
+                    await asyncio.sleep(backoff_sec)
+
+            if step is None:  # pragma: no cover - defensive
+                step = AgentStep(
+                    action=action,
+                    success=False,
+                    message="Action execution failed with an unknown error.",
+                    details={"exception": "UnknownError"},
+                )
+
+            step.details = dict(step.details or {})
+            step.details.setdefault("attempt", attempt)
+            step.details.setdefault("max_attempts", retry_limit + 1)
+            if action.retry_policy is not None:
+                step.details.setdefault(
+                    "retry_policy",
+                    {"max_retries": retry_limit, "backoff_sec": backoff_sec},
+                )
+
+            steps.append(step)
+            details = step.details or {}
+            result_payload = details.get("result")
+            if isinstance(result_payload, dict):
+                if (
+                    anchor_result is None
+                    and step.action.kind == "tool_operation"
+                    and step.action.name == "phagescope"
+                    and isinstance(details.get("parameters"), dict)
+                    and (details["parameters"].get("action") == "save_all")
+                ):
+                    anchor_result = result_payload
+
+            if not (isinstance(action.metadata, dict) and action.metadata.get("preserve_previous")):
+                previous_result = result_payload if isinstance(result_payload, dict) else None
+
+            if not step.success:
+                errors.append(step.message)
+                if action.blocking:
+                    block_message = (
+                        f"Stopping execution because blocking action "
+                        f"{action.kind}/{action.name} failed."
+                    )
+                    errors.append(block_message)
+                    logger.warning(block_message)
+                    break
+
+        suggestions = self._build_suggestions(structured, steps)
+        success = all(step.success for step in steps) if steps else True
+        primary_intent = steps[-1].action.name if steps else None
+        plan_persisted = False
+        if self.plan_session.plan_id is not None:
+            try:
+                plan_persisted = self._persist_if_dirty()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.exception("Failed to persist plan state: %s", exc)
+                errors.append(f"Failed to save plan updates: {exc}")
+        outline = None
+        if self.plan_session.plan_id is not None:
+            try:
+                outline = self.plan_session.outline(max_depth=4, max_nodes=80)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Failed to build plan outline: %s", exc)
+
+        if self._decomposition_errors:
+            errors.extend(self._decomposition_errors)
+
+        actions_summary = self._build_actions_summary(steps)
+        reply_text = structured.llm_reply.message or ""
+
+        # Special case: one-shot "download + analyze" chain for PhageScope.
+        # We must synthesize the analysis here (there is no post-tool LLM pass in this mode).
+        try:
+            synthesized = self._maybe_synthesize_phagescope_saveall_analysis(steps)
+            if synthesized:
+                reply_text = synthesized
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.debug("Failed to synthesize phagescope save_all analysis: %s", exc)
+        if self._include_action_summary and actions_summary:
+            reply_text = self._append_summary_to_reply(reply_text, actions_summary)
+
+        result = AgentResult(
+            reply=reply_text,
+            steps=steps,
+            suggestions=suggestions,
+            primary_intent=primary_intent,
+            success=success,
+            bound_plan_id=self.plan_session.plan_id,
+            plan_outline=outline,
+            plan_persisted=plan_persisted,
+            job_id=job_id,
+            job_type=job_type,
+            actions_summary=actions_summary,
+            errors=errors,
+        )
+
+        if get_current_job() is None:
+            self._sync_job_id = None
+            if job_id:
+                try:
+                    update_decomposition_job_status(
+                        self.plan_session.plan_id,
+                        job_id=job_id,
+                        status="succeeded" if success else "failed",
+                        finished_at=datetime.utcnow(),
+                        stats={
+                            "step_count": len(steps),
+                            "success": success,
+                            "error_count": len(errors),
+                        },
+                        result=result.model_dump(),
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("Failed to update sync job status: %s", exc)
+        self._current_user_message = None
+
+        return result
+
+        return result
+
+    def _maybe_synthesize_phagescope_saveall_analysis(self, steps):
+        return _maybe_synthesize_phagescope_saveall_analysis_fn(self, steps)
+
+    def _should_use_deep_think(self, message):
+        return _should_use_deep_think_fn(self, message)
+
+    async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
+        """
+        Execute deep thinking process and yield SSE events with streaming support.
+        """
+        # Create a queue for events
+        queue = asyncio.Queue()
+        
+        async def on_thinking(step: ThinkingStep):
+            await queue.put({
+                "type": "thinking_step",
+                "step": {
+                    "iteration": step.iteration,
+                    "thought": step.thought,
+                    "action": step.action,
+                    "status": step.status,
+                    "action_result": step.action_result
+                }
+            })
+
+        async def on_thinking_delta(iteration: int, delta: str):
+            """Send token-level updates for thinking process."""
+            logger.debug(f"[DEEP_THINK_DELTA] iteration={iteration} delta_len={len(delta)}")
+            await queue.put({
+                "type": "thinking_delta",
+                "iteration": iteration,
+                "delta": delta
+            })
+
+        async def on_final_delta(delta: str):
+            """Send token-level updates for final answer."""
+            await queue.put({
+                "type": "delta",
+                "content": delta
+            })
+
+        async def run_agent():
+            try:
+                deep_think_tool_order = 0
+                deep_think_bg_category: Optional[str] = None
+
+                # Wrapper for tool execution with plan_operation binding
+                async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
+                    nonlocal deep_think_tool_order, deep_think_bg_category
+                    safe_params = params if isinstance(params, dict) else {}
+
+                    if name != "plan_operation":
+                        deep_think_tool_order += 1
+                        synthetic_action = LLMAction(
+                            kind="tool_operation",
+                            name=name,
+                            parameters=safe_params,
+                            order=max(1, deep_think_tool_order),
+                            blocking=True,
+                            metadata={"origin": "deep_think"},
+                        )
+                        step = await self._handle_tool_action(synthetic_action)
+
+                        details = step.details if isinstance(step.details, dict) else {}
+                        result_payload = details.get("result")
+                        if isinstance(result_payload, dict):
+                            result = dict(result_payload)
+                            if isinstance(step.message, str) and step.message.strip():
+                                result.setdefault("summary", step.message.strip())
+                            storage_payload = details.get("storage")
+                            if storage_payload is not None:
+                                result.setdefault("storage", storage_payload)
+                            deliverables_payload = details.get("deliverables")
+                            if deliverables_payload is not None:
+                                result.setdefault("deliverables", deliverables_payload)
+
+                            # DeepThink PhageScope submit: register tracking job so
+                            # the task status panel can show progress.
+                            if (
+                                name == "phagescope"
+                                and str(safe_params.get("action") or "").strip().lower() == "submit"
+                                and result.get("success") is not False
+                            ):
+                                taskid = _extract_taskid_from_result(result)
+                                if taskid:
+                                    try:
+                                        tracking_id = f"act_{uuid4().hex}"
+                                        modulelist_raw = safe_params.get("modulelist")
+                                        module_items = _normalize_modulelist_value(modulelist_raw) if modulelist_raw else None
+                                        job = plan_decomposition_jobs.create_job(
+                                            plan_id=self.plan_session.plan_id,
+                                            task_id=None,
+                                            mode="phagescope_track",
+                                            job_type="phagescope_track",
+                                            params={"taskid": taskid, "session_id": self.session_id},
+                                            metadata={"session_id": self.session_id, "origin": "deep_think", "remote_taskid": taskid},
+                                            job_id=tracking_id,
+                                        )
+                                        create_action_run(
+                                            run_id=tracking_id,
+                                            session_id=self.session_id,
+                                            user_message=f"[DeepThink] PhageScope submit (taskid={taskid})",
+                                            mode="phagescope_track",
+                                            plan_id=self.plan_session.plan_id,
+                                            context={"origin": "deep_think"},
+                                            history=[],
+                                            structured_json=json.dumps({
+                                                "llm_reply": {"message": f"PhageScope submit taskid={taskid}"},
+                                                "actions": [{"kind": "tool_operation", "name": "phagescope", "parameters": safe_params}],
+                                            }),
+                                        )
+                                        update_action_run(tracking_id, status="running")
+                                        start_phagescope_track_job_thread(
+                                            job_id=tracking_id,
+                                            remote_taskid=str(taskid),
+                                            modulelist=module_items,
+                                            poll_interval=30.0,
+                                            poll_timeout=172800.0,
+                                            request_timeout=40.0,
+                                        )
+                                        logger.info(
+                                            "[DeepThink] Registered PhageScope tracking job %s for taskid=%s",
+                                            tracking_id, taskid,
+                                        )
+                                    except Exception as track_exc:
+                                        logger.warning(
+                                            "[DeepThink] Failed to register PhageScope tracking: %s", track_exc,
+                                        )
+
+                            return result
+
+                        fallback_result: Dict[str, Any] = {
+                            "success": bool(step.success),
+                            "tool": name,
+                            "message": step.message,
+                        }
+                        if isinstance(details, dict) and details:
+                            fallback_result["details"] = details
+                        return fallback_result
+
+                    result = await execute_tool(name, **safe_params)
+                    
+                    # Special handling: bind Plan to session after successful creation
+                    if name == "plan_operation" and isinstance(result, dict):
+                        if result.get("success") and result.get("operation") == "create":
+                            plan_id = result.get("plan_id")
+                            if plan_id:
+                                try:
+                                    # Bind the newly created plan to the current session
+                                    self.plan_session.bind(plan_id)
+                                    self._refresh_plan_tree(force_reload=True)
+                                    self.extra_context["plan_id"] = plan_id
+                                    self._dirty = True
+                                    
+                                    # CRITICAL: Also update the database session record
+                                    # so that frontend can fetch the new plan_id
+                                    if self.session_id:
+                                        _set_session_plan_id(self.session_id, plan_id)
+                                        logger.info(f"[DeepThink] Updated database session {self.session_id} with plan_id={plan_id}")
+                                    
+                                    # CRITICAL: Trigger automatic task decomposition
+                                    # This ensures DeepThink-created plans get the same
+                                    # multi-level decomposition as regular plans
+                                    session_ctx = {
+                                        "user_message": user_message,
+                                        "chat_history": self.history,
+                                        "recent_tool_results": self.extra_context.get(
+                                            "recent_tool_results", []
+                                        ),
+                                    }
+                                    decompose_result = await asyncio.to_thread(
+                                        self._auto_decompose_plan,
+                                        plan_id,
+                                        wait_for_completion=False,
+                                        session_context=session_ctx,
+                                    )
+                                    if decompose_result:
+                                        if decompose_result.get("result") is not None:
+                                            summary = decompose_result["result"]
+                                            logger.info(
+                                                "[DeepThink] Auto-decomposition completed for plan %s",
+                                                plan_id,
+                                            )
+                                            result["decomposition_completed"] = True
+                                            result["decomposition_created"] = len(
+                                                summary.created_tasks
+                                            )
+                                            result["decomposition_stats"] = summary.stats
+                                            result["decomposition_note"] = (
+                                                "Automatic task decomposition completed before review."
+                                            )
+                                        elif decompose_result.get("job") is not None:
+                                            logger.info(
+                                                "[DeepThink] Auto-decomposition submitted for plan %s",
+                                                plan_id,
+                                            )
+                                            result["decomposition_triggered"] = True
+                                            result["decomposition_note"] = (
+                                                "Automatic task decomposition has been submitted for background execution."
+                                            )
+
+                                    # Mark that a background decomposition was started
+                                    # so the final SSE event can include background_category.
+                                    deep_think_bg_category = "task_creation"
+
+                                    # NOTE: Auto optimization loop is skipped when
+                                    # decomposition runs in the background because it
+                                    # depends on the completed task tree.  The user can
+                                    # trigger plan review/optimize manually after
+                                    # decomposition finishes.
+                                    logger.info(
+                                        "[DeepThink] Auto-bound plan %s to session "
+                                        "(decomposition dispatched to background, "
+                                        "auto-optimize skipped)",
+                                        plan_id,
+                                    )
+                                except Exception as bind_err:
+                                    logger.warning(f"[DeepThink] Failed to bind plan {plan_id}: {bind_err}")
+                    
+                    return result
+                
+                # Instantiate DeepThinkAgent with streaming callbacks
+                dt_agent = DeepThinkAgent(
+                    llm_client=self.llm_service,
+                    available_tools=["web_search", "graph_rag", "claude_code", "file_operations", "document_reader", "vision_reader", "bio_tools", "phagescope", "result_interpreter", "plan_operation"],
+                    tool_executor=tool_wrapper,
+                    max_iterations=100,
+                    tool_timeout=120,  # 2分钟工具超时
+                    on_thinking=on_thinking,
+                    on_thinking_delta=on_thinking_delta,
+                    on_final_delta=on_final_delta
+                )
+                
+                # 构建上下文，包含对话历史
+                think_context = {
+                    **self.extra_context,
+                    "chat_history": self.history,
+                    "session_id": self.session_id,
+                }
+                
+                # Run think
+                result = await dt_agent.think(user_message, think_context)
+                await queue.put({
+                    "type": "result",
+                    "result": result,
+                    "bg_category": deep_think_bg_category,
+                })
+            except Exception as e:
+                logger.exception("Deep think execution failed")
+                await queue.put({"type": "error", "error": str(e)})
+            finally:
+                await queue.put(None) # Signal end
+
+        # Start agent in background
+        asyncio.create_task(run_agent())
+        
+        # Consume queue
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            
+            if item.get("type") == "thinking_step":
+                # Yield thinking event
+                yield _sse_message(item)
+            elif item.get("type") == "thinking_delta":
+                # Yield thinking delta for streaming display
+                yield _sse_message(item)
+            elif item.get("type") == "delta":
+                # Yield final answer delta for streaming display
+                yield _sse_message(item)
+            elif item.get("type") == "error":
+                yield _sse_message({"type": "error", "message": item["error"]})
+            elif item.get("type") == "result":
+                # Final result, yield as standard chat message
+                res: DeepThinkResult = item["result"]
+                
+                # Construct final content for display and saving
+                final_content_parts = []
+                # Thinking Summary removed per user request
+                if res.final_answer:
+                    final_content_parts.append(res.final_answer)
+                
+                full_response = "\n\n".join(final_content_parts)
+                
+                # 💾 Save Deep Think response to database
+                if self.session_id and full_response:
+                    try:
+                        _save_chat_message(
+                            self.session_id,
+                            "assistant",
+                            full_response,
+                            metadata={
+                                "deep_think": True,
+                                "iterations": res.total_iterations,
+                                "tools_used": res.tools_used,
+                                "confidence": res.confidence,
+                                "thinking_process": {
+                                    "status": "completed",
+                                    "total_iterations": res.total_iterations,
+                                    "steps": [
+                                        {
+                                            "iteration": s.iteration,
+                                            "thought": s.thought,
+                                            "action": s.action,
+                                            "action_result": s.action_result,
+                                            "status": "done" if s.status == "done" else "completed", # Normalize status for history
+                                            "timestamp": s.timestamp.isoformat() if s.timestamp else None
+                                        }
+                                        for s in res.thinking_steps
+                                    ]
+                                }
+                            }
+                        )
+                        logger.info("[CHAT][DEEP_THINK] Response saved to database for session=%s", self.session_id)
+                    except Exception as save_err:
+                        logger.warning("[CHAT][DEEP_THINK] Failed to save response: %s", save_err)
+                
+                # Thinking Summary removed per user request
+                # if res.thinking_summary:
+                #    yield _sse_message({"type": "delta", "content": f"**Thinking Summary:** {res.thinking_summary}"})
+                pass
+                
+                # Note: final_answer was already streamed via on_final_delta callback
+                # No need to yield it again here to avoid duplication
+                
+                # Mock a final structure event to satisfy frontend if needed, 
+                # or just let the stream end (frontend usually handles text)
+                bg_category = item.get("bg_category")
+                final_metadata: Dict[str, Any] = {
+                    "plan_id": self.plan_session.plan_id,  # Include plan_id so frontend can update
+                    "deep_think": True,
+                }
+                if bg_category:
+                    final_metadata["background_category"] = bg_category
+                payload = {
+                    "llm_reply": {"message": res.final_answer},
+                    "actions": [],
+                    "metadata": final_metadata,
+                }
+                yield _sse_message({"type": "final", "payload": payload})
+
+    async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
+        self._current_user_message = user_message
+        prompt = self._build_prompt(user_message)
+        model_override = self.extra_context.get("default_base_model")
+        raw = await self.llm_service.chat_async(
+            prompt, force_real=True, model=model_override
+        )
+        cleaned = self._strip_code_fence(raw)
+        return LLMStructuredResponse.model_validate_json(cleaned)
+
+    def _build_prompt(self, user_message):
+        return _build_prompt_fn(self, user_message)
+
+    def _format_memories(self, memories):
+        return _format_memories_fn(memories)
+
+    def _compose_plan_status(self, plan_bound):
+        return _compose_plan_status_fn(self, plan_bound)
+
+    def _compose_plan_catalog(self, plan_bound):
+        return _compose_plan_catalog_fn(self, plan_bound)
+
+    def _compose_action_catalog(self, plan_bound):
+        return _compose_action_catalog_fn(self, plan_bound)
+
+    def _compose_guidelines(self, plan_bound):
+        return _compose_guidelines_fn(self, plan_bound)
+
+    _get_structured_agent_prompts = staticmethod(_get_structured_agent_prompts_fn)
+
+    @staticmethod
+    def _extract_tool_name(action_line: str) -> Optional[str]:
+        match = re.search(r"-\s*tool_operation:\s*([^\s(]+)", action_line)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _resolve_job_meta(self):
+        return _resolve_job_meta_fn(self)
+
+    def _log_action_event(self, action, *, status, success, message, parameters, details):
+        return _log_action_event_fn(self, action, status=status, success=success, message=message, parameters=parameters, details=details)
+
+    _truncate_summary_text = staticmethod(_truncate_summary_text_fn)
+
+    def _build_actions_summary(self, steps):
+        return _build_actions_summary_fn(self, steps)
+
+    def _append_summary_to_reply(self, reply, summary):
+        return _append_summary_to_reply_fn(self, reply, summary)
+
+    def _format_history(self):
+        return _format_history_fn(self)
+
+    _strip_code_fence = staticmethod(_strip_code_fence_fn)
+
+    async def _execute_action(self, action: LLMAction) -> AgentStep:
+        logger.info(
+            "[CHAT][ACTION] session=%s plan=%s executing %s/%s params=%s",
+            self.session_id,
+            self.plan_session.plan_id,
+            action.kind,
+            action.name,
+            action.parameters,
+        )
+        self._log_action_event(
+            action,
+            status="running",
+            success=None,
+            message="Action execution started.",
+            parameters=action.parameters,
+            details=None,
+        )
+        log_job_event(
+            "info",
+            "Preparing to execute the action.",
+            {
+                "kind": action.kind,
+                "name": action.name,
+                "order": action.order,
+                "blocking": action.blocking,
+                "parameters": action.parameters,
+            },
+        )
+        handler = {
+            "plan_operation": self._handle_plan_action,
+            "task_operation": self._handle_task_action,
+            "context_request": self._handle_context_request,
+            "system_operation": self._handle_system_action,
+            "tool_operation": self._handle_tool_action,
+        }.get(action.kind, self._handle_unknown_action)
+        try:
+            result = handler(action)
+            step = await result if inspect.isawaitable(result) else result
+        except Exception as exc:
+            log_job_event(
+                "error",
+                "An exception occurred while executing the action.",
+                {
+                    "kind": action.kind,
+                    "name": action.name,
+                    "error": str(exc),
+                },
+            )
+            self._log_action_event(
+                action,
+                status="failed",
+                success=False,
+                message=str(exc),
+                parameters=action.parameters,
+                details={"error": str(exc), "exception": type(exc).__name__},
+            )
+            raise
+
+        self._log_action_event(
+            action,
+            status="completed" if step.success else "failed",
+            success=step.success,
+            message=step.message,
+            parameters=action.parameters,
+            details=step.details,
+        )
+        log_job_event(
+            "success" if step.success else "error",
+            "Action execution completed.",
+            {
+                "kind": action.kind,
+                "name": action.name,
+                "success": step.success,
+                "message": step.message,
+                "details": step.details,
+            },
+        )
+        logger.info(
+            "[CHAT][ACTION] session=%s plan=%s finished %s/%s success=%s message=%s",
+            self.session_id,
+            self.plan_session.plan_id,
+            action.kind,
+            action.name,
+            step.success,
+            step.message,
+        )
+        return step
+
+    async def _handle_tool_action(self, action):
+        return await _handle_tool_action_fn(self, action)
+
+    async def _handle_plan_action(self, action):
+        return await _handle_plan_action_fn(self, action)
+
+    def _handle_task_action(self, action):
+        return _handle_task_action_fn(self, action)
+
+    def _handle_context_request(self, action):
+        return _handle_context_request_fn(self, action)
+
+    def _handle_system_action(self, action):
+        return _handle_system_action_fn(self, action)
+
+    def _handle_unknown_action(self, action):
+        return _handle_unknown_action_fn(self, action)
+
+    def _build_suggestions(self, structured, steps):
+        return _build_suggestions_fn(self, structured, steps)
+
+    def _require_plan_bound(self):
+        return _require_plan_bound_fn(self)
+
+    def _refresh_plan_tree(self, force_reload=True):
+        return _refresh_plan_tree_fn(self, force_reload=force_reload)
+
+    _coerce_int = staticmethod(_coerce_int_fn)
+
+    def _auto_decompose_plan(self, plan_id, *, wait_for_completion=False, session_context=None):
+        return _auto_decompose_plan_fn(self, plan_id, wait_for_completion=wait_for_completion, session_context=session_context)
+
+    def _persist_if_dirty(self):
+        return _persist_if_dirty_fn(self)

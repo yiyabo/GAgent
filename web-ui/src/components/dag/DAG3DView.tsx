@@ -7,12 +7,7 @@ import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import ForceGraph2D, { ForceGraphMethods } from 'react-force-graph-2d';
 import { message, Tag, Drawer, Tabs, Descriptions, Empty, Typography, Collapse } from 'antd';
 import {
-  FullscreenExitOutlined,
-  ExpandOutlined,
-  ReloadOutlined,
   SearchOutlined,
-  DownloadOutlined,
-  AimOutlined,
   FileTextOutlined,
   DatabaseOutlined,
   HistoryOutlined,
@@ -34,172 +29,18 @@ import {
   TASK_TYPE_COLORS,
 } from './dag3d-utils';
 import '@/styles/dag-fullscreen.css';
+import type { GraphNode, GraphLink } from './dag-constants';
+import { CARD_WIDTH, CARD_HEIGHT, CARD_RADIUS, getCardColors } from './dag-constants';
+import { calculateHierarchicalLayout } from './dag-layout';
+import { drawNote, drawLink } from './dag-canvas-renderers';
+import { DAGToolbar } from './DAGToolbar';
+import { DAGLegend } from './DAGLegend';
+import { DAGStatsBar } from './DAGStatsBar';
 
 interface DAGViewProps {
   onClose?: () => void;
   onNodeSelect?: (task: TaskType | null) => void;
 }
-
-interface GraphNode {
-  id: number;
-  name: string;
-  task: TaskType;
-  x?: number;
-  y?: number;
-  fx?: number;  // 固定 x 位置
-  fy?: number;  // 固定 y 位置
-  rotation: number;  // 便签倾斜角度
-  noteColor: string; // 便签颜色
-}
-
-interface GraphLink {
-  source: number;
-  target: number;
-  type: 'parent' | 'dependency';  // 父子关系 or 依赖关系
-}
-
-// 计算紧凑树形布局
-function calculateHierarchicalLayout(tasks: TaskType[]): Map<number, { x: number; y: number }> {
-  const positions = new Map<number, { x: number; y: number }>();
-  if (!tasks.length) return positions;
-
-  // 紧凑布局参数
-  const NODE_WIDTH = 140;
-  const HORIZONTAL_GAP = 12;
-  const VERTICAL_GAP = 56;
-
-  // 构建父子关系
-  const childrenMap = new Map<number, TaskType[]>();
-  const taskMap = new Map<number, TaskType>();
-  
-  tasks.forEach(task => {
-    taskMap.set(task.id, task);
-    if (task.parent_id != null) {
-      if (!childrenMap.has(task.parent_id)) {
-        childrenMap.set(task.parent_id, []);
-      }
-      childrenMap.get(task.parent_id)!.push(task);
-    }
-  });
-
-  // 对每个父节点的子节点按 position 排序
-  childrenMap.forEach(children => {
-    children.sort((a, b) => (a.position ?? a.id) - (b.position ?? b.id));
-  });
-
-  // 找到根节点
-  const rootTasks = tasks.filter(t => t.parent_id == null);
-  rootTasks.sort((a, b) => (a.position ?? a.id) - (b.position ?? b.id));
-
-  // 缓存子树宽度
-  const subtreeWidthCache = new Map<number, number>();
-
-  // 递归计算子树宽度
-  function getSubtreeWidth(taskId: number): number {
-    if (subtreeWidthCache.has(taskId)) {
-      return subtreeWidthCache.get(taskId)!;
-    }
-    
-    const children = childrenMap.get(taskId) || [];
-    let width: number;
-    
-    if (children.length === 0) {
-      width = NODE_WIDTH;
-    } else {
-      width = 0;
-      children.forEach((child, i) => {
-        width += getSubtreeWidth(child.id);
-        if (i < children.length - 1) {
-          width += HORIZONTAL_GAP;
-        }
-      });
-      width = Math.max(NODE_WIDTH, width);
-    }
-    
-    subtreeWidthCache.set(taskId, width);
-    return width;
-  }
-
-  // 递归布局子树
-  function layoutSubtree(taskId: number, centerX: number, y: number) {
-    positions.set(taskId, { x: centerX, y });
-    
-    const children = childrenMap.get(taskId) || [];
-    if (children.length === 0) return;
-
-    // 计算子节点的总宽度
-    const childWidths = children.map(c => getSubtreeWidth(c.id));
-    const totalChildrenWidth = childWidths.reduce((sum, w) => sum + w, 0) 
-      + (children.length - 1) * HORIZONTAL_GAP;
-    
-    // 子节点起始位置（使子节点组居中于父节点下方）
-    let childX = centerX - totalChildrenWidth / 2;
-    const childY = y + VERTICAL_GAP;
-
-    children.forEach((child, i) => {
-      const childWidth = childWidths[i];
-      const childCenterX = childX + childWidth / 2;
-      layoutSubtree(child.id, childCenterX, childY);
-      childX += childWidth + HORIZONTAL_GAP;
-    });
-  }
-
-  // 布局所有根节点
-  if (rootTasks.length === 1) {
-    layoutSubtree(rootTasks[0].id, 0, 0);
-  } else {
-    // 多个根节点的情况
-    const rootWidths = rootTasks.map(r => getSubtreeWidth(r.id));
-    const totalRootWidth = rootWidths.reduce((sum, w) => sum + w, 0) 
-      + (rootTasks.length - 1) * HORIZONTAL_GAP;
-    let rootX = -totalRootWidth / 2;
-    
-    rootTasks.forEach((root, i) => {
-      const rootWidth = rootWidths[i];
-      const rootCenterX = rootX + rootWidth / 2;
-      layoutSubtree(root.id, rootCenterX, 0);
-      rootX += rootWidth + HORIZONTAL_GAP;
-    });
-  }
-
-  return positions;
-}
-
-// 索引卡片配色 - 温暖的纸质色系
-const CARD_COLORS = {
-  ROOT: {
-    bg: '#fffef8',        // 象牙白
-    line: '#c9a87c',      // 金棕色线
-    accent: '#b8860b',    // 暗金色
-  },
-  COMPOSITE: {
-    bg: '#fdfcf9',        // 奶油白
-    line: '#8fa3b1',      // 灰蓝色线
-    accent: '#5c7a8a',    // 石板蓝
-  },
-  ATOMIC: {
-    bg: '#fffffe',        // 纯净白
-    line: '#a8b5a0',      // 灰绿色线
-    accent: '#6b7c63',    // 橄榄绿
-  },
-  DEFAULT: {
-    bg: '#fafaf8',
-    line: '#c0c0c0',
-    accent: '#888888',
-  },
-};
-
-// 状态对应的颜色 - 更柔和
-const STATUS_COLORS_MAP: Record<string, { color: string; bg: string }> = {
-  completed: { color: '#2d6a4f', bg: '#d8f3dc' },
-  done: { color: '#2d6a4f', bg: '#d8f3dc' },
-  running: { color: '#1d4e89', bg: '#cfe2f3' },
-  executing: { color: '#1d4e89', bg: '#cfe2f3' },
-  pending: { color: '#9a6b00', bg: '#fff3cd' },
-  failed: { color: '#9c2230', bg: '#f8d7da' },
-  error: { color: '#9c2230', bg: '#f8d7da' },
-  default: { color: '#666666', bg: '#f0f0f0' },
-};
 
 const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -345,17 +186,6 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
     return ((seed % 233280) / 233280 - 0.5) * 6; // -3° 到 3°
   }, []);
 
-  // 获取卡片颜色配置
-  const getCardColors = useCallback((taskType?: string) => {
-    const type = taskType?.toUpperCase();
-    switch (type) {
-      case 'ROOT': return CARD_COLORS.ROOT;
-      case 'COMPOSITE': return CARD_COLORS.COMPOSITE;
-      case 'ATOMIC': return CARD_COLORS.ATOMIC;
-      default: return CARD_COLORS.DEFAULT;
-    }
-  }, []);
-
   // 构建图数据
   const graphData = useMemo(() => {
     let filteredTasks = tasks;
@@ -414,206 +244,6 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
 
     return { nodes, links };
   }, [tasks, searchText, getRotation, getCardColors]);
-
-  // 紧凑卡片尺寸
-  const CARD_WIDTH = 130;
-  const CARD_HEIGHT = 48;
-  const CARD_RADIUS = 3;
-
-  // 绘制紧凑索引卡片
-  const drawNote = useCallback((
-    ctx: CanvasRenderingContext2D,
-    node: GraphNode,
-    isSelected: boolean,
-    isHovered: boolean,
-    isHighlighted: boolean
-  ) => {
-    const x = node.x || 0;
-    const y = node.y || 0;
-    const colors = getCardColors(node.task.task_type);
-    const statusInfo = STATUS_COLORS_MAP[node.task.status] || STATUS_COLORS_MAP.default;
-    
-    ctx.save();
-    ctx.translate(x, y);
-
-    const opacity = isHighlighted ? 1 : 0.25;
-    const isActive = isSelected || isHovered;
-
-    // 悬停/选中时的浮起效果
-    if (isHighlighted) {
-      ctx.shadowColor = isActive ? 'rgba(0, 0, 0, 0.15)' : 'rgba(0, 0, 0, 0.06)';
-      ctx.shadowBlur = isActive ? 10 : 4;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = isActive ? 4 : 2;
-    }
-
-    // 卡片主体
-    ctx.beginPath();
-    ctx.roundRect(-CARD_WIDTH / 2, -CARD_HEIGHT / 2, CARD_WIDTH, CARD_HEIGHT, CARD_RADIUS);
-    ctx.fillStyle = colors.bg;
-    ctx.globalAlpha = opacity;
-    ctx.fill();
-
-    // 重置阴影
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
-
-    // 左侧色条（类型指示）
-    ctx.beginPath();
-    ctx.roundRect(-CARD_WIDTH / 2, -CARD_HEIGHT / 2, 4, CARD_HEIGHT, [CARD_RADIUS, 0, 0, CARD_RADIUS]);
-    ctx.fillStyle = colors.accent;
-    ctx.globalAlpha = opacity * 0.9;
-    ctx.fill();
-
-    // 边框
-    ctx.beginPath();
-    ctx.roundRect(-CARD_WIDTH / 2, -CARD_HEIGHT / 2, CARD_WIDTH, CARD_HEIGHT, CARD_RADIUS);
-    ctx.strokeStyle = isActive ? colors.accent : 'rgba(0, 0, 0, 0.08)';
-    ctx.lineWidth = isActive ? 1.5 : 0.5;
-    ctx.globalAlpha = opacity;
-    ctx.stroke();
-
-    // 状态小点 - 右上角
-    ctx.beginPath();
-    ctx.arc(CARD_WIDTH / 2 - 8, -CARD_HEIGHT / 2 + 8, 4, 0, Math.PI * 2);
-    ctx.fillStyle = statusInfo.color;
-    ctx.globalAlpha = opacity;
-    ctx.fill();
-
-    // 任务名称
-    ctx.globalAlpha = opacity;
-    ctx.fillStyle = '#2c2c2c';
-    ctx.font = node.task.task_type?.toUpperCase() === 'ROOT' 
-      ? 'bold 10px Georgia, "Times New Roman", serif'
-      : '10px Georgia, "Times New Roman", serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    
-    // 多行文本处理
-    const words = node.name.split('');
-    let line = '';
-    let lines: string[] = [];
-    const maxWidth = CARD_WIDTH - 20;
-    
-    for (const char of words) {
-      const testLine = line + char;
-      const metrics = ctx.measureText(testLine);
-      if (metrics.width > maxWidth && line) {
-        lines.push(line);
-        line = char;
-      } else {
-        line = testLine;
-      }
-    }
-    lines.push(line);
-    
-    lines = lines.slice(0, 2);
-    if (lines.length === 2 && node.name.length > lines.join('').length) {
-      lines[1] = lines[1].slice(0, -2) + '..';
-    }
-
-    const lineHeight = 12;
-    const textStartY = lines.length === 1 ? 0 : -lineHeight / 2;
-    lines.forEach((l, i) => {
-      ctx.fillText(l, 2, textStartY + i * lineHeight);
-    });
-
-    // 选中时的高亮边框
-    if (isSelected && isHighlighted) {
-      ctx.strokeStyle = colors.accent;
-      ctx.lineWidth = 2;
-      ctx.globalAlpha = 1;
-      ctx.beginPath();
-      ctx.roundRect(-CARD_WIDTH / 2 - 2, -CARD_HEIGHT / 2 - 2, CARD_WIDTH + 4, CARD_HEIGHT + 4, CARD_RADIUS + 1);
-      ctx.stroke();
-    }
-
-    ctx.restore();
-  }, [getCardColors]);
-
-  // 绘制连接线 - 父子关系实线，依赖关系虚线
-  const drawLink = useCallback((
-    ctx: CanvasRenderingContext2D,
-    link: any,
-    isHighlighted: boolean
-  ) => {
-    const source = link.source;
-    const target = link.target;
-    const linkType: 'parent' | 'dependency' = link.type || 'parent';
-    
-    if (!source.x || !target.x) return;
-
-    const isDependency = linkType === 'dependency';
-    
-    // 计算起点和终点
-    let sourceX = source.x || 0;
-    let sourceY = (source.y || 0) + CARD_HEIGHT / 2;
-    let targetX = target.x || 0;
-    let targetY = (target.y || 0) - CARD_HEIGHT / 2;
-
-    // 依赖关系：从右侧连接到左侧
-    if (isDependency) {
-      sourceX = (source.x || 0) + CARD_WIDTH / 2;
-      sourceY = source.y || 0;
-      targetX = (target.x || 0) - CARD_WIDTH / 2;
-      targetY = target.y || 0;
-    }
-
-    ctx.save();
-    
-    if (isDependency) {
-      // 依赖关系 - 橙色虚线，更明显
-      ctx.globalAlpha = 0.8;
-      ctx.strokeStyle = '#d4956a';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 3]);
-    } else {
-      // 父子关系 - 灰色细线
-      ctx.globalAlpha = isHighlighted ? 0.4 : 0.12;
-      ctx.strokeStyle = '#8a9099';
-      ctx.lineWidth = isHighlighted ? 1 : 0.6;
-    }
-
-    ctx.beginPath();
-    ctx.moveTo(sourceX, sourceY);
-    
-    if (isDependency) {
-      // 依赖关系：优雅的 S 形曲线
-      const dx = targetX - sourceX;
-      const dy = targetY - sourceY;
-      const controlOffset = Math.min(Math.abs(dx) * 0.4, 60);
-      ctx.bezierCurveTo(
-        sourceX + controlOffset, sourceY,
-        targetX - controlOffset, targetY,
-        targetX, targetY
-      );
-    } else {
-      // 父子关系：简洁的直角线
-      const midY = sourceY + (targetY - sourceY) * 0.5;
-      ctx.lineTo(sourceX, midY);
-      ctx.lineTo(targetX, midY);
-      ctx.lineTo(targetX, targetY);
-    }
-    
-    ctx.stroke();
-
-    // 依赖线箭头
-    if (isDependency) {
-      const arrowSize = 4;
-      ctx.globalAlpha = 0.9;
-      ctx.fillStyle = '#d4956a';
-      ctx.setLineDash([]);
-      
-      ctx.beginPath();
-      ctx.moveTo(targetX, targetY);
-      ctx.lineTo(targetX - arrowSize * 1.8, targetY - arrowSize);
-      ctx.lineTo(targetX - arrowSize * 1.8, targetY + arrowSize);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    ctx.restore();
-  }, []);
 
   // 节点点击
   const handleNodeClick = useCallback((node: GraphNode) => {
@@ -910,25 +540,13 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
       />
 
       {/* 工具栏 */}
-      <div className="dag-toolbar">
-        <button className="dag-toolbar-btn" onClick={handleFitView} title="缩放适应">
-          <ExpandOutlined />
-        </button>
-        <button className="dag-toolbar-btn" onClick={handleResetView} title="重置视角">
-          <AimOutlined />
-        </button>
-        <div className="dag-toolbar-divider" />
-        <button className="dag-toolbar-btn" onClick={handleRefresh} title="刷新">
-          <ReloadOutlined />
-        </button>
-        <button className="dag-toolbar-btn" onClick={handleExport} title="导出图片">
-          <DownloadOutlined />
-        </button>
-        <div className="dag-toolbar-divider" />
-        <button className="dag-toolbar-btn" onClick={exitFullscreen} title="退出全屏">
-          <FullscreenExitOutlined />
-        </button>
-      </div>
+      <DAGToolbar
+        onFitView={handleFitView}
+        onResetView={handleResetView}
+        onRefresh={handleRefresh}
+        onExport={handleExport}
+        onExitFullscreen={exitFullscreen}
+      />
 
       {/* 搜索栏 */}
       <div className="dag-search-bar">
@@ -943,77 +561,10 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
       </div>
 
       {/* 图例面板 */}
-      <div className="dag-legend-panel dag-card-legend">
-        <div className="dag-legend-title">Task Types</div>
-        <div className="dag-legend-item">
-          <span className="dag-legend-card" style={{ 
-            background: CARD_COLORS.ROOT.bg,
-            borderLeft: `3px solid ${CARD_COLORS.ROOT.accent}`
-          }} />
-          <span style={{ fontStyle: 'italic' }}>Root</span>
-        </div>
-        <div className="dag-legend-item">
-          <span className="dag-legend-card" style={{ 
-            background: CARD_COLORS.COMPOSITE.bg,
-            borderLeft: `3px solid ${CARD_COLORS.COMPOSITE.accent}`
-          }} />
-          <span style={{ fontStyle: 'italic' }}>Composite</span>
-        </div>
-        <div className="dag-legend-item">
-          <span className="dag-legend-card" style={{ 
-            background: CARD_COLORS.ATOMIC.bg,
-            borderLeft: `3px solid ${CARD_COLORS.ATOMIC.accent}`
-          }} />
-          <span style={{ fontStyle: 'italic' }}>Atomic</span>
-        </div>
-        
-        <div className="dag-legend-divider" />
-        <div className="dag-legend-title">Connections</div>
-        <div className="dag-legend-item">
-          <span className="dag-legend-line dag-legend-line-solid" />
-          <span>Hierarchy</span>
-        </div>
-        <div className="dag-legend-item">
-          <span className="dag-legend-line dag-legend-line-dashed" />
-          <span>Dependency <small style={{ opacity: 0.6 }}>(hover)</small></span>
-        </div>
-        
-        <div className="dag-legend-hint">
-          Scroll to zoom · Click to select
-        </div>
-      </div>
+      <DAGLegend />
 
       {/* 统计栏 */}
-      <div className="dag-stats-bar">
-        <div className="dag-stats-item">
-          <span className="dag-stats-count">{stats.total}</span>
-          <span>总计</span>
-        </div>
-        {stats.pending > 0 && (
-          <div className="dag-stats-item">
-            <span className="dag-stats-dot pending" />
-            <span>{stats.pending} 待处理</span>
-          </div>
-        )}
-        {stats.running > 0 && (
-          <div className="dag-stats-item">
-            <span className="dag-stats-dot running" />
-            <span>{stats.running} 运行中</span>
-          </div>
-        )}
-        {stats.completed > 0 && (
-          <div className="dag-stats-item">
-            <span className="dag-stats-dot completed" />
-            <span>{stats.completed} 已完成</span>
-          </div>
-        )}
-        {stats.failed > 0 && (
-          <div className="dag-stats-item">
-            <span className="dag-stats-dot failed" />
-            <span>{stats.failed} 失败</span>
-          </div>
-        )}
-      </div>
+      <DAGStatsBar stats={stats} />
 
       {/* 任务详情抽屉 */}
       <Drawer
