@@ -1,7 +1,7 @@
 """
 File Upload Routes
 
-处理文件上传，存储到按会话分组的目录中
+fileupload, sessionmedium
 """
 
 import logging
@@ -23,7 +23,6 @@ from ..services.upload_storage import ensure_session_dir
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/upload", tags=["upload"])
 
-# 上传配置
 ALLOWED_MIME_TYPES = {
     "document": [
         "application/pdf",
@@ -156,12 +155,12 @@ register_router(
     path="/upload",
     router=router,
     tags=["upload"],
-    description="文件上传服务",
+    description="fileuploadservice",
 )
 
 
 class UploadResponse(BaseModel):
-    """上传响应"""
+    """upload"""
 
     success: bool
     file_path: str
@@ -189,7 +188,7 @@ def _normalize_content_type(content_type: str) -> str:
 
 
 def _get_file_category(content_type: str, filename: str) -> Optional[str]:
-    """根据文件名和MIME类型判断文件类别"""
+    """fileMIMEtypefile"""
     lowered_name = (filename or "").lower()
     for ext in SORTED_ALLOWED_EXTENSIONS:
         if lowered_name.endswith(ext):
@@ -205,42 +204,38 @@ def _get_file_category(content_type: str, filename: str) -> Optional[str]:
 
 def _validate_file(file: UploadFile, category: Optional[str] = None) -> tuple[bool, str, str]:
     """
-    验证文件类型和大小
-    
+    filetype
+
     Returns:
         (is_valid, error_message, detected_category)
     """
     content_type = _normalize_content_type(file.content_type or "")
-    
-    # 检测文件类别
+
     detected_category = _get_file_category(content_type, file.filename or "")
-    
+
     if not detected_category:
-        return False, f"不支持的文件类型: {content_type or 'unknown'}", ""
-    
-    # 如果指定了类别，检查是否匹配
+        return False, f"unsupported file type: {content_type or 'unknown'}", ""
+
     if category and detected_category != category:
-        return False, f"文件类型不匹配，期望 {category}，实际 {detected_category}", ""
-    
+        return False, f"filetype,  {category},  {detected_category}", ""
+
     return True, "", detected_category
 
 
 def _sanitize_filename(filename: str) -> str:
-    """清理文件名，移除危险字符"""
-    # 移除路径分隔符和特殊字符
+    """file, """
     safe_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._- ")
     sanitized = "".join(c if c in safe_chars else "_" for c in filename)
-    
-    # 限制长度
+
     if len(sanitized) > 200:
         name, ext = os.path.splitext(sanitized)
         sanitized = name[:190] + ext
-    
+
     return sanitized
 
 
 def _get_session_upload_dir(session_id: str) -> Path:
-    """获取会话的上传目录"""
+    """getsessionupload"""
     session_dir = ensure_session_dir(session_id)
     upload_dir = session_dir / UPLOAD_SUBDIR
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -266,7 +261,7 @@ def _safe_extract_zip(zip_file: zipfile.ZipFile, dest_dir: Path) -> int:
     for member in zip_file.infolist():
         member_path = dest_dir / member.filename
         if not _is_within_directory(dest_dir, member_path):
-            raise HTTPException(status_code=400, detail="压缩包包含非法路径")
+            raise HTTPException(status_code=400, detail="Archive entry escapes destination directory")
         if not member.is_dir():
             count += 1
     zip_file.extractall(dest_dir)
@@ -277,10 +272,10 @@ def _safe_extract_tar(tar_file: tarfile.TarFile, dest_dir: Path) -> int:
     count = 0
     for member in tar_file.getmembers():
         if member.islnk() or member.issym():
-            raise HTTPException(status_code=400, detail="压缩包包含不安全的链接")
+            raise HTTPException(status_code=400, detail="Archive links are not allowed for security reasons")
         member_path = dest_dir / member.name
         if not _is_within_directory(dest_dir, member_path):
-            raise HTTPException(status_code=400, detail="压缩包包含非法路径")
+            raise HTTPException(status_code=400, detail="Archive entry escapes destination directory")
         if member.isfile():
             count += 1
     tar_file.extractall(dest_dir)
@@ -296,7 +291,7 @@ def _extract_archive(file_path: Path, dest_dir: Path) -> int:
         with tarfile.open(file_path) as tar_file:
             return _safe_extract_tar(tar_file, dest_dir)
 
-    raise HTTPException(status_code=400, detail="不支持的压缩包格式")
+    raise HTTPException(status_code=400, detail="Unsupported archive format. Only .zip and .tar are allowed")
 
 
 def _get_max_size(category: str) -> Optional[int]:
@@ -309,44 +304,40 @@ async def _save_upload_file(
     category: str,
 ) -> Dict[str, Any]:
     """
-    保存上传的文件
-    
+    saveuploadfile
+
     Returns:
-        文件信息字典
+        file
     """
-    # 生成唯一文件名
     file_id = uuid.uuid4().hex[:12]
     original_name = file.filename or "unknown"
     safe_name = _sanitize_filename(original_name)
-    
-    # 构建文件路径
+
     session_dir = _get_session_upload_dir(session_id)
     file_path = session_dir / f"{file_id}_{safe_name}"
-    
-    # 保存文件并检查大小
+
     file_size = 0
     max_size = _get_max_size(category)
-    
+
     try:
         with open(file_path, "wb") as f:
             while chunk := await file.read(8192):  # 8KB chunks
                 file_size += len(chunk)
                 if max_size is not None and file_size > max_size:
-                    # 删除已写入的文件
                     f.close()
                     file_path.unlink(missing_ok=True)
                     raise HTTPException(
                         status_code=413,
-                        detail=f"文件过大，最大允许 {max_size / 1024 / 1024:.1f}MB",
+                        detail=f"file,  {max_size / 1024 / 1024:.1f}MB",
                     )
                 f.write(chunk)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"保存文件失败: {e}")
+        logger.error(f"savefilefailed: {e}")
         file_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"保存文件失败: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=f"savefilefailed: {str(e)}")
+
     extracted_path = None
     extracted_files = None
 
@@ -361,17 +352,16 @@ async def _save_upload_file(
             raise
         except Exception as e:
             shutil.rmtree(extract_dir, ignore_errors=True)
-            logger.error(f"解压缩失败: {e}")
-            raise HTTPException(status_code=500, detail=f"解压缩失败: {str(e)}")
+            logger.error(f"failed: {e}")
+            raise HTTPException(status_code=500, detail=f"failed: {str(e)}")
 
-    # 格式化文件大小
     if file_size < 1024:
         size_str = f"{file_size} B"
     elif file_size < 1024 * 1024:
         size_str = f"{file_size / 1024:.2f} KB"
     else:
         size_str = f"{file_size / 1024 / 1024:.2f} MB"
-    
+
     file_type = file.content_type or "application/octet-stream"
 
     return {
@@ -397,29 +387,27 @@ async def upload_file(
     session_id: str = Form(...),
 ) -> UploadResponse:
     """
-    上传文件
-    
+    uploadfile
+
     Args:
-        file: 上传的文件
-        session_id: 会话ID（必需，用于隔离文件）
-    
+        file: uploadfile
+        session_id: sessionID(, file)
+
     Returns:
-        上传结果信息
+        uploadresult
     """
     if not session_id or not session_id.strip():
-        raise HTTPException(status_code=400, detail="session_id 不能为空")
-    
-    # 验证文件
+        raise HTTPException(status_code=400, detail="session_id ")
+
     is_valid, error_msg, category = _validate_file(file)
     if not is_valid:
         raise HTTPException(status_code=400, detail=error_msg)
-    
-    logger.info(f"上传文件: {file.filename}, session: {session_id}, 类型: {category}")
-    
-    # 保存文件
+
+    logger.info(f"uploadfile: {file.filename}, session: {session_id}, type: {category}")
+
     try:
         file_info = await _save_upload_file(file, session_id, category)
-        
+
         return UploadResponse(
             success=True,
             file_path=file_info["file_path"],
@@ -437,8 +425,8 @@ async def upload_file(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"上传文件失败: {e}")
-        raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
+        logger.error(f"uploadfilefailed: {e}")
+        raise HTTPException(status_code=500, detail=f"upload failed: {str(e)}")
 
 
 @router.post("/image", response_model=UploadResponse)
@@ -447,29 +435,27 @@ async def upload_image(
     session_id: str = Form(...),
 ) -> UploadResponse:
     """
-    上传图片（兼容旧接口）
-    
+    upload()
+
     Args:
-        file: 上传的图片文件
-        session_id: 会话ID（必需，用于隔离文件）
-    
+        file: uploadfile
+        session_id: sessionID(, file)
+
     Returns:
-        上传结果信息
+        uploadresult
     """
     if not session_id or not session_id.strip():
-        raise HTTPException(status_code=400, detail="session_id 不能为空")
-    
-    # 验证文件
+        raise HTTPException(status_code=400, detail="session_id ")
+
     is_valid, error_msg, category = _validate_file(file, category="image")
     if not is_valid:
         raise HTTPException(status_code=400, detail=error_msg)
-    
-    logger.info(f"上传图片: {file.filename}, session: {session_id}, 类型: {category}")
-    
-    # 保存文件
+
+    logger.info(f"upload: {file.filename}, session: {session_id}, type: {category}")
+
     try:
         file_info = await _save_upload_file(file, session_id, category)
-        
+
         return UploadResponse(
             success=True,
             file_path=file_info["file_path"],
@@ -487,85 +473,80 @@ async def upload_image(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"上传图片失败: {e}")
-        raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"upload failed: {str(e)}")
 
 
 @router.delete("/{file_id}")
 async def delete_file(file_id: str, session_id: str) -> Dict[str, Any]:
     """
-    删除上传的文件
-    
+    Delete an uploaded file by file ID.
+
     Args:
-        file_id: 文件ID
-        session_id: 会话ID（用于权限验证）
-    
+        file_id: File ID.
+        session_id: Session ID.
+
     Returns:
-        删除结果
+        Deletion result payload.
     """
     if not session_id or not session_id.strip():
-        raise HTTPException(status_code=400, detail="session_id 不能为空")
-    
-    # 获取会话目录
+        raise HTTPException(status_code=400, detail="session_id is required")
+
     session_dir = _get_session_upload_dir(session_id)
-    
-    # 查找文件
+
     found_file = None
     for file_path in session_dir.glob(f"{file_id}_*"):
         found_file = file_path
         break
-    
+
     if not found_file:
-        raise HTTPException(status_code=404, detail="文件不存在或无权访问")
-    
-    # 删除文件
+        raise HTTPException(status_code=404, detail="File not found")
+
     try:
         found_file.unlink()
-        logger.info(f"删除文件: {found_file}, session: {session_id}")
-        return {"success": True, "message": "文件已删除"}
+        logger.info(f"Deleted file: {found_file}, session: {session_id}")
+        return {"success": True, "message": "File deleted"}
     except Exception as e:
-        logger.error(f"删除文件失败: {e}")
-        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
+        logger.error(f"Delete file failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
 
 @router.get("/list")
 async def list_files(session_id: str) -> Dict[str, Any]:
     """
-    列出会话的所有上传文件
-    
+    List uploaded files for a session.
+
     Args:
-        session_id: 会话ID
-    
+        session_id: Session ID.
+
     Returns:
-        文件列表
+        File list payload.
     """
     if not session_id or not session_id.strip():
-        raise HTTPException(status_code=400, detail="session_id 不能为空")
-    
+        raise HTTPException(status_code=400, detail="session_id is required")
+
     session_dir = _get_session_upload_dir(session_id)
-    
+
     files = []
     for file_path in sorted(session_dir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
         if file_path.name == ".gitignore":
             continue
-        
-        # 解析文件名
+
         file_name = file_path.name
         parts = file_name.split("_", 1)
         file_id = parts[0] if len(parts) > 0 else ""
         original_name = parts[1] if len(parts) > 1 else file_name
-        
-        # 获取文件信息
+
         stat = file_path.stat()
         file_size = stat.st_size
-        
+
         if file_size < 1024:
             size_str = f"{file_size} B"
         elif file_size < 1024 * 1024:
             size_str = f"{file_size / 1024:.2f} KB"
         else:
             size_str = f"{file_size / 1024 / 1024:.2f} MB"
-        
+
         files.append({
             "file_id": file_id,
             "file_path": str(file_path),
@@ -574,7 +555,7 @@ async def list_files(session_id: str) -> Dict[str, Any]:
             "file_size": size_str,
             "uploaded_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
         })
-    
+
     return {
         "success": True,
         "files": files,

@@ -43,7 +43,7 @@ docker run --rm -v /path/to/data:/data quay.io/biocontainers/metabat2:2.15--h988
 ## Examples for Agent
 
 ### Example 1: Basic Binning
-**User Request**: "对这些 contigs 进行分箱"
+**User Request**: " contigs "
 
 **Agent Command**:
 ```bash
@@ -54,7 +54,7 @@ docker run --rm \
 ```
 
 ### Example 2: Calculate Depth
-**User Request**: "计算 BAM 文件的深度信息"
+**User Request**: " BAM "
 
 **Agent Command**:
 ```bash

@@ -37,37 +37,36 @@ export interface FileListResponse {
 
 export class UploadApi extends BaseApi {
   /**
-   * 上传文件
-   */
+  * uploadfile
+  */
   uploadFile = async (
-    file: File,
-    sessionId: string
+  file: File,
+  sessionId: string
   ): Promise<UploadResponse> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('session_id', sessionId);
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('session_id', sessionId);
 
-    // 使用axios直接调用，因为需要设置特殊的Content-Type
-    const response = await this.client.post<UploadResponse>('/upload/file', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-    return response.data;
+  const response = await this.client.post<UploadResponse>('/upload/file', formData, {
+  headers: {
+  'Content-Type': 'multipart/form-data',
+  },
+  });
+  return response.data;
   };
 
   /**
-   * 删除文件
-   */
+  * deletefile
+  */
   deleteFile = async (fileId: string, sessionId: string): Promise<{ success: boolean; message: string }> => {
-    return this.delete(`/upload/${fileId}`, { session_id: sessionId });
+  return this.delete(`/upload/${fileId}`, { session_id: sessionId });
   };
 
   /**
-   * 列出会话的所有上传文件
-   */
+  * sessionuploadfile
+  */
   listFiles = async (sessionId: string): Promise<FileListResponse> => {
-    return this.get('/upload/list', { session_id: sessionId });
+  return this.get('/upload/list', { session_id: sessionId });
   };
 }
 

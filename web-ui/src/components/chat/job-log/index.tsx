@@ -83,17 +83,17 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
         title={headerTitle}
         extra={
           <Space size="small">
-            <Tooltip title={isStreaming ? '实时同步中' : '使用轮询获取'}>
+            <Tooltip title={isStreaming ? 'Real-time sync active' : 'Using polling'}>
               {isStreaming ? <PlayCircleOutlined /> : <PauseCircleOutlined />}
             </Tooltip>
-            <Tooltip title="查看 Claude Code 日志">
+            <Tooltip title="View Claude Code logs">
               <Button
                 type="link"
                 size="small"
                 icon={<FileTextOutlined />}
                 onClick={() => setCliLogVisible(true)}
               >
-                CLI 日志
+                CLI Logs
               </Button>
             </Tooltip>
             <Button
@@ -102,7 +102,7 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
               icon={expanded ? <UpOutlined /> : <DownOutlined />}
               onClick={() => setExpanded((prev) => !prev)}
             >
-              {expanded ? '收起' : '展开'}
+              {expanded ? 'Collapse' : 'Expand'}
             </Button>
           </Space>
         }
@@ -117,27 +117,27 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
             <Space direction="vertical" size={4} style={{ width: '100%' }}>
               <Space size="small">
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  目标任务：
+                  Target task:
                 </Text>
                 <Text>{targetTaskName ?? '-'}</Text>
               </Space>
               {resolvedPlanId !== null && resolvedPlanId !== undefined ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  计划 ID：{resolvedPlanId}
+                  Plan ID: {resolvedPlanId}
                 </Text>
               ) : planId !== undefined && planId !== null ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  计划 ID：{planId}
+                  Plan ID: {planId}
                 </Text>
               ) : null}
               {jobMetadata?.session_id && (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  会话 ID：{jobMetadata.session_id}
+                  Session ID: {jobMetadata.session_id}
                 </Text>
               )}
               {lastUpdatedText && (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  最近更新：{lastUpdatedText}
+                  Last updated: {lastUpdatedText}
                 </Text>
               )}
             </Space>
@@ -145,7 +145,7 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
             {error && (
               <Alert
                 type="error"
-                message="后台执行失败"
+                message="Background execution failed"
                 description={error}
                 showIcon
               />
@@ -159,7 +159,7 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
             {Object.keys(stats || {}).length > 0 && (
               <div style={{ fontSize: 12, color: '#999' }}>
                 <Divider plain style={{ margin: '12px 0' }}>
-                  统计信息
+                  Statistics
                 </Divider>
                 <Paragraph
                   copyable={{
@@ -178,25 +178,25 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
       <Modal
         open={cliLogVisible}
         onCancel={() => setCliLogVisible(false)}
-        title="Claude Code CLI 日志"
+        title="Claude Code CLI Logs"
         footer={
           <Space size="small">
-            <Button onClick={() => setCliLogVisible(false)}>关闭</Button>
+            <Button onClick={() => setCliLogVisible(false)}>Close</Button>
             <Button type="primary" onClick={fetchCliLog} disabled={cliLogLoading}>
-              刷新
+              Refresh
             </Button>
           </Space>
         }
       >
         {cliLogPath && (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            日志路径：{cliLogPath}
+            Log path: {cliLogPath}
           </Text>
         )}
         {cliLogError && (
           <Alert
             type="warning"
-            message="无法加载 CLI 日志"
+            message="Unable to load CLI logs"
             description={cliLogError}
             showIcon
             style={{ marginTop: 12 }}
@@ -221,12 +221,12 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
               wordBreak: 'break-word',
             }}
           >
-            {cliLogLines.length ? cliLogLines.join('\n') : '暂无 CLI 日志输出。'}
+            {cliLogLines.length ? cliLogLines.join('\n') : 'No CLI log output yet.'}
           </pre>
         )}
         {cliLogTruncated && (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            已仅展示最新 200 行。
+            Showing only the latest 200 lines.
           </Text>
         )}
       </Modal>

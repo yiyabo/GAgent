@@ -1,7 +1,7 @@
 """
-树结构简化器 - 将计划树转换为DAG
+- planDAG
 
-通过识别相似节点并合并，减少冗余任务，形成有向无环图(DAG)结构。
+, task, (DAG). 
 """
 
 from __future__ import annotations
@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 
 class TreeSimplifier:
     """
-    树结构简化器
 
-    将PlanTree转换为DAG，通过合并相似节点减少冗余
 
-    用法:
+    PlanTreeDAG, 
+
+    :
         simplifier = TreeSimplifier(matcher=MySimilarityMatcher())
         dag = simplifier.simplify(plan_tree)
     """
@@ -40,12 +40,12 @@ class TreeSimplifier:
         use_cache: bool = True,
     ):
         """
-        初始化简化器
+
 
         Args:
-            matcher: 相似度匹配器，用于识别和判断节点是否应合并
-            use_llm: 是否使用 LLM 进行相似度判断
-            use_cache: 是否使用缓存
+            matcher: , 
+            use_llm:  LLM 
+            use_cache: 
         """
         if matcher is not None:
             self.matcher = matcher
@@ -59,15 +59,15 @@ class TreeSimplifier:
 
     def is_reachable(self, dag: DAG, from_id: int, to_id: int) -> bool:
         """
-        BFS检查从from_id是否可达to_id
+        BFSfrom_idto_id
 
         Args:
-            dag: DAG结构
-            from_id: 起始节点ID
-            to_id: 目标节点ID
+            dag: DAG
+            from_id: ID
+            to_id: ID
 
         Returns:
-            是否可达
+
         """
         if from_id == to_id:
             return True
@@ -93,65 +93,61 @@ class TreeSimplifier:
         self, dag: DAG, node1_id: int, node2_id: int
     ) -> Tuple[bool, str]:
         """
-        检查两个节点是否可以安全合并（不产生环）
+        ()
 
-        合并条件：
-        1. 两节点都存在
-        2. 不存在直接父子关系
-        3. 不存在祖先-后代关系（互不可达）
-        4. 不存在直接依赖关系
+        : 
+        1. 
+        2. does not exist
+        3. does not exist-()
+        4. does not exist
 
         Args:
-            dag: DAG结构
-            node1_id: 第一个节点ID
-            node2_id: 第二个节点ID
+            dag: DAG
+            node1_id: ID
+            node2_id: ID
 
         Returns:
-            (可否合并, 原因)
+            (, reason)
         """
         node1 = dag.nodes.get(node1_id)
         node2 = dag.nodes.get(node2_id)
 
         if not node1 or not node2:
-            return False, "节点不存在"
+            return False, "does not exist"
 
         if node1_id == node2_id:
-            return False, "同一节点"
+            return False, ""
 
-        # 检查1: 直接父子关系
         if node2_id in node1.child_ids or node1_id in node2.child_ids:
-            return False, "存在直接父子关系（子节点）"
+            return False, "()"
 
         if node2_id in node1.parent_ids or node1_id in node2.parent_ids:
-            return False, "存在直接父子关系（父节点）"
+            return False, "()"
 
-        # 检查2: 祖先-后代关系（路径可达性）
         if self.is_reachable(dag, node1_id, node2_id):
-            return False, f"[{node1_id}]是[{node2_id}]的祖先，存在路径"
+            return False, f"[{node1_id}][{node2_id}], path"
 
         if self.is_reachable(dag, node2_id, node1_id):
-            return False, f"[{node2_id}]是[{node1_id}]的祖先，存在路径"
+            return False, f"[{node2_id}][{node1_id}], path"
 
-        # 检查3: 依赖关系
         if node2_id in node1.dependencies:
-            return False, f"[{node1_id}]依赖[{node2_id}]"
+            return False, f"[{node1_id}][{node2_id}]"
 
         if node1_id in node2.dependencies:
-            return False, f"[{node2_id}]依赖[{node1_id}]"
+            return False, f"[{node2_id}][{node1_id}]"
 
-        return True, "可以合并（互不可达的并行节点）"
+        return True, "()"
 
     def find_mergeable_groups(self, dag: DAG) -> List[List[int]]:
         """
-        找出所有可合并的节点组（互不可达的相似节点）
+        ()
 
         Returns:
-            可合并节点组列表，每组可以合并为一个节点
+            , 
         """
         node_ids = list(dag.nodes.keys())
         n = len(node_ids)
 
-        # 构建可达性矩阵
         reachable = {}
         for i in range(n):
             for j in range(i + 1, n):
@@ -160,10 +156,8 @@ class TreeSimplifier:
                 reachable[(id1, id2)] = can
                 reachable[(id2, id1)] = can
 
-        # 使用简单的贪心：按节点名称分组，然后检查组内是否可合并
         name_groups: Dict[str, List[int]] = {}
         for node_id, node in dag.nodes.items():
-            # 使用名称的简化版本作为key
             name_key = node.name.strip().lower()
             name_groups.setdefault(name_key, []).append(node_id)
 
@@ -172,7 +166,6 @@ class TreeSimplifier:
             if len(ids) < 2:
                 continue
 
-            # 检查组内所有节点两两可合并
             group_valid = True
             for i in range(len(ids)):
                 for j in range(i + 1, len(ids)):
@@ -189,13 +182,13 @@ class TreeSimplifier:
 
     def tree_to_dag(self, tree: PlanTree) -> DAG:
         """
-        将PlanTree转换为DAG（不做合并）
+        PlanTreeDAG()
 
         Args:
-            tree: 输入的计划树
+            tree: inputplan
 
         Returns:
-            对应的DAG结构
+            DAG
         """
         dag = DAG(
             plan_id=tree.id,
@@ -203,12 +196,10 @@ class TreeSimplifier:
             description=tree.description,
         )
 
-        # Bug #9 Fix: 处理空计划的边界情况
         if not tree.nodes:
             logger.info(f"tree_to_dag: Plan #{tree.id} has no nodes, returning empty DAG")
             return dag
 
-        # 转换所有节点
         for node_id, plan_node in tree.nodes.items():
             dag_node = DAGNode(
                 id=node_id,
@@ -220,10 +211,8 @@ class TreeSimplifier:
             )
             dag.nodes[node_id] = dag_node
 
-        # 根据 adjacency (边) 设置父子关系
         for parent_id, children_ids in tree.adjacency.items():
             if parent_id is None:
-                # 根节点，没有父节点
                 continue
             if parent_id not in dag.nodes:
                 continue
@@ -232,7 +221,6 @@ class TreeSimplifier:
                     dag.nodes[parent_id].child_ids.add(child_id)
                     dag.nodes[child_id].parent_ids.add(parent_id)
 
-        # Bug #9 Fix: 记录单节点计划的情况
         if len(dag.nodes) == 1:
             logger.info(f"tree_to_dag: Plan #{tree.id} has single node, returning DAG with 1 node")
 
@@ -246,45 +234,40 @@ class TreeSimplifier:
         force: bool = False,
     ) -> bool:
         """
-        合并两个节点，保留keep_id，删除remove_id
+        , keep_id, deleteremove_id
 
         Args:
-            dag: DAG结构
-            keep_id: 保留的节点ID
-            remove_id: 要删除的节点ID
-            force: 是否跳过安全检查
+            dag: DAG
+            keep_id: ID
+            remove_id: deleteID
+            force: 
 
         Returns:
-            是否成功合并
+            success
         """
         if keep_id not in dag.nodes or remove_id not in dag.nodes:
             return False
 
-        # 安全检查
         if not force:
             can, reason = self.can_merge(dag, keep_id, remove_id)
             if not can:
-                logger.warning(f"无法合并 [{keep_id}] 和 [{remove_id}]: {reason}")
+                logger.warning(f" [{keep_id}]  [{remove_id}]: {reason}")
                 return False
 
         keep_node = dag.nodes[keep_id]
         remove_node = dag.nodes[remove_id]
 
-        # 合并信息
         keep_node.merge_from(remove_node)
 
-        # 移除自引用
         keep_node.parent_ids.discard(keep_id)
         keep_node.child_ids.discard(keep_id)
         keep_node.parent_ids.discard(remove_id)
         keep_node.child_ids.discard(remove_id)
 
-        # 更新其他节点的引用
         for node_id, node in dag.nodes.items():
             if node_id == keep_id or node_id == remove_id:
                 continue
 
-            # 将指向remove_id的引用改为指向keep_id
             if remove_id in node.parent_ids:
                 node.parent_ids.discard(remove_id)
                 node.parent_ids.add(keep_id)
@@ -297,7 +280,6 @@ class TreeSimplifier:
                 node.dependencies.discard(remove_id)
                 node.dependencies.add(keep_id)
 
-        # 删除节点并记录映射
         del dag.nodes[remove_id]
         dag.merge_map[remove_id] = keep_id
 
@@ -305,29 +287,27 @@ class TreeSimplifier:
 
     def merge_group(self, dag: DAG, node_ids: List[int]) -> Optional[int]:
         """
-        合并一组节点为一个
+
 
         Args:
-            dag: DAG结构
-            node_ids: 要合并的节点ID列表
+            dag: DAG
+            node_ids: ID
 
         Returns:
-            合并后保留的节点ID，失败返回None
+            ID, failedNone
         """
         if len(node_ids) < 2:
             return node_ids[0] if node_ids else None
 
-        # 检查组内所有节点两两可合并
         for i in range(len(node_ids)):
             for j in range(i + 1, len(node_ids)):
                 can, reason = self.can_merge(dag, node_ids[i], node_ids[j])
                 if not can:
                     logger.warning(
-                        f"组内节点不可合并: [{node_ids[i]}] 和 [{node_ids[j]}]: {reason}"
+                        f": [{node_ids[i]}]  [{node_ids[j]}]: {reason}"
                     )
                     return None
 
-        # 保留ID最小的节点
         keep_id = min(node_ids)
         merged_names = []
 
@@ -343,7 +323,7 @@ class TreeSimplifier:
         if merged_names:
             keep_name = dag.nodes[keep_id].name
             logger.info(
-                f"合并完成: [{keep_id}]{keep_name[:20]} <- {', '.join(merged_names)}"
+                f"completed: [{keep_id}]{keep_name[:20]} <- {', '.join(merged_names)}"
             )
 
         return keep_id
@@ -354,21 +334,19 @@ class TreeSimplifier:
         max_iterations: int = 100,
     ) -> DAG:
         """
-        简化树结构，合并相似节点，生成DAG
+        , , DAG
 
         Args:
-            tree: 输入的计划树
-            max_iterations: 最大迭代次数（防止无限循环）
+            tree: inputplan
+            max_iterations: ()
 
         Returns:
-            简化后的DAG结构
+            DAG
         """
-        # 1. 转换为DAG
-        # Bug #9 Fix: 处理空计划和单节点计划的边界情况
         if not tree.nodes:
             logger.info(f"simplify: Plan #{tree.id} has no nodes, returning empty DAG")
             return self.tree_to_dag(tree)
-        
+
         if len(tree.nodes) == 1:
             logger.info(f"simplify: Plan #{tree.id} has single node, returning as-is")
             return self.tree_to_dag(tree)
@@ -376,9 +354,8 @@ class TreeSimplifier:
         dag = self.tree_to_dag(tree)
 
         original_count = dag.node_count()
-        logger.info(f"开始简化 Plan #{tree.id}，原始节点数: {original_count}")
+        logger.info(f" Plan #{tree.id}, : {original_count}")
 
-        # 2. 迭代合并相似节点
         for iteration in range(max_iterations):
             nodes = list(dag.nodes.values())
             similar_pairs = self.matcher.find_similar_pairs(nodes)
@@ -386,10 +363,8 @@ class TreeSimplifier:
             if not similar_pairs:
                 break
 
-            # 按相似度降序排序
             similar_pairs.sort(key=lambda x: x[2], reverse=True)
 
-            # 合并最相似的一对
             merged = False
             for node_id_1, node_id_2, score in similar_pairs:
                 if node_id_1 not in dag.nodes or node_id_2 not in dag.nodes:
@@ -399,7 +374,6 @@ class TreeSimplifier:
                 node2 = dag.nodes[node_id_2]
 
                 if self.matcher.should_merge(node1, node2):
-                    # 保留ID较小的节点
                     keep_id = min(node_id_1, node_id_2)
                     remove_id = max(node_id_1, node_id_2)
                     if self.merge_nodes(dag, keep_id, remove_id):
@@ -412,28 +386,25 @@ class TreeSimplifier:
         final_count = dag.node_count()
         merged_count = len(dag.merge_map)
         logger.info(
-            f"简化完成: {original_count} -> {final_count} 节点，合并 {merged_count} 个"
+            f"completed: {original_count} -> {final_count} ,  {merged_count} "
         )
 
         return dag
 
     def simplify_fast(self, tree: PlanTree) -> DAG:
         """
-        快速简化（仅基于名称匹配，不使用 LLM）
+        (name,  LLM)
 
         Args:
-            tree: 输入的计划树
+            tree: inputplan
 
         Returns:
-            简化后的DAG结构
+            DAG
         """
-        # 1. 转换为DAG
         dag = self.tree_to_dag(tree)
 
-        # 2. 找出可合并的组
         mergeable_groups = self.find_mergeable_groups(dag)
 
-        # 3. 合并每个组
         for group in mergeable_groups:
             self.merge_group(dag, group)
 
@@ -441,14 +412,14 @@ class TreeSimplifier:
 
     def simplify_from_db(self, plan_id: int, repo=None) -> DAG:
         """
-        从数据库加载计划并执行简化。
+        databaseloadplanexecute. 
 
         Args:
-            plan_id: 计划ID
-            repo: PlanRepository实例（可选）
+            plan_id: planID
+            repo: PlanRepository()
 
         Returns:
-            简化后的DAG
+            DAG
         """
         if repo is None:
             from ...repository.plan_repository import PlanRepository
@@ -465,11 +436,11 @@ class TreeSimplifier:
         title_suffix: str = " (Simplified)",
     ) -> int:
         """
-        将DAG保存为新的计划（Plan）。
+        DAGsaveplan(Plan). 
 
-        说明：
-        - 由于Plan结构是树，这里选择一个父节点作为结构父节点，
-          其余父节点与显式依赖统一映射为 dependencies。
+        description: 
+        - Plan, , 
+          dependencies. 
         """
         if repo is None:
             from ...repository.plan_repository import PlanRepository
@@ -486,7 +457,6 @@ class TreeSimplifier:
         parent_map: Dict[int, Optional[int]] = {}
         metadata_map: Dict[int, Dict[str, Any]] = {}
 
-        # 先创建所有节点，确保父节点先创建
         for node_id in dag.topological_sort():
             node = dag.nodes[node_id]
 
@@ -516,7 +486,6 @@ class TreeSimplifier:
             parent_map[node_id] = parent_id
             metadata_map[node_id] = metadata
 
-        # 再统一补齐依赖映射（确保跨分支依赖不会丢失）
         for node_id, node in dag.nodes.items():
             mapped_deps: List[int] = []
 
@@ -547,10 +516,10 @@ class TreeSimplifier:
         title_suffix: str = " (Simplified)",
     ) -> Tuple[DAG, int]:
         """
-        从数据库加载、简化、并在需要时保存为新计划。
+        databaseload, , saveplan. 
 
         Returns:
-            (DAG, 新计划ID或原计划ID)
+            (DAG, planIDplanID)
         """
         dag = self.simplify_from_db(plan_id, repo)
         if not dag.merge_map:
@@ -559,17 +528,16 @@ class TreeSimplifier:
         return dag, new_plan_id
 
 
-# 便捷函数
 def simplify_plan(plan_id: int, use_llm: bool = False) -> DAG:
     """
-    便捷函数：简化指定计划
+    : plan
 
     Args:
-        plan_id: 计划ID
-        use_llm: 是否使用 LLM 进行相似度判断
+        plan_id: planID
+        use_llm:  LLM 
 
     Returns:
-        简化后的 DAG
+        DAG
     """
     from ...repository.plan_repository import PlanRepository
 
@@ -582,13 +550,13 @@ def simplify_plan(plan_id: int, use_llm: bool = False) -> DAG:
 
 def visualize_plan(plan_id: int) -> str:
     """
-    便捷函数：可视化计划的 DAG 结构
+    : plan DAG 
 
     Args:
-        plan_id: 计划ID
+        plan_id: planID
 
     Returns:
-        可视化字符串
+
     """
     from ...repository.plan_repository import PlanRepository
 

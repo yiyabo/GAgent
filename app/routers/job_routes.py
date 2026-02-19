@@ -175,7 +175,7 @@ def _extract_first_action_label(actions: List[Dict[str, Any]]) -> Optional[str]:
     kind = str(first.get("kind") or "").strip().lower()
     name = str(first.get("name") or "").strip()
     if kind == "tool_operation" and name:
-        return f"调用 {name}"
+        return f"Invoke {name}"
     if name:
         return name
     return None
@@ -183,12 +183,12 @@ def _extract_first_action_label(actions: List[Dict[str, Any]]) -> Optional[str]:
 
 def _default_label(category: str) -> str:
     if category == "task_creation":
-        return "任务创建"
+        return "Task Creation"
     if category == "phagescope":
-        return "PhageScope 任务"
+        return "PhageScope Job"
     if category == "claude_code":
-        return "Claude Code 执行"
-    return "后台任务"
+        return "Claude Code Execution"
+    return "Background Job"
 
 
 def _extract_phagescope_progress(job_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -542,7 +542,7 @@ def _list_task_creation_job_ids_by_plan_ids(limit: int, plan_ids: List[int]) -> 
 @job_router.get(
     "/board",
     response_model=BackgroundTaskBoardResponse,
-    summary="后台任务看板（任务创建 / PhageScope / Claude Code）",
+    summary="Background job board (Task Creation / PhageScope / Claude Code)",
 )
 def get_background_task_board(
     limit: int = Query(50, ge=1, le=500),
@@ -551,7 +551,7 @@ def get_background_task_board(
     include_finished: bool = Query(True),
 ):
     groups: Dict[str, BackgroundTaskGroup] = {
-        "task_creation": _build_group("task_creation", "任务创建"),
+        "task_creation": _build_group("task_creation", "Task Creation"),
         "phagescope": _build_group("phagescope", "PhageScope"),
         "claude_code": _build_group("claude_code", "Claude Code"),
     }
@@ -669,7 +669,7 @@ def get_background_task_board(
         metadata = job_payload.get("metadata") if isinstance(job_payload.get("metadata"), dict) else {}
         label = (
             str(metadata.get("target_task_name") or "").strip()
-            or "任务创建/拆分"
+            or "Task Creation/Decomposition"
         )
         item = BackgroundTaskItem(
             category="task_creation",
@@ -724,12 +724,12 @@ def get_background_task_board(
 
 @job_router.get(
     "/{job_id}/stream",
-    summary="实时订阅异步 Job 日志",
+    summary="Stream async job logs in real time",
 )
 async def stream_job(job_id: str):
     snapshot = plan_decomposition_jobs.get_job_payload(job_id)
     if snapshot is None:
-        raise HTTPException(status_code=404, detail="未找到对应的 Job。")
+        raise HTTPException(status_code=404, detail="Job not found.")
 
     loop = asyncio.get_running_loop()
     queue = plan_decomposition_jobs.register_subscriber(job_id, loop)
@@ -771,12 +771,12 @@ async def stream_job(job_id: str):
 @job_router.get(
     "/{job_id}",
     response_model=AsyncJobStatusResponse,
-    summary="查询异步 Job 状态",
+    summary="Get async job status",
 )
 def get_job_status(job_id: str):
     payload = plan_decomposition_jobs.get_job_payload(job_id)
     if payload is None:
-        raise HTTPException(status_code=404, detail="未找到对应的 Job。")
+        raise HTTPException(status_code=404, detail="Job not found.")
     action_logs = payload.get("action_logs") or []
     action_cursor = payload.get("action_cursor")
     return AsyncJobStatusResponse(
@@ -803,15 +803,15 @@ def get_job_status(job_id: str):
 @job_router.get(
     "/{job_id}/logs",
     response_model=JobLogTailResponse,
-    summary="读取 Claude Code 日志尾部",
+    summary="Read Claude Code log tail",
 )
 def get_job_logs(job_id: str, tail: int = Query(200, ge=1, le=2000)):
     if not _is_safe_job_id(job_id):
-        raise HTTPException(status_code=400, detail="非法的 job_id")
+        raise HTTPException(status_code=400, detail="Invalid job_id")
 
     log_path = _CLAUDE_LOG_DIR / f"{job_id}.log"
     if not log_path.exists():
-        raise HTTPException(status_code=404, detail="日志不存在或尚未生成")
+        raise HTTPException(status_code=404, detail="Log file does not exist or is not generated yet")
 
     lines, total = _tail_file_lines(log_path, tail)
     return JobLogTailResponse(
@@ -829,7 +829,7 @@ register_router(
     path="/jobs",
     router=job_router,
     tags=["jobs"],
-    description="通用异步 Job 查询接口",
+    description="General async job query APIs",
 )
 
 

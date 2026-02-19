@@ -13,14 +13,14 @@ def test_completion_claim_guardrail_rewrites_missing_file_claim(tmp_path: Path) 
     missing_path = tmp_path / "missing" / "result.txt"
     structured = LLMStructuredResponse(
         llm_reply=LLMReply(
-            message=f"任务已完成，文件已生成：{missing_path}",
+            message=f"taskcompleted, file: {missing_path}",
         ),
         actions=[],
     )
 
     patched = agent._apply_completion_claim_guardrail(structured)
 
-    assert "不能判定为“已完成”" in patched.llm_reply.message
+    assert "cannot be confirmed" in patched.llm_reply.message.lower()
     assert str(missing_path) in patched.llm_reply.message
 
 
@@ -30,7 +30,7 @@ def test_completion_claim_guardrail_keeps_message_when_paths_exist(tmp_path: Pat
     output.write_text("ok", encoding="utf-8")
     structured = LLMStructuredResponse(
         llm_reply=LLMReply(
-            message=f"已完成，输出文件：{output}",
+            message=f"completed, outputfile: {output}",
         ),
         actions=[],
     )

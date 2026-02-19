@@ -102,8 +102,14 @@ export async function handleJobUpdate(ctx: StreamHandlerContext, event: any): Pr
       contentCandidate = summarizeActions(finalActions.length > 0 ? finalActions : rawActions);
     }
   }
-  const fallbackSummary = normalizedFinalStatus === 'succeeded' && mergedToolResults.length > 0 ? '工具已完成，请查看结果。' : targetMessage.content;
-  const contentWithStatus = contentCandidate || (normalizedFinalStatus === 'failed' && updatedMetadata.errors?.length ? `${targetMessage.content}\n\n⚠️ 后台执行失败：${updatedMetadata.errors.join('; ')}` : fallbackSummary);
+  const fallbackSummary = normalizedFinalStatus === 'succeeded' && mergedToolResults.length > 0
+    ? 'Tool execution completed. Please review the results.'
+    : targetMessage.content;
+  const contentWithStatus = contentCandidate || (
+    normalizedFinalStatus === 'failed' && updatedMetadata.errors?.length
+      ? `${targetMessage.content}\n\n⚠️ Background execution failed: ${updatedMetadata.errors.join('; ')}`
+      : fallbackSummary
+  );
 
   ctx.get().updateMessage(ctx.assistantMessageId, { content: contentWithStatus, metadata: { ...updatedMetadata, status: normalizedFinalStatus === 'succeeded' ? 'completed' : 'failed', plan_id: finalPlanIdCandidate ?? null, plan_title: finalPlanTitle ?? null, final_summary: (typeof payload.result?.final_summary === 'string' ? payload.result.final_summary : undefined), analysis_text: (updatedMetadata.analysis_text ?? null) } });
 
@@ -125,8 +131,8 @@ export async function handleJobUpdate(ctx: StreamHandlerContext, event: any): Pr
     dispatchPlanSyncEvent({ type: 'task_changed', plan_id: finalPlanIdCandidate, plan_title: finalPlanTitle ?? sessionAfter?.plan_title ?? null }, { trackingId: updatedMetadata.tracking_id ?? null, source: 'chat.stream', status: normalizedFinalStatus as any, sessionId: sessionAfter?.session_id ?? null });
   }
   if (sessionAfter) {
-    try { await chatApi.updateSession(sessionAfter.session_id ?? sessionAfter.id, { plan_id: finalPlanIdCandidate ?? null, plan_title: finalPlanTitle ?? null, is_active: normalizedFinalStatus === 'succeeded' }); } catch (patchError) { console.warn('同步会话信息失败:', patchError); }
-    void ctx.get().loadChatHistory(sessionAfter.session_id ?? sessionAfter.id).catch((e: any) => console.warn('同步历史失败:', e));
+    try { await chatApi.updateSession(sessionAfter.session_id ?? sessionAfter.id, { plan_id: finalPlanIdCandidate ?? null, plan_title: finalPlanTitle ?? null, is_active: normalizedFinalStatus === 'succeeded' }); } catch (patchError) { console.warn('Failed to sync session info:', patchError); }
+    void ctx.get().loadChatHistory(sessionAfter.session_id ?? sessionAfter.id).catch((e: any) => console.warn('Failed to sync history:', e));
   }
   if (ctx.state.flushHandle !== null) { window.cancelAnimationFrame(ctx.state.flushHandle); ctx.state.flushHandle = null; }
   ctx.flushAnalysisText(true);
@@ -155,7 +161,7 @@ export function handleFinal(ctx: StreamHandlerContext, event: any): boolean {
       ? ctx.state.streamedContent
       : (typeof result.response === 'string' && result.response.trim()
         ? result.response
-        : `${categoryLabel} 任务已提交至后台运行，请在右侧「任务状态」面板查看进度。\n\n任务完成后，您可以告诉我进行结果分析。`);
+        : `${categoryLabel} task has been submitted to background execution. Check progress in the right-side "Task Status" panel.\n\nAfter completion, you can ask me to analyze the results.`);
 
     ctx.get().updateMessage(ctx.assistantMessageId, {
       content: bgContent,
@@ -316,7 +322,7 @@ export function processBackgroundDispatch(ctx: StreamHandlerContext): void {
       plan_id: ctx.get().currentPlanId ?? null,
       plan_title: ctx.get().currentPlanTitle ?? null,
       is_active: true,
-    }).catch((e: any) => console.warn('同步会话失败:', e));
+    }).catch((e: any) => console.warn('Failed to sync session:', e));
   }
   try {
     window.dispatchEvent(new CustomEvent('tasksUpdated', {
@@ -381,7 +387,7 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
       const history = autoTitleHistory.get(sessionKey);
       if (!history || history.planId !== sessionAfter.plan_id) {
         if (sessionAfter.plan_id !== null || sessionAfter.messages.some((m: any) => m.type === 'user')) {
-          void ctx.get().autotitleSession(sessionKey).catch((e: any) => console.warn('自动命名失败:', e));
+          void ctx.get().autotitleSession(sessionKey).catch((e: any) => console.warn('Auto-title failed:', e));
         }
       }
     }
@@ -419,7 +425,7 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
                 if (status.status !== meta.status) ctx.get().updateMessage(ctx.assistantMessageId, { metadata: { ...meta, status: status.status as ChatActionStatus, tracking_id: trackingId, unified_stream: true } as any });
               }
               if (status.status === 'completed' || status.status === 'failed') break;
-            } catch (e) { console.warn('轮询失败:', e); break; }
+            } catch (e) { console.warn('Polling failed:', e); break; }
             await new Promise(r => setTimeout(r, 2500));
           }
         }
@@ -430,14 +436,18 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
             const mergedResults = mergeToolResults(collectToolResultsFromMetadata((lastStatus.result as any)?.tool_results), collectToolResultsFromMetadata((lastStatus.metadata as any)?.tool_results));
             const analysis = (typeof (lastStatus.result as any)?.analysis_text === 'string' ? (lastStatus.result as any).analysis_text : null)?.trim();
             const summary = (typeof (lastStatus.result as any)?.final_summary === 'string' ? (lastStatus.result as any).final_summary : (typeof (lastStatus.metadata as any)?.final_summary === 'string' ? (lastStatus.metadata as any).final_summary : null))?.trim();
-            const completionContent = analysis ?? summary ?? (lastStatus.status === 'completed' ? '工具已完成，请查看结果。' : '执行失败，请查看错误信息。');
+            const completionContent = analysis ?? summary ?? (
+              lastStatus.status === 'completed'
+                ? 'Tool execution completed. Please review the results.'
+                : 'Execution failed. Please review the error details.'
+            );
             const nextMeta: any = { ...meta, status: lastStatus.status as ChatActionStatus, tracking_id: lastStatus.tracking_id ?? trackingId, plan_id: typeof lastStatus.plan_id === 'number' ? lastStatus.plan_id : (meta.plan_id ?? null), actions: Array.isArray(lastStatus.actions) ? lastStatus.actions : meta.actions, action_list: Array.isArray(lastStatus.actions) ? lastStatus.actions : meta.action_list, errors: Array.isArray(lastStatus.errors) ? lastStatus.errors : meta.errors, unified_stream: true };
             if (analysis) nextMeta.analysis_text = analysis;
             if (summary) nextMeta.final_summary = summary;
             if (mergedResults.length > 0) nextMeta.tool_results = mergedResults; else delete nextMeta.tool_results;
             ctx.get().updateMessage(ctx.assistantMessageId, { content: completionContent, metadata: nextMeta });
             const sessionKey = ctx.get().currentSession?.session_id ?? ctx.get().currentSession?.id ?? null;
-            if (sessionKey) void ctx.get().loadChatHistory(sessionKey).catch((e: any) => console.warn('同步失败:', e));
+            if (sessionKey) void ctx.get().loadChatHistory(sessionKey).catch((e: any) => console.warn('Sync failed:', e));
           }
         }
       } finally { activeActionFollowups.delete(trackingId); }
@@ -460,7 +470,7 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
   const sessionPatch = ctx.get().currentSession;
   if (!assistantMetadata.tracking_id && sessionPatch) {
     void (async () => {
-      try { await chatApi.updateSession(sessionPatch.session_id ?? sessionPatch.id, { plan_id: resolvedPlanId ?? null, plan_title: resolvedPlanTitle ?? null, current_task_id: resolvedTaskId ?? null, current_task_name: resolvedTaskName ?? null, is_active: true }); } catch (e) { console.warn('同步失败:', e); }
+      try { await chatApi.updateSession(sessionPatch.session_id ?? sessionPatch.id, { plan_id: resolvedPlanId ?? null, plan_title: resolvedPlanTitle ?? null, current_task_id: resolvedTaskId ?? null, current_task_name: resolvedTaskName ?? null, is_active: true }); } catch (e) { console.warn('Sync failed:', e); }
     })();
   }
 }

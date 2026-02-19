@@ -19,12 +19,12 @@ export const formatToolActionLabel = (action: any) => {
 
   if (kind === 'tool_operation') {
     if (name && query) {
-      return `调用 ${name} 搜索"${query}"`;
+      return `Use ${name} to search "${query}"`;
     }
     if (name) {
-      return `调用 ${name}`;
+      return `Invoke ${name}`;
     }
-    return '调用工具';
+    return 'Invoke tool';
   }
   if (kind === 'plan_operation') {
     const title =
@@ -33,7 +33,7 @@ export const formatToolActionLabel = (action: any) => {
         : typeof params.title === 'string'
           ? params.title
           : '';
-    return title ? `执行计划：${title}` : `执行计划操作${name ? ` ${name}` : ''}`;
+    return title ? `Execute plan: ${title}` : `Execute plan operation${name ? ` ${name}` : ''}`;
   }
   if (kind === 'task_operation') {
     const taskName =
@@ -42,13 +42,13 @@ export const formatToolActionLabel = (action: any) => {
         : typeof params.title === 'string'
           ? params.title
           : '';
-    return taskName ? `执行任务：${taskName}` : `执行任务操作${name ? ` ${name}` : ''}`;
+    return taskName ? `Execute task: ${taskName}` : `Execute task operation${name ? ` ${name}` : ''}`;
   }
   if (kind === 'context_request') {
-    return `获取上下文${name ? `：${name}` : ''}`;
+    return `Fetch context${name ? `: ${name}` : ''}`;
   }
   if (kind === 'system_operation') {
-    return `系统操作${name ? `：${name}` : ''}`;
+    return `System operation${name ? `: ${name}` : ''}`;
   }
   return `${kind || 'action'}${name ? `/${name}` : ''}`;
 };
@@ -101,12 +101,12 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
   const effectiveStatus = isDecomposeFailed ? 'failed' : isDecomposeActive ? 'running' : status;
   const statusLabel =
     isDecomposeActive
-      ? '计划拆解中'
+      ? 'Decomposing Plan'
       : effectiveStatus === 'completed'
-      ? '已完成'
+      ? 'Completed'
       : effectiveStatus === 'failed'
-        ? '已失败'
-        : '执行中';
+        ? 'Failed'
+        : 'Running';
   const statusColor =
     isDecomposeFailed
       ? 'red'
@@ -120,12 +120,12 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
 
   const summary =
     toolActions.length > 0
-      ? `工具：${toolActions
+      ? `Tools: ${toolActions
         .map((act: any) => (typeof act?.name === 'string' ? act.name : null))
         .filter(Boolean)
         .slice(0, 3)
-        .join(', ')}${toolActions.length > 3 ? ` 等 ${toolActions.length} 个` : ''}`
-      : `动作：${visibleActions.length} 个`;
+        .join(', ')}${toolActions.length > 3 ? ` and ${toolActions.length - 3} more` : ''}`
+      : `Actions: ${visibleActions.length}`;
 
   const toolProgress = (metadata as any)?.tool_progress as any;
   const toolProgressPercent =
@@ -179,7 +179,7 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
           onClick={() => setToolOpen((v) => !v)}
           style={{ padding: 0, fontSize: 12 }}
         >
-          {toolOpen ? '收起' : '查看过程'}
+          {toolOpen ? 'Collapse' : 'View Process'}
         </Button>
       </div>
       <div style={{ marginTop: 8 }}>
@@ -192,16 +192,16 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
         {isDecomposeActive && (
           <div style={{ marginTop: 6 }}>
             <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-              拆解进度：
+              Decomposition progress:
               {decomposeProgress?.percent !== null && decomposeProgress?.percent !== undefined
                 ? `${Math.round(decomposeProgress.percent)}%`
-                : '计算中'}
+                : 'Calculating'}
               {decomposeProgress?.consumedBudget !== null &&
                 decomposeProgress?.consumedBudget !== undefined
-                ? `，已创建 ${Math.max(0, Math.round(decomposeProgress.consumedBudget))} 个任务`
+                ? `, created ${Math.max(0, Math.round(decomposeProgress.consumedBudget))} tasks`
                 : ''}
               {decomposeProgress?.queueRemaining !== null && decomposeProgress?.queueRemaining !== undefined
-                ? `，队列剩余 ${decomposeProgress.queueRemaining}`
+                ? `, queue remaining ${decomposeProgress.queueRemaining}`
                 : ''}
             </Text>
           </div>
@@ -209,21 +209,21 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
         {isDecomposeFailed && (
           <div style={{ marginTop: 6 }}>
             <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-              拆解失败{effectiveDecomposeJob?.error ? `：${effectiveDecomposeJob.error}` : ''}
+              Decomposition failed{effectiveDecomposeJob?.error ? `: ${effectiveDecomposeJob.error}` : ''}
             </Text>
           </div>
         )}
         {moduleDone !== null && moduleTotal !== null && effectiveStatus !== 'completed' && effectiveStatus !== 'failed' && (
           <div style={{ marginTop: 6 }}>
             <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-              模块进度：{moduleDone}/{moduleTotal}
+              Module progress: {moduleDone}/{moduleTotal}
             </Text>
           </div>
         )}
         {toolProgressStatus && effectiveStatus !== 'completed' && effectiveStatus !== 'failed' && (
           <div style={{ marginTop: 6 }}>
             <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-              当前状态：{toolProgressStatus}
+              Current status: {toolProgressStatus}
             </Text>
           </div>
         )}
@@ -233,14 +233,14 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
           {processSummary && (
             <div style={{ marginBottom: 8 }}>
               <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                摘要：{processSummary}
+                Summary: {processSummary}
               </Text>
             </div>
           )}
           {toolProgressModules && toolProgressModules.length > 0 && (
             <div style={{ marginBottom: 8 }}>
               <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                模块完成情况：
+                Module completion:
               </Text>
               <div style={{ marginTop: 6 }}>
                 <Space size={[6, 6]} wrap>
@@ -277,14 +277,14 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
                 key={`${order}_${action?.name ?? 'action'}`}
                 style={{ color: 'var(--text-secondary)', marginBottom: 4, fontSize: 12 }}
               >
-                {statusIcon} 步骤 {order}: {label}
+                {statusIcon} Step {order}: {label}
                 {singleTask && (
                   <div style={{ marginTop: 6, paddingLeft: 18 }}>
                     {typeof singleTask.name === 'string' && (
-                      <div>子任务: {singleTask.name}</div>
+                      <div>Subtask: {singleTask.name}</div>
                     )}
                     {typeof singleTask.instruction === 'string' && singleTask.instruction.trim().length > 0 && (
-                      <div>说明: {singleTask.instruction}</div>
+                      <div>Instruction: {singleTask.instruction}</div>
                     )}
                   </div>
                 )}
@@ -301,8 +301,8 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
                         typeof task?.instruction === 'string' ? task.instruction : '';
                       return (
                         <div key={`${order}_created_${idx}`} style={{ marginBottom: 6 }}>
-                          {name ? <div>子任务: {name}</div> : null}
-                          {instruction ? <div>说明: {instruction}</div> : null}
+                          {name ? <div>Subtask: {name}</div> : null}
+                          {instruction ? <div>Instruction: {instruction}</div> : null}
                         </div>
                       );
                     })}
@@ -329,7 +329,7 @@ export const BackgroundDispatchCard: React.FC<BackgroundDispatchCardProps> = ({ 
   const categoryLabels: Record<string, string> = {
     phagescope: 'PhageScope',
     claude_code: 'Claude Code',
-    task_creation: '任务创建 / 拆解',
+    task_creation: 'Task Creation / Decomposition',
   };
   const categoryColors: Record<string, string> = {
     phagescope: 'purple',
@@ -356,12 +356,12 @@ export const BackgroundDispatchCard: React.FC<BackgroundDispatchCardProps> = ({ 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <CloudSyncOutlined style={{ color: 'var(--primary-color)', fontSize: 16 }} />
         <Text strong style={{ fontSize: 13, color: 'var(--text-primary)' }}>
-          后台任务已提交
+          Background task submitted
         </Text>
         <Tag color={color} style={{ margin: 0, fontSize: 11 }}>{label}</Tag>
       </div>
       <Text style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.6 }}>
-        任务已提交至后台运行。请在右侧「任务状态」面板查看进度，完成后可以告诉我进行结果分析。
+        The task is running in the background. Track progress in the right-side "Task Status" panel, then ask me for result analysis when it completes.
       </Text>
       {trackingId && (
         <div style={{ marginTop: 6 }}>

@@ -1,4 +1,3 @@
-// 上传文件相关类型
 export interface UploadedFile {
   file_id: string;
   file_path: string;
@@ -13,7 +12,6 @@ export interface UploadedFile {
   extracted_files?: number;
 }
 
-// API 响应类型
 export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
@@ -21,7 +19,6 @@ export interface ApiResponse<T = any> {
   error?: string;
 }
 
-// 系统状态类型
 export interface SystemStatus {
   api_connected: boolean;
   database_status: 'connected' | 'disconnected' | 'error';
@@ -34,7 +31,6 @@ export interface SystemStatus {
   };
 }
 
-// Memory-MCP 相关类型
 export interface Memory {
   id: string;
   content: string;

@@ -44,6 +44,10 @@ web-ui/dist/index.html
 docs_summary
 docs_summary.zip
 
+# SQLite auxiliary files (WAL mode)
+*.db-shm
+*.db-wal
+
 # local Claude worktrees / external reference checkout
 .claude/worktrees/
 reference/result-interpreter/

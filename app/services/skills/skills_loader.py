@@ -1,11 +1,11 @@
 """
-Skills Loader - 加载和管理分析技能
+Skills Loader - loadanalysis
 
-Skills 采用双目录架构：
-- 源文件: 项目 skills/ 目录（版本控制）
-- 运行时: ~/.claude/skills/（Claude Code 加载位置）
+Skills : 
+- file:  skills/ ()
+- : ~/.claude/skills/(Claude Code load)
 
-启动时自动同步，确保 Claude Code 能够加载最新的 skills。
+,  Claude Code load skills. 
 """
 
 import json
@@ -21,26 +21,25 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Skill:
-    """单个 Skill 的定义"""
+    """ Skill """
     name: str
     description: str
-    content: str  # SKILL.md 的完整内容
-    directory: str  # Skill 所在目录
+    content: str  # SKILL.md content
+    directory: str  # Skill 
     has_config: bool = False
     has_references: bool = False
 
 
 class SkillsLoader:
     """
-    Skills 加载器 - 管理和加载预定义的分析技能
-    
-    功能：
-    1. 从项目目录同步 skills 到 ~/.claude/skills/
-    2. 扫描并加载可用的 skills
-    3. 使用 LLM 智能选择相关 skills
+    Skills load - loadanalysis
+
+    : 
+    1.  skills  ~/.claude/skills/
+    2. loadavailable skills
+    3.  LLM related skills
     """
 
-    # 项目根目录
     _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 
     def __init__(
@@ -50,55 +49,49 @@ class SkillsLoader:
         auto_sync: bool = True
     ):
         """
-        初始化 Skills Loader
+        Skills Loader
 
         Args:
-            skills_dir: 运行时 skills 目录路径，默认为 ~/.claude/skills/
-            project_skills_dir: 项目 skills 源目录，默认为项目根目录的 skills/
-            auto_sync: 是否自动同步项目 skills 到运行时目录
+            skills_dir:  skills path, default ~/.claude/skills/
+            project_skills_dir:  skills , default skills/
+            auto_sync:  skills 
         """
-        # 运行时目录（Claude Code 加载位置）
         if skills_dir is None:
             self.skills_dir = Path.home() / ".claude" / "skills"
         else:
             self.skills_dir = Path(skills_dir)
 
-        # 项目源目录（版本控制）
         if project_skills_dir is None:
             self.project_skills_dir = self._PROJECT_ROOT / "skills"
         else:
             self.project_skills_dir = Path(project_skills_dir)
 
-        self._loaded_skills: Set[str] = set()  # 已加载的 skills（防止重复）
-        self._available_skills: Dict[str, Skill] = {}  # 可用的 skills 缓存
+        self._loaded_skills: Set[str] = set()  # load skills()
+        self._available_skills: Dict[str, Skill] = {}  # available skills 
 
         logger.info(f"SkillsLoader initialized:")
         logger.info(f"  Project skills dir: {self.project_skills_dir}")
         logger.info(f"  Runtime skills dir: {self.skills_dir}")
 
-        # 自动同步
         if auto_sync:
             self.sync_from_project()
 
-        # 扫描可用 skills
         self._scan_skills()
 
     def sync_from_project(self) -> bool:
         """
-        从项目目录同步 skills 到 ~/.claude/skills/
+        skills  ~/.claude/skills/
 
         Returns:
-            bool: 同步是否成功
+            bool: success
         """
         if not self.project_skills_dir.exists():
             logger.warning(f"Project skills directory not found: {self.project_skills_dir}")
             return False
 
         try:
-            # 确保目标目录存在
             self.skills_dir.mkdir(parents=True, exist_ok=True)
 
-            # 遍历项目 skills 目录
             synced_count = 0
             for item in self.project_skills_dir.iterdir():
                 if not item.is_dir():
@@ -108,10 +101,8 @@ class SkillsLoader:
                 if not skill_file.exists():
                     continue
 
-                # 目标目录
                 target_dir = self.skills_dir / item.name
 
-                # 使用 shutil.copytree 同步整个 skill 目录
                 if target_dir.exists():
                     shutil.rmtree(target_dir)
                 shutil.copytree(item, target_dir)
@@ -127,7 +118,7 @@ class SkillsLoader:
             return False
 
     def _scan_skills(self) -> None:
-        """扫描 skills 目录，发现所有可用的 skills"""
+        """ skills , available skills"""
         self._available_skills.clear()
 
         if not self.skills_dir.exists():
@@ -143,19 +134,15 @@ class SkillsLoader:
                 continue
 
             try:
-                # 读取 skill 内容
                 content = skill_file.read_text(encoding='utf-8')
 
-                # 提取描述（从 YAML frontmatter）
                 description = self._extract_description(content)
 
-                # 检查是否有 config 文件和 references 目录
                 config_file = item / "config.json"
                 references_dir = item / "references"
                 has_config = config_file.exists()
                 has_references = references_dir.exists() and references_dir.is_dir()
 
-                # 创建 Skill 对象
                 skill = Skill(
                     name=item.name,
                     description=description,
@@ -175,9 +162,9 @@ class SkillsLoader:
 
     def _extract_description(self, content: str) -> str:
         """
-        从 SKILL.md 内容中提取描述
+        SKILL.md contentmedium
 
-        支持 YAML frontmatter 格式：
+        support YAML frontmatter : 
         ---
         name: skill-name
         description: skill description
@@ -185,24 +172,19 @@ class SkillsLoader:
         """
         lines = content.split('\n')
 
-        # 检查是否有 YAML frontmatter
         if lines and lines[0].strip() == '---':
             in_frontmatter = True
             for i, line in enumerate(lines[1:], 1):
                 if line.strip() == '---':
-                    # frontmatter 结束
                     break
                 if line.startswith('description:'):
-                    # 提取 description 值
                     desc = line[len('description:'):].strip()
-                    # 移除引号
                     if desc.startswith('"') and desc.endswith('"'):
                         desc = desc[1:-1]
                     elif desc.startswith("'") and desc.endswith("'"):
                         desc = desc[1:-1]
-                    return desc[:500]  # 限制长度
+                    return desc[:500]  # 
 
-        # 如果没有 frontmatter，取第一个非标题段落
         for line in lines:
             line = line.strip()
             if line and not line.startswith('#') and not line.startswith('---'):
@@ -212,13 +194,13 @@ class SkillsLoader:
 
     def list_skills(self, category: Optional[str] = None) -> List[Dict[str, any]]:
         """
-        列出所有可用的 skills
+        available skills
 
         Args:
-            category: 可选的分类过滤
+            category: 
 
         Returns:
-            skills 信息列表
+            skills 
         """
         skills_info = []
         for skill_name, skill in self._available_skills.items():
@@ -232,35 +214,31 @@ class SkillsLoader:
         return skills_info
 
     def is_skill_loaded(self, skill_name: str) -> bool:
-        """检查 skill 是否已加载（防止重复）"""
+        """ skill load()"""
         return skill_name in self._loaded_skills
 
     def load_skill(self, skill_name: str) -> Optional[str]:
         """
-        加载单个 skill，返回要注入到上下文的内容
+        load skill, content
 
         Args:
-            skill_name: skill 名称
+            skill_name: skill name
 
         Returns:
-            skill 内容（带标记），如果已加载或不存在则返回 None
+            skill content(), ifloaddoes not exist None
         """
-        # 检查是否已加载
         if skill_name in self._loaded_skills:
             logger.info(f"Skill {skill_name} already loaded, skipping")
             return None
 
-        # 检查 skill 是否存在
         if skill_name not in self._available_skills:
             available = ', '.join(self._available_skills.keys())
             logger.warning(f"Skill {skill_name} not found. Available: {available}")
             return None
 
-        # 加载 skill
         skill = self._available_skills[skill_name]
         self._loaded_skills.add(skill_name)
 
-        # 构建注入内容（带标记）
         skill_marker = f"[Skill: {skill_name}]"
         injected_content = f"""{skill_marker}
 Base directory: {skill.directory}
@@ -273,13 +251,13 @@ Base directory: {skill.directory}
 
     def load_multiple_skills(self, skill_names: List[str]) -> str:
         """
-        加载多个 skills
+        load skills
 
         Args:
-            skill_names: skill 名称列表
+            skill_names: skill name
 
         Returns:
-            所有 skills 的组合内容
+            skills content
         """
         loaded_contents = []
         loaded_names = []
@@ -301,22 +279,22 @@ Base directory: {skill.directory}
         return "\n\n---\n\n".join(loaded_contents)
 
     def get_skill_content(self, skill_name: str) -> Optional[str]:
-        """获取 skill 的完整内容（不标记为已加载）"""
+        """get skill content(load)"""
         if skill_name not in self._available_skills:
             return None
         return self._available_skills[skill_name].content
 
     def reset_loaded_skills(self) -> None:
-        """重置已加载 skills 列表"""
+        """load skills """
         self._loaded_skills.clear()
         logger.info("Reset loaded skills")
 
     def get_skills_summary_for_llm(self) -> str:
         """
-        生成给 LLM 看的 skills 摘要（用于智能选择）
+        LLM  skills summary()
 
         Returns:
-            格式化的 skills 列表字符串
+            skills 
         """
         if not self._available_skills:
             return "No skills available"
@@ -364,7 +342,6 @@ If no skills are relevant, return:
 """
 
         try:
-            # 使用 LLM 进行语义判断
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
@@ -372,10 +349,8 @@ If no skills are relevant, return:
                 prompt
             )
 
-            # 解析 LLM 返回的 JSON
             response_text = response.strip()
 
-            # 清理可能的 markdown 标记
             if response_text.startswith("```"):
                 lines = response_text.splitlines()
                 if lines:
@@ -384,7 +359,6 @@ If no skills are relevant, return:
                     lines.pop()
                 response_text = "\n".join(lines).strip()
 
-            # 尝试找到 JSON
             start = response_text.find("{")
             end = response_text.rfind("}")
             if start != -1 and end != -1:
@@ -392,7 +366,6 @@ If no skills are relevant, return:
                 result = json.loads(json_str)
                 selected = result.get("selected_skills", [])
 
-                # 验证选中的 skills 是否存在
                 valid_skills = [s for s in selected if s in self._available_skills]
                 if len(valid_skills) != len(selected):
                     invalid = set(selected) - set(valid_skills)
@@ -409,7 +382,6 @@ If no skills are relevant, return:
         return []
 
 
-# 全局单例
 _global_skills_loader: Optional[SkillsLoader] = None
 
 
@@ -418,7 +390,7 @@ def get_skills_loader(
     project_skills_dir: Optional[str] = None,
     auto_sync: bool = True
 ) -> SkillsLoader:
-    """获取全局 SkillsLoader 实例"""
+    """get SkillsLoader """
     global _global_skills_loader
     if _global_skills_loader is None:
         _global_skills_loader = SkillsLoader(

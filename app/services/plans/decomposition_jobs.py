@@ -976,7 +976,7 @@ class PlanDecompositionJobManager:
         plan_id = entry.get("plan_id") if entry else None
         record = load_decomposition_job(plan_id, job_id)
         if record is None and plan_id is None:
-            # planless job may reside in系统数据库
+            # A planless job may reside in the system database.
             record = load_decomposition_job(None, job_id)
         if record is None:
             return None
@@ -1043,7 +1043,7 @@ def execute_decomposition_job(
         if mode == "plan_bfs":
             log_job_event(
                 "info",
-                "开始整体计划分解",
+                "Starting full-plan decomposition.",
                 {
                     "plan_id": plan_id,
                     "max_depth": max_depth,
@@ -1058,7 +1058,7 @@ def execute_decomposition_job(
         else:
             log_job_event(
                 "info",
-                "开始节点分解",
+                "Starting single-node decomposition.",
                 {
                     "plan_id": plan_id,
                     "task_id": task_id,
@@ -1068,7 +1068,7 @@ def execute_decomposition_job(
                 },
             )
             if task_id is None:
-                raise ValueError("task_id 必须在单节点分解模式下提供。")
+                raise ValueError("task_id must be provided in single-node decomposition mode.")
             result = plan_decomposer.decompose_node(
                 plan_id,
                 task_id,
@@ -1078,7 +1078,7 @@ def execute_decomposition_job(
             )
         log_job_event(
             "info",
-            "任务拆分完成",
+            "Task decomposition completed.",
             {
                 "created_tasks": len(result.created_tasks),
                 "stopped_reason": result.stopped_reason,
@@ -1092,7 +1092,7 @@ def execute_decomposition_job(
     except Exception as exc:  # pragma: no cover - defensive
         log_job_event(
             "error",
-            "任务拆分失败",
+            "Task decomposition failed.",
             {"error": str(exc)},
         )
         plan_decomposition_jobs.mark_failure(job_id, str(exc))
@@ -1132,7 +1132,7 @@ def start_decomposition_job_thread(
     plan_decomposition_jobs.append_log(
         job.job_id,
         "info",
-        "任务已加入后台队列",
+        "Task has been queued for background execution.",
         {
             "plan_id": plan_id,
             "task_id": task_id,

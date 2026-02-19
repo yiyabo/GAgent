@@ -134,7 +134,7 @@
   min-height: 400px;
 }
 
-/* 滚动条美化 */
+/*  */
 .tree-visualization-container::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -155,33 +155,33 @@
   background: rgba(24, 144, 255, 0.5);
 }
 
-/* 响应式适配 */
+/*  */
 @media (max-width: 768px) {
   .tree-visualization-container {
-    padding: 10px;
+  padding: 10px;
   }
   
   .tree-connector {
-    font-size: 12px;
+  font-size: 12px;
   }
   
   .node-name {
-    font-size: 13px;
+  font-size: 13px;
   }
   
   .node-type-icon {
-    font-size: 16px;
+  font-size: 16px;
   }
 }
 
-/* 打印样式 */
+/*  */
 @media print {
   .tree-visualization-container {
-    background: white;
-    box-shadow: none;
+  background: white;
+  box-shadow: none;
   }
   
   .tree-node-content:hover {
-    transform: none;
+  transform: none;
   }
 }

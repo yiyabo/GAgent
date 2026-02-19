@@ -22,7 +22,6 @@ export interface ToolResultPayload {
   } | null;
 }
 
-// 工具调用相关类型
 export interface ToolCall {
   tool_name: string;
   parameters: Record<string, any>;
@@ -101,6 +100,13 @@ export interface BackgroundTaskItem {
   taskid?: string | null;
   remote_status?: string | null;
   phase?: string | null;
+  progress_percent?: number | null;
+  progress_status?: string | null;
+  progress_text?: string | null;
+  current_step?: number | null;
+  total_steps?: number | null;
+  done_steps?: number | null;
+  current_task_id?: number | null;
   counts?: {
     done: number;
     total: number;

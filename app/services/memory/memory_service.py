@@ -34,37 +34,34 @@ logger = logging.getLogger(__name__)
 
 
 class IntegratedMemoryService:
-    """集成记忆服务 - 复用现有基础设施，支持 session 分库隔离"""
+    """memoryservice - , support session """
 
     def __init__(self):
         self.llm_client = get_default_client()
         self.embeddings_service = get_embeddings_service()
-        self.evolution_threshold = 10  # 每10个记忆触发一次进化
+        self.evolution_threshold = 10  # 10memory
         self.evolution_count = 0
         self.db_config = get_database_config()
 
-        # 确保数据库表存在（主库）
         self._ensure_memory_tables()
 
     @contextmanager
     def _get_conn(self, session_id: Optional[str] = None) -> Generator[sqlite3.Connection, None, None]:
         """
-        根据 session_id 选择主库或 session 专属库.
+        session_id  session .
 
         Args:
-            session_id: 会话标识符，None 时使用主库
+            session_id: session, None 
 
         Yields:
-            数据库连接
+            databaseconnection
         """
         if session_id:
-            # 使用 session 专属数据库
             db_path = self.db_config.get_session_db_path(session_id)
             db_path.parent.mkdir(parents=True, exist_ok=True)
 
             conn = sqlite3.connect(str(db_path), isolation_level="DEFERRED")
             conn.row_factory = sqlite3.Row
-            # 设置 PRAGMA 配置（参考 database.py:153）
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
@@ -78,13 +75,11 @@ class IntegratedMemoryService:
             finally:
                 conn.close()
         else:
-            # 使用主库
             with get_db() as conn:
                 yield conn
 
     def _ensure_memory_tables_for_conn(self, conn: sqlite3.Connection):
-        """确保给定连接的记忆相关数据库表存在"""
-        # 记忆主表
+        """connectionmemoryrelateddatabase"""
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS memories (
@@ -107,7 +102,6 @@ class IntegratedMemoryService:
         """
         )
 
-        # 记忆嵌入向量表
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_embeddings (
@@ -121,7 +115,6 @@ class IntegratedMemoryService:
         """
         )
 
-        # 索引
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_task_id ON memories(related_task_id)")
@@ -131,9 +124,8 @@ class IntegratedMemoryService:
         conn.commit()
 
     def _ensure_memory_tables(self):
-        """确保记忆相关的数据库表存在"""
+        """memoryrelateddatabase"""
         with get_db() as conn:
-            # 记忆主表
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memories (
@@ -156,7 +148,6 @@ class IntegratedMemoryService:
             """
             )
 
-            # 记忆嵌入向量表
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memory_embeddings (
@@ -170,7 +161,6 @@ class IntegratedMemoryService:
             """
             )
 
-            # 索引
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_task_id ON memories(related_task_id)")
@@ -180,17 +170,14 @@ class IntegratedMemoryService:
             conn.commit()
 
     async def save_memory(self, request: SaveMemoryRequest) -> SaveMemoryResponse:
-        """保存记忆到系统中（支持 session 隔离）"""
+        """Save memory entry with optional session-scoped storage."""
         try:
-            # 生成记忆ID
             memory_id = str(uuid.uuid4())
 
-            # 分析内容生成元数据（如果未提供）
             keywords = request.keywords or []
             context = request.context or "General"
             tags = request.tags or []
 
-            # 如果缺少元数据，使用LLM分析
             if not keywords or context == "General" or not tags:
                 analysis = await self._analyze_content(request.content)
                 if not keywords:
@@ -200,7 +187,6 @@ class IntegratedMemoryService:
                 if not tags:
                     tags = analysis.get("tags", [])
 
-            # 创建记忆笔记
             memory_note = MemoryNote(
                 id=memory_id,
                 content=request.content,
@@ -214,16 +200,13 @@ class IntegratedMemoryService:
                 last_accessed=datetime.now(),
             )
 
-            # 保存到数据库（使用 session_id 分库）
             await self._store_memory(memory_note, session_id=request.session_id)
 
-            # 生成嵌入向量
             embedding_generated = await self._generate_embedding(
                 memory_note, session_id=request.session_id
             )
             memory_note.embedding_generated = embedding_generated
 
-            # 记忆进化处理
             await self._process_memory_evolution(memory_note, session_id=request.session_id)
 
             return SaveMemoryResponse(
@@ -243,11 +226,10 @@ class IntegratedMemoryService:
             raise
 
     async def query_memory(self, request: QueryMemoryRequest) -> QueryMemoryResponse:
-        """查询记忆（支持 session 隔离）"""
+        """memory(support session )"""
         try:
             start_time = datetime.now()
 
-            # 构建查询条件
             where_conditions = []
             params = []
 
@@ -256,7 +238,6 @@ class IntegratedMemoryService:
                 where_conditions.append(f"memory_type IN ({type_placeholders})")
                 params.extend([t.value for t in request.memory_types])
 
-            # 如果有嵌入向量，使用语义搜索
             memories = await self._semantic_search(
                 query=request.search_text,
                 where_conditions=where_conditions,
@@ -266,7 +247,6 @@ class IntegratedMemoryService:
                 session_id=request.session_id,
             )
 
-            # 转换为响应格式
             memory_items = []
             for memory_data in memories:
                 memory_items.append(
@@ -293,7 +273,7 @@ class IntegratedMemoryService:
             raise
 
     async def _analyze_content(self, content: str) -> Dict[str, Any]:
-        """使用LLM分析内容生成元数据"""
+        """Use LLM to extract keywords, context, and tags from memory content."""
         try:
             prompt = f"""
 Analyze the following content and extract key information:
@@ -309,16 +289,13 @@ Return the analysis result in JSON format:
 }}
 """
 
-            # 使用正确的chat方法调用
             response = self.llm_client.chat(prompt)
 
-            # 处理响应格式
             if isinstance(response, dict):
                 result_text = response.get("content", "")
             else:
                 result_text = str(response)
 
-            # 解析JSON
             json_start = result_text.find("{")
             json_end = result_text.rfind("}") + 1
 
@@ -327,7 +304,6 @@ Return the analysis result in JSON format:
                 analysis = json.loads(json_text)
                 return analysis
             else:
-                # Fallback分析
                 return self._fallback_analysis(content)
 
         except Exception as e:
@@ -335,30 +311,28 @@ Return the analysis result in JSON format:
             return self._fallback_analysis(content)
 
     def _fallback_analysis(self, content: str) -> Dict[str, Any]:
-        """内容分析的fallback方法"""
+        """contentanalysisfallback"""
         words = content.split()
 
-        # 简单的关键词提取
         keywords = []
-        for word in words[:10]:  # 取前10个词
+        for word in words[:10]:  # 10
             if len(word) > 2 and word.isalpha():
                 keywords.append(word)
 
-        # 基于内容长度和关键词推断上下文
-        if any(kw in content.lower() for kw in ["噬菌体", "细菌", "病毒", "治疗"]):
-            context = "生物医学研究"
-            tags = ["生物学", "医学", "研究"]
-        elif any(kw in content.lower() for kw in ["AI", "人工智能", "机器学习", "算法"]):
-            context = "人工智能技术"
-            tags = ["AI", "技术", "算法"]
+        if any(kw in content.lower() for kw in ["", "", "", ""]):
+            context = ""
+            tags = ["", "", ""]
+        elif any(kw in content.lower() for kw in ["AI", "", "", ""]):
+            context = ""
+            tags = ["AI", "", ""]
         else:
-            context = "一般内容"
-            tags = ["信息", "内容"]
+            context = "content"
+            tags = ["", "content"]
 
         return {"keywords": keywords[:5], "context": context, "tags": tags}
 
     async def _store_memory(self, memory_note: MemoryNote, session_id: Optional[str] = None):
-        """将记忆存储到数据库（支持 session 分库）"""
+        """memorydatabase(support session )"""
         with self._get_conn(session_id) as conn:
             conn.execute(
                 """
@@ -389,16 +363,13 @@ Return the analysis result in JSON format:
             conn.commit()
 
     async def _generate_embedding(self, memory_note: MemoryNote, session_id: Optional[str] = None) -> bool:
-        """为记忆生成嵌入向量（支持 session 分库）"""
+        """memory(support session )"""
         try:
-            # 构建用于embedding的文本（内容+元数据）
             embedding_text = self._build_embedding_text(memory_note)
 
-            # 生成嵌入向量
             embedding = self.embeddings_service.get_single_embedding(embedding_text)
 
             if embedding:
-                # 存储嵌入向量
                 embedding_json = json.dumps(embedding)
                 with self._get_conn(session_id) as conn:
                     conn.execute(
@@ -410,7 +381,6 @@ Return the analysis result in JSON format:
                         (memory_note.id, embedding_json, "embedding-2"),
                     )
 
-                    # 更新记忆表的embedding状态
                     conn.execute(
                         """
                         UPDATE memories SET embedding_generated = TRUE, embedding_model = ?
@@ -430,17 +400,17 @@ Return the analysis result in JSON format:
             return False
 
     def _build_embedding_text(self, memory_note: MemoryNote) -> str:
-        """构建用于生成embedding的文本"""
+        """embedding"""
         parts = [memory_note.content]
 
         if memory_note.keywords:
-            parts.append(f"关键词: {', '.join(memory_note.keywords)}")
+            parts.append(f": {', '.join(memory_note.keywords)}")
 
         if memory_note.context and memory_note.context != "General":
-            parts.append(f"上下文: {memory_note.context}")
+            parts.append(f": {memory_note.context}")
 
         if memory_note.tags:
-            parts.append(f"标签: {', '.join(memory_note.tags)}")
+            parts.append(f": {', '.join(memory_note.tags)}")
 
         return " | ".join(parts)
 
@@ -448,16 +418,13 @@ Return the analysis result in JSON format:
         self, query: str, where_conditions: List[str], params: List[Any], limit: int, min_similarity: float,
         session_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """语义搜索记忆（支持 session 分库）"""
+        """searchmemory(support session )"""
         try:
-            # 生成查询的嵌入向量
             query_embedding = self.embeddings_service.get_single_embedding(query)
 
             if not query_embedding:
-                # Fallback到文本搜索
                 return await self._text_search(query, where_conditions, params, limit, session_id)
 
-            # 获取所有有嵌入向量的记忆
             where_clause = "WHERE embedding_generated = TRUE"
             if where_conditions:
                 where_clause += " AND " + " AND ".join(where_conditions)
@@ -473,7 +440,6 @@ Return the analysis result in JSON format:
 
                 rows = conn.execute(query_sql, params).fetchall()
 
-            # 计算相似度并排序
             results = []
             for row in rows:
                 try:
@@ -499,7 +465,6 @@ Return the analysis result in JSON format:
                     logger.warning(f"Error processing memory row: {e}")
                     continue
 
-            # 按相似度排序
             results.sort(key=lambda x: x["similarity"], reverse=True)
             return results[:limit]
 
@@ -511,7 +476,7 @@ Return the analysis result in JSON format:
         self, query: str, where_conditions: List[str], params: List[Any], limit: int,
         session_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """文本搜索fallback（支持 session 分库）"""
+        """searchfallback(support session )"""
         where_clause = "WHERE content LIKE ?"
         search_params = [f"%{query}%"]
 
@@ -542,31 +507,28 @@ Return the analysis result in JSON format:
                 "tags": row["tags"],
                 "related_task_id": row["related_task_id"],
                 "created_at": row["created_at"],
-                "similarity": 0.5,  # 默认相似度
+                "similarity": 0.5,  # default
             }
             results.append(memory_data)
 
         return results
 
     async def _process_memory_evolution(self, memory_note: MemoryNote, session_id: Optional[str] = None):
-        """处理记忆进化"""
+        """memory"""
         try:
             self.evolution_count += 1
 
-            # 每达到阈值触发一次进化
             if self.evolution_count % self.evolution_threshold == 0:
                 await self._evolve_memories(session_id)
 
-            # 为新记忆寻找相关连接
             await self._find_memory_connections(memory_note, session_id)
 
         except Exception as e:
             logger.error(f"Memory evolution failed: {e}")
 
     async def _find_memory_connections(self, memory_note: MemoryNote, session_id: Optional[str] = None):
-        """为新记忆寻找相关连接"""
+        """memoryrelatedconnection"""
         try:
-            # 搜索相关记忆
             query_request = QueryMemoryRequest(
                 search_text=memory_note.content,
                 limit=5,
@@ -576,22 +538,20 @@ Return the analysis result in JSON format:
 
             related_memories = await self.query_memory(query_request)
 
-            # 建立连接
             connections = []
             for related in related_memories.memories:
                 if related.memory_id != memory_note.id and related.similarity > 0.7:
                     connections.append(related.memory_id)
 
             if connections:
-                # 更新记忆的连接
-                memory_note.links.extend(connections[:3])  # 最多3个连接
+                memory_note.links.extend(connections[:3])  # 3connection
                 await self._update_memory_links(memory_note.id, memory_note.links, session_id)
 
         except Exception as e:
             logger.error(f"Failed to find memory connections: {e}")
 
     async def _update_memory_links(self, memory_id: str, links: List[str], session_id: Optional[str] = None):
-        """更新记忆的连接"""
+        """updatememoryconnection"""
         with self._get_conn(session_id) as conn:
             conn.execute(
                 """
@@ -602,11 +562,10 @@ Return the analysis result in JSON format:
             conn.commit()
 
     async def _evolve_memories(self, session_id: Optional[str] = None):
-        """执行记忆进化"""
+        """executememory"""
         try:
             logger.info("Starting memory evolution process...")
 
-            # 获取最近的记忆进行进化分析
             with self._get_conn(session_id) as conn:
                 rows = conn.execute(
                     """
@@ -616,7 +575,6 @@ Return the analysis result in JSON format:
                 """
                 ).fetchall()
 
-            # 分析记忆关系并更新标签和上下文
             for row in rows:
                 try:
                     await self._evolve_single_memory(row)
@@ -629,18 +587,14 @@ Return the analysis result in JSON format:
             logger.error(f"Memory evolution failed: {e}")
 
     async def _evolve_single_memory(self, memory_row):
-        """进化单个记忆"""
-        # 这里可以实现更复杂的进化逻辑
-        # 暂时简化实现
+        """memory"""
         pass
 
     async def get_memory_stats(self) -> MemoryStats:
-        """获取记忆系统统计信息"""
+        """getmemorysystemstatistics"""
         with get_db() as conn:
-            # 总记忆数量
             total_memories = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
 
-            # 记忆类型分布
             type_stats = conn.execute(
                 """
                 SELECT memory_type, COUNT(*) as count
@@ -649,7 +603,6 @@ Return the analysis result in JSON format:
             """
             ).fetchall()
 
-            # 重要性分布
             importance_stats = conn.execute(
                 """
                 SELECT importance, COUNT(*) as count
@@ -658,14 +611,12 @@ Return the analysis result in JSON format:
             """
             ).fetchall()
 
-            # 嵌入向量覆盖率
             embedding_count = conn.execute(
                 """
                 SELECT COUNT(*) FROM memories WHERE embedding_generated = TRUE
             """
             ).fetchone()[0]
 
-            # 平均连接数
             avg_connections = (
                 conn.execute(
                     """
@@ -687,12 +638,11 @@ Return the analysis result in JSON format:
         )
 
 
-# 单例服务实例
 _memory_service = None
 
 
 def get_memory_service() -> IntegratedMemoryService:
-    """获取记忆服务实例"""
+    """getmemoryservice"""
     global _memory_service
     if _memory_service is None:
         _memory_service = IntegratedMemoryService()

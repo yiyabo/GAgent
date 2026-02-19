@@ -15,7 +15,7 @@ const UploadedFilesList: React.FC = () => {
     try {
       await removeUploadedFile(fileId);
     } catch (error) {
-      console.error('删除文件失败:', error);
+      console.error('Failed to remove file:', error);
     }
   };
 

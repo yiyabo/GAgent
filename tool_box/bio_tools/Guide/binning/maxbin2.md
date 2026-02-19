@@ -42,7 +42,7 @@ docker run --rm -v /path/to/data:/data nanozoo/maxbin2:2.2.7--e1577a7 run_MaxBin
 ## Examples for Agent
 
 ### Example 1: Basic Binning
-**User Request**: "使用 MaxBin2 对 contigs 进行分箱"
+**User Request**: " MaxBin2  contigs "
 
 **Agent Command**:
 ```bash

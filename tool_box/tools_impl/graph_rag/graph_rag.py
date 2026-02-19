@@ -219,7 +219,7 @@ class GraphRAG:
 
 def demo():
     gr = GraphRAG()
-    q = "噬菌体如何感染细菌？"
+    q = "？"
     out = gr.query(q, top_k=12, hops=1)
     print("\n=== Prompt for LLM ===\n")
     print(out["prompt"])  # LLM-agnostic prompt

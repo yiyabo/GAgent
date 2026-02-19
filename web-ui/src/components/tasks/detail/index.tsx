@@ -111,7 +111,7 @@ const TaskDetailDrawer: React.FC = () => {
     refetchOnWindowFocus: false,
     queryFn: async () => {
       if (!currentPlanId || !selectedTaskId) {
-        throw new Error('缺少计划或任务信息，无法获取执行结果');
+        throw new Error('Missing plan or task information; cannot fetch execution result');
       }
       return planTreeApi.getTaskResult(currentPlanId, selectedTaskId);
     },
@@ -176,7 +176,11 @@ const TaskDetailDrawer: React.FC = () => {
 
   const handleCopyTask = useCallback(() => {
     if (!activeTask) return;
-    void copyJsonToClipboard({ task: activeTask, result: taskResult ?? cachedResult ?? null }, '任务详情已复制', message);
+    void copyJsonToClipboard(
+      { task: activeTask, result: taskResult ?? cachedResult ?? null },
+      'Task details copied',
+      message
+    );
   }, [activeTask, taskResult, cachedResult, message]);
 
   const handleDependencyClick = useCallback(
@@ -196,7 +200,7 @@ const TaskDetailDrawer: React.FC = () => {
 
   const handleOpenExecuteModal = useCallback(() => {
     if (!currentPlanId || !selectedTaskId) {
-      message.error('缺少计划或任务信息，无法执行任务');
+      message.error('Missing plan or task information; cannot execute task');
       return;
     }
     setExecuteModalOpen(true);
@@ -212,10 +216,10 @@ const TaskDetailDrawer: React.FC = () => {
               <Title level={5} style={{ margin: 0 }}>
                 {activeTask.name}
               </Title>
-              <Text type="secondary">任务 ID: {activeTask.id}</Text>
+              <Text type="secondary">Task ID: {activeTask.id}</Text>
             </Space>
           )
-          : '任务详情'
+          : 'Task Details'
       }
       open={isTaskDrawerOpen}
       onClose={closeTaskDrawer}
@@ -230,7 +234,7 @@ const TaskDetailDrawer: React.FC = () => {
             disabled={!currentPlanId || !selectedTaskId}
             loading={executeButtonLoading}
           >
-            执行
+            Execute
           </Button>
           <Button
             icon={<ReloadOutlined />}
@@ -238,28 +242,28 @@ const TaskDetailDrawer: React.FC = () => {
             disabled={!currentPlanId || !selectedTaskId}
             loading={tasksLoading || resultLoading}
           >
-            刷新
+            Refresh
           </Button>
           <Button
             icon={<CopyOutlined />}
             onClick={handleCopyTask}
             disabled={!activeTask}
           >
-            复制
+            Copy
           </Button>
         </Space>
       }
     >
       {!currentPlanId ? (
-        <Empty description="当前会话尚未绑定计划" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        <Empty description="No plan is bound to the current session" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : !selectedTaskId ? (
-        <Empty description="请选择一个任务查看详情" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        <Empty description="Select a task to view details" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : tasksLoading && !activeTask ? (
         <div style={{ display: 'flex', justifyContent: 'center', padding: '32px 0' }}>
-          <Spin tip="加载任务信息..." />
+          <Spin tip="Loading task details..." />
         </div>
       ) : !activeTask ? (
-        <Empty description="未找到该任务，可能已被删除" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        <Empty description="Task not found; it may have been deleted" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : (
         <TaskDrawerContent
           activeTask={activeTask}

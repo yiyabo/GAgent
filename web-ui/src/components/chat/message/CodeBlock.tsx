@@ -7,7 +7,7 @@ interface CodeBlockProps {
   className?: string;
 }
 
-// 自定义代码块渲染
+// Custom code block renderer.
 const CodeBlock: React.FC<CodeBlockProps> = ({ children, className }) => {
   const language = className?.replace('lang-', '') || 'text';
 

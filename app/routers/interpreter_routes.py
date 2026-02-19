@@ -1,12 +1,4 @@
-"""
-Result Interpreter API Routes
-
-提供数据分析和代码执行的 REST API 接口。
-
-重构说明：
-- /analyze 和 /execute 端点现在使用 Claude Code 执行
-- docker_image/docker_timeout 参数已废弃（保留向后兼容）
-"""
+"""Result interpreter routes for metadata, code generation, and execution."""
 
 from __future__ import annotations
 
@@ -40,7 +32,7 @@ def _prepare_data_files(file_paths: List[str]) -> tuple[List[str], str, Optional
 
     Returns:
         tuple: (staged_paths, data_dir, staging_dir_to_cleanup)
-        - staging_dir_to_cleanup 为 None 表示未创建临时目录，无需清理
+        - staging_dir_to_cleanup is None when no staging directory is created
     """
     data_dirs = {os.path.dirname(os.path.abspath(p)) for p in file_paths}
     if len(data_dirs) <= 1:
@@ -66,42 +58,42 @@ def _prepare_data_files(file_paths: List[str]) -> tuple[List[str], str, Optional
         staged_paths.append(dest)
 
     logger.info("Multiple data directories detected; staged files at %s", staging_dir)
-    return staged_paths, staging_dir, staging_dir  # 返回 staging_dir 以便清理
+    return staged_paths, staging_dir, staging_dir  # cleanup path equals staging directory
 
 
 def _cleanup_staging_dir(staging_dir: Optional[str]) -> None:
-    """清理临时 staging 目录"""
+    """Cleanup temporary staging directory."""
     if staging_dir and os.path.isdir(staging_dir):
         try:
             shutil.rmtree(staging_dir)
-            logger.info("已清理临时目录: %s", staging_dir)
+            logger.info("Removed staging directory: %s", staging_dir)
         except Exception as e:
-            logger.warning("清理临时目录失败: %s, 错误: %s", staging_dir, e)
+            logger.warning("Failed to clean staging directory %s: %s", staging_dir, e)
 
 
 # ============== Request/Response Models ==============
 
 class MetadataRequest(BaseModel):
-    """元数据提取请求"""
-    file_path: str = Field(..., description="数据文件的绝对路径")
+    """Request for metadata extraction from a single file."""
+    file_path: str = Field(..., description="Input file path")
 
 
 class MetadataResponse(BaseModel):
-    """元数据提取响应"""
+    """Response payload for metadata extraction."""
     success: bool
     metadata: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
 
 class CodeGenerateRequest(BaseModel):
-    """代码生成请求"""
-    file_paths: List[str] = Field(..., description="数据文件路径列表")
-    task_title: str = Field(..., description="任务标题")
-    task_description: str = Field(..., description="任务详细描述")
+    """Request for analysis code generation."""
+    file_paths: List[str] = Field(..., description="Input file paths")
+    task_title: str = Field(..., description="Task title")
+    task_description: str = Field(..., description="Task description")
 
 
 class CodeGenerateResponse(BaseModel):
-    """代码生成响应"""
+    """Response payload for analysis code generation."""
     success: bool
     code: Optional[str] = None
     description: Optional[str] = None
@@ -112,16 +104,15 @@ class CodeGenerateResponse(BaseModel):
 
 
 class CodeExecuteRequest(BaseModel):
-    """代码执行请求"""
-    code: str = Field(..., description="要执行的 Python 代码")
-    work_dir: Optional[str] = Field(None, description="工作目录（用于输出文件）")
-    data_dir: Optional[str] = Field(None, description="数据目录")
-    # 已废弃参数，保留向后兼容
-    docker_image: Optional[str] = Field(None, description="[已废弃] 不再使用")
+    """Request for Python code execution."""
+    code: str = Field(..., description="Python code to execute")
+    work_dir: Optional[str] = Field(None, description="Working directory for execution outputs")
+    data_dir: Optional[str] = Field(None, description="Directory containing input data files")
+    docker_image: Optional[str] = Field(None, description="Optional Docker image override")
 
 
 class CodeExecuteResponse(BaseModel):
-    """代码执行响应"""
+    """Response payload for code execution."""
     success: bool
     status: str  # 'success', 'failed', 'error'
     output: str = ""
@@ -130,17 +121,16 @@ class CodeExecuteResponse(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    """完整分析请求（元数据提取 + 代码生成 + 执行）"""
-    file_paths: List[str] = Field(..., description="数据文件路径列表")
-    task_title: str = Field(..., description="任务标题")
-    task_description: str = Field(..., description="任务详细描述")
-    work_dir: Optional[str] = Field(None, description="工作目录")
-    # 已废弃参数，保留向后兼容
-    docker_image: Optional[str] = Field(None, description="[已废弃] 不再使用")
+    """Request for end-to-end analysis (metadata + code + execution)."""
+    file_paths: List[str] = Field(..., description="Input file path")
+    task_title: str = Field(..., description="Task title")
+    task_description: str = Field(..., description="Task description")
+    work_dir: Optional[str] = Field(None, description="Working directory for analysis outputs")
+    docker_image: Optional[str] = Field(None, description="Optional Docker image override")
 
 
 class AnalyzeResponse(BaseModel):
-    """完整分析响应"""
+    """Response payload for end-to-end analysis."""
     success: bool
     metadata: Optional[List[Dict[str, Any]]] = None
     generated_code: Optional[str] = None
@@ -156,20 +146,19 @@ class AnalyzeResponse(BaseModel):
 
 
 class PlanAnalyzeRequest(BaseModel):
-    """计划式完整分析请求（分解 -> 执行）"""
-    data_paths: List[str] = Field(..., description="数据文件路径列表")
-    task_title: Optional[str] = Field(None, description="任务标题（可选）")
-    task_description: str = Field(..., description="任务详细描述")
-    output_dir: Optional[str] = Field(None, description="输出目录")
-    max_depth: int = Field(5, ge=1, le=10, description="分解最大深度")
-    node_budget: int = Field(50, ge=1, le=200, description="最大任务节点数")
-    # 已废弃参数，保留向后兼容
-    docker_image: Optional[str] = Field(None, description="[已废弃] 不再使用")
-    docker_timeout: Optional[int] = Field(None, description="[已废弃] 不再使用")
+    """Request for plan-based analysis (decompose then execute)."""
+    data_paths: List[str] = Field(..., description="Input file path")
+    task_title: Optional[str] = Field(None, description="Optional task title")
+    task_description: str = Field(..., description="Task description")
+    output_dir: Optional[str] = Field(None, description="Output directory")
+    max_depth: int = Field(5, ge=1, le=10, description="Maximum decomposition depth")
+    node_budget: int = Field(50, ge=1, le=200, description="Node budget limit")
+    docker_image: Optional[str] = Field(None, description="Optional Docker image override")
+    docker_timeout: Optional[int] = Field(None, description="Optional Docker timeout (seconds)")
 
 
 class PlanAnalyzeResponse(BaseModel):
-    """计划式完整分析响应"""
+    """Response payload for plan-based analysis."""
     success: bool
     plan_id: int
     total_tasks: int
@@ -185,11 +174,11 @@ class PlanAnalyzeResponse(BaseModel):
 @interpreter_router.post(
     "/metadata",
     response_model=MetadataResponse,
-    summary="提取数据集元数据",
+    summary="Extract metadata",
 )
 def extract_metadata(request: MetadataRequest):
     """
-    从数据文件提取元数据，支持 CSV, TSV, MAT, NPY 格式。
+    Extract file metadata. Supports CSV, TSV, MAT, and NPY formats.
     """
     try:
         metadata = DataProcessor.get_metadata(request.file_path)
@@ -209,14 +198,13 @@ def extract_metadata(request: MetadataRequest):
 @interpreter_router.post(
     "/generate",
     response_model=CodeGenerateResponse,
-    summary="生成分析代码",
+    summary="Generate analysis code",
 )
 def generate_code(request: CodeGenerateRequest):
     """
-    根据数据集元数据和任务描述生成 Python 分析代码。
+    Generate Python analysis code from task instructions and file metadata.
     """
     try:
-        # 提取所有文件的元数据
         metadata_list: List[DatasetMetadata] = []
         for file_path in request.file_paths:
             if not os.path.exists(file_path):
@@ -227,7 +215,6 @@ def generate_code(request: CodeGenerateRequest):
             metadata = DataProcessor.get_metadata(file_path)
             metadata_list.append(metadata)
 
-        # 生成代码
         generator = CodeGenerator()
         response: CodeTaskResponse = generator.generate(
             metadata_list=metadata_list,
@@ -254,36 +241,33 @@ def generate_code(request: CodeGenerateRequest):
 @interpreter_router.post(
     "/execute",
     response_model=CodeExecuteResponse,
-    summary="执行 Python 代码",
+    summary="Execute Python code",
 )
 async def execute_code(request: CodeExecuteRequest):
     """
-    使用 Claude Code 执行 Python 代码。
+    Execute Python code with Claude Code in a controlled working directory.
     """
     try:
         from pathlib import Path
         from tool_box.tools_impl.claude_code import claude_code_handler
 
-        # 确定工作目录
         work_dir = request.work_dir
         if not work_dir:
             work_dir = tempfile.mkdtemp(prefix="interpreter_")
 
         os.makedirs(work_dir, exist_ok=True)
 
-        # 构建任务描述
-        task = f"""执行以下 Python 代码：
+        task = f"""Execute the following Python code:
 
 ```python
 {request.code}
 ```
 
-工作目录: {work_dir}
+Working directory: {work_dir}
 """
         if request.data_dir:
-            task += f"\n数据目录: {request.data_dir}"
+            task += f"\nData directory: {request.data_dir}"
 
-        # 使用 Claude Code 执行
         add_dirs = work_dir
         if request.data_dir:
             add_dirs = f"{work_dir},{request.data_dir}"
@@ -296,7 +280,6 @@ async def execute_code(request: CodeExecuteRequest):
             require_task_context=False,
         )
 
-        # 复制 Claude Code 产出到 work_dir
         task_dir = result.get("task_directory_full", "")
         if task_dir and work_dir:
             src_results = Path(task_dir) / "results"
@@ -306,7 +289,7 @@ async def execute_code(request: CodeExecuteRequest):
                 for f in src_results.iterdir():
                     if f.is_file():
                         shutil.copy2(f, dst_results / f.name)
-                logger.info(f"已复制产出文件从 {src_results} 到 {dst_results}")
+                logger.info(f"Copied result files from {src_results} to {dst_results}")
 
         return CodeExecuteResponse(
             success=result.get("success", False),
@@ -329,21 +312,19 @@ async def execute_code(request: CodeExecuteRequest):
 @interpreter_router.post(
     "/analyze",
     response_model=AnalyzeResponse,
-    summary="完整数据分析流程",
+    summary="Run end-to-end analysis",
 )
 async def run_analysis(request: AnalyzeRequest):
     """
-    执行完整的数据分析流程（使用 Claude Code）：
-    1. 提取数据集元数据
-    2. 使用 Claude Code 自主完成分析任务
+    Run end-to-end analysis with Claude Code:
+    1. Collect metadata for input files
+    2. Run Claude Code to complete the analysis task
     """
-    # 用于清理的临时目录引用
     staging_dir_to_cleanup: Optional[str] = None
 
     try:
         from app.services.interpreter import TaskExecutor
 
-        # Step 1: 验证文件存在
         for file_path in request.file_paths:
             if not os.path.exists(file_path):
                 raise HTTPException(
@@ -351,19 +332,16 @@ async def run_analysis(request: AnalyzeRequest):
                     detail=f"File not found: {file_path}"
                 )
 
-        # Step 2: 准备数据文件
         effective_paths, data_dir, staging_dir_to_cleanup = _prepare_data_files(request.file_paths)
         metadata_list: List[DatasetMetadata] = [
             DataProcessor.get_metadata(path) for path in effective_paths
         ]
 
-        # Step 3: 准备工作目录
         work_dir = request.work_dir
         if not work_dir:
             work_dir = tempfile.mkdtemp(prefix="interpreter_")
         os.makedirs(work_dir, exist_ok=True)
 
-        # Step 4: 使用 TaskExecutor (Claude Code) 执行任务
         executor = TaskExecutor(
             data_file_paths=effective_paths,
             output_dir=work_dir,
@@ -395,21 +373,20 @@ async def run_analysis(request: AnalyzeRequest):
         logger.exception("Analysis failed")
         return AnalyzeResponse(success=False, error=str(e))
     finally:
-        # 清理临时 staging 目录
         _cleanup_staging_dir(staging_dir_to_cleanup)
 
 
 @interpreter_router.post(
     "/plan_analyze",
     response_model=PlanAnalyzeResponse,
-    summary="计划式完整数据分析流程",
+    summary="Run plan-based analysis",
 )
 def run_plan_analysis_endpoint(request: PlanAnalyzeRequest):
     """
-    执行计划式的数据分析流程（使用 Claude Code）：
-    1. 创建计划
-    2. 分解任务
-    3. 执行计划
+    Run plan-based analysis with Claude Code:
+    1. Create a plan
+    2. Decompose tasks
+    3. Execute the plan
     """
     try:
         result = run_plan_analysis(
@@ -419,7 +396,6 @@ def run_plan_analysis_endpoint(request: PlanAnalyzeRequest):
             output_dir=request.output_dir or "./results",
             max_depth=request.max_depth,
             node_budget=request.node_budget,
-            # 已废弃参数不再传递
         )
 
         return PlanAnalyzeResponse(
@@ -453,5 +429,5 @@ register_router(
     path="/interpreter",
     router=interpreter_router,
     tags=["interpreter"],
-    description="数据分析与结果解释 API",
+    description="Analysis and execution APIs",
 )

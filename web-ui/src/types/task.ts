@@ -1,7 +1,6 @@
 import type { DecompositionJobStatus } from './tool';
 import type { ContextOptions } from './settings';
 
-// 任务相关类型定义
 export interface Task {
   id: number;
   name: string;
@@ -37,7 +36,6 @@ export interface TaskOutput {
   content: string;
 }
 
-// 计划相关类型
 export interface Plan {
   title: string;
   tasks: Task[];
@@ -149,7 +147,6 @@ export interface ExecuteTaskResponse {
   result?: Record<string, any> | null;
 }
 
-// 评估相关类型
 export interface EvaluationDimensions {
   relevance: number;
   completeness: number;
@@ -169,7 +166,6 @@ export interface EvaluationResult {
   metadata?: Record<string, any>;
 }
 
-// 执行相关类型
 export interface ExecutionRequest {
   title?: string;
   target_task_id?: number;

@@ -94,7 +94,7 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
   return (
     <div style={{ width: '100%' }}>
       <Divider plain style={{ margin: '12px 0' }}>
-        动作执行记录
+        Action Execution Log
       </Divider>
       <Space direction="vertical" size={6} style={{ width: '100%' }}>
         {condensed.map((entry) => {
@@ -114,7 +114,7 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
                   <span style={{ marginLeft: 4 }}>{statusInfo.label}</span>
                 </Tag>
                 <Text strong>
-                  步骤 {entry.sequence}: {descriptor}
+                  Step {entry.sequence}: {descriptor}
                 </Text>
               </Space>
               {entry.message && (
@@ -124,7 +124,7 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
               )}
               {durationMs !== null && durationMs >= 0 && (
                 <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
-                  耗时：{durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
+                  Duration: {durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
                 </div>
               )}
               {timestamp && (
@@ -146,8 +146,8 @@ export const LogList: React.FC<{ logs: JobLogEvent[]; missingJob: boolean }> = (
     return (
       <Alert
         type="warning"
-        message="无法加载日志"
-        description="对应的后台任务已清理或不存在。"
+        message="Unable to load logs"
+        description="The corresponding background task was cleaned up or does not exist."
         showIcon
       />
     );
@@ -155,7 +155,7 @@ export const LogList: React.FC<{ logs: JobLogEvent[]; missingJob: boolean }> = (
   if (!logs.length) {
     return (
       <Text type="secondary" style={{ fontSize: 12 }}>
-        暂无日志输出。
+        No logs yet.
       </Text>
     );
   }

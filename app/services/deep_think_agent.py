@@ -41,27 +41,27 @@ class DeepThinkAgent:
     Agent that performs multi-step reasoning and tool calling before answering.
     Supports streaming output for real-time display of thinking process.
     """
-    
-    # 默认工具执行超时时间（秒）
+
+    # Default tool execution timeout (seconds)
     DEFAULT_TOOL_TIMEOUT = 60
-    
-    # 按工具类型设置不同超时（秒）
+
+    # Per-tool timeout overrides (seconds)
     TOOL_TIMEOUTS = {
-        "claude_code": 1200,      # 10 分钟 - 代码执行可能很长
-        "web_search": 180,        # 90 秒
-        "document_reader": 200,   # 1 分钟
-        "graph_rag": 600,         # 1 分钟
-        "file_operations": 90,   # 30 秒 - 文件操作应该很快
-        "vision_reader": 1200,    # 10 分钟 - 视觉模型处理 PDF
-        "bio_tools": 86400,      # 24 小时 - 生物信息学工具不限制
-        "phagescope": 60,        # 1 分钟 - 仅用于提交/查询，不等待结果
-        "result_interpreter": 300,  # 5 分钟 - 数据分析和代码执行
-        "plan_operation": 1200,    # 20 分钟 - Plan 创建和优化操作（含长时验证）
+        "claude_code": 1200,      # 10 minutes: code execution can be long-running
+        "web_search": 180,        # 3 minutes
+        "document_reader": 200,   # ~3.3 minutes
+        "graph_rag": 600,         # 10 minutes
+        "file_operations": 90,    # 1.5 minutes: file operations should be fast
+        "vision_reader": 1200,    # 10 minutes: vision model PDF/image processing
+        "bio_tools": 86400,       # 24 hours: bioinformatics jobs can be long-running
+        "phagescope": 60,         # 1 minute: submit/query only, no blocking wait
+        "result_interpreter": 300,  # 5 minutes: data analysis and code execution
+        "plan_operation": 1200,   # 20 minutes: plan creation/optimization with validation
     }
 
     FINAL_STREAM_CHUNK_CHARS = 1
     FINAL_STREAM_DELAY_SEC = 0.01
-    
+
     def __init__(
         self,
         llm_client: Any,
@@ -87,32 +87,32 @@ class DeepThinkAgent:
     async def think(self, user_query: str, context: Optional[Dict[str, Any]] = None) -> DeepThinkResult:
         """
         Executes the deep thinking loop with streaming output.
-        
+
         Args:
             user_query: The user's question/request
             context: Optional context including chat_history, session_id, etc.
-            
+
         Returns:
             DeepThinkResult with final answer and thinking steps
-            
+
         Raises:
             ValueError: If user_query is empty or too long
         """
-        # 输入验证
+        # Input validation
         if not user_query or not user_query.strip():
             raise ValueError("User query cannot be empty")
         if len(user_query) > 10000:
             raise ValueError("User query too long (max 10000 chars)")
-        
+
         user_query = user_query.strip()
         context = context or {}
         thinking_steps: List[ThinkingStep] = []
         tools_used: List[str] = []
         cancelled = False
-        
-        # 构建 System Prompt（传入上下文以支持对话历史）
+
+        # Build system prompt (includes conversation context)
         system_prompt = self._build_system_prompt(context)
-        
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"User Query: {user_query}"}
@@ -121,18 +121,18 @@ class DeepThinkAgent:
         iteration = 0
         final_answer = ""
         confidence = 0.0
-        
+
         logger.info(f"Starting DeepThink for query: {user_query[:50]}...")
 
         while iteration < self.max_iterations:
-            # 检查取消
+            # Cancellation check
             if self.cancel_event and self.cancel_event.is_set():
                 logger.info("DeepThink cancelled by user")
                 cancelled = True
                 break
-            
+
             iteration += 1
-            
+
             try:
                 # Create a temporary step object
                 current_step = ThinkingStep(
@@ -144,14 +144,14 @@ class DeepThinkAgent:
                     timestamp=datetime.now(),
                     status="thinking"
                 )
-                
+
                 # Notify start of new step
                 if self.on_thinking:
                     await self._safe_callback(current_step)
 
                 # Use streaming LLM call to get response token by token
                 response_text = ""
-                
+
                 # Strict mode: DeepThink requires streaming-capable LLM client.
                 if not hasattr(self.llm_client, "stream_chat_async"):
                     raise DeepThinkProtocolError(
@@ -169,7 +169,7 @@ class DeepThinkAgent:
                 parsed = self._parse_llm_response(response_text)
                 current_step.thought = parsed.get("thought", "")
                 current_step.action = parsed.get("action_str", None)
-                
+
                 # Check for final answer
                 if parsed.get("is_final"):
                     final_answer = parsed.get("final_answer", "")
@@ -178,22 +178,22 @@ class DeepThinkAgent:
                     thinking_steps.append(current_step)
                     if self.on_thinking:
                         await self._safe_callback(current_step)
-                    
+
                     # Stream final answer if callback provided
                     if self.on_final_delta and final_answer:
                         await self._stream_final_answer(final_answer)
                     break
-                
+
                 # Handle Action
                 if current_step.action:
                     current_step.status = "calling_tool"
                     thinking_steps.append(current_step)
                     if self.on_thinking:
                         await self._safe_callback(current_step)
-                        
+
                     tool_name = parsed.get("tool_name")
                     tool_params = parsed.get("tool_params")
-                    
+
                     if tool_name not in self.available_tools:
                         current_step.action_result = f"Error: Tool '{tool_name}' is not available. Available: {self.available_tools}"
                     elif tool_params is not None and not isinstance(tool_params, dict):
@@ -202,9 +202,9 @@ class DeepThinkAgent:
                         if tool_name not in tools_used:
                             tools_used.append(tool_name)
                         try:
-                            # 根据工具类型获取超时时间
+                            # Resolve timeout by tool type
                             timeout = self.TOOL_TIMEOUTS.get(tool_name, self.tool_timeout)
-                            
+
                             # Execute tool with timeout
                             result = await asyncio.wait_for(
                                 self.tool_executor(tool_name, tool_params or {}),
@@ -218,16 +218,16 @@ class DeepThinkAgent:
                         except Exception as e:
                             current_step.action_result = f"Error executing tool: {str(e)}"
                             logger.exception(f"Tool {tool_name} execution failed")
-                    
+
                     # Update conversation history with result
                     messages.append({"role": "assistant", "content": response_text})
                     messages.append({"role": "user", "content": f"Tool Output: {current_step.action_result}"})
-                    
+
                     current_step.status = "analyzing"
                     # Update step with action result
                     if self.on_thinking:
                         await self._safe_callback(current_step)
-                    
+
                 else:
                     # Pure thinking step or self-correction without action
                     thinking_steps.append(current_step)
@@ -285,8 +285,8 @@ Respond with ONLY a JSON object:
                 if parsed.get("is_final"):
                     final_answer = parsed.get("final_answer", "")
                     confidence = parsed.get("confidence", 0.7)
-                    
-                    # 发送最终答案
+
+                    # Stream final answer
                     if self.on_final_delta and final_answer:
                         await self._stream_final_answer(final_answer)
                 else:
@@ -300,7 +300,7 @@ Respond with ONLY a JSON object:
         if not final_answer:
             raise DeepThinkProtocolError("DeepThink terminated without final_answer.")
 
-        # Generate summary (使用 LLM 生成有意义的摘要)
+        # Generate summary with LLM
         summary = await self._generate_summary(thinking_steps, user_query)
 
         return DeepThinkResult(
@@ -338,7 +338,7 @@ Respond with ONLY a JSON object:
                     if cut_point > MAX_DELTA_LENGTH - 500:
                         truncated = delta[:cut_point]
                     delta = truncated + f"... [truncated, {len(delta) - len(truncated)} chars hidden]"
-                
+
                 if asyncio.iscoroutinefunction(self.on_thinking_delta):
                     await self.on_thinking_delta(iteration, delta)
                 else:
@@ -387,7 +387,7 @@ Respond with ONLY a JSON object:
 
     def _build_system_prompt(self, context: Optional[Dict[str, Any]] = None) -> str:
         """Constructs the system prompt for the Deep Think Agent."""
-        # 构建工具详细描述
+        # Build detailed tool descriptions
         tool_descriptions = {
             "claude_code": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. Params: {\"task\": \"description\"}",
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. Params: {\"query\": \"search query\"}",
@@ -453,7 +453,7 @@ WORKFLOW for Plan Creation:
 
 IMPORTANT: When creating plans, ensure each task has clear, actionable instructions!""",
         }
-        
+
         tools_desc = []
         for t in self.available_tools:
             if t in tool_descriptions:
@@ -461,7 +461,7 @@ IMPORTANT: When creating plans, ensure each task has clear, actionable instructi
             else:
                 tools_desc.append(f"- {t}")
         tools_text = "\n".join(tools_desc)
-        
+
         base_prompt = f"""You are a Deep Thinking AI Assistant with UNLIMITED resources.
 Your goal is to provide the MOST COMPREHENSIVE answer by using ALL available tools aggressively.
 
@@ -629,8 +629,8 @@ When ready to answer (after using multiple tools):
 5. Be thorough - incomplete answers are worse than using more tools.
 6. For PhageScope submit, prioritize non-blocking backend execution over immediate result fetching.
 """
-        
-        # 添加对话历史上下文
+
+        # Append recent conversation context
         if context:
             chat_history = context.get("chat_history", [])
             if chat_history:
@@ -643,7 +643,7 @@ When ready to answer (after using multiple tools):
                         content = content[:500] + "..."
                     history_lines.append(f"[{role}]: {content}")
                 base_prompt += f"\n=== RECENT CONVERSATION ===\n" + "\n".join(history_lines)
-        
+
         return base_prompt
 
     def _get_next_step_prompt(self, iteration: int) -> str:
@@ -719,7 +719,7 @@ When ready to answer (after using multiple tools):
             )
 
         return result
-    
+
     def _extract_json(self, text: str) -> str:
         """Extract the first complete top-level JSON object."""
         text = (text or "").strip()

@@ -22,7 +22,7 @@ plt.close()  # ALWAYS close after save
 
 # 3. ALL text must be English
 plt.title('Genome Size Distribution')  # ✅
-# plt.title('基因组大小分布')  # ❌ NEVER
+# plt.title('')  # ❌ NEVER
 
 # 4. Use the preferred color palette
 COLORS = ['#ABD1BC', '#BED0F9', '#CCCC99', '#DBE4FB', 

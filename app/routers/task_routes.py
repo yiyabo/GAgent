@@ -1,8 +1,4 @@
-"""
-任务管理相关API端点
-
-包含基础的任务CRUD操作和任务输出管理。
-"""
+"""Task APIs for CRUD operations and task output retrieval."""
 
 from fastapi import APIRouter, HTTPException, Query, Body
 
@@ -46,14 +42,14 @@ async def intelligent_create_task(payload: Dict[str, Any] = Body(...)):
     user_input = payload.get("user_input", "")
     session_id = payload.get("session_id")
     workflow_id = payload.get("workflow_id")
-    
+
     if not user_input or not user_input.strip():
         raise HTTPException(status_code=400, detail="User input cannot be empty")
-    
+
     try:
         # Use LLM to extract a concise ROOT task title.
         llm_service = get_llm_service()
-        
+
         extraction_prompt = f"""Extract a concise and accurate ROOT task title from the user's natural-language request.
 
 User input:
@@ -71,11 +67,11 @@ Return only the extracted task title. No explanation or extra text."""
 
         llm_response = await llm_service.chat_async(extraction_prompt)
         task_name = llm_response.strip()
-        
+
         # Fallback if extraction fails or becomes too long.
         if not task_name or len(task_name) > 100:
             task_name = user_input[:50].strip()
-        
+
         # Create ROOT task.
         task_id = default_repo.create_task(
             name=task_name,
@@ -86,13 +82,13 @@ Return only the extracted task title. No explanation or extra text."""
             workflow_id=workflow_id,
             root_id=None,
         )
-        
+
         created_task = default_repo.get_task_info(task_id)
         if not created_task:
             raise HTTPException(status_code=500, detail="Failed to create or retrieve task")
-        
+
         return created_task
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500, 
@@ -102,40 +98,38 @@ Return only the extracted task title. No explanation or extra text."""
 
 @router.get("", response_model=List[Task])
 def list_tasks(
-    session_id: Optional[str] = Query(None, description="仅返回指定会话(session)下的任务"),
-    workflow_id: Optional[str] = Query(None, description="仅返回指定工作流(workflow)下的任务"),
+    session_id: Optional[str] = Query(None, description="Session scope for task filtering"),
+    workflow_id: Optional[str] = Query(None, description="Workflow scope for task filtering"),
 ):
-    """列出系统任务，可按会话或工作流进行过滤。🔒 实现专事专办，必须提供会话信息"""
+    """List tasks within the resolved session/workflow scope."""
     resolved_session, resolved_workflow = resolve_scope_params(
-        session_id, workflow_id, require_scope=True  # 🔒 强制要求会话信息
+        session_id, workflow_id, require_scope=True  # 🔒 session
     )
     return default_repo.list_all_tasks(session_id=resolved_session, workflow_id=resolved_workflow)
 
 
 @router.get("/stats")
 def get_task_stats(
-    session_id: Optional[str] = Query(None, description="统计指定会话(session)下的任务"),
-    workflow_id: Optional[str] = Query(None, description="统计指定工作流(workflow)下的任务"),
+    session_id: Optional[str] = Query(None, description="Session scope for task filtering"),
+    workflow_id: Optional[str] = Query(None, description="Workflow scope for task filtering"),
 ):
-    """获取任务统计信息，支持按会话/工作流过滤。🔒 实现专事专办"""
+    """Get task statistics within the resolved session/workflow scope."""
     try:
         resolved_session, resolved_workflow = resolve_scope_params(
-            session_id, workflow_id, require_scope=True  # 🔒 强制要求会话信息
+            session_id, workflow_id, require_scope=True  # 🔒 session
         )
         all_tasks = default_repo.list_all_tasks(session_id=resolved_session, workflow_id=resolved_workflow)
-        
-        # 按状态分组统计
+
         by_status = {}
         for task in all_tasks:
             status = task.get('status', 'unknown')
             by_status[status] = by_status.get(status, 0) + 1
-        
-        # 按类型分组统计  
+
         by_type = {}
         for task in all_tasks:
             task_type = task.get('task_type', 'unknown')
             by_type[task_type] = by_type.get(task_type, 0) + 1
-            
+
         return {
             "total": len(all_tasks),
             "by_status": by_status,
@@ -148,8 +142,8 @@ def get_task_stats(
 @router.get("/{task_id}", response_model=Task)
 def get_task(
     task_id: int,
-    session_id: Optional[str] = Query(None, description="验证任务所属的会话"),
-    workflow_id: Optional[str] = Query(None, description="验证任务所属的工作流"),
+    session_id: Optional[str] = Query(None, description="Task session scope"),
+    workflow_id: Optional[str] = Query(None, description="Task workflow scope"),
 ):
     """Get a single task by its ID."""
     task = default_repo.get_task_info(task_id)
@@ -158,9 +152,9 @@ def get_task(
     if session_id is not None or workflow_id is not None:
         resolved_session, resolved_workflow = resolve_scope_params(session_id, workflow_id)
         if resolved_session and task.get("session_id") and task["session_id"] != resolved_session:
-            raise HTTPException(status_code=403, detail="任务不属于指定的 session")
+            raise HTTPException(status_code=403, detail="Task does not belong to the requested session")
         if resolved_workflow and task.get("workflow_id") and task["workflow_id"] != resolved_workflow:
-            raise HTTPException(status_code=403, detail="任务不属于指定的 workflow")
+            raise HTTPException(status_code=403, detail="Task does not belong to the requested workflow")
     return task
 
 
@@ -169,7 +163,7 @@ def update_task(task_id: int, task_update: TaskUpdate):
     """Update a task's properties, such as its status."""
     if task_update.status:
         default_repo.update_task_status(task_id, task_update.status)
-    
+
     updated_task = default_repo.get_task_info(task_id)
     if not updated_task:
         raise HTTPException(status_code=404, detail="Task not found after update")
@@ -179,8 +173,8 @@ def update_task(task_id: int, task_update: TaskUpdate):
 @router.get("/{task_id}/output")
 def get_task_output(
     task_id: int,
-    session_id: Optional[str] = Query(None, description="验证任务所属的会话"),
-    workflow_id: Optional[str] = Query(None, description="验证任务所属的工作流"),
+    session_id: Optional[str] = Query(None, description="Task session scope"),
+    workflow_id: Optional[str] = Query(None, description="Task workflow scope"),
 ):
     """Get the output content for a specific task.
 
@@ -195,13 +189,13 @@ def get_task_output(
     """
     task = default_repo.get_task_info(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="task not found")
+        raise HTTPException(status_code=404, detail="Task not found")
     if session_id is not None or workflow_id is not None:
         resolved_session, resolved_workflow = resolve_scope_params(session_id, workflow_id)
         if resolved_session and task.get("session_id") and task["session_id"] != resolved_session:
-            raise HTTPException(status_code=403, detail="任务不属于指定的 session")
+            raise HTTPException(status_code=403, detail="Task does not belong to the requested session")
         if resolved_workflow and task.get("workflow_id") and task["workflow_id"] != resolved_workflow:
-            raise HTTPException(status_code=403, detail="任务不属于指定的 workflow")
+            raise HTTPException(status_code=403, detail="Task does not belong to the requested workflow")
 
     content = default_repo.get_task_output_content(task_id)
     if content is None:
@@ -212,19 +206,19 @@ def get_task_output(
 @router.get("/{task_id}/children")
 def get_task_children(
     task_id: int,
-    session_id: Optional[str] = Query(None, description="验证任务所属的会话"),
-    workflow_id: Optional[str] = Query(None, description="验证任务所属的工作流"),
+    session_id: Optional[str] = Query(None, description="Task session scope"),
+    workflow_id: Optional[str] = Query(None, description="Task workflow scope"),
 ):
-    """获取指定任务的所有子任务"""
+    """Get direct child tasks for the provided task ID."""
     parent = default_repo.get_task_info(task_id)
     if not parent:
-        raise HTTPException(status_code=404, detail="task not found")
+        raise HTTPException(status_code=404, detail="Task not found")
     if session_id is not None or workflow_id is not None:
         resolved_session, resolved_workflow = resolve_scope_params(session_id, workflow_id)
         if resolved_session and parent.get("session_id") and parent["session_id"] != resolved_session:
-            raise HTTPException(status_code=403, detail="任务不属于指定的 session")
+            raise HTTPException(status_code=403, detail="Task does not belong to the requested session")
         if resolved_workflow and parent.get("workflow_id") and parent["workflow_id"] != resolved_workflow:
-            raise HTTPException(status_code=403, detail="任务不属于指定的 workflow")
+            raise HTTPException(status_code=403, detail="Task does not belong to the requested workflow")
         children = [
             child
             for child in default_repo.get_children(task_id)
@@ -239,20 +233,20 @@ def get_task_children(
 @router.get("/{task_id}/subtree")
 def get_task_subtree(
     task_id: int,
-    session_id: Optional[str] = Query(None, description="验证任务所属的会话"),
-    workflow_id: Optional[str] = Query(None, description="验证任务所属的工作流"),
+    session_id: Optional[str] = Query(None, description="Task session scope"),
+    workflow_id: Optional[str] = Query(None, description="Task workflow scope"),
 ):
-    """获取指定任务的完整子树结构"""
+    """Get the full subtree rooted at a task."""
     root = default_repo.get_task_info(task_id)
     if not root:
-        raise HTTPException(status_code=404, detail="task not found")
+        raise HTTPException(status_code=404, detail="Task not found")
 
     if session_id is not None or workflow_id is not None:
         resolved_session, resolved_workflow = resolve_scope_params(session_id, workflow_id)
         if resolved_session and root.get("session_id") and root["session_id"] != resolved_session:
-            raise HTTPException(status_code=403, detail="任务不属于指定的 session")
+            raise HTTPException(status_code=403, detail="Task does not belong to the requested session")
         if resolved_workflow and root.get("workflow_id") and root["workflow_id"] != resolved_workflow:
-            raise HTTPException(status_code=403, detail="任务不属于指定的 workflow")
+            raise HTTPException(status_code=403, detail="Task does not belong to the requested workflow")
         subtree = [
             node
             for node in default_repo.get_subtree(task_id)
@@ -262,5 +256,5 @@ def get_task_subtree(
     else:
         subtree = default_repo.get_subtree(task_id)
     if not subtree:
-        raise HTTPException(status_code=404, detail="task not found")
+        raise HTTPException(status_code=404, detail="Task not found")
     return {"task_id": task_id, "subtree": subtree}

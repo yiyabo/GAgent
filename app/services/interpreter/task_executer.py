@@ -1,18 +1,14 @@
 """
-任务执行器模块
+Task execution orchestration.
 
-该模块封装了任务执行的完整流程。
-自动判断任务类型，对需要代码的任务使用 Claude Code 执行，对不需要代码的任务直接由LLM处理。
+This module routes tasks to one of two paths:
+1. Code-required tasks executed via Claude Code.
+2. Text-only tasks answered directly by the LLM.
 
-重构说明：
-- 原流程：LLM生成代码 → LocalCodeInterpreter执行 → 失败 → LLM修复 → 重试
-- 新流程：任务描述 → claude_code_handler 自主完成一切 → 结果
-
-Skills 集成：
-- Skills 源文件存放在项目 skills/ 目录
-- 运行时同步到 ~/.claude/skills/
-- Claude Code 自动加载并根据任务语义决定使用哪些 skills
-- 可选：使用 LLM 驱动的 skill 选择进行更精细控制
+Skills support:
+- Workspace skills from `skills/`
+- User skills from `~/.claude/skills/`
+- Optional LLM-based skill selection hints per task
 """
 
 import asyncio
@@ -39,52 +35,43 @@ logger = logging.getLogger(__name__)
 
 
 class TaskType(str, Enum):
-    """任务类型枚举"""
-    CODE_REQUIRED = "code_required"      # 需要编写代码的任务（计算、绘图、数据处理等）
-    TEXT_ONLY = "text_only"              # 纯文本任务（解释、总结、问答等）
-    
+    """Supported task execution modes."""
+    CODE_REQUIRED = "code_required"  # Task requires code execution/tooling.
+    TEXT_ONLY = "text_only"  # Task can be answered directly with text.
+
 
 class TaskExecutionResult(BaseModel):
-    """任务执行的最终结果"""
-    task_type: TaskType = Field(..., description="任务类型")
-    success: bool = Field(..., description="任务是否成功完成")
-    
-    # 代码相关（仅当 task_type == CODE_REQUIRED 时有值）
-    final_code: Optional[str] = Field(None, description="最终执行的代码")
-    code_description: Optional[str] = Field(None, description="代码功能描述")
-    code_output: Optional[str] = Field(None, description="代码执行的标准输出")
-    code_error: Optional[str] = Field(None, description="代码执行的错误信息")
-    total_attempts: int = Field(0, description="代码执行总尝试次数")
-    
-    # 可视化相关
-    has_visualization: bool = Field(default=False, description="是否包含可视化")
-    visualization_purpose: Optional[str] = Field(None, description="可视化目的：为什么画这个图，想分析什么")
-    visualization_analysis: Optional[str] = Field(None, description="可视化分析：图表展示什么结果，特征，计算公式等")
-    
-    # 文本相关（仅当 task_type == TEXT_ONLY 时有值）
-    text_response: Optional[str] = Field(None, description="LLM直接回答的文本")
-    
-    # 信息收集相关
-    gathered_info: Optional[str] = Field(None, description="信息收集阶段获取的额外数据信息")
-    info_gathering_rounds: int = Field(0, description="信息收集轮次")
-    
-    # 通用
-    error_message: Optional[str] = Field(None, description="系统级错误信息")
+    """Normalized task execution output."""
+    task_type: TaskType = Field(..., description="Task execution type")
+    success: bool = Field(..., description="Whether task execution succeeded")
+
+    final_code: Optional[str] = Field(None, description="Final generated code")
+    code_description: Optional[str] = Field(None, description="Human-readable code summary")
+    code_output: Optional[str] = Field(None, description="Execution stdout")
+    code_error: Optional[str] = Field(None, description="Execution stderr")
+    total_attempts: int = Field(0, description="Total execution attempts")
+
+    has_visualization: bool = Field(default=False, description="Whether visualization artifacts were produced")
+    visualization_purpose: Optional[str] = Field(None, description="Purpose of generated visualization")
+    visualization_analysis: Optional[str] = Field(None, description="Interpretation of generated visualization")
+
+    text_response: Optional[str] = Field(None, description="LLM text response")
+
+    gathered_info: Optional[str] = Field(None, description="Optional gathered supporting information")
+    info_gathering_rounds: int = Field(0, description="Number of info-gathering rounds")
+
+    error_message: Optional[str] = Field(None, description="Top-level execution error message")
 
 
 class TaskExecutor:
     """
-    任务执行器
+    Execute tasks with Claude Code or direct LLM responses.
 
-    使用 Claude Code 自主完成代码生成、执行和修复的完整流程。
-    自动判断任务类型，对需要代码的任务使用 Claude Code 执行，
-    对不需要代码的任务直接由LLM处理。
-
-    使用示例:
+    Example:
         executor = TaskExecutor(data_file_paths=["/path/to/data1.csv", "/path/to/data2.csv"])
         result = await executor.execute(
-            task_title="计算平均值",
-            task_description="计算销售额的平均值并绘制柱状图"
+            task_title="Generate distribution plots",
+            task_description="Create histograms for the key metrics"
         )
     """
 
@@ -92,37 +79,33 @@ class TaskExecutor:
         self,
         data_file_paths: List[str],
         llm_service: Optional[LLMService] = None,
-        docker_image: str = "agent-plotter",  # 保留参数兼容性，但不再使用
-        docker_timeout: int = 60,  # 保留参数兼容性，但不再使用
+        docker_image: str = "agent-plotter",  # parameter, 
+        docker_timeout: int = 60,  # parameter, 
         output_dir: Optional[str] = None,
         session_id: Optional[str] = None,
         plan_id: Optional[int] = None,
     ):
         """
-        初始化任务执行器
+        Initialize task executor.
 
         Args:
-            data_file_paths: 数据文件路径列表（支持 csv, tsv, mat 格式）
-            llm_service: LLM 服务实例（可选，默认使用 get_llm_service()）
-            docker_image: [已废弃] Docker镜像名称（保留兼容性）
-            docker_timeout: [已废弃] Docker执行超时时间（保留兼容性）
-            output_dir: 输出目录，Claude Code生成的文件将保存在此目录
-                       如果不指定，则使用数据文件所在目录
-            session_id: 会话ID，用于 Claude Code 工作区隔离
-            plan_id: 计划ID，用于 Claude Code 工作区隔离
+            data_file_paths: Dataset file paths (e.g., CSV/TSV/MAT).
+            llm_service: Optional LLM service instance.
+            docker_image: Reserved compatibility parameter.
+            docker_timeout: Reserved compatibility parameter.
+            output_dir: Output directory for generated artifacts.
+            session_id: Optional session ID for Claude Code scope.
+            plan_id: Optional plan ID for Claude Code scope.
         """
-        # 兼容单个文件路径的情况
         if isinstance(data_file_paths, str):
             data_file_paths = [data_file_paths]
 
-        # 临时目录引用（用于清理）
         self._staging_dir: Optional[str] = None
 
-        # 如果数据文件分散在多个目录，统一复制到临时目录
         data_dirs = {str(Path(fp).resolve().parent) for fp in data_file_paths}
         if len(data_dirs) > 1:
             staging_dir = tempfile.mkdtemp(prefix="interpreter_data_")
-            self._staging_dir = staging_dir  # 保存引用以便后续清理
+            self._staging_dir = staging_dir  # save
             used_names = set()
             staged_paths: List[str] = []
 
@@ -230,16 +213,16 @@ class TaskExecutor:
             task_title=task_title,
             task_description=task_description
         )
-        
+
         full_prompt = f"{TASK_TYPE_SYSTEM_PROMPT}\n\n{user_prompt}"
-        
+
         try:
             response = self.llm_service.chat(prompt=full_prompt)
             response_text = response.strip()
-            
+
             # Try to parse JSON.
             import json
-            
+
             # Strip optional markdown fences.
             if response_text.startswith("```"):
                 lines = response_text.splitlines()
@@ -247,7 +230,7 @@ class TaskExecutor:
                 if lines and lines[-1].strip() == "```":
                     lines.pop()
                 response_text = "\n".join(lines).strip()
-            
+
             # Find the JSON object.
             start = response_text.find("{")
             end = response_text.rfind("}")
@@ -255,17 +238,17 @@ class TaskExecutor:
                 json_str = response_text[start:end+1]
                 result = json.loads(json_str)
                 task_type_str = result.get("task_type", "code_required")
-                
+
                 if task_type_str == "text_only":
                     logger.info("Task type classification (LLM): TEXT_ONLY")
                     return TaskType.TEXT_ONLY
                 else:
                     logger.info("Task type classification (LLM): CODE_REQUIRED")
                     return TaskType.CODE_REQUIRED
-            
+
         except Exception as e:
             logger.warning(f"LLM task classification failed: {e}; defaulting to CODE_REQUIRED")
-        
+
         # Default to code-required for safety.
         logger.info("Task type classification: CODE_REQUIRED (default)")
         return TaskType.CODE_REQUIRED
@@ -444,7 +427,7 @@ class TaskExecutor:
             task_title=task_title,
             task_description=task_description
         )
-        
+
         response = self.llm_service.chat(prompt=prompt)
         return TaskExecutionResult(
             task_type=TaskType.TEXT_ONLY,
@@ -520,17 +503,11 @@ class TaskExecutor:
 
         logger.info(f"Task execution finished: success={result.success}")
 
-        # 注意：不再在此处调用 cleanup()
-        # 当 PlanExecutorInterpreter 复用同一个 TaskExecutor 执行多个节点时，
-        # 过早清理 staging 目录会导致后续节点找不到数据文件。
-        # cleanup() 应由调用方在所有节点执行完成后统一调用，
-        # 或由析构函数 __del__ 自动处理。
 
         return result
 
 
 # ============================================================
-# 便捷函数
 # ============================================================
 
 async def execute_task(
@@ -543,19 +520,19 @@ async def execute_task(
     **kwargs
 ) -> TaskExecutionResult:
     """
-    便捷函数：一次性执行任务（异步版本）
+    Async helper to execute one task with a temporary `TaskExecutor`.
 
     Args:
-        data_file_paths: 数据文件路径列表（也支持单个路径字符串）
-        task_title: 任务标题
-        task_description: 任务描述
-        subtask_results: 子任务结果（可选）
-        skip_info_gathering: [已废弃] Claude Code 自主处理信息收集
-        is_visualization: 是否为可视化任务
-        **kwargs: 传递给TaskExecutor的其他参数
+        data_file_paths: Input dataset paths.
+        task_title: Task title.
+        task_description: Task description/instruction.
+        subtask_results: Optional upstream task outputs.
+        skip_info_gathering: Deprecated; retained for compatibility.
+        is_visualization: Whether visualization output is expected.
+        **kwargs: Additional `TaskExecutor` parameters.
 
     Returns:
-        TaskExecutionResult: 任务执行结果
+        TaskExecutionResult.
     """
     executor = TaskExecutor(data_file_paths=data_file_paths, **kwargs)
     try:
@@ -567,7 +544,6 @@ async def execute_task(
             is_visualization=is_visualization
         )
     finally:
-        # 显式清理临时 staging 目录，不依赖 __del__
         executor.cleanup()
 
 
@@ -581,23 +557,20 @@ def execute_task_sync(
     **kwargs
 ) -> TaskExecutionResult:
     """
-    便捷函数：一次性执行任务（同步包装版本）
-
-    在非异步上下文中使用此函数。
+    Sync helper wrapping `execute_task` with `asyncio.run`.
 
     Args:
-        data_file_paths: 数据文件路径列表（也支持单个路径字符串）
-        task_title: 任务标题
-        task_description: 任务描述
-        subtask_results: 子任务结果（可选）
-        skip_info_gathering: [已废弃] Claude Code 自主处理信息收集
-        is_visualization: 是否为可视化任务
-        **kwargs: 传递给TaskExecutor的其他参数
+        data_file_paths: Input dataset paths.
+        task_title: Task title.
+        task_description: Task description/instruction.
+        subtask_results: Optional upstream task outputs.
+        skip_info_gathering: Deprecated; retained for compatibility.
+        is_visualization: Whether visualization output is expected.
+        **kwargs: Additional `TaskExecutor` parameters.
 
     Returns:
-        TaskExecutionResult: 任务执行结果
+        TaskExecutionResult.
     """
-    # execute_task 内部已有 try/finally 处理 cleanup，直接调用即可
     return asyncio.run(execute_task(
         data_file_paths=data_file_paths,
         task_title=task_title,

@@ -140,7 +140,6 @@ app = FastAPI(
 )
 
 # Add CORS middleware to allow web UI access
-# 从环境变量读取允许的前端地址,支持逗号分隔多个地址
 cors_origins_str = os.getenv(
     "CORS_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
@@ -158,10 +157,9 @@ app.add_middleware(
 )
 
 
-# 注册统一异常处理器
 @app.exception_handler(BaseError)
 async def base_error_handler(_request: Request, exc: BaseError):
-    """统一处理自定义业务异常."""
+    """exception."""
     error_response = handle_api_error(exc, include_debug=False)
     return JSONResponse(
         status_code=_map_error_to_http_status(exc), content=error_response
@@ -170,12 +168,12 @@ async def base_error_handler(_request: Request, exc: BaseError):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(_request: Request, exc: RequestValidationError):
-    """处理FastAPI参数验证错误."""
+    """Handle FastAPI request validation errors."""
     validation_error = ValidationError(
         message="Request parameter validation failed",
         error_code=ErrorCode.SCHEMA_VALIDATION_FAILED,
         context={"errors": exc.errors(), "body": str(exc.body) if exc.body else None},
-        suggestions=["检查请求参数格式", "确保必填字段完整", "参考API文档修正参数"],
+        suggestions=["Check request parameters", "Review API parameter docs", "Submit valid payload"],
     )
     error_response = handle_api_error(validation_error, include_debug=False)
     return JSONResponse(status_code=422, content=error_response)
@@ -183,7 +181,7 @@ async def validation_exception_handler(_request: Request, exc: RequestValidation
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    """处理HTTP异常."""
+    """Handle Starlette HTTP exceptions."""
     if exc.status_code == 404:
         error = BusinessError(
             message="Requested resource not found",
@@ -209,7 +207,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """处理未捕获的通用异常."""
+    """Handle uncaught application exceptions."""
     system_error = CustomSystemError(
         message="Internal server error",
         error_code=ErrorCode.INTERNAL_SERVER_ERROR,
@@ -219,9 +217,8 @@ async def general_exception_handler(request: Request, exc: Exception):
             "method": request.method,
             "exception_type": type(exc).__name__,
         },
-        suggestions=["稍后重试", "如问题持续存在，请联系技术支持"],
+        suggestions=["Retry the request", "If persistent, contact support with request details"],
     )
-    # 根据环境变量控制是否返回调试信息（默认生产环境关闭）
     debug_env = (
         os.environ.get("API_DEBUG")
         or os.environ.get("APP_DEBUG")
@@ -233,7 +230,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 
 def _map_error_to_http_status(error: BaseError) -> int:
-    """将自定义错误映射到HTTP状态码."""
+    """Map internal error categories to HTTP status codes."""
     if error.category == ErrorCategory.VALIDATION:
         return 400
     elif error.category == ErrorCategory.AUTHENTICATION:
@@ -252,10 +249,9 @@ def _map_error_to_http_status(error: BaseError) -> int:
     elif error.category in [ErrorCategory.SYSTEM, ErrorCategory.DATABASE]:
         return 500
     else:
-        return 400  # 默认客户端错误
+        return 400  # defaulterror
 
 
-# 注册功能模块路由
 for router in get_all_routers():
     app.include_router(router)
 

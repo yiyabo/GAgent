@@ -176,7 +176,6 @@ class CompositeAssembler(_BaseAssembler):
             ],
         }
 
-        # 写入到文件系统：results/<root>/<composite>/summary.md
         try:
             comp_dir = get_task_file_path(composite_task, self.repo)  # ends with '/'
             if ensure_task_directory(comp_dir):
@@ -288,7 +287,6 @@ class RootAssembler(_BaseAssembler):
             "strategy": strategy_enum.value,
             "fallback_used": fallback_used,
         }
-        # 写入到文件系统：results/<root>/summary.md
         try:
             root_dir = get_task_file_path(root_task, self.repo)  # ends with '/'
             if ensure_task_directory(root_dir):

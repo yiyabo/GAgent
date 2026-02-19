@@ -183,7 +183,7 @@ Use "seqkit [command] --help" for more information about a command.
 ## Examples for Agent
 
 ### Example 1: Get File Statistics
-**User Request**: "帮我统计这个 FASTA 文件有多少条序列"
+**User Request**: " FASTA "
 
 **Agent Command**:
 ```bash
@@ -200,7 +200,7 @@ sequences.fasta  FASTA   DNA    1,234    5.6M     100     4,536    12,345
 ```
 
 ### Example 2: Filter Short Sequences
-**User Request**: "过滤掉长度小于 1000bp 的序列"
+**User Request**: " 1000bp "
 
 **Agent Command**:
 ```bash
@@ -211,7 +211,7 @@ docker run --rm \
 ```
 
 ### Example 3: Extract Sequences by ID
-**User Request**: "提取包含 'phage' 关键词的序列"
+**User Request**: " 'phage' "
 
 **Agent Command**:
 ```bash
@@ -222,7 +222,7 @@ docker run --rm \
 ```
 
 ### Example 4: Sample Random Sequences
-**User Request**: "从文件中随机抽取 100 条序列"
+**User Request**: " 100 "
 
 **Agent Command**:
 ```bash

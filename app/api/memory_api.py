@@ -67,10 +67,12 @@ async def save_memory_endpoint(request: SaveMemoryRequest):
 
     except ValueError as e:
         logger.warning(f"Validation error in save_memory: {e}")
-        raise HTTPException(status_code=400, detail=f"Data validation error: {str(e)}")
+        raise HTTPException(
+        status_code=400, detail=f"Data validation error: {str(e)}")
     except Exception as e:
         logger.error(f"Error in save_memory: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(
+        status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @memory_router.post("/query_memory", response_model=Dict[str, Any])
@@ -107,10 +109,12 @@ async def query_memory_endpoint(request: QueryMemoryRequest):
 
     except ValueError as e:
         logger.warning(f"Validation error in query_memory: {e}")
-        raise HTTPException(status_code=400, detail=f"Data validation error: {str(e)}")
+        raise HTTPException(
+        status_code=400, detail=f"Data validation error: {str(e)}")
     except Exception as e:
         logger.error(f"Error in query_memory: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(
+        status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @memory_router.get("/memory/stats", response_model=MemoryStats)
@@ -121,7 +125,8 @@ async def get_memory_stats():
         return await memory_service.get_memory_stats()
     except Exception as e:
         logger.error(f"Error getting memory stats: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get statistics: {str(e)}")
+        raise HTTPException(
+        status_code=500, detail=f"Failed to get statistics: {str(e)}")
 
 
 @memory_router.get("/tools")
@@ -191,7 +196,8 @@ async def auto_save_task_memory(task_data: Dict[str, Any] = Body(...)):
         session_id = task_data.get("session_id")
 
         if not task_id or not task_content:
-            raise HTTPException(status_code=400, detail="task_id and content are required")
+            raise HTTPException(
+        status_code=400, detail="task_id and content are required")
 
         # Create save request
         save_request = SaveMemoryRequest(
@@ -200,7 +206,7 @@ async def auto_save_task_memory(task_data: Dict[str, Any] = Body(...)):
             importance="medium",
             tags=["task_output", "auto_generated"],
             related_task_id=task_id,
-            session_id=session_id,  # 支持 session 分库隔离
+            session_id=session_id,  # support session
         )
 
         memory_service = get_memory_service()
@@ -223,7 +229,8 @@ async def get_hooks_stats():
         return hooks.get_stats()
     except Exception as e:
         logger.error(f"Error getting hooks stats: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get hooks statistics: {str(e)}")
+        raise HTTPException(
+        status_code=500, detail=f"Failed to get hooks statistics: {str(e)}")
 
 
 @memory_router.post("/memory/hooks/enable")
@@ -235,7 +242,8 @@ async def enable_hooks():
         return {"success": True, "message": "Memory hooks enabled"}
     except Exception as e:
         logger.error(f"Error enabling hooks: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to enable hooks: {str(e)}")
+        raise HTTPException(
+        status_code=500, detail=f"Failed to enable hooks: {str(e)}")
 
 
 @memory_router.post("/memory/hooks/disable")
@@ -247,14 +255,15 @@ async def disable_hooks():
         return {"success": True, "message": "Memory hooks disabled"}
     except Exception as e:
         logger.error(f"Error disabling hooks: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to disable hooks: {str(e)}")
+        raise HTTPException(
+        status_code=500, detail=f"Failed to disable hooks: {str(e)}")
 
 
 @memory_router.post("/memory/chat/save")
 async def save_chat_message(message_data: Dict[str, Any] = Body(...)):
     """
     Save chat message as memory
-    
+
     Intelligently determines message importance and auto-saves
     """
     try:
@@ -262,10 +271,10 @@ async def save_chat_message(message_data: Dict[str, Any] = Body(...)):
         role = message_data.get("role", "user")
         session_id = message_data.get("session_id")
         force_save = message_data.get("force_save", False)
-        
+
         if not content:
             raise HTTPException(status_code=400, detail="content is required")
-        
+
         middleware = get_chat_memory_middleware()
         memory_id = await middleware.process_message(
             content=content,
@@ -273,7 +282,7 @@ async def save_chat_message(message_data: Dict[str, Any] = Body(...)):
             session_id=session_id,
             force_save=force_save,
         )
-        
+
         if memory_id:
             return {
                 "success": True,
@@ -285,7 +294,7 @@ async def save_chat_message(message_data: Dict[str, Any] = Body(...)):
                 "success": False,
                 "message": "Message did not meet save threshold"
             }
-    
+
     except Exception as e:
         logger.error(f"Failed to save chat message: {e}")
         raise HTTPException(status_code=500, detail=f"Save failed: {str(e)}")

@@ -176,7 +176,11 @@ def _synthesize_root_brief(task_id: int, repo: TaskRepository) -> Optional[Dict[
     if len(brief_body) > max_len:
         brief_body = brief_body[:max_len].rstrip()
 
-    content = f"# Root Brief\n\n- Title: {rname}\n- Problem/Goal:\n{brief_body}\n\n要求：所有子任务必须与上述主题保持一致；若信息不足，优先提问澄清或引用Root Brief。"
+    content = (
+        f"# Root Brief\n\n- Title: {rname}\n- Problem/Goal:\n{brief_body}\n\n"
+        "Requirement: all subtasks must stay aligned with the theme above; "
+        "if information is insufficient, ask clarifying questions first or explicitly reference the Root Brief."
+    )
     return {
         "task_id": rid,
         "name": "ROOT_BRIEF",
@@ -447,16 +451,16 @@ def gather_context(
     try:
         from ...services.memory.memory_service import get_memory_service
         from ...models_memory import QueryMemoryRequest
-        
+
         memory_service = get_memory_service()
-        
+
         # Query memories using the same query text
         memory_request = QueryMemoryRequest(
             search_text=query_text,
             limit=3,  # Limit to top 3 memories
             min_similarity=0.5,  # Higher threshold for memories
         )
-        
+
         # Run async query synchronously
         import asyncio
         try:
@@ -464,9 +468,9 @@ def gather_context(
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        
+
         memory_response = loop.run_until_complete(memory_service.query_memory(memory_request))
-        
+
         # Add memories as context sections
         for mem in memory_response.memories:
             sections.append({
@@ -478,7 +482,7 @@ def gather_context(
                 "retrieval_score": mem.similarity or 0.0,
                 "retrieval_method": "memory",
             })
-        
+
         if _debug_on() and memory_response.memories:
             _CTX_LOGGER.debug(
                 {

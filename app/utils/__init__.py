@@ -1,10 +1,9 @@
 """
-工具函数包
 
-包含项目中使用的各种工具和辅助函数。
+
+medium. 
 """
 
-# 从原utils.py导入核心函数
 import re
 import json
 import asyncio
@@ -79,7 +78,6 @@ def run_async(coro):
         return asyncio.run(coro)
 
 
-# 从route_helpers导入新的解析函数
 from .route_helpers import (
     parse_bool,
     parse_int, 

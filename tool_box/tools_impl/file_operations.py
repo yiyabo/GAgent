@@ -14,8 +14,8 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Security configuration
-MAX_READ_CHARS = 100_000   # 100K 字符限制，约 25-50K tokens
-MAX_READ_LINES = 2_000     # 2000 行限制，覆盖绝大多数源文件
+MAX_READ_CHARS = 100_000   # 100K character cap (~25K-50K tokens)
+MAX_READ_LINES = 2_000     # 2K line cap (covers most source files)
 
 def _normalize_allowed_base_paths() -> List[str]:
     cwd = Path(os.getcwd()).resolve()
@@ -249,7 +249,10 @@ async def _read_file(file_path: str, max_chars: int = None, max_lines: int = Non
         }
 
         if truncated:
-            result["truncated_message"] = f"内容已截断（已读取 {len(lines)} 行/{len(content)} 字符，文件总大小 {file_size} 字节）"
+            result["truncated_message"] = (
+                f"Content truncated (read {len(lines)} lines / {len(content)} chars; "
+                f"total file size: {file_size} bytes)"
+            )
 
         return result
 

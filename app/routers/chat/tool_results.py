@@ -469,7 +469,7 @@ def truncate_large_fields(
     data: Any, max_field_length: int = 1000, current_depth: int = 0
 ) -> Any:
     """Recursively truncate large text fields while preserving structure."""
-    if current_depth > 5:  # 防止过深递归
+    if current_depth > 5:  # Guard against excessive recursion depth.
         return "...[nested data truncated]"
 
     if isinstance(data, dict):
@@ -479,7 +479,7 @@ def truncate_large_fields(
         return result
     elif isinstance(data, list):
         if len(data) > 10:
-            # 列表过长，只保留前5个和后2个
+            # List is too long: keep first 5 and last 2.
             truncated = data[:5] + [f"...[{len(data) - 7} items omitted]"] + data[-2:]
             return [truncate_large_fields(item, max_field_length, current_depth + 1) for item in truncated]
         return [truncate_large_fields(item, max_field_length, current_depth + 1) for item in data]
@@ -519,8 +519,8 @@ def append_recent_tool_result(
         history = []
         extra_context["recent_tool_results"] = history
 
-    # 分级压缩策略
-    # 将结果序列化为字符串来计算大小
+    # Tiered compression strategy.
+    # Serialize result to estimate size.
     try:
         result_str = json.dumps(sanitized, ensure_ascii=False, default=str)
     except Exception:
@@ -528,21 +528,21 @@ def append_recent_tool_result(
 
     result_size = len(result_str)
 
-    # 定义阈值
-    SMALL_THRESHOLD = 2000    # 2000字符以下：完整保留
-    MEDIUM_THRESHOLD = 8000   # 8000字符以下：截断保留
-    # 超过8000：只保留摘要
+    # Size thresholds.
+    SMALL_THRESHOLD = 2000    # <=2000 chars: keep full payload.
+    MEDIUM_THRESHOLD = 8000   # <=8000 chars: keep structure with truncation.
+    # >8000 chars: keep summary only.
 
     if result_size <= SMALL_THRESHOLD:
-        # 小结果：完整保留
+        # Small result: keep full payload.
         compressed_result = sanitized
         compression_level = "full"
     elif result_size <= MEDIUM_THRESHOLD:
-        # 中等结果：保留结构但截断长文本字段
+        # Medium result: keep structure but truncate long text fields.
         compressed_result = truncate_large_fields(sanitized, max_field_length=1000)
         compression_level = "truncated"
     else:
-        # 大结果：只保留摘要和关键元数据
+        # Large result: keep summary and key metadata only.
         compressed_result = {
             "_compressed": True,
             "_original_size": result_size,
@@ -550,7 +550,7 @@ def append_recent_tool_result(
             "summary": sanitized.get("summary") or summary,
             "error": sanitized.get("error"),
         }
-        # 保留一些常用的小字段
+        # Preserve some commonly used small fields.
         for key in ["file_path", "file_name", "total", "count", "status"]:
             if key in sanitized and sanitized[key] is not None:
                 val = sanitized[key]
@@ -569,7 +569,7 @@ def append_recent_tool_result(
     }
     history.append(entry)
 
-    # 增加保留数量到10个
+    # Keep up to 10 recent entries.
     max_items = 10
     if len(history) > max_items:
         del history[:-max_items]

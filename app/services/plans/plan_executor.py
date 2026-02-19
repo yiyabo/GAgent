@@ -124,9 +124,7 @@ class ExecutionConfig:
     include_plan_outline: bool = True
     dependency_throttle: bool = True
     max_tasks: Optional[int] = None
-    # 新增：会话上下文，包含聊天历史、用户消息等
     session_context: Optional[Dict[str, Any]] = None
-    # 新增：强制依赖检查，未完成的依赖会导致任务被跳过
     enforce_dependencies: bool = True
 
     @classmethod
@@ -157,7 +155,6 @@ class ExecutorPromptBuilder:
         "Respond using the JSON schema provided."
     )
 
-    # 可用工具目录
     TOOL_CATALOG = """
 === AVAILABLE TOOLS ===
 When a task requires tool execution, request one of these tools:
@@ -192,7 +189,6 @@ When a task requires tool execution, request one of these tools:
   Parameters: {"task": "<writing task>", "output_path": "<path>"}
 """
 
-    # 任务类型判断指引
     TASK_TYPE_GUIDANCE = """
 === WHEN TO USE TOOLS ===
 - For design/architecture/planning/text writing → respond with text only (status: "success")
@@ -220,52 +216,52 @@ When a task requires tool execution, request one of these tools:
 
     def _summarize_long_result(self, result: str, max_length: int = 2000) -> str:
         """Summarize long execution results to avoid prompt bloat.
-        
+
         Preserves key information like:
         - Numbers, metrics, statistics
         - File paths
         - Conclusions and key findings
         - Error messages
-        
+
         Args:
             result: The original result text
             max_length: Maximum length to return
-            
+
         Returns:
             Summarized result if over max_length, otherwise original
         """
         if not result or len(result) <= max_length:
             return result
-        
+
         # Strategy: Keep beginning and end, add truncation notice
         # Beginning often has summary/conclusion
         # End often has final results or file paths
         keep_start = int(max_length * 0.6)
         keep_end = int(max_length * 0.3)
-        
+
         # Extract key patterns to preserve
         import re
-        
+
         # Find file paths
         file_paths = re.findall(r'[\w/\-\.]+\.(csv|json|txt|png|jpg|pdf|fasta|fa|fq|xlsx)', result)
-        
+
         # Find numbers with context (e.g., "accuracy: 0.95", "rows: 1000")
         metrics = re.findall(r'\b\w+[:\s=]+\d+\.?\d*%?\b', result)[:5]
-        
+
         # Build summary
         summary_parts = [
             result[:keep_start].strip(),
             "\n... [TRUNCATED - original was {} chars] ...\n".format(len(result)),
         ]
-        
+
         if file_paths:
             summary_parts.append(f"[Key files: {', '.join(set(file_paths[:5]))}]")
-        
+
         if metrics:
             summary_parts.append(f"[Key metrics: {'; '.join(metrics[:5])}]")
-        
+
         summary_parts.append(result[-keep_end:].strip())
-        
+
         return "\n".join(summary_parts)
 
     def build(
@@ -279,36 +275,32 @@ When a task requires tool execution, request one of these tools:
         session_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         lines: List[str] = [self.SYSTEM_HEADER]
-        
-        # 新增：会话上下文（用户消息、聊天历史等）
+
         if session_context:
             user_message = session_context.get("user_message")
             if user_message:
                 lines.append("\n=== USER REQUEST ===")
                 lines.append(f"{user_message}")
-            
+
             chat_history = session_context.get("chat_history", [])
             if chat_history:
                 lines.append("\n=== RECENT CONVERSATION ===")
-                # 限制历史条数，避免过长
                 recent_history = chat_history[-6:] if len(chat_history) > 6 else chat_history
                 for msg in recent_history:
                     role = msg.get("role", "unknown")
                     content = msg.get("content", "")
-                    # 截断过长的消息
                     if len(content) > 500:
                         content = content[:500] + "..."
                     lines.append(f"[{role}]: {content}")
-            
-            # 最近的工具结果
+
             tool_results = session_context.get("recent_tool_results", [])
             if tool_results:
                 lines.append("\n=== RECENT TOOL RESULTS ===")
-                for tr in tool_results[-3:]:  # 最近3个工具结果
+                for tr in tool_results[-3:]:  # 3result
                     tool_name = tr.get("tool", "unknown")
                     summary = tr.get("summary", "")
                     lines.append(f"- {tool_name}: {summary}")
-        
+
         lines.append("\n=== TASK SUMMARY ===")
         lines.append(f"Task ID: {node.id}")
         lines.append(f"Task Name: {node.display_name()}")
@@ -322,7 +314,6 @@ When a task requires tool execution, request one of these tools:
             if parent.instruction:
                 lines.append(f"Parent Instruction: {parent.instruction.strip()}")
             if parent.execution_result:
-                # 对超长结果进行压缩
                 parent_result = self._summarize_long_result(parent.execution_result, max_length=2000)
                 lines.append(f"Parent Latest Result: {parent_result}")
 
@@ -338,7 +329,6 @@ When a task requires tool execution, request one of these tools:
                     else "○"
                 )
                 raw_result = dep.execution_result or "(not executed)"
-                # 对超长结果进行压缩
                 summary = self._summarize_long_result(raw_result, max_length=2000)
                 lines.append(f"- [{status_indicator}] [{dep.id}] {dep.display_name()}: {summary}")
 
@@ -358,7 +348,6 @@ When a task requires tool execution, request one of these tools:
             lines.append("\n=== PLAN OUTLINE (TRUNCATED) ===")
             lines.append(plan_outline)
 
-        # 新增：工具目录和任务类型指引
         lines.append(self.TOOL_CATALOG)
         lines.append(self.TASK_TYPE_GUIDANCE)
 
@@ -543,13 +532,11 @@ class PlanExecutor:
             )
 
         summary.finished_at = time.time()
-        
-        # 自动生成执行汇总报告
+
         if summary.executed_task_ids:
             try:
                 plan_summary = self._generate_plan_summary(plan_id, tree, summary, cfg)
                 if plan_summary:
-                    # 存储汇总到 plan metadata
                     current_metadata = tree.metadata or {}
                     current_metadata["execution_summary"] = plan_summary
                     current_metadata["execution_summary_at"] = summary.finished_at
@@ -561,7 +548,7 @@ class PlanExecutor:
                     )
             except Exception as exc:
                 logger.warning("Failed to generate plan summary: %s", exc)
-        
+
         _log_job(
             "info",
             "Plan execution finished.",
@@ -601,8 +588,7 @@ class PlanExecutor:
     ) -> ExecutionResult:
         parent = tree.nodes.get(node.parent_id) if node.parent_id else None
         dependencies = self._resolve_dependencies(tree, node)
-        
-        # 检查依赖状态
+
         incomplete_deps = []
         for dep in dependencies:
             dep_status = (dep.status or "pending").strip().lower()
@@ -612,8 +598,7 @@ class PlanExecutor:
                     "Dependency %s (status=%s) not completed before executing task %s",
                     dep.id, dep.status, node.id
                 )
-        
-        # 如果有未完成的依赖且启用了强制依赖检查，则跳过任务
+
         if incomplete_deps and config.enforce_dependencies:
             incomplete_ids = [d.id for d in incomplete_deps]
             incomplete_display = ", ".join(
@@ -680,7 +665,7 @@ class PlanExecutor:
             node.status = "skipped"
             node.execution_result = raw_response
             tree.nodes[node.id] = node
-            
+
             return ExecutionResult(
                 plan_id=plan_id,
                 task_id=node.id,
@@ -691,7 +676,6 @@ class PlanExecutor:
                 raw_response=raw_response,
             )
         elif incomplete_deps:
-            # 仅警告，不阻塞
             _log_job(
                 "warning",
                 f"Task {node.id} has {len(incomplete_deps)} incomplete dependencies (continuing anyway)",
@@ -701,11 +685,9 @@ class PlanExecutor:
                     "enforce_dependencies": False,
                 },
             )
-        
-        # 增大 outline 限制：40 → 80 节点
+
         outline = tree.to_outline(max_depth=4, max_nodes=80) if config.include_plan_outline else None
-        
-        # 传递 session_context 到 prompt builder
+
         prompt = self._prompt_builder.build(
             node=node,
             parent=parent,
@@ -740,8 +722,7 @@ class PlanExecutor:
                     },
                 )
                 response = self._llm.generate(prompt, config)
-                
-                # 新增：检查是否需要工具调用
+
                 if response.status == "needs_tool" and response.tool_call:
                     _log_job(
                         "info",
@@ -752,13 +733,11 @@ class PlanExecutor:
                             "tool": response.tool_call.name,
                         },
                     )
-                    # 执行工具调用
                     tool_result = self._execute_tool_call(
                         response.tool_call,
                         node=node,
                         config=config,
                     )
-                    # 合并工具结果
                     if tool_result.get("success"):
                         final_content = f"{response.content}\n\n=== Tool Execution Result ===\n{tool_result.get('summary', str(tool_result.get('result', '')))}"
                         response.status = "success"
@@ -777,7 +756,7 @@ class PlanExecutor:
                         metadata["deliverables"] = deliverable_payload
                         response.metadata = metadata
                     response.content = final_content
-                
+
                 result_payload = response.model_dump()
                 raw_response = json.dumps(result_payload, ensure_ascii=False)
                 task_status = self._normalize_status(response.status)
@@ -912,7 +891,6 @@ class PlanExecutor:
                     if current_id in emitted:
                         continue
                     if current_id in visiting:
-                        # 循环依赖：跳过并警告，而不是抛出错误
                         logger.warning(
                             "Detected circular dependency while ordering task %s, skipping",
                             current_id
@@ -925,7 +903,6 @@ class PlanExecutor:
                         if dep_id not in tree.nodes or dep_id in emitted:
                             continue
                         if dep_id in visiting:
-                            # 循环依赖：跳过该依赖，警告并继续
                             logger.warning(
                                 "Detected circular dependency between tasks %s and %s, skipping dependency",
                                 current_id, dep_id
@@ -945,7 +922,6 @@ class PlanExecutor:
                         if child_id not in tree.nodes or child_id in emitted:
                             continue
                         if child_id in visiting:
-                            # 循环依赖：跳过该子节点，警告并继续
                             logger.warning(
                                 "Detected circular dependency between parent %s and child %s, skipping",
                                 current_id, child_id
@@ -996,14 +972,13 @@ class PlanExecutor:
         config: ExecutionConfig,
     ) -> Optional[str]:
         """Generate a comprehensive summary of the plan execution.
-        
+
         Collects all completed task results and uses LLM to synthesize
         a final report.
-        
+
         Returns:
             Summary text or None if generation fails
         """
-        # 收集所有已完成任务的结果
         completed_results = []
         for result in summary.results:
             if result.status == "completed":
@@ -1015,24 +990,23 @@ class PlanExecutor:
                         "instruction": node.instruction,
                         "result": result.content[:2000] if len(result.content) > 2000 else result.content,
                     })
-        
+
         if not completed_results:
             return None
-        
-        # 构建汇总提示
+
         summary_prompt = (
             "You are generating a comprehensive execution summary for a completed plan.\n\n"
             f"Plan Title: {tree.title}\n"
             f"Plan Description: {tree.description or 'N/A'}\n\n"
             "=== COMPLETED TASKS ===\n"
         )
-        
+
         for r in completed_results:
             summary_prompt += f"\n**Task {r['task_id']}: {r['task_name']}**\n"
             if r['instruction']:
                 summary_prompt += f"Instruction: {r['instruction'][:200]}...\n" if len(r['instruction'] or '') > 200 else f"Instruction: {r['instruction']}\n"
             summary_prompt += f"Result: {r['result']}\n"
-        
+
         summary_prompt += (
             "\n=== YOUR TASK ===\n"
             "Generate a concise executive summary (200-400 words) that:\n"
@@ -1042,7 +1016,7 @@ class PlanExecutor:
             "4. Identifies any issues or areas needing follow-up\n\n"
             "Write the summary in a professional, clear style."
         )
-        
+
         try:
             response = self._llm.generate(
                 summary_prompt,
@@ -1059,24 +1033,22 @@ class PlanExecutor:
         config: ExecutionConfig,
     ) -> Dict[str, Any]:
         """Execute a tool call requested by the executor LLM.
-        
+
         Args:
             tool_call: The tool call request from LLM
             node: The current task node being executed
             config: Execution configuration
-            
+
         Returns:
             Dict with success status, result/error, and summary
         """
         import asyncio
         from concurrent.futures import ThreadPoolExecutor
         from tool_box import execute_tool
-        
+
         tool_name = tool_call.name
         params = dict(tool_call.parameters)
 
-        # 规范化任务上下文参数，避免把不受支持的参数透传给工具 handler。
-        # claude_code 使用 task_id/plan_id；历史遗留 target_task_id 统一转换。
         if tool_name == "claude_code":
             for key in (
                 "require_task_context",
@@ -1101,13 +1073,12 @@ class PlanExecutor:
             params["setting_sources"] = "project"
         else:
             params.pop("target_task_id", None)
-        
-        # 如果有 session_context，传递 session_id 给工具
+
         if config.session_context:
             session_id = config.session_context.get("session_id")
             if session_id:
                 params["session_id"] = session_id
-        
+
         logger.info(
             "PlanExecutor executing tool %s for task %s with params: %s",
             tool_name, node.id, list(params.keys())
@@ -1119,8 +1090,6 @@ class PlanExecutor:
         )
 
         try:
-            # execute_tool 是异步的。若当前线程已有运行中的 loop（如在 async 请求链路里），
-            # 则切换到独立线程运行，避免 "Cannot run the event loop while another loop is running"。
             try:
                 running_loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -1134,8 +1103,7 @@ class PlanExecutor:
                     result = executor.submit(_run_in_worker).result()
             else:
                 result = asyncio.run(execute_tool(tool_name, **params))
-            
-            # 提取摘要
+
             summary = self._summarize_tool_result(tool_name, result)
             tool_success = not (
                 isinstance(result, dict)
@@ -1173,7 +1141,7 @@ class PlanExecutor:
                         node.id,
                         exc,
                     )
-            
+
             logger.info(
                 "Tool %s execution succeeded for task %s",
                 tool_name, node.id
@@ -1191,7 +1159,7 @@ class PlanExecutor:
             if publish_report is not None:
                 payload["deliverables"] = publish_report.to_dict()
             return payload
-            
+
         except Exception as exc:
             logger.exception(
                 "Tool %s execution failed for task %s: %s",
@@ -1237,20 +1205,18 @@ class PlanExecutor:
             return f"PhageScope {action} succeeded."
 
         if isinstance(result, dict):
-            # 优先使用已有的摘要字段
             if "summary" in result:
                 return str(result["summary"])[:1000]
             if "result" in result:
                 return str(result["result"])[:1000]
             if "output" in result:
                 return str(result["output"])[:1000]
-            # 对于其他 dict，序列化前 1000 字符
             import json
             try:
                 return json.dumps(result, ensure_ascii=False)[:1000]
             except (TypeError, ValueError):
                 return str(result)[:1000]
-        
+
         return str(result)[:1000]
 
     def _current_job_id(self) -> Optional[str]:

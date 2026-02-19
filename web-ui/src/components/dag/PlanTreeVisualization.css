@@ -1,4 +1,4 @@
-/* 极简单色任务树 */
+/* Plan tree container */
 
 .tree-container {
   overflow-y: auto;
@@ -10,7 +10,7 @@
   padding: 4px 0;
 }
 
-/* 单行任务项 */
+/* Tree row item */
 .tree-item {
   display: flex;
   align-items: center;
@@ -34,7 +34,7 @@
   font-weight: 600;
 }
 
-/* 缩进区域 */
+/* Indentation guides */
 .tree-indent {
   display: flex;
   flex-shrink: 0;
@@ -56,7 +56,7 @@
   background: rgba(0, 0, 0, 0.06);
 }
 
-/* 展开/折叠按钮 */
+/* Expand/collapse toggle */
 .tree-toggle {
   width: 20px;
   height: 20px;
@@ -83,7 +83,7 @@
   transform: rotate(90deg);
 }
 
-/* 状态指示器 - 小圆点 */
+/* Status dot */
 .tree-status {
   width: 6px;
   height: 6px;
@@ -116,7 +116,7 @@
   50% { opacity: 0.5; }
 }
 
-/* 任务名称 */
+/* Task name */
 .tree-name {
   flex: 1;
   font-size: 13px;
@@ -135,7 +135,7 @@
   color: #111827;
 }
 
-/* ROOT 标签 */
+/* ROOT badge */
 .tree-badge {
   font-size: 9px;
   font-weight: 600;
@@ -148,7 +148,7 @@
   flex-shrink: 0;
 }
 
-/* 加载状态 */
+/* Loading state */
 .tree-loading {
   display: flex;
   flex-direction: column;
@@ -160,7 +160,7 @@
   font-size: 12px;
 }
 
-/* 空状态 */
+/* Empty state */
 .tree-empty {
   display: flex;
   flex-direction: column;
@@ -179,7 +179,7 @@
   background: #e5e7eb;
 }
 
-/* 滚动条 */
+/* Scrollbar */
 .tree-container::-webkit-scrollbar {
   width: 4px;
 }
@@ -197,47 +197,47 @@
   background: rgba(0, 0, 0, 0.2);
 }
 
-/* 暗色模式适配 */
+/* Dark mode adjustments */
 @media (prefers-color-scheme: dark) {
   .tree-item:hover {
-    background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.04);
   }
 
   .tree-item.selected {
-    background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.06);
   }
 
   .tree-indent-guide::before {
-    background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.06);
   }
 
   .tree-toggle.has-children:hover {
-    background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.06);
   }
 
   .tree-chevron {
-    color: rgba(255, 255, 255, 0.35);
+  color: rgba(255, 255, 255, 0.35);
   }
 
   .tree-name {
-    color: #e5e7eb;
+  color: #e5e7eb;
   }
 
   .tree-item:hover .tree-name,
   .tree-item.selected .tree-name {
-    color: #f9fafb;
+  color: #f9fafb;
   }
 
   .tree-badge {
-    color: rgba(255, 255, 255, 0.35);
-    background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.04);
   }
 
   .tree-status.status-pending {
-    background: #4b5563;
+  background: #4b5563;
   }
 
   .tree-empty-dot {
-    background: #374151;
+  background: #374151;
   }
 }

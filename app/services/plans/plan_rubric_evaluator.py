@@ -214,7 +214,7 @@ def _build_rule_evidence(tree: PlanTree) -> Dict[str, Any]:
                 queue.append(nxt)
     cycle_suspected = visited != len(indeg) and len(indeg) > 0
 
-    # Textual signals for rubric subcriteria (multilingual heuristics)
+    # Textual signals for rubric subcriteria (English heuristics)
     why_markers = [
         "because",
         "so that",
@@ -222,13 +222,6 @@ def _build_rule_evidence(tree: PlanTree) -> Dict[str, Any]:
         "rationale",
         "motivation",
         "because of",
-        "为了",
-        "以便",
-        "因为",
-        "目的",
-        "动机",
-        "原因",
-        "理由",
     ]
     assumption_markers = [
         "assume",
@@ -238,12 +231,6 @@ def _build_rule_evidence(tree: PlanTree) -> Dict[str, Any]:
         "scope",
         "availability",
         "data availability",
-        "假设",
-        "约束",
-        "限制",
-        "范围",
-        "数据可得",
-        "可获得",
     ]
     ordering_markers = [
         "first",
@@ -253,12 +240,6 @@ def _build_rule_evidence(tree: PlanTree) -> Dict[str, Any]:
         "step",
         "pipeline",
         "workflow",
-        "首先",
-        "然后",
-        "接着",
-        "最后",
-        "流程",
-        "步骤",
     ]
     alternative_markers = [
         "alternative",
@@ -268,11 +249,6 @@ def _build_rule_evidence(tree: PlanTree) -> Dict[str, Any]:
         "ablation",
         "versus",
         "or",
-        "或者",
-        "备选",
-        "权衡",
-        "对比",
-        "消融",
     ]
     tool_markers = [
         "blast",
@@ -309,10 +285,6 @@ def _build_rule_evidence(tree: PlanTree) -> Dict[str, Any]:
         ".parquet",
         "input",
         "output",
-        "输入",
-        "输出",
-        "文件",
-        "格式",
     ]
     metric_markers = [
         "f1",
@@ -328,12 +300,6 @@ def _build_rule_evidence(tree: PlanTree) -> Dict[str, Any]:
         "control",
         "threshold",
         "acceptance",
-        "验收",
-        "指标",
-        "基线",
-        "对照",
-        "阈值",
-        "通过标准",
         "qc",
         "validation",
         "benchmark",
@@ -341,9 +307,6 @@ def _build_rule_evidence(tree: PlanTree) -> Dict[str, Any]:
         "ablation",
         "error analysis",
         "cross-validation",
-        "交叉验证",
-        "误差分析",
-        "稳健",
     ]
     data_source_markers = [
         "ncbi",
@@ -356,12 +319,9 @@ def _build_rule_evidence(tree: PlanTree) -> Dict[str, Any]:
         "doi",
         "arxiv",
         "github",
-        "版本",
         "v1",
         "v2",
         "release",
-        "数据来源",
-        "数据库",
     ]
 
     def _has_any(text: str, markers: List[str]) -> bool:
@@ -443,13 +403,6 @@ def _build_rule_evidence(tree: PlanTree) -> Dict[str, Any]:
         "build",
         "develop",
         "study",
-        "研究",
-        "探索",
-        "分析",
-        "优化",
-        "设计",
-        "开发",
-        "搭建",
     ]
     broad_steps = [
         n.id

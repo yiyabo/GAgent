@@ -25,12 +25,12 @@ SECTION_TITLES: Dict[str, str] = {
 }
 
 SECTION_KEYWORDS: Dict[str, Tuple[str, ...]] = {
-    "abstract": ("abstract", "摘要"),
-    "introduction": ("introduction", "intro", "引言", "背景"),
-    "method": ("method", "methods", "approach", "方法"),
-    "experiment": ("experiment", "experiments", "evaluation", "benchmark", "ablation", "实验", "评估"),
-    "result": ("result", "results", "finding", "performance", "结果", "发现"),
-    "conclusion": ("conclusion", "summary", "future work", "结论", "总结", "展望"),
+    "abstract": ("abstract", "summary"),
+    "introduction": ("introduction", "intro", "", ""),
+    "method": ("method", "methods", "approach", ""),
+    "experiment": ("experiment", "experiments", "evaluation", "benchmark", "ablation", "", "evaluation"),
+    "result": ("result", "results", "finding", "performance", "result", ""),
+    "conclusion": ("conclusion", "summary", "future work", "", "", ""),
 }
 
 PLACEHOLDER_MARKER = "AUTO_PLACEHOLDER"
@@ -67,7 +67,6 @@ class PaperBuilder:
             if section_key in SECTION_ORDER:
                 return section_key
         # Only task_name is used for inference; task_instruction and text are not,
-        # to avoid false positives (e.g. "执行结果摘要" in CC output matching abstract/result)
         task_haystack = str(task_name or "").strip().lower()
         if not task_haystack:
             return None

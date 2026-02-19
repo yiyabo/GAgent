@@ -262,13 +262,13 @@ class ChatStatusResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ConfirmActionRequest(BaseModel):
-    """确认操作请求"""
+    """Confirmation action request."""
     confirmation_id: str
-    confirmed: bool = True  # True=确认执行, False=取消
+    confirmed: bool = True  # True = confirm execution, False = cancel.
 
 
 class ConfirmActionResponse(BaseModel):
-    """确认操作响应"""
+    """Confirmation action response."""
     success: bool
     message: str
     confirmation_id: str
@@ -327,7 +327,7 @@ class AgentResult(BaseModel):
                 label_parts.append(action.kind)
             if action.name:
                 label_parts.append(action.name)
-            header = "/".join(label_parts) if label_parts else f"步骤 {idx + 1}"
+            header = "/".join(label_parts) if label_parts else f"Step {idx + 1}"
             params = action.parameters or {}
             detail = (
                 params.get("instruction")
@@ -335,7 +335,7 @@ class AgentResult(BaseModel):
                 or params.get("title")
                 or step.message
             )
-            lines.append(f"- {header}: {detail or '已完成'}")
+            lines.append(f"- {header}: {detail or 'completed'}")
             subtasks = params.get("subtasks")
             if isinstance(subtasks, list):
                 for st in subtasks:
@@ -348,7 +348,7 @@ class AgentResult(BaseModel):
                         or None
                     )
                     if st_name:
-                        lines.append(f"  - 子任务: {st_name}")
+                        lines.append(f"  - Subtask: {st_name}")
                     if st_instr:
-                        lines.append(f"    · 说明: {st_instr}")
+                        lines.append(f"    · Note: {st_instr}")
         return "\n".join(lines) if lines else None

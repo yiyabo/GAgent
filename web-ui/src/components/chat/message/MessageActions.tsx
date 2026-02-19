@@ -26,7 +26,7 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
   const { saveMessageAsMemory, retryActionRun, retryLastMessage, isProcessing } = useChatStore();
   const [isSaving, setIsSaving] = useState(false);
 
-  // 复制消息内容 (带降级方案，支持 HTTP 环境)
+  // Copy message content (with HTTP fallback path).
   const handleCopy = () => {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(content).catch(() => {
@@ -37,15 +37,15 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
     }
   };
 
-  // 保存为记忆
+  // Save as memory.
   const handleSaveAsMemory = async () => {
     try {
       setIsSaving(true);
       await saveMessageAsMemory(message);
-      antMessage.success('✅ 已保存为记忆');
+      antMessage.success('Saved to memory');
     } catch (error) {
-      console.error('保存记忆失败:', error);
-      antMessage.error('❌ 保存失败');
+      console.error('Failed to save memory:', error);
+      antMessage.error('Save failed');
     } finally {
       setIsSaving(false);
     }
@@ -60,7 +60,7 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
 
         {type !== 'system' && (
           <Space size={4}>
-            <Tooltip title="复制">
+            <Tooltip title="Copy">
               <Button
                 type="text"
                 size="small"
@@ -70,7 +70,7 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
               />
             </Tooltip>
 
-            <Tooltip title="保存为记忆">
+            <Tooltip title="Save as Memory">
               <Button
                 type="text"
                 size="small"
@@ -82,15 +82,15 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
             </Tooltip>
 
             {type === 'assistant' && (
-              <Tooltip title="重新生成">
+              <Tooltip title="Regenerate">
                 <Button
                   type="text"
                   size="small"
                   icon={<ReloadOutlined />}
                   onClick={() => {
-                    // Deep Think 消息直接重新发送原始消息，不 replay actions
-                    // 增加内容检测作为兜底，防止旧消息没有 metadata 导致误触发
-                    // 使用正则检测 'Thinking Summary'，忽略大小写
+                    // For Deep Think messages, resend the original prompt directly (no action replay).
+                    // Keep content-based fallback for older messages without metadata.
+                    // Regex check for "Thinking Summary" is case-insensitive.
                     const isDeepThink = (metadata as any)?.deep_think === true || /thinking\s*summary/i.test(content || '');
                     if (isDeepThink) {
                       void retryLastMessage();

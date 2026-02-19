@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 from fastapi import HTTPException, status
 
 from app.routers import artifact_routes
@@ -71,26 +72,21 @@ def test_resolve_session_dir_prefers_runtime_for_raw_when_both_have_tool_outputs
     assert resolved == runtime_session.resolve()
 
 
-def test_list_deliverables_returns_empty_when_session_missing(monkeypatch) -> None:
+@pytest.mark.parametrize("target", ["list", "manifest"])
+def test_session_missing_returns_empty_payload(monkeypatch, target: str) -> None:
     def _raise_not_found(*args, **kwargs):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="missing")
 
     monkeypatch.setattr(artifact_routes, "_resolve_session_dir", _raise_not_found)
 
-    response = asyncio.run(artifact_routes.list_session_deliverables("session_missing"))
-    assert response.count == 0
-    assert response.items == []
-    assert response.modules == {}
-
-
-def test_manifest_returns_empty_when_session_missing(monkeypatch) -> None:
-    def _raise_not_found(*args, **kwargs):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="missing")
-
-    monkeypatch.setattr(artifact_routes, "_resolve_session_dir", _raise_not_found)
-
-    response = asyncio.run(
-        artifact_routes.get_session_deliverables_manifest("session_missing")
-    )
-    assert response.manifest == {}
-    assert response.manifest_path is None
+    if target == "list":
+        response = asyncio.run(artifact_routes.list_session_deliverables("session_missing"))
+        assert response.count == 0
+        assert response.items == []
+        assert response.modules == {}
+    else:
+        response = asyncio.run(
+            artifact_routes.get_session_deliverables_manifest("session_missing")
+        )
+        assert response.manifest == {}
+        assert response.manifest_path is None

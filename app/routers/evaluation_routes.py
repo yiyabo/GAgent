@@ -1,7 +1,7 @@
 """
-评估系统相关API端点
+evaluationsystemrelatedAPI
 
-包含评估配置、评估历史、评估执行和统计功能。
+evaluationconfiguration, evaluation, evaluationexecute. 
 """
 
 from datetime import datetime
@@ -194,23 +194,19 @@ def execute_task_with_evaluation_api(task_id: int, payload: Optional[Dict[str, A
         # Update task status
         default_repo.update_task_status(task_id, result.status)
 
-        # 兼容模拟评估对象（MockEvaluation/MockDimensions）
         eval_payload = None
         if result.evaluation:
             dims = result.evaluation.dimensions
-            # 支持 pydantic/dataclass/mock 三种风格
             if hasattr(dims, "model_dump"):
                 dim_dict = dims.model_dump()
             elif hasattr(dims, "dict"):
                 dim_dict = dims.dict()
             else:
-                # 反射读取常见字段
                 keys = ["relevance", "completeness", "accuracy", "clarity", "coherence", "scientific_rigor"]
                 dim_dict = {k: getattr(dims, k, None) for k in keys if hasattr(dims, k)}
 
             needs_revision = getattr(result.evaluation, "needs_revision", None)
             if needs_revision is None and hasattr(result, "iterations"):
-                # 简单兜底：按分数与阈值推断（若阈值不可得，则按0.8）
                 score = getattr(result.evaluation, "overall_score", 0.0)
                 needs_revision = bool(score < 0.8)
 
@@ -235,7 +231,7 @@ def execute_task_with_evaluation_api(task_id: int, payload: Optional[Dict[str, A
 
 
 @router.get("/evaluation/stats")
-@router.get("/stats")  # 保留向后兼容性
+@router.get("/stats")  # 
 def get_evaluation_stats():
     """Get overall evaluation system statistics"""
     try:
@@ -263,7 +259,7 @@ def get_evaluation_supervision():
     """Get evaluation supervision report"""
     try:
         from ..services.evaluation.evaluation_supervisor import get_supervision_report
-        
+
         supervision_report = get_supervision_report()
         return {
             "supervision_report": supervision_report,
@@ -279,23 +275,23 @@ def update_supervision_config(config: Dict[str, Any] = Body(...)):
     """Update evaluation supervision configuration"""
     try:
         from ..services.evaluation.evaluation_supervisor import get_evaluation_supervisor
-        
+
         supervisor = get_evaluation_supervisor()
-        
+
         # Extract threshold updates
         thresholds = {}
         threshold_fields = [
             "min_accuracy", "min_consistency", "max_bias_risk", 
             "min_cache_hit_rate", "max_error_rate", "max_evaluation_time", "min_confidence"
         ]
-        
+
         for field in threshold_fields:
             if field in config:
                 try:
                     thresholds[field] = float(config[field])
                 except (ValueError, TypeError):
                     raise HTTPException(status_code=400, detail=f"Invalid value for {field}, must be a number")
-        
+
         if not thresholds:
             # Return current configuration
             current_config = supervisor.get_current_config() if hasattr(supervisor, 'get_current_config') else {}
@@ -304,16 +300,16 @@ def update_supervision_config(config: Dict[str, Any] = Body(...)):
                 "current_config": current_config,
                 "available_thresholds": threshold_fields
             }
-        
+
         # Update thresholds
         success = supervisor.update_thresholds(thresholds)
-        
+
         return {
             "action": "update_config",
             "success": success,
             "updated_thresholds": thresholds
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -327,15 +323,15 @@ def batch_evaluation(payload: Dict[str, Any] = Body(...)):
         task_ids = payload.get("task_ids", [])
         if not task_ids or not isinstance(task_ids, list):
             raise HTTPException(status_code=400, detail="task_ids must be a non-empty list")
-        
+
         max_iterations = parse_int(payload.get("max_iterations", 3), default=3, min_value=1, max_value=10)
         quality_threshold = parse_opt_float(payload.get("quality_threshold"), 0.0, 1.0) or 0.8
         use_context = parse_bool(payload.get("use_context"), default=False)
-        
+
         results = []
         successful = 0
         failed = 0
-        
+
         for task_id in task_ids:
             try:
                 # Get task info
@@ -348,7 +344,7 @@ def batch_evaluation(payload: Dict[str, Any] = Body(...)):
                     })
                     failed += 1
                     continue
-                
+
                 # Execute with evaluation
                 result = execute_task_with_evaluation(
                     task=task,
@@ -357,10 +353,10 @@ def batch_evaluation(payload: Dict[str, Any] = Body(...)):
                     quality_threshold=quality_threshold,
                     use_context=use_context,
                 )
-                
+
                 # Update task status
                 default_repo.update_task_status(task_id, result.status)
-                
+
                 # Add to results
                 eval_payload = None
                 if result.evaluation:
@@ -369,7 +365,7 @@ def batch_evaluation(payload: Dict[str, Any] = Body(...)):
                         "suggestions": getattr(result.evaluation, "suggestions", []),
                         "needs_revision": getattr(result.evaluation, "needs_revision", False),
                     }
-                
+
                 results.append({
                     "task_id": task_id,
                     "status": result.status,
@@ -378,12 +374,12 @@ def batch_evaluation(payload: Dict[str, Any] = Body(...)):
                     "final_score": result.evaluation.overall_score if result.evaluation else None,
                     "evaluation": eval_payload,
                 })
-                
+
                 if result.status == "done":
                     successful += 1
                 else:
                     failed += 1
-                    
+
             except Exception as e:
                 results.append({
                     "task_id": task_id,
@@ -391,7 +387,7 @@ def batch_evaluation(payload: Dict[str, Any] = Body(...)):
                     "error": str(e)
                 })
                 failed += 1
-        
+
         return {
             "batch_results": results,
             "summary": {
@@ -406,7 +402,7 @@ def batch_evaluation(payload: Dict[str, Any] = Body(...)):
                 "use_context": use_context
             }
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:

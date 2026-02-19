@@ -7,7 +7,6 @@ import App from './App';
 import { queryClient } from '@/queryClient';
 import './styles/index.css';
 
-// Ant Design 主题配置
 const antdTheme = {
   algorithm: theme.defaultAlgorithm,
   token: {

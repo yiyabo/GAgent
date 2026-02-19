@@ -1,11 +1,11 @@
 """
 Result Interpreter Tool
 
-数据分析和结果解释工具，支持 CSV/TSV/MAT/NPY 文件的自动分析。
+Data analysis and result interpretation tool for CSV/TSV/MAT/NPY files.
 
-重构说明：
-- execute 和 analyze 操作现在使用 Claude Code 执行
-- docker_image/docker_timeout 参数已废弃（保留向后兼容）
+Refactor notes:
+- `execute` and `analyze` now run through Claude Code.
+- `docker_image`/`docker_timeout` are deprecated (kept for backward compatibility).
 """
 
 import logging
@@ -23,7 +23,7 @@ def _prepare_data_files(file_paths: List[str]) -> tuple[List[str], str, Optional
 
     Returns:
         tuple: (staged_paths, data_dir, staging_dir_to_cleanup)
-        - staging_dir_to_cleanup 为 None 表示未创建临时目录，无需清理
+        - `staging_dir_to_cleanup` is None when no temp directory was created.
     """
     data_dirs = {os.path.dirname(os.path.abspath(p)) for p in file_paths}
     if len(data_dirs) <= 1:
@@ -49,17 +49,17 @@ def _prepare_data_files(file_paths: List[str]) -> tuple[List[str], str, Optional
         staged_paths.append(dest)
 
     logger.info("Multiple data directories detected; staged files at %s", staging_dir)
-    return staged_paths, staging_dir, staging_dir  # 返回 staging_dir 以便清理
+    return staged_paths, staging_dir, staging_dir  # Return staging_dir for cleanup.
 
 
 def _cleanup_staging_dir(staging_dir: Optional[str]) -> None:
-    """清理临时 staging 目录"""
+    """Clean up temporary staging directory."""
     if staging_dir and os.path.isdir(staging_dir):
         try:
             shutil.rmtree(staging_dir)
-            logger.info("已清理临时目录: %s", staging_dir)
+            logger.info("Cleaned temporary staging directory: %s", staging_dir)
         except Exception as e:
-            logger.warning("清理临时目录失败: %s, 错误: %s", staging_dir, e)
+            logger.warning("Failed to clean staging directory %s: %s", staging_dir, e)
 
 
 async def result_interpreter_handler(
@@ -75,7 +75,7 @@ async def result_interpreter_handler(
     output_dir: Optional[str] = None,
     max_depth: int = 5,
     node_budget: int = 50,
-    # 已废弃参数，保留向后兼容
+    # Deprecated parameters kept for backward compatibility.
     docker_image: str = "agent-plotter",
     docker_timeout: Optional[int] = None,
     timeout: Optional[int] = None,
@@ -83,26 +83,26 @@ async def result_interpreter_handler(
     **kwargs,
 ) -> Dict[str, Any]:
     """
-    数据分析和结果解释工具处理器
+    Data analysis and result interpretation tool handler.
 
     Args:
-        operation: 操作类型 (metadata, generate, execute, analyze)
-        file_path: 单个数据文件路径 (用于 metadata)
-        file_paths: 数据文件路径列表 (用于 generate/analyze)
-        task_title: 任务标题
-        task_description: 任务描述
-        code: Python 代码 (用于 execute)
-        work_dir: 工作目录
-        data_dir: 数据目录
-        docker_image: [已废弃] 不再使用
-        docker_timeout: [已废弃] 不再使用
-        timeout: [已废弃] 不再使用
-        max_retries: [已废弃] 不再使用
+        operation: Operation type (metadata, generate, execute, analyze)
+        file_path: Single data file path (for metadata)
+        file_paths: Data file path list (for generate/analyze)
+        task_title: Task title
+        task_description: Task description
+        code: Python code (for execute)
+        work_dir: Working directory
+        data_dir: Data directory
+        docker_image: [Deprecated] Not used
+        docker_timeout: [Deprecated] Not used
+        timeout: [Deprecated] Not used
+        max_retries: [Deprecated] Not used
 
     Returns:
-        执行结果字典
+        Execution result dictionary.
     """
-    # 延迟导入避免循环依赖
+    # Lazy import to avoid circular dependency.
     from app.services.interpreter import (
         DataProcessor,
         CodeGenerator,
@@ -111,7 +111,7 @@ async def result_interpreter_handler(
 
     try:
         if operation == "metadata":
-            # 提取元数据
+            # Extract metadata.
             if not file_path:
                 return {"success": False, "error": "file_path is required for metadata operation"}
 
@@ -126,7 +126,7 @@ async def result_interpreter_handler(
             }
 
         elif operation == "generate":
-            # 生成代码
+            # Generate code.
             paths = file_paths or ([file_path] if file_path else [])
             if not paths:
                 return {"success": False, "error": "file_paths or file_path is required"}
@@ -134,14 +134,14 @@ async def result_interpreter_handler(
             if not task_title or not task_description:
                 return {"success": False, "error": "task_title and task_description are required"}
 
-            # 提取元数据
+            # Extract metadata.
             metadata_list = []
             for fp in paths:
                 if not os.path.exists(fp):
                     return {"success": False, "error": f"File not found: {fp}"}
                 metadata_list.append(DataProcessor.get_metadata(fp))
 
-            # 生成代码
+            # Generate code.
             generator = CodeGenerator()
             response = generator.generate(
                 metadata_list=metadata_list,
@@ -160,7 +160,7 @@ async def result_interpreter_handler(
             }
 
         elif operation == "execute":
-            # 使用 Claude Code 执行代码
+            # Execute code through Claude Code.
             if not code:
                 return {"success": False, "error": "code is required for execute operation"}
 
@@ -170,19 +170,19 @@ async def result_interpreter_handler(
             exec_work_dir = work_dir or tempfile.mkdtemp(prefix="interpreter_")
             os.makedirs(exec_work_dir, exist_ok=True)
 
-            # 构建任务描述
-            task = f"""执行以下 Python 代码：
+            # Build task description.
+            task = f"""Execute the following Python code:
 
 ```python
 {code}
 ```
 
-工作目录: {exec_work_dir}
+Working directory: {exec_work_dir}
 """
             if data_dir:
-                task += f"\n数据目录: {data_dir}"
+                task += f"\nData directory: {data_dir}"
 
-            # 使用 Claude Code 执行
+            # Run via Claude Code.
             add_dirs = exec_work_dir
             if data_dir:
                 add_dirs = f"{exec_work_dir},{data_dir}"
@@ -195,7 +195,7 @@ async def result_interpreter_handler(
                 require_task_context=False,
             )
 
-            # 复制 Claude Code 产出到 work_dir
+            # Copy Claude Code outputs to work_dir.
             task_dir = result.get("task_directory_full", "")
             if task_dir and exec_work_dir:
                 src_results = Path(task_dir) / "results"
@@ -205,7 +205,7 @@ async def result_interpreter_handler(
                     for f in src_results.iterdir():
                         if f.is_file():
                             shutil.copy2(f, dst_results / f.name)
-                    logger.info(f"已复制产出文件从 {src_results} 到 {dst_results}")
+                    logger.info(f"Copied output files from {src_results} to {dst_results}")
 
             return {
                 "success": result.get("success", False),
@@ -218,7 +218,7 @@ async def result_interpreter_handler(
             }
 
         elif operation == "analyze":
-            # 使用 Claude Code 完整分析流程
+            # Full analysis workflow using Claude Code.
             paths = file_paths or ([file_path] if file_path else [])
             if not paths:
                 return {"success": False, "error": "file_paths or file_path is required"}
@@ -226,13 +226,13 @@ async def result_interpreter_handler(
             if not task_title or not task_description:
                 return {"success": False, "error": "task_title and task_description are required"}
 
-            # 用于清理的临时目录引用
+            # Temporary directory reference for cleanup.
             staging_dir_to_cleanup: Optional[str] = None
 
             try:
                 from app.services.interpreter import DataProcessor, TaskExecutor
 
-                # Step 1: 验证文件存在并提取元数据
+                # Step 1: Validate file existence and extract metadata.
                 for fp in paths:
                     if not os.path.exists(fp):
                         return {"success": False, "error": f"File not found: {fp}"}
@@ -244,11 +244,11 @@ async def result_interpreter_handler(
 
                 metadata_list = [DataProcessor.get_metadata(fp) for fp in effective_paths]
 
-                # Step 2: 准备工作目录
+                # Step 2: Prepare working directory.
                 exec_work_dir = work_dir or tempfile.mkdtemp(prefix="interpreter_")
                 os.makedirs(exec_work_dir, exist_ok=True)
 
-                # Step 3: 使用 TaskExecutor (Claude Code) 执行任务
+                # Step 3: Run task using TaskExecutor (Claude Code).
                 executor = TaskExecutor(
                     data_file_paths=effective_paths,
                     output_dir=exec_work_dir,
@@ -276,11 +276,11 @@ async def result_interpreter_handler(
                     "work_dir": exec_work_dir,
                 }
             finally:
-                # 清理临时 staging 目录
+                # Clean up temporary staging directory.
                 _cleanup_staging_dir(staging_dir_to_cleanup)
 
         elif operation == "plan_analyze":
-            # 计划式完整分析流程（分解 -> 执行）
+            # Plan-based full analysis workflow (decompose -> execute).
             paths = data_paths or file_paths or ([file_path] if file_path else [])
             if not paths:
                 return {"success": False, "error": "data_paths or file_paths is required"}
@@ -290,7 +290,7 @@ async def result_interpreter_handler(
 
             from app.services.interpreter.interpreter import run_analysis_async
 
-            # 使用异步版本避免 asyncio.run() 在已有事件循环中抛出 RuntimeError
+            # Use async entrypoint to avoid asyncio.run() in active event loops.
             plan_result = await run_analysis_async(
                 description=task_description,
                 data_paths=paths,
@@ -323,7 +323,7 @@ async def result_interpreter_handler(
         return {"success": False, "error": str(e)}
 
 
-# 工具定义
+# Tool definition
 result_interpreter_tool = {
     "name": "result_interpreter",
     "description": """Data analysis and result interpretation tool.

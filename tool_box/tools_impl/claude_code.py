@@ -25,7 +25,7 @@ _BLOCK_SCOPE_REASON = "REASON: NEED_ATOMIC_TASK"
 
 
 def _get_available_skills() -> List[str]:
-    """获取可用的 skills 列表"""
+    """ skills """
     try:
         from app.services.skills import get_skills_loader
         loader = get_skills_loader(auto_sync=False)
@@ -414,7 +414,7 @@ Requirements:
 5. Return ONLY the directory name, nothing else
 
 Examples:
-- Task: "分析 data/code_task 目录，训练 baseline 模型，评估得分" → analyze_train_baseline
+- Task: " data/code_task ， baseline ，" → analyze_train_baseline
 - Task: "Generate a report on user behavior" → user_behavior_report
 - Task: "Debug the authentication system" → debug_authentication
 

@@ -20,7 +20,7 @@ const ActionSummary: React.FC<ActionSummaryProps> = ({ items }) => {
   return (
     <div style={{ marginTop: 10 }}>
       <Space direction="vertical" size={4} style={{ width: '100%' }}>
-        <Text strong style={{ color: 'var(--text-primary)', fontSize: 12 }}>动作摘要</Text>
+        <Text strong style={{ color: 'var(--text-primary)', fontSize: 12 }}>Action Summary</Text>
         <div>
           {items.map((item, index) => {
             const order = typeof item.order === 'number' ? item.order : index + 1;
@@ -35,7 +35,7 @@ const ActionSummary: React.FC<ActionSummaryProps> = ({ items }) => {
             return (
               <div key={`${order}_${kind}_${name}`} style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 2 }}>
                 <Text>
-                  {icon} 步骤 {order}: {kind}
+                  {icon} Step {order}: {kind}
                   {name}
                   {messageText}
                 </Text>
@@ -68,9 +68,9 @@ export const ToolStatusBar: React.FC<ToolStatusBarProps> = ({
   const successCount = toolResults.filter((item) => item.result?.success !== false).length;
   const failCount = toolResults.length - successCount;
   const statusTag = failCount > 0 ? (
-    <Tag color="red">部分失败</Tag>
+    <Tag color="red">Partial Failure</Tag>
   ) : (
-    <Tag color="green">全部成功</Tag>
+    <Tag color="green">All Succeeded</Tag>
   );
 
   const toolTags = toolResults.slice(0, 3).map((item, index) => (
@@ -95,20 +95,20 @@ export const ToolStatusBar: React.FC<ToolStatusBarProps> = ({
       }}
     >
       <Space size={6} wrap align="center">
-        <Text strong style={{ fontSize: 11 }}>工具</Text>
+        <Text strong style={{ fontSize: 11 }}>Tools</Text>
         {statusTag}
         <Space size={[4, 4]} wrap>
           {toolTags}
           {toolResults.length > 3 && (
-            <Text type="secondary">+{toolResults.length - 3} 更多</Text>
+            <Text type="secondary">+{toolResults.length - 3} more</Text>
           )}
         </Space>
         <Text type="secondary">
-          {failCount > 0 ? `失败 ${failCount} · 成功 ${successCount}` : `成功 ${successCount}`}
+          {failCount > 0 ? `Failed ${failCount} · Succeeded ${successCount}` : `Succeeded ${successCount}`}
         </Text>
       </Space>
       <Button type="link" size="small" onClick={onOpenDrawer} style={{ padding: 0 }}>
-        查看调用流程
+        View Call Flow
       </Button>
     </div>
   );
@@ -134,7 +134,7 @@ const ToolResultDrawer: React.FC<ToolResultDrawerProps> = ({
   const summaryItems = Array.isArray(actionsSummary) ? actionsSummary : [];
   return (
     <Drawer
-      title="工具调用详情"
+      title="Tool Call Details"
       placement="right"
       width={640}
       open={open}
