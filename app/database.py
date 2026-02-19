@@ -135,6 +135,31 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_job_index_plan ON plan_decomposition_job_index(plan_id)"
         )
 
+        # PhageScope tracking recovery table — persists in-flight tracking jobs so
+        # the polling thread can be restarted after a server restart.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS phagescope_tracking (
+                job_id       TEXT PRIMARY KEY,
+                session_id   TEXT NOT NULL,
+                plan_id      INTEGER,
+                remote_taskid TEXT NOT NULL,
+                modulelist   TEXT,
+                poll_interval REAL DEFAULT 30.0,
+                poll_timeout  REAL DEFAULT 172800.0,
+                status       TEXT NOT NULL DEFAULT 'running',
+                created_at   TEXT NOT NULL,
+                finished_at  TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_phagescope_tracking_status ON phagescope_tracking(status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_phagescope_tracking_session ON phagescope_tracking(session_id)"
+        )
+
     # 清理过期的 session 数据库
     try:
         cleaned = config.cleanup_old_sessions(max_age_days=30)

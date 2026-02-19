@@ -564,7 +564,9 @@ def get_background_task_board(
         where_parts.append("session_id=?")
         params.append(session_id)
     if plan_id is not None:
-        where_parts.append("plan_id=?")
+        # Include rows with matching plan_id OR rows with plan_id IS NULL (e.g.
+        # PhageScope jobs submitted before a plan was created in the session).
+        where_parts.append("(plan_id=? OR plan_id IS NULL)")
         params.append(plan_id)
     where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
     effective_plan_id = plan_id if isinstance(plan_id, int) else _lookup_session_plan_id(session_id)

@@ -89,6 +89,45 @@ async def lifespan(_fastapi_app: FastAPI):
     except Exception as e:
         logging.getLogger("app.main").warning("Failed to fix stale jobs: %s", e)
 
+    # Resume any PhageScope tracking threads that were running before restart
+    try:
+        from app.repository.plan_storage import get_running_phagescope_trackings
+        from app.services.plans.decomposition_jobs import (
+            plan_decomposition_jobs as _pdjobs,
+            start_phagescope_track_job_thread,
+        )
+        tracking_rows = get_running_phagescope_trackings()
+        resumed = 0
+        for row in tracking_rows:
+            job_id = row["job_id"]
+            # Re-create the in-memory job so the board can find it
+            try:
+                _pdjobs.create_job(
+                    plan_id=row.get("plan_id"),
+                    task_id=None,
+                    mode="phagescope_track",
+                    job_type="phagescope_track",
+                    params={"session_id": row.get("session_id"), "mode": "phagescope_track"},
+                    metadata={"session_id": row.get("session_id"), "resumed_on_startup": True},
+                    job_id=job_id,
+                )
+            except ValueError:
+                pass  # job already exists in memory
+            start_phagescope_track_job_thread(
+                job_id=job_id,
+                remote_taskid=row["remote_taskid"],
+                modulelist=row.get("modulelist") or [],
+                poll_interval=float(row.get("poll_interval") or 30.0),
+                poll_timeout=float(row.get("poll_timeout") or 172800.0),
+            )
+            resumed += 1
+        if resumed > 0:
+            logging.getLogger("app.main").info(
+                "Resumed %d PhageScope tracking thread(s) from previous run", resumed
+            )
+    except Exception as e:
+        logging.getLogger("app.main").warning("Failed to resume PhageScope tracking: %s", e)
+
     yield
 
 
