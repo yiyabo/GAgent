@@ -58,18 +58,22 @@ class PaperBuilder:
         task_name: Optional[str],
         task_instruction: Optional[str],
         text: Optional[str] = None,
+        *,
+        explicit_section: Optional[str] = None,
     ) -> Optional[str]:
-        haystacks = [
-            str(task_name or "").strip().lower(),
-            str(task_instruction or "").strip().lower(),
-            str(text or "")[:400].strip().lower(),
-        ]
-        merged = " ".join(item for item in haystacks if item)
-        if not merged:
+        # Explicit section from plan/task metadata takes precedence
+        if explicit_section is not None:
+            section_key = str(explicit_section).strip().lower()
+            if section_key in SECTION_ORDER:
+                return section_key
+        # Only task_name is used for inference; task_instruction and text are not,
+        # to avoid false positives (e.g. "执行结果摘要" in CC output matching abstract/result)
+        task_haystack = str(task_name or "").strip().lower()
+        if not task_haystack:
             return None
         for section in SECTION_ORDER:
             keywords = SECTION_KEYWORDS.get(section, ())
-            if any(keyword.lower() in merged for keyword in keywords):
+            if any(keyword.lower() in task_haystack for keyword in keywords):
                 return section
         return None
 

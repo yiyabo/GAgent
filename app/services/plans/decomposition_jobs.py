@@ -456,6 +456,16 @@ def execute_phagescope_track_job(
                 _update_action_run(job_id, status="failed", result=result_payload, errors=[str(error)])
         except Exception:
             pass
+        # Update the persistent tracking record so the job won't be restarted
+        # unnecessarily on the next server restart.
+        try:
+            from app.repository.plan_storage import update_phagescope_tracking_status
+            final_payload = plan_decomposition_jobs.get_job_payload(job_id) or {}
+            final_status = final_payload.get("status") or "running"
+            if final_status in ("succeeded", "failed"):
+                update_phagescope_tracking_status(job_id, final_status)
+        except Exception:
+            pass
         reset_current_job(ctx_token)
 
 
