@@ -1,0 +1,274 @@
+"""Claude Code execution helpers for atomic task context, CSV normalization,
+AMEM experience summarization, prompt composition, and placeholder resolution.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+from .session_helpers import _find_key_recursive
+
+if TYPE_CHECKING:
+    from app.services.llm.structured_response import LLMAction
+    from app.services.plans.plan_models import PlanNode
+
+logger = logging.getLogger(__name__)
+
+PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*previous\.([^\}]+)\s*\}\}")
+
+
+def resolve_claude_code_task_context(agent: Any) -> Tuple[Optional["PlanNode"], Optional[str]]:
+    plan_id = agent.plan_session.plan_id
+    if plan_id is None:
+        return None, "missing_plan_binding"
+
+    raw_task_id = agent.extra_context.get("current_task_id")
+    if raw_task_id is None:
+        return None, "missing_target_task"
+
+    try:
+        task_id = int(raw_task_id)
+    except (TypeError, ValueError):
+        return None, "invalid_target_task"
+
+    try:
+        tree = agent.plan_session.repo.get_plan_tree(plan_id)
+    except Exception:
+        return None, "plan_tree_unavailable"
+
+    if not tree.has_node(task_id):
+        return None, "target_task_not_found"
+
+    node = tree.get_node(task_id)
+    if tree.children_ids(task_id):
+        atomic_task_id = agent._first_executable_atomic_descendant(tree, task_id)
+        if atomic_task_id is None:
+            return None, "target_task_not_atomic"
+        try:
+            agent.extra_context["current_task_id"] = int(atomic_task_id)
+        except (TypeError, ValueError):
+            pass
+        node = tree.get_node(atomic_task_id)
+        logger.info(
+            "[CLAUDE_CODE] Redirected composite task %s to atomic descendant %s",
+            task_id,
+            atomic_task_id,
+        )
+
+    return node, None
+
+
+def normalize_csv_arg(value: Any) -> Optional[str]:
+    tokens: List[str] = []
+    if value is None:
+        return None
+    if isinstance(value, str):
+        raw_tokens = value.split(",")
+        tokens = [token.strip() for token in raw_tokens if token.strip()]
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            if item is None:
+                continue
+            item_text = str(item).strip()
+            if not item_text:
+                continue
+            if "," in item_text:
+                tokens.extend(part.strip() for part in item_text.split(",") if part.strip())
+            else:
+                tokens.append(item_text)
+    else:
+        item_text = str(value).strip()
+        if item_text:
+            tokens.append(item_text)
+
+    if not tokens:
+        return None
+
+    deduped: List[str] = []
+    seen = set()
+    for token in tokens:
+        normalized = token.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(token)
+    return ",".join(deduped) if deduped else None
+
+
+def summarize_amem_experiences_for_cc(
+    experiences: List[Dict[str, Any]],
+    *,
+    max_items: int = 3,
+) -> str:
+    if not experiences:
+        return ""
+
+    lines: List[str] = []
+    for exp in experiences[:max_items]:
+        content = str(exp.get("content") or "")
+        score = exp.get("score")
+        score_text = ""
+        try:
+            if score is not None:
+                score_text = f"{float(score):.2f}"
+        except (TypeError, ValueError):
+            score_text = ""
+
+        status_match = re.search(r"状态:\s*([^\n]+)", content)
+        key_match = re.search(r"##\s*关键发现\s*([\s\S]+)", content)
+        key_text = ""
+        if key_match:
+            key_text = key_match.group(1).splitlines()[0].strip()
+        if not key_text:
+            for raw_line in content.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                key_text = line
+                break
+        if not key_text:
+            key_text = "No concise finding extracted."
+        key_text = re.sub(r"\s+", " ", key_text)[:220]
+
+        segments: List[str] = []
+        if score_text:
+            segments.append(f"score={score_text}")
+        if status_match:
+            segments.append(status_match.group(1).strip())
+        header = f"[{' | '.join(segments)}] " if segments else ""
+        lines.append(f"- {header}{key_text}")
+
+    return "\n".join(lines)
+
+
+def compose_claude_code_atomic_task_prompt(
+    *,
+    task_node: "PlanNode",
+    original_task: str,
+    amem_hints: str = "",
+    data_context: Optional[str] = None,
+) -> str:
+    task_instruction = (task_node.instruction or "").strip() or original_task.strip()
+    user_task_context = original_task.strip()
+    if len(user_task_context) > 1200:
+        user_task_context = user_task_context[:1200].rstrip() + "..."
+
+    lines: List[str] = [
+        "[OUTER AGENT EXECUTION CONTRACT]",
+        "You are a code execution worker for ONE atomic task. Planning is forbidden.",
+        f"Plan ID: {task_node.plan_id}",
+        f"Task ID: {task_node.id}",
+        f"Task Name: {task_node.display_name()}",
+        "",
+        "Atomic task objective:",
+        task_instruction or "No instruction provided.",
+        "",
+        "Mandatory rules:",
+        "- Execute ONLY this atomic task.",
+        "- Do NOT create roadmap, decomposition, or extra tasks.",
+        "- Do NOT execute sibling or downstream tasks.",
+        "- Keep outputs scoped to the current task deliverables.",
+        "- If this task still needs decomposition or broader planning, STOP and output exactly:",
+        "  STATUS: BLOCKED_SCOPE",
+        "  REASON: NEED_ATOMIC_TASK",
+        "  DETAIL: <one sentence>",
+    ]
+
+    if user_task_context and user_task_context != task_instruction:
+        lines.extend(
+            [
+                "",
+                "User-provided context (reference only, do not expand scope):",
+                user_task_context,
+            ]
+        )
+
+    if data_context:
+        lines.extend(
+            [
+                "",
+                "Available data from previous steps (use these ABSOLUTE paths directly):",
+                data_context,
+            ]
+        )
+
+    if amem_hints:
+        lines.extend(
+            [
+                "",
+                "Historical execution hints (reference only, never expand scope):",
+                amem_hints,
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def resolve_previous_path(
+    previous_result: Dict[str, Any], path: str
+) -> Optional[Any]:
+    if not path:
+        return None
+    if path in {"taskid", "task_id"}:
+        return _find_key_recursive(previous_result, "taskid") or _find_key_recursive(
+            previous_result, "task_id"
+        )
+    current: Any = previous_result
+    for part in path.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        if isinstance(current, list):
+            try:
+                index = int(part)
+            except ValueError:
+                return None
+            if 0 <= index < len(current):
+                current = current[index]
+                continue
+        return None
+    if current is not None:
+        return current
+    fallback_key = path.split(".")[-1]
+    return _find_key_recursive(previous_result, fallback_key)
+
+
+def resolve_placeholders_in_value(
+    value: Any, previous_result: Dict[str, Any]
+) -> Any:
+    if isinstance(value, str):
+        def _replace(match: re.Match[str]) -> str:
+            token = match.group(1).strip()
+            resolved = resolve_previous_path(previous_result, token)
+            if resolved is None:
+                return match.group(0)
+            return str(resolved)
+
+        return PLACEHOLDER_PATTERN.sub(_replace, value)
+    if isinstance(value, dict):
+        return {
+            key: resolve_placeholders_in_value(item, previous_result)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            resolve_placeholders_in_value(item, previous_result)
+            for item in value
+        ]
+    return value
+
+
+def resolve_action_placeholders(
+    action: "LLMAction", previous_result: Optional[Dict[str, Any]]
+) -> "LLMAction":
+    if not previous_result:
+        return action
+    if not isinstance(action.parameters, dict):
+        return action
+    resolved = resolve_placeholders_in_value(
+        action.parameters, previous_result
+    )
+    action.parameters = resolved
+    return action

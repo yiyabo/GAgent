@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -37,7 +38,6 @@ CODE_EXTS = {
     ".yaml",
     ".yml",
     ".toml",
-    ".json",
     ".ini",
     ".cfg",
 }
@@ -95,6 +95,10 @@ DOC_ALLOWED_STEMS = {
     "conclusion",
     "reference",
     "references",
+    "report",
+    "analysis",
+    "survey",
+    "summary",
 }
 
 PATH_HINT_KEYS = {
@@ -148,6 +152,10 @@ NOISE_FILENAMES = {
     "preview.json",
     "result.json",
 }
+
+_CC_RUN_ARTIFACT_RE = re.compile(r"^run_\d{8}_\d{6}_")
+
+CC_INTERMEDIATE_SCRIPT_EXTS = {".py", ".sh", ".bash", ".r", ".jl"}
 
 
 @dataclass(frozen=True)
@@ -303,7 +311,15 @@ class DeliverablePublisher:
 
         text_blob = self._extract_text_blob(raw_result=raw_result, summary=summary)
         section: Optional[str] = None
-        if self._should_publish_text_blob(tool_name=tool_name, raw_result=raw_result):
+        normalized_tool = str(tool_name or "").strip().lower()
+        if normalized_tool == "claude_code":
+            # CC: only publish to paper when task_name implies a section; do not use instruction/text
+            section = self._paper_builder.infer_section(
+                task_name=task_name,
+                task_instruction=None,
+                text=None,
+            )
+        elif self._should_publish_text_blob(tool_name=tool_name, raw_result=raw_result):
             section = self._paper_builder.infer_section(
                 task_name=task_name,
                 task_instruction=task_instruction,
@@ -496,10 +512,28 @@ class DeliverablePublisher:
         if isinstance(summary, str) and summary.strip():
             chunks.append(summary.strip())
         if isinstance(raw_result, dict):
+            # Claude Code returns {"type":"result","result":"...", "duration_ms":...}; prefer "result" as main text
+            cc_text = raw_result.get("result")
+            if isinstance(cc_text, str) and cc_text.strip():
+                chunks.append(cc_text.strip())
             for key in ("content", "response", "answer", "summary", "text"):
+                if key == "result":
+                    continue
                 value = raw_result.get(key)
                 if isinstance(value, str) and value.strip():
                     chunks.append(value.strip())
+        elif isinstance(raw_result, str) and raw_result.strip():
+            # If raw_result is a JSON string (e.g. CC wrapper), try to parse and extract "result"
+            raw_str = raw_result.strip()
+            if raw_str.startswith("{"):
+                try:
+                    parsed = json.loads(raw_str)
+                    if isinstance(parsed, dict):
+                        cc_text = parsed.get("result")
+                        if isinstance(cc_text, str) and cc_text.strip():
+                            chunks.append(cc_text.strip())
+                except Exception:
+                    pass
         if not chunks:
             return ""
         return "\n\n".join(chunks)[:12000]
@@ -572,6 +606,8 @@ class DeliverablePublisher:
             if module not in allowed_modules:
                 continue
             if module == "docs" and not self._is_allowed_doc_file(file_path):
+                continue
+            if not self._should_publish_file(module, file_path):
                 continue
 
             key = f"{module}::{rel_path}"
@@ -755,9 +791,18 @@ class DeliverablePublisher:
             return False
         if self._is_noise_artifact_file(source_path):
             return False
+        if self._is_cc_intermediate_artifact(source_path):
+            return False
         if module == "docs":
             return self._is_allowed_doc_file(source_path)
+        if module == "code":
+            return self._is_allowed_code_file(source_path)
         return True
+
+    @staticmethod
+    def _is_allowed_code_file(path: Path) -> bool:
+        """Only actual code files belong in the code module; raw JSON/YAML data files do not."""
+        return path.suffix.lower() in CODE_EXTS
 
     def _is_noise_artifact_file(self, source_path: Path) -> bool:
         file_name = source_path.name.lower()
@@ -765,6 +810,13 @@ class DeliverablePublisher:
             return False
         normalized = "/" + str(source_path).replace("\\", "/").lower()
         return any(segment in normalized for segment in NOISE_PATH_SEGMENTS)
+
+    @staticmethod
+    def _is_cc_intermediate_artifact(source_path: Path) -> bool:
+        """CC auto-generated one-off scripts (run_YYYYMMDD_HHMMSS_*) are working artifacts, not deliverables."""
+        if source_path.suffix.lower() not in CC_INTERMEDIATE_SCRIPT_EXTS:
+            return False
+        return bool(_CC_RUN_ARTIFACT_RE.match(source_path.name))
 
     @staticmethod
     def _is_failed_result(raw_result: Any) -> bool:
@@ -779,6 +831,9 @@ class DeliverablePublisher:
     @staticmethod
     def _should_publish_text_blob(*, tool_name: str, raw_result: Any) -> bool:
         normalized_tool = str(tool_name or "").strip().lower()
+        # Claude Code: only publish to paper when infer_section returns a section (handled at call site)
+        if normalized_tool == "claude_code":
+            return False
         if normalized_tool in TEXT_DELIVERABLE_TOOLS:
             return True
         if normalized_tool != "file_operations" or not isinstance(raw_result, dict):
