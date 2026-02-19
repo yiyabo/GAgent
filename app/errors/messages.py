@@ -37,9 +37,9 @@ class ErrorMessageRegistry:
             # Business error messages (1000-1999)
             ErrorCode.BUSINESS_RULE_VIOLATION: {
                 Language.ZH_CN: {
-                    "message": "业务规则违反",
-                    "description": "操作违反了业务逻辑规则",
-                    "suggestions": ["检查业务规则", "确认操作的前置条件", "联系业务团队确认规则"],
+                    "message": "",
+                    "description": "",
+                    "suggestions": ["", "confirm", "confirm"],
                 },
                 Language.EN_US: {
                     "message": "Business rule violation",
@@ -49,9 +49,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.TASK_NOT_FOUND: {
                 Language.ZH_CN: {
-                    "message": "任务不存在",
-                    "description": "指定的任务ID未找到",
-                    "suggestions": ["检查任务ID是否正确", "确认任务是否已被删除", "刷新任务列表"],
+                    "message": "taskdoes not exist",
+                    "description": "task id",
+                    "suggestions": ["check task id", "confirm task was not deleted", "refresh task list"],
                 },
                 Language.EN_US: {
                     "message": "Task not found",
@@ -61,9 +61,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.INVALID_TASK_STATE: {
                 Language.ZH_CN: {
-                    "message": "任务状态无效",
-                    "description": "当前任务状态不允许此操作",
-                    "suggestions": ["检查任务当前状态", "确认操作时机", "等待任务状态变更"],
+                    "message": "invalid task state",
+                    "description": "task status does not allow this operation",
+                    "suggestions": ["check task status", "verify operation timing", "wait for status change"],
                 },
                 Language.EN_US: {
                     "message": "Invalid task state",
@@ -73,9 +73,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.INSUFFICIENT_RESOURCES: {
                 Language.ZH_CN: {
-                    "message": "资源不足",
-                    "description": "系统资源不足以完成操作",
-                    "suggestions": ["释放部分资源", "增加系统资源配额", "稍后重试"],
+                    "message": "",
+                    "description": "systemcompleted",
+                    "suggestions": ["", "system", ""],
                 },
                 Language.EN_US: {
                     "message": "Insufficient resources",
@@ -85,9 +85,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.GOAL_VALIDATION_FAILED: {
                 Language.ZH_CN: {
-                    "message": "目标验证失败",
-                    "description": "提供的目标不符合验证要求",
-                    "suggestions": ["检查目标格式", "确保目标内容完整", "参考目标设定指南"],
+                    "message": "failed",
+                    "description": "",
+                    "suggestions": ["", "content", ""],
                 },
                 Language.EN_US: {
                     "message": "Goal validation failed",
@@ -102,9 +102,9 @@ class ErrorMessageRegistry:
             # Validation error messages (2000-2999)
             ErrorCode.MISSING_REQUIRED_FIELD: {
                 Language.ZH_CN: {
-                    "message": "缺少必填字段",
-                    "description": "请求中缺少必需的字段",
-                    "suggestions": ["检查所有必填字段", "参考API文档", "补充缺失的参数"],
+                    "message": "",
+                    "description": "missing required field",
+                    "suggestions": ["", "API", "parameter"],
                 },
                 Language.EN_US: {
                     "message": "Missing required field",
@@ -118,9 +118,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.INVALID_FIELD_FORMAT: {
                 Language.ZH_CN: {
-                    "message": "字段格式无效",
-                    "description": "字段值不符合预期格式",
-                    "suggestions": ["检查字段格式要求", "使用正确的数据类型", "参考格式示例"],
+                    "message": "",
+                    "description": "",
+                    "suggestions": ["", "type", ""],
                 },
                 Language.EN_US: {
                     "message": "Invalid field format",
@@ -134,9 +134,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.FIELD_VALUE_OUT_OF_RANGE: {
                 Language.ZH_CN: {
-                    "message": "字段值超出范围",
-                    "description": "字段值超出了允许的取值范围",
-                    "suggestions": ["检查取值范围限制", "调整参数值", "使用合理的数值"],
+                    "message": "",
+                    "description": "",
+                    "suggestions": ["", "parameter", ""],
                 },
                 Language.EN_US: {
                     "message": "Field value out of range",
@@ -146,9 +146,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.INVALID_JSON_FORMAT: {
                 Language.ZH_CN: {
-                    "message": "JSON格式无效",
-                    "description": "请求数据不是有效的JSON格式",
-                    "suggestions": ["检查JSON语法", "使用JSON验证工具", "确保引号和括号正确配对"],
+                    "message": "JSON",
+                    "description": "pleaseJSON",
+                    "suggestions": ["JSON", "JSON", ""],
                 },
                 Language.EN_US: {
                     "message": "Invalid JSON format",
@@ -162,9 +162,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.SCHEMA_VALIDATION_FAILED: {
                 Language.ZH_CN: {
-                    "message": "数据结构验证失败",
-                    "description": "数据不符合预期的结构定义",
-                    "suggestions": ["检查数据结构", "参考结构定义文档", "使用正确的数据模型"],
+                    "message": "failed",
+                    "description": "",
+                    "suggestions": ["", "", "model"],
                 },
                 Language.EN_US: {
                     "message": "Schema validation failed",
@@ -175,9 +175,9 @@ class ErrorMessageRegistry:
             # System error messages (3000-3999)
             ErrorCode.INTERNAL_SERVER_ERROR: {
                 Language.ZH_CN: {
-                    "message": "内部服务器错误",
-                    "description": "服务器处理请求时发生内部错误",
-                    "suggestions": ["稍后重试", "检查服务器状态", "联系技术支持"],
+                    "message": "serviceerror",
+                    "description": "service internal error",
+                    "suggestions": ["", "servicestatus", "support"],
                 },
                 Language.EN_US: {
                     "message": "Internal server error",
@@ -187,9 +187,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.SERVICE_UNAVAILABLE: {
                 Language.ZH_CN: {
-                    "message": "服务不可用",
-                    "description": "当前服务暂时不可用",
-                    "suggestions": ["稍后重试", "检查服务状态", "使用备用服务"],
+                    "message": "serviceunavailable",
+                    "description": "serviceunavailable",
+                    "suggestions": ["", "servicestatus", "service"],
                 },
                 Language.EN_US: {
                     "message": "Service unavailable",
@@ -199,9 +199,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.TIMEOUT_ERROR: {
                 Language.ZH_CN: {
-                    "message": "操作超时",
-                    "description": "操作执行时间超出预期",
-                    "suggestions": ["增加超时时间", "优化操作效率", "分批处理数据"],
+                    "message": "",
+                    "description": "execute",
+                    "suggestions": ["", "", ""],
                 },
                 Language.EN_US: {
                     "message": "Operation timeout",
@@ -215,9 +215,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.CONFIGURATION_ERROR: {
                 Language.ZH_CN: {
-                    "message": "配置错误",
-                    "description": "系统配置存在错误或缺失",
-                    "suggestions": ["检查配置文件", "更新配置信息", "重启服务"],
+                    "message": "configurationerror",
+                    "description": "systemconfigurationerror",
+                    "suggestions": ["configurationfile", "updateconfiguration", "service"],
                 },
                 Language.EN_US: {
                     "message": "Configuration error",
@@ -227,9 +227,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.MEMORY_INSUFFICIENT: {
                 Language.ZH_CN: {
-                    "message": "内存不足",
-                    "description": "系统可用内存不足",
-                    "suggestions": ["释放内存资源", "增加内存配置", "优化内存使用"],
+                    "message": "",
+                    "description": "systemavailable",
+                    "suggestions": ["", "configuration", ""],
                 },
                 Language.EN_US: {
                     "message": "Insufficient memory",
@@ -240,9 +240,9 @@ class ErrorMessageRegistry:
             # Network error messages (4000-4999)
             ErrorCode.CONNECTION_FAILED: {
                 Language.ZH_CN: {
-                    "message": "连接失败",
-                    "description": "无法建立网络连接",
-                    "suggestions": ["检查网络连接", "确认目标地址正确", "检查防火墙设置"],
+                    "message": "connectionfailed",
+                    "description": "networkconnection",
+                    "suggestions": ["networkconnection", "confirm", ""],
                 },
                 Language.EN_US: {
                     "message": "Connection failed",
@@ -252,9 +252,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.REQUEST_TIMEOUT: {
                 Language.ZH_CN: {
-                    "message": "请求超时",
-                    "description": "网络请求超时",
-                    "suggestions": ["检查网络速度", "增加超时时间", "重试请求"],
+                    "message": "please",
+                    "description": "networkplease",
+                    "suggestions": ["network", "", "please"],
                 },
                 Language.EN_US: {
                     "message": "Request timeout",
@@ -265,9 +265,9 @@ class ErrorMessageRegistry:
             # Database error messages (5000-5999)
             ErrorCode.DATABASE_CONNECTION_FAILED: {
                 Language.ZH_CN: {
-                    "message": "数据库连接失败",
-                    "description": "无法连接到数据库服务器",
-                    "suggestions": ["检查数据库服务状态", "验证连接配置", "检查网络连通性"],
+                    "message": "databaseconnectionfailed",
+                    "description": "connectiondatabaseservice",
+                    "suggestions": ["databaseservicestatus", "connectionconfiguration", "network"],
                 },
                 Language.EN_US: {
                     "message": "Database connection failed",
@@ -281,9 +281,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.QUERY_EXECUTION_FAILED: {
                 Language.ZH_CN: {
-                    "message": "查询执行失败",
-                    "description": "数据库查询执行时出错",
-                    "suggestions": ["检查SQL语法", "验证表结构", "检查数据权限"],
+                    "message": "query execution failed",
+                    "description": "databaseexecute",
+                    "suggestions": ["SQL", "", ""],
                 },
                 Language.EN_US: {
                     "message": "Query execution failed",
@@ -294,9 +294,9 @@ class ErrorMessageRegistry:
             # Authentication/Authorization error messages (6000-6999)
             ErrorCode.AUTHENTICATION_FAILED: {
                 Language.ZH_CN: {
-                    "message": "身份验证失败",
-                    "description": "用户身份验证未通过",
-                    "suggestions": ["检查用户名和密码", "确认账户状态", "重新登录"],
+                    "message": "failed",
+                    "description": "",
+                    "suggestions": ["", "confirmstatus", ""],
                 },
                 Language.EN_US: {
                     "message": "Authentication failed",
@@ -306,9 +306,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.TOKEN_EXPIRED: {
                 Language.ZH_CN: {
-                    "message": "令牌已过期",
-                    "description": "访问令牌已过期需要刷新",
-                    "suggestions": ["刷新访问令牌", "重新登录", "检查令牌有效期"],
+                    "message": "",
+                    "description": "refresh",
+                    "suggestions": ["refresh", "", ""],
                 },
                 Language.EN_US: {
                     "message": "Token expired",
@@ -318,9 +318,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.INSUFFICIENT_PERMISSIONS: {
                 Language.ZH_CN: {
-                    "message": "权限不足",
-                    "description": "用户权限不足以执行此操作",
-                    "suggestions": ["联系管理员获取权限", "确认用户角色", "检查权限配置"],
+                    "message": "",
+                    "description": "execute",
+                    "suggestions": ["get", "confirm", "configuration"],
                 },
                 Language.EN_US: {
                     "message": "Insufficient permissions",
@@ -335,9 +335,9 @@ class ErrorMessageRegistry:
             # External service error messages (7000-7999)
             ErrorCode.LLM_SERVICE_ERROR: {
                 Language.ZH_CN: {
-                    "message": "LLM服务错误",
-                    "description": "大语言模型服务调用失败",
-                    "suggestions": ["检查LLM服务状态", "确认API密钥有效", "稍后重试"],
+                    "message": "LLMserviceerror",
+                    "description": "modelservicefailed",
+                    "suggestions": ["LLMservicestatus", "confirmAPI", ""],
                 },
                 Language.EN_US: {
                     "message": "LLM service error",
@@ -347,9 +347,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.EMBEDDING_SERVICE_ERROR: {
                 Language.ZH_CN: {
-                    "message": "嵌入向量服务错误",
-                    "description": "向量化服务调用失败",
-                    "suggestions": ["检查向量服务状态", "确认模型可用性", "重新生成向量"],
+                    "message": "serviceerror",
+                    "description": "servicefailed",
+                    "suggestions": ["servicestatus", "confirmmodelavailable", ""],
                 },
                 Language.EN_US: {
                     "message": "Embedding service error",
@@ -359,9 +359,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.MCP_SERVICE_ERROR: {
                 Language.ZH_CN: {
-                    "message": "MCP服务错误",
-                    "description": "Memory-MCP服务调用失败",
-                    "suggestions": ["检查MCP服务状态", "验证内存服务配置", "重启MCP服务"],
+                    "message": "MCPserviceerror",
+                    "description": "Memory-MCPservicefailed",
+                    "suggestions": ["MCPservicestatus", "serviceconfiguration", "MCPservice"],
                 },
                 Language.EN_US: {
                     "message": "MCP service error",
@@ -371,9 +371,9 @@ class ErrorMessageRegistry:
             },
             ErrorCode.API_RATE_LIMIT_EXCEEDED: {
                 Language.ZH_CN: {
-                    "message": "API调用频率超限",
-                    "description": "API调用频率超过限制",
-                    "suggestions": ["降低调用频率", "申请更高配额", "使用批量接口"],
+                    "message": "API",
+                    "description": "API",
+                    "suggestions": ["reduce request rate", "request higher quota", "retry with backoff"],
                 },
                 Language.EN_US: {
                     "message": "API rate limit exceeded",
@@ -381,6 +381,20 @@ class ErrorMessageRegistry:
                     "suggestions": ["Reduce call frequency", "Request higher quota", "Use batch APIs"],
                 },
             },
+        }
+        # Keep runtime outputs English-only after repository-wide language normalization.
+        for error_data in self._messages.values():
+            english_payload = error_data.get(Language.EN_US)
+            if english_payload:
+                error_data[Language.ZH_CN] = self._clone_message_payload(english_payload)
+
+    @staticmethod
+    def _clone_message_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Clone message payload to avoid shared mutable list references."""
+        return {
+            "message": str(payload.get("message", "")),
+            "description": str(payload.get("description", "")),
+            "suggestions": list(payload.get("suggestions", [])),
         }
 
     def get_message(

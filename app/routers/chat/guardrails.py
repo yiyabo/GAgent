@@ -24,11 +24,6 @@ def explicit_manuscript_request(user_message: str) -> bool:
         if re.search(r"\b(write|draft|revise|edit|polish|prepare)\b", lowered):
             return True
 
-    if re.search(r"(写|撰写|生成|润色|修改|改写|完善).*(论文|稿件)", text):
-        return True
-    if re.search(r"(论文|稿件).*(写|撰写|生成|润色|修改|改写|完善)", text):
-        return True
-
     return False
 
 
@@ -37,7 +32,6 @@ def extract_task_id_from_text(text: str) -> Optional[int]:
         return None
     patterns = [
         r"(?:task[_\s-]?id|task)\s*[#:=]?\s*(\d+)",
-        r"任务\s*[#:=]?\s*(\d+)",
         r"#(\d+)",
     ]
     for pattern in patterns:
@@ -56,27 +50,18 @@ def is_status_query_only(text: str) -> bool:
     if not lowered:
         return False
     status_tokens = (
-        "完成了",
-        "完成吗",
-        "完成没",
         "done",
         "status",
-        "进度",
-        "状态",
-        "更新了吗",
-        "好了没",
-        "结果呢",
+        "progress",
+        "updated",
+        "result",
     )
     execute_tokens = (
-        "执行",
-        "运行",
-        "开始",
-        "继续",
-        "重跑",
-        "重试",
         "run",
         "execute",
         "start",
+        "continue",
+        "retry",
         "rerun",
         "resume",
     )
@@ -90,22 +75,13 @@ def reply_promises_execution(reply_text: str) -> bool:
     if not lowered:
         return False
     promise_tokens = (
-        "我将",
-        "我会",
-        "马上",
-        "立即",
-        "接下来",
         "i will",
         "i'll",
         "starting now",
         "immediately",
+        "next",
     )
     action_tokens = (
-        "执行",
-        "运行",
-        "开始",
-        "撰写",
-        "写入",
         "run",
         "execute",
         "start",
@@ -122,11 +98,6 @@ def looks_like_completion_claim(reply_text: str) -> bool:
     if not lowered:
         return False
     claim_tokens = (
-        "已完成",
-        "完成了",
-        "全部完成",
-        "已创建",
-        "已生成",
         "completed",
         "all required files",
         "files have been created",
@@ -141,8 +112,8 @@ def extract_declared_absolute_paths(reply_text: str) -> List[str]:
     pattern = re.compile(r"(/(?:[^\s`\"'<>|])+)")
     paths: List[str] = []
     seen: set[str] = set()
-    # CJK and other non-filesystem characters indicate the "/" is part of
-    # natural language (e.g. "创建/拆分"), not a real file path.
+    # CJK and other non-filesystem characters indicate "/" is part of
+    # natural language (e.g. "create/decompose"), not a real file path.
     _NON_PATH_RE = re.compile(
         r"[\u2E80-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFFEF\u3000-\u303F\u3040-\u30FF]|[^\x00-\x7F]{2}"
     )
@@ -172,29 +143,17 @@ def is_generic_plan_confirmation(text: str) -> bool:
     raw = str(text or "").strip()
     if not raw:
         return False
-    normalized = re.sub(r"[\s，。,.!！?？]+", "", raw).lower()
+    normalized = re.sub(r"[\s,\.!?]+", "", raw).lower()
     generic_phrases = {
         "ok",
         "okay",
         "yes",
         "yep",
         "sure",
-        "好的",
-        "好",
-        "可以",
-        "可以的",
-        "行",
-        "行的",
-        "创建吧",
-        "开始吧",
-        "执行吧",
-        "继续吧",
-        "可以创建吧",
-        "可以开始吧",
-        "可以执行吧",
-        "可以的创建吧",
-        "可以的开始吧",
-        "可以的执行吧",
+        "createit",
+        "startit",
+        "executeit",
+        "continueit",
     }
     return normalized in generic_phrases
 
@@ -209,15 +168,7 @@ def should_force_plan_first(
         return False
 
     project_keywords = (
-        "从0到1",
-        "完整",
-        "全流程",
-        "整个任务",
-        "综述",
-        "论文",
-        "项目",
         "task graph",
-        "任务图谱",
         "project",
         "end-to-end",
         "end to end",
@@ -228,11 +179,6 @@ def should_force_plan_first(
         "review paper",
     )
     action_keywords = (
-        "完成",
-        "实现",
-        "产出",
-        "交付",
-        "构建",
         "build",
         "deliver",
         "complete",
@@ -240,11 +186,9 @@ def should_force_plan_first(
         "finish",
     )
     broad_execution_keywords = (
-        "一键",
-        "全部",
-        "全都",
-        "一次性",
-        "完整项目",
+        "one-click",
+        "all",
+        "all-at-once",
         "whole project",
         "full project",
         "entire workflow",

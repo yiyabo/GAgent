@@ -1,17 +1,17 @@
 #!/bin/bash
-# 后端启动脚本 - 从环境变量读取配置
+#  - 
 
-# 解析项目根目录（无论从哪个 cwd 启动都一致）
+# （ cwd ）
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNTIME_DIR="$ROOT_DIR/runtime"
 DATA_DIR="$ROOT_DIR/data"
 
-# 加载项目根目录下的 .env 文件
+#  .env 
 if [ -f "$ROOT_DIR/.env" ]; then
     export $(cat "$ROOT_DIR/.env" | grep -v '^#' | xargs)
 fi
 
-# 读取环境变量，提供默认值
+# ，
 BACKEND_HOST=${BACKEND_HOST:-0.0.0.0}
 BACKEND_PORT=${BACKEND_PORT:-9000}
 # Default to hot-reload for local development; set BACKEND_RELOAD=false to disable.
@@ -24,7 +24,7 @@ echo "🌐 CORS Origins: $CORS_ORIGINS"
 echo "♻️  Reload enabled: $BACKEND_RELOAD"
 echo "📂 Project root: $ROOT_DIR"
 
-# 启动 FastAPI 应用
+#  FastAPI 
 RELOAD_ARGS=()
 case "$BACKEND_RELOAD" in
   true|TRUE|1|yes|YES|on|ON)

@@ -1,7 +1,8 @@
 """
-递归分解相关API端点
+Decomposition-related API routes.
 
-包含任务分解、计划分解、复杂度评估和分解建议功能。
+Includes task decomposition, plan decomposition, complexity evaluation,
+and decomposition recommendation endpoints.
 """
 
 import asyncio
@@ -203,7 +204,6 @@ def get_decomposition_recommendation(task_id: int, min_complexity_score: float =
         ) from e
 
 
-# 计划分解端点  
 @router.post("/plans/{title}/decompose")
 def decompose_plan_endpoint(title: str, payload: Dict[str, Any] = Body(default={})):
     """Recursively decompose all tasks in a plan.

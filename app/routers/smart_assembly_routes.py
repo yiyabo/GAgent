@@ -1,7 +1,7 @@
 """
-智能组装路由
 
-提供更智能的报告组装功能，解决标题匹配问题。
+
+, . 
 """
 
 import logging
@@ -17,16 +17,15 @@ logger = logging.getLogger(__name__)
 
 @router.get("/smart-assemble/{title}")
 def smart_assemble_plan(title: str):
-    """智能组装计划报告，支持多种匹配策略"""
-    
-    logger.info(f"智能组装请求: title='{title}'")
-    
+    """plan, support"""
+
+    logger.info(f"please: title='{title}'")
+
     from ..database_pool import get_db
     with get_db() as conn:
-        # 策略1：精确前缀匹配
         from ..utils import plan_prefix
         prefix = plan_prefix(title)
-        
+
         rows = conn.execute(
             """
             SELECT t.id, t.name, o.content, t.priority
@@ -37,10 +36,9 @@ def smart_assemble_plan(title: str):
             """,
             (prefix + "%",),
         ).fetchall()
-        
-        logger.info(f"精确匹配结果: {len(rows)} 个任务")
-        
-        # 策略2：模糊匹配
+
+        logger.info(f"result: {len(rows)} task")
+
         if not rows:
             fuzzy_pattern = f"%{title}%"
             rows = conn.execute(
@@ -53,9 +51,8 @@ def smart_assemble_plan(title: str):
                 """,
                 (fuzzy_pattern,),
             ).fetchall()
-            logger.info(f"模糊匹配结果: {len(rows)} 个任务")
-        
-        # 策略3：关键词匹配
+            logger.info(f"result: {len(rows)} task")
+
         if not rows and title:
             keywords = [word for word in title.split() if len(word) > 1]
             if keywords:
@@ -71,11 +68,9 @@ def smart_assemble_plan(title: str):
                     """,
                     (keyword_pattern,),
                 ).fetchall()
-                logger.info(f"关键词匹配结果: {len(rows)} 个任务 (关键词: '{main_keyword}')")
-        
-        # 策略4：最近的相关任务
+                logger.info(f"result: {len(rows)} task (: '{main_keyword}')")
+
         if not rows:
-            # 查找最近创建的有内容的任务
             rows = conn.execute(
                 """
                 SELECT t.id, t.name, o.content, t.priority
@@ -86,24 +81,23 @@ def smart_assemble_plan(title: str):
                 LIMIT 10
                 """,
             ).fetchall()
-            logger.info(f"最近任务匹配结果: {len(rows)} 个任务")
-    
+            logger.info(f"taskresult: {len(rows)} task")
+
     if not rows:
-        logger.warning(f"没有找到与标题 '{title}' 匹配的任务")
-        return {"title": title, "sections": [], "combined": "", "error": "没有找到匹配的任务"}
-    
-    # 构建结果
+        logger.warning(f" '{title}' task")
+        return {"title": title, "sections": [], "combined": "", "error": "task"}
+
     sections = []
     combined_parts = []
-    
+
     for row in rows:
         try:
             task_id, name, content, priority = row[0], row[1], row[2], row[3]
         except:
             task_id, name, content, priority = row["id"], row["name"], row["content"], row["priority"]
-            
+
         _, short = split_prefix(name)
-        
+
         sections.append({
             "name": short,
             "content": content,
@@ -111,14 +105,14 @@ def smart_assemble_plan(title: str):
             "priority": priority
         })
         combined_parts.append(f"## {short}\n\n{content}")
-    
+
     result = {
         "title": title,
         "sections": sections,
         "combined": "\n\n".join(combined_parts),
         "total_sections": len(sections),
-        "match_strategy": "智能匹配"
+        "match_strategy": ""
     }
-    
-    logger.info(f"智能组装完成: {len(sections)} 个章节")
+
+    logger.info(f"completed: {len(sections)} ")
     return result

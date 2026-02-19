@@ -41,7 +41,6 @@ class LLMClient(LLMProvider):
     ) -> None:
         settings = get_settings()
 
-        # 确定使用的提供商（强制将 legacy glm 路由到 qwen，避免误打到 BigModel）
         requested_provider = (
             provider or os.getenv("LLM_PROVIDER") or settings.llm_provider or "qwen"
         )
@@ -53,7 +52,6 @@ class LLMClient(LLMProvider):
 
         provider_name = self.provider.lower()
 
-        # 根据提供商配置API参数
         if provider_name == "perplexity":
             env_api_key = os.getenv("PERPLEXITY_API_KEY")
             env_url = os.getenv("PERPLEXITY_API_URL")
@@ -78,7 +76,6 @@ class LLMClient(LLMProvider):
                 selected_model = settings.qwen_model or "qwen3.5-plus"
             self.model = selected_model
         elif provider_name == "kimi":
-            # Kimi (Moonshot) via OpenAI-compatible endpoints (e.g., 百炼/compatible-mode)
             env_api_key = os.getenv("KIMI_API_KEY")
             env_url = os.getenv("KIMI_API_URL")
             env_model = os.getenv("KIMI_MODEL")
@@ -138,10 +135,9 @@ class LLMClient(LLMProvider):
                 or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
             )
             self.model = model or env_model or settings.qwen_model or "qwen3.5-plus"
-        
+
         self.timeout = timeout or settings.glm_request_timeout
-        # 🚫 科研项目要求：强制禁用Mock模式，必须使用真实API
-        self.mock = False  # 永远不使用Mock模式
+        self.mock = False  # Mock
         # Retry/backoff configuration
         try:
             if retries is None:
@@ -166,13 +162,13 @@ class LLMClient(LLMProvider):
 
         if not self.api_key:
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
-        
+
         # Support full messages list for multi-turn conversations
         if messages:
             payload_messages = messages
         else:
             payload_messages = [{"role": "user", "content": prompt}]
-        
+
         payload = {
             "model": model or self.model,
             "messages": payload_messages,

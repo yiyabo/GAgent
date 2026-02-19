@@ -121,7 +121,7 @@ const ThinkingStepItem: React.FC<{ step: ThinkingStep; index: number; isLast: bo
                             {actionDetails.tool}
                         </span>
                         {step.status === 'calling_tool' && (
-                            <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>正在调用...</span>
+                            <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Calling...</span>
                         )}
                     </div>
                     <div style={{
@@ -144,7 +144,7 @@ const ThinkingStepItem: React.FC<{ step: ThinkingStep; index: number; isLast: bo
                             borderTop: '1px dashed var(--border-color)',
                             paddingTop: 8,
                         }}>
-                            <span style={{ color: 'var(--success-color)', fontWeight: 500 }}>结果: </span>
+                            <span style={{ color: 'var(--success-color)', fontWeight: 500 }}>Result: </span>
                             <span style={{
                                 color: 'var(--text-secondary)',
                                 display: '-webkit-box',

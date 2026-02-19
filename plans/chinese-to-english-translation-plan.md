@@ -78,9 +78,9 @@ This plan outlines the systematic approach to convert all Chinese content (comme
 
 | File | Content to Translate |
 |------|---------------------|
-| `Tasks.tsx` | "任务管理" -> "Task Management" |
+| `Tasks.tsx` | "" -> "Task Management" |
 | `Plans.tsx` | All UI labels, statistics titles, status messages |
-| `System.tsx` | "系统设置" -> "System Settings" |
+| `System.tsx` | "" -> "System Settings" |
 | `Dashboard.tsx` | Check for any Chinese content |
 | `Memory.tsx` | Check for any Chinese content |
 
@@ -195,28 +195,28 @@ This plan outlines the systematic approach to convert all Chinese content (comme
 
 | Chinese | English |
 |---------|---------|
-| 任务 | Task |
-| 计划 | Plan |
-| 执行 | Execute |
-| 加载中 | Loading |
-| 暂无 | No data / None |
-| 失败 | Failed |
-| 成功 | Success |
-| 待执行 | Pending |
-| 执行中 | Running |
-| 已完成 | Completed |
-| 已跳过 | Skipped |
-| 刷新 | Refresh |
-| 删除 | Delete |
-| 保存 | Save |
-| 取消 | Cancel |
-| 确定 | Confirm / OK |
-| 搜索 | Search |
-| 记忆 | Memory |
-| 对话 | Chat / Conversation |
-| 工具 | Tool |
-| 系统 | System |
-| 设置 | Settings |
+|  | Task |
+|  | Plan |
+|  | Execute |
+|  | Loading |
+|  | No data / None |
+|  | Failed |
+|  | Success |
+|  | Pending |
+|  | Running |
+|  | Completed |
+|  | Skipped |
+|  | Refresh |
+|  | Delete |
+|  | Save |
+|  | Cancel |
+|  | Confirm / OK |
+|  | Search |
+|  | Memory |
+|  | Chat / Conversation |
+|  | Tool |
+|  | System |
+|  | Settings |
 
 ---
 

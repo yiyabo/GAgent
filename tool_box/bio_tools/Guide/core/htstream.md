@@ -54,7 +54,7 @@ docker run --rm -v /path/to/data:/data quay.io/biocontainers/htstream:latest [co
 ## Examples for Agent
 
 ### Example 1: Basic Stats Calculation
-**User Request**: "计算这个 FASTQ 文件的统计信息"
+**User Request**: " FASTQ "
 
 **Agent Command**:
 ```bash
@@ -65,7 +65,7 @@ docker run --rm \
 ```
 
 ### Example 2: Remove Duplicates
-**User Request**: "去除 PCR 重复"
+**User Request**: " PCR "
 
 **Agent Command**:
 ```bash

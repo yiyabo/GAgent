@@ -37,7 +37,7 @@ class GLMEmbeddingsService:
         else:
             logger.info("Using GLM API for embeddings")
             self.api_client = GLMApiClient(self.config)
-        
+
         self.batch_processor = EmbeddingBatchProcessor(self.config, self.api_client, self.cache)
         self.async_manager = AsyncEmbeddingManager(self.batch_processor)
         self.similarity_calculator = SimilarityCalculator()
@@ -195,30 +195,27 @@ class GLMEmbeddingsService:
         return json.loads(json_str)
 
 
-# 导入线程安全版本
 from app.services.embeddings.thread_safe_embeddings import (
     get_thread_safe_embeddings_service,
     shutdown_thread_safe_embeddings_service,
 )
 
 
-# 保持向后兼容性
 def get_embeddings_service():
-    """获取嵌入向量服务（线程安全版本）"""
+    """getservice()"""
     return get_thread_safe_embeddings_service()
 
 
 def shutdown_embeddings_service():
-    """关闭嵌入向量服务（线程安全版本）"""
+    """closeservice()"""
     shutdown_thread_safe_embeddings_service()
 
 
-# Singleton pattern for service instance (保留用于兼容性，但标记为已弃用)
 _embeddings_service = None
 
 
 class GLMEmbeddingsServiceLegacy(GLMEmbeddingsService):
-    """遗留的GLM嵌入向量服务类（已弃用，建议使用线程安全版本）"""
+    """GLMservice(, recommendation)"""
 
     def __init__(self):
         import warnings

@@ -96,43 +96,47 @@ def test_sanitize_task_dir_component_removes_unsafe_path_chars() -> None:
     assert _sanitize_task_dir_component("../../A/B\\C:task") == "a_b_c_task"
 
 
-def test_is_path_within_detects_child_path(tmp_path) -> None:
-    parent = tmp_path / "parent"
-    child = parent / "nested"
-    child.mkdir(parents=True)
-    assert _is_path_within(child, parent) is True
-
-
-def test_is_path_within_detects_outside_path(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("target_path", "expected"),
+    [
+    ("parent/nested", True),
+    ("outside", False),
+],
+)
+def test_is_path_within_variants(tmp_path, target_path: str, expected: bool) -> None:
     parent = tmp_path / "parent"
     parent.mkdir(parents=True)
-    outside = tmp_path / "outside"
-    outside.mkdir(parents=True)
-    assert _is_path_within(outside, parent) is False
+    full_target = tmp_path / target_path
+    full_target.mkdir(parents=True, exist_ok=True)
+    assert _is_path_within(full_target, parent) is expected
 
 
-def test_resolve_setting_sources_defaults_to_project_local() -> None:
-    assert _resolve_setting_sources(None) == "project,local"
+@pytest.mark.parametrize(
+    ("raw_sources", "auth_mode", "expected"),
+    [
+        (None, None, "project,local"),
+        ("none", None, None),
+        ("user,invalid,project,user", None, "user,project"),
+        (None, "api_env", "project"),
+    ],
+)
+def test_resolve_setting_sources_variants(
+    raw_sources: str | None,
+    auth_mode: str | None,
+    expected: str | None,
+) -> None:
+    assert _resolve_setting_sources(raw_sources, auth_mode=auth_mode) == expected
 
 
-def test_resolve_setting_sources_disables_with_none() -> None:
-    assert _resolve_setting_sources("none") is None
-
-
-def test_resolve_setting_sources_filters_invalid_tokens() -> None:
-    assert _resolve_setting_sources("user,invalid,project,user") == "user,project"
-
-
-def test_resolve_setting_sources_defaults_to_project_in_api_mode() -> None:
-    assert _resolve_setting_sources(None, auth_mode="api_env") == "project"
-
-
-def test_resolve_auth_mode_defaults_to_api_env() -> None:
-    assert _resolve_auth_mode(None) == "api_env"
-
-
-def test_resolve_auth_mode_accepts_api_env() -> None:
-    assert _resolve_auth_mode("api_env") == "api_env"
+@pytest.mark.parametrize(
+    ("raw_mode", "expected"),
+    [
+        (None, "api_env"),
+        ("api_env", "api_env"),
+    ],
+)
+def test_resolve_auth_mode_variants(raw_mode: str | None, expected: str) -> None:
+    assert _resolve_auth_mode(raw_mode) == expected
 
 
 def test_build_claude_subprocess_env_strips_anthropic_vars_in_login_mode(

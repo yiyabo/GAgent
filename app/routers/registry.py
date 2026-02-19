@@ -30,7 +30,7 @@ class RouterRegistry:
     def register(cls, entry: RouterEntry) -> None:
         key = (entry.namespace, entry.version, entry.path)
         if any((e.namespace, e.version, e.path) == key for e in cls._entries):
-            raise ValueError(f"Router {key} 已注册，请勿重复注册。")
+            raise ValueError(f"Router {key} , please. ")
         cls._entries.append(entry)
 
     @classmethod
@@ -79,7 +79,7 @@ def routers_for_fastapi() -> List[APIRouter]:
 def generate_router_markdown() -> str:
     """Produce markdown table documenting registered routers."""
     if not RouterRegistry.entries():
-        return "（当前未注册对外接口）"
+        return "()"
 
     headers = [
         "| Namespace | Version | Prefix | Tags | Requires Plan | Deprecated | Description |",

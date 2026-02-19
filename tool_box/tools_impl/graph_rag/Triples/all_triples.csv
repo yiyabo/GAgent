@@ -13008,115 +13008,115 @@ ergosterol,lipid signaling molecule,molecular interaction or relation,ergosterol
 ergosterol,lipid signaling molecule,molecular interaction or relation,ergosterol biosynthesis,process,PMC11323496,ergosterol biosynthesis is altered in the absence of erg3 or erg6a.
 ergosterol,lipid signaling molecule,molecular interaction or relation,ergosterol pathway,pathway,PMC11323496,ergosterol is a key component of the ergosterol pathway.
 ergosterol,lipid signaling molecule,molecular interaction or relation,ergosterol-binding polyenes,drug,PMC11323496,ergosterol-binding polyenes like amphotericin b target ergosterol.
-egfr,gene,molecular interaction or relation,alk,gene,PMC11331256,"non-small cell lung cancer (non-small cell lung cancer, nsclc)中的表皮生长因子受体 (epidermal growth factor receptor, egfr) 突变与间变性淋巴瘤激酶 (anaplastic lymphoma kinase, alk) 融合基因共存的病例陆续有报道。"
-egfr,gene,binding/association,alk,gene,PMC11331256,分子遗传学和测序技术在癌症检测中的应用，egfr和alk基因双突变共存的nsclc研究。
-egfr,gene,inhibition,gefitinib,drug,PMC11331256,egfr突变和alk重排是肺腺癌最为主要的驱动基因，egfr突变和alk重排导致下游通路的持续激活，诱导肿瘤细胞异常增殖和侵袭使得正常细胞癌变。
-egfr,gene,inhibition,osimertinib,drug,PMC11331256,"flaura研究后，由于奥希替尼改善了患者的总生存期，三代酪氨酸激酶抑制剂（tyrosine kinase inhibitors, tkis）已经成为了肺癌敏感基因突变患者的一线治疗优选方案。"
-alk,gene,binding/association,immunohistochemistry,diagnostic method,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,detection,next-generation sequencing,diagnostic method,PMC11331256,分子遗传学和测序技术发展为mplc诊断提供了新的策略，特别是对于组织病理学评估和影像学检测难以有效进行鉴别的肿瘤类型。
-egfr,gene,activation,tumor cell proliferation,biological process,PMC11331256,egfr突变和alk重排导致下游通路的持续激活，诱导肿瘤细胞异常增殖和侵袭使得正常细胞癌变。
-osimertinib,drug,protection,patient,organism,PMC11331256,患者2022年4月15日复查胸部ct（图1e）：右肺不张及左肺粟粒样结节好转，纵隔及右侧腋窝稍大淋巴结缩小。
-egfr,gene,expression,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,correlation,patient survival,biological process,PMC11331256,"随着对肺癌致病机制研究的深入，非小细胞肺癌（non-small cell lung cancer, nsclc）中的驱动基因不断被揭示，如表皮生长因子受体（epidermal growth factor receptor, egfr）、间变性淋巴瘤激酶（anaplastic lymphoma kinase, alk）、kirsten鼠肉瘤基因（kirsten rat sarcoma viral oncogene, kras）以及间充质细胞上皮转化因子（mesenchymal-epithelial transition factor, met）等，这些驱动基因的发现为后续的靶向治疗提供了分子靶点。"
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者基因检测报告：egfr exon19 del阳性。
-egfr,gene,binding/association,tumor cells,cell,PMC11331256,患者肺癌术后免疫组织化学显示alk（d5f3）呈阳性表达（ventana法，×200）。
+egfr,gene,molecular interaction or relation,alk,gene,PMC11331256,"non-small cell lung cancer (non-small cell lung cancer, nsclc) (epidermal growth factor receptor, egfr)  (anaplastic lymphoma kinase, alk) "
+egfr,gene,binding/association,alk,gene,PMC11331256,，egfralknsclc
+egfr,gene,inhibition,gefitinib,drug,PMC11331256,egfralk，egfralk，
+egfr,gene,inhibition,osimertinib,drug,PMC11331256,"flaura，，（tyrosine kinase inhibitors, tkis）"
+alk,gene,binding/association,immunohistochemistry,diagnostic method,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,detection,next-generation sequencing,diagnostic method,PMC11331256,mplc，
+egfr,gene,activation,tumor cell proliferation,biological process,PMC11331256,egfralk，
+osimertinib,drug,protection,patient,organism,PMC11331256,2022415ct（1e）：，
+egfr,gene,expression,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,correlation,patient survival,biological process,PMC11331256,"，（non-small cell lung cancer, nsclc），（epidermal growth factor receptor, egfr）（anaplastic lymphoma kinase, alk）kirsten（kirsten rat sarcoma viral oncogene, kras）（mesenchymal-epithelial transition factor, met），"
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,：egfr exon19 del
+egfr,gene,binding/association,tumor cells,cell,PMC11331256,alk（d5f3）（ventana，×200）
 artificial intelligence,other,used for,outcome evaluations of human in vitro fertilization-derived embryos,other,PMC11332789,artificial intelligence system for outcome evaluations of human in vitro fertilization-derived embryos.
 convolutional neural networks (cnns),other,used for,the development of accurate and efficient image diagnostic systems,other,PMC11332789,"convolutional neural networks (cnns), especially those that incorporate transfer learning, have emerged as powerful tools for the development of accurate and efficient image diagnostic systems."
 neural network,other,trained on,embryo and clinical metadata,other,PMC11332789,"a neural network was trained on embryo and clinical metadata to identify good-quality embryos for implantation on day 3 or day 5, and predict live-birth outcomes."

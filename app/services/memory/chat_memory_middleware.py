@@ -1,7 +1,7 @@
 """
-Chat Memory Middleware - 聊天记忆中间件
+Chat memory middleware.
 
-使用LLM智能分析和保存重要的聊天消息为记忆
+Uses LLM signals to decide whether chat content should be saved to long-term memory.
 """
 
 import json
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class ChatMemoryMiddleware:
-    """聊天记忆中间件 - 使用LLM智能判断和保存重要对话"""
+    """LLM-driven memory save decision middleware for chat messages."""
 
     def __init__(self):
         self.hooks = get_memory_hooks()
@@ -31,59 +31,58 @@ class ChatMemoryMiddleware:
         force_save: bool = False,
     ) -> Optional[str]:
         """
-        处理聊天消息，使用LLM判断是否保存为记忆
-        
+        Process one chat message and conditionally persist it to memory.
+
         Args:
-            content: 消息内容
-            role: 角色 (user/assistant)
-            session_id: 会话ID
-            force_save: 强制保存
-            
+            content: Message content.
+            role: Message role (`user`/`assistant`).
+            session_id: Optional session ID.
+            force_save: Force save without LLM decision.
+
         Returns:
-            记忆ID，如果未保存则返回None
+            Saved memory ID, or `None` when not saved.
         """
         if not self.enabled and not force_save:
             return None
-        
-        # 使用LLM判断是否需要保存
+
         should_save, importance, memory_type = await self._should_save_message(
             content, role, force_save
         )
-        
+
         if not should_save:
             return None
-        
-        # 保存为记忆（使用LLM判断的类型）
+
         try:
             from ...models_memory import SaveMemoryRequest
             from .memory_service import get_memory_service
-            
+
             memory_service = get_memory_service()
-            
-            # 添加角色标识
+
             memory_content = f"[{role}] {content}"
-            
-            tags = ["对话", role]
+
+            tags = ["conversation", role]
             if session_id:
                 tags.append(f"session:{session_id}")
-            
+
             request = SaveMemoryRequest(
                 content=memory_content,
                 memory_type=memory_type,
                 importance=importance,
                 tags=tags,
             )
-            
+
             response = await memory_service.save_memory(request)
             memory_id = response.memory_id
-            
+
             if memory_id:
-                logger.info(f"💾 聊天消息已保存为记忆 ({memory_type.value}/{importance.value}): {memory_id[:8]}...")
-            
+                logger.info(
+                    f"Saved memory ({memory_type.value}/{importance.value}): {memory_id[:8]}..."
+                )
+
             return memory_id
-            
+
         except Exception as e:
-            logger.error(f"保存聊天记忆失败: {e}")
+            logger.error(f"Failed to save memory: {e}")
             return None
 
     async def _should_save_message(
@@ -93,27 +92,25 @@ class ChatMemoryMiddleware:
         force_save: bool = False,
     ) -> tuple[bool, ImportanceLevel, Optional[MemoryType]]:
         """
-        使用LLM判断消息是否应该保存以及重要性级别
-        
+        Ask LLM whether a message should be saved as memory.
+
         Returns:
-            (是否保存, 重要性级别, 记忆类型)
+            Tuple of `(should_save, importance, memory_type)`.
         """
         if force_save:
             return True, ImportanceLevel.HIGH, MemoryType.CONVERSATION
-        
-        # 太短的消息直接跳过
+
         if len(content) < 10:
             return False, ImportanceLevel.LOW, None
-        
-        # 使用LLM判断，最多重试3次
+
         max_retries = 3
         last_error = None
-        
+
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
-                    logger.info(f"🔄 LLM判断重试 {attempt + 1}/{max_retries}")
-                
+                    logger.info(f"LLM retry {attempt + 1}/{max_retries}")
+
                 prompt = f"""You are an intelligent memory system analyzer. Analyze the following conversation message and determine if it's worth saving as long-term memory.
 
 Role: {role}
@@ -135,31 +132,27 @@ Return your judgment in JSON format:
 
 Only return JSON, no other content."""
 
-                # 注意：llm_client.chat() 是同步方法，需要用 run_in_executor
                 import asyncio
                 loop = asyncio.get_event_loop()
                 response = await loop.run_in_executor(
                     None,
                     lambda: self.llm_client.chat(prompt, temperature=0.3)
                 )
-                
-                # 解析LLM响应
+
                 response_text = response.strip() if isinstance(response, str) else response.get("content", "").strip()
-                
-                # 尝试提取JSON
+
                 if "```json" in response_text:
                     response_text = response_text.split("```json")[1].split("```")[0].strip()
                 elif "```" in response_text:
                     response_text = response_text.split("```")[1].split("```")[0].strip()
-                
+
                 result = json.loads(response_text)
-                
+
                 should_save = result.get("should_save", False)
                 importance_str = result.get("importance", "low").lower()
                 memory_type_str = result.get("memory_type", "conversation").lower()
                 reason = result.get("reason", "")
-                
-                # 转换为枚举
+
                 importance_map = {
                     "low": ImportanceLevel.LOW,
                     "medium": ImportanceLevel.MEDIUM,
@@ -167,7 +160,7 @@ Only return JSON, no other content."""
                     "critical": ImportanceLevel.CRITICAL,
                 }
                 importance = importance_map.get(importance_str, ImportanceLevel.MEDIUM)
-                
+
                 memory_type_map = {
                     "knowledge": MemoryType.KNOWLEDGE,
                     "experience": MemoryType.EXPERIENCE,
@@ -175,26 +168,22 @@ Only return JSON, no other content."""
                     "context": MemoryType.CONTEXT,
                 }
                 memory_type = memory_type_map.get(memory_type_str, MemoryType.CONVERSATION)
-                
+
                 if should_save:
-                    logger.info(f"🤖 LLM判断应保存: {importance_str} - {reason}")
+                    logger.info(f"LLM decision: save ({importance_str}) - {reason}")
                 else:
-                    logger.debug(f"🤖 LLM判断不保存: {reason}")
-                
-                # 成功，直接返回
+                    logger.debug(f"LLM decision: do not save - {reason}")
+
                 return should_save, importance, memory_type
-                
+
             except Exception as e:
                 last_error = e
-                logger.warning(f"⚠️  LLM判断失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-                # 如果还有重试机会，继续下一次
+                logger.warning(f"LLM analysis failed (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     continue
-                # 否则跳出循环
                 break
-        
-        # 所有重试都失败
-        logger.error(f"❌ LLM判断失败，已重试{max_retries}次: {last_error}")
+
+        logger.error(f"LLM analysis failed after {max_retries} attempts: {last_error}")
         return False, ImportanceLevel.LOW, None
 
     async def process_assistant_response(
@@ -203,14 +192,14 @@ Only return JSON, no other content."""
         session_id: Optional[str] = None,
     ) -> Optional[str]:
         """
-        处理助手响应，使用LLM判断
-        
+        Process assistant response and conditionally save to memory.
+
         Args:
-            content: 响应内容
-            session_id: 会话ID
-            
+            content: Assistant response content.
+            session_id: Optional session ID.
+
         Returns:
-            记忆ID
+            Saved memory ID, or `None`.
         """
         return await self.process_message(
             content=content,
@@ -220,22 +209,21 @@ Only return JSON, no other content."""
         )
 
     def enable(self):
-        """启用中间件"""
+        """Enable chat memory middleware."""
         self.enabled = True
-        logger.info("✅ Chat memory middleware enabled")
+        logger.info("Chat memory middleware enabled")
 
     def disable(self):
-        """禁用中间件"""
+        """Disable chat memory middleware."""
         self.enabled = False
-        logger.info("⏸️  Chat memory middleware disabled")
+        logger.info("Chat memory middleware disabled")
 
 
-# 全局单例
 _chat_memory_middleware: Optional[ChatMemoryMiddleware] = None
 
 
 def get_chat_memory_middleware() -> ChatMemoryMiddleware:
-    """获取聊天记忆中间件实例"""
+    """Get singleton chat memory middleware instance."""
     global _chat_memory_middleware
     if _chat_memory_middleware is None:
         _chat_memory_middleware = ChatMemoryMiddleware()

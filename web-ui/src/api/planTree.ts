@@ -43,86 +43,86 @@ export interface ExecuteTaskWithDepsPayload {
 
 class PlanTreeApi extends BaseApi {
   listPlans = async (): Promise<PlanSummary[]> => {
-    return this.get<PlanSummary[]>('/plans');
+  return this.get<PlanSummary[]>('/plans');
   };
 
   getPlanTree = async (planId: number): Promise<PlanTreeResponse> => {
-    return this.get<PlanTreeResponse>(`/plans/${planId}/tree`);
+  return this.get<PlanTreeResponse>(`/plans/${planId}/tree`);
   };
 
   getPlanSubgraph = async (
-    planId: number,
-    nodeId: number,
-    maxDepth = 2
+  planId: number,
+  nodeId: number,
+  maxDepth = 2
   ): Promise<SubgraphResponse> => {
-    return this.get<SubgraphResponse>(`/plans/${planId}/subgraph`, {
-      node_id: nodeId,
-      max_depth: maxDepth,
-    });
+  return this.get<SubgraphResponse>(`/plans/${planId}/subgraph`, {
+  node_id: nodeId,
+  max_depth: maxDepth,
+  });
   };
 
   decomposeTask = async (
-    taskId: number,
-    payload: DecomposeTaskPayload
+  taskId: number,
+  payload: DecomposeTaskPayload
   ): Promise<DecomposeTaskResponse> => {
-    return this.post<DecomposeTaskResponse>(`/tasks/${taskId}/decompose`, payload);
+  return this.post<DecomposeTaskResponse>(`/tasks/${taskId}/decompose`, payload);
   };
 
   getDecompositionJobStatus = async (jobId: string): Promise<DecompositionJobStatus> => {
-    return this.getJobStatus(jobId);
+  return this.getJobStatus(jobId);
   };
 
   getJobStatus = async (jobId: string): Promise<DecompositionJobStatus> => {
-    return this.get<DecompositionJobStatus>(`/jobs/${jobId}`);
+  return this.get<DecompositionJobStatus>(`/jobs/${jobId}`);
   };
 
   getJobLogTail = async (jobId: string, tail = 200): Promise<JobLogTailResponse> => {
-    return this.get<JobLogTailResponse>(`/jobs/${jobId}/logs`, { tail });
+  return this.get<JobLogTailResponse>(`/jobs/${jobId}/logs`, { tail });
   };
 
   getBackgroundTaskBoard = async (options?: {
-    limit?: number;
-    session_id?: string;
-    plan_id?: number;
-    include_finished?: boolean;
+  limit?: number;
+  session_id?: string;
+  plan_id?: number;
+  include_finished?: boolean;
   }): Promise<BackgroundTaskBoardResponse> => {
-    return this.get<BackgroundTaskBoardResponse>('/jobs/board', options);
+  return this.get<BackgroundTaskBoardResponse>('/jobs/board', options);
   };
 
   getPlanResults = async (
-    planId: number,
-    options?: { onlyWithOutput?: boolean }
+  planId: number,
+  options?: { onlyWithOutput?: boolean }
   ): Promise<PlanResultsResponse> => {
-    return this.get<PlanResultsResponse>(`/plans/${planId}/results`, {
-      only_with_output: options?.onlyWithOutput ?? true,
-    });
+  return this.get<PlanResultsResponse>(`/plans/${planId}/results`, {
+  only_with_output: options?.onlyWithOutput ?? true,
+  });
   };
 
   getTaskResult = async (planId: number, taskId: number): Promise<PlanResultItem> => {
-    return this.get<PlanResultItem>(`/tasks/${taskId}/result`, {
-      plan_id: planId,
-    });
+  return this.get<PlanResultItem>(`/tasks/${taskId}/result`, {
+  plan_id: planId,
+  });
   };
 
   getPlanExecutionSummary = async (planId: number): Promise<PlanExecutionSummary> => {
-    return this.get<PlanExecutionSummary>(`/plans/${planId}/execution/summary`);
+  return this.get<PlanExecutionSummary>(`/plans/${planId}/execution/summary`);
   };
 
   getTaskDependencyPlan = async (
-    planId: number,
-    taskId: number
+  planId: number,
+  taskId: number
   ): Promise<DependencyPlanResponse> => {
-    return this.get<DependencyPlanResponse>(`/tasks/${taskId}/dependency-plan`, {
-      plan_id: planId,
-    });
+  return this.get<DependencyPlanResponse>(`/tasks/${taskId}/dependency-plan`, {
+  plan_id: planId,
+  });
   };
 
   executeTaskWithDeps = async (
-    planId: number,
-    taskId: number,
-    payload: ExecuteTaskWithDepsPayload = {}
+  planId: number,
+  taskId: number,
+  payload: ExecuteTaskWithDepsPayload = {}
   ): Promise<ExecuteTaskResponse> => {
-    return this.post<ExecuteTaskResponse>(`/tasks/${taskId}/execute?plan_id=${planId}`, payload);
+  return this.post<ExecuteTaskResponse>(`/tasks/${taskId}/execute?plan_id=${planId}`, payload);
   };
 }
 
@@ -144,20 +144,20 @@ export const waitForDecompositionJob = async (
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const status = await planTreeApi.getDecompositionJobStatus(jobId);
-    options.onUpdate?.(status);
+  const status = await planTreeApi.getDecompositionJobStatus(jobId);
+  options.onUpdate?.(status);
 
-    if (status.status === 'succeeded') {
-      return status;
-    }
-    if (status.status === 'failed') {
-      throw new Error(status.error || '计划分解任务失败');
-    }
+  if (status.status === 'succeeded') {
+  return status;
+  }
+  if (status.status === 'failed') {
+  throw new Error(status.error || 'Plan decomposition failed');
+  }
 
-    if (Date.now() - startedAt > timeout) {
-      throw new Error('等待计划分解超时，请稍后重试。');
-    }
+  if (Date.now() - startedAt > timeout) {
+  throw new Error('Timed out while waiting for plan decomposition to finish.');
+  }
 
-    await new Promise((resolve) => setTimeout(resolve, interval));
+  await new Promise((resolve) => setTimeout(resolve, interval));
   }
 };

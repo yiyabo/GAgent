@@ -21,12 +21,12 @@ def _build_agent(user_message: str, *, current_task_id: int = 23) -> StructuredC
     node = PlanNode(
         id=current_task_id,
         plan_id=34,
-        name="撰写引言",
+        name="",
         status="pending",
     )
     tree = PlanTree(
         id=34,
-        title="论文计划",
+        title="plan",
         nodes={current_task_id: node},
         adjacency={None: [current_task_id]},
     )
@@ -38,9 +38,9 @@ def _build_agent(user_message: str, *, current_task_id: int = 23) -> StructuredC
 
 
 def test_followthrough_guardrail_injects_rerun_action_for_execute_intent():
-    agent = _build_agent("请立即执行任务 23")
+    agent = _build_agent("pleaseexecutetask 23")
     structured = LLMStructuredResponse(
-        llm_reply=LLMReply(message="好的，我来处理。"),
+        llm_reply=LLMReply(message=", . "),
         actions=[],
     )
 
@@ -50,9 +50,9 @@ def test_followthrough_guardrail_injects_rerun_action_for_execute_intent():
 
 
 def test_followthrough_guardrail_keeps_status_query_without_promise():
-    agent = _build_agent("现在完成了吗？")
+    agent = _build_agent("completed？")
     structured = LLMStructuredResponse(
-        llm_reply=LLMReply(message="任务仍在处理中。"),
+        llm_reply=LLMReply(message="taskmedium. "),
         actions=[],
     )
 
@@ -62,9 +62,9 @@ def test_followthrough_guardrail_keeps_status_query_without_promise():
 
 
 def test_followthrough_guardrail_executes_when_reply_promises_start():
-    agent = _build_agent("现在完成了吗？")
+    agent = _build_agent("completed？")
     structured = LLMStructuredResponse(
-        llm_reply=LLMReply(message="还没有，我将立即开始执行该任务。"),
+        llm_reply=LLMReply(message=", executetask. "),
         actions=[],
     )
 

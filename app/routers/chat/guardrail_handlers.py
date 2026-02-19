@@ -72,20 +72,15 @@ def apply_phagescope_fallback(
     def _wants_results(text: str) -> bool:
         text_lower = text.lower()
         triggers = [
-            "结果",
-            "分析",
-            "展示",
             "report",
             "result",
             "results",
             "quality",
-            "评估",
-            "指标",
+            "evaluation",
+            "metrics",
         ]
         avoid = [
-            "列表",
             "list",
-            "任务列表",
             "task list",
         ]
         return any(token in text_lower for token in triggers) and not any(
@@ -94,27 +89,26 @@ def apply_phagescope_fallback(
 
     def _infer_result_kind(text: str) -> Optional[str]:
         text_lower = text.lower()
-        if any(token in text_lower for token in ("quality", "质量", "评估", "checkv")):
+        if any(token in text_lower for token in ("quality", "evaluation", "checkv")):
             return "quality"
-        if any(token in text_lower for token in ("protein", "proteins", "蛋白")):
+        if any(token in text_lower for token in ("protein", "proteins")):
             return "proteins"
-        if any(token in text_lower for token in ("fasta", "序列")):
+        if any(token in text_lower for token in ("fasta", "sequence")):
             return "phagefasta"
-        if any(token in text_lower for token in ("tree", "系统树")):
+        if any(token in text_lower for token in ("tree", "phylogenetic")):
             return "tree"
-        if any(token in text_lower for token in ("detail", "详情")):
+        if any(token in text_lower for token in ("detail", "details")):
             return "phage_detail"
-        if any(token in text_lower for token in ("phage", "噬菌体")):
+        if any(token in text_lower for token in ("phage", "bacteriophage")):
             return "phage"
         return None
 
     def _wants_download(text: str) -> bool:
         tl = text.lower()
         triggers = [
-            "下载",
-            "保存",
-            "落盘",
-            "导出",
+            "download",
+            "save",
+            "export",
             "save_all",
             "saveall",
         ]
@@ -123,18 +117,17 @@ def apply_phagescope_fallback(
     def _wants_analysis(text: str) -> bool:
         tl = text.lower()
         triggers = [
-            "分析",
-            "解读",
-            "总结",
             "interpret",
             "analyze",
             "analyse",
+            "summarize",
+            "summary",
         ]
         return any(token in tl for token in triggers)
 
     def _extract_taskid_from_text(text: str) -> Optional[str]:
-        # Support patterns like taskid=36322 / 任务 36322
-        m = re.search(r"(?:taskid\s*=?\s*|任务\s*)(\d{4,})", text, flags=re.IGNORECASE)
+        # Support patterns like taskid=36322 / task 36322.
+        m = re.search(r"(?:taskid\s*=?\s*|task\s*)(\d{4,})", text, flags=re.IGNORECASE)
         if m:
             return m.group(1)
         m = re.search(r"\b(\d{4,})\b", text)
@@ -168,8 +161,8 @@ def apply_phagescope_fallback(
             structured.actions = [normalized_submit]
             if structured.llm_reply and structured.llm_reply.message:
                 structured.llm_reply.message = (
-                    "我会先把 PhageScope 任务提交到后台，不在本轮等待远端完成；"
-                    "提交后会返回 taskid 与后台运行状态。"
+                    "I will first submit the PhageScope task to the background and will not wait "
+                    "for remote completion in this turn; after submission, taskid and background status will be returned."
                 )
             return structured
 
@@ -228,8 +221,8 @@ def apply_phagescope_fallback(
             if structured.llm_reply and structured.llm_reply.message:
                 # Keep LLM wording but ensure it doesn't confuse users with tool details.
                 structured.llm_reply.message = (
-                    "我会先把 PhageScope 结果下载到本地（即便部分结果缺失也会继续），"
-                    "然后读取关键文件并给出结构化解读。"
+                    "I will first download PhageScope results locally (and continue even if some outputs are missing), "
+                    "then read key files and provide a structured interpretation."
                 )
             return structured
         except Exception:
@@ -264,6 +257,21 @@ def apply_task_execution_followthrough_guardrail(
     agent: Any,
     structured: LLMStructuredResponse,
 ) -> LLMStructuredResponse:
+    # Compatibility default: disable automatic action injection unless explicitly
+    # enabled by caller context.
+    guardrail_enabled_raw = agent.extra_context.get("followthrough_guardrail_enabled")
+    if isinstance(guardrail_enabled_raw, str):
+        guardrail_enabled = guardrail_enabled_raw.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    else:
+        guardrail_enabled = bool(guardrail_enabled_raw)
+    if not guardrail_enabled:
+        return structured
+
     if structured.actions:
         return structured
 
@@ -277,22 +285,18 @@ def apply_task_execution_followthrough_guardrail(
 
     lowered_user = user_message.lower()
     execute_tokens = (
-        "执行",
-        "运行",
-        "开始",
-        "继续",
-        "重跑",
-        "重试",
         "run",
         "execute",
         "start",
+        "continue",
+        "retry",
         "rerun",
         "resume",
     )
     user_requests_execution = any(token in lowered_user for token in execute_tokens)
     reply_promises = reply_promises_execution(reply_text)
 
-    # 纯状态查询且回复未承诺马上执行时，不注入 rerun。
+    # For pure status queries, do not inject rerun unless reply explicitly promises execution.
     if is_status_query_only(user_message) and not reply_promises:
         return structured
     if not user_requests_execution and not reply_promises:
@@ -401,9 +405,10 @@ def apply_completion_claim_guardrail(
 
     missing_block = "\n".join(f"- {path}" for path in missing_paths)
     structured.llm_reply.message = (
-        "检测到回复声明了文件已生成，但以下路径当前不存在，不能判定为“已完成”：\n"
+        "The reply claimed files were generated, but the following paths do not currently exist, "
+        "so completion cannot be confirmed:\n"
         f"{missing_block}\n"
-        "请先确认文件已实际写入，或明确说明当前仍在执行中。"
+        "Please first verify files are actually written, or clearly state that execution is still in progress."
     )
     return structured
 
@@ -440,13 +445,13 @@ def match_atomic_task_by_keywords(
         return None
 
     keyword_groups: Dict[str, Tuple[str, ...]] = {
-        "abstract": ("abstract", "摘要"),
-        "introduction": ("introduction", "intro", "引言"),
-        "methods": ("method", "methods", "方法"),
-        "experiment": ("experiment", "evaluation", "实验", "评估"),
-        "result": ("result", "results", "结果"),
-        "conclusion": ("conclusion", "总结", "结论"),
-        "reference": ("reference", "references", "bib", "参考文献"),
+        "abstract": ("abstract",),
+        "introduction": ("introduction", "intro"),
+        "methods": ("method", "methods"),
+        "experiment": ("experiment", "evaluation"),
+        "result": ("result", "results"),
+        "conclusion": ("conclusion", "summary"),
+        "reference": ("reference", "references", "bib"),
     }
     requested_sections = [
         key
@@ -510,6 +515,10 @@ def apply_plan_first_guardrail(
 
     seed_message = user_message
     if is_generic_plan_confirmation(user_message):
+        # Compatibility: when the model has already produced explicit actions,
+        # keep them as-is for generic confirmations (e.g., "okay, create it").
+        if structured.actions:
+            return structured
         inferred = infer_plan_seed_message(agent, user_message)
         if inferred:
             seed_message = inferred
@@ -519,10 +528,10 @@ def apply_plan_first_guardrail(
 
     normalized = re.sub(r"\s+", " ", seed_message).strip()
     title_source = normalized
-    if "，" in title_source:
-        title_source = title_source.split("，", 1)[0]
-    elif "。" in title_source:
-        title_source = title_source.split("。", 1)[0]
+    if "," in title_source:
+        title_source = title_source.split(",", 1)[0]
+    elif "." in title_source:
+        title_source = title_source.split(".", 1)[0]
     title = (title_source or normalized or "New Research Plan")[:80]
     goal = normalized or title
 

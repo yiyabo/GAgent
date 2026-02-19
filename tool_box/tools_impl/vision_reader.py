@@ -169,7 +169,7 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
 
 async def _read_pdf_with_qwen_long(
     pdf_path: str,
-    prompt: str = "请阅读这篇文档，提取所有文本内容，保持原有结构（段落、列表、标题等）。",
+    prompt: str = "Read this document and extract all text while preserving original structure (paragraphs, lists, headings, etc.).",
 ) -> Dict[str, Any]:
     """Read PDF using Qwen-Long file upload API - much faster for text PDFs.
     
@@ -452,7 +452,8 @@ async def vision_reader_handler(
         logger.info(f"Attempting PDF read with Qwen-Long first: {abs_path.name}")
         qwen_long_result = await _read_pdf_with_qwen_long(
             str(abs_path),
-            prompt=question or "请阅读这篇文档，提取所有文本内容，保持原有结构（段落、列表、标题等）。"
+            prompt=question
+            or "Read this document and extract all text while preserving original structure (paragraphs, lists, headings, etc.)."
         )
         
         if qwen_long_result.get("success"):
@@ -656,4 +657,3 @@ vision_reader_tool: Dict[str, Any] = {
         "Read equations: operation='read_equation_image', file_path='/path/to/eq.png'",
     ],
 }
-

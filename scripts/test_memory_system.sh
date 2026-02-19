@@ -1,5 +1,5 @@
 #!/bin/bash
-# Memory System 测试脚本
+# Memory System 
 
 echo "======================================"
 echo "🧪 Memory System Test Suite"
@@ -8,17 +8,17 @@ echo ""
 
 BASE_URL="http://localhost:9000"
 
-# 颜色定义
+# 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# 测试计数器
+# 
 PASSED=0
 FAILED=0
 
-# 测试函数
+# 
 test_endpoint() {
     local name=$1
     local method=$2
@@ -53,27 +53,27 @@ test_endpoint() {
 echo "1️⃣  Testing Basic Memory APIs"
 echo "------------------------------"
 
-# 测试统计接口
+# 
 test_endpoint "Memory Stats" "GET" "/mcp/memory/stats"
 
-# 测试钩子统计
+# 
 test_endpoint "Hooks Stats" "GET" "/mcp/memory/hooks/stats"
 
 echo ""
 echo "2️⃣  Testing Memory Operations"
 echo "------------------------------"
 
-# 测试保存记忆
+# 
 test_endpoint "Save Memory" "POST" "/mcp/save_memory" '{
-  "content": "测试记忆：这是一个自动化测试",
+  "content": "：",
   "memory_type": "experience",
   "importance": "medium",
-  "tags": ["测试", "自动化"]
+  "tags": ["", ""]
 }'
 
-# 测试查询记忆
+# 
 test_endpoint "Query Memory" "POST" "/mcp/query_memory" '{
-  "search_text": "测试",
+  "search_text": "",
   "limit": 5,
   "min_similarity": 0.3
 }'
@@ -82,22 +82,22 @@ echo ""
 echo "3️⃣  Testing Hooks Operations"
 echo "------------------------------"
 
-# 测试启用钩子
+# 
 test_endpoint "Enable Hooks" "POST" "/mcp/memory/hooks/enable"
 
-# 测试禁用钩子
+# 
 test_endpoint "Disable Hooks" "POST" "/mcp/memory/hooks/disable"
 
-# 重新启用
+# 
 test_endpoint "Re-enable Hooks" "POST" "/mcp/memory/hooks/enable"
 
 echo ""
 echo "4️⃣  Testing Chat Memory"
 echo "------------------------------"
 
-# 测试聊天消息保存
+# 
 test_endpoint "Save Chat Message" "POST" "/mcp/memory/chat/save" '{
-  "content": "如何优化系统性能？这是一个重要的问题。",
+  "content": "？",
   "role": "user",
   "session_id": "test_session_123"
 }'

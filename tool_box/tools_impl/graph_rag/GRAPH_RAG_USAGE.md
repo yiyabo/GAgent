@@ -12,7 +12,7 @@ pip install pandas networkx
 from graph_rag import GraphRAG
 
 rag = GraphRAG()  # loads Triples/all_triples.csv
-res = rag.query("噬菌体如何感染细菌？", top_k=12, hops=1)
+res = rag.query("？", top_k=12, hops=1)
 
 # Give res['prompt'] to any LLM (OpenAI, Qwen, DeepSeek, etc.)
 print(res['prompt'])

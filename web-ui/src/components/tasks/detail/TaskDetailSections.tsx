@@ -14,7 +14,7 @@ import { statusColorMap, statusLabelMap } from './constants';
 
 const { Paragraph, Text, Title } = Typography;
 
-// 降级复制方案 (用于非 HTTPS 环境)
+// Clipboard fallback for non-HTTPS environments.
 export function fallbackCopyToClipboard(text: string): boolean {
   const textArea = document.createElement('textarea');
   textArea.value = text;
@@ -49,16 +49,16 @@ export async function copyJsonToClipboard(
       if (fallbackCopyToClipboard(text)) {
         messageFn.success(successMessage);
       } else {
-        messageFn.error('复制失败，请手动复制内容');
+        messageFn.error('Copy failed, please copy manually');
       }
     }
   } catch (error) {
-    console.warn('复制失败', error);
+    console.warn('Copy failed', error);
     const text = JSON.stringify(value, null, 2);
     if (fallbackCopyToClipboard(text)) {
       messageFn.success(successMessage);
     } else {
-      messageFn.error('复制失败，请手动复制内容');
+      messageFn.error('Copy failed, please copy manually');
     }
   }
 }
@@ -80,7 +80,7 @@ export function resolveTaskName(
   const fromPlan =
     dependencyPlan?.missing_dependencies?.find((d) => d.id === taskId)?.name ??
     dependencyPlan?.running_dependencies?.find((d) => d.id === taskId)?.name;
-  return fromPlan || `任务 #${taskId}`;
+  return fromPlan || `Task #${taskId}`;
 }
 
 export function resolveTaskStatus(
@@ -105,7 +105,7 @@ interface DependenciesProps {
 
 export const Dependencies: React.FC<DependenciesProps> = ({ dependencies, onDependencyClick }) => {
   if (!dependencies || dependencies.length === 0) {
-    return <Text type="secondary">无依赖</Text>;
+    return <Text type="secondary">No dependencies</Text>;
   }
   return (
     <Space wrap size={6}>
@@ -116,7 +116,7 @@ export const Dependencies: React.FC<DependenciesProps> = ({ dependencies, onDepe
           type="link"
           onClick={() => onDependencyClick(dep)}
         >
-          任务 #{dep}
+          Task #{dep}
         </Button>
       ))}
     </Space>
@@ -135,7 +135,7 @@ export const ContextSections: React.FC<ContextSectionsProps> = ({ sections }) =>
     const title =
       typeof section?.title === 'string' && section.title.trim().length > 0
         ? section.title
-        : `片段 ${index + 1}`;
+        : `Section ${index + 1}`;
     const content =
       typeof section?.content === 'string'
         ? section.content
@@ -175,58 +175,58 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <section>
-        <Title level={5}>基础信息</Title>
+        <Title level={5}>Basic Information</Title>
         <Descriptions column={1} bordered size="small">
-          <Descriptions.Item label="任务类型">
-            {activeTask.task_type ?? '未知'}
+          <Descriptions.Item label="Task Type">
+            {activeTask.task_type ?? 'Unknown'}
           </Descriptions.Item>
-          <Descriptions.Item label="状态">
+          <Descriptions.Item label="Status">
             <Tag color={statusColorMap[activeTask.status ?? 'pending'] ?? 'default'}>
               {statusLabelMap[activeTask.status ?? 'pending'] ??
                 activeTask.status ??
-                '未知'}
+                'Unknown'}
             </Tag>
           </Descriptions.Item>
           {activeTask.parent_id ? (
-            <Descriptions.Item label="父任务">
+            <Descriptions.Item label="Parent Task">
               <Button
                 type="link"
                 size="small"
                 onClick={() => handleDependencyClick(activeTask.parent_id!)}
               >
-                任务 #{activeTask.parent_id}
+                Task #{activeTask.parent_id}
               </Button>
             </Descriptions.Item>
           ) : (
-            <Descriptions.Item label="父任务">无</Descriptions.Item>
+            <Descriptions.Item label="Parent Task">None</Descriptions.Item>
           )}
-          <Descriptions.Item label="层级深度">
+          <Descriptions.Item label="Depth">
             {activeTask.depth ?? 0}
           </Descriptions.Item>
-          <Descriptions.Item label="创建时间">
-            {activeTask.created_at ? new Date(activeTask.created_at).toLocaleString() : '未知'}
+          <Descriptions.Item label="Created At">
+            {activeTask.created_at ? new Date(activeTask.created_at).toLocaleString() : 'Unknown'}
           </Descriptions.Item>
-          <Descriptions.Item label="更新时间">
-            {activeTask.updated_at ? new Date(activeTask.updated_at).toLocaleString() : '未知'}
+          <Descriptions.Item label="Updated At">
+            {activeTask.updated_at ? new Date(activeTask.updated_at).toLocaleString() : 'Unknown'}
           </Descriptions.Item>
         </Descriptions>
       </section>
 
       <section>
-        <Title level={5}>任务内容</Title>
+        <Title level={5}>Task Content</Title>
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           <div>
-            <Text type="secondary">指令</Text>
+            <Text type="secondary">Instruction</Text>
             <Paragraph
               style={{ whiteSpace: 'pre-wrap' }}
               copyable
-              ellipsis={{ rows: 6, expandable: true, symbol: '展开' }}
+              ellipsis={{ rows: 6, expandable: true, symbol: 'Expand' }}
             >
-              {activeTask.instruction || '暂无描述'}
+              {activeTask.instruction || 'No description available'}
             </Paragraph>
           </div>
           <div>
-            <Text type="secondary">依赖任务</Text>
+            <Text type="secondary">Dependencies</Text>
             <Dependencies
               dependencies={activeTask.dependencies}
               onDependencyClick={handleDependencyClick}
@@ -236,18 +236,18 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
       </section>
 
       <section>
-        <Title level={5}>上下文信息</Title>
+        <Title level={5}>Context</Title>
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           {activeTask.context_combined ? (
             <Paragraph
               style={{ whiteSpace: 'pre-wrap' }}
               copyable
-              ellipsis={{ rows: 6, expandable: true, symbol: '展开' }}
+              ellipsis={{ rows: 6, expandable: true, symbol: 'Expand' }}
             >
               {activeTask.context_combined}
             </Paragraph>
           ) : (
-            <Text type="secondary">暂无上下文摘要</Text>
+            <Text type="secondary">No context summary available</Text>
           )}
           <ContextSections sections={activeTask.context_sections} />
           {activeTask.context_meta && Object.keys(activeTask.context_meta).length > 0 && (
@@ -264,7 +264,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
 
       {recentToolResults.length > 0 && (
         <section>
-          <Title level={5}>近期搜索摘要</Title>
+          <Title level={5}>Recent Tool Summaries</Title>
           <Space direction="vertical" size="small" style={{ width: '100%' }}>
             {recentToolResults.map((result, index) => (
               <ToolResultCard
@@ -278,7 +278,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
       )}
 
       <section>
-        <Title level={5}>元数据</Title>
+        <Title level={5}>Metadata</Title>
         {activeTask.metadata && Object.keys(activeTask.metadata).length > 0 ? (
           <Paragraph
             code
@@ -288,12 +288,12 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
             {JSON.stringify(activeTask.metadata, null, 2)}
           </Paragraph>
         ) : (
-          <Text type="secondary">暂无元数据信息</Text>
+          <Text type="secondary">No metadata available</Text>
         )}
       </section>
 
       <section>
-        <Title level={5}>执行结果</Title>
+        <Title level={5}>Execution Result</Title>
         <ExecutionResult
           resultLoading={resultLoading}
           taskResult={taskResult}
@@ -308,14 +308,14 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({ resultLoading,
   if (resultLoading && !taskResult && !cachedResult) {
     return (
       <div style={{ padding: '12px 0' }}>
-        <Spin tip="加载执行结果..." />
+        <Spin tip="Loading execution result..." />
       </div>
     );
   }
 
   const result = taskResult ?? cachedResult;
   if (!result) {
-    return <Text type="secondary">暂无执行结果</Text>;
+    return <Text type="secondary">No execution result available</Text>;
   }
 
   return (
@@ -336,7 +336,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({ resultLoading,
           items={[
             {
               key: 'notes',
-              label: `备注 (${result.notes.length})`,
+              label: `Notes (${result.notes.length})`,
               children: (
                 <Space direction="vertical">
                   {result.notes.map((note, idx) => (

@@ -68,15 +68,15 @@ export const computeDecomposeProgress = (
   return { status, percent, totalBudget, consumedBudget, queueRemaining, createdCount, processedCount };
 };
 
-// 格式化时间
+// Format time.
 export const formatTime = (date: Date) => {
-  return new Date(date).toLocaleTimeString('zh-CN', {
+  return new Date(date).toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
   });
 };
 
-// 降级复制方案 (用于非 HTTPS 环境)
+// Fallback copy approach (for non-HTTPS environments).
 export const fallbackCopyToClipboard = (text: string) => {
   const textArea = document.createElement('textarea');
   textArea.value = text;

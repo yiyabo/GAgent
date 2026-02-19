@@ -116,13 +116,13 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             request.message,
         )
 
-        # 处理附件：如果context中有attachments，自动附加到消息中
-        # 并尝试自动读取文本类附件内容
+        # Handle attachments: if context has attachments, append metadata to the message
+        # and try auto-reading text-like content.
         message_to_send = request.message
         attachments = context.get("attachments", [])
         if attachments and isinstance(attachments, list):
-            attachment_info = "\n\n📎 用户当前上传的附件：\n"
-            # 定义可自动读取的文件类型
+            attachment_info = "\n\n📎 User-uploaded attachments:\n"
+            # Define file types eligible for auto-read.
             AUTO_READ_TEXT_EXTS = {".txt", ".md", ".log", ".ini", ".cfg", ".yaml", ".yml"}
             AUTO_READ_PDF_EXT = ".pdf"
             MAX_AUTO_READ_SIZE = 200 * 1024  # 200KB
@@ -130,14 +130,14 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             for att in attachments:
                 if isinstance(att, dict):
                     att_type = att.get("type", "file")
-                    att_name = att.get("name", "未知文件")
+                    att_name = att.get("name", "Unknown file")
                     att_path = att.get("path", "")
                     att_extracted = att.get("extracted_path")
                     attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
                     if att_extracted:
                         attachment_info += f"  extracted: {att_extracted}\n"
 
-                    # 自动读取文本类文件内容
+                    # Auto-read text-like content where possible.
                     if att_path:
                         try:
                             file_path = Path(att_path).expanduser().resolve()
@@ -147,27 +147,27 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
 
                                 if file_size <= MAX_AUTO_READ_SIZE:
                                     if suffix in AUTO_READ_TEXT_EXTS:
-                                        # 直接读取文本文件
+                                        # Read text file directly.
                                         try:
                                             content = file_path.read_text(
                                                 encoding="utf-8", errors="replace"
                                             )
-                                            # 截断过长内容
+                                            # Truncate overly long content.
                                             if len(content) > 10000:
-                                                content = content[:10000] + f"\n... [内容已截断，共 {len(content)} 字符]"
-                                            attachment_info += f"\n📄 文件内容 ({att_name}):\n```\n{content}\n```\n"
+                                                content = content[:10000] + f"\n... [content truncated, total {len(content)} characters]"
+                                            attachment_info += f"\n📄 File content ({att_name}):\n```\n{content}\n```\n"
                                             logger.info("[CHAT][AUTO_READ] text file=%s size=%d", att_name, file_size)
                                         except Exception as read_err:
                                             logger.warning("[CHAT][AUTO_READ] Failed to read %s: %s", att_name, read_err)
 
                                     elif suffix == AUTO_READ_PDF_EXT:
-                                        # 读取 PDF 文件
+                                        # Read PDF file.
                                         try:
                                             import pypdf
                                             with file_path.open("rb") as f:
                                                 reader = pypdf.PdfReader(f)
                                                 text_parts = []
-                                                for i, page in enumerate(reader.pages[:20]):  # 限制20页
+                                                for i, page in enumerate(reader.pages[:20]):  # Cap at 20 pages.
                                                     try:
                                                         txt = page.extract_text() or ""
                                                         if txt.strip():
@@ -176,9 +176,9 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                                                         pass
                                                 pdf_content = "\n\n".join(text_parts)
                                                 if len(pdf_content) > 15000:
-                                                    pdf_content = pdf_content[:15000] + f"\n... [PDF内容已截断，共 {len(pdf_content)} 字符]"
+                                                    pdf_content = pdf_content[:15000] + f"\n... [PDF content truncated, total {len(pdf_content)} characters]"
                                                 if pdf_content.strip():
-                                                    attachment_info += f"\n📄 PDF 内容 ({att_name}, {len(reader.pages)} 页):\n{pdf_content}\n"
+                                                    attachment_info += f"\n📄 PDF content ({att_name}, {len(reader.pages)} pages):\n{pdf_content}\n"
                                                     logger.info("[CHAT][AUTO_READ] pdf file=%s pages=%d", att_name, len(reader.pages))
                                         except ImportError:
                                             logger.warning("[CHAT][AUTO_READ] pypdf not installed, skipping PDF auto-read")
@@ -187,7 +187,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                         except Exception as e:
                             logger.warning("[CHAT][AUTO_READ] Error processing attachment %s: %s", att_name, e)
 
-            # 根据附件类型给出工具使用建议
+            # Add tool-usage hints based on attachment types.
             has_image = any(att.get("type") == "image" for att in attachments if isinstance(att, dict))
             has_document = any(att.get("type") in ["document", "application/pdf"] for att in attachments if isinstance(att, dict))
             has_data = any(
@@ -197,11 +197,11 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
 
             hints = []
             if has_image:
-                hints.append("图片请使用 vision_reader 进行视觉理解")
+                hints.append("Use vision_reader for image understanding")
             if has_data:
-                hints.append("数据文件(.csv/.json/.xlsx)请使用 claude_code 进行分析")
+                hints.append("Use claude_code for data-file analysis (.csv/.json/.xlsx)")
             if hints:
-                attachment_info += f"\n💡 提示：{'; '.join(hints)}。"
+                attachment_info += f"\n💡 Hint: {'; '.join(hints)}."
 
             message_to_send = request.message + attachment_info
             logger.info("[CHAT][ATTACHMENTS] session=%s count=%d", request.session_id, len(attachments))
@@ -215,8 +215,8 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
 
         session_settings: Dict[str, Any] = {}
 
-        # 🔄 任务状态同步：优先使用前端传入的 task_id
-        # 这个逻辑必须在 session_id 检查之前执行，确保 task_id 总是被处理
+        # 🔄 Task-state sync: prioritize task_id from frontend context.
+        # This logic must run before session checks to ensure task_id is always handled.
         if "task_id" in context and "current_task_id" not in context:
             context["current_task_id"] = context["task_id"]
             logger.info(
@@ -227,7 +227,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
         if request.session_id:
             _save_chat_message(request.session_id, "user", request.message)
             session_settings = _get_session_settings(request.session_id)
-            # 如果 context 中没有 current_task_id，尝试从 session 加载
+            # If current_task_id is missing in context, try loading from session.
             if "current_task_id" not in context:
                 current_task_id = _get_session_current_task(request.session_id)
                 if current_task_id is not None:
@@ -328,13 +328,13 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             if agent_result.job_id:
                 metadata_payload["job_id"] = agent_result.job_id
                 metadata_payload["job_type"] = agent_result.job_type or "chat_action"
-                # 从 job 获取真实状态，而不是使用 agent_result.success
+                # Pull actual status from job payload instead of agent_result.success.
                 job_snap = plan_decomposition_jobs.get_job_payload(agent_result.job_id)
                 if job_snap:
                     metadata_payload["job_status"] = job_snap.get("status", "queued")
                     metadata_payload["job"] = job_snap
                 else:
-                    # 如果是同步执行完成的 job，使用 success 判断
+                    # For synchronously finished jobs, infer status from success.
                     metadata_payload["job_status"] = (
                             "succeeded" if agent_result.success else "failed"
                     )
@@ -569,9 +569,9 @@ async def update_chat_session(
 
     try:
         with get_db() as conn:
-            # 确保session存在，如果不存在则自动创建
+            # Ensure session exists; auto-create if missing.
             _ensure_session_exists(session_id, conn)
-            
+
             row = conn.execute(
                 "SELECT id FROM chat_sessions WHERE id=?", (session_id,)
             ).fetchone()
@@ -798,12 +798,13 @@ async def confirm_pending_action(
     background_tasks: BackgroundTasks,
 ) -> ConfirmActionResponse:
     """
-    确认或取消待执行的操作。
+    Confirm or cancel a pending action.
 
-    当 LLM 生成的操作需要用户确认时（如 create_plan），
-    系统会暂存操作并返回 confirmation_id，用户需调用此接口确认或取消。
+    When LLM-generated actions require user confirmation (e.g., create_plan),
+    the system stores them and returns a confirmation_id. The client then uses
+    this endpoint to confirm or cancel.
     """
-    _cleanup_old_confirmations()  # 清理过期确认
+    _cleanup_old_confirmations()  # Clean up expired confirmations.
 
     pending = _remove_pending_confirmation(request.confirmation_id)
     if not pending:
@@ -816,12 +817,12 @@ async def confirm_pending_action(
         logger.info(f"[CONFIRMATION] User cancelled: {request.confirmation_id}")
         return ConfirmActionResponse(
             success=True,
-            message="操作已取消",
+            message="Operation cancelled.",
             confirmation_id=request.confirmation_id,
             executed=False,
         )
 
-    # 用户确认，执行操作
+    # User confirmed; execute actions.
     logger.info(f"[CONFIRMATION] User confirmed: {request.confirmation_id}")
 
     try:
@@ -829,10 +830,10 @@ async def confirm_pending_action(
         actions = pending["actions"]
         plan_id = pending.get("plan_id")
 
-        # 创建后台执行任务
+        # Create background execution task.
         tracking_id = f"act_{uuid4().hex[:32]}"
 
-        # 调度后台执行
+        # Schedule background execution.
         background_tasks.add_task(
             _execute_confirmed_actions,
             tracking_id=tracking_id,
@@ -844,7 +845,7 @@ async def confirm_pending_action(
 
         return ConfirmActionResponse(
             success=True,
-            message="操作已确认，正在执行...",
+            message="Operation confirmed and now executing...",
             confirmation_id=request.confirmation_id,
             executed=True,
             result={"tracking_id": tracking_id},
@@ -854,7 +855,7 @@ async def confirm_pending_action(
         raise HTTPException(status_code=500, detail=str(e))
 
 async def get_pending_confirmation_status(confirmation_id: str) -> Dict[str, Any]:
-    """获取待确认操作的状态"""
+    """Get status of a pending confirmation action."""
     pending = _get_pending_confirmation(confirmation_id)
     if not pending:
         raise HTTPException(status_code=404, detail="Confirmation not found or expired")
@@ -877,7 +878,7 @@ async def _execute_confirmed_actions(
     plan_id: Optional[int],
     extra_context: Dict[str, Any],
 ) -> None:
-    """后台执行已确认的操作"""
+    """Execute confirmed actions in the background."""
     logger.info(f"[CONFIRMATION] Executing confirmed actions: {tracking_id}")
 
     try:
@@ -899,7 +900,7 @@ async def _execute_confirmed_actions(
             extra_context=extra_context or {},
         )
 
-        # 执行每个 action
+        # Execute each action.
         for action in actions:
             try:
                 step = await agent._dispatch_action(action)
@@ -1091,4 +1092,3 @@ router.add_api_route(
     methods=["POST"],
     response_model=ActionStatusResponse,
 )
-

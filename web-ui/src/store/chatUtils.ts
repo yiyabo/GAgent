@@ -58,7 +58,7 @@ export const parseJobStreamPayload = (raw: MessageEvent<any>): Record<string, an
         }
         return payload as Record<string, any>;
     } catch (error) {
-        console.warn('无法解析动作 SSE 消息:', error);
+        console.warn('Failed to parse action SSE message:', error);
         return null;
     }
 };
@@ -87,7 +87,7 @@ export const parseChatStreamEvent = (raw: string): ChatStreamEvent | null => {
     try {
         return JSON.parse(payload) as ChatStreamEvent;
     } catch (error) {
-        console.warn('无法解析 SSE payload:', error);
+        console.warn('Failed to parse SSE payload:', error);
         return { type: 'error', message: 'SSE payload parse failed' };
     }
 };
@@ -200,15 +200,15 @@ export const buildActionsFromSteps = (steps: Array<Record<string, any>>): ChatAc
 export const formatToolPlanPreface = (actions: ChatActionSummary[]): string => {
     const toolActions = (actions ?? []).filter((a) => a?.kind === 'tool_operation');
     if (!toolActions.length) {
-        return '我将先调用工具获取信息，然后给出基于结果的回答。';
+        return 'I will call tools first to gather information, then provide a result-based answer.';
     }
     const names = toolActions
         .map((a) => (typeof a?.name === 'string' ? a.name : null))
         .filter(Boolean) as string[];
     const uniqueNames = Array.from(new Set(names));
     const label = uniqueNames.slice(0, 3).join(', ');
-    const suffix = uniqueNames.length > 3 ? ` 等 ${uniqueNames.length} 个工具` : '';
-    return `我将先调用工具（${label}${suffix}）获取最新信息，然后给出基于结果的回答。`;
+    const suffix = uniqueNames.length > 3 ? ` and ${uniqueNames.length - 3} more tools` : '';
+    return `I will call tools first (${label}${suffix}) to gather the latest information, then provide a result-based answer.`;
 };
 
 export const summarizeSteps = (steps: Array<Record<string, any>>): string | null => {
@@ -220,7 +220,7 @@ export const summarizeSteps = (steps: Array<Record<string, any>>): string | null
         const labelParts: string[] = [];
         if (typeof action?.kind === 'string') labelParts.push(action.kind);
         if (typeof action?.name === 'string') labelParts.push(action.name);
-        const header = labelParts.length ? labelParts.join('/') : `步骤 ${order}`;
+        const header = labelParts.length ? labelParts.join('/') : `Step ${order}`;
 
         const detail =
             (typeof step?.summary === 'string' && step.summary) ||
@@ -249,7 +249,7 @@ export const summarizeSteps = (steps: Array<Record<string, any>>): string | null
                     (st && typeof st.title === 'string' && st.title) ||
                     null;
                 if (name) {
-                    lines.push(`  - 子任务: ${name}`);
+                    lines.push(`  - Subtask: ${name}`);
                 }
             });
         }
@@ -279,7 +279,7 @@ export const summarizeActions = (actions: ChatActionSummary[] | null | undefined
         const labelParts: string[] = [];
         if (typeof act.kind === 'string') labelParts.push(act.kind);
         if (typeof act.name === 'string') labelParts.push(act.name);
-        const header = labelParts.length ? labelParts.join('/') : `步骤 ${order}`;
+        const header = labelParts.length ? labelParts.join('/') : `Step ${order}`;
 
         const params = (act.parameters ?? {}) as Record<string, any>;
         const hasMsg = typeof act.message === 'string' && act.message.trim().length > 0;
@@ -308,7 +308,7 @@ export const summaryToChatSession = (summary: ChatSessionSummary): ChatSession =
     const title =
         rawName ||
         (summary.plan_title && summary.plan_title.trim()) ||
-        `会话 ${summary.id.slice(0, 8)}`;
+        `Session ${summary.id.slice(0, 8)}`;
     const titleSource =
         summary.name_source ??
         (rawName ? (summary.is_user_named ? 'user' : null) : null);
@@ -411,7 +411,8 @@ export const waitForActionCompletionViaStream = async (
 
     return new Promise((resolve) => {
         let finished = false;
-        // 统一使用通用 jobs SSE（GET），避免 chat/stream(POST) 中断后无法继续拿到终态
+        // Always use generic jobs SSE (GET) so final states are still available
+        // even if chat/stream (POST) is interrupted.
         const streamUrl = `${ENV.API_BASE_URL}/jobs/${trackingId}/stream`;
         const source = new EventSource(streamUrl);
 
@@ -423,7 +424,7 @@ export const waitForActionCompletionViaStream = async (
                 const status = await chatApi.getActionStatus(trackingId);
                 resolve(status);
             } catch (error) {
-                console.warn('动作 SSE 获取最终状态失败:', error);
+                console.warn('Failed to fetch final status from action SSE:', error);
                 resolve(null);
             }
         };
@@ -484,7 +485,7 @@ export type BackgroundCategory = 'phagescope' | 'claude_code' | 'task_creation';
 export const BACKGROUND_CATEGORY_LABELS: Record<BackgroundCategory, string> = {
     phagescope: 'PhageScope',
     claude_code: 'Claude Code',
-    task_creation: '任务创建 / 拆解',
+    task_creation: 'Task creation / decomposition',
 };
 
 /** Tool-operation action names that map to a background category. */

@@ -421,9 +421,6 @@ class AdversarialEvaluator(LLMBasedEvaluator):
             "high": 0.3,  # High severity has more impact
             "medium": 0.1,  # Medium severity
             "low": 0.05,  # Low severity
-            "高": 0.3,  # Backward-compatible severity labels
-            "中": 0.1,
-            "低": 0.05,
         }
 
         total_penalty = 0.0

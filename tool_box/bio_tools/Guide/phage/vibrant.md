@@ -41,7 +41,7 @@ docker run --rm -v /path/to/data:/data -v /path/to/db:/db quay.io/biocontainers/
 ## Examples for Agent
 
 ### Example 1: Run VIBRANT
-**User Request**: "运行 VIBRANT 识别病毒"
+**User Request**: " VIBRANT "
 
 **Agent Command**:
 ```bash

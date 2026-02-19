@@ -46,15 +46,15 @@ def _build_agent(*, tree: _FakeTree, user_message: str, current_task_id: int | N
 def test_followthrough_guardrail_infers_introduction_task_from_reply_promise() -> None:
     tree = _FakeTree(
         nodes={
-            4: _FakeNode(4, "撰写论文摘要和引言", status="pending"),
-            22: _FakeNode(22, "撰写论文摘要（Abstract）", status="completed", instruction="write abstract"),
-            23: _FakeNode(23, "撰写引言章节（Introduction）", status="pending", instruction="write introduction"),
+            4: _FakeNode(4, "summary", status="pending"),
+            22: _FakeNode(22, "summary(Abstract)", status="completed", instruction="write abstract"),
+            23: _FakeNode(23, "(Introduction)", status="pending", instruction="write introduction"),
         },
         children={4: [22, 23]},
     )
-    agent = _build_agent(tree=tree, user_message="现在完成了吗？")
+    agent = _build_agent(tree=tree, user_message="completed？")
     structured = LLMStructuredResponse(
-        llm_reply=LLMReply(message="我将立即开始撰写引言并写入主文件。"),
+        llm_reply=LLMReply(message="writefile. "),
         actions=[],
     )
 
@@ -66,18 +66,18 @@ def test_followthrough_guardrail_infers_introduction_task_from_reply_promise() -
 def test_followthrough_guardrail_uses_atomic_descendant_for_composite_current_task() -> None:
     tree = _FakeTree(
         nodes={
-            4: _FakeNode(4, "撰写论文摘要和引言", status="pending"),
-            23: _FakeNode(23, "撰写引言章节（Introduction）", status="pending"),
+            4: _FakeNode(4, "summary", status="pending"),
+            23: _FakeNode(23, "(Introduction)", status="pending"),
         },
         children={4: [23]},
     )
     agent = _build_agent(
         tree=tree,
-        user_message="开始执行当前任务",
+        user_message="executetask",
         current_task_id=4,
     )
     structured = LLMStructuredResponse(
-        llm_reply=LLMReply(message="收到，我马上执行。"),
+        llm_reply=LLMReply(message=", execute. "),
         actions=[],
     )
 
@@ -89,13 +89,13 @@ def test_followthrough_guardrail_uses_atomic_descendant_for_composite_current_ta
 def test_followthrough_guardrail_keeps_status_query_without_execution_intent() -> None:
     tree = _FakeTree(
         nodes={
-            23: _FakeNode(23, "撰写引言章节（Introduction）", status="pending"),
+            23: _FakeNode(23, "(Introduction)", status="pending"),
         },
         children={},
     )
-    agent = _build_agent(tree=tree, user_message="现在完成了吗？")
+    agent = _build_agent(tree=tree, user_message="completed？")
     structured = LLMStructuredResponse(
-        llm_reply=LLMReply(message="引言章节尚未完成。"),
+        llm_reply=LLMReply(message="completed. "),
         actions=[],
     )
 

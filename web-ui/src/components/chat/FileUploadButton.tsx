@@ -95,17 +95,17 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
 
   const handleUpload = async (file: File) => {
     if (!currentSession) {
-      message.error('请先创建或选择一个会话');
+      message.error('Please create or select a session first.');
       return false;
     }
 
     setUploading(true);
     try {
       await uploadFile(file);
-      message.success(`文件 ${file.name} 上传成功`);
-      return false; // 阻止默认上传行为
+      message.success(`File ${file.name} uploaded successfully.`);
+      return false; // Prevent default upload behavior.
     } catch (error: any) {
-      message.error(`上传失败: ${error.message || '未知错误'}`);
+      message.error(`Upload failed: ${error.message || 'Unknown error'}`);
       return false;
     } finally {
       setUploading(false);
@@ -120,16 +120,16 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
       ALLOWED_EXTENSIONS.some((ext) => fileName.endsWith(ext));
 
     if (!isAllowed) {
-      message.error('不支持的文件类型');
+      message.error('Unsupported file type.');
       return Upload.LIST_IGNORE;
     }
 
-    // 执行上传
+    // Execute upload
     handleUpload(file);
-    return false; // 阻止默认上传
+    return false; // Prevent default upload
   };
 
-  const tooltip = '上传文件';
+  const tooltip = 'Upload file';
   const acceptList = [
     'image/*',
     'application/pdf',

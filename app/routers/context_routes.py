@@ -1,8 +1,4 @@
-"""
-上下文管理相关API端点
-
-包含任务间链接管理、上下文预览和快照功能。
-"""
+"""Context relationship APIs for task links and context snapshots."""
 
 import os
 from fastapi import APIRouter, HTTPException, Body
@@ -22,7 +18,7 @@ router = APIRouter(tags=["context"])
 
 @router.post("/context/links")
 def create_link(payload: Dict[str, Any]):
-    """创建任务间的上下文链接"""
+    """Create a context link between two tasks."""
     try:
         from_id = int(payload.get("from_id"))
         to_id = int(payload.get("to_id"))
@@ -37,7 +33,7 @@ def create_link(payload: Dict[str, Any]):
 
 @router.delete("/context/links")
 def delete_link(payload: Dict[str, Any]):
-    """删除任务间的上下文链接"""
+    """Delete a context link between two tasks."""
     try:
         from_id = int(payload.get("from_id"))
         to_id = int(payload.get("to_id"))
@@ -52,16 +48,15 @@ def delete_link(payload: Dict[str, Any]):
 
 @router.get("/context/links/{task_id}")
 def get_links(task_id: int):
-    """获取指定任务的所有入站和出站链接"""
+    """Get inbound and outbound links for a task."""
     inbound = default_repo.list_links(to_id=task_id)
     outbound = default_repo.list_links(from_id=task_id)
     return {"task_id": task_id, "inbound": inbound, "outbound": outbound}
 
 
-# 任务上下文相关端点
 @router.post("/tasks/{task_id}/context/preview")
 def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
-    """预览任务的上下文信息"""
+    """Preview assembled context bundle for a task."""
     # Typed parsing
     try:
         req = ContextPreviewRequest.model_validate(payload or {})
@@ -107,21 +102,20 @@ def context_preview(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)
 
 @router.get("/tasks/{task_id}/context/snapshots")
 def list_task_contexts_api(task_id: int):
-    """列出指定任务的所有上下文快照"""
+    """List saved context snapshots for a task."""
     snaps = default_repo.list_task_contexts(task_id)
     return {"task_id": task_id, "snapshots": snaps}
 
 
 @router.get("/tasks/{task_id}/context/snapshots/{label}")
 def get_task_context_api(task_id: int, label: str):
-    """获取指定任务和标签的上下文快照"""
+    """Get a specific context snapshot by label."""
     snap = default_repo.get_task_context(task_id, label)
     if not snap:
         raise HTTPException(status_code=404, detail="snapshot not found")
     return snap
 
 
-# 全局索引端点
 def _global_index_path() -> str:
     p = os.environ.get("GLOBAL_INDEX_PATH")
     return p if (isinstance(p, str) and p.strip()) else "INDEX.md"
@@ -129,7 +123,7 @@ def _global_index_path() -> str:
 
 @router.get("/index")
 def get_global_index():
-    """获取全局索引文件内容"""
+    """getfilecontent"""
     path = _global_index_path()
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -141,7 +135,7 @@ def get_global_index():
 
 @router.put("/index")
 def put_global_index(payload: Dict[str, Any] = Body(...)):
-    """更新全局索引文件内容"""
+    """updatefilecontent"""
     content = payload.get("content") if isinstance(payload, dict) else None
     if not isinstance(content, str):
         raise HTTPException(status_code=400, detail="content (string) is required")

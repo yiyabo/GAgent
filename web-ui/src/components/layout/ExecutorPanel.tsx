@@ -34,36 +34,36 @@ const EMPTY_BOARD = (): BackgroundTaskBoardResponse => ({
   generated_at: new Date().toISOString(),
   total: 0,
   groups: {
-    task_creation: {
-      key: 'task_creation',
-      label: '任务创建',
-      total: 0,
-      running: 0,
-      queued: 0,
-      succeeded: 0,
-      failed: 0,
-      items: [],
-    },
-    phagescope: {
-      key: 'phagescope',
-      label: 'PhageScope',
-      total: 0,
-      running: 0,
-      queued: 0,
-      succeeded: 0,
-      failed: 0,
-      items: [],
-    },
-    claude_code: {
-      key: 'claude_code',
-      label: 'Claude Code',
-      total: 0,
-      running: 0,
-      queued: 0,
-      succeeded: 0,
-      failed: 0,
-      items: [],
-    },
+  task_creation: {
+  key: 'task_creation',
+  label: 'taskcreate',
+  total: 0,
+  running: 0,
+  queued: 0,
+  succeeded: 0,
+  failed: 0,
+  items: [],
+  },
+  phagescope: {
+  key: 'phagescope',
+  label: 'PhageScope',
+  total: 0,
+  running: 0,
+  queued: 0,
+  succeeded: 0,
+  failed: 0,
+  items: [],
+  },
+  claude_code: {
+  key: 'claude_code',
+  label: 'Claude Code',
+  total: 0,
+  running: 0,
+  queued: 0,
+  succeeded: 0,
+  failed: 0,
+  items: [],
+  },
   },
 });
 
@@ -77,20 +77,20 @@ const normalizeJobStatus = (raw: unknown): 'queued' | 'running' | 'completed' | 
 
 const getStatusLabel = (status: string): string => {
   switch (normalizeJobStatus(status)) {
-    case 'running':
-      return '运行中';
-    case 'completed':
-      return '已完成';
-    case 'failed':
-      return '失败';
-    default:
-      return '排队中';
+  case 'running':
+  return 'medium';
+  case 'completed':
+  return 'completed';
+  case 'failed':
+  return 'failed';
+  default:
+  return 'queued';
   }
 };
 
 const getDisplayId = (item: BackgroundTaskItem): string => {
   if (item.category === 'phagescope' && item.taskid && item.taskid.trim()) {
-    return item.taskid.trim();
+  return item.taskid.trim();
   }
   return item.job_id.slice(0, 8);
 };
@@ -113,10 +113,10 @@ const formatRelativeTime = (time?: string | null): string => {
   const date = parseServerTime(time);
   if (!date || !date.isValid()) return '-';
   const diffMs = Date.now() - date.valueOf();
-  if (diffMs < 60000) return '刚刚';
-  if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}分钟前`;
-  if (diffMs < 86400000) return `${Math.floor(diffMs / 3600000)}小时前`;
-  return `${Math.floor(diffMs / 86400000)}天前`;
+  if (diffMs < 60000) return '';
+  if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}`;
+  if (diffMs < 86400000) return `${Math.floor(diffMs / 3600000)}`;
+  return `${Math.floor(diffMs / 86400000)}`;
 };
 
 const clampPercent = (value: number): number => {
@@ -136,48 +136,48 @@ const getProgressText = (item: BackgroundTaskItem): string | null => {
   const parts: string[] = [];
 
   if (typeof item.progress_text === 'string' && item.progress_text.trim()) {
-    parts.push(item.progress_text.trim());
+  parts.push(item.progress_text.trim());
   } else if (
-    typeof item.done_steps === 'number' &&
-    Number.isFinite(item.done_steps) &&
-    typeof item.total_steps === 'number' &&
-    Number.isFinite(item.total_steps) &&
-    item.total_steps > 0
+  typeof item.done_steps === 'number' &&
+  Number.isFinite(item.done_steps) &&
+  typeof item.total_steps === 'number' &&
+  Number.isFinite(item.total_steps) &&
+  item.total_steps > 0
   ) {
-    parts.push(`${Math.max(0, Math.round(item.done_steps))}/${Math.max(0, Math.round(item.total_steps))}`);
+  parts.push(`${Math.max(0, Math.round(item.done_steps))}/${Math.max(0, Math.round(item.total_steps))}`);
   } else if (
-    item.counts &&
-    typeof item.counts.done === 'number' &&
-    Number.isFinite(item.counts.done) &&
-    typeof item.counts.total === 'number' &&
-    Number.isFinite(item.counts.total) &&
-    item.counts.total > 0
+  item.counts &&
+  typeof item.counts.done === 'number' &&
+  Number.isFinite(item.counts.done) &&
+  typeof item.counts.total === 'number' &&
+  Number.isFinite(item.counts.total) &&
+  item.counts.total > 0
   ) {
-    parts.push(`${Math.max(0, Math.round(item.counts.done))}/${Math.max(0, Math.round(item.counts.total))}`);
+  parts.push(`${Math.max(0, Math.round(item.counts.done))}/${Math.max(0, Math.round(item.counts.total))}`);
   }
 
   if (
-    typeof item.current_step === 'number' &&
-    Number.isFinite(item.current_step) &&
-    item.current_step > 0
+  typeof item.current_step === 'number' &&
+  Number.isFinite(item.current_step) &&
+  item.current_step > 0
   ) {
-    if (
-      typeof item.total_steps === 'number' &&
-      Number.isFinite(item.total_steps) &&
-      item.total_steps > 0
-    ) {
-      parts.push(`step ${Math.round(item.current_step)}/${Math.round(item.total_steps)}`);
-    } else {
-      parts.push(`step ${Math.round(item.current_step)}`);
-    }
+  if (
+  typeof item.total_steps === 'number' &&
+  Number.isFinite(item.total_steps) &&
+  item.total_steps > 0
+  ) {
+  parts.push(`step ${Math.round(item.current_step)}/${Math.round(item.total_steps)}`);
+  } else {
+  parts.push(`step ${Math.round(item.current_step)}`);
+  }
   }
 
   if (
-    typeof item.current_task_id === 'number' &&
-    Number.isFinite(item.current_task_id) &&
-    item.current_task_id > 0
+  typeof item.current_task_id === 'number' &&
+  Number.isFinite(item.current_task_id) &&
+  item.current_task_id > 0
   ) {
-    parts.push(`task #${Math.round(item.current_task_id)}`);
+  parts.push(`task #${Math.round(item.current_task_id)}`);
   }
 
   if (!parts.length) return null;
@@ -189,48 +189,48 @@ const resolveItemProgress = (
 ): { percent: number; status: 'normal' | 'active' | 'success' | 'exception'; text: string | null } => {
   const status = toProgressStatus(item.progress_status || item.status || 'queued');
   const explicitPercent =
-    typeof item.progress_percent === 'number' && Number.isFinite(item.progress_percent)
-      ? clampPercent(item.progress_percent)
-      : null;
+  typeof item.progress_percent === 'number' && Number.isFinite(item.progress_percent)
+  ? clampPercent(item.progress_percent)
+  : null;
 
   let fallbackPercent: number | null = null;
   if (
-    typeof item.done_steps === 'number' &&
-    Number.isFinite(item.done_steps) &&
-    typeof item.total_steps === 'number' &&
-    Number.isFinite(item.total_steps) &&
-    item.total_steps > 0
+  typeof item.done_steps === 'number' &&
+  Number.isFinite(item.done_steps) &&
+  typeof item.total_steps === 'number' &&
+  Number.isFinite(item.total_steps) &&
+  item.total_steps > 0
   ) {
-    fallbackPercent = clampPercent((item.done_steps / item.total_steps) * 100);
+  fallbackPercent = clampPercent((item.done_steps / item.total_steps) * 100);
   } else if (
-    item.counts &&
-    typeof item.counts.done === 'number' &&
-    Number.isFinite(item.counts.done) &&
-    typeof item.counts.total === 'number' &&
-    Number.isFinite(item.counts.total) &&
-    item.counts.total > 0
+  item.counts &&
+  typeof item.counts.done === 'number' &&
+  Number.isFinite(item.counts.done) &&
+  typeof item.counts.total === 'number' &&
+  Number.isFinite(item.counts.total) &&
+  item.counts.total > 0
   ) {
-    fallbackPercent = clampPercent((item.counts.done / item.counts.total) * 100);
+  fallbackPercent = clampPercent((item.counts.done / item.counts.total) * 100);
   }
 
   let percent = explicitPercent ?? fallbackPercent ?? 0;
   if (status === 'active' && percent >= 100) {
-    percent = 99;
+  percent = 99;
   }
   if (status === 'success' || status === 'exception') {
-    percent = 100;
+  percent = 100;
   }
 
   return {
-    percent,
-    status,
-    text: getProgressText(item),
+  percent,
+  status,
+  text: getProgressText(item),
   };
 };
 
 const ExecutorPanel: React.FC = () => {
   const currentSessionId = useChatStore(
-    (state) => state.currentSession?.session_id ?? state.currentSession?.id ?? null
+  (state) => state.currentSession?.session_id ?? state.currentSession?.id ?? null
   );
   const currentPlanId = useChatStore((state) => state.currentPlanId ?? null);
   const sendMessage = useChatStore((state) => state.sendMessage);
@@ -241,228 +241,233 @@ const ExecutorPanel: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const fetchBoard = useCallback(
-    async (silent = false) => {
-      try {
-        if (!silent) {
-          setRefreshing(true);
-        } else {
-          setLoading(true);
-        }
-        if (!currentSessionId && !currentPlanId) {
-          setBoard(EMPTY_BOARD());
-          setError(null);
-          return;
-        }
-        const snapshot = await planTreeApi.getBackgroundTaskBoard({
-          limit: 50,
-          session_id: currentSessionId ?? undefined,
-          plan_id: currentPlanId ?? undefined,
-          include_finished: true,
-        });
-        setBoard(snapshot);
-        setError(null);
-      } catch (err: any) {
-        setError(err?.message || '后台任务加载失败');
-      } finally {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    },
-    [currentPlanId, currentSessionId]
+  async (silent = false) => {
+  try {
+  if (!silent) {
+  setRefreshing(true);
+  } else {
+  setLoading(true);
+  }
+  if (!currentSessionId && !currentPlanId) {
+  setBoard(EMPTY_BOARD());
+  setError(null);
+  return;
+  }
+  const snapshot = await planTreeApi.getBackgroundTaskBoard({
+  limit: 50,
+  session_id: currentSessionId ?? undefined,
+  plan_id: currentPlanId ?? undefined,
+  include_finished: true,
+  });
+  setBoard(snapshot);
+  setError(null);
+  } catch (err: any) {
+  setError(err?.message || 'Failed to load background tasks');
+  } finally {
+  setLoading(false);
+  setRefreshing(false);
+  }
+  },
+  [currentPlanId, currentSessionId]
   );
 
   useEffect(() => {
-    void fetchBoard(true);
+  void fetchBoard(true);
   }, [fetchBoard]);
 
   const timeoutIdsRef = React.useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => {
-    const onTasksUpdated = () => {
-      timeoutIdsRef.current.forEach((id) => clearTimeout(id));
-      timeoutIdsRef.current = [];
-      const t1 = setTimeout(() => void fetchBoard(true), 2000);
-      const t2 = setTimeout(() => void fetchBoard(true), 6000);
-      timeoutIdsRef.current = [t1, t2];
-    };
-    window.addEventListener('tasksUpdated', onTasksUpdated);
-    return () => {
-      window.removeEventListener('tasksUpdated', onTasksUpdated);
-      timeoutIdsRef.current.forEach((id) => clearTimeout(id));
-      timeoutIdsRef.current = [];
-    };
+  const onTasksUpdated = () => {
+  timeoutIdsRef.current.forEach((id) => clearTimeout(id));
+  timeoutIdsRef.current = [];
+  const t1 = setTimeout(() => void fetchBoard(true), 2000);
+  const t2 = setTimeout(() => void fetchBoard(true), 6000);
+  timeoutIdsRef.current = [t1, t2];
+  };
+  window.addEventListener('tasksUpdated', onTasksUpdated);
+  return () => {
+  window.removeEventListener('tasksUpdated', onTasksUpdated);
+  timeoutIdsRef.current.forEach((id) => clearTimeout(id));
+  timeoutIdsRef.current = [];
+  };
   }, [fetchBoard]);
 
   const runningExists = useMemo(() => {
-    if (!board) return false;
-    return GROUP_ORDER.some((key) => {
-      const group = board.groups[key];
-      if (!group || !Array.isArray(group.items)) return false;
-      return group.items.some((item) => !FINAL_STATUSES.has(String(item.status || '').toLowerCase()));
-    });
+  if (!board) return false;
+  return GROUP_ORDER.some((key) => {
+  const group = board.groups[key];
+  if (!group || !Array.isArray(group.items)) return false;
+  return group.items.some((item) => !FINAL_STATUSES.has(String(item.status || '').toLowerCase()));
+  });
   }, [board]);
 
   useEffect(() => {
-    if (!runningExists) return undefined;
-    const timer = window.setInterval(() => {
-      void fetchBoard(true);
-    }, 8000);
-    return () => window.clearInterval(timer);
+  if (!runningExists) return undefined;
+  const timer = window.setInterval(() => {
+  void fetchBoard(true);
+  }, 8000);
+  return () => window.clearInterval(timer);
   }, [runningExists, fetchBoard]);
 
   const groups: BackgroundTaskGroup[] = useMemo(() => {
-    if (!board) return [];
-    return GROUP_ORDER.map((key) => board.groups[key]).filter(Boolean);
+  if (!board) return [];
+  return GROUP_ORDER.map((key) => board.groups[key]).filter(Boolean);
   }, [board]);
 
   const totalItems = useMemo(() => groups.reduce((acc, group) => acc + (group?.items?.length || 0), 0), [groups]);
 
   if (loading && !board) {
-    return (
-      <div className="executor-empty">
-        <div className="executor-empty-icon" />
-        <span>加载后台任务中...</span>
-      </div>
-    );
+  return (
+  <div className="executor-empty">
+  <div className="executor-empty-icon" />
+  <span>Loading background tasks...</span>
+  </div>
+  );
   }
 
   return (
-    <div className="executor-container">
-      <div className="executor-toolbar">
-        <Space size={8}>
-          <Button
-            size="small"
-            icon={<ReloadOutlined />}
-            onClick={() => void fetchBoard(false)}
-            loading={refreshing}
-          >
-            刷新
-          </Button>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            共 {totalItems} 条
-          </Text>
-        </Space>
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          更新时间：{board?.generated_at ? formatRelativeTime(board.generated_at) : '-'}
-        </Text>
-      </div>
+  <div className="executor-container">
+  <div className="executor-toolbar">
+  <Space size={8}>
+  <Button
+  size="small"
+  icon={<ReloadOutlined />}
+  onClick={() => void fetchBoard(false)}
+  loading={refreshing}
+  >
+  Refresh
+  </Button>
+  <Text type="secondary" style={{ fontSize: 12 }}>
+  {totalItems} tasks
+  </Text>
+  </Space>
+  <Text type="secondary" style={{ fontSize: 12 }}>
+  Updated: {board?.generated_at ? formatRelativeTime(board.generated_at) : '-'}
+  </Text>
+  </div>
 
-      {error ? (
-        <div className="executor-error">
-          <Text type="danger">{error}</Text>
-        </div>
-      ) : null}
+  {error ? (
+  <div className="executor-error">
+  <Text type="danger">{error}</Text>
+  </div>
+  ) : null}
 
-      {totalItems === 0 ? (
-        <div className="executor-empty">
-          <div className="executor-empty-icon" />
-          <span>暂无任务记录</span>
-        </div>
-      ) : (
-        <div className="task-table-wrap">
-          {groups.map((group) => (
-            <div key={group.key} className="executor-group">
-              <div className="executor-group-header">
-                <Space size={8}>
-                  <Text strong>{group.label}</Text>
-                  <Tag>{group.total}</Tag>
-                  {group.running > 0 ? <Tag color="blue">运行中 {group.running}</Tag> : null}
-                  {group.queued > 0 ? <Tag color="default">排队 {group.queued}</Tag> : null}
-                  {group.failed > 0 ? <Tag color="red">失败 {group.failed}</Tag> : null}
-                </Space>
-              </div>
-              <table className="task-table">
-                <thead>
-                  <tr>
-                    <th>Task ID</th>
-                    <th>内容</th>
-                    <th>状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {group.items.map((item) => {
-                    const normalized = normalizeJobStatus(item.status);
-                    const duration = formatDuration(item.started_at, item.finished_at);
-                    const progress = resolveItemProgress(item);
-                    const remoteMeta =
-                      item.category === 'phagescope'
-                        ? [item.remote_status, item.phase].filter((v) => typeof v === 'string' && v.trim()).join(' / ')
-                        : '';
-                    const countMeta =
-                      item.category === 'phagescope' && item.counts
-                        ? `${item.counts.done}/${item.counts.total}`
-                        : '';
-                    return (
-                      <tr key={item.job_id} className="task-row">
-                        <td className="task-id" title={item.job_id}>
-                          {getDisplayId(item)}
-                        </td>
-                        <td className="task-content" title={item.label}>
-                          <div>{item.label}</div>
-                          {remoteMeta ? (
-                            <div className="task-content-meta">远端状态：{remoteMeta}</div>
-                          ) : null}
-                          {countMeta ? (
-                            <div className="task-content-meta">模块进度：{countMeta}</div>
-                          ) : null}
-                          {item.error ? (
-                            <div className="task-content-meta task-content-error">{item.error}</div>
-                          ) : null}
-                          <div className="task-progress-wrap">
-                            <Progress
-                              percent={progress.percent}
-                              status={progress.status}
-                              size="small"
-                              showInfo={false}
-                              strokeLinecap="round"
-                            />
-                            <div className="task-progress-meta">
-                              <span className="task-progress-percent">{progress.percent}%</span>
-                              {progress.text ? <span className="task-progress-text">{progress.text}</span> : null}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="task-status">
-                          <span className={`task-status-dot ${normalized}`} />
-                          <span className="task-status-text">{getStatusLabel(item.status)}</span>
-                          {duration ? <span className="task-status-meta">{duration}</span> : null}
-                          <span className="task-status-meta">{formatRelativeTime(item.created_at)}</span>
-                          {normalized === 'completed' && (
-                            <Tooltip title="让 Agent 分析此任务的结果">
-                              <Button
-                                type="link"
-                                size="small"
-                                icon={<SearchOutlined />}
-                                disabled={isProcessing}
-                                onClick={() => {
-                                  const displayId = getDisplayId(item);
-                                  if (item.category === 'phagescope') {
-                                    // PhageScope: use DeepThink to download + read files + analyze in one loop
-                                    const taskidHint = item.taskid ? `taskid=${item.taskid}` : `job_id=${item.job_id}`;
-                                    const prompt = `/think PhageScope 任务 (${taskidHint}) 已完成。请先用 phagescope save_all 下载结果到本地，然后用 file_operations 读取关键文件（summary.json、phage_info.json、quality.json、proteins.tsv），最后给出结构化的生物信息学解读。`;
-                                    void sendMessage(prompt);
-                                  } else {
-                                    // Other tasks: text-only analysis
-                                    const prompt = `后台任务「${item.label}」(${displayId}) 已完成。请根据已有的执行记录和日志，直接分析这个任务的结果和状态，不要调用任何工具，不要重新提交任务。`;
-                                    void sendMessage(prompt, { analysis_only: true, source_job_id: item.job_id });
-                                  }
-                                }}
-                                style={{ padding: '0 4px', fontSize: 11, height: 'auto', lineHeight: 1 }}
-                              >
-                                分析
-                              </Button>
-                            </Tooltip>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+  {totalItems === 0 ? (
+  <div className="executor-empty">
+  <div className="executor-empty-icon" />
+  <span>No tasks</span>
+  </div>
+  ) : (
+  <div className="task-table-wrap">
+  {groups.map((group) => (
+  <div key={group.key} className="executor-group">
+  <div className="executor-group-header">
+  <Space size={8}>
+  <Text strong>{group.label}</Text>
+  <Tag>{group.total}</Tag>
+  {group.running > 0 ? <Tag color="blue">Running {group.running}</Tag> : null}
+  {group.queued > 0 ? <Tag color="default">Pending {group.queued}</Tag> : null}
+  {group.failed > 0 ? <Tag color="red">Failed {group.failed}</Tag> : null}
+  </Space>
+  </div>
+  <table className="task-table">
+  <thead>
+  <tr>
+  <th>Task ID</th>
+  <th>Content</th>
+  <th>Status</th>
+  </tr>
+  </thead>
+  <tbody>
+  {group.items.map((item) => {
+  const normalized = normalizeJobStatus(item.status);
+  const duration = formatDuration(item.started_at, item.finished_at);
+  const progress = resolveItemProgress(item);
+  const remoteMeta =
+  item.category === 'phagescope'
+  ? [item.remote_status, item.phase].filter((v) => typeof v === 'string' && v.trim()).join(' / ')
+  : '';
+  const countMeta =
+  item.category === 'phagescope' && item.counts
+  ? `${item.counts.done}/${item.counts.total}`
+  : '';
+  return (
+  <tr key={item.job_id} className="task-row">
+  <td className="task-id" title={item.job_id}>
+  {getDisplayId(item)}
+  </td>
+  <td className="task-content" title={item.label}>
+  <div>{item.label}</div>
+  {remoteMeta ? (
+  <div className="task-content-meta">status: {remoteMeta}</div>
+  ) : null}
+  {countMeta ? (
+  <div className="task-content-meta">progress: {countMeta}</div>
+  ) : null}
+  {item.error ? (
+  <div className="task-content-meta task-content-error">{item.error}</div>
+  ) : null}
+  <div className="task-progress-wrap">
+  <Progress
+  percent={progress.percent}
+  status={progress.status}
+  size="small"
+  showInfo={false}
+  strokeLinecap="round"
+  />
+  <div className="task-progress-meta">
+  <span className="task-progress-percent">{progress.percent}%</span>
+  {progress.text ? <span className="task-progress-text">{progress.text}</span> : null}
+  </div>
+  </div>
+  </td>
+  <td className="task-status">
+  <span className={`task-status-dot ${normalized}`} />
+  <span className="task-status-text">{getStatusLabel(item.status)}</span>
+  {duration ? <span className="task-status-meta">{duration}</span> : null}
+  <span className="task-status-meta">{formatRelativeTime(item.created_at)}</span>
+  {normalized === 'completed' && (
+  <Tooltip title="Ask Agent to analyze task results">
+  <Button
+  type="link"
+  size="small"
+  icon={<SearchOutlined />}
+  disabled={isProcessing}
+  onClick={() => {
+  const displayId = getDisplayId(item);
+  if (item.category === 'phagescope') {
+  // PhageScope: use DeepThink to download + read files + analyze in one loop
+  const taskidHint = item.taskid ? `taskid=${item.taskid}` : `job_id=${item.job_id}`;
+  const prompt =
+  `/think PhageScope task (${taskidHint}) completed. ` +
+  `Please run phagescope save_all to download results, then use file_operations to read ` +
+  `summary.json, phage_info.json, quality.json, and proteins.tsv, and provide a concise analysis.`;
+  void sendMessage(prompt);
+  } else {
+  // Other tasks: text-only analysis
+  const prompt =
+  `Background task "${item.label}" (${displayId}) completed. ` +
+  `Please review execution logs, analyze task result status, and summarize key outcomes and issues.`;
+  void sendMessage(prompt, { analysis_only: true, source_job_id: item.job_id });
+  }
+  }}
+  style={{ padding: '0 4px', fontSize: 11, height: 'auto', lineHeight: 1 }}
+  >
+  Analyze
+  </Button>
+  </Tooltip>
+  )}
+  </td>
+  </tr>
+  );
+  })}
+  </tbody>
+  </table>
+  </div>
+  ))}
+  </div>
+  )}
+  </div>
   );
 };
 

@@ -60,14 +60,14 @@ def _default_pubmed_query(topic: str) -> str:
 
 
 def _default_task(topic: str) -> str:
-    t = topic.strip() if isinstance(topic, str) and topic.strip() else "噬菌体相关主题"
+    t = topic.strip() if isinstance(topic, str) and topic.strip() else "phage-related topic"
     return (
-        f"写一篇可投稿的中文综述，主题：{t}。\n"
-        "要求：\n"
-        "1) 全文必须使用 Markdown citekeys（形如 [@citekey]）。\n"
-        "2) 不得捏造引用；References 章节只能列出提供的 BibTeX 中存在的 citekey。\n"
-        "3) 如果证据文件未提供具体数值/统计量，必须写“Not available”，不得编造数字。\n"
-        "4) 结构建议：摘要、引言、（若干主题小节）、挑战与展望、结论、参考文献。\n"
+        f"Write a submission-ready English review article on: {t}.\n"
+        "Requirements:\n"
+        "1) Use Markdown citekeys throughout (for example: [@citekey]).\n"
+        "2) Do not fabricate citations. The References section must only include citekeys present in the provided BibTeX.\n"
+        "3) If the evidence files do not provide concrete values/statistics, write \"Not available\" instead of inventing numbers.\n"
+        "4) Suggested structure: Abstract, Introduction, thematic sections, Challenges & Outlook, Conclusion, References.\n"
     )
 
 
@@ -210,7 +210,7 @@ review_pack_writer_tool = {
     "name": "review_pack_writer",
     "description": (
         "One-shot: build a PubMed/PMC literature pack (BibTeX + evidence inventory + optional OA PDFs) "
-        "then draft a Chinese review with Markdown citekeys via manuscript_writer. "
+        "then draft an English review with Markdown citekeys via manuscript_writer. "
         "Keeps literature_pipeline/manuscript_writer available for standalone use."
     ),
     "category": "document_writing",
@@ -246,7 +246,6 @@ review_pack_writer_tool = {
     "handler": review_pack_writer_handler,
     "tags": ["review", "pubmed", "pmc", "bibtex", "citekey", "manuscript"],
     "examples": [
-        "Build + draft: topic='噬菌体-宿主互作、噬菌体组学/数据库' out_dir='runtime/literature/phage_review_pack'",
+        "Build + draft: topic='phage-host interactions and phage omics/databases' out_dir='runtime/literature/phage_review_pack'",
     ],
 }
-

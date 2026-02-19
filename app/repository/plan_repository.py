@@ -107,7 +107,7 @@ class PlanRepository:
 
     def update_plan_metadata(self, plan_id: int, metadata: Dict[str, Any]) -> None:
         """Update the metadata for a plan.
-        
+
         Args:
             plan_id: The plan ID
             metadata: New metadata dict (replaces existing)
@@ -366,13 +366,14 @@ class PlanRepository:
         execution_result: Optional[str] = None,
     ) -> int:
         """
-        级联更新任务及其所有子任务的状态。
-        当 root 任务完成时，所有子任务也应该被标记为完成。
-        返回更新的任务数量。
+        Update all descendant task statuses under a given task.
+
+        When a root or intermediate task reaches a terminal status, this method
+        propagates the same status to its descendants and returns the number of
+        updated rows.
         """
         with plan_db_connection(get_plan_db_path(plan_id)) as conn:
             self._ensure_task_columns(conn, plan_id)
-            # 获取任务的 path
             row = conn.execute(
                 "SELECT path FROM tasks WHERE id=?",
                 (task_id,),
@@ -380,8 +381,7 @@ class PlanRepository:
             if not row:
                 raise ValueError(f"Task {task_id} not found in plan {plan_id}")
             path = row["path"] or f"/{task_id}"
-            
-            # 更新所有子任务（path 以当前任务 path 开头的任务）
+
             if execution_result is not None:
                 updated = conn.execute(
                     """
@@ -400,7 +400,7 @@ class PlanRepository:
                     """,
                     (status, f"{path}/%", status),
                 ).rowcount
-        
+
         if updated > 0:
             self._touch_plan(plan_id)
         return updated
@@ -872,7 +872,7 @@ class PlanRepository:
     ) -> Optional[int]:
         if requested_position is not None:
             if requested_position < 0:
-                raise ValueError("position 不能为负数。")
+                raise ValueError("position . ")
             return requested_position
 
         if anchor_position is None:
@@ -880,7 +880,7 @@ class PlanRepository:
 
         anchor_mode = anchor_position.strip().lower()
         if anchor_mode not in {"before", "after", "first_child", "last_child"}:
-            raise ValueError(f"不支持的 anchor_position: {anchor_position!r}")
+            raise ValueError(f"support anchor_position: {anchor_position!r}")
 
         if anchor_mode == "last_child":
             return None
@@ -890,16 +890,16 @@ class PlanRepository:
             return 0
 
         if anchor_task_id is None:
-            raise ValueError("anchor_task_id 缺失，无法根据 anchor_position 计算插入位置。")
+            raise ValueError("anchor_task_id ,  anchor_position . ")
 
         anchor = self._fetch_task_brief(conn, anchor_task_id)
         if anchor is None:
-            raise ValueError(f"未找到锚点任务 {anchor_task_id}。")
+            raise ValueError(f"task {anchor_task_id}. ")
 
         anchor_parent = anchor["parent_id"]
         normalized_parent = parent_id if parent_id is not None else None
         if (anchor_parent if anchor_parent is not None else None) != normalized_parent:
-            raise ValueError("锚点任务不属于目标父节点，无法插入。")
+            raise ValueError("task, . ")
 
         anchor_pos = anchor["position"]
         if anchor_mode == "before":

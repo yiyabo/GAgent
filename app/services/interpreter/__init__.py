@@ -1,15 +1,15 @@
 """
 Result Interpreter Module
 
-提供数据分析和结果解释功能，包含：
-- DataProcessor: 数据集元数据提取
-- TaskExecutor: 任务执行器（使用 Claude Code）
-- PlanExecutorInterpreter: 计划执行器
-- run_analysis: 一站式数据分析入口
+analysisresult, : 
+- DataProcessor: 
+- TaskExecutor: taskexecute( Claude Code)
+- PlanExecutorInterpreter: plan execution
+- run_analysis: analysis
 
-重构说明：
-- TaskExecutor 现在使用 Claude Code 作为执行后端
-- CodeGenerator 和 LocalCodeInterpreter 不再被 TaskExecutor 直接使用
+description: 
+- TaskExecutor  Claude Code executebackend
+- CodeGenerator  LocalCodeInterpreter  TaskExecutor 
 """
 
 from .metadata import DataProcessor, DatasetMetadata, ColumnMetadata
@@ -25,10 +25,8 @@ __all__ = [
     "DataProcessor",
     "DatasetMetadata",
     "ColumnMetadata",
-    # Code Generation (保留兼容性)
     "CodeGenerator",
     "CodeTaskResponse",
-    # Code Execution (保留兼容性)
     "LocalCodeInterpreter",
     "DockerCodeInterpreter",
     "CodeExecutionResult",

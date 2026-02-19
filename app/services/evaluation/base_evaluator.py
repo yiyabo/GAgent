@@ -152,7 +152,7 @@ class BaseEvaluator(ABC):
         return EvaluationResult(
             overall_score=0.0,
             dimensions=EvaluationDimensions(),
-            suggestions=["内容为空，请提供实质性内容"],
+            suggestions=["Content is empty. Please provide substantive content."],
             needs_revision=True,
             iteration=iteration,
             timestamp=datetime.now(),
@@ -168,7 +168,7 @@ class BaseEvaluator(ABC):
         return EvaluationResult(
             overall_score=0.0,
             dimensions=EvaluationDimensions(),
-            suggestions=[f"评估出错: {error_msg}"],
+            suggestions=[f"Evaluation error: {error_msg}"],
             needs_revision=True,
             iteration=iteration,
             timestamp=datetime.now(),

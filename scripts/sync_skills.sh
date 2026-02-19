@@ -1,28 +1,28 @@
 #!/bin/bash
 #
-# sync_skills.sh - 同步 skills 到 ~/.claude/skills/
+# sync_skills.sh -  skills  ~/.claude/skills/
 #
-# 用法:
-#   ./scripts/sync_skills.sh           # 同步 skills
-#   ./scripts/sync_skills.sh --check   # 仅检查，不同步
-#   ./scripts/sync_skills.sh --clean   # 清理目标目录后同步
+# :
+#   ./scripts/sync_skills.sh           #  skills
+#   ./scripts/sync_skills.sh --check   # ，
+#   ./scripts/sync_skills.sh --clean   # 
 #
-# 说明:
-#   Skills 源文件存放在项目 skills/ 目录（版本控制）
-#   运行时同步到 ~/.claude/skills/（Claude Code 加载位置）
+# :
+#   Skills  skills/ （）
+#    ~/.claude/skills/（Claude Code ）
 #
 
 set -e
 
-# 获取项目根目录
+# 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# 源目录和目标目录
+# 
 SOURCE_DIR="${PROJECT_ROOT}/skills"
 TARGET_DIR="${HOME}/.claude/skills"
 
-# 颜色输出
+# 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -40,19 +40,19 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# 检查源目录是否存在
+# 
 check_source() {
     if [ ! -d "${SOURCE_DIR}" ]; then
         log_error "Source directory not found: ${SOURCE_DIR}"
         exit 1
     fi
     
-    # 统计 skills 数量
+    #  skills 
     skill_count=$(find "${SOURCE_DIR}" -maxdepth 2 -name "SKILL.md" | wc -l | tr -d ' ')
     log_info "Found ${skill_count} skills in ${SOURCE_DIR}"
 }
 
-# 仅检查模式
+# 
 check_only() {
     check_source
     
@@ -66,7 +66,7 @@ check_only() {
     exit 0
 }
 
-# 清理目标目录
+# 
 clean_target() {
     if [ -d "${TARGET_DIR}" ]; then
         log_info "Cleaning target directory: ${TARGET_DIR}"
@@ -74,14 +74,14 @@ clean_target() {
     fi
 }
 
-# 同步 skills
+#  skills
 sync_skills() {
     check_source
     
-    # 确保目标目录存在
+    # 
     mkdir -p "${TARGET_DIR}"
     
-    # 同步项目中的 skills（不删除用户已有的其他 skills）
+    #  skills（ skills）
     log_info "Syncing project skills to ${TARGET_DIR}..."
     
     synced_count=0
@@ -90,12 +90,12 @@ sync_skills() {
             skill_name=$(basename "$skill_dir")
             target_skill_dir="${TARGET_DIR}/${skill_name}"
             
-            # 如果目标已存在，先删除（更新）
+            # ，（）
             if [ -d "$target_skill_dir" ]; then
                 rm -rf "$target_skill_dir"
             fi
             
-            # 复制 skill 目录
+            #  skill 
             cp -r "$skill_dir" "$target_skill_dir"
             synced_count=$((synced_count + 1))
             log_info "  Synced: ${skill_name}"
@@ -104,17 +104,17 @@ sync_skills() {
     
     log_info "Successfully synced ${synced_count} skills from project"
     
-    # 统计目标目录中的总 skills 数
+    #  skills 
     total_count=$(find "${TARGET_DIR}" -maxdepth 2 -name "SKILL.md" | wc -l | tr -d ' ')
     log_info "Total skills in ${TARGET_DIR}: ${total_count}"
     
-    # 列出所有 skills
+    #  skills
     echo ""
     log_info "All available skills:"
     for skill_dir in "${TARGET_DIR}"/*/; do
         if [ -f "${skill_dir}SKILL.md" ]; then
             skill_name=$(basename "$skill_dir")
-            # 标记项目 skills
+            #  skills
             if [ -d "${SOURCE_DIR}/${skill_name}" ]; then
                 echo "  - ${skill_name} (project)"
             else
@@ -124,7 +124,7 @@ sync_skills() {
     done
 }
 
-# 主函数
+# 
 main() {
     case "${1:-}" in
         --check)

@@ -19,16 +19,16 @@ export const ResultSummary: React.FC<ResultSummaryProps> = ({ result, jobType })
     return (
       <div style={{ marginTop: 12 }}>
         <Divider plain style={{ margin: '12px 0' }}>
-          执行结果
+          Execution Results
         </Divider>
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           <Space size="small">
             <FileTextOutlined />
-            <Text>新增子任务：{createdTasks.length}</Text>
+            <Text>New subtasks: {createdTasks.length}</Text>
           </Space>
           {stoppedReason && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              停止原因：{stoppedReason}
+              Stop reason: {stoppedReason}
             </Text>
           )}
         </Space>
@@ -44,19 +44,19 @@ export const ResultSummary: React.FC<ResultSummaryProps> = ({ result, jobType })
     return (
       <div style={{ marginTop: 12 }}>
         <Divider plain style={{ margin: '12px 0' }}>
-          动作总结
+          Action Summary
         </Divider>
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           <Space size="small">
             <FileTextOutlined />
-            <Text>总动作：{steps.length}</Text>
+            <Text>Total actions: {steps.length}</Text>
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            成功：{succeededSteps.length}，失败：{failedSteps.length}
+            Success: {succeededSteps.length}, Failed: {failedSteps.length}
           </Text>
           {firstFailure && (
             <Text type="danger" style={{ fontSize: 12 }}>
-              首个失败动作：{firstFailure?.action?.name ?? '-'} — {firstFailure?.message ?? '执行失败'}
+              First failed action: {firstFailure?.action?.name ?? '-'} - {firstFailure?.message ?? 'Execution failed'}
             </Text>
           )}
         </Space>
@@ -85,29 +85,29 @@ export const ResultSummary: React.FC<ResultSummaryProps> = ({ result, jobType })
     return (
       <div style={{ marginTop: 12 }}>
         <Divider plain style={{ margin: '12px 0' }}>
-          执行总结
+          Execution Summary
         </Divider>
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           <Space size="small">
             <FileTextOutlined />
-            <Text>步骤数：{total}</Text>
+            <Text>Step count: {total}</Text>
           </Space>
           {typeof targetTaskId === 'number' && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              目标任务：#{targetTaskId}
+              Target task: #{targetTaskId}
             </Text>
           )}
           <Text type="secondary" style={{ fontSize: 12 }}>
-            成功：{executed.length}，失败：{failed.length}，跳过：{skipped.length}
+            Success: {executed.length}, Failed: {failed.length}, Skipped: {skipped.length}
           </Text>
           {firstFailed != null && (
             <Text type="danger" style={{ fontSize: 12 }}>
-              首个失败任务：#{String(firstFailed)}
+              First failed task: #{String(firstFailed)}
             </Text>
           )}
           {firstFailed == null && firstSkipped != null && (
             <Text type="warning" style={{ fontSize: 12 }}>
-              首个跳过任务：#{String(firstSkipped)}
+              First skipped task: #{String(firstSkipped)}
             </Text>
           )}
         </Space>
@@ -186,7 +186,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({ jobType, status, logs,
   const detailParts: string[] = [];
   if (showBudget) {
     detailParts.push(
-      `已处理 ${Math.max(0, Math.round(progressContext!.consumedBudget!))}/${Math.round(
+      `Processed ${Math.max(0, Math.round(progressContext!.consumedBudget!))}/${Math.round(
         progressContext!.totalBudget!
       )}`
     );
@@ -195,13 +195,13 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({ jobType, status, logs,
     progressContext?.queueRemaining !== null &&
     progressContext?.queueRemaining !== undefined
   ) {
-    detailParts.push(`队列剩余 ${Math.max(0, Math.round(progressContext.queueRemaining))}`);
+    detailParts.push(`Queue remaining ${Math.max(0, Math.round(progressContext.queueRemaining))}`);
   }
   const detailText = detailParts.length ? detailParts.join(' · ') : null;
   return (
     <div style={{ width: '100%' }}>
       <Text type="secondary" style={{ fontSize: 12 }}>
-        拆解进度
+        Decomposition Progress
       </Text>
       <Progress
         percent={percent}
@@ -212,9 +212,9 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({ jobType, status, logs,
           if (progressContext?.percent !== null && progressContext?.percent !== undefined) {
             return `${percent}%`;
           }
-          if (status === 'failed') return '失败';
-          if (isFinal) return '完成';
-          return '估算中';
+          if (status === 'failed') return 'Failed';
+          if (isFinal) return 'Completed';
+          return 'Estimating';
         }}
       />
       {detailText && (

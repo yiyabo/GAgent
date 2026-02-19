@@ -256,13 +256,13 @@ class SessionTitleService:
         cleaned = re.sub(r"\s+", " ", str(text)).strip()
         # Drop leading prompt words
         drop_prefixes = (
-            "帮我",
-            "请帮我",
-            "请",
-            "我想",
-            "希望",
-            "能否",
-            "需要",
+            "",
+            "please",
+            "please",
+            "",
+            "",
+            "",
+            "",
             "help me",
             "please",
             "i want to",

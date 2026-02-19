@@ -133,8 +133,8 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
   const isStreaming =
     unifiedStream && (status === 'pending' || status === 'running');
 
-  // 如果是统一流且处于初始 pending 阶段、没有前置文案和动作，显示思考中动画
-  // 但如果已经有思考步骤，则不显示简单的 TypingIndicator，而是显示 ThinkingProcess
+  // In unified stream mode, show typing indicator only at initial pending stage
+  // when there is no preface/actions and no thinking steps yet.
   const hasThinkingSteps = message.thinking_process && message.thinking_process.steps && message.thinking_process.steps.length > 0;
   if (
     unifiedStream &&
@@ -144,9 +144,9 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
     !(metadata as any)?.actions?.length &&
     (content?.trim?.() ?? '') === '' &&
     !analysisText &&
-    !hasThinkingSteps  // 关键：如果有思考步骤，不显示简单的 TypingIndicator
+    !hasThinkingSteps  // If thinking steps exist, render ThinkingProcess instead.
   ) {
-    return <TypingIndicator message="思考中" showAvatar={true} />;
+    return <TypingIndicator message="Thinking..." showAvatar={true} />;
   }
   const hasFooterDivider =
     !unifiedStream &&
@@ -189,7 +189,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
               }}
             />
             <Text type="secondary" style={{ opacity: 0.8, fontSize: 12 }}>
-              正在规划 {actions.length} 个工具...
+              Planning {actions.length} tool actions...
             </Text>
           </Space>
           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
@@ -199,7 +199,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
               const order = typeof act?.order === 'number' ? act.order : idx + 1;
               return (
                 <div key={`${order}_${kind}_${name}`} style={{ marginBottom: 4 }}>
-                  • 步骤 {order}: {kind}
+                  • Step {order}: {kind}
                   {name ? ` / ${name}` : ''}
                 </div>
               );
@@ -213,7 +213,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
               onClick={() => setPendingDetailOpen((v) => !v)}
               style={{ padding: 0 }}
             >
-              {pendingDetailOpen ? '收起计划' : '展开全部计划'}
+              {pendingDetailOpen ? 'Collapse Plan' : 'Expand Full Plan'}
             </Button>
           )}
         </Space>
@@ -252,9 +252,9 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
     return null;
   };
 
-  // 渲染消息内容
+  // Render message content.
   const renderContent = () => {
-    // 主体内容现在用 renderSummary 渲染，普通消息仍用 Markdown
+    // For unified stream, primary content uses renderSummary; otherwise Markdown.
     if (type === 'system') {
       return (
         <Text type="secondary" style={{ fontStyle: 'italic' }}>
@@ -268,7 +268,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
     return <MarkdownRenderer content={content} />;
   };
 
-  // 渲染元数据
+  // Render metadata.
   const renderMetadata = () => {
     if (!metadata) return null;
     const planTitle = metadata.plan_title;
@@ -279,7 +279,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
     return (
       <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
         <div>
-          关联计划:
+          Linked Plan:
           {planTitle ? ` ${planTitle}` : ''}
           {planId !== undefined && planId !== null ? ` (#${planId})` : ''}
         </div>
@@ -311,7 +311,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
 
         <div className="message-bubble">
           {(() => {
-            // 统一摘要块，在非 unifiedStream 时也优先使用
+            // Prefer summary block even outside unified stream mode.
             const summaryBlock = renderSummary();
             if (unifiedStream) {
               return (

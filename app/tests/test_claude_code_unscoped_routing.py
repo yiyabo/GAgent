@@ -54,8 +54,8 @@ def _build_tree() -> PlanTree:
     leaf = PlanNode(
         id=30,
         plan_id=49,
-        name="多智能体协作子任务：角色分配",
-        instruction="实现Agent的角色动态分配机制。",
+        name="subtask: ",
+        instruction="Agent. ",
         parent_id=1,
         status="pending",
     )
@@ -101,7 +101,7 @@ def test_prepare_claude_code_params_routes_unscoped_for_session_stale_composite(
         kind="tool_operation",
         name="claude_code",
         parameters={
-            "task": "写一个 Python 斐波那契数列程序并运行",
+            "task": "Write a Python Fibonacci sequence program and run it",
             "allowed_tools": ["Write", "Bash", "Read"],
         },
         order=1,
@@ -118,7 +118,7 @@ def test_prepare_claude_code_params_routes_unscoped_for_session_stale_composite(
     assert isinstance(prepared, tuple)
     prepared_params, original_task = prepared
 
-    assert original_task == "写一个 Python 斐波那契数列程序并运行"
+    assert original_task == "Write a Python Fibonacci sequence program and run it"
     assert prepared_params.get("task") == original_task
     assert prepared_params.get("require_task_context") is False
     assert prepared_params.get("auth_mode") == "api_env"

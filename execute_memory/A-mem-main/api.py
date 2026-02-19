@@ -96,7 +96,7 @@ async def startup_event():
         # Try to load config from config file or environment
         config = configparser.ConfigParser()
         
-        # 尝试多个可能的配置文件路径
+        # 
         possible_paths = [
             "config.cfg",
             "../config.cfg",
@@ -113,7 +113,7 @@ async def startup_event():
             except Exception:
                 continue
 
-        # Default values - 优先使用环境变量
+        # Default values - 
         import os
         llm_backend = os.getenv("AMEM_LLM_BACKEND", "openai")
         llm_model = os.getenv("AMEM_LLM_MODEL", "gpt-4o-mini")
@@ -121,7 +121,7 @@ async def startup_event():
         api_key = os.getenv("AMEM_API_KEY") or os.getenv("QWEN_API_KEY") or os.getenv("GLM_API_KEY") or os.getenv("OPENAI_API_KEY")
         evo_threshold = int(os.getenv("AMEM_EVO_THRESHOLD", "100"))
 
-        # 从配置文件覆盖（如果存在）
+        # （）
         if config_loaded and 'DEFAULT' in config:
             llm_backend = config['DEFAULT'].get('llm_backend', llm_backend)
             llm_model = config['DEFAULT'].get('llm_model', llm_model)

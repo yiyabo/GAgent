@@ -193,9 +193,9 @@ def run_benchmark(
             md_path = os.path.join(outdir, f"{safe_name}.md")
             try:
                 with open(md_path, "w", encoding="utf-8") as f:
-                    f.write(f"# {topic}（{name}）\n\n")
+                    f.write(f"# {topic} ({name})\n\n")
                     for sec_title, sec_content in collected_sections:
-                        # 去掉主题前缀的展示更友好
+                        # Drop topic prefix for cleaner display.
                         display_title = (
                             sec_title.split("] ", 1)[-1]
                             if sec_title.startswith("[") and "] " in sec_title
@@ -219,10 +219,10 @@ def run_benchmark(
 
     # Render summary markdown
     lines: List[str] = []
-    lines.append(f"# LLM 配置基准报告: {topic}")
+    lines.append(f"# LLM Configuration Benchmark Report: {topic}")
     lines.append("")
     lines.append(
-        "| 配置 | 平均分 | 平均迭代 | 平均耗时(s) | 成功数 | 失败数 | relevance | completeness | accuracy | clarity | coherence | scientific_rigor |"
+        "| Configuration | Avg Score | Avg Iterations | Avg Time(s) | Successes | Failures | relevance | completeness | accuracy | clarity | coherence | scientific_rigor |"
     )
     lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for name, _ in configs:
@@ -236,7 +236,7 @@ def run_benchmark(
         )
     lines.append("")
     lines.append(
-        "> 评分维度来自系统内置 LLM 评估器（相关性/完整性/准确性/清晰度/连贯性/科学严谨性），overall_score 为加权结果。"
+        "> Scoring dimensions come from the built-in LLM evaluator (relevance/completeness/accuracy/clarity/coherence/scientific_rigor), and overall_score is the weighted result."
     )
 
     # Optional CSV export (per-config rows)

@@ -1,4 +1,4 @@
-"""Per-plan SQLite 文件管理."""
+"""Per-plan SQLite file."""
 
 from __future__ import annotations
 
@@ -46,14 +46,14 @@ def _json_load(data: Optional[str]) -> Any:
 
 
 def get_plan_db_path(plan_id: int) -> Path:
-    """返回指定 plan 的数据库文件路径."""
+    """ plan databasefilepath."""
     base_dir = get_database_config().get_plan_store_dir()
     base_dir.mkdir(parents=True, exist_ok=True)
     return base_dir / f"plan_{plan_id}.sqlite"
 
 
 def get_system_job_db_path() -> Path:
-    """返回未绑定 Plan 的系统级 Job 日志数据库."""
+    """ Plan system Job logdatabase."""
     path = get_database_config().get_system_jobs_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
@@ -72,7 +72,7 @@ def initialize_plan_database(
     description: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Path:
-    """创建并初始化 plan 专属数据库文件."""
+    """create plan databasefile."""
     db_path = get_plan_db_path(plan_id)
     metadata = metadata or {}
 
@@ -151,7 +151,7 @@ def update_plan_metadata(
     description: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """更新 plan_meta 表中的基础信息."""
+    """update plan_meta medium."""
     db_path = get_plan_db_path(plan_id)
     with plan_db_connection(db_path) as conn:
         if title is not None:
@@ -163,7 +163,7 @@ def update_plan_metadata(
 
 
 def remove_plan_database(plan_id: int) -> None:
-    """删除 plan 的数据库文件."""
+    """delete plan databasefile."""
     db_path = get_plan_db_path(plan_id)
     try:
         if db_path.exists():
@@ -464,7 +464,6 @@ def _ensure_action_log_tables(conn, *, plan_id: Optional[int] = None) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_action_logs_plan_created ON plan_action_logs(plan_id, created_at)"
     )
-    # 保持 schema_version 更新
     if plan_id is not None:
         conn.execute(
             """
@@ -658,8 +657,8 @@ def list_action_logs(
 
     query = [
         "SELECT id, plan_id, job_id, job_type, sequence, session_id, user_message,",
-        "       action_kind, action_name, status, success, message, details_json,",
-        "       created_at, updated_at",
+        "  action_kind, action_name, status, success, message, details_json,",
+        "  created_at, updated_at",
         "FROM plan_action_logs",
         "WHERE 1=1",
     ]
@@ -750,19 +749,18 @@ def cleanup_action_logs(
 
 def fix_stale_jobs_on_startup() -> int:
     """
-    修复启动时卡住的 job。
-    
-    当后端异常退出时，正在运行的 job 状态可能没有正确更新。
-    此函数在启动时将所有 running/queued 状态的 job 标记为 failed，
-    因为它们在后端重启后无法继续执行。
-    
+    job. 
+
+    backendexception, in progress job statusupdate. 
+    running/queued status job  failed, 
+    backendexecute. 
+
     Returns:
-        修复的 job 数量
+        job count
     """
     fixed_count = 0
     now = datetime.utcnow().isoformat()
-    
-    # 1. 修复 system_jobs.sqlite 中的 decomposition_jobs
+
     system_db = get_system_job_db_path()
     if system_db.exists():
         try:
@@ -779,8 +777,7 @@ def fix_stale_jobs_on_startup() -> int:
                 fixed_count += result.rowcount
         except Exception as e:
             logger.warning("Failed to fix stale jobs in system db: %s", e)
-    
-    # 2. 修复所有 plan_X.sqlite 中的 decomposition_jobs
+
     plan_store_dir = get_database_config().get_plan_store_dir()
     if plan_store_dir.exists():
         for plan_db in plan_store_dir.glob("plan_*.sqlite"):
@@ -798,9 +795,7 @@ def fix_stale_jobs_on_startup() -> int:
                     fixed_count += result.rowcount
             except Exception as e:
                 logger.warning("Failed to fix stale jobs in %s: %s", plan_db, e)
-    
-    # 3. 修复 plan_action_logs 中的卡住记录（这些是详细的 action 日志）
-    # 注意：plan_action_logs 存储在 system_jobs.sqlite 中
+
     if system_db.exists():
         try:
             with plan_db_connection(system_db) as conn:
@@ -812,13 +807,12 @@ def fix_stale_jobs_on_startup() -> int:
                     WHERE status IN ('running', 'queued')
                     """,
                 )
-                # 不计入 fixed_count，因为这些是 action 级别的日志
         except Exception as e:
             logger.warning("Failed to fix stale action logs: %s", e)
-    
+
     if fixed_count > 0:
         logger.info("Fixed %d stale jobs on startup", fixed_count)
-    
+
     return fixed_count
 
 

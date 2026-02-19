@@ -25,12 +25,12 @@ class MetaEvaluator(LLMBasedEvaluator):
 
         # Meta-evaluation criteria
         self.meta_criteria = {
-            "consistency": "评估结果的一致性和稳定性",
-            "objectivity": "评估过程的客观性，避免主观偏见",
-            "comprehensiveness": "评估维度的全面性和完整性",
-            "calibration": "评估分数与实际质量的校准程度",
-            "discriminability": "评估系统区分不同质量内容的能力",
-            "reliability": "评估结果的可靠性和可重复性",
+            "consistency": "Consistency and stability of evaluation outcomes",
+            "objectivity": "Objectivity of the evaluation process with minimal subjective bias",
+            "comprehensiveness": "Coverage and completeness of evaluation dimensions",
+            "calibration": "Calibration between evaluation scores and actual quality",
+            "discriminability": "Ability to distinguish different quality levels",
+            "reliability": "Reliability and repeatability of evaluation outcomes",
         }
 
     def get_evaluation_method_name(self) -> str:
@@ -372,20 +372,20 @@ Return results in JSON format:
         # Consistency insights
         stability = consistency_analysis.get("stability_rating", "unknown")
         if stability == "unstable":
-            insights.append("评估结果不稳定，建议检查评估标准的一致性")
+            insights.append("Evaluation outcomes are unstable; review consistency of evaluation standards.")
         elif stability == "very_stable":
-            insights.append("评估结果高度稳定，显示评估系统运行良好")
+            insights.append("Evaluation outcomes are highly stable, indicating healthy evaluator behavior.")
 
         # Bias insights
         biases = bias_analysis.get("biases_detected", [])
         if "anchoring_bias" in biases:
-            insights.append("检测到锚定偏见，后续评估过度依赖首次评估结果")
+            insights.append("Anchoring bias detected: later evaluations depend too heavily on the first result.")
         if "halo_effect" in biases:
-            insights.append("检测到光环效应，各评估维度相关性过高")
+            insights.append("Halo effect detected: correlations among evaluation dimensions are excessively high.")
         if "severity_bias" in biases:
-            insights.append("检测到严厉偏见，评估标准可能过于苛刻")
+            insights.append("Severity bias detected: evaluation criteria may be too strict.")
         if "leniency_bias" in biases:
-            insights.append("检测到宽松偏见，评估标准可能过于宽松")
+            insights.append("Leniency bias detected: evaluation criteria may be too permissive.")
 
         # LLM insights
         llm_insights = llm_meta_evaluation.get("meta_insights", [])
@@ -393,9 +393,9 @@ Return results in JSON format:
 
         # Score-based insights
         if meta_scores.get("overall_meta_score", 0.5) < 0.6:
-            insights.append("整体评估质量偏低，建议优化评估流程")
+            insights.append("Overall evaluation quality is low; optimize the evaluation workflow.")
         elif meta_scores.get("overall_meta_score", 0.5) > 0.8:
-            insights.append("评估系统表现优秀，质量控制良好")
+            insights.append("Evaluation system performance is strong with good quality control.")
 
         return insights[:10]  # Limit to top 10 insights
 
@@ -428,11 +428,11 @@ Return results in JSON format:
         # Generate recommendations
         recommendations = []
         if health_indicators["consistency_level"] < 0.6:
-            recommendations.append("提高评估标准的一致性")
+            recommendations.append("Improve consistency of evaluation standards.")
         if health_indicators["bias_control"] < 0.6:
-            recommendations.append("加强认知偏见控制")
+            recommendations.append("Strengthen cognitive-bias control mechanisms.")
         if health_indicators["evaluation_volume"] < 5:
-            recommendations.append("增加评估样本量以提高可靠性")
+            recommendations.append("Increase evaluation sample size to improve reliability.")
 
         return {
             "health_score": health_score,
@@ -449,7 +449,7 @@ Return results in JSON format:
             "consistency_analysis": {"consistency_score": 0.0},
             "bias_analysis": {"biases_detected": [], "overall_bias_risk": 0.0},
             "llm_meta_evaluation": {"overall_meta_score": 0.0},
-            "meta_insights": ["无评估历史可供分析"],
+            "meta_insights": ["No evaluation history is available for meta-analysis."],
             "system_health": {"health_status": "unknown"},
             "evaluation_count": 0,
             "timestamp": datetime.now().isoformat(),
@@ -463,7 +463,7 @@ Return results in JSON format:
             "consistency_analysis": {"consistency_score": 0.0},
             "bias_analysis": {"biases_detected": [], "overall_bias_risk": 0.0},
             "llm_meta_evaluation": {"overall_meta_score": 0.0},
-            "meta_insights": [f"元评估出错: {error_msg}"],
+            "meta_insights": [f"Meta-evaluation error: {error_msg}"],
             "system_health": {"health_status": "error"},
             "evaluation_count": 0,
             "timestamp": datetime.now().isoformat(),

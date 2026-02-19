@@ -5,7 +5,7 @@ import './TypingIndicator.css';
 interface TypingIndicatorProps {
     /**
      * Optional message to display alongside the animation.
-     * @default "思考中"
+     * @default "Thinking..."
      */
     message?: string;
     /**
@@ -20,7 +20,7 @@ interface TypingIndicatorProps {
  * "thinking" animation while the AI is preparing a response.
  */
 export const TypingIndicator: React.FC<TypingIndicatorProps> = ({
-    message = '思考中',
+    message = 'Thinking...',
     showAvatar = true,
 }) => {
     return (

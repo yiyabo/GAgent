@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # ========================
-#       常量定义
+#       
 # ========================
 SCRIPT_NAME=$(basename "$0")
 NODE_MIN_VERSION=18
@@ -17,7 +17,7 @@ API_KEY_URL="https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys"
 API_TIMEOUT_MS=3000000
 
 # ========================
-#       工具函数
+#       
 # ========================
 
 log_info() {
@@ -43,7 +43,7 @@ ensure_dir_exists() {
 }
 
 # ========================
-#     Node.js 安装函数
+#     Node.js 
 # ========================
 
 install_nodejs() {
@@ -53,19 +53,19 @@ install_nodejs() {
         Linux|Darwin)
             log_info "Installing Node.js on $platform..."
 
-            # 安装 nvm
+            #  nvm
             log_info "Installing nvm ($NVM_VERSION)..."
             curl -s https://raw.githubusercontent.com/nvm-sh/nvm/"$NVM_VERSION"/install.sh | bash
 
-            # 加载 nvm
+            #  nvm
             log_info "Loading nvm environment..."
             \. "$HOME/.nvm/nvm.sh"
 
-            # 安装 Node.js
+            #  Node.js
             log_info "Installing Node.js $NODE_INSTALL_VERSION..."
             nvm install "$NODE_INSTALL_VERSION"
 
-            # 验证安装
+            # 
             node -v &>/dev/null || {
                 log_error "Node.js installation failed"
                 exit 1
@@ -81,7 +81,7 @@ install_nodejs() {
 }
 
 # ========================
-#     Node.js 检查函数
+#     Node.js 
 # ========================
 
 check_nodejs() {
@@ -103,7 +103,7 @@ check_nodejs() {
 }
 
 # ========================
-#     Claude Code 安装
+#     Claude Code 
 # ========================
 
 install_claude_code() {
@@ -136,7 +136,7 @@ configure_claude_json(){
 }
 
 # ========================
-#     API Key 配置
+#     API Key 
 # ========================
 
 configure_claude() {
@@ -152,7 +152,7 @@ configure_claude() {
 
     ensure_dir_exists "$CONFIG_DIR"
 
-    # 写入配置文件
+    # 
     node --eval '
         const os = require("os");
         const fs = require("fs");
@@ -184,7 +184,7 @@ configure_claude() {
 }
 
 # ========================
-#        主流程
+#        
 # ========================
 
 main() {
