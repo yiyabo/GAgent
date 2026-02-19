@@ -1,15 +1,14 @@
-"""Legacy context utilities placeholder.
+"""Context utilities for gathering task context.
 
-The new workflow embeds PlanTree information directly in prompts, making the
-old context aggregation stack obsolete.
+Provides gather_context() and apply_budget() for assembling contextual
+information used in prompt construction.
 
-Note: The gather_context function in context.py is still available for backward
-compatibility, but new code should use the PlanTree prompt embedding workflow.
+Note: The PlanTree prompt embedding workflow is the preferred approach for
+new code. These utilities are retained for backward compatibility with
+modules that still depend on them (e.g. prompt_builder, context_routes).
 """
 
-# Re-export gather_context for backward compatibility
-# New code should use PlanTree prompt embedding workflow instead
 from .context import gather_context  # noqa: F401
-from .context_budget import apply_budget  # noqa: F401
+from .context_budget import apply_budget, PRIORITY_ORDER  # noqa: F401
 
-__all__ = ["gather_context", "apply_budget"]
+__all__ = ["gather_context", "apply_budget", "PRIORITY_ORDER"]
