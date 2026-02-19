@@ -1,5 +1,5 @@
 # Bioinformatics Tools Help Documentation
-Generated on: 2026年 01月 07日 星期三 21:26:20 CST
+Generated on: 2026 01 07  21:26:20 CST
 
 ## 1. Nextflow
 ========================================

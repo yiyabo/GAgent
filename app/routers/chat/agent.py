@@ -9,13 +9,14 @@ import logging
 import re
 from dataclasses import replace
 from datetime import datetime
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
 from app.config.executor_config import get_executor_settings
 from app.repository.chat_action_runs import create_action_run, fetch_action_run, update_action_run
 from app.repository.plan_storage import append_action_log_entry, update_decomposition_job_status
 from app.llm import LLMClient
+from app.services.foundation.settings import get_settings
 from app.services.llm.decomposer_service import PlanDecomposerLLMService
 from app.services.llm.llm_service import LLMService, get_llm_service
 from app.services.llm.structured_response import LLMAction, LLMStructuredResponse, schema_as_json
@@ -32,7 +33,12 @@ from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMServic
 from app.services.plans.plan_session import PlanSession
 from app.services.session_title_service import SessionNotFoundError
 from app.services.upload_storage import delete_session_storage
-from app.services.deep_think_agent import DeepThinkAgent, ThinkingStep, DeepThinkResult
+from app.services.deep_think_agent import (
+    DeepThinkAgent,
+    DeepThinkProtocolError,
+    ThinkingStep,
+    DeepThinkResult,
+)
 from tool_box import execute_tool
 
 from .action_execution import (
@@ -311,6 +317,246 @@ class StructuredChatAgent:
     def _resolve_action_placeholders(self, action, previous_result):
         return _resolve_action_placeholders_fn(action, previous_result)
 
+    def _should_route_claude_code_unscoped(
+        self, context_error: Optional[str]
+    ) -> bool:
+        if not context_error:
+            return False
+        allow_raw = self.extra_context.get("allow_unscoped_claude_code", True)
+        if isinstance(allow_raw, str):
+            allow_unscoped = allow_raw.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            allow_unscoped = bool(allow_raw)
+        if not allow_unscoped:
+            return False
+
+        # If caller explicitly selected task_id in request context, keep strict
+        # plan-scoped execution.
+        if self.extra_context.get("task_id") is not None:
+            return False
+
+        return context_error in {
+            "missing_plan_binding",
+            "missing_target_task",
+            "invalid_target_task",
+            "target_task_not_found",
+            "target_task_not_atomic",
+        }
+
+    async def _prepare_claude_code_params(
+        self,
+        action: LLMAction,
+        tool_name: str,
+        params: Dict[str, Any],
+    ) -> Union[Tuple[Dict[str, Any], Optional[str]], AgentStep]:
+        task_value = params.get("task")
+        if not isinstance(task_value, str) or not task_value.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="claude_code requires a non-empty `task` string.",
+                details={"error": "invalid_task", "tool": tool_name},
+            )
+
+        original_task = task_value.strip()
+        allowed_tools = self._normalize_csv_arg(params.get("allowed_tools"))
+        add_dirs = self._normalize_csv_arg(params.get("add_dirs"))
+
+        task_node, context_error = self._resolve_claude_code_task_context()
+        if context_error or task_node is None:
+            if self._should_route_claude_code_unscoped(context_error):
+                logger.info(
+                    "[CLAUDE_CODE] Routing to unscoped execution (reason=%s, source=%s)",
+                    context_error,
+                    self.extra_context.get("_current_task_source"),
+                )
+                prepared_params: Dict[str, Any] = {
+                    "task": original_task,
+                    "require_task_context": False,
+                    "auth_mode": "api_env",
+                    "setting_sources": "project",
+                }
+                if allowed_tools:
+                    prepared_params["allowed_tools"] = allowed_tools
+                if add_dirs:
+                    prepared_params["add_dirs"] = add_dirs
+                if self.session_id:
+                    prepared_params["session_id"] = self.session_id
+
+                current_job_id = get_current_job()
+                if not current_job_id:
+                    current_job_id, _ = self._resolve_job_meta()
+                if current_job_id:
+                    async def log_stdout(line: str):
+                        plan_decomposition_jobs.append_log(
+                            current_job_id,
+                            "stdout",
+                            line,
+                            {},
+                        )
+
+                    async def log_stderr(line: str):
+                        plan_decomposition_jobs.append_log(
+                            current_job_id,
+                            "stderr",
+                            line,
+                            {},
+                        )
+
+                    prepared_params["on_stdout"] = log_stdout
+                    prepared_params["on_stderr"] = log_stderr
+
+                return prepared_params, original_task
+
+            context_messages = {
+                "missing_plan_binding": "claude_code execution requires a bound plan. Please create/bind a plan first.",
+                "missing_target_task": "claude_code execution requires a target atomic task context. Please select or run a task first.",
+                "invalid_target_task": "claude_code execution requires a valid numeric task id.",
+                "plan_tree_unavailable": "Unable to load the current plan tree. Please retry after refreshing plan state.",
+                "target_task_not_found": "The selected task was not found in the current plan.",
+                "target_task_not_atomic": "claude_code can only execute atomic tasks. Please decompose this task and execute a leaf task.",
+            }
+            return AgentStep(
+                action=action,
+                success=False,
+                message=context_messages.get(
+                    context_error or "",
+                    "claude_code execution requires a bound atomic task context.",
+                ),
+                details={
+                    "error": context_error or "missing_task_context",
+                    "tool": tool_name,
+                    "requires_plan_binding": True,
+                    "requires_atomic_task": True,
+                },
+            )
+
+        amem_hints = ""
+        try:
+            from app.services.amem_client import get_amem_client
+
+            amem_client = get_amem_client()
+            if amem_client.enabled:
+                amem_experiences = await amem_client.query_experiences(
+                    query=original_task,
+                    top_k=3,
+                )
+                if amem_experiences:
+                    amem_hints = self._summarize_amem_experiences_for_cc(amem_experiences)
+                    logger.info(
+                        "[AMEM] Injected compact hints from %d historical experiences",
+                        len(amem_experiences),
+                    )
+        except Exception as amem_err:
+            logger.warning("[AMEM] Failed to query experiences: %s", amem_err)
+
+        constrained_task = self._compose_claude_code_atomic_task_prompt(
+            task_node=task_node,
+            original_task=original_task,
+            amem_hints=amem_hints,
+        )
+
+        prepared_params: Dict[str, Any] = {
+            "task": constrained_task,
+            "auth_mode": "api_env",
+            "setting_sources": "project",
+            "require_task_context": True,
+        }
+        if allowed_tools:
+            prepared_params["allowed_tools"] = allowed_tools
+        if add_dirs:
+            prepared_params["add_dirs"] = add_dirs
+        if self.session_id:
+            prepared_params["session_id"] = self.session_id
+        prepared_params["plan_id"] = task_node.plan_id
+        prepared_params["task_id"] = task_node.id
+
+        current_job_id = get_current_job()
+        if not current_job_id:
+            current_job_id, _ = self._resolve_job_meta()
+        if current_job_id:
+            async def log_stdout(line: str):
+                plan_decomposition_jobs.append_log(
+                    current_job_id,
+                    "stdout",
+                    line,
+                    {},
+                )
+
+            async def log_stderr(line: str):
+                plan_decomposition_jobs.append_log(
+                    current_job_id,
+                    "stderr",
+                    line,
+                    {},
+                )
+
+            prepared_params["on_stdout"] = log_stdout
+            prepared_params["on_stderr"] = log_stderr
+
+        return prepared_params, original_task
+
+    def _sync_task_status_after_tool_execution(
+        self,
+        tool_name: str,
+        success: Any,
+        summary: str,
+        message: str,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if (
+            tool_name == "claude_code"
+            and isinstance(params, dict)
+            and params.get("require_task_context") is False
+        ):
+            logger.info(
+                "[TASK_SYNC] Skipping task status sync for unscoped claude_code execution"
+            )
+            return
+
+        current_task_id = self.extra_context.get("current_task_id")
+        if current_task_id is None or self.plan_session.plan_id is None:
+            return
+        try:
+            new_status = "completed" if success else "failed"
+            task_id_int = int(current_task_id)
+
+            self.plan_session.repo.update_task(
+                self.plan_session.plan_id,
+                task_id_int,
+                status=new_status,
+                execution_result=summary or message,
+            )
+            logger.info(
+                "[TASK_SYNC] Updated task %s status to %s after tool %s execution",
+                current_task_id,
+                new_status,
+                tool_name,
+            )
+
+            if new_status == "completed":
+                cascade_result = f"Completed as part of parent task #{task_id_int}"
+                descendants_updated = self.plan_session.repo.cascade_update_descendants_status(
+                    self.plan_session.plan_id,
+                    task_id_int,
+                    status=new_status,
+                    execution_result=cascade_result,
+                )
+                if descendants_updated > 0:
+                    logger.info(
+                        "[TASK_SYNC] Cascade updated %d descendant tasks to %s",
+                        descendants_updated,
+                        new_status,
+                    )
+
+            self._dirty = True
+        except Exception as sync_err:
+            logger.warning(
+                "[TASK_SYNC] Failed to update task %s status: %s",
+                current_task_id,
+                sync_err,
+            )
+
     async def execute_structured(
         self, structured: LLMStructuredResponse
     ) -> AgentResult:
@@ -525,8 +771,129 @@ class StructuredChatAgent:
     def _maybe_synthesize_phagescope_saveall_analysis(self, steps):
         return _maybe_synthesize_phagescope_saveall_analysis_fn(self, steps)
 
-    def _should_use_deep_think(self, message):
-        return _should_use_deep_think_fn(self, message)
+    async def _should_use_deep_think(self, message: str) -> bool:
+        """
+        LLM-routed DeepThink trigger.
+
+        Policy:
+        - explicit command always triggers
+        - explicit mode disables auto-routing
+        - all other routing decisions come from an LLM classifier (no keyword/regex fallback)
+        """
+        mode = str(getattr(get_settings(), "deep_think_mode", "smart")).strip().lower()
+
+        # 1) Context override has highest priority.
+        if self.extra_context.get("deep_think_enabled", False):
+            logger.info("[DEEP_THINK] Triggered by context override flag")
+            return True
+
+        msg = (message or "").strip()
+        if not msg:
+            return False
+
+        # 2) Explicit commands always trigger.
+        explicit_commands = ("/think", "/deep", "/plan", "/analyze", "/decompose")
+        for cmd in explicit_commands:
+            if msg.startswith(cmd):
+                logger.info("[DEEP_THINK] Triggered by explicit command '%s'", cmd)
+                return True
+
+        # 3) Explicit mode: no automatic routing.
+        if mode == "explicit":
+            logger.debug(
+                "[DEEP_THINK] Not triggered (mode=explicit, non-explicit message)"
+            )
+            return False
+
+        history_lines: List[str] = []
+        for item in self.history[-6:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "")).strip().lower() or "unknown"
+            content = str(item.get("content", "")).strip()
+            if content:
+                history_lines.append(f"{role}: {content}")
+        history_text = "\n".join(history_lines) if history_lines else "(none)"
+
+        router_prompt = f"""You are a strict router for DeepThink mode.
+
+Decide whether the next user message should be routed to DeepThink (iterative reasoning/tool exploration) or handled by the normal structured response path.
+
+Return JSON only:
+{{
+  "use_deep_think": true or false,
+  "confidence": 0.0-1.0,
+  "reason": "one short sentence"
+}}
+
+Set `use_deep_think=true` only when the request is genuinely complex and benefits from deep multi-step reasoning, e.g. open-ended research planning, ambiguous scientific analysis, or tasks requiring substantial tool orchestration.
+
+Set `use_deep_think=false` for simple chat, direct status checks, lightweight follow-ups, confirmations, or straightforward execution requests.
+
+Conversation history (recent):
+{history_text}
+
+User message:
+{msg}
+"""
+
+        model_override = self.extra_context.get("default_base_model")
+        try:
+            raw = await self.llm_service.chat_async(
+                router_prompt,
+                force_real=True,
+                model=model_override,
+            )
+        except Exception as exc:
+            logger.error("[DEEP_THINK] LLM router failed: %s", exc)
+            raise RuntimeError("DeepThink router LLM call failed in strict mode.") from exc
+
+        cleaned = self._strip_code_fence(str(raw or "").strip())
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise DeepThinkProtocolError(
+                "DeepThink router output is not a valid top-level JSON object."
+            )
+
+        payload_text = cleaned[start : end + 1]
+        try:
+            payload = json.loads(payload_text)
+        except Exception as exc:
+            raise DeepThinkProtocolError(
+                "DeepThink router returned invalid JSON payload."
+            ) from exc
+
+        raw_flag = payload.get("use_deep_think")
+        if not isinstance(raw_flag, bool):
+            raise DeepThinkProtocolError(
+                "DeepThink router JSON field `use_deep_think` must be a boolean."
+            )
+        use_deep_think = raw_flag
+
+        try:
+            confidence = float(payload.get("confidence"))
+        except (TypeError, ValueError) as exc:
+            raise DeepThinkProtocolError(
+                "DeepThink router JSON field `confidence` must be numeric."
+            ) from exc
+        confidence = max(0.0, min(1.0, confidence))
+
+        reason_raw = payload.get("reason")
+        if not isinstance(reason_raw, str) or not reason_raw.strip():
+            raise DeepThinkProtocolError(
+                "DeepThink router JSON field `reason` must be a non-empty string."
+            )
+        reason = reason_raw.strip()
+
+        logger.info(
+            "[DEEP_THINK] Routed by LLM (mode=%s, use_deep_think=%s, confidence=%.2f, reason=%s)",
+            mode,
+            use_deep_think,
+            confidence,
+            reason or "n/a",
+        )
+        return use_deep_think
 
     async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
         """
@@ -534,7 +901,7 @@ class StructuredChatAgent:
         """
         # Create a queue for events
         queue = asyncio.Queue()
-        
+
         async def on_thinking(step: ThinkingStep):
             await queue.put({
                 "type": "thinking_step",
@@ -587,7 +954,11 @@ class StructuredChatAgent:
 
                         details = step.details if isinstance(step.details, dict) else {}
                         result_payload = details.get("result")
-                        if isinstance(result_payload, dict):
+                        if not isinstance(result_payload, dict):
+                            raise DeepThinkProtocolError(
+                                "DeepThink tool wrapper expected a dict `result` payload."
+                            )
+
                             result = dict(result_payload)
                             if isinstance(step.message, str) and step.message.strip():
                                 result.setdefault("summary", step.message.strip())
@@ -653,17 +1024,8 @@ class StructuredChatAgent:
 
                             return result
 
-                        fallback_result: Dict[str, Any] = {
-                            "success": bool(step.success),
-                            "tool": name,
-                            "message": step.message,
-                        }
-                        if isinstance(details, dict) and details:
-                            fallback_result["details"] = details
-                        return fallback_result
-
                     result = await execute_tool(name, **safe_params)
-                    
+
                     # Special handling: bind Plan to session after successful creation
                     if name == "plan_operation" and isinstance(result, dict):
                         if result.get("success") and result.get("operation") == "create":
@@ -675,13 +1037,13 @@ class StructuredChatAgent:
                                     self._refresh_plan_tree(force_reload=True)
                                     self.extra_context["plan_id"] = plan_id
                                     self._dirty = True
-                                    
+
                                     # CRITICAL: Also update the database session record
                                     # so that frontend can fetch the new plan_id
                                     if self.session_id:
                                         _set_session_plan_id(self.session_id, plan_id)
                                         logger.info(f"[DeepThink] Updated database session {self.session_id} with plan_id={plan_id}")
-                                    
+
                                     # CRITICAL: Trigger automatic task decomposition
                                     # This ensures DeepThink-created plans get the same
                                     # multi-level decomposition as regular plans
@@ -740,28 +1102,40 @@ class StructuredChatAgent:
                                     )
                                 except Exception as bind_err:
                                     logger.warning(f"[DeepThink] Failed to bind plan {plan_id}: {bind_err}")
-                    
+
                     return result
-                
-                # Instantiate DeepThinkAgent with streaming callbacks
-                dt_agent = DeepThinkAgent(
+
+                # Instantiate DeepThinkAgent with streaming callbacks. Use the
+                # compatibility shim override when available to preserve legacy
+                # monkeypatch behavior in integrations/tests.
+                dt_agent_cls = DeepThinkAgent
+                try:  # pragma: no cover - compatibility bridge
+                    from app.routers import chat_routes as compat_chat_routes
+
+                    compat_candidate = getattr(compat_chat_routes, "DeepThinkAgent", None)
+                    if inspect.isclass(compat_candidate):
+                        dt_agent_cls = compat_candidate
+                except Exception:
+                    pass
+
+                dt_agent = dt_agent_cls(
                     llm_client=self.llm_service,
                     available_tools=["web_search", "graph_rag", "claude_code", "file_operations", "document_reader", "vision_reader", "bio_tools", "phagescope", "result_interpreter", "plan_operation"],
                     tool_executor=tool_wrapper,
                     max_iterations=100,
-                    tool_timeout=120,  # 2分钟工具超时
+                    tool_timeout=120,  # 2-minute tool timeout.
                     on_thinking=on_thinking,
                     on_thinking_delta=on_thinking_delta,
                     on_final_delta=on_final_delta
                 )
-                
-                # 构建上下文，包含对话历史
+
+                # Build context including chat history.
                 think_context = {
                     **self.extra_context,
                     "chat_history": self.history,
                     "session_id": self.session_id,
                 }
-                
+
                 # Run think
                 result = await dt_agent.think(user_message, think_context)
                 await queue.put({
@@ -777,13 +1151,13 @@ class StructuredChatAgent:
 
         # Start agent in background
         asyncio.create_task(run_agent())
-        
+
         # Consume queue
         while True:
             item = await queue.get()
             if item is None:
                 break
-            
+
             if item.get("type") == "thinking_step":
                 # Yield thinking event
                 yield _sse_message(item)
@@ -798,15 +1172,15 @@ class StructuredChatAgent:
             elif item.get("type") == "result":
                 # Final result, yield as standard chat message
                 res: DeepThinkResult = item["result"]
-                
+
                 # Construct final content for display and saving
                 final_content_parts = []
                 # Thinking Summary removed per user request
                 if res.final_answer:
                     final_content_parts.append(res.final_answer)
-                
+
                 full_response = "\n\n".join(final_content_parts)
-                
+
                 # 💾 Save Deep Think response to database
                 if self.session_id and full_response:
                     try:
@@ -839,15 +1213,15 @@ class StructuredChatAgent:
                         logger.info("[CHAT][DEEP_THINK] Response saved to database for session=%s", self.session_id)
                     except Exception as save_err:
                         logger.warning("[CHAT][DEEP_THINK] Failed to save response: %s", save_err)
-                
+
                 # Thinking Summary removed per user request
                 # if res.thinking_summary:
                 #    yield _sse_message({"type": "delta", "content": f"**Thinking Summary:** {res.thinking_summary}"})
                 pass
-                
+
                 # Note: final_answer was already streamed via on_final_delta callback
                 # No need to yield it again here to avoid duplication
-                
+
                 # Mock a final structure event to satisfy frontend if needed, 
                 # or just let the stream end (frontend usually handles text)
                 bg_category = item.get("bg_category")
@@ -1009,6 +1383,23 @@ class StructuredChatAgent:
         return step
 
     async def _handle_tool_action(self, action):
+        # Keep legacy monkeypatch points from app.routers.chat_routes wired into
+        # the split action_handlers module.
+        try:  # pragma: no cover - compatibility bridge
+            from app.routers import chat_routes as compat_chat_routes
+            from . import action_handlers as _action_handlers_module
+
+            for name in (
+                "get_tool_policy",
+                "is_tool_allowed",
+                "execute_tool",
+                "get_current_job",
+            ):
+                candidate = getattr(compat_chat_routes, name, None)
+                if candidate is not None:
+                    setattr(_action_handlers_module, name, candidate)
+        except Exception:
+            pass
         return await _handle_tool_action_fn(self, action)
 
     async def _handle_plan_action(self, action):

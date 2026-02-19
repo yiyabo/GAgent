@@ -1,7 +1,6 @@
 import type { ChatSessionSettings, WebSearchProvider, BaseModelOption, LLMProviderOption } from './settings';
 import type { ToolResultPayload, DecompositionJobStatus, JobLogEvent } from './tool';
 
-// 聊天会话摘要（来自后端）
 export interface ChatSessionSummary {
   id: string;
   name?: string | null;
@@ -25,7 +24,6 @@ export interface ChatSessionsResponse {
   offset: number;
 }
 
-// 聊天相关类型
 export type ChatActionStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 export interface ChatActionSummary {
@@ -157,7 +155,6 @@ export interface ChatMessage {
   thinking_process?: ThinkingProcess;
 }
 
-// 思考过程相关类型
 export interface ThinkingStep {
   iteration: number;
   thought: string;
@@ -221,7 +218,6 @@ export interface ChatSessionAutoTitleBulkResponse {
   processed: number;
 }
 
-// WebSocket 消息类型
 export interface WSMessage {
   type: 'task_update' | 'chat_message' | 'system_status' | 'execution_progress';
   data: any;

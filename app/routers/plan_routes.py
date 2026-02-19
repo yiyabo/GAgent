@@ -57,7 +57,7 @@ def _run_decomposition_job(
     )
 
 
-@plan_router.get("", summary="列出计划概览")
+@plan_router.get("", summary="List plans")
 def list_plans():
     """Return plan summaries."""
     summaries = _plan_repo.list_plans()
@@ -73,15 +73,15 @@ class SubgraphResponse(BaseModel):
 
 
 class DecomposeTaskRequest(BaseModel):
-    plan_id: int = Field(..., description="计划 ID，必填")
-    expand_depth: Optional[int] = Field(None, ge=1, description="扩展深度（默认为配置值）")
-    node_budget: Optional[int] = Field(None, ge=1, description="此次分解允许创建的最大节点数")
+    plan_id: int = Field(..., description="Plan ID")
+    expand_depth: Optional[int] = Field(None, ge=1, description="Maximum decomposition depth (defaults to service config)")
+    node_budget: Optional[int] = Field(None, ge=1, description="Node budget for decomposition")
     allow_existing_children: Optional[bool] = Field(
-        None, description="是否允许在已有子任务的节点上继续追加子任务"
+        None, description="Allow decomposition even when child tasks already exist"
     )
     async_mode: bool = Field(
         False,
-        description="是否使用异步执行模式（立即返回 job_id，并在后台完成分解）",
+        description="Run decomposition asynchronously and return a background job id",
     )
 
 
@@ -90,7 +90,7 @@ class DecomposeTaskResponse(BaseModel):
     message: str
     result: Dict[str, Any]
     job: Optional[Dict[str, Any]] = Field(
-        default=None, description="异步模式下的任务状态信息"
+        default=None, description="Background decomposition job status payload"
     )
 
 
@@ -461,7 +461,7 @@ def _run_task_chain_job(
         reset_current_job(token)
 
 
-@plan_router.get("/{plan_id}/tree", summary="获取完整计划树")
+@plan_router.get("/{plan_id}/tree", summary="Get plan tree")
 def get_plan_tree(plan_id: int):
     """Return serialized PlanTree for the specified plan."""
     try:
@@ -474,11 +474,11 @@ def get_plan_tree(plan_id: int):
 @plan_router.get(
     "/{plan_id}/results",
     response_model=PlanResultsResponse,
-    summary="获取计划内所有任务的执行输出（最新）",
+    summary="List plan execution results",
 )
 def get_plan_results(
     plan_id: int,
-    only_with_output: bool = Query(True, description="仅返回包含执行结果的任务"),
+    only_with_output: bool = Query(True, description="Only include tasks with execution output"),
 ):
     try:
         tree = _plan_repo.get_plan_tree(plan_id)
@@ -508,15 +508,15 @@ def get_plan_results(
 @task_router.get(
     "/{task_id}/result",
     response_model=TaskResultItem,
-    summary="获取单个任务的执行输出（最新）",
+    summary="Get task execution result",
 )
-def get_task_result(task_id: int, plan_id: int = Query(..., description="计划 ID")):
+def get_task_result(task_id: int, plan_id: int = Query(..., description="plan ID")):
     try:
         tree = _plan_repo.get_plan_tree(plan_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not tree.has_node(task_id):
-        raise HTTPException(status_code=404, detail=f"Plan {plan_id} 中未找到节点 {task_id}")
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
     node = tree.get_node(task_id)
 
     content, notes, metadata, raw_payload = _parse_execution_result(node.execution_result)
@@ -535,18 +535,18 @@ def get_task_result(task_id: int, plan_id: int = Query(..., description="计划 
 @task_router.get(
     "/{task_id}/dependency-plan",
     response_model=DependencyPlanResponse,
-    summary="获取任务依赖预检结果与推荐执行顺序",
+    summary="Get task dependency plan",
 )
 def get_task_dependency_plan(
     task_id: int,
-    plan_id: int = Query(..., description="计划 ID"),
+    plan_id: int = Query(..., description="plan ID"),
 ):
     try:
         tree = _plan_repo.get_plan_tree(plan_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not tree.has_node(task_id):
-        raise HTTPException(status_code=404, detail=f"Plan {plan_id} 中未找到节点 {task_id}")
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
 
     plan = compute_dependency_plan(tree, task_id)
     return _to_dependency_plan_response(tree, plan)
@@ -555,11 +555,11 @@ def get_task_dependency_plan(
 @task_router.post(
     "/{task_id}/execute",
     response_model=ExecuteTaskResponse,
-    summary="执行单个任务（可选一键补齐依赖链，异步 Job）",
+    summary="Execute task with dependencies",
 )
 def execute_task_with_dependencies(
     task_id: int,
-    plan_id: int = Query(..., description="计划 ID"),
+    plan_id: int = Query(..., description="plan ID"),
     request: Optional[ExecuteTaskRequest] = Body(default=None),
 ):
     request = request or ExecuteTaskRequest()
@@ -568,7 +568,7 @@ def execute_task_with_dependencies(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not tree.has_node(task_id):
-        raise HTTPException(status_code=404, detail=f"Plan {plan_id} 中未找到节点 {task_id}")
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
 
     dep_plan = compute_dependency_plan(tree, task_id)
     dep_response = _to_dependency_plan_response(tree, dep_plan)
@@ -576,7 +576,7 @@ def execute_task_with_dependencies(
     if dep_plan.cycle_detected:
         return ExecuteTaskResponse(
             success=False,
-            message="检测到循环依赖，无法生成可靠的执行顺序。请先修正依赖关系后再试。",
+            message="Dependency cycle detected. Resolve the cycle before execution.",
             plan_id=plan_id,
             task_id=task_id,
             dependency_plan=dep_response,
@@ -587,7 +587,7 @@ def execute_task_with_dependencies(
     if dep_plan.running_dependencies:
         return ExecuteTaskResponse(
             success=False,
-            message="存在依赖任务正在执行中。请等待其完成后再执行该任务。",
+            message="Some dependencies are still running. Wait for completion and retry.",
             plan_id=plan_id,
             task_id=task_id,
             dependency_plan=dep_response,
@@ -624,7 +624,7 @@ def execute_task_with_dependencies(
 
         return ExecuteTaskResponse(
             success=len(failed) == 0 and len(skipped) == 0,
-            message="执行完成。" if len(failed) == 0 and len(skipped) == 0 else "执行未完成（存在失败或跳过）。",
+            message="Execution completed successfully." if len(failed) == 0 and len(skipped) == 0 else "Execution finished with failures.",
             plan_id=plan_id,
             task_id=task_id,
             dependency_plan=dep_response,
@@ -657,7 +657,7 @@ def execute_task_with_dependencies(
     plan_decomposition_jobs.append_log(
         job.job_id,
         "info",
-        "任务执行已加入后台队列",
+        "Task execution has been queued in background.",
         {
             "plan_id": plan_id,
             "task_id": task_id,
@@ -682,7 +682,7 @@ def execute_task_with_dependencies(
 
     return ExecuteTaskResponse(
         success=True,
-        message="任务执行已提交到后台执行。",
+        message="Task execution started in background.",
         plan_id=plan_id,
         task_id=task_id,
         dependency_plan=dep_response,
@@ -694,7 +694,7 @@ def execute_task_with_dependencies(
 @plan_router.get(
     "/{plan_id}/execution/summary",
     response_model=PlanExecutionSummary,
-    summary="根据当前任务状态聚合执行统计",
+    summary="Get plan execution status summary",
 )
 def get_plan_execution_summary(plan_id: int):
     try:
@@ -724,12 +724,12 @@ def get_plan_execution_summary(plan_id: int):
 @plan_router.get(
     "/{plan_id}/subgraph",
     response_model=SubgraphResponse,
-    summary="获取计划子图",
+    summary="Get plan subgraph",
 )
 def get_plan_subgraph(
     plan_id: int,
-    node_id: int = Query(..., description="子图根节点 ID"),
-    max_depth: int = Query(2, ge=1, le=6, description="递归深度限制"),
+    node_id: int = Query(..., description="Root node ID"),
+    max_depth: int = Query(2, ge=1, le=6, description="Traversal depth limit"),
 ):
     try:
         tree = _plan_repo.get_plan_tree(plan_id)
@@ -739,7 +739,7 @@ def get_plan_subgraph(
     if not tree.has_node(node_id):
         raise HTTPException(
             status_code=404,
-            detail=f"Plan {plan_id} 中未找到节点 {node_id}",
+            detail=f"Node {node_id} not found in plan {plan_id}",
         )
     nodes = tree.subgraph_nodes(node_id, max_depth=max_depth)
     outline = tree.subgraph_outline(node_id, max_depth=max_depth)
@@ -755,7 +755,7 @@ def get_plan_subgraph(
 @task_router.post(
     "/{task_id}/decompose",
     response_model=DecomposeTaskResponse,
-    summary="对指定任务执行 LLM 分解",
+    summary="Decompose task with LLM",
 )
 def decompose_task(
     task_id: int,
@@ -771,7 +771,7 @@ def decompose_task(
     if not tree.has_node(task_id):
         raise HTTPException(
             status_code=404,
-            detail=f"Plan {plan_id} 中未找到节点 {task_id}",
+            detail=f"Task {task_id} not found in plan {plan_id}",
         )
 
     expand_depth = request.expand_depth
@@ -791,12 +791,12 @@ def decompose_task(
         )
         if background_tasks is None:
             raise HTTPException(
-                status_code=500, detail="后台任务管理不可用，无法执行异步分解。"
+                status_code=500, detail="Background task manager is unavailable; cannot enqueue decomposition."
             )
         plan_decomposition_jobs.append_log(
             job.job_id,
             "info",
-            "任务拆分已进入后台队列",
+            "Task decomposition has been queued in background.",
             {
                 "plan_id": plan_id,
                 "task_id": task_id,
@@ -815,7 +815,7 @@ def decompose_task(
             allow_existing_children,
         )
         message = (
-            "任务拆分已提交到后台执行。你可以稍后查询 job 状态或刷新计划树查看进度。"
+            "Task decomposition started in background. Poll job status to track progress."
         )
         payload = job.to_payload()
         return DecomposeTaskResponse(
@@ -837,12 +837,12 @@ def decompose_task(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     message = (
-        f"已生成 {len(result.created_tasks)} 个子任务。"
+        f"Created {len(result.created_tasks)} subtasks."
         if result.created_tasks
-        else "分解完成，未新增任务。"
+        else "Decomposition completed with no new tasks."
     )
     if result.stopped_reason:
-        message += f" 停止原因：{result.stopped_reason}"
+        message += f" Reason: {result.stopped_reason}"
 
     return DecomposeTaskResponse(
         success=True,
@@ -854,12 +854,12 @@ def decompose_task(
 
 @task_router.get(
     "/decompose/jobs/{job_id}/stream",
-    summary="实时订阅异步拆分日志",
+    summary="Stream decomposition job logs",
 )
 async def stream_decomposition_job(job_id: str):
     snapshot = plan_decomposition_jobs.get_job_payload(job_id)
     if snapshot is None:
-        raise HTTPException(status_code=404, detail="未找到对应的拆分任务。")
+        raise HTTPException(status_code=404, detail="Decomposition job not found.")
 
     loop = asyncio.get_running_loop()
     queue = plan_decomposition_jobs.register_subscriber(job_id, loop)
@@ -904,12 +904,12 @@ async def stream_decomposition_job(job_id: str):
 @task_router.get(
     "/decompose/jobs/{job_id}",
     response_model=DecompositionJobStatusResponse,
-    summary="查询异步任务拆分状态",
+    summary="Get decomposition job status",
 )
 def get_decomposition_job_status(job_id: str):
     payload = plan_decomposition_jobs.get_job_payload(job_id)
     if payload is None:
-        raise HTTPException(status_code=404, detail="未找到对应的拆分任务。")
+        raise HTTPException(status_code=404, detail="Decomposition job not found.")
     return DecompositionJobStatusResponse(
         job_id=payload.get("job_id"),
         job_type=payload.get("job_type") or "plan_decompose",
@@ -935,7 +935,7 @@ register_router(
     path="/plans",
     router=plan_router,
     tags=["plans"],
-    description="计划树读取接口",
+    description="Plan read and execution APIs",
 )
 
 register_router(
@@ -944,5 +944,5 @@ register_router(
     path="/tasks",
     router=task_router,
     tags=["tasks"],
-    description="面向外部的任务 REST 功能（PlanTree 补充接口）",
+    description="Task APIs backed by PlanTree",
 )

@@ -1,7 +1,7 @@
 """
-Graph RAG 配置
+Graph RAG configuration
 
-集中管理 Graph RAG 模块的路径、缓存参数等设置。
+medium Graph RAG path, parameter. 
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Optional
 
 @dataclass(slots=True)
 class GraphRAGSettings:
-    """Graph RAG 模块配置"""
+    """Graph RAG configuration"""
 
     triples_path: str
     cache_ttl: int = 900
@@ -32,7 +32,7 @@ def _env(key: str, default: Optional[str] = None) -> Optional[str]:
 
 @lru_cache(maxsize=1)
 def get_graph_rag_settings() -> GraphRAGSettings:
-    """读取环境变量并返回 Graph RAG 设置"""
+    """read Graph RAG """
 
     root_dir = os.getenv("GRAPH_RAG_ROOT_DIR")
     default_path = os.path.join(
@@ -73,6 +73,6 @@ def get_graph_rag_settings() -> GraphRAGSettings:
 
 
 def reset_graph_rag_settings_cache() -> None:
-    """测试场景下重置缓存"""
+    """"""
 
     get_graph_rag_settings.cache_clear()  # type: ignore[attr-defined]

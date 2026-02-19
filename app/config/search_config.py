@@ -1,8 +1,8 @@
 """
-Web Search 配置
+Web Search configuration
 
-统一管理 Web Search 相关的配置，包括默认 Provider、各 Provider 使用的
-API Endpoint、模型名称以及鉴权参数。
+Web Search relatedconfiguration, default Provider,  Provider 
+API Endpoint, modelnameparameter. 
 """
 
 from dataclasses import dataclass
@@ -13,12 +13,11 @@ from typing import Optional
 
 @dataclass(slots=True)
 class SearchSettings:
-    """Web Search 模块配置"""
+    """Web Search configuration"""
 
     default_provider: str = "builtin"
     builtin_provider: str = "qwen"  # qwen | glm | ...
 
-    # Builtin（模型内置搜索）配置
     qwen_api_key: Optional[str] = None
     qwen_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     qwen_model: str = "qwen3.5-plus"
@@ -29,13 +28,11 @@ class SearchSettings:
 
     builtin_request_timeout: float = 40.0
 
-    # 外部 Provider：Perplexity
     perplexity_api_key: Optional[str] = None
     perplexity_api_url: str = "https://api.perplexity.ai/chat/completions"
     perplexity_model: str = "sonar-pro"
     perplexity_timeout: float = 30.0
 
-    # 外部 Provider：Tavily MCP
     tavily_api_key: Optional[str] = None
     tavily_api_url: str = "https://api.tavily.com/search"
     tavily_mcp_url: str = "https://mcp.tavily.com/mcp/"
@@ -59,7 +56,7 @@ def _env(key: str, default: Optional[str] = None) -> Optional[str]:
 
 @lru_cache(maxsize=1)
 def get_search_settings() -> SearchSettings:
-    """读取环境变量并返回 SearchSettings"""
+    """read SearchSettings"""
 
     default_provider = _env("DEFAULT_WEB_SEARCH_PROVIDER", "builtin")
     builtin_provider = _env("BUILTIN_SEARCH_PROVIDER", "qwen")
@@ -131,6 +128,6 @@ def get_search_settings() -> SearchSettings:
 
 
 def reset_search_settings_cache() -> None:
-    """测试场景下清理缓存"""
+    """"""
 
     get_search_settings.cache_clear()  # type: ignore[attr-defined]

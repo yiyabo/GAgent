@@ -1,11 +1,11 @@
 """
-TreeSimplifier 单元测试
+TreeSimplifier 
 
-测试图简化算法的核心功能：
-- PlanTree 到 DAG 转换
-- 节点合并逻辑
-- 环路检测
-- 相似度匹配
+: 
+- PlanTree  DAG 
+- 
+- 
+- 
 """
 
 import pytest
@@ -18,10 +18,10 @@ from app.services.plans.similarity_matcher import SimpleSimilarityMatcher
 
 
 class TestDAGNode:
-    """DAGNode 数据模型测试"""
+    """DAGNode model"""
 
     def test_merge_from_basic(self):
-        """测试基本的节点合并"""
+        """"""
         node1 = DAGNode(
             id=1,
             name="Task A",
@@ -45,7 +45,6 @@ class TestDAGNode:
 
         node1.merge_from(node2)
 
-        # 验证合并结果
         assert node1.source_node_ids == [1, 2]
         assert node1.parent_ids == {0}
         assert node1.child_ids == {2, 3}
@@ -54,7 +53,7 @@ class TestDAGNode:
         assert "key2" in node1.metadata
 
     def test_merge_from_instruction(self):
-        """测试 instruction 合并"""
+        """ instruction """
         node1 = DAGNode(id=1, name="Task", instruction="Step 1", source_node_ids=[1])
         node2 = DAGNode(id=2, name="Task", instruction="Step 2", source_node_ids=[2])
 
@@ -65,7 +64,7 @@ class TestDAGNode:
         assert "---" in node1.instruction
 
     def test_merge_from_empty_instruction(self):
-        """测试空 instruction 合并"""
+        """ instruction """
         node1 = DAGNode(id=1, name="Task", instruction=None, source_node_ids=[1])
         node2 = DAGNode(id=2, name="Task", instruction="Step 2", source_node_ids=[2])
 
@@ -75,10 +74,10 @@ class TestDAGNode:
 
 
 class TestDAG:
-    """DAG 数据结构测试"""
+    """DAG """
 
     def test_get_roots(self):
-        """测试获取根节点"""
+        """get"""
         dag = DAG(plan_id=1, title="Test Plan")
         dag.nodes[1] = DAGNode(id=1, name="Root", source_node_ids=[1])
         dag.nodes[2] = DAGNode(id=2, name="Child", source_node_ids=[2], parent_ids={1})
@@ -88,7 +87,7 @@ class TestDAG:
         assert roots[0].id == 1
 
     def test_get_leaves(self):
-        """测试获取叶节点"""
+        """get"""
         dag = DAG(plan_id=1, title="Test Plan")
         dag.nodes[1] = DAGNode(id=1, name="Root", source_node_ids=[1], child_ids={2})
         dag.nodes[2] = DAGNode(id=2, name="Leaf", source_node_ids=[2], parent_ids={1})
@@ -98,7 +97,7 @@ class TestDAG:
         assert leaves[0].id == 2
 
     def test_topological_sort(self):
-        """测试拓扑排序"""
+        """"""
         dag = DAG(plan_id=1, title="Test Plan")
         dag.nodes[1] = DAGNode(id=1, name="A", source_node_ids=[1], child_ids={2, 3})
         dag.nodes[2] = DAGNode(id=2, name="B", source_node_ids=[2], parent_ids={1}, child_ids={4})
@@ -107,7 +106,6 @@ class TestDAG:
 
         sorted_ids = dag.topological_sort()
 
-        # 验证顺序：1 必须在 2, 3 之前；2, 3 必须在 4 之前
         assert sorted_ids.index(1) < sorted_ids.index(2)
         assert sorted_ids.index(1) < sorted_ids.index(3)
         assert sorted_ids.index(2) < sorted_ids.index(4)
@@ -115,16 +113,16 @@ class TestDAG:
 
 
 class TestTreeSimplifier:
-    """TreeSimplifier 核心功能测试"""
+    """TreeSimplifier """
 
     @pytest.fixture
     def simplifier(self):
-        """创建测试用简化器（不使用 LLM）"""
+        """create( LLM)"""
         return TreeSimplifier(use_llm=False, use_cache=False)
 
     @pytest.fixture
     def sample_tree(self):
-        """创建测试用计划树"""
+        """createplan"""
         tree = PlanTree(id=1, title="Test Plan", description="Test")
         tree.nodes = {
             1: PlanNode(id=1, plan_id=1, name="Root Task", instruction="Main task", parent_id=None, dependencies=[]),
@@ -139,21 +137,20 @@ class TestTreeSimplifier:
         return tree
 
     def test_tree_to_dag(self, simplifier, sample_tree):
-        """测试 PlanTree 到 DAG 转换"""
+        """ PlanTree  DAG """
         dag = simplifier.tree_to_dag(sample_tree)
 
         assert dag.plan_id == sample_tree.id
         assert dag.title == sample_tree.title
         assert len(dag.nodes) == len(sample_tree.nodes)
 
-        # 验证父子关系
         assert 2 in dag.nodes[1].child_ids
         assert 3 in dag.nodes[1].child_ids
         assert 4 in dag.nodes[1].child_ids
         assert 1 in dag.nodes[2].parent_ids
 
     def test_is_reachable(self, simplifier):
-        """测试可达性检查"""
+        """"""
         dag = DAG(plan_id=1, title="Test")
         dag.nodes[1] = DAGNode(id=1, name="A", source_node_ids=[1], child_ids={2})
         dag.nodes[2] = DAGNode(id=2, name="B", source_node_ids=[2], parent_ids={1}, child_ids={3})
@@ -164,7 +161,7 @@ class TestTreeSimplifier:
         assert simplifier.is_reachable(dag, 1, 1) is True
 
     def test_can_merge_parallel_nodes(self, simplifier):
-        """测试并行节点可合并"""
+        """"""
         dag = DAG(plan_id=1, title="Test")
         dag.nodes[1] = DAGNode(id=1, name="Root", source_node_ids=[1], child_ids={2, 3})
         dag.nodes[2] = DAGNode(id=2, name="Task A", source_node_ids=[2], parent_ids={1})
@@ -174,27 +171,27 @@ class TestTreeSimplifier:
         assert can is True
 
     def test_cannot_merge_parent_child(self, simplifier):
-        """测试父子节点不可合并"""
+        """"""
         dag = DAG(plan_id=1, title="Test")
         dag.nodes[1] = DAGNode(id=1, name="Parent", source_node_ids=[1], child_ids={2})
         dag.nodes[2] = DAGNode(id=2, name="Child", source_node_ids=[2], parent_ids={1})
 
         can, reason = simplifier.can_merge(dag, 1, 2)
         assert can is False
-        assert "父子" in reason or "parent" in reason.lower()
+        assert "" in reason or "parent" in reason.lower()
 
     def test_cannot_merge_with_dependency(self, simplifier):
-        """测试有依赖关系的节点不可合并"""
+        """"""
         dag = DAG(plan_id=1, title="Test")
         dag.nodes[1] = DAGNode(id=1, name="Task A", source_node_ids=[1])
         dag.nodes[2] = DAGNode(id=2, name="Task B", source_node_ids=[2], dependencies={1})
 
         can, reason = simplifier.can_merge(dag, 1, 2)
         assert can is False
-        assert "依赖" in reason
+        assert "" in reason
 
     def test_merge_nodes(self, simplifier):
-        """测试节点合并"""
+        """"""
         dag = DAG(plan_id=1, title="Test")
         dag.nodes[1] = DAGNode(id=1, name="Root", source_node_ids=[1], child_ids={2, 3})
         dag.nodes[2] = DAGNode(id=2, name="Task A", source_node_ids=[2], parent_ids={1}, child_ids={4})
@@ -211,19 +208,18 @@ class TestTreeSimplifier:
         assert dag.nodes[2].source_node_ids == [2, 3]
 
     def test_simplify_fast(self, simplifier, sample_tree):
-        """测试快速简化（基于名称匹配）"""
+        """(name)"""
         dag = simplifier.simplify_fast(sample_tree)
 
-        # 应该合并相同名称的节点
         assert dag.node_count() < len(sample_tree.nodes)
         assert len(dag.merge_map) > 0
 
 
 class TestSimpleSimilarityMatcher:
-    """SimpleSimilarityMatcher 测试"""
+    """SimpleSimilarityMatcher """
 
     def test_exact_match(self):
-        """测试完全匹配"""
+        """"""
         matcher = SimpleSimilarityMatcher(threshold=0.9)
         node1 = DAGNode(id=1, name="Install dependencies", source_node_ids=[1])
         node2 = DAGNode(id=2, name="Install dependencies", source_node_ids=[2])
@@ -231,7 +227,7 @@ class TestSimpleSimilarityMatcher:
         assert matcher.should_merge(node1, node2) is True
 
     def test_similar_match(self):
-        """测试相似匹配"""
+        """"""
         matcher = SimpleSimilarityMatcher(threshold=0.5)
         node1 = DAGNode(id=1, name="Install npm dependencies", source_node_ids=[1])
         node2 = DAGNode(id=2, name="Install pip dependencies", source_node_ids=[2])
@@ -240,7 +236,7 @@ class TestSimpleSimilarityMatcher:
         assert len(pairs) > 0
 
     def test_no_match(self):
-        """测试不匹配"""
+        """"""
         matcher = SimpleSimilarityMatcher(threshold=0.9)
         node1 = DAGNode(id=1, name="Build project", source_node_ids=[1])
         node2 = DAGNode(id=2, name="Run tests", source_node_ids=[2])

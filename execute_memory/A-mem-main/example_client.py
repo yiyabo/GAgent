@@ -103,20 +103,20 @@ class AmemClient:
         Args:
             results: Query results from query_memory()
         """
-        print(f"\n查询: {results['query']}")
-        print(f"找到 {results['count']} 条相关记忆:\n")
+        print(f"\n: {results['query']}")
+        print(f" {results['count']} :\n")
 
         for i, memory in enumerate(results['results'], 1):
             print(f"{'='*80}")
-            print(f"记忆 {i}:")
+            print(f" {i}:")
             print(f"ID: {memory['id']}")
-            print(f"时间: {memory['timestamp']}")
-            print(f"内容: {memory['content']}")
-            print(f"上下文: {memory['context']}")
-            print(f"关键词: {', '.join(memory['keywords'])}")
-            print(f"标签: {', '.join(memory['tags'])}")
+            print(f": {memory['timestamp']}")
+            print(f": {memory['content']}")
+            print(f": {memory['context']}")
+            print(f": {', '.join(memory['keywords'])}")
+            print(f": {', '.join(memory['tags'])}")
             if memory.get('score') is not None:
-                print(f"相关度评分: {memory['score']:.4f}")
+                print(f": {memory['score']:.4f}")
             print()
 
 
@@ -126,43 +126,43 @@ def main():
     # Initialize client
     client = AmemClient()
 
-    print("Amem Memory System API 客户端示例\n")
+    print("Amem Memory System API \n")
 
     # Check health
-    print("1. 检查服务状态...")
+    print("1. ...")
     try:
         health = client.health_check()
-        print(f"   状态: {health['status']}")
-        print(f"   记忆数量: {health['memory_count']}")
-        print(f"   时间: {health['timestamp']}\n")
+        print(f"   : {health['status']}")
+        print(f"   : {health['memory_count']}")
+        print(f"   : {health['timestamp']}\n")
     except Exception as e:
-        print(f"   错误: 无法连接到服务 - {e}")
-        print("   请确保API服务正在运行 (python api.py)")
+        print(f"   :  - {e}")
+        print("   API (python api.py)")
         return
 
     # Add memories
-    print("2. 添加记忆...")
+    print("2. ...")
 
     memories_to_add = [
         {
-            "content": "今天学习了FastAPI框架，它是一个现代、快速的Python Web框架",
-            "tags": ["Python", "FastAPI", "Web开发"],
-            "context": "学习笔记"
+            "content": "FastAPI，Python Web",
+            "tags": ["Python", "FastAPI", "Web"],
+            "context": ""
         },
         {
-            "content": "讨论了微服务架构的优缺点，特别是服务间通信和分布式事务的处理",
-            "tags": ["架构", "微服务", "分布式系统"],
-            "context": "技术讨论"
+            "content": "，",
+            "tags": ["", "", ""],
+            "context": ""
         },
         {
-            "content": "研究了向量数据库ChromaDB的使用，它非常适合存储和检索embeddings",
-            "tags": ["数据库", "ChromaDB", "向量搜索"],
-            "context": "技术研究"
+            "content": "ChromaDB，embeddings",
+            "tags": ["", "ChromaDB", ""],
+            "context": ""
         },
         {
-            "content": "阅读了关于大语言模型prompt engineering的文章，学习了few-shot learning技巧",
+            "content": "prompt engineering，few-shot learning",
             "tags": ["LLM", "Prompt Engineering", "AI"],
-            "context": "学习笔记"
+            "context": ""
         }
     ]
 
@@ -171,20 +171,20 @@ def main():
         try:
             result = client.add_memory(**mem)
             memory_ids.append(result['memory_id'])
-            print(f"   ✓ 已添加: {mem['content'][:50]}...")
+            print(f"   ✓ : {mem['content'][:50]}...")
         except Exception as e:
-            print(f"   ✗ 添加失败: {e}")
+            print(f"   ✗ : {e}")
 
-    print(f"\n   成功添加 {len(memory_ids)} 条记忆\n")
+    print(f"\n    {len(memory_ids)} \n")
 
     # Query memories
-    print("3. 查询记忆...\n")
+    print("3. ...\n")
 
     queries = [
-        "有哪些关于Python和Web开发的内容？",
-        "分布式系统相关的讨论",
-        "向量数据库的使用",
-        "人工智能和机器学习"
+        "PythonWeb？",
+        "",
+        "",
+        ""
     ]
 
     for query in queries:
@@ -192,16 +192,16 @@ def main():
             results = client.query_memory(query, top_k=3)
             client.print_query_results(results)
         except Exception as e:
-            print(f"查询失败: {e}\n")
+            print(f": {e}\n")
 
     # Final health check
     print(f"{'='*80}")
-    print("4. 最终状态检查...")
+    print("4. ...")
     try:
         health = client.health_check()
-        print(f"   总记忆数量: {health['memory_count']}\n")
+        print(f"   : {health['memory_count']}\n")
     except Exception as e:
-        print(f"   错误: {e}\n")
+        print(f"   : {e}\n")
 
 
 if __name__ == "__main__":

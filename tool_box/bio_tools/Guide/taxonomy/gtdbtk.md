@@ -45,7 +45,7 @@ docker run --rm -v /path/to/data:/data -v /path/to/db:/refdata quay.io/biocontai
 ## Examples for Agent
 
 ### Example 1: Classify Genomes
-**User Request**: "对这些基因组进行分类"
+**User Request**: ""
 
 **Agent Command**:
 ```bash

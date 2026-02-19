@@ -24,8 +24,8 @@ class DecomposerSettings:
     retry_limit: int = 1
     allow_existing_children: bool = False
     # Graph simplification settings
-    enable_simplification: bool = True  # 默认开启图简化
-    simplification_use_llm: bool = False  # 默认用简单匹配，节省 tokens
+    enable_simplification: bool = True  # default
+    simplification_use_llm: bool = False  # default,  tokens
     simplification_threshold: float = 0.8
 
 

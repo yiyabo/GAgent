@@ -6,13 +6,13 @@
         "operations": {
             "stats": {
                 "command": "seqkit stats {input}",
-                "description": "统计序列文件信息（数量、长度、GC含量等）",
+                "description": "（GC）",
                 "requires_input": true,
                 "requires_output": false
             },
             "grep": {
                 "command": "seqkit grep -p '{pattern}' {input} -o {output}",
-                "description": "按模式搜索序列",
+                "description": "",
                 "requires_input": true,
                 "requires_output": true,
                 "extra_params": [
@@ -21,13 +21,13 @@
             },
             "seq": {
                 "command": "seqkit seq {input} -o {output}",
-                "description": "序列格式转换和处理",
+                "description": "",
                 "requires_input": true,
                 "requires_output": true
             },
             "head": {
                 "command": "seqkit head -n {count} {input}",
-                "description": "显示前N条序列 (count=序列数量)",
+                "description": "N (count=)",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -40,40 +40,40 @@
         "image": "biocontainers/blast:2.2.31",
         "description": "BLAST+ - Basic Local Alignment Search Tool for sequence similarity search",
         "category": "sequence_alignment",
-        "notes": "数据库必须先用 makeblastdb 创建，且路径必须使用容器内路径 /work/xxx",
+        "notes": " makeblastdb ， /work/xxx",
         "operations": {
             "blastn": {
                 "command": "blastn -query {input} -db {db} -out /work/{output} -outfmt 6",
-                "description": "核酸序列比对",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "db",
                     "output"
                 ],
-                "notes": "db: 容器内路径如 /work/mydb; output: 输出文件名如 results.txt"
+                "notes": "db:  /work/mydb; output:  results.txt"
             },
             "blastp": {
                 "command": "blastp -query {input} -db {db} -out /work/{output} -outfmt 6",
-                "description": "蛋白质序列比对",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "db",
                     "output"
                 ],
-                "notes": "db: 容器内路径如 /work/mydb; output: 输出文件名如 results.txt"
+                "notes": "db:  /work/mydb; output:  results.txt"
             },
             "makeblastdb": {
                 "command": "makeblastdb -in {input} -dbtype {type} -out /work/{db}",
-                "description": "创建 BLAST 数据库",
+                "description": " BLAST ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "type",
                     "db"
                 ],
-                "notes": "type: nucl(核酸) 或 prot(蛋白质); db: 数据库名称(无后缀)"
+                "notes": "type: nucl()  prot(); db: ()"
             }
         }
     },
@@ -81,28 +81,28 @@
         "image": "docker.byoryn.cn/biocontainers/prodigal:v1-2.6.3-4-deb_cv1",
         "description": "Prodigal - Prokaryotic gene prediction",
         "category": "gene_prediction",
-        "notes": "输出文件会保存到 runtime/bio_tools/prodigal/ 目录",
+        "notes": " runtime/bio_tools/prodigal/ ",
         "operations": {
             "predict": {
                 "command": "prodigal -i {input} -o /dev/null -a /work/{protein} -d /work/{nucleotide}",
-                "description": "预测原核生物基因",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "protein",
                     "nucleotide"
                 ],
-                "notes": "protein: 蛋白质输出文件名如 genes.faa; nucleotide: 核苷酸输出文件名如 genes.fna"
+                "notes": "protein:  genes.faa; nucleotide:  genes.fna"
             },
             "meta": {
                 "command": "prodigal -i {input} -o /dev/null -a /work/{protein} -p meta",
-                "description": "宏基因组模式基因预测",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "protein"
                 ],
-                "notes": "protein: 蛋白质输出文件名如 genes.faa; 适合短序列或宏基因组数据"
+                "notes": "protein:  genes.faa; "
             }
         }
     },
@@ -110,49 +110,49 @@
         "image": "staphb/hmmer:latest",
         "description": "HMMER - Biosequence analysis using profile hidden Markov models",
         "category": "sequence_analysis",
-        "notes": "HMM数据库必须先用 hmmpress 处理。支持绝对路径（自动挂载）或放在 runtime/bio_tools/hmmer/ 目录下的文件名",
+        "notes": "HMM hmmpress （） runtime/bio_tools/hmmer/ ",
         "operations": {
             "hmmscan": {
                 "command": "hmmscan --tblout /work/{output} {db} {input}",
-                "description": "用序列搜索 HMM 数据库",
+                "description": " HMM ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "db",
                     "output"
                 ],
-                "notes": "db: 支持绝对路径如 /home/xxx/xxx.hmm 或相对路径（放 runtime/bio_tools/hmmer/ 目录）; output: 输出文件名"
+                "notes": "db:  /home/xxx/xxx.hmm （ runtime/bio_tools/hmmer/ ）; output: "
             },
             "hmmsearch": {
                 "command": "hmmsearch --tblout /work/{output} {db} {input}",
-                "description": "用 HMM 搜索序列数据库",
+                "description": " HMM ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "db",
                     "output"
                 ],
-                "notes": "db: 支持绝对路径如 /home/xxx/xxx.hmm 或相对路径（放 runtime/bio_tools/hmmer/ 目录）; output: 输出文件名"
+                "notes": "db:  /home/xxx/xxx.hmm （ runtime/bio_tools/hmmer/ ）; output: "
             },
             "hmmpress": {
                 "command": "hmmpress /work/{db}",
-                "description": "压缩/准备 HMM 数据库以供 hmmscan 使用",
+                "description": "/ HMM  hmmscan ",
                 "requires_input": false,
                 "requires_output": false,
                 "extra_params": [
                     "db"
                 ],
-                "notes": "db: 放在 runtime/bio_tools/hmmer/ 目录下的 HMM 文件名"
+                "notes": "db:  runtime/bio_tools/hmmer/  HMM "
             },
             "hmmbuild": {
                 "command": "hmmbuild /work/{output} {input}",
-                "description": "从序列比对构建 HMM 模型",
+                "description": " HMM ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output"
                 ],
-                "notes": "output: 输出 HMM 文件名如 test.hmm; input 应该是对齐好的 FASTA/Stockholm/Clustal/Phylip 文件"
+                "notes": "output:  HMM  test.hmm; input  FASTA/Stockholm/Clustal/Phylip "
             }
         }
     },
@@ -160,11 +160,11 @@
         "image": "genomicpariscentre/dorado:0.5.3",
         "description": "Dorado - Oxford Nanopore basecalling and demultiplexing",
         "category": "long_read_processing",
-        "notes": "长读长数据处理：basecall + demux。GPU可用时更快，需安装NVIDIA Container Toolkit",
+        "notes": "：basecall + demuxGPU，NVIDIA Container Toolkit",
         "operations": {
             "basecall": {
                 "command": "/opt/dorado-0.5.3-linux-x64/bin/dorado basecall --model {model} --kit-name {kit} --output-dir /work/{output} {input}",
-                "description": "Nanopore 原始信号 basecalling",
+                "description": "Nanopore  basecalling",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -172,49 +172,49 @@
                     "kit",
                     "output"
                 ],
-                "notes": "model: 模型如 dna_r10.4.1_e8.1_sup; kit: 试剂盒如 SQK-RBK001; output: 输出目录名"
+                "notes": "model:  dna_r10.4.1_e8.1_sup; kit:  SQK-RBK001; output: "
             },
             "demux": {
                 "command": "/opt/dorado-0.5.3-linux-x64/bin/dorado demux --output-dir /work/{output_dir} --kit-name {kit} {input}",
-                "description": "拆分多样本 barcode 数据",
+                "description": " barcode ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "kit",
                     "output_dir"
                 ],
-                "notes": "kit: 试剂盒如 SQK-RBK001, SQK-NBD114-96; output_dir: 输出目录名"
+                "notes": "kit:  SQK-RBK001, SQK-NBD114-96; output_dir: "
             }
         }
     },
     "nanoplot": {
         "image": "staphb/nanoplot:latest",
-        "description": "NanoPlot - 长读长测序数据质控可视化",
+        "description": "NanoPlot - ",
         "category": "long_read_processing",
-        "notes": "输入支持: --fastq, --fasta, --bam, --summary",
+        "notes": ": --fastq, --fasta, --bam, --summary",
         "operations": {
             "basic": {
                 "command": "NanoPlot --fastq {input} -o /work/{output} --prefix {prefix}",
-                "description": "长读长数据质控和可视化",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output",
                     "prefix"
                 ],
-                "notes": "output: 输出目录; prefix: 输出文件前缀; 输入文件放在 runtime/bio_tools/nanoplot/input/"
+                "notes": "output: ; prefix: ;  runtime/bio_tools/nanoplot/input/"
             }
         }
     },
     "minimap2": {
         "image": "staphb/minimap2:latest",
-        "description": "Minimap2 - 短读长/长读长快速比对工具",
+        "description": "Minimap2 - /",
         "category": "sequence_alignment",
-        "notes": "支持: map-pb (PacBio), map-ont (ONT), map-hifi (HiFi), sr (短读长)",
+        "notes": ": map-pb (PacBio), map-ont (ONT), map-hifi (HiFi), sr ()",
         "operations": {
             "map": {
                 "command": "minimap2 -ax {preset} {reference} {query} > /work/{output}",
-                "description": "序列比对",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -222,11 +222,11 @@
                     "reference",
                     "output"
                 ],
-                "notes": "preset: map-pb/map-ont/map-hifi/sr; reference: 参考基因组路径; output: SAM输出文件名"
+                "notes": "preset: map-pb/map-ont/map-hifi/sr; reference: ; output: SAM"
             },
             "filter": {
                 "command": "minimap2 -t {threads} -ax map-ont {reference} {input} > /work/{output}",
-                "description": "比对到参考基因组，输出 SAM/BAM（供 samtools 过滤未比对 reads）",
+                "description": "， SAM/BAM（ samtools  reads）",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -234,126 +234,126 @@
                     "output",
                     "threads"
                 ],
-                "notes": "reference: 参考基因组(.mmi); output: 输出SAM文件; 需配合 samtools 提取未比对 reads"
+                "notes": "reference: (.mmi); output: SAM;  samtools  reads"
             }
         }
     },
     "samtools": {
         "image": "staphb/samtools:latest",
-        "description": "SAMtools - 处理 SAM/BAM/CRAM 文件",
+        "description": "SAMtools -  SAM/BAM/CRAM ",
         "category": "sequence_alignment",
-        "notes": "用于处理比对结果，支持 view/sort/index/fastq 等操作",
+        "notes": "， view/sort/index/fastq ",
         "operations": {
             "view_filter_unmapped": {
                 "command": "samtools view -@ {threads} -b -f 4 {input} | samtools fastq -@ {threads} - | gzip -c > /work/{output}",
-                "description": "提取未比对 reads（-f 4），输出 FASTQ.gz",
+                "description": " reads（-f 4）， FASTQ.gz",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "threads",
                     "output"
                 ],
-                "notes": "input: SAM/BAM文件; output: 输出FASTQ.gz; -f 4 保留未比对 reads"
+                "notes": "input: SAM/BAM; output: FASTQ.gz; -f 4  reads"
             },
             "view": {
                 "command": "samtools view -@ {threads} -b {input} > /work/{output}",
-                "description": "SAM 转 BAM",
+                "description": "SAM  BAM",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "threads",
                     "output"
                 ],
-                "notes": "input: SAM文件; output: 输出BAM文件"
+                "notes": "input: SAM; output: BAM"
             },
             "sort": {
                 "command": "samtools sort -@ {threads} {input} -o /work/{output}",
-                "description": "排序 BAM 文件",
+                "description": " BAM ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "threads",
                     "output"
                 ],
-                "notes": "input: BAM文件; output: 排序后BAM文件"
+                "notes": "input: BAM; output: BAM"
             },
             "index": {
                 "command": "samtools index {input}",
-                "description": "为 BAM 文件建立索引",
+                "description": " BAM ",
                 "requires_input": true,
                 "requires_output": false,
-                "notes": "input: BAM文件; 输出: .bai 索引文件"
+                "notes": "input: BAM; : .bai "
             },
             "stats": {
                 "command": "samtools stats {input} > /work/{output}",
-                "description": "比对统计报告",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output"
                 ],
-                "notes": "input: SAM/BAM文件; output: 统计报告"
+                "notes": "input: SAM/BAM; output: "
             }
         }
     },
     "flye": {
         "image": "staphb/flye:latest",
-        "description": "Flye - 长读长组装工具（支持 meta 宏基因组模式）",
+        "description": "Flye - （ meta ）",
         "category": "assembly",
-        "notes": "ONT/PacBio/HiFi 长读长组装，meta 模式适合宏基因组",
+        "notes": "ONT/PacBio/HiFi ，meta ",
         "operations": {
             "meta": {
                 "command": "flye --meta --out-dir {output} {input}",
-                "description": "宏基因组模式组装（ONT 推荐）",
+                "description": "（ONT ）",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output"
                 ],
-                "notes": "input: ONT reads (fastq); output: 输出目录; 需要配合 --nano-raw 参数; 结果在 assembly.fasta"
+                "notes": "input: ONT reads (fastq); output: ;  --nano-raw ;  assembly.fasta"
             },
             "ont": {
                 "command": "flye --nano-raw --out-dir {output} {input}",
-                "description": "ONT 原始数据组装",
+                "description": "ONT ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output"
                 ],
-                "notes": "input: ONT fastq; output: 输出目录"
+                "notes": "input: ONT fastq; output: "
             },
             "hifi": {
                 "command": "flye --pacbio-hifi --out-dir {output} {input}",
-                "description": "HiFi 模式组装",
+                "description": "HiFi ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output"
                 ],
-                "notes": "input: HiFi reads; output: 输出目录"
+                "notes": "input: HiFi reads; output: "
             }
         }
     },
     "seqtk": {
         "image": "staphb/seqtk:latest",
-        "description": "Seqtk -  FASTA/Q 工具",
+        "description": "Seqtk -  FASTA/Q ",
         "category": "sequence_processing",
-        "notes": "支持子采样、序列处理等",
+        "notes": "",
         "operations": {
             "sample": {
                 "command": "seqtk sample {input} {fraction} > /work/{output}",
-                "description": "随机抽样序列",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "fraction",
                     "output"
                 ],
-                "notes": "fraction: 抽样比例(0-1)如 0.1 表示10%; output: 输出文件名"
+                "notes": "fraction: (0-1) 0.1 10%; output: "
             },
             "size": {
                 "command": "seqtk size {input}",
-                "description": "统计序列数量和碱基数",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false
             }
@@ -361,13 +361,13 @@
     },
     "megahit": {
         "image": "quay.io/biocontainers/megahit:1.2.9--h43eeafb_5",
-        "description": "MEGAHIT - 宏基因组组装工具",
+        "description": "MEGAHIT - ",
         "category": "assembly",
-        "notes": "短读长宏基因组组装首选",
+        "notes": "",
         "operations": {
             "assemble": {
                 "command": "megahit -1 {r1} -2 {r2} -o /work/{output}",
-                "description": "短读长宏基因组组装",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -375,38 +375,38 @@
                     "r2",
                     "output"
                 ],
-                "notes": "r1/r2: 双端测序文件路径; output: 输出目录名; 结果保存到 runtime/bio_tools/megahit/output/"
+                "notes": "r1/r2: ; output: ;  runtime/bio_tools/megahit/output/"
             }
         }
     },
     "bakta": {
         "image": "staphb/bakta:latest",
-        "description": "Bakta - 细菌基因组快速标准化注释",
+        "description": "Bakta - ",
         "category": "annotation",
-        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/bakta_db，容器内映射为 /work/database",
+        "notes": ": /home/zczhao/GAgent/data/databases/bio_tools/bakta_db， /work/database",
         "operations": {
             "annotate": {
                 "command": "bakta --db /work/database --prefix {prefix} --output-dir /work/{output} {input}",
-                "description": "基因组/宏基因组注释",
+                "description": "/",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "prefix",
                     "output"
                 ],
-                "notes": "prefix: 输出前缀; output: 输出目录名; 需 Bakta 数据库"
+                "notes": "prefix: ; output: ;  Bakta "
             }
         }
     },
     "metabat2": {
         "image": "quay.io/biocontainers/metabat2:2.15--h986a166_1",
-        "description": "MetaBAT2 - 宏基因组分箱工具",
+        "description": "MetaBAT2 - ",
         "category": "binning",
-        "notes": "依赖 contig depth 文件 (用 jgi_summarize_bam_contig_depths 生成)",
+        "notes": " contig depth  ( jgi_summarize_bam_contig_depths )",
         "operations": {
             "bin": {
                 "command": "metabat2 -i {contigs} -a {depth} -o /work/{output_prefix}",
-                "description": "基于丰度分箱",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -414,30 +414,30 @@
                     "depth",
                     "output_prefix"
                 ],
-                "notes": "contigs: 组装结果contigs路径; depth: depth文件路径; output_prefix: 输出前缀"
+                "notes": "contigs: contigs; depth: depth; output_prefix: "
             },
             "depth": {
                 "command": "jgi_summarize_bam_contig_depths --outputDepth /work/{output} {bam_files}",
-                "description": "计算 contig 丰度深度",
+                "description": " contig ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output",
                     "bam_files"
                 ],
-                "notes": "output: depth输出文件名; bam: 排序后的bam文件列表(空格分隔)"
+                "notes": "output: depth; bam: bam()"
             }
         }
     },
     "concoct": {
         "image": "quay.io/biocontainers/concoct:1.1.0--py312h71dcd68_8",
-        "description": "CONCOCT - 基于组成和丰度的宏基因组分箱",
+        "description": "CONCOCT - ",
         "category": "binning",
-        "notes": "需要先准备 coverage table",
+        "notes": " coverage table",
         "operations": {
             "bin": {
                 "command": "concoct --coverage_file /work/{coverage} --contigs_file {contigs} -b /work/{output}",
-                "description": "宏基因组分箱",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -445,19 +445,19 @@
                     "contigs",
                     "output"
                 ],
-                "notes": "coverage: coverage table路径; contigs: contigs fasta路径; output: 输出目录"
+                "notes": "coverage: coverage table; contigs: contigs fasta; output: "
             }
         }
     },
     "maxbin2": {
         "image": "quay.io/biocontainers/maxbin2:2.2.7--he1b5a44_2",
-        "description": "MaxBin2 - 宏基因组分箱工具",
+        "description": "MaxBin2 - ",
         "category": "binning",
-        "notes": "需要 abundance 信息文件",
+        "notes": " abundance ",
         "operations": {
             "bin": {
                 "command": "run_MaxBin.pl -contig {contigs} -out /work/{output} -abundance {abundance}",
-                "description": "宏基因组分箱",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -465,19 +465,19 @@
                     "output",
                     "abundance"
                 ],
-                "notes": "contigs: 组装结果; output: 输出前缀; abundance: 丰度文件"
+                "notes": "contigs: ; output: ; abundance: "
             }
         }
     },
     "das_tool": {
         "image": "quay.io/biocontainers/das_tool:1.1.6--r42hdfd78af_0",
-        "description": "DAS Tool - 整合多个分箱结果",
+        "description": "DAS Tool - ",
         "category": "binning",
-        "notes": "整合 MetaBAT2/CONCOCT/MaxBin 等结果",
+        "notes": " MetaBAT2/CONCOCT/MaxBin ",
         "operations": {
             "integrate": {
                 "command": "DAS_Tool -i {bins} -c {contigs} -o /work/{output}",
-                "description": "整合分箱结果",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -485,30 +485,30 @@
                     "contigs",
                     "output"
                 ],
-                "notes": "bins: 各工具bin文件列表(逗号分隔); contigs: 组装结果; output: 输出前缀"
+                "notes": "bins: bin(); contigs: ; output: "
             }
         }
     },
     "checkm": {
         "image": "staphb/checkm:latest",
-        "description": "CheckM - 宏基因组组装基因组质量评估",
+        "description": "CheckM - ",
         "category": "bin_assessment",
-        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/checkm_data，容器内映射为 /work/database",
+        "notes": ": /home/zczhao/GAgent/data/databases/bio_tools/checkm_data， /work/database",
         "operations": {
             "lineage_wf": {
                 "command": "checkm lineage_wf -x fa --tabulated -f /work/{output} --database /work/database {input} /work/{output_dir}",
-                "description": "评估 bins 完整性和污染率",
+                "description": " bins ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output",
                     "output_dir"
                 ],
-                "notes": "input: bins目录; output: 输出统计文件; output_dir: 工作目录; 需 CheckM 数据库"
+                "notes": "input: bins; output: ; output_dir: ;  CheckM "
             },
             "qa": {
                 "command": "checkm qa -o 2 -f /work/{output} --tabulated /work/{tree} {input}",
-                "description": "详细质量评估",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -516,116 +516,116 @@
                     "tree",
                     "input"
                 ],
-                "notes": "tree: lineage_wf生成的tree文件; input: marker file; output: 输出文件"
+                "notes": "tree: lineage_wftree; input: marker file; output: "
             }
         }
     },
     "gtdbtk": {
         "image": "quay.io/biocontainers/gtdbtk:2.3.2--pyhdfd78af_0",
-        "description": "GTDB-Tk - 基于系统发育的物种分类",
+        "description": "GTDB-Tk - ",
         "category": "taxonomy",
-        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/gtdbtk，容器内映射为 /work/database",
+        "notes": ": /home/zczhao/GAgent/data/databases/bio_tools/gtdbtk， /work/database",
         "operations": {
             "classify_wf": {
                 "command": "gtdbtk classify_wf --genome_dir {genome_dir} --out_dir /work/{output} --database /work/database -x fa",
-                "description": "bins 物种分类",
+                "description": "bins ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "genome_dir",
                     "output"
                 ],
-                "notes": "genome_dir: bins目录(包含fa文件); output: 输出目录; 需 GTDB-Tk 数据库"
+                "notes": "genome_dir: bins(fa); output: ;  GTDB-Tk "
             }
         }
     },
     "genomad": {
         "image": "quay.io/biocontainers/genomad:1.7.6--pyhdfd78af_0",
-        "description": "geNomad - 移动遗传元素识别（噬菌体/质粒预测）",
+        "description": "geNomad - （/）",
         "category": "phage",
-        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/genomad (~5GB)，容器内映射为 /work/database。高内存需求(16GB+)",
+        "notes": ": /home/zczhao/GAgent/data/databases/bio_tools/genomad (~5GB)， /work/database(16GB+)",
         "operations": {
             "end_to_end": {
                 "command": "genomad end-to-end {input} /work/{output} /work/database",
-                "description": "端到端分析（推荐）- 识别噬菌体和质粒",
+                "description": "（）- ",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output"
                 ],
-                "notes": "input: 输入FASTA文件; output: 输出目录名; 需 geNomad 数据库"
+                "notes": "input: FASTA; output: ;  geNomad "
             },
             "annotate": {
                 "command": "genomad annotate {input} /work/{output} /work/database",
-                "description": "基因预测和标记注释",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output"
                 ],
-                "notes": "input: 输入FASTA文件; output: 输出目录名"
+                "notes": "input: FASTA; output: "
             },
             "find_proviruses": {
                 "command": "genomad find-proviruses {input} /work/{output} /work/database",
-                "description": "查找整合的前噬菌体",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output"
                 ],
-                "notes": "input: 输入FASTA文件; output: 输出目录名"
+                "notes": "input: FASTA; output: "
             }
         }
     },
     "checkv": {
         "image": "quay.io/biocontainers/checkv:1.0.1--pyhdfd78af_0",
-        "description": "CheckV - 病毒基因组质量评估",
+        "description": "CheckV - ",
         "category": "phage",
-        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5 (~2GB)，容器内映射为 /work/database",
+        "notes": ": /home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5 (~2GB)， /work/database",
         "operations": {
             "end_to_end": {
                 "command": "checkv end_to_end {input} /work/{output} -d /work/database -t {threads}",
-                "description": "完整质量评估流程",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output",
                     "threads"
                 ],
-                "notes": "input: 病毒序列FASTA; output: 输出目录; threads: 线程数(默认4)"
+                "notes": "input: FASTA; output: ; threads: (4)"
             },
             "completeness": {
                 "command": "checkv completeness {input} /work/{output} -d /work/database -t {threads}",
-                "description": "仅评估完整度",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output",
                     "threads"
                 ],
-                "notes": "input: 病毒序列FASTA; output: 输出目录; threads: 线程数(默认4)"
+                "notes": "input: FASTA; output: ; threads: (4)"
             },
             "complete_genomes": {
                 "command": "checkv complete_genomes {input} /work/{output}",
-                "description": "识别完整基因组（基于末端重复）",
+                "description": "（）",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output"
                 ],
-                "notes": "input: 病毒序列FASTA; output: 输出目录"
+                "notes": "input: FASTA; output: "
             }
         }
     },
     "virsorter2": {
         "image": "quay.io/biocontainers/virsorter:2.2.4--pyhdfd78af_2",
-        "description": "VirSorter2 - 多分类器病毒序列识别",
+        "description": "VirSorter2 - ",
         "category": "phage",
-        "notes": "需要数据库: /home/zczhao/GAgent/data/databases/bio_tools/virsorter2/db/db (~10-15GB)，容器内映射为 /work/database。使用 -j 参数指定线程数而非 --threads",
+        "notes": ": /home/zczhao/GAgent/data/databases/bio_tools/virsorter2/db/db (~10-15GB)， /work/database -j  --threads",
         "operations": {
             "run": {
                 "command": "virsorter run -i {input} -w /work/{output} --db-dir /work/database --min-score {min_score} -j {threads}",
-                "description": "运行病毒识别流程",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -633,26 +633,26 @@
                     "min_score",
                     "threads"
                 ],
-                "notes": "input: 输入FASTA; output: 输出目录; min_score: 最低分数阈值(默认0.5); threads: 线程数(默认4)"
+                "notes": "input: FASTA; output: ; min_score: (0.5); threads: (4)"
             }
         }
     },
     "bwa": {
         "image": "staphb/bwa:latest",
-        "description": "BWA - Burrows-Wheeler Alignment Tool，短读序列比对",
+        "description": "BWA - Burrows-Wheeler Alignment Tool，",
         "category": "sequence_alignment",
-        "notes": "需要先运行 bwa index 构建索引。支持单端和双端测序数据比对",
+        "notes": " bwa index ",
         "operations": {
             "index": {
                 "command": "bwa index {input}",
-                "description": "为参考基因组构建BWA索引",
+                "description": "BWA",
                 "requires_input": true,
                 "requires_output": false,
-                "notes": "input: 参考基因组FASTA文件。将生成 .amb, .ann, .bwt, .pac, .sa 索引文件"
+                "notes": "input: FASTA .amb, .ann, .bwt, .pac, .sa "
             },
             "mem": {
                 "command": "bwa mem -t {threads} {reference} {input} > /work/{output}",
-                "description": "BWA-MEM算法比对（推荐）",
+                "description": "BWA-MEM（）",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -660,29 +660,29 @@
                     "output",
                     "threads"
                 ],
-                "notes": "reference: 已索引的参考基因组; input: 单端或双端FASTQ; output: SAM输出文件; threads: 线程数(默认4)"
+                "notes": "reference: ; input: FASTQ; output: SAM; threads: (4)"
             }
         }
     },
     "bowtie2": {
         "image": "staphb/bowtie2:latest",
-        "description": "Bowtie 2 - 快速敏感的序列比对工具",
+        "description": "Bowtie 2 - ",
         "category": "sequence_alignment",
-        "notes": "需要先运行 bowtie2-build 构建索引",
+        "notes": " bowtie2-build ",
         "operations": {
             "build": {
                 "command": "bowtie2-build {input} /work/{index_prefix}",
-                "description": "构建Bowtie2索引",
+                "description": "Bowtie2",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "index_prefix"
                 ],
-                "notes": "input: 参考基因组FASTA; index_prefix: 索引前缀名。将生成 .1.bt2, .2.bt2, .3.bt2, .4.bt2, .rev.1.bt2, .rev.2.bt2 文件"
+                "notes": "input: FASTA; index_prefix:  .1.bt2, .2.bt2, .3.bt2, .4.bt2, .rev.1.bt2, .rev.2.bt2 "
             },
             "align": {
                 "command": "bowtie2 -p {threads} -x {index} -1 {r1} -2 {r2} -S /work/{output}",
-                "description": "双端测序比对",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -692,19 +692,19 @@
                     "output",
                     "threads"
                 ],
-                "notes": "index: 索引前缀; r1/r2: 双端FASTQ文件; output: SAM输出; threads: 线程数(默认4)"
+                "notes": "index: ; r1/r2: FASTQ; output: SAM; threads: (4)"
             }
         }
     },
     "mmseqs2": {
         "image": "staphb/mmseqs2:latest",
-        "description": "MMseqs2 - 超快速蛋白序列搜索和聚类",
+        "description": "MMseqs2 - ",
         "category": "sequence_analysis",
-        "notes": "支持 easy-search, easy-linclust, easy-taxonomy 等易用接口",
+        "notes": " easy-search, easy-linclust, easy-taxonomy ",
         "operations": {
             "easy_search": {
                 "command": "mmseqs easy-search {query} {target} /work/{output} /work/tmp --threads {threads}",
-                "description": "快速序列搜索",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -713,11 +713,11 @@
                     "output",
                     "threads"
                 ],
-                "notes": "query: 查询序列FASTA; target: 目标序列FASTA; output: 比对结果(m8格式); threads: 线程数(默认4)"
+                "notes": "query: FASTA; target: FASTA; output: (m8); threads: (4)"
             },
             "easy_linclust": {
                 "command": "mmseqs easy-linclust {input} /work/{output} /work/tmp --min-seq-id {min_seq_id} --cov-mode 1 --threads {threads}",
-                "description": "线性时间序列聚类",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -725,19 +725,19 @@
                     "min_seq_id",
                     "threads"
                 ],
-                "notes": "input: 输入FASTA; output: 输出前缀; min_seq_id: 最小序列相似度(默认0.9); threads: 线程数(默认4)"
+                "notes": "input: FASTA; output: ; min_seq_id: (0.9); threads: (4)"
             }
         }
     },
     "trim_galore": {
         "image": "staphb/trim-galore:latest",
-        "description": "Trim Galore! - 质量和接头修剪工具",
+        "description": "Trim Galore! - ",
         "category": "sequence_processing",
-        "notes": "自动检测Illumina、Nextera和Small RNA接头。封装了Cutadapt和FastQC",
+        "notes": "IlluminaNexteraSmall RNACutadaptFastQC",
         "operations": {
             "trim": {
                 "command": "trim_galore --quality {quality} --length {min_length} --cores {cores} -o /work {input}",
-                "description": "单端测序修剪",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -745,11 +745,11 @@
                     "min_length",
                     "cores"
                 ],
-                "notes": "input: 输入FASTQ; quality: Phred质量阈值(默认20); min_length: 最小长度(默认20); cores: CPU核心数(默认1)"
+                "notes": "input: FASTQ; quality: Phred(20); min_length: (20); cores: CPU(1)"
             },
             "trim_paired": {
                 "command": "trim_galore --paired --quality {quality} --length {min_length} --cores {cores} -o /work {r1} {r2}",
-                "description": "双端测序修剪",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -759,19 +759,19 @@
                     "min_length",
                     "cores"
                 ],
-                "notes": "r1/r2: 双端FASTQ文件; quality: Phred质量阈值(默认20); min_length: 最小长度(默认20); cores: CPU核心数(默认1)"
+                "notes": "r1/r2: FASTQ; quality: Phred(20); min_length: (20); cores: CPU(1)"
             }
         }
     },
     "ngmlr": {
         "image": "staphb/ngmlr:latest",
-        "description": "NGMLR - 结构变异感知的序列比对工具",
+        "description": "NGMLR - ",
         "category": "sequence_alignment",
-        "notes": "专门为长读测序(ONT和PacBio)设计，适合结构变异检测。常与Sniffles2配合使用",
+        "notes": "(ONTPacBio)，Sniffles2",
         "operations": {
             "map": {
                 "command": "ngmlr -r {reference} -q {input} -o /work/{output} -x {preset} -t {threads}",
-                "description": "长读序列比对",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -780,19 +780,19 @@
                     "preset",
                     "threads"
                 ],
-                "notes": "reference: 参考基因组FASTA; input: 长读FASTQ; output: SAM输出; preset: ont或pacbio; threads: 线程数(默认4)"
+                "notes": "reference: FASTA; input: FASTQ; output: SAM; preset: ontpacbio; threads: (4)"
             }
         }
     },
     "sniffles2": {
         "image": "staphb/sniffles:latest",
-        "description": "Sniffles2 - 结构变异检测工具",
+        "description": "Sniffles2 - ",
         "category": "sequence_analysis",
-        "notes": "专为长读测序数据设计，检测缺失、插入、重复、倒位等结构变异。输入必须是排序并索引的BAM文件",
+        "notes": "，BAM",
         "operations": {
             "call": {
                 "command": "sniffles --input {input} --vcf /work/{output} --reference {reference} --threads {threads}",
-                "description": "检测结构变异",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -800,19 +800,19 @@
                     "reference",
                     "threads"
                 ],
-                "notes": "input: 排序索引的BAM文件; output: VCF输出; reference: 参考基因组FASTA; threads: 线程数(默认4)"
+                "notes": "input: BAM; output: VCF; reference: FASTA; threads: (4)"
             }
         }
     },
     "fastani": {
         "image": "staphb/fastani:latest",
-        "description": "FastANI - 快速全基因组平均核苷酸一致性计算",
+        "description": "FastANI - ",
         "category": "taxonomy",
-        "notes": "用于物种界定(ANI>=95%通常表示同种)。比BLAST-based ANI方法快得多",
+        "notes": "(ANI>=95%)BLAST-based ANI",
         "operations": {
             "compare": {
                 "command": "fastANI -q {query} -r {reference} -o /work/{output} -t {threads}",
-                "description": "比较两个基因组",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
@@ -820,99 +820,99 @@
                     "output",
                     "threads"
                 ],
-                "notes": "query: 查询基因组FASTA; reference: 参考基因组FASTA; output: 结果文件; threads: 线程数(默认1)"
+                "notes": "query: FASTA; reference: FASTA; output: ; threads: (1)"
             }
         }
     },
     "vibrant": {
         "image": "quay.io/biocontainers/vibrant:1.2.1--pyhdfd78af_0",
-        "description": "VIBRANT - 病毒识别和分类工具",
+        "description": "VIBRANT - ",
         "category": "phage",
-        "notes": "需要数据库。使用HMM模型识别病毒序列",
+        "notes": "HMM",
         "operations": {
             "run": {
                 "command": "VIBRANT_run.py -i {input} -o /work/{output} -t {threads}",
-                "description": "运行VIBRANT病毒识别",
+                "description": "VIBRANT",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output",
                     "threads"
                 ],
-                "notes": "input: 输入FASTA; output: 输出目录; threads: 线程数(默认4)"
+                "notes": "input: FASTA; output: ; threads: (4)"
             }
         }
     },
     "iphop": {
         "image": "quay.io/biocontainers/iphop:latest",
-        "description": "iPHoP - 噬菌体宿主预测工具",
+        "description": "iPHoP - ",
         "category": "phage",
-        "notes": "需要数据库(~20GB+)。基于机器学习的噬菌体-宿主关联预测",
+        "notes": "(~20GB+)-",
         "operations": {
             "predict": {
                 "command": "iphop predict --fa_file {input} --db_dir /work/database --out_dir /work/{output} --num_threads {threads}",
-                "description": "预测噬菌体宿主",
+                "description": "",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "output",
                     "threads"
                 ],
-                "notes": "input: 噬菌体序列FASTA; output: 输出目录; threads: 线程数(默认4)"
+                "notes": "input: FASTA; output: ; threads: (4)"
             }
         }
     },
     "nextflow": {
         "image": "nextflow/nextflow:22.10.5",
-        "description": "Nextflow - 数据驱动计算流程系统",
+        "description": "Nextflow - ",
         "category": "workflow",
-        "notes": "用于创建可扩展、可重现的科学工作流。支持-resume恢复失败的任务",
+        "notes": "-resume",
         "operations": {
             "run": {
                 "command": "nextflow run {pipeline} -profile docker -work-dir /work/work",
-                "description": "运行Nextflow流程",
+                "description": "Nextflow",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "pipeline"
                 ],
-                "notes": "pipeline: 流程脚本路径(.nf文件)或远程仓库。需要在/work目录中运行"
+                "notes": "pipeline: (.nf)/work"
             },
             "clean": {
                 "command": "nextflow clean -f",
-                "description": "清理工作目录",
+                "description": "",
                 "requires_input": false,
                 "requires_output": false,
-                "notes": "删除项目缓存和工作目录中的中间文件"
+                "notes": ""
             }
         }
     },
     "snakemake": {
         "image": "snakemake/snakemake:latest",
-        "description": "Snakemake - 工作流管理系统",
+        "description": "Snakemake - ",
         "category": "workflow",
-        "notes": "基于Python的DSL，用于创建可扩展、可重现的数据分析流程。支持Conda和容器",
+        "notes": "PythonDSL，Conda",
         "operations": {
             "run": {
                 "command": "snakemake -s {snakefile} --cores {cores} --workdir /work",
-                "description": "运行Snakemake流程",
+                "description": "Snakemake",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "snakefile",
                     "cores"
                 ],
-                "notes": "snakefile: Snakefile路径; cores: 并行CPU核心数。可以使用--use-conda或--use-singularity"
+                "notes": "snakefile: Snakefile; cores: CPU--use-conda--use-singularity"
             },
             "dry_run": {
                 "command": "snakemake -s {snakefile} -n --workdir /work",
-                "description": "干运行(检查流程但不执行)",
+                "description": "()",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": [
                     "snakefile"
                 ],
-                "notes": "snakefile: Snakefile路径。显示将要执行的任务而不实际运行"
+                "notes": "snakefile: Snakefile"
             }
         }
     }

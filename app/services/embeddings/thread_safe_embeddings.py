@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-线程安全的嵌入向量服务模块
+Thread-safe embeddings service facade.
 
-解决原有服务中的并发安全问题，包括：
-1. 单例模式的竞态条件
-2. 缓存操作的线程安全性
-3. 异步任务管理的并发控制
+Coordinates provider selection, batching, async execution, caching,
+and similarity utilities.
 """
 
 import logging
@@ -25,17 +23,15 @@ logger = logging.getLogger(__name__)
 
 
 class ThreadSafeEmbeddingsService:
-    """线程安全的嵌入向量服务类（支持 Qwen/GLM/本地模型）"""
+    """Thread-safe embedding service supporting multiple providers."""
 
     def __init__(self):
-        """初始化线程安全的服务组件"""
+        """Initialize provider clients and thread-safe helper components."""
         self.config = get_config()
         self.cache = get_thread_safe_embedding_cache()
-        
-        # 获取 embedding provider
+
         provider = getattr(self.config, 'embedding_provider', 'qwen')
 
-        # 根据配置选择 API 客户端
         if provider == "local" or self.config.use_local_embedding:
             logger.info("Using local embedding model (thread-safe)")
             self.api_client = LocalEmbeddingClient(self.config)
@@ -49,12 +45,11 @@ class ThreadSafeEmbeddingsService:
             logger.info("Using GLM API for embeddings (thread-safe)")
             self.api_client = GLMApiClient(self.config)
             self._provider = "glm"
-        
+
         self.batch_processor = ThreadSafeBatchProcessor(self.config, self.api_client, self.cache)
         self.async_manager = ThreadSafeAsyncManager(self.batch_processor)
         self.similarity_calculator = SimilarityCalculator()
 
-        # 服务级别的锁
         self._service_lock = threading.RLock()
 
         logger.info(
@@ -63,121 +58,117 @@ class ThreadSafeEmbeddingsService:
             f"Dimension: {self.config.embedding_dimension}"
         )
 
-    # 核心嵌入方法 - 委托给线程安全批处理器
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """
-        线程安全获取文本列表的向量表示（带缓存支持）
+        Get embeddings for a list of texts.
 
         Args:
-            texts: 文本列表
+            texts: Input texts.
 
         Returns:
-            向量列表，每个向量是一个浮点数列表
+            Embedding vectors in the same order as input.
         """
         with self._service_lock:
             return self.batch_processor.process_texts_batch(texts)
 
     def get_single_embedding(self, text: str) -> List[float]:
         """
-        线程安全获取单个文本的向量表示
+        Get embedding for a single text.
 
         Args:
-            text: 单个文本
+            text: Input text.
 
         Returns:
-            向量作为浮点数列表
+            Embedding vector.
         """
         embeddings = self.get_embeddings([text])
         return embeddings[0] if embeddings else []
 
-    # 异步方法 - 委托给线程安全异步管理器
     def get_embeddings_async(self, texts: List[str], callback: Optional[Callable] = None) -> Future:
         """
-        异步获取嵌入向量（线程安全）
+        Submit async request for multiple embeddings.
 
         Args:
-            texts: 文本列表
-            callback: 可选的回调函数接收嵌入向量结果
+            texts: Input texts.
+            callback: Optional callback for results.
 
         Returns:
-            Future对象
+            Future resolving to `List[List[float]]`.
         """
         return self.async_manager.get_embeddings_async(texts, callback)
 
     def get_single_embedding_async(self, text: str, callback: Optional[Callable] = None) -> Future:
         """
-        异步获取单个嵌入向量（线程安全）
+        Submit async request for one embedding.
 
         Args:
-            text: 单个文本
-            callback: 可选的回调函数
+            text: Input text.
+            callback: Optional callback for result.
 
         Returns:
-            Future对象
+            Future resolving to `List[float]`.
         """
         return self.async_manager.get_single_embedding_async(text, callback)
 
     def precompute_embeddings_async(self, texts: List[str], progress_callback: Optional[Callable] = None) -> Future:
         """
-        异步预计算嵌入向量（线程安全）
+        Submit async precompute request for a text batch.
 
         Args:
-            texts: 文本列表
-            progress_callback: 进度回调函数
+            texts: Input texts.
+            progress_callback: Optional progress callback.
 
         Returns:
-            Future对象，结果包含统计信息
+            Future resolving to precompute statistics.
         """
         return self.async_manager.precompute_embeddings_async(texts, progress_callback)
 
     def wait_for_background_tasks(self, timeout: Optional[float] = None) -> Dict[str, Any]:
         """
-        等待所有后台任务完成（线程安全）
+        Wait for active async tasks to finish.
 
         Args:
-            timeout: 超时时间（秒）
+            timeout: Optional timeout in seconds.
 
         Returns:
-            任务完成状态
+            Completion summary.
         """
         return self.async_manager.wait_for_background_tasks(timeout)
 
     def get_background_task_status(self) -> Dict[str, Any]:
         """
-        获取后台任务状态（线程安全）
+        Get current async background task status.
 
         Returns:
-            包含任务状态信息的字典
+            Status dictionary with counters and metrics.
         """
         return self.async_manager.get_async_status()
 
     def cancel_background_tasks(self) -> int:
         """
-        取消所有未完成的后台任务（线程安全）
+        Cancel currently active background tasks.
 
         Returns:
-            成功取消的任务数量
+            Number of successfully cancelled tasks.
         """
         return self.async_manager.cancel_background_tasks()
 
-    # 相似度计算方法 - 委托给相似度计算器
     def compute_similarity(self, embedding1: List[float], embedding2: List[float]) -> float:
-        """计算两个向量之间的余弦相似度"""
+        """Compute cosine similarity between two embeddings."""
         return self.similarity_calculator.compute_similarity(embedding1, embedding2)
 
     def compute_similarities(self, query_embedding: List[float], target_embeddings: List[List[float]]) -> List[float]:
-        """计算查询向量与多个目标向量之间的相似度"""
+        """Compute cosine similarities from one query to many targets."""
         return self.similarity_calculator.compute_similarities(query_embedding, target_embeddings)
 
     def find_most_similar(
         self, query_embedding: List[float], candidates: List[Dict[str, Any]], k: int = 5, min_similarity: float = 0.0
     ) -> List[Dict[str, Any]]:
-        """查找最相似的候选项"""
+        """Return top-k most similar candidates above threshold."""
         return self.similarity_calculator.find_most_similar(query_embedding, candidates, k, min_similarity)
 
-    # 服务信息和配置方法
     def get_service_info(self) -> Dict[str, Any]:
-        """获取线程安全的服务信息"""
+        """Return service metadata and component status."""
         with self._service_lock:
             return {
                 "service_type": "ThreadSafeEmbeddingsService",
@@ -196,51 +187,48 @@ class ThreadSafeEmbeddingsService:
                 },
             }
 
-    # 兼容性方法 - 保持向后兼容性
     def get_optimal_batch_size(self) -> int:
-        """获取最优批处理大小"""
+        """Return current optimal batch size from batch processor."""
         return self.batch_processor.get_optimal_batch_size()
 
     def test_connection(self) -> bool:
-        """测试API连接"""
+        """Check embedding provider connectivity."""
         return self.api_client.test_connection()
 
     def embedding_to_json(self, embedding: List[float]) -> str:
-        """将嵌入向量转换为JSON字符串用于存储"""
+        """Serialize embedding vector to JSON string."""
         import json
 
         return json.dumps(embedding)
 
     def json_to_embedding(self, json_str: str) -> List[float]:
-        """将JSON字符串转换回嵌入向量"""
+        """Deserialize embedding vector from JSON string."""
         import json
 
         return json.loads(json_str)
 
     def precompute_embeddings_for_completed_tasks(self, batch_size: int = 10) -> int:
-        """为已完成的任务预计算嵌入向量（线程安全）"""
+        """Precompute embeddings for completed tasks in storage."""
         return self.batch_processor.precompute_for_completed_tasks(batch_size)
 
     def shutdown(self) -> None:
-        """关闭服务并清理资源"""
+        """Shut down async manager and cache resources."""
         with self._service_lock:
             logger.info("Shutting down thread-safe embeddings service")
             self.async_manager.shutdown()
             self.cache.shutdown()
 
 
-# 线程安全的单例模式实现
 _thread_safe_service: Optional[ThreadSafeEmbeddingsService] = None
 _service_creation_lock = threading.Lock()
 
 
 def get_thread_safe_embeddings_service() -> ThreadSafeEmbeddingsService:
-    """获取线程安全的GLM嵌入向量服务单例"""
+    """Get singleton instance of thread-safe embeddings service."""
     global _thread_safe_service
 
     if _thread_safe_service is None:
         with _service_creation_lock:
-            # 双重检查锁定模式，确保线程安全的单例创建
             if _thread_safe_service is None:
                 _thread_safe_service = ThreadSafeEmbeddingsService()
 
@@ -248,7 +236,7 @@ def get_thread_safe_embeddings_service() -> ThreadSafeEmbeddingsService:
 
 
 def shutdown_thread_safe_embeddings_service():
-    """关闭线程安全的嵌入向量服务"""
+    """Shutdown and clear singleton service instance."""
     global _thread_safe_service
 
     with _service_creation_lock:
@@ -257,12 +245,11 @@ def shutdown_thread_safe_embeddings_service():
             _thread_safe_service = None
 
 
-# 为了兼容现有代码，提供别名
 def get_embeddings_service() -> ThreadSafeEmbeddingsService:
-    """获取嵌入向量服务（线程安全版本）"""
+    """Backward-compatible accessor for thread-safe embeddings service."""
     return get_thread_safe_embeddings_service()
 
 
 def shutdown_embeddings_service():
-    """关闭嵌入向量服务（线程安全版本）"""
+    """Backward-compatible shutdown wrapper."""
     shutdown_thread_safe_embeddings_service()

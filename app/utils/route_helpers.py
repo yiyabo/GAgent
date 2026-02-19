@@ -1,7 +1,7 @@
-"""
-路由辅助函数
+"""Route helper utilities.
 
-包含所有路由共用的解析和验证函数，从main.py中提取出来。
+Contains shared parsing and validation helpers reused by routers,
+extracted from ``main.py``.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -10,7 +10,7 @@ from fastapi import HTTPException
 
 
 def parse_bool(val, default: bool = False) -> bool:
-    """解析布尔值参数"""
+    """Parse a boolean-like parameter."""
     if isinstance(val, bool):
         return val
     if val is None:
@@ -27,7 +27,7 @@ def parse_bool(val, default: bool = False) -> bool:
 
 
 def parse_int(val, default: int, min_value: int, max_value: int) -> int:
-    """解析整数参数，带范围限制"""
+    """Parse an integer parameter with range limits."""
     try:
         i = int(val)
     except (ValueError, TypeError, OverflowError):
@@ -40,7 +40,7 @@ def parse_int(val, default: int, min_value: int, max_value: int) -> int:
 
 
 def parse_opt_float(val, min_value: float, max_value: float):
-    """解析可选浮点数参数"""
+    """Parse an optional float parameter."""
     if val is None:
         return None
     try:
@@ -55,7 +55,7 @@ def parse_opt_float(val, min_value: float, max_value: float):
 
 
 def parse_opt_int(val, min_value: int, max_value: int):
-    """解析可选整数参数"""
+    """Parse an optional integer parameter."""
     if val is None:
         return None
     try:
@@ -70,7 +70,7 @@ def parse_opt_int(val, min_value: int, max_value: int):
 
 
 def parse_strategy(val) -> str:
-    """解析策略参数"""
+    """Parse strategy parameter."""
     if not isinstance(val, str):
         return "truncate"
     v = val.strip().lower()
@@ -78,7 +78,7 @@ def parse_strategy(val) -> str:
 
 
 def parse_schedule(val) -> str:
-    """解析调度策略参数: 'bfs' (default), 'dag', or 'postorder'."""
+    """Parse scheduling strategy: 'bfs' (default), 'dag', or 'postorder'."""
     if not isinstance(val, str):
         return "bfs"
     v = val.strip().lower()
@@ -86,7 +86,7 @@ def parse_schedule(val) -> str:
 
 
 def sanitize_manual_list(vals) -> Optional[List[int]]:
-    """清理手动任务ID列表"""
+    """Sanitize manual task-ID list."""
     if not isinstance(vals, list):
         return None
     out: List[int] = []
@@ -103,7 +103,7 @@ def sanitize_manual_list(vals) -> Optional[List[int]]:
 
 
 def sanitize_context_options(co: Dict[str, Any]) -> Dict[str, Any]:
-    """清理上下文选项参数"""
+    """Sanitize context option parameters."""
     co = co or {}
     return {
         "include_deps": parse_bool(co.get("include_deps"), default=True),
@@ -138,13 +138,15 @@ def resolve_scope_params(
     *,
     repo=None,
     require_scope: bool = False,
-    default_session: Optional[str] = None,  # 🔒 改为None，实现专事专办
+    default_session: Optional[str] = None,  # Keep None by default for strict scoped handling.
 ) -> Tuple[Optional[str], Optional[str]]:
     """Validate and resolve session/workflow scope parameters.
 
-    When ``workflow_id`` is provided, ensure it存在且归属提供的 ``session_id``。
-    当 ``require_scope`` 为 ``True`` 且两个参数均为空时抛出 400。
-    默认情况下如果未提供任何作用域但指定了 ``default_session``，则回退到默认会话。
+    When ``workflow_id`` is provided, ensure it exists and belongs to the
+    provided ``session_id``.
+    If ``require_scope`` is ``True`` and both parameters are empty, raise 400.
+    By default, if no scope is provided but ``default_session`` is set, fall
+    back to that session.
     """
 
     if repo is None:
@@ -156,15 +158,15 @@ def resolve_scope_params(
     normalized_workflow = (workflow_id or "").strip() or None
 
     if require_scope and not normalized_session and not normalized_workflow:
-        raise HTTPException(status_code=400, detail="必须提供 session_id 或 workflow_id 参数")
+        raise HTTPException(status_code=400, detail="Either session_id or workflow_id must be provided.")
 
     if normalized_workflow:
         metadata = repo.get_workflow_metadata(normalized_workflow)
         if not metadata:
-            raise HTTPException(status_code=404, detail="指定的 workflow_id 不存在")
+            raise HTTPException(status_code=404, detail="Specified workflow_id does not exist.")
         workflow_session = metadata.get("session_id") or None
         if normalized_session and workflow_session and normalized_session != workflow_session:
-            raise HTTPException(status_code=403, detail="workflow_id 不属于指定的 session_id")
+            raise HTTPException(status_code=403, detail="workflow_id does not belong to the specified session_id.")
         normalized_session = normalized_session or workflow_session
 
     if not normalized_session and default_session:

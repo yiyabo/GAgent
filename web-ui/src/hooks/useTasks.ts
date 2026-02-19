@@ -15,7 +15,7 @@ const isValidPlanId = (value: number | null | undefined): value is number =>
   typeof value === 'number' && value >= 0;
 
 /**
- * 订阅完整的 PlanTree，并将任务同步到全局任务 store。
+ *  PlanTree, tasktask store. 
  */
 export const usePlanTreeTasks = ({
   planId,
@@ -25,26 +25,26 @@ export const usePlanTreeTasks = ({
   const { setTasks } = useTasksStore();
 
   const query = useQuery({
-    queryKey: ['planTree', 'full', planId ?? null],
-    enabled: enabled && isValidPlanId(planId),
-    queryFn: async () => {
-      if (!isValidPlanId(planId)) {
-        return [] as Task[];
-      }
-      const tree = await planTreeApi.getPlanTree(planId);
-      return planTreeToTasks(tree);
-    },
-    refetchOnWindowFocus: false,
-    staleTime: 30_000,
-    refetchInterval: refetchIntervalMs ?? false,
+  queryKey: ['planTree', 'full', planId ?? null],
+  enabled: enabled && isValidPlanId(planId),
+  queryFn: async () => {
+  if (!isValidPlanId(planId)) {
+  return [] as Task[];
+  }
+  const tree = await planTreeApi.getPlanTree(planId);
+  return planTreeToTasks(tree);
+  },
+  refetchOnWindowFocus: false,
+  staleTime: 30_000,
+  refetchInterval: refetchIntervalMs ?? false,
   });
 
   useEffect(() => {
-    if (query.data) {
-      setTasks(query.data);
-    } else if (query.isFetched && !query.isFetching) {
-      setTasks([]);
-    }
+  if (query.data) {
+  setTasks(query.data);
+  } else if (query.isFetched && !query.isFetching) {
+  setTasks([]);
+  }
   }, [query.data, query.isFetched, query.isFetching, setTasks]);
 
   return query;
@@ -58,7 +58,7 @@ interface UsePlanSubgraphOptions {
 }
 
 /**
- * 获取计划子图（局部 PlanTree）。
+ * getplan( PlanTree). 
  */
 export const usePlanSubgraph = ({
   planId,
@@ -67,30 +67,30 @@ export const usePlanSubgraph = ({
   enabled = true,
 }: UsePlanSubgraphOptions) => {
   return useQuery({
-    queryKey: ['planTree', 'subgraph', planId ?? null, nodeId ?? null, maxDepth],
-    enabled: enabled && isValidPlanId(planId) && typeof nodeId === 'number',
-    queryFn: async () => {
-      if (!isValidPlanId(planId) || typeof nodeId !== 'number') {
-        return [] as Task[];
-      }
-      const subgraph = await planTreeApi.getPlanSubgraph(planId, nodeId, maxDepth);
-      const nodes = Array.isArray(subgraph.nodes) ? subgraph.nodes : [];
-      return nodes.map((node: any) => {
-        const hasChildren = nodes.some((candidate) => candidate.parent_id === node.id);
-        const taskType: Task['task_type'] =
-          node.parent_id == null ? 'root' : hasChildren ? 'composite' : 'atomic';
-        return {
-          id: Number(node.id),
-          name: node.name,
-          status: 'pending',
-          parent_id: node.parent_id ?? undefined,
-          depth: node.depth ?? 0,
-          path: node.path ?? undefined,
-          task_type: taskType,
-        } as Task;
-      });
-    },
-    refetchOnWindowFocus: false,
-    staleTime: 30_000,
+  queryKey: ['planTree', 'subgraph', planId ?? null, nodeId ?? null, maxDepth],
+  enabled: enabled && isValidPlanId(planId) && typeof nodeId === 'number',
+  queryFn: async () => {
+  if (!isValidPlanId(planId) || typeof nodeId !== 'number') {
+  return [] as Task[];
+  }
+  const subgraph = await planTreeApi.getPlanSubgraph(planId, nodeId, maxDepth);
+  const nodes = Array.isArray(subgraph.nodes) ? subgraph.nodes : [];
+  return nodes.map((node: any) => {
+  const hasChildren = nodes.some((candidate) => candidate.parent_id === node.id);
+  const taskType: Task['task_type'] =
+  node.parent_id == null ? 'root' : hasChildren ? 'composite' : 'atomic';
+  return {
+  id: Number(node.id),
+  name: node.name,
+  status: 'pending',
+  parent_id: node.parent_id ?? undefined,
+  depth: node.depth ?? 0,
+  path: node.path ?? undefined,
+  task_type: taskType,
+  } as Task;
+  });
+  },
+  refetchOnWindowFocus: false,
+  staleTime: 30_000,
   });
 };

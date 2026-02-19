@@ -1,6 +1,5 @@
 import type { Task } from './task';
 
-// DAG可视化相关类型
 export interface DAGNode {
   id: string;
   label: string;

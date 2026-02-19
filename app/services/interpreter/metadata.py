@@ -1,7 +1,7 @@
 """
 Dataset Metadata Processing Module
 
-提供数据集元数据提取功能，支持 CSV, TSV, MAT, NPY 格式。
+, support CSV, TSV, MAT, NPY . 
 """
 
 import os
@@ -19,7 +19,7 @@ except ImportError:
 
 
 class ColumnMetadata(BaseModel):
-    """列元数据"""
+    """"""
     name: str
     dtype: str
     sample_values: List[Any]
@@ -28,7 +28,7 @@ class ColumnMetadata(BaseModel):
 
 
 class DatasetMetadata(BaseModel):
-    """数据集元数据"""
+    """"""
     filename: str
     file_format: str
     file_size_bytes: int
@@ -38,11 +38,11 @@ class DatasetMetadata(BaseModel):
 
 
 class DataProcessor:
-    """数据处理器，提供元数据提取功能"""
+    """, """
 
     @staticmethod
     def _process_npy_file(file_path: str) -> DatasetMetadata:
-        """处理 .npy 文件"""
+        """ .npy file"""
         data = np.load(file_path, allow_pickle=True)
 
         columns_metadata = []
@@ -127,7 +127,7 @@ class DataProcessor:
 
     @staticmethod
     def _process_mat_file(file_path: str) -> DatasetMetadata:
-        """处理 .mat 文件"""
+        """ .mat file"""
         if not HAS_SCIPY:
             raise ImportError("scipy is required to read .mat files")
 
@@ -191,17 +191,17 @@ class DataProcessor:
     @staticmethod
     def get_metadata(file_path: str) -> DatasetMetadata:
         """
-        获取数据集元数据
+        Extract metadata from supported dataset files.
 
         Args:
-            file_path: 数据文件路径
+            file_path: Dataset file path.
 
         Returns:
-            DatasetMetadata: 数据集元数据
+            Parsed dataset metadata.
 
         Raises:
-            FileNotFoundError: 文件不存在
-            ValueError: 不支持的文件格式
+            FileNotFoundError: File does not exist.
+            ValueError: Unsupported format or parsing failure.
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")

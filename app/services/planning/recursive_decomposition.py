@@ -1,8 +1,7 @@
 """
-递归任务分解模块
+Task decomposition service.
 
-基于任务复杂度智能分解任务为子任务的核心逻辑。
-支持 ROOT → COMPOSITE → ATOMIC 三级分解架构。
+Decomposes tasks recursively using a ROOT -> COMPOSITE -> ATOMIC structure.
 """
 
 import logging
@@ -19,28 +18,28 @@ from app.services.foundation.settings import get_settings
 
 # Task complexity evaluation thresholds
 COMPLEXITY_KEYWORDS = {
-    "high": ["系统", "架构", "平台", "框架", "完整", "全面", "端到端", "整体", "综合"],
-    "medium": ["模块", "组件", "功能", "特性", "集成", "优化", "重构", "扩展"],
-    "low": ["修复", "调试", "测试", "文档", "配置", "部署", "更新", "检查"],
+    "high": ["system", "", "", "", "", "", "", "", ""],
+    "medium": ["", "component", "", "", "", "", "", ""],
+    "low": ["", "", "", "", "configuration", "", "update", ""],
 }
 
-MAX_DECOMPOSITION_DEPTH = 3  # 最大分解深度
-MIN_ATOMIC_TASKS = 2  # 最小原子任务数
-MAX_ATOMIC_TASKS = 8  # 最大原子任务数
+MAX_DECOMPOSITION_DEPTH = 3  # decompose
+MIN_ATOMIC_TASKS = 2  # subtask
+MAX_ATOMIC_TASKS = 8  # subtask
 
 _DECOMP_LOGGER = logging.getLogger("app.decomposition")
 
 
 class TaskType(Enum):
-    """任务类型枚举"""
+    """Task type in recursive decomposition."""
 
-    ROOT = "root"  # 根任务：高层目标，需要分解
-    COMPOSITE = "composite"  # 复合任务：中等粒度，可能需要进一步分解
-    ATOMIC = "atomic"  # 原子任务：可直接执行
+    ROOT = "root"  # High-level task requiring decomposition.
+    COMPOSITE = "composite"  # Mid-level task that can still be decomposed.
+    ATOMIC = "atomic"  # Leaf task ready for execution.
 
 
 def _debug_on() -> bool:
-    """检查是否启用调试模式（集中配置）"""
+    """Return True when decomposition debug logging is enabled."""
     try:
         s = get_settings()
         return bool(getattr(s, "decomp_debug", False) or getattr(s, "ctx_debug", False))
@@ -71,7 +70,7 @@ def _inject_root_brief_to_prompt(original_prompt: str, task_id: int, repo: TaskR
     """Inject Root Brief and parent chain into subtask prompt to ensure theme consistency"""
     root_brief = ""
     parent_chain = ""
-    
+
     try:
         # Get root task
         root = _find_root_task(task_id, repo)
@@ -79,7 +78,7 @@ def _inject_root_brief_to_prompt(original_prompt: str, task_id: int, repo: TaskR
             root_name = root.get("name", "")
             root_prompt = repo.get_task_input_prompt(root.get("id")) or ""
             root_brief = f"[ROOT TOPIC] {root_name}\n[CORE OBJECTIVE] {root_prompt[:500]}\n\n"
-        
+
         # Get parent task
         parent = repo.get_parent(task_id)
         if parent:
@@ -87,34 +86,32 @@ def _inject_root_brief_to_prompt(original_prompt: str, task_id: int, repo: TaskR
             parent_chain = f"[PARENT TASK] {parent_name}\n\n"
     except Exception as e:
         _DECOMP_LOGGER.warning(f"Failed to inject root brief: {e}")
-    
+
     # Add explicit theme constraint
     theme_constraint = (
         "\n\nIMPORTANT CONSTRAINT: Keep all content tightly aligned with the ROOT TOPIC above. "
         "Do not drift. If information is insufficient, ask clarifying questions first.\n"
     )
-    
+
     return f"{root_brief}{parent_chain}{original_prompt}{theme_constraint}"
 
 
 def evaluate_task_complexity(task_name: str, task_prompt: str = "") -> str:
-    """评估任务复杂度
+    """Evaluate task complexity from name and prompt text.
 
     Args:
-        task_name: 任务名称
-        task_prompt: 任务描述/提示
+        task_name: Task name.
+        task_prompt: Optional task prompt/context.
 
     Returns:
-        "high" | "medium" | "low"
+        One of: "high", "medium", "low".
     """
     text = f"{task_name} {task_prompt}".lower()
 
-    # 检查高复杂度关键词
     high_score = sum(1 for keyword in COMPLEXITY_KEYWORDS["high"] if keyword in text)
     medium_score = sum(1 for keyword in COMPLEXITY_KEYWORDS["medium"] if keyword in text)
     low_score = sum(1 for keyword in COMPLEXITY_KEYWORDS["low"] if keyword in text)
 
-    # 基于关键词密度和任务描述长度判断
     if high_score >= 2 or (high_score >= 1 and len(text) > 100):
         return "high"
     elif low_score >= 2 or (low_score >= 1 and len(text) < 50):
@@ -124,21 +121,19 @@ def evaluate_task_complexity(task_name: str, task_prompt: str = "") -> str:
 
 
 def determine_task_type(task: Dict[str, Any], complexity: str = None) -> TaskType:
-    """确定任务类型
+    """Determine task type based on task metadata and optional complexity hint.
 
     Args:
-        task: 任务信息字典
-        complexity: 预计算的复杂度（可选）
+        task: Task dictionary.
+        complexity: Optional complexity override.
 
     Returns:
-        TaskType 枚举值
+        Derived TaskType.
     """
     depth = task.get("depth", 0)
 
-    # 如果提供了复杂度参数，基于复杂度和深度判断
     if complexity is not None:
         if depth == 0:
-            # 根层级任务
             if complexity == "high":
                 return TaskType.ROOT
             elif complexity == "medium":
@@ -150,17 +145,14 @@ def determine_task_type(task: Dict[str, Any], complexity: str = None) -> TaskTyp
         else:
             return TaskType.ATOMIC
 
-    # 如果已经有明确的类型标识，优先使用
     existing_type = task.get("task_type", "atomic")
     if existing_type in ["root", "composite", "atomic"]:
         return TaskType(existing_type)
 
-    # 基于深度判断（没有复杂度参数时）
     if depth == 0:
-        # 根层级任务
         if not complexity:
             task_name = task.get("name", "")
-            task_prompt = ""  # 可以从 repo 获取，暂时简化
+            task_prompt = ""  # Repository prompt is optional for classification.
             complexity = evaluate_task_complexity(task_name, task_prompt)
 
         if complexity == "high":
@@ -170,22 +162,20 @@ def determine_task_type(task: Dict[str, Any], complexity: str = None) -> TaskTyp
         else:
             return TaskType.ATOMIC
     elif depth == 1:
-        # 第一层子任务，通常是复合任务
         return TaskType.COMPOSITE
     else:
-        # 深层任务，通常是原子任务
         return TaskType.ATOMIC
 
 
 def should_decompose_task(task: Dict[str, Any], repo: TaskRepository = None) -> bool:
-    """判断任务是否需要分解
+    """Return whether the task should be decomposed.
 
     Args:
-        task: 任务信息
-        repo: 仓储实例
+        task: Task dictionary.
+        repo: Optional repository instance.
 
     Returns:
-        True 如果需要分解
+        True if decomposition is recommended.
     """
     if repo is None:
         repo = default_repo
@@ -194,45 +184,39 @@ def should_decompose_task(task: Dict[str, Any], repo: TaskRepository = None) -> 
     depth = task.get("depth", 0)
     task_type = determine_task_type(task)
 
-    # 检查分解深度限制（深度从0开始，所以depth=2已经是第3层）
     if depth >= MAX_DECOMPOSITION_DEPTH - 1:
         return False
 
-    # 原子任务不需要分解
     if task_type == TaskType.ATOMIC:
         return False
 
-    # 检查是否已经有子任务
     try:
         children = repo.get_children(task_id)
         if children:
-            # 已有子任务，检查是否需要进一步分解
             pending_children = [c for c in children if c.get("status") == "pending"]
             if len(pending_children) >= MIN_ATOMIC_TASKS:
-                return False  # 已有足够的子任务
+                return False  # Sufficient pending children already exist.
     except Exception as e:
         if _debug_on():
             _DECOMP_LOGGER.debug({"event": "should_decompose_task.get_children_error", "error": str(e)})
-        # 如果获取子任务失败，假设没有子任务，继续分解判断
         pass
 
-    # 根任务和复合任务需要分解
     return task_type in [TaskType.ROOT, TaskType.COMPOSITE]
 
 
 def decompose_task(
     task_id: int, repo: TaskRepository = None, max_subtasks: int = MAX_ATOMIC_TASKS, force: bool = False
 ) -> Dict[str, Any]:
-    """递归分解任务
+    """Decompose a task into child tasks.
 
     Args:
-        task_id: 要分解的任务ID
-        repo: 仓储实例
-        max_subtasks: 最大子任务数
-        force: 强制分解（忽略现有子任务）
+        task_id: Target task ID.
+        repo: Optional repository instance.
+        max_subtasks: Maximum number of subtasks to generate.
+        force: Force decomposition even if checks say it is unnecessary.
 
     Returns:
-        分解结果字典
+        Decomposition result payload.
     """
     if repo is None:
         repo = default_repo
@@ -259,17 +243,13 @@ def decompose_task(
         )
 
     try:
-        # 获取任务输入提示作为分解上下文
         task_prompt = repo.get_task_input_prompt(task_id) or ""
 
-        # 构建分解提示
         decomp_prompt = _build_decomposition_prompt(task_name, task_prompt, task_type, max_subtasks)
 
-        # 调用规划服务生成子任务
         plan_payload = {"goal": decomp_prompt, "title": f"decomposition_{task_name}", "sections": max_subtasks}
         plan_result = propose_plan_service(plan_payload)
 
-        # 检查规划服务结果
         if not isinstance(plan_result, dict) or not plan_result.get("tasks"):
             return {"success": False, "error": "Failed to generate subtasks"}
 
@@ -277,13 +257,11 @@ def decompose_task(
         if not subtasks:
             return {"success": False, "error": "No subtasks generated"}
 
-        # 创建子任务
         created_subtasks = []
         for i, subtask in enumerate(subtasks[:max_subtasks]):
             subtask_name = subtask.get("name", f"Subtask {i+1}")
             subtask_priority = subtask.get("priority", 100 + i * 10)
 
-            # 确定子任务类型
             parent_depth = task.get("depth", 0)
             if task_type == TaskType.ROOT:
                 child_type = TaskType.COMPOSITE.value
@@ -292,23 +270,21 @@ def decompose_task(
             else:
                 child_type = TaskType.COMPOSITE.value
 
-            # 创建子任务
-            # CRITICAL FIX: Add plan prefix to subtask names to associate them with the plan.
+            # Add plan prefix to subtask names for plan-level grouping.
             from ...utils import split_prefix
             plan_title, _ = split_prefix(task_name)
             if not plan_title and task.get("depth", 0) == 0:
-                plan_title = task_name # The root task's name is the plan title
-            
+                plan_title = task_name  # Root task name is used as plan title.
+
             prefix = plan_prefix(plan_title) if plan_title else ""
-            
+
             subtask_id = repo.create_task(
                 name=prefix + subtask_name, status="pending", priority=subtask_priority, parent_id=task_id, task_type=child_type
             )
 
-            # 保存子任务输入（注入Root Brief和父链信息）
             subtask_prompt = subtask.get("prompt", "")
             if subtask_prompt:
-                # Inject Root Brief and parent chain to ensure theme consistency
+                # Inject root brief and parent chain to keep theme consistency.
                 enhanced_prompt = _inject_root_brief_to_prompt(subtask_prompt, task_id, repo)
                 repo.upsert_task_input(subtask_id, enhanced_prompt)
 
@@ -341,10 +317,15 @@ def decompose_task(
                 })
 
             created_subtasks.append(
-                {"id": subtask_id, "name": subtask_name, "type": child_type, "task_type": child_type, "priority": subtask_priority}  # ⭐ 前端需要task_type字段
+                {
+                    "id": subtask_id,
+                    "name": subtask_name,
+                    "type": child_type,
+                    "task_type": child_type,
+                    "priority": subtask_priority,
+                }
             )
 
-        # 更新父任务类型（如果需要）
         if task.get("task_type") == "atomic":
             repo.update_task_type(task_id, task_type.value)
 
@@ -367,20 +348,20 @@ def decompose_task(
 
 
 def _build_decomposition_prompt(task_name: str, task_prompt: str, task_type: TaskType, max_subtasks: int) -> str:
-    """构建任务分解提示
+    """Build decomposition prompt text for ROOT/COMPOSITE tasks.
 
     Args:
-        task_name: 任务名称
-        task_prompt: 任务描述
-        task_type: 任务类型
-        max_subtasks: 最大子任务数
+        task_name: Task name.
+        task_prompt: Task prompt/context.
+        task_type: Current task type.
+        max_subtasks: Maximum number of subtasks requested.
 
     Returns:
-        分解提示字符串
+        Prompt text for the planner.
     """
     # Use prompt manager for internationalized prompts
     from app.prompts import prompt_manager
-    
+
     if task_type == TaskType.ROOT:
         intro = prompt_manager.get("decomposition.root_task.intro", 
                                    min_tasks=MIN_ATOMIC_TASKS, 
@@ -390,9 +371,9 @@ def _build_decomposition_prompt(task_name: str, task_prompt: str, task_type: Tas
         principles_label = prompt_manager.get("decomposition.root_task.principles")
         principles_list = prompt_manager.get_category("decomposition")["root_task"]["principles_list"]
         format_instruction = prompt_manager.get("decomposition.root_task.format_instruction")
-        
+
         principles_text = "\n".join(principles_list)
-        
+
         decomp_instruction = f"""
 {intro}
 
@@ -413,9 +394,9 @@ def _build_decomposition_prompt(task_name: str, task_prompt: str, task_type: Tas
         principles_label = prompt_manager.get("decomposition.composite_task.principles")
         principles_list = prompt_manager.get_category("decomposition")["composite_task"]["principles_list"]
         format_instruction = prompt_manager.get("decomposition.composite_task.format_instruction")
-        
+
         principles_text = "\n".join(principles_list)
-        
+
         decomp_instruction = f"""
 {intro}
 
@@ -428,7 +409,6 @@ def _build_decomposition_prompt(task_name: str, task_prompt: str, task_type: Tas
 {format_instruction}
 """
     else:
-        # 原子任务不应该被分解，返回空提示
         return ""
 
     return decomp_instruction
@@ -437,48 +417,42 @@ def _build_decomposition_prompt(task_name: str, task_prompt: str, task_type: Tas
 def recursive_decompose_plan(
     plan_title: str, repo: TaskRepository = None, max_depth: int = MAX_DECOMPOSITION_DEPTH
 ) -> Dict[str, Any]:
-    """递归分解整个计划
+    """Recursively decompose all eligible tasks in a plan.
 
     Args:
-        plan_title: 计划标题
-        repo: 仓储实例
-        max_depth: 最大分解深度
+        plan_title: Plan title.
+        repo: Optional repository instance.
+        max_depth: Maximum decomposition depth.
 
     Returns:
-        分解结果字典
+        Summary of decomposition rounds and created subtasks.
     """
     if repo is None:
         repo = default_repo
 
     try:
-        # 获取计划中的所有任务
         plan_tasks = repo.list_plan_tasks(plan_title)
 
         decomposition_results = []
-        processed_tasks = set()  # 避免重复处理
+        processed_tasks = set()  # Avoid repeated decomposition attempts.
 
-        # 多轮分解，直到没有新的任务需要分解
         round_count = 0
         while round_count < max_depth:
             round_count += 1
             current_round_decomposed = False
 
-            # 重新获取计划任务（包括新创建的子任务）
             plan_tasks = repo.list_plan_tasks(plan_title)
 
             for task in plan_tasks:
                 task_id = task.get("id")
                 depth = task.get("depth", 0)
 
-                # 跳过已处理的任务
                 if task_id in processed_tasks:
                     continue
 
-                # 检查深度限制
                 if depth >= max_depth - 1:
                     continue
 
-                # 尝试分解任务
                 if should_decompose_task(task, repo):
                     result = decompose_task(task_id, repo)
                     if result.get("success"):
@@ -486,7 +460,6 @@ def recursive_decompose_plan(
                         processed_tasks.add(task_id)
                         current_round_decomposed = True
 
-            # 如果这一轮没有分解任何任务，停止递归
             if not current_round_decomposed:
                 break
 

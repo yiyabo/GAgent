@@ -10,7 +10,7 @@ interface MessageAvatarProps {
   type: 'user' | 'assistant' | 'system';
 }
 
-// 渲染头像 - Claude Code 风格
+// Render avatar - Claude Code style.
 const MessageAvatar: React.FC<MessageAvatarProps> = ({ type }) => {
   const avatarProps = {
     size: 28 as const,

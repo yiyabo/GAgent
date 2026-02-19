@@ -31,37 +31,37 @@ export const statusMeta: Record<
 > = {
   queued: {
     color: 'default',
-    label: '排队中',
+    label: 'Queued',
     icon: <PauseCircleOutlined />,
   },
   pending: {
     color: 'default',
-    label: '排队中',
+    label: 'Queued',
     icon: <PauseCircleOutlined />,
   },
   awaiting_confirmation: {
     color: 'default',
-    label: '等待确认',
+    label: 'Awaiting confirmation',
     icon: <PauseCircleOutlined />,
   },
   running: {
     color: 'processing',
-    label: '执行中',
+    label: 'Running',
     icon: <SyncOutlined spin />,
   },
   succeeded: {
     color: 'success',
-    label: '已完成',
+    label: 'Completed',
     icon: <CheckCircleOutlined />,
   },
   completed: {
     color: 'success',
-    label: '已完成',
+    label: 'Completed',
     icon: <CheckCircleOutlined />,
   },
   failed: {
     color: 'error',
-    label: '失败',
+    label: 'Failed',
     icon: <CloseCircleOutlined />,
   },
 };
@@ -92,19 +92,19 @@ export const jobTypeMeta: Record<
   }
 > = {
   plan_decompose: {
-    label: '任务拆分日志',
+    label: 'Task decomposition log',
     color: 'blue',
   },
   plan_execute: {
-    label: '计划执行日志',
+    label: 'Plan execution log',
     color: 'green',
   },
   chat_action: {
-    label: '动作执行日志',
+    label: 'Action execution log',
     color: 'purple',
   },
   default: {
-    label: '后台任务日志',
+    label: 'Background task log',
     color: 'geekblue',
   },
 };
@@ -143,7 +143,7 @@ export const parseStreamData = (raw: MessageEvent<any>): StreamMessage | null =>
     payload.type = 'event';
     return payload as StreamMessage;
   } catch (error) {
-    console.warn('无法解析 SSE 消息:', error);
+    console.warn('Failed to parse SSE message:', error);
     return null;
   }
 };

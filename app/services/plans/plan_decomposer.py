@@ -43,7 +43,6 @@ class DecompositionResult(BaseModel):
     failed_nodes: List[Optional[int]] = Field(default_factory=list)
     stopped_reason: Optional[str] = None
     stats: Dict[str, Any] = Field(default_factory=dict)
-    # 图简化结果（可选，已序列化为字典）
     simplified_dag: Optional[Dict[str, Any]] = None
 
 
@@ -91,36 +90,32 @@ class DecompositionPromptBuilder:
         prompt = [
             self.SYSTEM_HEADER,
         ]
-        
-        # 新增：会话上下文（用户消息、聊天历史等）
+
         if session_context:
             user_message = session_context.get("user_message")
             if user_message:
                 prompt.append("\n=== USER REQUEST ===")
                 prompt.append(f"{user_message}")
-            
+
             chat_history = session_context.get("chat_history", [])
             if chat_history:
                 prompt.append("\n=== RECENT CONVERSATION ===")
-                # 限制历史条数，避免过长
                 recent_history = chat_history[-6:] if len(chat_history) > 6 else chat_history
                 for msg in recent_history:
                     role = msg.get("role", "unknown")
                     content = msg.get("content", "")
-                    # 截断过长的消息
                     if len(content) > 500:
                         content = content[:500] + "..."
                     prompt.append(f"[{role}]: {content}")
-            
-            # 最近的工具结果
+
             tool_results = session_context.get("recent_tool_results", [])
             if tool_results:
                 prompt.append("\n=== RECENT TOOL RESULTS ===")
-                for tr in tool_results[-3:]:  # 最近3个工具结果
+                for tr in tool_results[-3:]:  # 3result
                     tool_name = tr.get("tool", "unknown")
                     summary = tr.get("summary", "")
                     prompt.append(f"- {tool_name}: {summary}")
-        
+
         prompt.extend([
             "\n=== PLAN OVERVIEW ===",
             outline or "(empty plan)",
@@ -138,24 +133,24 @@ class DecompositionPromptBuilder:
             '  "should_stop": <true|false>,',
             '  "reason": "<optional string>",',
             '  "children": [',
-            "    {",
-            '      "name": "<task name>",',
-            '      "instruction": "<execution details>",',
-            '      "dependencies": [<int>],',
-            '      "leaf": <true|false>,',
-            '      "context": {',
-            '         "combined": "<optional summary>",',
-            '         "sections": [',
-            '             {',
-            '                 "title": "<section title>",',
-            '                 "content": "<section details>"',
-            '             }',
-            '         ],',
-            '         "meta": {',
-            '             "<key>": "<value>"',
-            '         }',
-            "      }",
-            "    }",
+            "  {",
+            '  "name": "<task name>",',
+            '  "instruction": "<execution details>",',
+            '  "dependencies": [<int>],',
+            '  "leaf": <true|false>,',
+            '  "context": {',
+            '  "combined": "<optional summary>",',
+            '  "sections": [',
+            '  {',
+            '  "title": "<section title>",',
+            '  "content": "<section details>"',
+            '  }',
+            '  ],',
+            '  "meta": {',
+            '  "<key>": "<value>"',
+            '  }',
+            "  }",
+            "  }",
             "  ]",
             "}",
             "\nSTRICT REQUIREMENTS:",
@@ -269,19 +264,16 @@ class PlanDecomposer:
             session_context=session_context,
         )
 
-        # 图简化处理（与 decompose 方法保持一致）
         if self._settings.enable_simplification and result.created_tasks:
             try:
                 from .tree_simplifier import TreeSimplifier
 
-                # 重新获取最新的计划树
                 updated_tree = self._repo.get_plan_tree(plan_id)
 
                 simplifier = TreeSimplifier(
                     use_llm=self._settings.simplification_use_llm,
                     use_cache=True,
                 )
-                # 设置阈值
                 if hasattr(simplifier.matcher, 'threshold'):
                     simplifier.matcher.threshold = self._settings.simplification_threshold
 
@@ -294,7 +286,6 @@ class PlanDecomposer:
                     f"merged={len(dag_result.merge_map)}"
                 )
 
-                # 更新结果
                 result.simplified_dag = dag_result.to_dict()
             except Exception as e:
                 logger.warning(f"Graph simplification failed in decompose_node: {e}")
@@ -451,7 +442,6 @@ class PlanDecomposer:
                     break
                 continue
 
-            # 收集当前批次中已创建的兄弟节点 ID
             created_sibling_ids = [n.id for n in created_nodes if n.parent_id == current.node_id]
             for child in children:
                 if budget_remaining is not None and budget_remaining <= 0:
@@ -466,7 +456,7 @@ class PlanDecomposer:
                 if budget_remaining is not None:
                     budget_remaining -= 1
                 created_nodes.append(new_node)
-                created_sibling_ids.append(new_node.id)  # 更新兄弟列表
+                created_sibling_ids.append(new_node.id)  # update
                 self._update_tree_cache(tree, new_node)
                 outline_cache = tree.to_outline(max_depth=5, max_nodes=80)
                 _log_job(
@@ -507,24 +497,20 @@ class PlanDecomposer:
                 {"node_budget": node_budget},
             )
 
-        # 图简化处理（根据配置）
         simplified_dag: Optional[dict] = None
         if self._settings.enable_simplification and created_nodes:
             try:
                 from .tree_simplifier import TreeSimplifier
 
-                # 重新获取最新的计划树
                 updated_tree = self._repo.get_plan_tree(plan_id)
 
                 simplifier = TreeSimplifier(
                     use_llm=self._settings.simplification_use_llm,
                     use_cache=True,
                 )
-                # 设置阈值
                 if hasattr(simplifier.matcher, 'threshold'):
                     simplifier.matcher.threshold = self._settings.simplification_threshold
 
-                # 使用独立变量存储中间结果，避免异常时类型不一致
                 dag_result = simplifier.simplify(updated_tree)
 
                 _log_job(
@@ -536,7 +522,6 @@ class PlanDecomposer:
                         "merged_count": len(dag_result.merge_map),
                     },
                 )
-                # 转换为可序列化的字典
                 simplified_dag = dag_result.to_dict()
             except Exception as e:
                 logger.warning(f"Graph simplification failed: {e}")
@@ -577,14 +562,13 @@ class PlanDecomposer:
         tree: PlanTree,
         created_sibling_ids: List[int],
     ) -> PlanNode:
-        # 验证并过滤依赖，防止循环引用
         validated_deps = self._validate_dependencies(
             tree=tree,
             parent_id=parent_id,
             raw_deps=child.dependencies,
             created_sibling_ids=created_sibling_ids,
         )
-        
+
         node = self._repo.create_task(
             plan_id,
             name=child.name,
@@ -617,25 +601,24 @@ class PlanDecomposer:
         raw_deps: List[int],
         created_sibling_ids: List[int],
     ) -> List[int]:
-        """验证并过滤依赖 ID，防止循环引用。
-        
-        只允许依赖：
-        1. 已存在于 tree 中的任务（且不是祖先节点）
-        2. 同一批次中已创建的兄弟节点
-        
+        """Validate dependency IDs and remove illegal references.
+
+        Rules:
+        1. Dependencies must refer to existing nodes in the tree.
+        2. Dependencies must not create cycles with ancestors.
+
         Args:
-            tree: 当前的计划树
-            parent_id: 当前节点的父节点 ID
-            raw_deps: LLM 返回的原始依赖 ID 列表
-            created_sibling_ids: 当前批次中已创建的兄弟节点 ID 列表
-            
+            tree: Current plan tree.
+            parent_id: Parent node ID of the node being created.
+            raw_deps: Raw dependency IDs proposed by LLM.
+            created_sibling_ids: Sibling IDs created in current decomposition pass.
+
         Returns:
-            验证后的有效依赖 ID 列表
+            Validated dependency ID list.
         """
         if not raw_deps:
             return []
-        
-        # 收集祖先节点 ID（不能依赖祖先，会造成循环）
+
         ancestor_ids: set = set()
         current = parent_id
         while current is not None:
@@ -645,32 +628,29 @@ class PlanDecomposer:
                 current = node.parent_id
             else:
                 break
-        
+
         valid_deps: List[int] = []
         for dep_id in raw_deps:
-            # 跳过祖先节点
             if dep_id in ancestor_ids:
                 logger.warning(
                     "Skipping dependency %s: would create cycle with ancestor",
                     dep_id
                 )
                 continue
-            
-            # 检查是否存在于树中
+
             if dep_id in tree.nodes:
                 valid_deps.append(dep_id)
                 continue
-            
-            # 检查是否是刚创建的兄弟节点
+
             if dep_id in created_sibling_ids:
                 valid_deps.append(dep_id)
                 continue
-            
+
             logger.warning(
                 "Skipping dependency %s: task does not exist",
                 dep_id
             )
-        
+
         return valid_deps
 
     def _update_tree_cache(self, tree: PlanTree, node: PlanNode) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import Any, AsyncIterator, Dict
 from uuid import uuid4
@@ -80,25 +81,25 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             message_to_send = request.message
             attachments = context.get("attachments", [])
             if attachments and isinstance(attachments, list):
-                attachment_info = "\n\n📎 用户当前上传的附件：\n"
+                attachment_info = "\n\n📎 User-uploaded attachments:\n"
                 for att in attachments:
                     if isinstance(att, dict):
                         att_type = att.get("type", "file")
-                        att_name = att.get("name", "未知文件")
+                        att_name = att.get("name", "Unknown file")
                         att_path = att.get("path", "")
                         att_extracted = att.get("extracted_path")
                         attachment_info += f"- {att_name} ({att_type}): {att_path}\n"
                         if att_extracted:
                             attachment_info += f"  extracted: {att_extracted}\n"
-                # 根据附件类型给出工具使用建议
+                # Provide tool usage hints based on attachment types.
                 has_image = any(att.get("type") == "image" for att in attachments if isinstance(att, dict))
                 has_document = any(att.get("type") in ["document", "application/pdf"] for att in attachments if isinstance(att, dict))
                 if has_image and not has_document:
-                    attachment_info += "\n💡 提示：图片文件请使用 vision_reader 进行视觉理解和描述。"
+                    attachment_info += "\n💡 Hint: use vision_reader for image understanding and description."
                 elif has_document and not has_image:
-                    attachment_info += "\n💡 提示：文档文件请使用 document_reader 提取内容。"
+                    attachment_info += "\n💡 Hint: use document_reader to extract document content."
                 elif has_image and has_document:
-                    attachment_info += "\n💡 提示：图片请使用 vision_reader，文档请使用 document_reader。"
+                    attachment_info += "\n💡 Hint: use vision_reader for images and document_reader for documents."
                 message_to_send = request.message + attachment_info
                 logger.info(
                     "[CHAT][STREAM][ATTACHMENTS] session=%s count=%d",
@@ -184,20 +185,26 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             parser = StructuredReplyStreamParser()
 
             # 🚀 Deep Think Mode Check
-            if agent._should_use_deep_think(message_to_send):
+            maybe_deep_think = agent._should_use_deep_think(message_to_send)
+            use_deep_think = (
+                await maybe_deep_think
+                if inspect.isawaitable(maybe_deep_think)
+                else bool(maybe_deep_think)
+            )
+            if use_deep_think:
                 logger.info("[CHAT] Activating Deep Think Mode")
                 async for chunk in agent.process_deep_think_stream(message_to_send):
                     yield chunk
                 return
 
-            # 打字机效果：与 DeepThink 保持一致
-            TYPEWRITER_DELAY = 0.01  # 10ms 延迟，与 DeepThink 一致
+            # Typewriter effect aligned with DeepThink behavior.
+            TYPEWRITER_DELAY = 0.01  # 10ms delay
             async for chunk in agent.llm_service.stream_chat_async(
                 prompt, force_real=True, model=model_override
             ):
                 for delta in parser.feed(chunk):
                     if delta:
-                        # 逐字符发送，实现平滑打字机效果
+                        # Stream one character at a time for smooth typing.
                         for char in delta:
                             yield _sse_message({"type": "delta", "content": char})
                             await asyncio.sleep(TYPEWRITER_DELAY)
@@ -212,7 +219,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
             structured = agent._apply_completion_claim_guardrail(structured)
             agent._current_user_message = None
 
-            # "分析" button from ExecutorPanel: force text-only response, no tool calls.
+            # "Analyze" button from ExecutorPanel: force text-only response, no tool calls.
             if context.get("analysis_only"):
                 structured.actions = []
 
@@ -255,7 +262,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                     "plan_persisted": agent_result.plan_persisted,
                     "status": "completed",
                     "unified_stream": True,
-                    # 无动作场景直接使用完整回复作为正文分析
+                    # In no-action scenarios, use the full reply as the primary analysis body.
                     "analysis_text": agent_result.reply or request.message,
                     "final_summary": None,
                     "actions": actions_for_display,
@@ -274,13 +281,13 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                 if agent_result.job_id:
                     metadata_payload["job_id"] = agent_result.job_id
                     metadata_payload["job_type"] = agent_result.job_type or "chat_action"
-                    # 从 job 获取真实状态，而不是使用 agent_result.success
+                    # Pull actual status from the job payload instead of agent_result.success.
                     job_snap = plan_decomposition_jobs.get_job_payload(agent_result.job_id)
                     if job_snap:
                         metadata_payload["job_status"] = job_snap.get("status", "queued")
                         metadata_payload["job"] = job_snap
                     else:
-                        # 如果是同步执行完成的 job，使用 success 判断
+                        # For synchronously finished jobs, infer status from success.
                         metadata_payload["job_status"] = (
                                 "succeeded" if agent_result.success else "failed"
                         )
@@ -398,11 +405,11 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
 
             job_snapshot = plan_decomposition_jobs.get_job_payload(tracking_id)
 
-            # 检查是否需要用户确认
+            # Check whether user confirmation is required.
             requires_confirm = _requires_confirmation(structured.actions)
 
             if requires_confirm:
-                # 生成确认ID并存储待确认操作
+                # Generate a confirmation ID and store pending actions.
                 confirmation_id = _generate_confirmation_id()
                 _store_pending_confirmation(
                     confirmation_id=confirmation_id,
@@ -413,15 +420,15 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                     extra_context=agent.extra_context,
                 )
 
-                # 构建需要确认的响应
+                # Build a confirmation-required response.
                 confirm_actions = [
                     {"kind": a.kind, "name": a.name}
                     for a in structured.actions
                     if (a.kind, a.name) in ACTIONS_REQUIRING_CONFIRMATION
                 ]
                 suggestions = [
-                    "此操作需要您的确认才能执行。",
-                    "请点击确认按钮或调用 /chat/confirm 接口确认执行。",
+                    "This action requires your confirmation before execution.",
+                    "Please click the confirm button or call /chat/confirm to proceed.",
                 ]
                 chat_response = ChatResponse(
                     response=structured.llm_reply.message,
@@ -447,7 +454,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
                 )
                 return
 
-            # 不需要确认，正常执行
+            # No confirmation needed; execute normally.
             bg_category = _classify_background_category(
                 structured.actions, job_snapshot
             )
@@ -525,4 +532,3 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
     return StreamingResponse(
         event_generator(), media_type="text/event-stream", headers=headers
     )
-

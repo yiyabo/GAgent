@@ -26,7 +26,7 @@ const patchThirdPartyModules = () => {
       if (cleanId.includes('/rc-input-number/') && /InputNumber\.(m?js|cjs)$/.test(cleanId)) {
         const broken = 'inputStr.replace(//g,';
         if (next.includes(broken)) {
-          next = next.split(broken).join("inputStr.replace(/[。．]/g,");
+          next = next.split(broken).join("inputStr.replace(/[．]/g,");
         }
       }
 
@@ -54,7 +54,7 @@ const patchThirdPartyModulesForOptimizeDeps = () => {
 
         const broken = 'inputStr.replace(//g,';
         if (args.path.includes(`${path.sep}rc-input-number${path.sep}`) && next.includes(broken)) {
-          next = next.split(broken).join("inputStr.replace(/[。．]/g,");
+          next = next.split(broken).join("inputStr.replace(/[．]/g,");
         }
 
         return {
@@ -68,7 +68,7 @@ const patchThirdPartyModulesForOptimizeDeps = () => {
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
-  // 统一从仓库根目录加载 .env（确保前后端共享同一份配置）
+  //  .env（）
   const projectRoot = path.resolve(__dirname, '..');
   const env = loadEnv(mode, projectRoot, '');
 

@@ -113,7 +113,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
           setMissingJob(true);
           stopPolling();
         } else {
-          console.error('轮询任务状态失败:', err);
+          console.error('Failed to poll job status:', err);
         }
       }
     }, 5000);
@@ -129,7 +129,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
       setCliLogPath(response.log_path);
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : '无法加载 CLI 日志';
+        err instanceof Error ? err.message : 'Failed to load CLI logs';
       setCliLogError(message);
       setCliLogLines([]);
       setCliLogTruncated(false);
@@ -223,8 +223,8 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
           stopPolling();
           return;
         }
-        console.error('加载任务拆分状态失败:', err);
-        // 进入轮询兜底
+        console.error('Failed to load task-decomposition status:', err);
+        // Fallback to polling.
       }
 
       const streamUrl = `${ENV.API_BASE_URL}/jobs/${jobId}/stream`;
@@ -290,12 +290,12 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
             closeStream();
             return;
           }
-          console.warn('SSE 链接中断，切换为轮询模式');
+          console.warn('SSE connection interrupted; switching to polling mode.');
           closeStream();
           startPolling();
         };
       } catch (err) {
-        console.warn('SSE 初始化失败，改用轮询:', err);
+        console.warn('SSE initialization failed; falling back to polling:', err);
         startPolling();
       }
     };

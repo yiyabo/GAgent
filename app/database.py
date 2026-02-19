@@ -1,7 +1,7 @@
-"""主数据库初始化逻辑。
+"""database. 
 
-主库仅保存跨计划的元信息（计划索引、会话与聊天记录），
-实际的计划任务数据存放在独立的 plan SQLite 文件中。
+saveplan(plan, session), 
+plantask plan SQLite filemedium. 
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def init_db() -> None:
-    """初始化主数据库及目录结构。"""
+    """database. """
     config = get_database_config()
     main_db_path = get_main_database_path()
 
@@ -140,15 +140,15 @@ def init_db() -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS phagescope_tracking (
-                job_id       TEXT PRIMARY KEY,
-                session_id   TEXT NOT NULL,
-                plan_id      INTEGER,
+                job_id  TEXT PRIMARY KEY,
+                session_id  TEXT NOT NULL,
+                plan_id  INTEGER,
                 remote_taskid TEXT NOT NULL,
-                modulelist   TEXT,
+                modulelist  TEXT,
                 poll_interval REAL DEFAULT 30.0,
                 poll_timeout  REAL DEFAULT 172800.0,
-                status       TEXT NOT NULL DEFAULT 'running',
-                created_at   TEXT NOT NULL,
+                status  TEXT NOT NULL DEFAULT 'running',
+                created_at  TEXT NOT NULL,
                 finished_at  TEXT
             )
             """
@@ -160,7 +160,6 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_phagescope_tracking_session ON phagescope_tracking(session_id)"
         )
 
-    # 清理过期的 session 数据库
     try:
         cleaned = config.cleanup_old_sessions(max_age_days=30)
         if cleaned > 0:
@@ -172,13 +171,13 @@ def init_db() -> None:
 
 
 def close_db_pool() -> None:
-    """关闭连接池，释放资源。"""
+    """closeconnection, . """
     get_connection_pool().close_pool()
 
 
 @contextmanager
 def plan_db_connection(plan_path: Path) -> Iterator:
-    """针对单个 plan 文件建立连接的便捷方法."""
+    """ plan fileconnection."""
     import sqlite3
 
     conn = sqlite3.connect(plan_path, isolation_level="DEFERRED")

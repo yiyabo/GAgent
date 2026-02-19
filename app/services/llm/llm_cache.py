@@ -106,8 +106,7 @@ class LLMCache:
         self.memory_cache = LRUCache(max_size=memory_size)
         self.ttl_seconds = ttl_hours * 3600
         self.enable_persistent = enable_persistent
-        
-        # 使用规范的缓存路径
+
         if db_path is None:
             from ...config.database_config import get_cache_database_path
             self.db_path = get_cache_database_path("llm")

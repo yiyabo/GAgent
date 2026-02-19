@@ -1,15 +1,15 @@
 /* ============================================
-   CherryStudio-Claude 风格主题
-   ============================================ */
+  CherryStudio-Claude 
+  ============================================ */
 
-/* CSS 变量定义 */
+/* CSS  */
 :root {
-  /* 主色调 - Claude 风格 */
+  /*  - Claude  */
   --primary-gradient: linear-gradient(135deg, #C96442 0%, #d4886e 100%);
   --primary-color: #C96442;
   --primary-hover: #b55332;
   
-  /* 功能色 */
+  /*  */
   --success-color: #22c55e;
   --success-bg: rgba(34, 197, 94, 0.1);
   --warning-color: #f59e0b;
@@ -19,43 +19,43 @@
   --info-color: #3b82f6;
   --info-bg: rgba(59, 130, 246, 0.1);
   
-  /* 背景色 - Claude 暖米色风格 */
-  --bg-primary: #F5F4ED;        /* 主背景 - 暖米色 */
-  --bg-secondary: #FFFFFF;      /* 卡片背景 */
-  --bg-tertiary: #FAF9F5;      /* 略浅的背景 */
-  --bg-user: #F0EEE6;          /* 用户消息背景 */
-  --bg-assistant: #FAF9F5;     /* AI消息背景 */
+  /*  - Claude  */
+  --bg-primary: #F5F4ED;  /*  -  */
+  --bg-secondary: #FFFFFF;  /*  */
+  --bg-tertiary: #FAF9F5;  /*  */
+  --bg-user: #F0EEE6;  /*  */
+  --bg-assistant: #FAF9F5;  /* AI */
   
-  /* 边框 - 极淡 */
+  /*  -  */
   --border-color: rgba(120, 120, 120, 0.08);
   --border-light: rgba(0, 0, 0, 0.04);
   
-  /* 文字颜色 */
-  --text-primary: #262624;      /* 深灰文字 */
+  /*  */
+  --text-primary: #262624;  /*  */
   --text-secondary: #6b6b6b;
   --text-tertiary: #999999;
   
-  /* 阴影 - 轻微 */
+  /*  -  */
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
   
-  /* 过渡动画 */
+  /*  */
   --transition-fast: 0.15s ease;
   --transition-normal: 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
   
-  /* 圆角系统 */
+  /* system */
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 12px;
   --radius-xl: 20px;
   --radius-full: 9999px;
   
-  /* Header 高度 */
+  /* Header high */
   --header-height: 48px;
 }
 
-/* 全局样式重置 */
+/*  */
 * {
   margin: 0;
   padding: 0;
@@ -67,7 +67,7 @@ body,
 #root {
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
   line-height: 1.7;
   letter-spacing: 0.018em;
   font-weight: 500;
@@ -77,7 +77,7 @@ body,
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* 自定义滚动条 - 暖色调 */
+/*  -  */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -97,8 +97,8 @@ body,
 }
 
 /* ============================================
-   Header 样式 - 简洁白色
-   ============================================ */
+  Header  - 
+  ============================================ */
 .app-layout {
   height: 100vh;
   overflow: hidden;
@@ -162,8 +162,8 @@ body,
 }
 
 /* ============================================
-   侧边栏样式
-   ============================================ */
+  
+  ============================================ */
 .app-sider {
   background: var(--bg-secondary) !important;
   border-right: 1px solid var(--border-color);
@@ -262,7 +262,7 @@ body,
   background: rgba(0, 0, 0, 0.04);
 }
 
-/* 可拖拽分割条 */
+/*  */
 .layout-resizer {
   width: 6px;
   background: transparent;
@@ -276,8 +276,8 @@ body,
 }
 
 /* ============================================
-   主内容区域
-   ============================================ */
+  content
+  ============================================ */
 .app-content {
   display: flex;
   height: calc(100vh - var(--header-height));
@@ -307,7 +307,7 @@ body,
   background: var(--bg-primary);
 }
 
-/* 聊天面板样式 */
+/*  */
 .chat-panel {
   width: 400px;
   background: var(--bg-secondary);
@@ -351,7 +351,7 @@ body,
   width: 200px;
 }
 
-/* 右侧任务面板 Tabs 布局与滚动 */
+/* task Tabs  */
 .dag-sidebar-tabs {
   height: 100%;
   display: flex;
@@ -377,8 +377,8 @@ body,
 }
 
 /* ============================================
-   消息样式 - Claude 风格（AI居中，用户气泡）
-   ============================================ */
+  - Claude (AImedium, )
+  ============================================ */
 .message {
   display: flex;
   flex-direction: column;
@@ -478,11 +478,11 @@ body,
 
 @keyframes streamCursorBlink {
   to {
-    visibility: hidden;
+  visibility: hidden;
   }
 }
 
-/* DAG 可视化容器 */
+/* DAG  */
 .dag-container {
   height: 100%;
   background: var(--bg-secondary);
@@ -506,8 +506,8 @@ body,
 }
 
 /* ============================================
-   卡片样式 - 艺术悬浮效果
-   ============================================ */
+  - 
+  ============================================ */
 .task-card {
   background: var(--bg-secondary);
   border-radius: var(--radius-lg);
@@ -566,42 +566,42 @@ body,
 }
 
 /* ============================================
-   响应式设计
-   ============================================ */
+  
+  ============================================ */
 @media (max-width: 1200px) {
   .chat-panel {
-    width: 320px;
+  width: 320px;
   }
 }
 
 @media (max-width: 768px) {
   .app-content {
-    flex-direction: column;
+  flex-direction: column;
   }
   
   .chat-panel {
-    width: 100%;
-    height: 320px;
-    border-left: none;
-    border-top: 1px solid var(--border-light);
+  width: 100%;
+  height: 320px;
+  border-left: none;
+  border-top: 1px solid var(--border-light);
   }
   
   .main-content {
-    height: calc(100vh - var(--header-height) - 320px);
+  height: calc(100vh - var(--header-height) - 320px);
   }
   
   .app-header {
-    padding: 0 16px;
+  padding: 0 16px;
   }
   
   .content-body {
-    padding: 16px;
+  padding: 16px;
   }
 }
 
 /* ============================================
-   按钮样式优化
-   ============================================ */
+  
+  ============================================ */
 .ant-btn-primary {
   background: var(--primary-gradient) !important;
   border: none !important;
@@ -623,8 +623,8 @@ body,
 }
 
 /* ============================================
-   输入框样式优化 - Claude 风格
-   ============================================ */
+  input - Claude 
+  ============================================ */
 .chat-input-container .ant-input,
 .chat-input-container .ant-input-affix-wrapper {
   background: #FFFFFF !important;
@@ -654,8 +654,8 @@ body,
 }
 
 /* ============================================
-   选择器样式优化
-   ============================================ */
+  
+  ============================================ */
 .ant-select-selector {
   border-radius: var(--radius-md) !important;
   border-color: var(--border-color) !important;
@@ -672,8 +672,8 @@ body,
 }
 
 /* ============================================
-   Modal 弹窗样式优化
-   ============================================ */
+  Modal 
+  ============================================ */
 .ant-modal-confirm .ant-btn.ant-btn-primary {
   background: var(--error-color) !important;
   border-color: var(--error-color) !important;
@@ -693,8 +693,8 @@ body,
 }
 
 /* ============================================
-   Tab 样式优化
-   ============================================ */
+  Tab 
+  ============================================ */
 .ant-tabs-tab {
   padding: 12px 20px !important;
   border-radius: var(--radius-md) var(--radius-md) 0 0 !important;
@@ -712,8 +712,8 @@ body,
 }
 
 /* ============================================
-   标签样式优化
-   ============================================ */
+  
+  ============================================ */
 .ant-tag {
   border-radius: var(--radius-full) !important;
   border: none !important;
@@ -721,29 +721,29 @@ body,
 }
 
 /* ============================================
-   骨架屏动画
-   ============================================ */
+  
+  ============================================ */
 @keyframes shimmer {
   0% {
-    background-position: -200% 0;
+  background-position: -200% 0;
   }
   100% {
-    background-position: 200% 0;
+  background-position: 200% 0;
   }
 }
 
 .skeleton-loading {
   background: linear-gradient(
-    90deg,
-    var(--bg-tertiary) 25%,
-    var(--bg-secondary) 50%,
-    var(--bg-tertiary) 75%
+  90deg,
+  var(--bg-tertiary) 25%,
+  var(--bg-secondary) 50%,
+  var(--bg-tertiary) 75%
   );
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
 }
 
-/* 加载动画 */
+/* load */
 .loading-spinner {
   display: flex;
   align-items: center;
@@ -751,7 +751,7 @@ body,
   padding: 40px;
 }
 
-/* 空状态样式 */
+/* status */
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -778,7 +778,7 @@ body,
   color: var(--text-secondary);
 }
 
-/* 打字机动画 */
+/*  */
 .typing-indicator {
   display: flex;
   align-items: center;
@@ -803,16 +803,16 @@ body,
 
 @keyframes typing {
   0%, 80%, 100% {
-    transform: scale(0.8);
-    opacity: 0.5;
+  transform: scale(0.8);
+  opacity: 0.5;
   }
   40% {
-    transform: scale(1);
-    opacity: 1;
+  transform: scale(1);
+  opacity: 1;
   }
 }
 
-/* 代码块样式 */
+/*  */
 pre, code {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace !important;
 }

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-结构化日志初始化
+log
 
-提供 JSON/普通 文本两种格式，默认 JSON，支持 LOG_LEVEL 与 LOG_FORMAT 环境变量控制。
+JSON/ , default JSON, support LOG_LEVEL  LOG_FORMAT . 
 """
 import json
 import logging
@@ -19,7 +19,6 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        # 附加 extra 字段（如有）
         for key, value in getattr(record, "__dict__", {}).items():
             if key in {
                 "args",
@@ -53,7 +52,6 @@ class JsonFormatter(logging.Formatter):
 def setup_logging() -> None:
     settings = get_settings()
     root = logging.getLogger()
-    # 清理已有 handler，避免重复初始化
     for h in list(root.handlers):
         root.removeHandler(h)
 

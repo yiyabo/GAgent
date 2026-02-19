@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 def should_use_deep_think(agent: Any, message: str) -> bool:
     """Check if deep think mode should be activated."""
     # Check explicit trigger
-    if message.startswith("/think ") or message.startswith("/深度") or message.startswith("/deep"):
+    if message.startswith("/think ") or message.startswith("/deep"):
         return True
     # Check context flag
     if agent.extra_context.get("deep_think_enabled", False):
@@ -31,14 +31,9 @@ def should_use_deep_think(agent: Any, message: str) -> bool:
         "research plan",
         "project plan",
         "roadmap",
-        "计划",
-        "研究计划",
-        "项目计划",
-        "任务计划",
-        "规划",
-        "拆解",
-        "分解",
-        "任务树",
+        "decompose",
+        "break down",
+        "task tree",
     )
     if any(k in msg for k in plan_keywords):
         return True
@@ -49,7 +44,7 @@ def build_prompt(agent: Any, user_message: str) -> str:
     plan_bound = agent.plan_session.plan_id is not None
     history_text = format_history(agent)
 
-    # 从 extra_context 中提取记忆，单独格式化
+    # Extract memories from extra_context and format separately.
     memories = agent.extra_context.pop("memories", None)
     memory_section = format_memories(memories) if memories else ""
 
@@ -68,7 +63,7 @@ def build_prompt(agent: Any, user_message: str) -> str:
         f"Extra context:\n{context_text}",
     ]
 
-    # 如果有相关记忆，添加到 prompt 中
+    # Add memory section if relevant memories exist.
     if memory_section:
         prompt_parts.append(memory_section)
 
@@ -93,7 +88,7 @@ def build_prompt(agent: Any, user_message: str) -> str:
 
 
 def format_memories(memories: List[Dict[str, Any]]) -> str:
-    """格式化记忆列表为 prompt 中的文本"""
+    """Format memory list into prompt text."""
     if not memories:
         return ""
 

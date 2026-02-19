@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://phageapi.deepomics.org"
 
-# 结果端点映射
+# Result endpoint map
 RESULT_ENDPOINTS = {
     "phage": "/tasks/result/phage/",
     "proteins": "/tasks/result/proteins/",
@@ -70,11 +70,11 @@ FILENAME_TO_RESULT_KIND: Dict[str, str] = {
     filename.lower(): kind for kind, filename in RESULT_KIND_TO_FILENAME.items()
 }
 
-# 分析类型配置
+# Analysis type configuration
 ANALYSIS_TYPES = {
     "Annotation Pipline": {
         "endpoint": "/analyze/pipline/",
-        "description": "基因注释流程",
+        "description": "Gene annotation pipeline",
         "modules": [
             "quality", "host", "lifestyle", "annotation", "terminator",
             "taxonomic", "trna", "anticrispr", "crispr", "arvf", "transmembrane"
@@ -82,36 +82,36 @@ ANALYSIS_TYPES = {
     },
     "Phenotype Annotation": {
         "endpoint": "/analyze/pipline/",
-        "description": "表型注释",
+        "description": "Phenotype annotation",
     },
     "Structural Annotation": {
         "endpoint": "/analyze/pipline/",
-        "description": "结构注释",
+        "description": "Structural annotation",
     },
     "Functional Annotation": {
         "endpoint": "/analyze/pipline/",
-        "description": "功能注释",
+        "description": "Functional annotation",
     },
     "Completeness Assessment": {
         "endpoint": "/analyze/pipline/",
-        "description": "完整性评估",
+        "description": "Completeness assessment",
     },
     "Host Assignment": {
         "endpoint": "/analyze/pipline/",
-        "description": "宿主分配",
+        "description": "Host assignment",
     },
     "Lifestyle Prediction": {
         "endpoint": "/analyze/pipline/",
-        "description": "生活方式预测",
+        "description": "Lifestyle prediction",
     },
     "Genome Comparison": {
         "endpoint": "/analyze/clusterpipline/",
-        "description": "基因组比较（聚类、系统发育树、序列比对）",
+        "description": "Genome comparison (clustering, phylogenetic tree, sequence alignment)",
         "modules": ["clustering", "phylogenetic", "alignment"],
     },
 }
 
-# 模块依赖关系
+# Module dependency rules
 MODULE_DEPENDENCIES = {
     "anticrispr": ["annotation"],
     "transmembrane": ["annotation"],
@@ -120,7 +120,7 @@ MODULE_DEPENDENCIES = {
     "terminator": ["annotation"],
 }
 
-# 聚类分析模块
+# Clustering analysis modules
 CLUSTER_MODULES = {"clustering", "phylogenetic", "alignment"}
 
 
@@ -165,16 +165,16 @@ def _infer_result_kind_from_path(path: str, fallback_kind: Optional[str] = None)
 
 
 def _parse_modulelist(value: Optional[str]) -> List[str]:
-    """解析 Python 列表字符串为 Python 列表。
-    
-    使用 ast.literal_eval() 安全解析 Python 字面量，如果失败则回退到 JSON 解析。
-    支持列表和元组格式。
-    
+    """Parse a Python-list-like string into a Python list.
+
+    Prefers `ast.literal_eval()` for safe literal parsing and falls back to
+    JSON parsing when needed. Supports both list and tuple payloads.
+
     Args:
-        value: 要解析的字符串，可能是 Python 列表字符串或 JSON 数组
-        
+        value: String to parse (Python list literal or JSON array).
+
     Returns:
-        解析后的字符串列表，如果解析失败则返回空列表
+        Parsed string list, or an empty list on failure.
     """
     if not value or not isinstance(value, str):
         return []
@@ -183,16 +183,16 @@ def _parse_modulelist(value: Optional[str]) -> List[str]:
     if not value:
         return []
     
-    # 优先使用 ast.literal_eval() 安全解析 Python 字面量
+    # Prefer ast.literal_eval() for safe literal parsing.
     try:
         parsed = ast.literal_eval(value)
-        # 支持列表和元组格式
+        # Support list and tuple payloads.
         if isinstance(parsed, (list, tuple)):
             return [str(item) for item in parsed]
     except (ValueError, SyntaxError):
         pass
     
-    # 回退到 JSON 解析（处理简单的单引号替换场景）
+    # Fallback to JSON parsing (including simple quote-normalization cases).
     try:
         parsed = json.loads(value.replace("'", '"'))
         if isinstance(parsed, list):
@@ -415,7 +415,7 @@ def _results_payload_to_tsv_text(payload: Dict[str, Any]) -> Optional[str]:
 
 
 def _validate_module_dependencies(modules: List[str]) -> Tuple[bool, Optional[str]]:
-    """验证模块依赖关系，返回 (is_valid, error_message)"""
+    """Validate module dependencies. Returns (is_valid, error_message)."""
     module_set = set(m.lower() for m in modules)
     for module, deps in MODULE_DEPENDENCIES.items():
         if module.lower() in module_set:
@@ -426,7 +426,7 @@ def _validate_module_dependencies(modules: List[str]) -> Tuple[bool, Optional[st
 
 
 def _is_cluster_analysis(analysistype: str, modules: Optional[List[str]] = None) -> bool:
-    """判断是否为聚类分析类型"""
+    """Determine whether this is a clustering analysis request."""
     if analysistype == "Genome Comparison":
         return True
     if modules:
@@ -436,11 +436,11 @@ def _is_cluster_analysis(analysistype: str, modules: Optional[List[str]] = None)
 
 
 def _get_analysis_endpoint(analysistype: str, modules: Optional[List[str]] = None) -> str:
-    """根据分析类型和模块获取正确的 API 端点"""
+    """Resolve the correct API endpoint from analysis type/modules."""
     config = ANALYSIS_TYPES.get(analysistype)
     if config:
         return config["endpoint"]
-    # 如果模块包含聚类分析，使用 clusterpipline
+    # If clustering modules are included, use clusterpipline.
     if _is_cluster_analysis(analysistype, modules):
         return "/analyze/clusterpipline/"
     return "/analyze/pipline/"
@@ -533,18 +533,19 @@ def _parse_task_detail(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _module_completed(task_detail: Dict[str, Any], module_name: str) -> Optional[bool]:
-    """检查模块是否已完成，并验证数据有效性。
-    
-    不仅检查任务状态，还验证模块数据是否非空，避免误判。
-    
+    """Check whether a module has completed and data is valid.
+
+    This checks both status and whether result-like fields are non-empty to
+    avoid false positives.
+
     Args:
-        task_detail: 任务详情字典
-        module_name: 模块名称
-        
+        task_detail: Task detail payload.
+        module_name: Module name.
+
     Returns:
-        True: 模块已完成且数据有效
-        False: 模块失败或数据无效
-        None: 状态未知或无法判断
+        True: module completed with valid data.
+        False: module failed or data is invalid.
+        None: unknown/indeterminate state.
     """
     if not module_name:
         logger.debug("_module_completed: module_name is empty")
@@ -577,7 +578,7 @@ def _module_completed(task_detail: Dict[str, Any], module_name: str) -> Optional
         if module.lower() != module_name_lower:
             continue
         
-        # 找到匹配的模块，检查状态
+        # Found the matching module; inspect status.
         status_value = item.get("module_satus") or item.get("module_status") or item.get("status")
         if not isinstance(status_value, str):
             logger.debug(f"_module_completed: module '{module_name}' status is not a string, type={type(status_value)}")
@@ -587,21 +588,21 @@ def _module_completed(task_detail: Dict[str, Any], module_name: str) -> Optional
         logger.debug(f"_module_completed: module '{module_name}' status='{status_upper}'")
         
         if status_upper in {"COMPLETED", "SUCCESS", "SUCCEEDED", "DONE", "FINISHED"}:
-            # 状态为成功时，进一步验证数据有效性
-            # 检查是否有 result 字段或其他数据字段
+            # For success-like status, validate data fields as well.
+            # Check for result/data-like fields.
             has_data = False
             
-            # 检查常见的数据字段
+            # Inspect common payload fields.
             for data_key in ("result", "results", "data", "output", "uploadpath"):
                 data_value = item.get(data_key)
                 if data_value is not None:
-                    # 验证数据非空
+                    # Validate that data is non-empty.
                     if isinstance(data_value, (list, dict, str)):
-                        if data_value:  # 非空
+                        if data_value:  # Non-empty container/string.
                             has_data = True
                             break
                     else:
-                        # 非容器类型，认为有数据
+                        # Non-container type: treat as data present.
                         has_data = True
                         break
             
@@ -609,16 +610,16 @@ def _module_completed(task_detail: Dict[str, Any], module_name: str) -> Optional
                 logger.info(f"_module_completed: module '{module_name}' completed with valid data")
                 return True
             else:
-                # 状态成功但数据为空，记录警告
+                # Success status but empty payload; log warning.
                 logger.warning(
                     f"_module_completed: module '{module_name}' status is '{status_upper}' but data appears empty. "
                     f"Item keys: {list(item.keys())}"
                 )
-                # 仍然返回 True 以保持向后兼容，但记录警告
+                # Keep backward compatibility by returning True, with warning.
                 return True
         
         if status_upper in {"FAILED", "ERROR"}:
-            # 获取失败详情（如果有）
+            # Capture failure details when available.
             error_msg = item.get("error") or item.get("message") or item.get("detail")
             if error_msg:
                 logger.error(f"_module_completed: module '{module_name}' failed with error: {error_msg}")
@@ -626,11 +627,11 @@ def _module_completed(task_detail: Dict[str, Any], module_name: str) -> Optional
                 logger.error(f"_module_completed: module '{module_name}' failed")
             return False
         
-        # 状态为其他值（如 RUNNING, PENDING 等）
+        # Other statuses (for example RUNNING/PENDING) are not completed yet.
         logger.debug(f"_module_completed: module '{module_name}' status is '{status_upper}', not yet completed")
         return None
     
-    # 未找到匹配的模块
+    # No matching module found.
     logger.debug(f"_module_completed: module '{module_name}' not found in task_que")
     return None
 
@@ -647,7 +648,7 @@ async def _request(
     timeout: float = 60.0,
 ) -> Tuple[int, Dict[str, Any]]:
     url = f"{base_url}{path}"
-    # 显式设置 trust_env=False 忽略环境代理，避免 SOCKS 代理依赖问题
+    # Set trust_env=False to ignore environment proxies (avoid SOCKS dependency issues).
     async with httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False) as client:
         response = await client.request(method, url, params=params, data=data, files=files)
     content_type = response.headers.get("content-type", "")
@@ -685,7 +686,7 @@ async def phagescope_handler(
     wait: bool = False,
     poll_interval: float = 2.0,
     poll_timeout: float = 120.0,
-    # 聚类分析专用参数
+    # Cluster analysis specific parameters
     comparedatabase: Optional[str] = None,
     neednum: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -803,7 +804,7 @@ async def phagescope_handler(
             if not modulelist:
                 return {"success": False, "status_code": 400, "error": "modulelist is required", "action": action}
 
-            # 解析模块列表用于验证
+            # Parse module list for validation.
             module_items: List[str] = []
             if isinstance(modulelist, (list, tuple)):
                 module_items = [str(item) for item in modulelist]
@@ -816,12 +817,12 @@ async def phagescope_handler(
                 elif isinstance(parsed, dict):
                     module_items = list(parsed.keys())
 
-            # 验证模块依赖关系
+            # Validate module dependencies.
             is_valid, dep_error = _validate_module_dependencies(module_items)
             if not is_valid:
                 return {"success": False, "status_code": 400, "error": dep_error, "action": action}
 
-            # 自动选择正确的端点
+            # Auto-select the correct endpoint.
             if action == "cluster_submit":
                 endpoint = "/analyze/clusterpipline/"
                 actual_analysistype = "Genome Comparison"
@@ -853,7 +854,7 @@ async def phagescope_handler(
                 }
             )
 
-            # 聚类分析专用参数
+            # Cluster analysis specific parameters.
             if endpoint == "/analyze/clusterpipline/":
                 if comparedatabase:
                     data["comparedatabase"] = comparedatabase
@@ -1744,7 +1745,7 @@ phagescope_tool = {
                 "description": "Max total polling time in seconds when wait=true",
                 "default": 120.0,
             },
-            # 聚类分析专用参数
+            # Cluster analysis specific parameters.
             "comparedatabase": {
                 "type": "string",
                 "description": "Whether to compare with database (for cluster_submit)",

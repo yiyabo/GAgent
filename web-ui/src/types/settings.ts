@@ -35,7 +35,6 @@ export interface ChatStatusResponse {
   warnings: string[];
 }
 
-// 上下文相关类型
 export interface ContextOptions {
   include_deps: boolean;
   include_plan: boolean;

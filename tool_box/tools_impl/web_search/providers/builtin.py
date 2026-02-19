@@ -42,7 +42,7 @@ def _extract_links(text: str) -> List[Dict[str, str]]:
 
 def _parse_content(content: Any, max_results: int) -> Tuple[str, List[Dict[str, Any]]]:
     if isinstance(content, list):
-        # OpenAI兼容接口在某些模型下返回列表形式
+        # Some OpenAI-compatible endpoints may return list-shaped content.
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     if not isinstance(content, str):
         content = json.dumps(content, ensure_ascii=False)
@@ -128,7 +128,7 @@ async def search(
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": f"为以下检索任务提供答案：{query}\n请按照要求输出 JSON。",
+            "content": f"Provide an answer for the following search task: {query}\nReturn JSON in the required schema.",
         },
     ]
 

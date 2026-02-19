@@ -42,7 +42,15 @@ def resolve_claude_code_task_context(agent: Any) -> Tuple[Optional["PlanNode"], 
         return None, "target_task_not_found"
 
     node = tree.get_node(task_id)
+    task_source = str(agent.extra_context.get("_current_task_source") or "").strip().lower()
+    explicit_task_selected = (
+        agent.extra_context.get("task_id") is not None or task_source == "request"
+    )
     if tree.children_ids(task_id):
+        if task_source == "session" and not explicit_task_selected:
+            # Session-persisted composite/root task ids are often stale for ad-hoc
+            # prompts. Require explicit task selection instead of silent redirect.
+            return None, "target_task_not_atomic"
         atomic_task_id = agent._first_executable_atomic_descendant(tree, task_id)
         if atomic_task_id is None:
             return None, "target_task_not_atomic"
@@ -116,8 +124,8 @@ def summarize_amem_experiences_for_cc(
         except (TypeError, ValueError):
             score_text = ""
 
-        status_match = re.search(r"状态:\s*([^\n]+)", content)
-        key_match = re.search(r"##\s*关键发现\s*([\s\S]+)", content)
+        status_match = re.search(r"status:\s*([^\n]+)", content, flags=re.IGNORECASE)
+        key_match = re.search(r"##\s*key findings\s*([\s\S]+)", content, flags=re.IGNORECASE)
         key_text = ""
         if key_match:
             key_text = key_match.group(1).splitlines()[0].strip()

@@ -156,8 +156,9 @@ def build_actions_summary(agent: Any, steps: List["AgentStep"]) -> List[Dict[str
 def append_summary_to_reply(
     agent: Any, reply: str, summary: List[Dict[str, Any]]
 ) -> str:
-    # 不再在回复末尾追加 Action summary，因为前端已有状态标签和「查看过程」按钮
-    # 保留方法签名以保持兼容性
+    # Do not append action summary at the end of replies:
+    # the frontend already provides status tags and a "View process" panel.
+    # Keep this method signature for backward compatibility.
     return reply
 
 
@@ -172,9 +173,7 @@ async def _generate_tool_analysis(
     session_id: Optional[str] = None,
     llm_provider: Optional[str] = None,
 ) -> Optional[str]:
-    """
-    让 LLM 基于工具执行结果生成详细分析。
-    """
+    """Use the LLM to generate a detailed analysis from tool results."""
     try:
         tools_description = []
         web_search_items: List[Dict[str, str]] = []
@@ -183,9 +182,9 @@ async def _generate_tool_analysis(
             summary = tool_result.get("summary", "")
             result_data = tool_result.get("result", {})
 
-            tool_desc = f"{idx}. 工具: {tool_name}"
+            tool_desc = f"{idx}. Tool: {tool_name}"
             if summary:
-                tool_desc += f"\n   执行摘要: {summary}"
+                tool_desc += f"\n   Execution summary: {summary}"
 
             if isinstance(result_data, dict):
                 useful_fields = ["output", "stdout", "stderr", "success", "error"]
@@ -235,25 +234,25 @@ async def _generate_tool_analysis(
         tools_text = "\n\n".join(tools_description)
 
         analysis_requirements = [
-            "1. 给出完整、深入的分析，不要重复用户问题",
-            "2. 明确区分结论、依据、注意事项/风险",
-            "3. 若涉及 web_search，请逐条列出所有结果并说明价值",
-            "4. 若有错误或不确定性，说明原因并给出下一步建议",
-            "5. 输出不少于 6 条要点或 3 个自然段",
+            "1. Provide a complete, in-depth analysis; do not repeat the user question.",
+            "2. Clearly separate conclusions, evidence, and caveats/risks.",
+            "3. If web_search is involved, list each result and explain its value.",
+            "4. If errors or uncertainty exist, explain why and propose next steps.",
+            "5. Output at least 6 bullet points or 3 natural paragraphs.",
             "6. Use only fields present in the tool outputs; do not invent paths, modules, or metrics.",
             "7. If a field is missing, explicitly say it was not provided by the tool.",
             "8. Prefer factual summaries over speculation.",
         ]
 
         base_prompt = (
-            "你是资深分析助手。以下是用户问题与工具执行结果。\n"
-            "请输出详细分析正文，务必可直接作为最终回答展示。\n\n"
-            f"用户问题：{user_message}\n\n"
-            "工具执行结果：\n"
+            "You are a senior analysis assistant. Below are the user question and tool execution results.\n"
+            "Write a detailed analysis body that can be shown directly as the final answer.\n\n"
+            f"User question: {user_message}\n\n"
+            "Tool execution results:\n"
             f"{tools_text}\n\n"
-            "要求：\n"
+            "Requirements:\n"
             + "\n".join(analysis_requirements)
-            + "\n\n输出分析："
+            + "\n\nOutput analysis:"
         )
         llm_service = _get_llm_service_for_provider(llm_provider)
 
@@ -275,9 +274,7 @@ async def _generate_tool_summary(
     session_id: Optional[str] = None,
     llm_provider: Optional[str] = None,
 ) -> Optional[str]:
-    """
-    让 LLM 基于工具执行结果生成简短摘要（用于过程面板）。
-    """
+    """Use the LLM to generate a short summary from tool results (for process panel)."""
     try:
         tools_description = []
         for idx, tool_result in enumerate(tool_results, 1):
@@ -290,10 +287,10 @@ async def _generate_tool_summary(
 
         tools_text = "\n".join(tools_description)
         prompt = (
-            "你是项目助理，请根据工具执行情况给出简短摘要（1-3 句话）。\n"
-            f"用户问题：{user_message}\n"
-            f"工具执行概览：\n{tools_text}\n"
-            "输出摘要："
+            "You are a project assistant. Provide a brief summary (1-3 sentences) based on tool execution.\n"
+            f"User question: {user_message}\n"
+            f"Tool execution overview:\n{tools_text}\n"
+            "Output summary:"
         )
         llm_service = _get_llm_service_for_provider(llm_provider)
         summary = await llm_service.chat_async(prompt)
@@ -358,31 +355,32 @@ async def _generate_action_analysis(
             if task_name:
                 lines.append(f"{idx}. {task_name}")
             if instruction:
-                lines.append(f"   - 说明: {instruction}")
+                lines.append(f"   - Instruction: {instruction}")
         tasks_text = "\n".join(lines)
 
         prompt = (
-            "你是项目分析助手。用户要求对任务拆解结果进行详细分析。"
-            "请基于拆解结果给出深入分析：覆盖范围是否充分、任务之间关系、"
-            "是否有遗漏、可进一步细化的方向（如有）。不要复述“生成了X个子任务”这类总结，"
-            "直接给出专业分析正文。\n"
-            "要求：至少 6 条要点或 3 个自然段；要点清晰、具体可执行。\n\n"
-            f"用户问题：{user_message}\n\n"
-            "拆解结果：\n"
+            "You are a project analysis assistant. The user requests a detailed analysis of task decomposition results. "
+            "Based on the decomposition, analyze coverage sufficiency, relationships between tasks, "
+            "possible omissions, and potential refinement directions (if any). Do not repeat summaries like "
+            "'X subtasks were generated'; provide a professional analysis body directly.\n"
+            "Requirements: at least 6 bullet points or 3 natural paragraphs; points must be clear, concrete, and actionable.\n\n"
+            f"User question: {user_message}\n\n"
+            "Decomposition results:\n"
             f"{tasks_text}\n\n"
-            "请输出分析："
+            "Output analysis:"
         )
     elif step_summaries:
         steps_text = "\n\n".join(step_summaries)
         prompt = (
-            "你是项目分析助手。用户请求分析后台任务的执行结果。"
-            "请基于以下执行步骤的输出，给出结构化的分析：主要发现、关键数据、"
-            "下一步建议。直接输出专业分析正文，不要说“我来分析”之类的开场白。\n"
-            "要求：内容具体、数据驱动、可操作。\n\n"
-            f"用户问题：{user_message}\n\n"
-            "执行结果：\n"
+            "You are a project analysis assistant. The user requests analysis of background task execution results. "
+            "Based on outputs from the following execution steps, provide a structured analysis: key findings, critical data, "
+            "and next-step recommendations. Output the professional analysis body directly; avoid preambles like "
+            "'I will analyze this now.'\n"
+            "Requirements: specific, data-driven, and actionable.\n\n"
+            f"User question: {user_message}\n\n"
+            "Execution results:\n"
             f"{steps_text}\n\n"
-            "请输出分析："
+            "Output analysis:"
         )
     else:
         return None
@@ -407,9 +405,9 @@ def _build_brief_action_summary(steps: List[Any]) -> Optional[str]:
         if step.message:
             return step.message
         if step.action.name:
-            return f"已完成动作：{step.action.name}"
+            return f"Completed action: {step.action.name}"
         if step.action.kind:
-            return f"已完成动作：{step.action.kind}"
+            return f"Completed action: {step.action.kind}"
         return None
 
     names: List[str] = []
@@ -419,14 +417,14 @@ def _build_brief_action_summary(steps: List[Any]) -> Optional[str]:
         elif step.action.kind:
             names.append(step.action.kind)
     if not names:
-        return f"已完成 {len(steps)} 个动作。"
+        return f"Completed {len(steps)} actions."
     unique = []
     for name in names:
         if name not in unique:
             unique.append(name)
-    preview = "、".join(unique[:3])
-    suffix = " 等" if len(unique) > 3 else ""
-    return f"已完成 {len(steps)} 个动作：{preview}{suffix}。"
+    preview = ", ".join(unique[:3])
+    suffix = " and more" if len(unique) > 3 else ""
+    return f"Completed {len(steps)} actions: {preview}{suffix}."
 
 
 async def _execute_action_run(run_id: str) -> None:
@@ -579,14 +577,14 @@ async def _execute_action_run(run_id: str) -> None:
             if fallback_llm_provider:
                 context["default_llm_provider"] = fallback_llm_provider
 
-        # 🔄 任务状态同步：优先使用 context 中的 task_id
+        # Task-state sync: prioritize task_id from context.
         if "task_id" in context and "current_task_id" not in context:
             context["current_task_id"] = context["task_id"]
             logger.info(
                 "[CHAT][ASYNC][TASK_SYNC] Using task_id from context: %s",
                 context["current_task_id"],
             )
-        # 如果 context 中没有，尝试从 session 加载
+        # If current_task_id is absent in context, try loading from session.
         if "current_task_id" not in context and record.get("session_id"):
             current_task_id = _get_session_current_task(record["session_id"])
             if current_task_id is not None:
@@ -901,8 +899,8 @@ async def _execute_action_run(run_id: str) -> None:
         status = "completed" if result.success else "failed"
         result_dict = result.model_dump()
         tool_results_payload: List[Dict[str, Any]] = []
-        
-        # 诊断日志：记录所有步骤
+
+        # Diagnostic logging: record all steps.
         logger.info(
             "[CHAT][TOOL_RESULTS] session=%s tracking=%s total_steps=%d success=%s",
             record.get("session_id"),
@@ -910,7 +908,7 @@ async def _execute_action_run(run_id: str) -> None:
             len(result.steps),
             result.success,
         )
-        
+
         for step in result.steps:
             logger.info(
                 "[CHAT][TOOL_RESULTS] session=%s tracking=%s step_kind=%s step_name=%s step_success=%s",
@@ -920,7 +918,7 @@ async def _execute_action_run(run_id: str) -> None:
                 step.action.name,
                 step.success,
             )
-            
+
             # Only collect actual tool_operation results for analysis.
             # task_operation / plan_operation steps (rerun_task, decompose_task, etc.)
             # return scheduling/status objects, not meaningful tool output — including
@@ -931,7 +929,7 @@ async def _execute_action_run(run_id: str) -> None:
             details = step.details or {}
             result_payload = details.get("result")
 
-            # 诊断日志：记录result类型
+            # Diagnostic logging: record result payload type.
             logger.info(
                 "[CHAT][TOOL_RESULTS] session=%s tracking=%s tool=%s result_type=%s has_result=%s",
                 record.get("session_id"),
@@ -963,7 +961,7 @@ async def _execute_action_run(run_id: str) -> None:
                     "parameters": details.get("parameters"),
                     "result": {"output": str(result_payload)},
                 })
-        
+
         if tool_results_payload:
             result_dict["tool_results"] = tool_results_payload
             logger.info(
@@ -972,8 +970,8 @@ async def _execute_action_run(run_id: str) -> None:
                 run_id,
                 len(tool_results_payload),
             )
-        
-        # Agent Loop: 生成正文分析 + 过程摘要
+
+        # Agent loop: generate detailed analysis + process summary.
         analysis_text: Optional[str] = None
         summary_text: Optional[str] = None
         llm_provider = _normalize_llm_provider(
@@ -1033,8 +1031,8 @@ async def _execute_action_run(run_id: str) -> None:
                 run_id,
                 content_for_message[:100] if len(content_for_message) > 100 else content_for_message,
             )
-        
-        # 现在才更新状态为 completed，前端会在下次轮询时看到总结消息
+
+        # Update to completed only now so the frontend sees the summary on next poll.
         update_kwargs: Dict[str, Any] = {
             "status": status,
             "result": result_dict,
@@ -1042,7 +1040,7 @@ async def _execute_action_run(run_id: str) -> None:
         }
         if result.bound_plan_id is not None:
             update_kwargs["plan_id"] = result.bound_plan_id
-        
+
         logger.info(
             "[CHAT][SUMMARY] session=%s tracking=%s Updating action status to %s",
             record.get("session_id"),

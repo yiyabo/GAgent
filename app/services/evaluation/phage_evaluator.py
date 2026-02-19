@@ -23,85 +23,55 @@ class PhageEvaluator(LLMBasedEvaluator):
         # Phage-specific terminology and concepts
         self.phage_terminology = {
             "basic_terms": [
-                "噬菌体",
                 "bacteriophage",
                 "phage",
-                "病毒",
-                "细菌病毒",
-                "宿主",
                 "host",
-                "感染",
                 "infection",
-                "裂解",
                 "lysis",
-                "溶原",
                 "lysogenic",
-                "溶菌",
                 "lytic",
-                "复制",
                 "replication",
             ],
             "molecular_terms": [
                 "DNA",
                 "RNA",
-                "基因组",
                 "genome",
-                "蛋白质",
                 "protein",
-                "衣壳",
                 "capsid",
-                "尾部",
                 "tail",
-                "纤维",
                 "fiber",
-                "受体",
                 "receptor",
-                "转录",
                 "transcription",
-                "翻译",
                 "translation",
             ],
             "therapeutic_terms": [
-                "噬菌体疗法",
                 "phage therapy",
-                "抗生素耐药",
                 "antibiotic resistance",
-                "超级细菌",
                 "superbug",
-                "个性化治疗",
                 "personalized treatment",
-                "生物安全",
                 "biosafety",
-                "临床试验",
                 "clinical trial",
             ],
             "technical_terms": [
-                "滴度",
                 "titer",
-                "多重感染",
                 "MOI",
-                "突变",
                 "mutation",
-                "进化",
                 "evolution",
-                "共进化",
                 "coevolution",
                 "CRISPR",
-                "基因工程",
                 "genetic engineering",
-                "合成生物学",
                 "synthetic biology",
             ],
         }
 
         # Critical evaluation aspects for phage research
         self.phage_evaluation_aspects = {
-            "scientific_accuracy": "科学准确性 - 生物学概念和机制的正确性",
-            "clinical_relevance": "临床相关性 - 治疗应用的可行性和安全性",
-            "technical_feasibility": "技术可行性 - 实验方法和技术路线的合理性",
-            "safety_considerations": "安全考量 - 生物安全和临床安全评估",
-            "regulatory_compliance": "法规合规 - 药物开发和审批要求",
-            "innovation_potential": "创新潜力 - 技术突破和应用前景",
+            "scientific_accuracy": "Scientific accuracy - correctness of biological concepts and mechanisms",
+            "clinical_relevance": "Clinical relevance - feasibility and safety of therapeutic applications",
+            "technical_feasibility": "Technical feasibility - reasonableness of experimental methods and technical path",
+            "safety_considerations": "Safety considerations - biosafety and clinical safety assessment",
+            "regulatory_compliance": "Regulatory compliance - development and approval requirements",
+            "innovation_potential": "Innovation potential - technical breakthroughs and application outlook",
         }
 
     def get_evaluation_method_name(self) -> str:
@@ -224,10 +194,10 @@ class PhageEvaluator(LLMBasedEvaluator):
 
         # Check for common phage biology concepts
         phage_concepts = {
-            "lytic_cycle": ["裂解周期", "lytic cycle", "裂解", "lysis"],
-            "lysogenic_cycle": ["溶原周期", "lysogenic cycle", "溶原", "lysogenic"],
-            "host_specificity": ["宿主特异性", "host specificity", "特异性", "specificity"],
-            "resistance_mechanisms": ["耐药机制", "resistance mechanism", "耐药性", "resistance"],
+            "lytic_cycle": ["lytic cycle", "lysis", "lytic"],
+            "lysogenic_cycle": ["lysogenic cycle", "lysogenic"],
+            "host_specificity": ["host specificity", "specificity"],
+            "resistance_mechanisms": ["resistance mechanism", "resistance"],
         }
 
         concept_coverage = 0
@@ -239,9 +209,9 @@ class PhageEvaluator(LLMBasedEvaluator):
 
         # Check for potential inaccuracies (simple heuristics)
         inaccuracy_flags = [
-            "噬菌体是细菌",  # Phages are not bacteria
-            "噬菌体可以感染人类",  # Most phages don't infect humans directly
-            "所有噬菌体都是有害的",  # Many phages are beneficial
+            "phages are bacteria",  # Phages are not bacteria
+            "phages infect humans directly",  # Most phages do not directly infect humans
+            "all phages are harmful",  # Many phages are beneficial
         ]
 
         inaccuracy_count = sum(1 for flag in inaccuracy_flags if flag in content)
@@ -249,10 +219,10 @@ class PhageEvaluator(LLMBasedEvaluator):
 
         # Assess conceptual clarity
         clarity_indicators = [
-            "机制" in content_lower,
-            "原理" in content_lower,
-            "过程" in content_lower,
-            "步骤" in content_lower,
+            "mechanism" in content_lower,
+            "principle" in content_lower,
+            "process" in content_lower,
+            "step" in content_lower,
         ]
 
         accuracy_indicators["conceptual_clarity"] = sum(clarity_indicators) / len(clarity_indicators)
@@ -280,17 +250,11 @@ class PhageEvaluator(LLMBasedEvaluator):
 
         # Therapeutic application indicators
         therapeutic_terms = [
-            "治疗",
             "therapy",
-            "疗法",
             "treatment",
-            "临床",
             "clinical",
-            "患者",
             "patient",
-            "疾病",
             "disease",
-            "感染",
             "infection",
         ]
         therapeutic_score = sum(1 for term in therapeutic_terms if term in content_lower)
@@ -298,17 +262,11 @@ class PhageEvaluator(LLMBasedEvaluator):
 
         # Safety awareness indicators
         safety_terms = [
-            "安全",
             "safety",
-            "副作用",
             "side effect",
-            "风险",
             "risk",
-            "毒性",
             "toxicity",
-            "免疫",
             "immune",
-            "过敏",
             "allergy",
         ]
         safety_score = sum(1 for term in safety_terms if term in content_lower)
@@ -316,17 +274,11 @@ class PhageEvaluator(LLMBasedEvaluator):
 
         # Clinical feasibility indicators
         feasibility_terms = [
-            "剂量",
             "dose",
-            "给药",
             "administration",
-            "制备",
             "preparation",
-            "储存",
             "storage",
-            "稳定性",
             "stability",
-            "质控",
             "quality control",
         ]
         feasibility_score = sum(1 for term in feasibility_terms if term in content_lower)
@@ -334,17 +286,11 @@ class PhageEvaluator(LLMBasedEvaluator):
 
         # Patient benefit indicators
         benefit_terms = [
-            "疗效",
             "efficacy",
-            "有效",
             "effective",
-            "改善",
             "improvement",
-            "康复",
             "recovery",
-            "治愈",
             "cure",
-            "缓解",
             "relief",
         ]
         benefit_score = sum(1 for term in benefit_terms if term in content_lower)
@@ -373,13 +319,9 @@ class PhageEvaluator(LLMBasedEvaluator):
 
         # Biosafety awareness
         biosafety_terms = [
-            "生物安全",
             "biosafety",
-            "生物防护",
             "biocontainment",
-            "实验室安全",
             "laboratory safety",
-            "防护",
             "protection",
         ]
         biosafety_score = sum(1 for term in biosafety_terms if term in content_lower)
@@ -389,15 +331,10 @@ class PhageEvaluator(LLMBasedEvaluator):
         regulatory_terms = [
             "FDA",
             "NMPA",
-            "药监局",
-            "审批",
             "approval",
-            "监管",
             "regulation",
-            "临床试验",
             "clinical trial",
             "GMP",
-            "质量标准",
             "quality standard",
         ]
         regulatory_score = sum(1 for term in regulatory_terms if term in content_lower)
@@ -405,15 +342,10 @@ class PhageEvaluator(LLMBasedEvaluator):
 
         # Risk assessment
         risk_terms = [
-            "风险评估",
             "risk assessment",
-            "风险",
             "risk",
-            "危险",
             "hazard",
-            "不良反应",
             "adverse reaction",
-            "禁忌",
             "contraindication",
         ]
         risk_score = sum(1 for term in risk_terms if term in content_lower)
@@ -421,17 +353,11 @@ class PhageEvaluator(LLMBasedEvaluator):
 
         # Quality control
         qc_terms = [
-            "质量控制",
             "quality control",
-            "质检",
             "QC",
-            "标准化",
             "standardization",
-            "纯度",
             "purity",
-            "活性",
             "activity",
-            "稳定性",
             "stability",
         ]
         qc_score = sum(1 for term in qc_terms if term in content_lower)
@@ -561,31 +487,31 @@ Return the result in JSON format:
 
         # Terminology suggestions
         if terminology_analysis["coverage_score"] < 0.3:
-            suggestions.append("建议增加更多噬菌体专业术语，提高内容的专业性")
+            suggestions.append("Add more phage-specific terminology to improve technical precision.")
 
         if terminology_analysis["sophistication_score"] < 0.5:
-            suggestions.append("建议使用更多技术性和分子生物学术语，增强内容深度")
+            suggestions.append("Use more technical and molecular-biology terms to increase depth.")
 
         # Accuracy suggestions
         if accuracy_assessment["accuracy_score"] < 0.7:
-            suggestions.append("建议核实噬菌体生物学机制的准确性，确保科学概念正确")
+            suggestions.append("Verify phage-biological mechanisms for scientific correctness.")
 
         if accuracy_assessment["concept_coverage"] < 2:
-            suggestions.append("建议补充噬菌体生命周期、宿主特异性等核心概念")
+            suggestions.append("Add core concepts such as phage life cycle and host specificity.")
 
         # Clinical relevance suggestions
         if clinical_evaluation["relevance_score"] < 0.6:
-            suggestions.append("建议增加噬菌体治疗应用的临床相关内容")
+            suggestions.append("Increase clinically relevant content for phage-therapy applications.")
 
         if not clinical_evaluation["safety_conscious"]:
-            suggestions.append("建议增加临床安全性和副作用的讨论")
+            suggestions.append("Add discussion of clinical safety and side effects.")
 
         # Safety and regulatory suggestions
         if safety_assessment["safety_score"] < 0.5:
-            suggestions.append("建议加强生物安全和监管合规方面的内容")
+            suggestions.append("Strengthen biosafety and regulatory-compliance coverage.")
 
         if not safety_assessment["regulatory_aware"]:
-            suggestions.append("建议补充药物审批和质量控制相关要求")
+            suggestions.append("Include drug approval and quality-control requirements.")
 
         # LLM expert suggestions
         llm_suggestions = llm_phage_evaluation.get("improvement_suggestions", [])
@@ -594,7 +520,7 @@ Return the result in JSON format:
         # Innovation suggestions
         innovation_score = llm_phage_evaluation.get("innovation_potential", 0.5)
         if innovation_score < 0.6:
-            suggestions.append("建议增加噬菌体领域的最新研究进展和创新应用")
+            suggestions.append("Add recent phage-research advances and innovative applications.")
 
         return suggestions[:8]  # Limit to top 8 suggestions
 

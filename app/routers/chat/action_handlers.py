@@ -133,7 +133,7 @@ def maybe_synthesize_phagescope_saveall_analysis(agent: Any, steps: List[AgentSt
     missing = save_result.get("missing_artifacts") or []
     missing_text = ""
     if isinstance(missing, list) and missing:
-        missing_text = f"（部分缺失：{', '.join(str(x) for x in missing)}）"
+        missing_text = f" (partial missing: {', '.join(str(x) for x in missing)})"
 
     # Parse key jsons (best-effort)
     phage_info = None
@@ -216,14 +216,14 @@ def maybe_synthesize_phagescope_saveall_analysis(agent: Any, steps: List[AgentSt
             protein_count = None
 
     lines: List[str] = []
-    lines.append(f"已下载到：{output_dir}{missing_text}")
+    lines.append(f"Downloaded to: {output_dir}{missing_text}")
     if status_code == 207:
-        lines.append("提示：本次为 207（部分成功），核心结果可用，我已按可用结果继续解读。")
+        lines.append("Note: status 207 (partial success). Core results are available and interpretation continues with available artifacts.")
 
     lines.append("")
-    lines.append("## 结构化解读")
+    lines.append("## Structured Interpretation")
     if isinstance(qsum, dict):
-        lines.append("- **质量指标**：")
+        lines.append("- **Quality Metrics**:")
         lines.append(
             "  - contig_id={cid}, length={clen}, gene_count={gc}, checkv_quality={cq}, miuvig_quality={mq}, completeness={comp}, contamination={cont}".format(
                 cid=qsum.get("contig_id"),
@@ -236,26 +236,26 @@ def maybe_synthesize_phagescope_saveall_analysis(agent: Any, steps: List[AgentSt
             )
         )
     else:
-        lines.append("- **质量指标**：未能读取 `metadata/quality.json`，请检查该文件是否存在或是否被安全策略拦截。")
+        lines.append("- **Quality Metrics**: Could not read `metadata/quality.json`; check file existence and security-policy restrictions.")
 
-    lines.append("- **宿主/生活方式**：")
+    lines.append("- **Host / Lifestyle**:")
     if host or lifestyle or taxonomy:
         lines.append(f"  - host={host}, lifestyle={lifestyle}, taxonomy={taxonomy}")
         lines.append(f"  - length={length}, genes={genes}, gc_content={gc_content}")
     else:
-        lines.append("  - 未能读取 `metadata/phage_info.json` 或内容为空。")
+        lines.append("  - Could not read `metadata/phage_info.json`, or it is empty.")
 
-    lines.append("- **蛋白注释**：")
+    lines.append("- **Protein Annotation**:")
     if protein_count is not None:
-        lines.append(f"  - 蛋白数量：{protein_count}")
+        lines.append(f"  - Protein count: {protein_count}")
     else:
-        lines.append("  - 蛋白数量：未能统计（可稍后补充读取 proteins.json/tsv）")
+        lines.append("  - Protein count: unavailable (you can later read proteins.json/tsv).")
     if top5:
-        lines.append("  - 前 5 条注释：")
+        lines.append("  - Top 5 annotations:")
         for i, item in enumerate(top5, 1):
             lines.append(f"    {i}. {item}")
     else:
-        lines.append("  - 前 5 条注释：未能从 `annotation/proteins.tsv` 提取（可能缺失或读取失败）。")
+        lines.append("  - Top 5 annotations: failed to extract from `annotation/proteins.tsv` (missing file or read error).")
 
     return "\n".join(lines).strip()
 
@@ -283,8 +283,9 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         )
 
     params = dict(action.parameters or {})
+    original_task: Optional[str] = None
 
-    # 🔄 如果 LLM 指定了 target_task_id，优先使用它来更新任务状态
+    # 🔄 If LLM specified target_task_id, prioritize it for task-status updates.
     target_task_id = params.pop("target_task_id", None)
     if target_task_id is not None:
         try:
@@ -528,171 +529,19 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         params = clean_params
 
     elif tool_name == "claude_code":
-        # Claude Code CLI - requires task parameter
-        task_value = params.get("task")
-        if not isinstance(task_value, str) or not task_value.strip():
-            return AgentStep(
-                action=action,
-                success=False,
-                message="claude_code requires a non-empty `task` string.",
-                details={"error": "invalid_task", "tool": tool_name},
-            )
-
-        task_node, context_error = agent._resolve_claude_code_task_context()
-        if context_error or task_node is None:
-            context_messages = {
-                "missing_plan_binding": "claude_code execution requires a bound plan. Please create/bind a plan first.",
-                "missing_target_task": "claude_code execution requires a target atomic task context. Please select or run a task first.",
-                "invalid_target_task": "claude_code execution requires a valid numeric task id.",
-                "plan_tree_unavailable": "Unable to load the current plan tree. Please retry after refreshing plan state.",
-                "target_task_not_found": "The selected task was not found in the current plan.",
-                "target_task_not_atomic": "claude_code can only execute atomic tasks. Please decompose this task and execute a leaf task.",
-            }
-            return AgentStep(
-                action=action,
-                success=False,
-                message=context_messages.get(
-                    context_error or "",
-                    "claude_code execution requires a bound atomic task context.",
-                ),
-                details={
-                    "error": context_error or "missing_task_context",
-                    "tool": tool_name,
-                    "requires_plan_binding": True,
-                    "requires_atomic_task": True,
-                },
-            )
-
-        # 🔍 A-mem集成：查询历史执行经验
-        original_task = task_value.strip()
-        amem_hints = ""
-        amem_experiences = []
-        
-        try:
-            from app.services.amem_client import get_amem_client
-            amem_client = get_amem_client()
-            
-            if amem_client.enabled:
-                # 查询相似的历史执行经验
-                amem_experiences = await amem_client.query_experiences(
-                    query=original_task,
-                    top_k=3
-                )
-                
-                if amem_experiences:
-                    amem_hints = agent._summarize_amem_experiences_for_cc(
-                        amem_experiences
-                    )
-                    logger.info(
-                        f"[AMEM] Injected compact hints from {len(amem_experiences)} historical experiences"
-                    )
-        except Exception as amem_err:
-            logger.warning(f"[AMEM] Failed to query experiences: {amem_err}")
-            # 继续执行，不影响主流程
-
-        # Optional: allowed_tools parameter
-        allowed_tools = agent._normalize_csv_arg(params.get("allowed_tools"))
-
-        # Optional: add_dirs parameter
-        add_dirs_raw = agent._normalize_csv_arg(params.get("add_dirs"))
-
-        # ------------------------------------------------------------------
-        # Build data_context: inject absolute paths of previously collected
-        # data so CC can find files without searching the whole filesystem.
-        # ------------------------------------------------------------------
-        data_context_lines: List[str] = []
-        extra = agent.extra_context or {}
-
-        # 1. PhageScope save_all output directory (quality.json, proteins.tsv, …)
-        phagescope_output = extra.get("phagescope_last_output") or {}
-        if isinstance(phagescope_output, dict):
-            ps_output_dir = phagescope_output.get("output_dir") or phagescope_output.get("output_directory")
-            if ps_output_dir:
-                data_context_lines.append(f"PhageScope output directory: {ps_output_dir}")
-                data_context_lines.append(f"  - {ps_output_dir}/metadata/quality.json  (CheckV quality)")
-                data_context_lines.append(f"  - {ps_output_dir}/metadata/phage_info.json  (host/lifestyle/taxonomy)")
-                data_context_lines.append(f"  - {ps_output_dir}/annotation/proteins.tsv  (protein annotations)")
-                # Add the output dir to allowed dirs so CC can access it
-                if add_dirs_raw:
-                    add_dirs_raw = f"{add_dirs_raw},{ps_output_dir}"
-                else:
-                    add_dirs_raw = ps_output_dir
-
-        # 2. Recent tool results: summarise file paths returned by file_operations
-        recent_results: List[Any] = extra.get("recent_tool_results") or []
-        if isinstance(recent_results, list):
-            file_paths_seen: List[str] = []
-            for res_item in recent_results[-6:]:  # last 6 only
-                if not isinstance(res_item, dict):
-                    continue
-                # file_operations read results contain a "path" key
-                res_inner = res_item.get("result") or {}
-                if isinstance(res_inner, dict):
-                    fpath = res_inner.get("path") or res_inner.get("file_path")
-                    if fpath and fpath not in file_paths_seen:
-                        file_paths_seen.append(fpath)
-            if file_paths_seen:
-                data_context_lines.append("Files already read by previous steps (content in context):")
-                for fp in file_paths_seen:
-                    data_context_lines.append(f"  - {fp}")
-
-        data_context = "\n".join(data_context_lines) if data_context_lines else None
-
-        constrained_task = agent._compose_claude_code_atomic_task_prompt(
-            task_node=task_node,
-            original_task=original_task,
-            amem_hints=amem_hints,
-            data_context=data_context,
+        prepared = await agent._prepare_claude_code_params(
+            action=action,
+            tool_name=tool_name,
+            params=params,
         )
-
-        # Build final params (严格原子任务执行约束)
-        params = {
-            "task": constrained_task,
-        }
-        if allowed_tools:
-            params["allowed_tools"] = allowed_tools
-        if add_dirs_raw:
-            params["add_dirs"] = add_dirs_raw
-
-        # 会话/任务上下文信息，便于 runtime 归档与溯源
-        if agent.session_id:
-            params["session_id"] = agent.session_id
-        params["plan_id"] = task_node.plan_id
-        params["task_id"] = task_node.id
-
-        # 🚀 实时日志回调注入
-        # 获取当前上下文中的 job_id (在 _execute_action 中已经 set_current_job)
-        current_job_id = get_current_job()
-        # 如果没有找到 (例如同步调用)，尝试使用 sync_job_id
-        if not current_job_id:
-            current_job_id, _ = agent._resolve_job_meta()
-        
-        if current_job_id:
-            async def log_stdout(line: str):
-                """将 stdout 实时写入 job logs"""
-                plan_decomposition_jobs.append_log(
-                    current_job_id,
-                    "stdout",
-                    line,
-                    {},
-                )
-
-            async def log_stderr(line: str):
-                """将 stderr 实时写入 job logs"""
-                plan_decomposition_jobs.append_log(
-                    current_job_id,
-                    "stderr",
-                    line,
-                    {},
-                )
-
-            params["on_stdout"] = log_stdout
-            params["on_stderr"] = log_stderr
+        if isinstance(prepared, AgentStep):
+            return prepared
+        params, original_task = prepared
 
     elif tool_name == "document_reader":
         operation = params.get("operation")
         file_path = params.get("file_path")
-        
+
         if not operation or not file_path:
             return AgentStep(
                 action=action,
@@ -700,8 +549,8 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 message="document_reader requires `operation` and `file_path`.",
                 details={"error": "missing_params", "tool": tool_name},
             )
-        
-        # 验证操作类型
+
+        # Validate action type.
         if operation not in [
             "read_pdf",
             "read_image",
@@ -1241,8 +1090,8 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         )
 
     sanitized = _sanitize_tool_result_fn(tool_name, raw_result)
-    # For optional local file reads (e.g., one-shot phagescope download+analyze),
-    # treat read failures as non-fatal and continue the chain.
+    # For optional local file reads, keep failure semantics but annotate the
+    # result so callers can decide whether to continue.
     try:
         is_optional = (
             isinstance(action.metadata, dict) and bool(action.metadata.get("optional"))
@@ -1258,7 +1107,6 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             patched = dict(sanitized)
             patched["optional"] = True
             patched["optional_error"] = patched.get("error") or "read_failed"
-            patched["success"] = True
             sanitized = patched
     except Exception:
         pass
@@ -1423,71 +1271,34 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
     else:
         message = summary or f"{tool_name} finished execution."
 
-    # 💾 A-mem集成：保存执行结果（异步，不阻塞主流程）
+    # 💾 A-mem integration: save execution result asynchronously without blocking.
     if tool_name == "claude_code":
         try:
             from app.services.amem_client import get_amem_client
             amem_client = get_amem_client()
-            
+
             if amem_client.enabled:
-                # 异步保存到A-mem
+                # Save to A-mem asynchronously.
                 asyncio.create_task(
                     amem_client.save_execution(
-                        task=original_task,  # 使用原始任务描述
+                        task=original_task,  # Use original task description.
                         result=sanitized,
                         session_id=agent.session_id,
                         plan_id=agent.plan_session.plan_id,
-                        key_findings=summary  # 将总结作为关键发现
+                        key_findings=summary  # Use summary as key findings.
                     )
                 )
                 logger.info("[AMEM] Scheduled execution result save")
         except Exception as amem_err:
             logger.warning(f"[AMEM] Failed to schedule save: {amem_err}")
-            # 不影响主流程
+            # Do not affect main flow.
 
-    # 🔄 任务状态同步：如果有关联的 current_task_id，更新任务状态
-    current_task_id = agent.extra_context.get("current_task_id")
-    if current_task_id is not None and agent.plan_session.plan_id is not None:
-        try:
-            new_status = "completed" if success else "failed"
-            task_id_int = int(current_task_id)
-            
-            # 更新当前任务状态
-            agent.plan_session.repo.update_task(
-                agent.plan_session.plan_id,
-                task_id_int,
-                status=new_status,
-                execution_result=summary or message,
-            )
-            logger.info(
-                "[TASK_SYNC] Updated task %s status to %s after tool %s execution",
-                current_task_id,
-                new_status,
-                tool_name,
-            )
-            
-            # 🔄 级联更新：如果是 root 任务完成，也更新所有子任务
-            if new_status == "completed":
-                cascade_result = f"Completed as part of parent task #{task_id_int}"
-                descendants_updated = agent.plan_session.repo.cascade_update_descendants_status(
-                    agent.plan_session.plan_id,
-                    task_id_int,
-                    status=new_status,
-                    execution_result=cascade_result,
-                )
-                if descendants_updated > 0:
-                    logger.info(
-                        "[TASK_SYNC] Cascade updated %d descendant tasks to %s",
-                        descendants_updated,
-                        new_status,
-                    )
-            
-            agent._dirty = True
-        except Exception as sync_err:
-            logger.warning(
-                "[TASK_SYNC] Failed to update task %s status: %s",
-                current_task_id,
-                sync_err,
+    agent._sync_task_status_after_tool_execution(
+    tool_name=tool_name,
+    success=success,
+        summary=summary,
+            message=message,
+            params=params,
             )
 
     return AgentStep(
@@ -1536,7 +1347,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             description=description,
             metadata=metadata,
         )
-        
+
         # Create a ROOT task first - enforce a single root node for the plan
         raw_tasks = params.get("tasks")
         root_node = agent.plan_session.repo.create_task(
@@ -1549,7 +1360,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         )
         root_task_id: Optional[int] = root_node.id
         logger.info("Created ROOT task %s for plan %s", root_task_id, new_tree.id)
-        
+
         # If the caller provided an explicit task list, materialize it immediately
         created_seed_tasks: List[Any] = []
         if isinstance(raw_tasks, list) and raw_tasks:
@@ -1686,9 +1497,9 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         tree = agent._require_plan_bound()
         if agent.plan_executor is None:
             raise ValueError("Plan executor is not enabled in this environment.")
-        # 构建会话上下文，传递给 Plan 执行器
+        # Build session context and pass to plan executor.
         session_ctx = {
-            "session_id": agent.session_id,  # 用于工具调用
+            "session_id": agent.session_id,  # For tool calls.
             "user_message": agent._current_user_message if hasattr(agent, "_current_user_message") else None,
             "chat_history": agent.history,
             "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
@@ -2000,9 +1811,9 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
         task_id = agent._coerce_int(task_id_raw, "task_id")
         if agent.plan_executor is None:
             raise ValueError("Plan executor is not enabled in this environment.")
-        # 构建会话上下文，传递给任务执行器
+        # Build session context and pass to task executor.
         session_ctx = {
-            "session_id": agent.session_id,  # 用于工具调用
+            "session_id": agent.session_id,  # For tool calls.
             "user_message": agent._current_user_message if hasattr(agent, "_current_user_message") else None,
             "chat_history": agent.history,
             "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
@@ -2057,7 +1868,7 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
                 }
 
         task_id_raw = params.get("task_id")
-        # 构建会话上下文，传递给 Plan 分解器
+        # Build session context and pass to plan decomposer.
         session_ctx = {
             "user_message": agent._current_user_message if hasattr(agent, "_current_user_message") else None,
             "chat_history": agent.history,

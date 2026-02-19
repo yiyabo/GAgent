@@ -83,7 +83,7 @@ class PlanTree(BaseModel):
 
     def to_outline(self, max_depth: int = 3, max_nodes: int = 40, include_results: bool = True) -> str:
         """Render the plan as a compact outline for prompts.
-        
+
         Args:
             max_depth: Maximum depth to render
             max_nodes: Maximum number of nodes to render
@@ -98,21 +98,19 @@ class PlanTree(BaseModel):
             status_marker = f"[{node.status}]" if node.status != "pending" else ""
             instruction = node.instruction.strip() if node.instruction else ""
             snippet = instruction[:90] + ("..." if instruction and len(instruction) > 90 else "")
-            
-            # 构建基本行
+
             line = f"{indent}- [{node.id}] {node.display_name()} {status_marker}"
             if snippet:
                 line += f" :: {snippet}"
             lines.append(line)
-            
-            # 如果任务已完成且有执行结果，显示结果摘要
+
             status_norm = str(node.status or "").strip().lower()
             if include_results and status_norm in {"completed", "done"} and node.execution_result:
                 result_snippet = node.execution_result.strip()[:200]
                 if len(node.execution_result) > 200:
                     result_snippet += "..."
                 lines.append(f"{indent}  └─ Result: {result_snippet}")
-            
+
             counter[0] += 1
             for child_id in self.children_ids(node_id):
                 _render(child_id, depth + 1, lines, counter)

@@ -1,12 +1,12 @@
 # Bio Tools Docker Images Summary
 
-> 基于 NC_TOOLS.MD 中论文工具列表整理的 Docker 镜像版本
+>  NC_TOOLS.MD  Docker 
 
 ---
 
-## 1) 流程编排与测序数据预处理（QC / 去宿主）
+## 1) （QC / ）
 
-| 工具 | 版本 | Docker镜像 | 状态 |
+|  |  | Docker |  |
 |------|------|-----------|------|
 | Nextflow | v22.10.5 | `nextflow/nextflow:22.10.5` | ✅ |
 | HTStream SuperDeduper | v1.3.3 | `quay.io/biocontainers/htstream:1.3.3--hf5e1c6e_5` | ✅ |
@@ -19,13 +19,13 @@
 
 ---
 
-## 2) 组装、基因预测、分箱（MAGs）
+## 2) （MAGs）
 
-| 工具 | 版本 | Docker镜像 | 状态 |
+|  |  | Docker |  |
 |------|------|-----------|------|
 | MEGAHIT | v1.2.9 | `quay.io/biocontainers/megahit:1.2.9--haf24da9_8` | ✅ |
 | metaFlye | v2.9.2-b1786 | `staphb/flye:2.9.2` / `staphb/flye:latest` | ✅ |
-| myloasm | v0.1.0 | ❌ 无Docker镜像 (需 `pip install myloasm`) | ⏳ pip |
+| myloasm | v0.1.0 | ❌ Docker ( `pip install myloasm`) | ⏳ pip |
 | Bakta | v1.8.2 | `staphb/bakta:latest` | ✅ |
 | MetaBAT | v2.5 / v2.15 | `quay.io/biocontainers/metabat2:2.15--h986a166_1` | ✅ |
 | CONCOCT | v1.1.0 | `quay.io/biocontainers/concoct:1.1.0--py312h71dcd68_8` | ✅ |
@@ -36,9 +36,9 @@
 
 ---
 
-## 3) 噬菌体预测、质量控制与短读/长读对比
+## 3) /
 
-| 工具 | 版本 | Docker镜像 | 状态 |
+|  |  | Docker |  |
 |------|------|-----------|------|
 | geNomad | v1.7.6 | `quay.io/biocontainers/genomad:1.7.6--pyhdfd78af_0` | ✅ |
 | VIBRANT | v1.2.1 | `quay.io/biocontainers/vibrant:1.2.1--hdfd78af_4` | ✅ |
@@ -52,9 +52,9 @@
 
 ---
 
-## 4) 进化/变异与宿主预测相关分析
+## 4) /
 
-| 工具 | 版本 | Docker镜像 | 状态 |
+|  |  | Docker |  |
 |------|------|-----------|------|
 | FastANI | v1.34 | `staphb/fastani:latest` | ✅ |
 | NGMLR | v0.2.7 | `quay.io/biocontainers/ngmlr:0.2.7--h077b44d_10` | ✅ |
@@ -64,68 +64,68 @@
 
 ---
 
-## 5) 基因内容/共线性可视化 + 移动元件相关扫描
+## 5) / + 
 
-| 工具 | 版本 | 安装方式 | 状态 |
+|  |  |  |  |
 |------|------|-----------|------|
-| AliTV | - | Web工具 / `pip install alitv-python` | ⏳ pip |
+| AliTV | - | Web / `pip install alitv-python` | ⏳ pip |
 | pharokka | v1.6.1 | `bjhall/pharokka:1.6.1` | ✅ |
 | LoVis4u | v0.1.4.1 | `quay.io/biocontainers/lovis4u:0.1.4.1--pyh7e72e81_0` | ✅ |
-| HMMER | v3.4 | `staphb/hmmer:latest` | ✅ 已安装 |
-| ISEScan | v1.7.2.3 | ❌ 无Docker镜像 (`pip install isescan`) | ⏳ pip |
-| NCBI Datasets tool | - | 无独立Docker镜像 (`ncbi/edirect` 或 `pip install ncbi-datasets-cli`) | ⏳ pip |
+| HMMER | v3.4 | `staphb/hmmer:latest` | ✅  |
+| ISEScan | v1.7.2.3 | ❌ Docker (`pip install isescan`) | ⏳ pip |
+| NCBI Datasets tool | - | Docker (`ncbi/edirect`  `pip install ncbi-datasets-cli`) | ⏳ pip |
 
 ---
 
-## 6) 补充工具
+## 6) 
 
-| 工具 | 版本 | 安装方式 | 状态 |
+|  |  |  |  |
 |------|------|-----------|------|
-| Phanta | v1.0 | ❌ 无Docker镜像 (`pip install phanta`) | ⏳ pip |
-| DamageProfiler | v1.1 | ❌ 无Docker镜像 (需手动安装) | ⏳ 手动 |
+| Phanta | v1.0 | ❌ Docker (`pip install phanta`) | ⏳ pip |
+| DamageProfiler | v1.1 | ❌ Docker () | ⏳  |
 | Prodigal | - | `docker.byoryn.cn/biocontainers/prodigal:v1-2.6.3-4-deb_cv1` | ✅ |
 | SeqKit | - | `staphb/seqkit:2.8.0` / `quay.io/biocontainers/seqkit:2.8.1--h9ee0642_0` | ✅ |
 
 ---
 
-## 统计
+## 
 
-| 类别 | Docker安装 | pip/手动安装 | 未安装 | 总计 |
+|  | Docker | pip/ |  |  |
 |------|------------|--------------|--------|------|
-| 流程编排与QC | 8 | 0 | 0 | 8 |
-| 组装/分箱/MAGs | 9 | 1 (myloasm) | 0 | 10 |
-| 噬菌体预测 | 8 | 0 | 0 | 8 |
-| 进化/变异分析 | 5 | 0 | 0 | 5 |
-| 可视化/移动元件 | 3 | 2 (AliTV, ISEScan) | 1 (NCBI Datasets*) | 6 |
-| 补充工具 | 2 | 1 (Phanta) | 1 (DamageProfiler) | 4 |
-| **总计** | **35** | **4** | **2** | **41** |
+| QC | 8 | 0 | 0 | 8 |
+| //MAGs | 9 | 1 (myloasm) | 0 | 10 |
+|  | 8 | 0 | 0 | 8 |
+| / | 5 | 0 | 0 | 5 |
+| / | 3 | 2 (AliTV, ISEScan) | 1 (NCBI Datasets*) | 6 |
+|  | 2 | 1 (Phanta) | 1 (DamageProfiler) | 4 |
+| **** | **35** | **4** | **2** | **41** |
 
-> *NCBI Datasets 可通过 `ncbi/edirect` Docker镜像或 `pip install ncbi-datasets-cli` 安装
+> *NCBI Datasets  `ncbi/edirect` Docker `pip install ncbi-datasets-cli` 
 
 ---
 
-## 状态说明
+## 
 
-| 标记 | 含义 |
+|  |  |
 |------|------|
-| ✅ | Docker镜像已下载到服务器 |
-| ⏳ pip | 需通过 pip 安装 |
-| ⏳ 手动 | 需手动安装或编译 |
-| ⏳ 其他 | 有其他安装方式（非独立Docker） |
+| ✅ | Docker |
+| ⏳ pip |  pip  |
+| ⏳  |  |
+| ⏳  | （Docker） |
 
 ---
 
-## 安装命令参考
+## 
 
 ```bash
-# pip 安装工具
+# pip 
 pip install myloasm                    # myloasm
 pip install alitv-python               # AliTV
 pip install isescan                    # ISEScan
 pip install ncbi-datasets-cli          # NCBI Datasets CLI
 pip install phanta                     # Phanta
 
-# Docker 方式
-docker pull staphb/hmmer               # HMMER (已安装)
-docker pull ncbi/edirect               # NCBI EDirect (含datasets功能)
+# Docker 
+docker pull staphb/hmmer               # HMMER ()
+docker pull ncbi/edirect               # NCBI EDirect (datasets)
 ```

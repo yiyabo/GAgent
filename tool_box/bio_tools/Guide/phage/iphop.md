@@ -42,7 +42,7 @@ docker run --rm -v /path/to/data:/data -v /path/to/db:/db quay.io/biocontainers/
 ## Examples for Agent
 
 ### Example 1: Predict Hosts
-**User Request**: "预测这些噬菌体的宿主"
+**User Request**: ""
 
 **Agent Command**:
 ```bash

@@ -1,4 +1,4 @@
-/* DAG 全屏可视化样式 - Claude Style */
+/* DAG  - Claude Style */
 
 :root {
   --dag-bg: #faf9f7;
@@ -17,7 +17,7 @@
   --dag-radius-lg: 12px;
 }
 
-/* 全屏容器 - 温暖的米白色背景 */
+/*  -  */
 .dag-fullscreen-container {
   position: relative;
   width: 100%;
@@ -31,7 +31,7 @@
   background: var(--dag-bg);
 }
 
-/* 网络图容器 */
+/* network */
 .dag-network-wrapper {
   position: absolute;
   top: 0;
@@ -41,7 +41,7 @@
   z-index: 1;
 }
 
-/* 工具栏 - 简洁扁平 */
+/*  -  */
 .dag-toolbar {
   position: absolute;
   top: 20px;
@@ -92,7 +92,7 @@
   margin: 6px 4px;
 }
 
-/* 图例面板 - 简约白色卡片 */
+/*  -  */
 .dag-legend-panel {
   position: absolute;
   top: 20px;
@@ -124,7 +124,7 @@
   color: var(--dag-text-secondary);
 }
 
-/* 节点信息面板 */
+/*  */
 .dag-node-info-panel {
   position: absolute;
   bottom: 20px;
@@ -210,7 +210,7 @@
   word-break: break-word;
 }
 
-/* 搜索栏 - 简洁胶囊形 */
+/* search -  */
 .dag-search-bar {
   position: absolute;
   top: 20px;
@@ -252,7 +252,7 @@
   font-size: 13px;
 }
 
-/* 统计栏 - 紧凑胶囊 */
+/*  -  */
 .dag-stats-bar {
   position: absolute;
   bottom: 20px;
@@ -304,7 +304,7 @@
   50% { opacity: 0.6; transform: scale(1.1); }
 }
 
-/* 全屏提示 */
+/* hint */
 .dag-fullscreen-hint {
   position: absolute;
   bottom: 72px;
@@ -332,42 +332,42 @@
   100% { opacity: 0; }
 }
 
-/* 响应式 */
+/*  */
 @media (max-width: 768px) {
   .dag-toolbar {
-    top: 12px;
-    right: 12px;
-    padding: 4px;
+  top: 12px;
+  right: 12px;
+  padding: 4px;
   }
 
   .dag-toolbar-btn {
-    width: 28px;
-    height: 28px;
+  width: 28px;
+  height: 28px;
   }
 
   .dag-legend-panel {
-    display: none;
+  display: none;
   }
 
   .dag-search-bar {
-    width: 180px;
-    max-width: calc(100% - 180px);
+  width: 180px;
+  max-width: calc(100% - 180px);
   }
 
   .dag-node-info-panel {
-    max-width: none;
-    left: 12px;
-    right: 12px;
-    bottom: 12px;
+  max-width: none;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
   }
 }
 
 /* ============================================ */
-/* 3D DAG 视图 - Claude 风格                   */
+/* 3D DAG  - Claude  */
 /* ============================================ */
 
 /* ============================================ */
-/* 索引卡片风格 DAG - 专业但温暖                 */
+/*  DAG -  */
 /* ============================================ */
 
 .dag-sticky-container {
@@ -379,7 +379,7 @@
   background: #f5f3ed;
 }
 
-/* 优雅的纸质纹理 */
+/*  */
 .dag-sticky-container::before {
   content: '';
   position: absolute;
@@ -388,18 +388,18 @@
   right: 0;
   bottom: 0;
   background: 
-    repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 39px,
-      rgba(179, 212, 252, 0.08) 39px,
-      rgba(179, 212, 252, 0.08) 40px
-    );
+  repeating-linear-gradient(
+  0deg,
+  transparent,
+  transparent 39px,
+  rgba(179, 212, 252, 0.08) 39px,
+  rgba(179, 212, 252, 0.08) 40px
+  );
   pointer-events: none;
   z-index: 0;
 }
 
-/* 柔和的边缘晕染 */
+/*  */
 .dag-sticky-container::after {
   content: '';
   position: absolute;
@@ -408,15 +408,15 @@
   right: 0;
   bottom: 0;
   background: radial-gradient(
-    ellipse at center,
-    transparent 40%,
-    rgba(245, 243, 237, 0.8) 100%
+  ellipse at center,
+  transparent 40%,
+  rgba(245, 243, 237, 0.8) 100%
   );
   pointer-events: none;
   z-index: 0;
 }
 
-/* 索引卡片图例样式 */
+/*  */
 .dag-card-legend {
   font-family: Georgia, 'Times New Roman', serif;
 }
@@ -463,11 +463,11 @@
 
 .dag-legend-line-dashed {
   background: repeating-linear-gradient(
-    90deg,
-    #c9a87c 0px,
-    #c9a87c 6px,
-    transparent 6px,
-    transparent 10px
+  90deg,
+  #c9a87c 0px,
+  #c9a87c 6px,
+  transparent 6px,
+  transparent 10px
   );
 }
 
@@ -477,7 +477,7 @@
   font-size: 10px;
 }
 
-/* 工具栏动效 */
+/*  */
 .dag-sticky-container .dag-toolbar {
   animation: slideInRight 0.4s ease-out;
 }
@@ -496,55 +496,55 @@
 
 @keyframes slideInRight {
   from {
-    opacity: 0;
-    transform: translateX(20px);
+  opacity: 0;
+  transform: translateX(20px);
   }
   to {
-    opacity: 1;
-    transform: translateX(0);
+  opacity: 1;
+  transform: translateX(0);
   }
 }
 
 @keyframes slideInLeft {
   from {
-    opacity: 0;
-    transform: translateX(-20px);
+  opacity: 0;
+  transform: translateX(-20px);
   }
   to {
-    opacity: 1;
-    transform: translateX(0);
+  opacity: 1;
+  transform: translateX(0);
   }
 }
 
 @keyframes slideInDown {
   from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(-10px);
+  opacity: 0;
+  transform: translateX(-50%) translateY(-10px);
   }
   to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
   }
 }
 
 @keyframes slideInUp {
   from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(10px);
+  opacity: 0;
+  transform: translateX(-50%) translateY(10px);
   }
   to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
   }
 }
 
-/* 搜索框聚焦动效 */
+/* search */
 .dag-sticky-container .dag-search-input:focus {
   border-color: #b8860b;
   box-shadow: 0 0 0 3px rgba(184, 134, 11, 0.1);
 }
 
-/* 工具栏按钮悬停 */
+/*  */
 .dag-sticky-container .dag-toolbar-btn {
   transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -554,7 +554,7 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-/* 统计数字 */
+/*  */
 .dag-stats-count {
   font-weight: 600;
   color: var(--dag-text-primary);
@@ -562,7 +562,7 @@
 }
 
 /* ============================================ */
-/* 3D 视图样式（保留兼容）                       */
+/* 3D ()  */
 /* ============================================ */
 
 .dag-3d-container {
@@ -598,7 +598,7 @@
   z-index: 0;
 }
 
-/* 确保 canvas 在正确层级 */
+/*  canvas  */
 .dag-3d-container > div:first-child {
   position: absolute !important;
   top: 0;
@@ -612,7 +612,7 @@
   z-index: 1;
 }
 
-/* UI 元素层级 */
+/* UI  */
 .dag-3d-container .dag-toolbar,
 .dag-3d-container .dag-search-bar,
 .dag-3d-container .dag-legend-panel,
@@ -622,7 +622,7 @@
   z-index: 100;
 }
 
-/* 3D 图例 - 球形指示器 */
+/* 3D  -  */
 .dag-legend-sphere {
   width: 10px;
   height: 10px;
@@ -639,7 +639,7 @@
   line-height: 1.5;
 }
 
-/* 3D 状态点 - Claude 风格色彩 */
+/* 3D status - Claude  */
 .dag-3d-stats .dag-stats-dot.pending {
   background: #d97706;
 }
@@ -656,13 +656,13 @@
   background: #dc2626;
 }
 
-/* 工具提示 */
+/* hint */
 .dag-3d-container .scene-tooltip {
   pointer-events: none !important;
   z-index: 1000 !important;
 }
 
-/* 加载状态 */
+/* loadstatus */
 .dag-3d-loading {
   position: absolute;
   top: 50%;
@@ -693,7 +693,7 @@
   font-size: 13px;
 }
 
-/* 空状态 */
+/* status */
 .dag-empty-state {
   position: absolute;
   top: 50%;
@@ -714,10 +714,10 @@
 }
 
 /* ============================================ */
-/* 任务详情抽屉样式                              */
+/* task  */
 /* ============================================ */
 
-/* 确保抽屉在全屏模式下正确显示 */
+/*  */
 .dag-task-drawer {
   position: absolute !important;
   z-index: 1000 !important;
@@ -731,7 +731,7 @@
   cursor: default;
 }
 
-/* 确保关闭按钮可点击 */
+/* close */
 .dag-task-drawer .ant-drawer-close {
   position: relative;
   z-index: 10;
@@ -793,7 +793,7 @@
   overflow-y: auto;
 }
 
-/* 抽屉内 Tabs 样式优化 */
+/*  Tabs  */
 .dag-sticky-container .ant-drawer .ant-tabs-nav {
   margin-bottom: 12px;
 }
@@ -813,13 +813,13 @@
   font-size: 12px;
 }
 
-/* Collapse 样式 */
+/* Collapse  */
 .dag-sticky-container .ant-collapse-ghost > .ant-collapse-item > .ant-collapse-header {
   padding: 8px 0;
   font-size: 12px;
 }
 
-/* 滚动条美化 */
+/*  */
 .task-context-box::-webkit-scrollbar,
 .task-result-box::-webkit-scrollbar,
 .task-metadata-box::-webkit-scrollbar {

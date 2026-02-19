@@ -1,8 +1,4 @@
-"""
-Code Generator Module
-
-代码生成器，根据数据集元数据和任务描述生成 Python 代码。
-"""
+"""Code generation helpers for analysis tasks."""
 
 import json
 import logging
@@ -21,12 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 class CodeTaskResponse(BaseModel):
-    """LLM生成代码的响应结构，包含代码和描述。"""
-    code: str = Field(..., description="生成的可执行Python代码")
-    description: str = Field(..., description="代码描述：说明这段代码想要获取什么信息或分析什么内容")
-    has_visualization: bool = Field(default=False, description="本次代码是否包含可视化（图表、绘图等）")
-    visualization_purpose: Optional[str] = Field(None, description="可视化目的：为什么画这个图，想分析什么，有什么意义")
-    visualization_analysis: Optional[str] = Field(None, description="可视化分析：图表展示什么结果，特征，计算公式，数据细节等")
+    """Structured response returned by code generation prompts."""
+    code: str = Field(..., description="Python code to execute")
+    description: str = Field(..., description="Short description of generated code")
+    has_visualization: bool = Field(default=False, description="Whether visualization output is expected")
+    visualization_purpose: Optional[str] = Field(None, description="Intended purpose of visualization")
+    visualization_analysis: Optional[str] = Field(None, description="Guidance for interpreting visualization output")
 
     @classmethod
     def parse_from_llm_output(cls, text: str) -> "CodeTaskResponse":
@@ -58,42 +54,25 @@ class CodeTaskResponse(BaseModel):
             except Exception:
                 pass
 
-            # Final fallback: 返回空代码和错误描述
-            return cls(code="", description="解析LLM输出失败")
+            return cls(code="", description="Failed to parse LLM output")
 
 
 class CodeGenerator:
-    """
-    代码生成器
-
-    根据数据集元数据、任务标题和描述生成可执行的 Python 代码。
-    支持多数据集分析。
-
-    使用示例:
-        generator = CodeGenerator(llm_service=my_llm_service)
-        response = generator.generate(
-            metadata_list=[metadata1, metadata2],
-            task_title="计算平均值",
-            task_description="计算销售额的平均值"
-        )
-    """
+    """Generate and repair Python analysis code with LLM prompts."""
 
     def __init__(self, llm_service=None):
         """
-        初始化代码生成器
-
         Args:
-            llm_service: LLM 服务实例，需要有 chat() 方法
+            llm_service: Optional LLM service implementation providing `chat()`.
         """
         if llm_service:
             self.llm = llm_service
         else:
-            # 使用项目默认 LLM 服务
             from app.services.llm.llm_service import get_llm_service
             self.llm = get_llm_service()
 
     def _format_columns_for_metadata(self, metadata: DatasetMetadata) -> str:
-        """格式化单个数据集的列信息"""
+        """Format a compact column summary for prompt context."""
         cols_summary = []
         cols = getattr(metadata, 'columns', [])
         for col in cols[:20]:  # Limit column context
@@ -108,7 +87,7 @@ class CodeGenerator:
         return cols_text
 
     def _format_datasets(self, metadata_list: List[DatasetMetadata]) -> str:
-        """格式化所有数据集的信息"""
+        """Format dataset metadata blocks for prompt input."""
         datasets_info = []
         for i, metadata in enumerate(metadata_list, 1):
             cols_text = self._format_columns_for_metadata(metadata)
@@ -128,17 +107,16 @@ class CodeGenerator:
         task_description: str
     ) -> CodeTaskResponse:
         """
-        生成 Python 代码
+        Generate analysis code.
 
         Args:
-            metadata_list: 数据集元数据列表
-            task_title: 任务标题
-            task_description: 任务描述
+            metadata_list: Dataset metadata list.
+            task_title: Task title.
+            task_description: Task description.
 
         Returns:
-            CodeTaskResponse: 包含生成的代码和描述
+            Parsed code generation result.
         """
-        # 兼容单个 metadata 的情况
         if isinstance(metadata_list, DatasetMetadata):
             metadata_list = [metadata_list]
 
@@ -165,20 +143,19 @@ class CodeGenerator:
         max_retries: int = 5
     ) -> CodeTaskResponse:
         """
-        尝试修复代码
+        Repair previously generated code using execution error feedback.
 
         Args:
-            metadata_list: 数据集元数据列表
-            task_title: 任务标题
-            task_description: 任务描述
-            code: 需要修复的代码
-            error: 执行错误信息
-            max_retries: 最大重试次数
+            metadata_list: Dataset metadata list.
+            task_title: Task title.
+            task_description: Task description.
+            code: Previous code.
+            error: Execution error message.
+            max_retries: Maximum retry attempts.
 
         Returns:
-            CodeTaskResponse: 修复后的代码响应
+            Parsed code repair result.
         """
-        # 兼容单个 metadata 的情况
         if isinstance(metadata_list, DatasetMetadata):
             metadata_list = [metadata_list]
 
@@ -187,7 +164,7 @@ class CodeGenerator:
         current_error = error
 
         for attempt in range(1, max_retries + 1):
-            logger.info(f"代码修复尝试 {attempt}/{max_retries}")
+            logger.info("Code repair attempt %s/%s", attempt, max_retries)
 
             user_prompt = CODER_FIX_PROMPT_TEMPLATE.format(
                 datasets_info=datasets_text,
@@ -203,18 +180,16 @@ class CodeGenerator:
                 response_text = self.llm.chat(prompt=full_prompt)
                 result = CodeTaskResponse.parse_from_llm_output(response_text)
 
-                # 如果解析成功且代码不为空，返回结果
                 if result.code and result.code.strip():
-                    logger.info(f"代码修复成功 (尝试 {attempt}/{max_retries})")
+                    logger.info("Code repair succeeded on attempt %s/%s", attempt, max_retries)
                     return result
 
             except Exception as e:
-                logger.warning(f"代码修复尝试 {attempt} 失败: {e}")
-                current_error = f"{error}\n\n修复尝试 {attempt} 失败: {e}"
+                logger.warning("Code repair attempt %s failed: %s", attempt, e)
+                current_error = f"{error}\n\n {attempt} failed: {e}"
 
-        # 所有尝试都失败，返回原代码
-        logger.error(f"代码修复失败，已尝试 {max_retries} 次")
-        return CodeTaskResponse(code=code, description=f"代码修复失败: 已尝试{max_retries}次")
+        logger.error("Code repair failed after %s attempts", max_retries)
+        return CodeTaskResponse(code=code, description=f"Code repair failed after {max_retries} attempts")
 
     def generate_visualization(
         self,
@@ -223,15 +198,15 @@ class CodeGenerator:
         task_description: str
     ) -> CodeTaskResponse:
         """
-        生成可视化代码（复用 generate 方法，未来可添加可视化专用 prompt）
+        Generate visualization-oriented code.
 
         Args:
-            metadata_list: 数据集元数据列表
-            task_title: 任务标题
-            task_description: 任务描述
+            metadata_list: Dataset metadata list.
+            task_title: Task title.
+            task_description: Task description.
 
         Returns:
-            CodeTaskResponse: 包含生成的代码和描述
+            Parsed code generation result.
         """
         return self.generate(metadata_list, task_title, task_description)
 
@@ -245,17 +220,17 @@ class CodeGenerator:
         max_retries: int = 3
     ) -> CodeTaskResponse:
         """
-        修复可视化代码（复用 fix_code 方法）
+        Repair visualization-oriented code.
 
         Args:
-            metadata_list: 数据集元数据列表
-            task_title: 任务标题
-            task_description: 任务描述
-            code: 需要修复的代码
-            error: 执行错误信息
-            max_retries: 最大重试次数
+            metadata_list: Dataset metadata list.
+            task_title: Task title.
+            task_description: Task description.
+            code: Previous code.
+            error: Execution error message.
+            max_retries: Maximum retry attempts.
 
         Returns:
-            CodeTaskResponse: 修复后的代码响应
+            Parsed code repair result.
         """
         return self.fix_code(metadata_list, task_title, task_description, code, error, max_retries)

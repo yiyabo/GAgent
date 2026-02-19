@@ -108,21 +108,20 @@ def test_plan_first_guardrail_uses_previous_context_for_generic_confirmation() -
     agent.history = [
         {
             "role": "user",
-            "content": "请复现 DeepSEA 论文 P0 指标，并输出 ROC 图和 AUC 对比表。",
+            "content": "Please reproduce DeepSEA P0 metrics and output ROC plots plus an AUC comparison table.",
         }
     ]
-    agent._current_user_message = "可以的，创建吧"
+    agent._current_user_message = "Okay, create it."
 
     structured = LLMStructuredResponse(
-        llm_reply=LLMReply(message="好的"),
+        llm_reply=LLMReply(message="Okay"),
         actions=[
             LLMAction(
                 kind="tool_operation",
                 name="claude_code",
                 parameters={
                     "task": (
-                        "请从0到1完整实现 DeepSEA 复现工作，包括数据处理、模型训练、评估、"
-                        "可视化和论文写作，输出所有最终成果文件并自动执行全部流程。"
+                        "Train and evaluate a DeepSEA baseline, then output ROC plots and an AUC table."
                     )
                 },
                 order=1,

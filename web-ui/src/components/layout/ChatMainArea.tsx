@@ -90,7 +90,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
             }}
           >
             <span style={{ color: 'var(--primary-color)' }}>🧠</span>
-            {item.count} 条相关记忆
+            {item.count} related memories
           </div>
         );
       }
@@ -267,7 +267,7 @@ const ChatMainArea: React.FC = () => {
     return () => observer.disconnect();
   }, []);
 
-  // 初始化会话：优先从后端加载列表
+  // Initialize session: prefer loading list from backend first.
   useEffect(() => {
     (async () => {
       if (currentSession) {
@@ -280,17 +280,17 @@ const ChatMainArea: React.FC = () => {
           await loadChatHistory(selected.id);
           return;
         }
-        const session = startNewSession('AI 任务编排助手');
+        const session = startNewSession('AI Task Orchestration Assistant');
         await loadChatHistory(session.id);
       } catch (err) {
-        console.warn('[ChatMainArea] 会话初始化失败，尝试创建新会话:', err);
-        const session = startNewSession('AI 任务编排助手');
+        console.warn('[ChatMainArea] Session initialization failed; creating a new session:', err);
+        const session = startNewSession('AI Task Orchestration Assistant');
         await loadChatHistory(session.id);
       }
     })();
   }, [currentSession, loadSessions, loadChatHistory, startNewSession]);
 
-  // 处理发送消息
+  // Send message handler.
   const handleSendMessage = async () => {
     if (!inputText.trim() || isProcessing) return;
 
@@ -300,7 +300,7 @@ const ChatMainArea: React.FC = () => {
       task_name: selectedTask?.name ?? currentTaskName ?? undefined,
     };
 
-    // 如果开启了深度思考模式，自动添加 /think 前缀
+    // If Deep Think mode is enabled, auto-prefix with /think.
     let messageToSend = inputText.trim();
     if (deepThinkEnabled && !messageToSend.startsWith('/think')) {
       messageToSend = `/think ${messageToSend}`;
@@ -320,8 +320,8 @@ const ChatMainArea: React.FC = () => {
         (value as 'builtin' | 'perplexity' | 'tavily') ?? null
       );
     } catch (err) {
-      console.error('[ChatMainArea] 切换搜索来源失败:', err);
-      message.error('切换搜索来源失败，请稍后重试。');
+      console.error('[ChatMainArea] Failed to switch search provider:', err);
+      message.error('Failed to switch search provider. Please try again later.');
     }
   };
 
@@ -334,8 +334,8 @@ const ChatMainArea: React.FC = () => {
         (value as 'qwen3.5-plus' | 'qwen3-max-2026-01-23' | 'qwen-turbo') ?? null
       );
     } catch (err) {
-      console.error('[ChatMainArea] 切换基座模型失败:', err);
-      message.error('切换基座模型失败，请稍后重试。');
+      console.error('[ChatMainArea] Failed to switch base model:', err);
+      message.error('Failed to switch base model. Please try again later.');
     }
   };
 
@@ -348,15 +348,15 @@ const ChatMainArea: React.FC = () => {
         (value as 'qwen') ?? null
       );
     } catch (err) {
-      console.error('[ChatMainArea] 切换LLM提供商失败:', err);
-      message.error('切换LLM提供商失败，请稍后重试。');
+      console.error('[ChatMainArea] Failed to switch LLM provider:', err);
+      message.error('Failed to switch LLM provider. Please try again later.');
     }
   };
 
   const providerOptions = [
-    { label: '模型内置搜索', value: 'builtin' },
-    { label: 'Perplexity 搜索', value: 'perplexity' },
-    { label: 'Tavily MCP 搜索', value: 'tavily' },
+    { label: 'Built-in Search', value: 'builtin' },
+    { label: 'Perplexity Search', value: 'perplexity' },
+    { label: 'Tavily MCP Search', value: 'tavily' },
   ];
 
   const providerValue = defaultSearchProvider ?? undefined;
@@ -373,7 +373,7 @@ const ChatMainArea: React.FC = () => {
     { label: 'Qwen-Turbo', value: 'qwen-turbo' },
   ];
 
-  // 处理键盘事件
+  // Keyboard handler.
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -389,14 +389,14 @@ const ChatMainArea: React.FC = () => {
     await loadChatHistory(sessionId, { beforeId: historyBeforeId, append: true });
   }, [currentSession, historyHasMore, historyLoading, historyBeforeId, loadChatHistory]);
 
-  // 快捷操作
+  // Quick actions.
   const quickActions = [
-    { text: '创建新计划', action: () => setInputText('帮我创建一个新的计划') },
-    { text: '查看任务状态', action: () => setInputText('显示当前所有任务的状态') },
-    { text: '系统帮助', action: () => setInputText('我需要帮助，请告诉我可以做什么') },
+    { text: 'Create a new plan', action: () => setInputText('Help me create a new plan') },
+    { text: 'View task status', action: () => setInputText('Show the status of all current tasks') },
+    { text: 'System help', action: () => setInputText('I need help. Tell me what you can do') },
   ];
 
-  // 渲染欢迎界面
+  // Render welcome view.
   const renderWelcome = () => (
     <div style={{
       display: 'flex',
@@ -417,7 +417,7 @@ const ChatMainArea: React.FC = () => {
       />
 
       <Title level={3} style={{ marginBottom: 12, color: '#1f2937' }}>
-        AI 智能任务编排助手
+        AI Intelligent Task Orchestration Assistant
       </Title>
 
       <Text
@@ -428,7 +428,7 @@ const ChatMainArea: React.FC = () => {
           lineHeight: 1.5,
         }}
       >
-        我可以帮你创建计划、分解任务、执行调度，让复杂的项目变得简单高效
+        I can help you create plans, decompose tasks, and orchestrate execution to make complex projects simpler and more efficient.
       </Text>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 280 }}>
@@ -458,7 +458,7 @@ const ChatMainArea: React.FC = () => {
       <Divider style={{ margin: '24px 0', width: '100%' }} />
 
       <Text type="secondary" style={{ fontSize: 13 }}>
-        💡 你可以直接输入自然语言描述你的需求，我会智能理解并帮助执行
+        💡 You can describe your needs in natural language and I will understand and help execute.
       </Text>
     </div>
   );
@@ -470,7 +470,7 @@ const ChatMainArea: React.FC = () => {
       flexDirection: 'column',
       background: 'var(--bg-primary)',
     }}>
-      {/* 头部信息 - 极简设计 */}
+      {/* Header - minimal design */}
       <div style={{
         padding: '12px 20px',
         borderBottom: '1px solid var(--border-color)',
@@ -491,26 +491,26 @@ const ChatMainArea: React.FC = () => {
           />
           <div>
             <Text strong style={{ fontSize: 14, color: 'var(--text-primary)' }}>
-              {currentSession?.title || 'AI 任务编排助手'}
+              {currentSession?.title || 'AI Task Orchestration Assistant'}
             </Text>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
               <Text type="secondary" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                在线
+                Online
               </Text>
             </div>
           </div>
         </div>
 
-        {/* 简化操作区 */}
+        {/* Simplified controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {/* 搜索提供商选择器 */}
+          {/* Search provider selector */}
           <Select
             size="small"
             value={providerValue}
             onChange={handleProviderChange}
             options={providerOptions}
             style={{ width: 130 }}
-            placeholder="搜索来源"
+            placeholder="Search provider"
             disabled={isUpdatingProvider}
           />
 
@@ -520,7 +520,7 @@ const ChatMainArea: React.FC = () => {
             onChange={handleLLMProviderChange}
             options={llmProviderOptions}
             style={{ width: 120 }}
-            placeholder="LLM 提供商"
+            placeholder="LLM provider"
             disabled={isUpdatingLLMProvider}
           />
 
@@ -530,12 +530,12 @@ const ChatMainArea: React.FC = () => {
             onChange={handleBaseModelChange}
             options={baseModelOptions}
             style={{ width: 140 }}
-            placeholder="基座模型"
+            placeholder="Base model"
             disabled={isUpdatingBaseModel}
           />
 
-          {/* Memory 开关 */}
-          <Tooltip title={memoryEnabled ? "记忆已启用" : "记忆已禁用"}>
+          {/* Memory toggle */}
+          <Tooltip title={memoryEnabled ? "Memory enabled" : "Memory disabled"}>
             <Switch
               checked={memoryEnabled}
               onChange={toggleMemory}
@@ -548,7 +548,7 @@ const ChatMainArea: React.FC = () => {
         </div>
       </div>
 
-      {/* 消息区域 */}
+      {/* Message area */}
       <div
         ref={messageContainerRef}
         style={{
@@ -573,7 +573,7 @@ const ChatMainArea: React.FC = () => {
         )}
       </div>
 
-      {/* 输入区域 - Claude 风格 */}
+      {/* Input area - Claude style */}
       <div style={{
         padding: '16px 24px 20px',
         background: 'var(--bg-primary)',
@@ -581,7 +581,7 @@ const ChatMainArea: React.FC = () => {
         flexShrink: 0,
       }}>
         <div style={{ maxWidth: 920, margin: '0 auto' }}>
-          {/* 上传文件列表 */}
+          {/* Uploaded files list */}
           <UploadedFilesList />
 
           <div
@@ -591,7 +591,7 @@ const ChatMainArea: React.FC = () => {
               alignItems: 'stretch',
             }}
           >
-            {/* 左侧上传按钮组 */}
+            {/* Left-side upload controls */}
             <div style={{
               display: 'flex',
               flexDirection: 'row',
@@ -602,7 +602,7 @@ const ChatMainArea: React.FC = () => {
               borderRadius: 'var(--radius-md)',
             }}>
               <FileUploadButton size="small" />
-              <Tooltip title={deepThinkEnabled ? '深度思考已开启' : '开启深度思考模式'}>
+              <Tooltip title={deepThinkEnabled ? 'Deep Think enabled' : 'Enable Deep Think mode'}>
                 <Button
                   type={deepThinkEnabled ? 'primary' : 'text'}
                   icon={<BulbOutlined />}
@@ -618,7 +618,7 @@ const ChatMainArea: React.FC = () => {
               </Tooltip>
             </div>
 
-            {/* 输入框 - Claude 风格 */}
+            {/* Input box - Claude style */}
             <div style={{
               flex: 1,
               background: '#FFFFFF',
@@ -635,7 +635,7 @@ const ChatMainArea: React.FC = () => {
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyPress={handleKeyPress}
-                placeholder="输入你的需求，让我来帮你完成..."
+                placeholder="Describe what you need, and I'll help you complete it..."
                 autoSize={{ minRows: 1, maxRows: 5 }}
                 disabled={isProcessing}
                 style={{
@@ -663,7 +663,7 @@ const ChatMainArea: React.FC = () => {
                   border: 'none',
                 }}
               >
-                发送
+                Send
               </Button>
             </div>
           </div>

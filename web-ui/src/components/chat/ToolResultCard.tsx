@@ -49,7 +49,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
         ? payload.result.fallback_from
         : undefined;
     const labelMap: Record<string, string> = {
-      builtin: '内置搜索',
+      builtin: 'Built-in Search',
       perplexity: 'Perplexity',
     };
     const providerLabelText = providerValue ? labelMap[providerValue] ?? providerValue : undefined;
@@ -58,18 +58,18 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
     const successState = payload.result?.success !== false;
     let headerText =
       payload.summary ??
-      (successState ? '工具执行完成' : '工具执行失败，稍后重试');
-    let intro = '工具调用完成';
+      (successState ? 'Tool execution completed' : 'Tool execution failed. Please try again later.');
+    let intro = 'Tool call completed';
     if (isWeb) {
       headerText =
         payload.summary ??
-        (successState ? '网络搜索已完成' : '网络搜索失败，稍后重试');
-      intro = '已调用 Web 搜索获取实时资料';
+        (successState ? 'Web search completed' : 'Web search failed. Please try again later.');
+      intro = 'Web search has been called to fetch real-time information';
     } else if (isGraph) {
       headerText =
         payload.summary ??
-        (successState ? '知识图谱检索完成' : '知识图谱检索失败');
-      intro = '已查询噬菌体知识图谱';
+        (successState ? 'Knowledge graph retrieval completed' : 'Knowledge graph retrieval failed');
+      intro = 'Phage knowledge graph has been queried';
     }
     const normalizedQuery =
       payload.result?.query ??
@@ -121,7 +121,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
     }
     try {
       setRetryLoading(true);
-      const prompt = `请再次调用 web_search 工具，查询 "${query}"，并总结最新结果。`;
+      const prompt = `Please call the web_search tool again, query "${query}", and summarize the latest results.`;
       await sendMessage(prompt, { tool_retry: true, retry_query: query });
     } finally {
       setRetryLoading(false);
@@ -150,13 +150,13 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           {providerLabel && (
             <Text type="secondary">
-              使用来源：{providerLabel}
-              {fallbackLabel ? `（由 ${fallbackLabel} 兜底）` : ''}
+              Source provider: {providerLabel}
+              {fallbackLabel ? ` (fallback: ${fallbackLabel})` : ''}
             </Text>
           )}
           {query && (
             <Text type="secondary">
-              查询语句：<Text code>{query}</Text>
+              Query: <Text code>{query}</Text>
             </Text>
           )}
           {responseText && (
@@ -171,7 +171,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
           )}
           {metadata && (
             <Text type="secondary">
-              三元组数量：{metadata.triple_count ?? '-'}，扩展层数：{metadata.hops ?? '-'}
+              Triple count: {metadata.triple_count ?? '-'}, hops: {metadata.hops ?? '-'}
             </Text>
           )}
           {searchItems.length > 0 && (
@@ -193,7 +193,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
                       </Text>
                     )}
                     {item?.source && (
-                      <Text type="secondary">来源：{item.source}</Text>
+                      <Text type="secondary">Source: {item.source}</Text>
                     )}
                     {item?.snippet && (
                       <Text style={{ whiteSpace: 'pre-wrap' }}>{item.snippet}</Text>
@@ -214,10 +214,10 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
                       {item.entity1} --[{item.relation}]→ {item.entity2}
                     </Text>
                     <Text type="secondary">
-                      类型: {item.entity1_type ?? '未知'} → {item.entity2_type ?? '未知'}
+                      Type: {item.entity1_type ?? 'unknown'} → {item.entity2_type ?? 'unknown'}
                     </Text>
                     {item.pdf_name && (
-                      <Text type="secondary">来源 PDF: {item.pdf_name}</Text>
+                      <Text type="secondary">Source PDF: {item.pdf_name}</Text>
                     )}
                   </Space>
                 </List.Item>
@@ -228,14 +228,14 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
             <Alert
               type="info"
               showIcon
-              message="返回了知识图谱子图，可在图谱视图中进一步分析。"
+              message="Knowledge-graph subgraph returned. You can analyze it further in graph view."
             />
           )}
           {!success && (
             <Alert
               type="error"
               showIcon
-              message={errorText ?? '搜索失败，请稍后重试。'}
+              message={errorText ?? 'Search failed. Please try again later.'}
             />
           )}
           {!success && query && isWebSearch && (
@@ -246,7 +246,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
               loading={retryLoading}
               style={{ paddingLeft: 0 }}
             >
-              重试搜索
+              Retry search
             </Button>
           )}
         </Space>

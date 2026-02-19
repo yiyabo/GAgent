@@ -3,7 +3,6 @@ import type { PlanNodeResponse, PlanTreeResponse, Task } from '@/types';
 export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
   const nodes = Object.values(tree.nodes || {});
   
-  // 从 parent_id 反向构建子节点关系
   const childrenByParent = new Map<number, number[]>();
   nodes.forEach((node: PlanNodeResponse) => {
     if (node.parent_id != null) {

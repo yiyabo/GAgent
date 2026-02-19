@@ -1,0 +1,357 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, Tuple
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.routers import job_routes
+
+
+def _create_board_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+  CREATE TABLE chat_sessions (
+  id TEXT PRIMARY KEY,
+  plan_id INTEGER
+  );
+
+  CREATE TABLE chat_action_runs (
+  id TEXT PRIMARY KEY,
+  session_id TEXT,
+  user_message TEXT,
+  plan_id INTEGER,
+  status TEXT,
+  structured_json TEXT,
+  created_at TEXT,
+  started_at TEXT,
+  finished_at TEXT
+  );
+
+  CREATE TABLE plan_decomposition_job_index (
+  job_id TEXT PRIMARY KEY,
+  plan_id INTEGER NOT NULL,
+  job_type TEXT NOT NULL DEFAULT 'plan_decompose',
+  created_at TEXT
+  );
+  """
+    )
+    return conn
+
+
+def _insert_action_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    session_id: str | None,
+    plan_id: int | None,
+    status: str,
+    action_name: str,
+    created_at: str,
+) -> None:
+    structured_json = json.dumps(
+        {
+            "actions": [
+                {
+                    "kind": "tool_operation",
+                    "name": action_name,
+                    "parameters": {"task": f"execute {action_name}"},
+                    "order": 1,
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    conn.execute(
+        """
+  INSERT INTO chat_action_runs (
+  id, session_id, user_message, plan_id, status, structured_json, created_at, started_at, finished_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+  """,
+        (run_id, session_id, "run task", plan_id,
+         status, structured_json, created_at),
+    )
+    conn.commit()
+
+
+def _insert_job_index(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str,
+    plan_id: int,
+    created_at: str,
+) -> None:
+    conn.execute(
+        """
+  INSERT INTO plan_decomposition_job_index (job_id, plan_id, job_type, created_at)
+  VALUES (?, ?, 'plan_decompose', ?)
+  """,
+        (job_id, plan_id, created_at),
+    )
+    conn.commit()
+
+
+@pytest.fixture
+def board_api_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Tuple[sqlite3.Connection, Dict[str, Dict[str, Any]], TestClient]]:
+    conn = _create_board_db()
+
+    @contextmanager
+    def _get_db() -> Iterator[sqlite3.Connection]:
+        yield conn
+
+    payloads: Dict[str, Dict[str, Any]] = {}
+
+    def _fake_get_job_payload(
+        job_id: str, include_logs: bool = False
+    ) -> Dict[str, Any] | None:
+        _ = include_logs
+        return payloads.get(job_id)
+
+    monkeypatch.setattr(job_routes, "get_db", _get_db)
+    monkeypatch.setattr(
+        job_routes.plan_decomposition_jobs, "get_job_payload", _fake_get_job_payload
+    )
+
+    app = FastAPI()
+    app.include_router(job_routes.job_router)
+    client = TestClient(app)
+
+    try:
+        yield conn, payloads, client
+    finally:
+        client.close()
+        conn.close()
+
+
+def test_jobs_board_classifies_items_and_exposes_progress_fields(
+    board_api_env: Tuple[sqlite3.Connection, Dict[str, Dict[str, Any]], TestClient],
+) -> None:
+    conn, payloads, client = board_api_env
+
+    _insert_action_run(
+        conn,
+        run_id="act_phage_1",
+        session_id="sess-a",
+        plan_id=None,
+        status="pending",
+        action_name="phagescope",
+        created_at="2026-02-19 10:00:00",
+    )
+    _insert_action_run(
+        conn,
+        run_id="act_claude_1",
+        session_id="sess-a",
+        plan_id=42,
+        status="queued",
+        action_name="claude_code",
+        created_at="2026-02-19 10:01:00",
+    )
+    _insert_job_index(
+        conn,
+        job_id="job_decompose_1",
+        plan_id=42,
+        created_at="2026-02-19 10:02:00",
+    )
+
+    payloads.update(
+        {
+            "act_phage_1": {
+                "job_id": "act_phage_1",
+                "job_type": "chat_action",
+                "status": "running",
+                "stats": {
+                    "tool_progress": {
+                        "taskid": "remote-42",
+                        "status": "running",
+                        "counts": {"done": 2, "total": 8},
+                    }
+                },
+            },
+            "act_claude_1": {
+                "job_id": "act_claude_1",
+                "job_type": "chat_action",
+                "status": "queued",
+            },
+            "job_decompose_1": {
+                "job_id": "job_decompose_1",
+                "job_type": "plan_decompose",
+                "status": "running",
+                "params": {"node_budget": 10},
+                "stats": {"consumed_budget": 3},
+                "metadata": {"target_task_name": ""},
+            },
+        }
+    )
+
+    response = client.get("/jobs/board", params={"limit": 10})
+    assert response.status_code == 200
+    payload = response.json()
+    groups = payload["groups"]
+
+    assert set(groups.keys()) == {"task_creation", "phagescope", "claude_code"}
+    assert payload["total"] == 3
+    assert payload["generated_at"]
+
+    phage_item = groups["phagescope"]["items"][0]
+    assert phage_item["job_id"] == "act_phage_1"
+    assert phage_item["progress_percent"] == 25
+    assert phage_item["progress_status"] == "running"
+    assert phage_item["progress_text"] == "2/8"
+    assert phage_item["done_steps"] == 2
+    assert phage_item["total_steps"] == 8
+    assert phage_item["taskid"] == "remote-42"
+    assert phage_item["remote_status"] == "running"
+
+    claude_item = groups["claude_code"]["items"][0]
+    assert claude_item["job_id"] == "act_claude_1"
+    assert claude_item["progress_percent"] == 0
+    assert claude_item["progress_status"] == "queued"
+
+    creation_item = groups["task_creation"]["items"][0]
+    assert creation_item["job_id"] == "job_decompose_1"
+    assert creation_item["label"] == "Task Creation/Decomposition"
+    assert creation_item["progress_percent"] == 30
+    assert creation_item["progress_status"] == "running"
+    assert creation_item["progress_text"] == "3/10"
+
+
+def test_jobs_board_filters_finished_items_when_requested(
+    board_api_env: Tuple[sqlite3.Connection, Dict[str, Dict[str, Any]], TestClient],
+) -> None:
+    conn, payloads, client = board_api_env
+
+    _insert_action_run(
+        conn,
+        run_id="act_claude_done",
+        session_id="sess-b",
+        plan_id=7,
+        status="pending",
+        action_name="claude_code",
+        created_at="2026-02-19 11:00:00",
+    )
+    _insert_action_run(
+        conn,
+        run_id="act_phage_running",
+        session_id="sess-b",
+        plan_id=7,
+        status="pending",
+        action_name="phagescope",
+        created_at="2026-02-19 11:01:00",
+    )
+    _insert_job_index(
+        conn,
+        job_id="job_decompose_done",
+        plan_id=7,
+        created_at="2026-02-19 11:02:00",
+    )
+    _insert_job_index(
+        conn,
+        job_id="job_decompose_running",
+        plan_id=7,
+        created_at="2026-02-19 11:03:00",
+    )
+
+    payloads.update(
+        {
+            "act_claude_done": {
+                "job_id": "act_claude_done",
+                "job_type": "chat_action",
+                "status": "succeeded",
+            },
+            "act_phage_running": {
+                "job_id": "act_phage_running",
+                "job_type": "chat_action",
+                "status": "running",
+            },
+            "job_decompose_done": {
+                "job_id": "job_decompose_done",
+                "job_type": "plan_decompose",
+                "status": "failed",
+            },
+            "job_decompose_running": {
+                "job_id": "job_decompose_running",
+                "job_type": "plan_decompose",
+                "status": "running",
+            },
+        }
+    )
+
+    response = client.get(
+        "/jobs/board",
+        params={"plan_id": 7, "include_finished": "false"},
+    )
+    assert response.status_code == 200
+    groups = response.json()["groups"]
+
+    assert groups["claude_code"]["items"] == []
+    assert groups["phagescope"]["items"][0]["job_id"] == "act_phage_running"
+    assert groups["task_creation"]["items"][0]["job_id"] == "job_decompose_running"
+
+
+def test_jobs_board_uses_session_plan_binding_for_task_creation(
+    board_api_env: Tuple[sqlite3.Connection, Dict[str, Dict[str, Any]], TestClient],
+) -> None:
+    conn, payloads, client = board_api_env
+
+    conn.execute(
+        "INSERT INTO chat_sessions (id, plan_id) VALUES (?, ?)", ("sess-z", 77))
+    conn.commit()
+
+    _insert_action_run(
+        conn,
+        run_id="act_session_phage",
+        session_id="sess-z",
+        plan_id=None,
+        status="pending",
+        action_name="phagescope",
+        created_at="2026-02-19 12:00:00",
+    )
+    _insert_job_index(
+        conn,
+        job_id="job_plan_77",
+        plan_id=77,
+        created_at="2026-02-19 12:01:00",
+    )
+    _insert_job_index(
+        conn,
+        job_id="job_plan_88",
+        plan_id=88,
+        created_at="2026-02-19 12:02:00",
+    )
+
+    payloads.update(
+        {
+            "act_session_phage": {
+                "job_id": "act_session_phage",
+                "job_type": "chat_action",
+                "status": "running",
+            },
+            "job_plan_77": {
+                "job_id": "job_plan_77",
+                "job_type": "plan_decompose",
+                "status": "running",
+            },
+            "job_plan_88": {
+                "job_id": "job_plan_88",
+                "job_type": "plan_decompose",
+                "status": "running",
+            },
+        }
+    )
+
+    response = client.get("/jobs/board", params={"session_id": "sess-z"})
+    assert response.status_code == 200
+    groups = response.json()["groups"]
+
+    creation_ids = {item["job_id"]
+                    for item in groups["task_creation"]["items"]}
+    assert "job_plan_77" in creation_ids
+    assert "job_plan_88" not in creation_ids

@@ -1,7 +1,7 @@
 """
-基准测试相关API端点
+relatedAPI
 
-包含系统性能基准测试和配置比较功能。
+systemconfiguration. 
 """
 
 from fastapi import APIRouter, HTTPException, Body

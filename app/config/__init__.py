@@ -1,7 +1,7 @@
 """
-配置管理包
+configuration
 
-统一管理系统的各种配置，包括数据库路径、缓存设置等。
+systemconfiguration, databasepath, . 
 """
 
 from .database_config import (

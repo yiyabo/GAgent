@@ -2,8 +2,8 @@
 """
 Bio Tools Handler
 
-执行生物信息学 Docker 工具的处理器。
-支持 35+ 生物信息学工具，每个工具运行在独立 Docker 容器中。
+ Docker 
+ 35+ ， Docker 
 """
 
 import asyncio
@@ -17,14 +17,14 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# 配置
+# 
 BIO_TOOLS_CONFIG_PATH = Path(__file__).parent / "tools_config.json"
 RUNTIME_BASE_DIR = os.getenv("BIO_TOOLS_RUNTIME_DIR", "/home/zczhao/GAgent/runtime/bio_tools")
-DEFAULT_TIMEOUT = 3600  # 1小时默认超时
+DEFAULT_TIMEOUT = 3600  # 1
 
 
 def load_tools_config() -> Dict[str, Any]:
-    """加载工具配置"""
+    """"""
     if not BIO_TOOLS_CONFIG_PATH.exists():
         logger.error(f"Tools config not found: {BIO_TOOLS_CONFIG_PATH}")
         return {}
@@ -33,12 +33,12 @@ def load_tools_config() -> Dict[str, Any]:
         return json.load(f)
 
 
-# 全局配置缓存
+# 
 _tools_config: Optional[Dict[str, Any]] = None
 
 
 def get_tools_config() -> Dict[str, Any]:
-    """获取工具配置（带缓存）"""
+    """（）"""
     global _tools_config
     if _tools_config is None:
         _tools_config = load_tools_config()
@@ -46,7 +46,7 @@ def get_tools_config() -> Dict[str, Any]:
 
 
 def get_available_bio_tools() -> List[Dict[str, Any]]:
-    """获取可用的生物信息学工具列表"""
+    """"""
     config = get_tools_config()
     tools = []
     for name, info in config.items():
@@ -60,7 +60,7 @@ def get_available_bio_tools() -> List[Dict[str, Any]]:
 
 
 def ensure_tool_directory(tool_name: str) -> Path:
-    """确保工具运行目录存在"""
+    """"""
     tool_dir = Path(RUNTIME_BASE_DIR) / tool_name
     tool_dir.mkdir(parents=True, exist_ok=True)
     return tool_dir
@@ -73,7 +73,7 @@ def build_docker_command(
     output_file: Optional[str] = None,
     extra_params: Optional[Dict[str, str]] = None,
 ) -> str:
-    """构建 Docker 运行命令"""
+    """ Docker """
     config = get_tools_config()
     
     if tool_name not in config:
@@ -90,17 +90,17 @@ def build_docker_command(
     image = tool_config["image"]
     command_template = op_config["command"]
     
-    # 确保工具目录存在
+    # 
     tool_dir = ensure_tool_directory(tool_name)
     
-    # 准备挂载目录 - 必须使用绝对路径
+    #  - 
     tool_dir_abs = str(tool_dir.resolve())
     mounts = [f"-v {tool_dir_abs}:/work"]
     
-    # 如果有输入文件，挂载输入文件目录
+    # ，
     if input_file:
         input_path = Path(input_file)
-        # 转换为绝对路径
+        # 
         if not input_path.is_absolute():
             input_path = input_path.resolve()
         
@@ -111,81 +111,81 @@ def build_docker_command(
         else:
             logger.warning(f"Input file not found: {input_path}")
     
-    # 如果是 checkv，添加数据库挂载
+    #  checkv，
     if tool_name == "checkv":
-        # CheckV 数据库路径 (服务器上的固定位置)
+        # CheckV  ()
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5"
         mounts.append(f"-v {db_path}:/work/database")
     
-    # 如果是 genomad，添加数据库挂载
+    #  genomad，
     if tool_name == "genomad":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/genomad/genomad_db"
         mounts.append(f"-v {db_path}:/work/database")
     
-    # 如果是 virsorter2，添加数据库挂载
+    #  virsorter2，
     if tool_name == "virsorter2":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/virsorter2/db/db"
         mounts.append(f"-v {db_path}:/work/database")
     
-    # 如果是 iphop，添加数据库挂载
+    #  iphop，
     if tool_name == "iphop":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/iphop"
         mounts.append(f"-v {db_path}:/work/database")
 
-    # 如果是 checkm，添加数据库挂载
+    #  checkm，
     if tool_name == "checkm":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/checkm_data"
         mounts.append(f"-v {db_path}:/work/database")
 
-    # 如果是 gtdbtk，添加数据库挂载
+    #  gtdbtk，
     if tool_name == "gtdbtk":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/gtdbtk/gtdbtk_r220_data"
         mounts.append(f"-v {db_path}:/work/database")
 
-    # 构建命令参数
+    # 
     params = {
         "input": input_file or "",
         "output": f"/work/{output_file}" if output_file else "",
         "output_dir": "/work",
     }
 
-    # 添加额外参数
+    # 
     if extra_params:
         params.update(extra_params)
 
-    # 如果有 db 参数，检查是否需要挂载数据库路径
+    #  db ，
     db_path = params.get('db')
     if db_path:
         db_path_obj = Path(db_path)
-        # 如果是绝对路径且文件存在，挂载其父目录
+        # ，
         if db_path_obj.is_absolute() and db_path_obj.exists():
             db_dir_abs = str(db_path_obj.parent.resolve())
-            # 检查是否已经挂载了这个目录
+            # 
             mount_exists = any(f"-v {db_dir_abs}:" in m for m in mounts)
             if not mount_exists:
                 mounts.append(f"-v {db_dir_abs}:/db:ro")
-                # 将路径转换为容器内路径
+                # 
                 params['db'] = f"/db/{db_path_obj.name}"
         elif not db_path_obj.is_absolute():
-            # 相对路径，假设在 tool_dir 中
+            # ， tool_dir 
             params['db'] = f"/work/{db_path}"
 
-    # 如果是 bakta，添加数据库挂载
+    #  bakta，
     if tool_name == "bakta":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/bakta/db"
         mounts.append(f"-v {db_path}:/work/database")
 
-    # 如果是 minimap2 filter，添加参考基因组挂载
+    #  minimap2 filter，
     if tool_name == "minimap2" and operation == "filter":
         ref_path = params.get('reference', '')
         if ref_path.endswith('.mmi'):
             ref_dir = str(Path(ref_path).parent.resolve())
             mounts.append(f"-v {ref_dir}:/work/reference:ro")
     
-    # 替换模板中的占位符
+    # 
     command = command_template.format(**params)
     
-    # 构建完整的 Docker 命令
+    #  Docker 
     mount_str = " ".join(mounts)
     import os
     uid = os.getuid()
@@ -201,13 +201,13 @@ async def execute_docker_command(
     timeout: int = DEFAULT_TIMEOUT,
     capture_output: bool = True,
 ) -> Dict[str, Any]:
-    """执行 Docker 命令"""
+    """ Docker """
     logger.info(f"Executing: {command}")
     
     start_time = datetime.now()
     
     try:
-        # 使用 asyncio.create_subprocess_shell 异步执行
+        #  asyncio.create_subprocess_shell 
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE if capture_output else None,
@@ -262,22 +262,22 @@ async def bio_tools_handler(
     timeout: int = DEFAULT_TIMEOUT,
 ) -> Dict[str, Any]:
     """
-    生物信息学工具处理器
+    
     
     Args:
-        tool_name: 工具名称 (如 "seqkit", "blast", "prodigal")
-        operation: 操作类型 (如 "stats", "blastn", "predict")
-        input_file: 输入文件路径
-        output_file: 输出文件名（保存在工具目录中）
-        params: 额外参数
-        timeout: 超时时间（秒）
+        tool_name:  ( "seqkit", "blast", "prodigal")
+        operation:  ( "stats", "blastn", "predict")
+        input_file: 
+        output_file: （）
+        params: 
+        timeout: （）
     
     Returns:
-        执行结果字典
+        
     """
     logger.info(f"Bio tools handler called: tool={tool_name}, operation={operation}")
     
-    # 特殊操作：列出可用工具
+    # ：
     if tool_name == "list" or operation == "list":
         tools = get_available_bio_tools()
         return {
@@ -287,7 +287,7 @@ async def bio_tools_handler(
             "count": len(tools),
         }
     
-    # 特殊操作：获取工具帮助
+    # ：
     if operation == "help":
         config = get_tools_config()
         if tool_name not in config:
@@ -298,7 +298,7 @@ async def bio_tools_handler(
             }
         
         tool_config = config[tool_name]
-        # 返回更详细的操作信息，包括 notes 和 extra_params
+        # ， notes  extra_params
         operations_detail = {}
         for op, info in tool_config.get("operations", {}).items():
             operations_detail[op] = {
@@ -316,7 +316,7 @@ async def bio_tools_handler(
             "operations": operations_detail,
         }
     
-    # 验证工具和操作
+    # 
     config = get_tools_config()
     if tool_name not in config:
         return {
@@ -326,7 +326,7 @@ async def bio_tools_handler(
         }
     
     try:
-        # 构建 Docker 命令
+        #  Docker 
         docker_cmd = build_docker_command(
             tool_name=tool_name,
             operation=operation,
@@ -335,14 +335,14 @@ async def bio_tools_handler(
             extra_params=params,
         )
         
-        # 执行命令
+        # 
         result = await execute_docker_command(docker_cmd, timeout=timeout)
         
-        # 添加工具信息
+        # 
         result["tool"] = tool_name
         result["operation"] = operation
         
-        # 如果有输出文件，添加输出路径
+        # ，
         if output_file and result.get("success"):
             tool_dir = ensure_tool_directory(tool_name)
             result["output_path"] = str(tool_dir / output_file)
@@ -366,7 +366,7 @@ async def bio_tools_handler(
         }
 
 
-# 工具定义（用于注册到 tool_box）
+# （ tool_box）
 bio_tools_tool = {
     "name": "bio_tools",
     "description": """Execute bioinformatics tools in Docker containers.
