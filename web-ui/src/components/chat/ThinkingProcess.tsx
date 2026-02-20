@@ -1,13 +1,20 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ThinkingProcess as ThinkingProcessType, ThinkingStep } from '@/types';
 import { CaretRightOutlined, LoadingOutlined, CheckCircleOutlined, InfoCircleOutlined, BulbOutlined, ToolOutlined, SearchOutlined } from '@ant-design/icons';
 import { motion, AnimatePresence } from 'framer-motion';
-import { theme, Tag, Tooltip } from 'antd';
-import classNames from 'classnames';
+import { Button } from 'antd';
 
 interface ThinkingProcessProps {
     process: ThinkingProcessType;
     isFinished?: boolean;
+    canControl?: boolean;
+    onPause?: () => void;
+    onResume?: () => void;
+    onSkipStep?: () => void;
+    paused?: boolean;
+    controlDisabled?: boolean;
+    controlBusy?: boolean;
+    controlBusyAction?: 'pause' | 'resume' | 'skip_step' | null;
 }
 
 const ThinkingStepItem: React.FC<{ step: ThinkingStep; index: number; isLast: boolean; isFinished?: boolean }> = ({ step, index, isLast, isFinished }) => {
@@ -47,6 +54,8 @@ const ThinkingStepItem: React.FC<{ step: ThinkingStep; index: number; isLast: bo
             actionDetails = { tool: 'unknown', params: step.action };
         }
     }
+
+    const [expandedResult, setExpandedResult] = useState(false);
 
     return (
         <motion.div
@@ -144,16 +153,30 @@ const ThinkingStepItem: React.FC<{ step: ThinkingStep; index: number; isLast: bo
                             borderTop: '1px dashed var(--border-color)',
                             paddingTop: 8,
                         }}>
-                            <span style={{ color: 'var(--success-color)', fontWeight: 500 }}>Result: </span>
-                            <span style={{
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                                <span style={{ color: 'var(--success-color)', fontWeight: 500 }}>Result:</span>
+                                <Button
+                                    type="link"
+                                    size="small"
+                                    onClick={() => setExpandedResult((prev) => !prev)}
+                                    style={{ padding: 0, height: 'auto' }}
+                                >
+                                    {expandedResult ? 'Collapse' : 'Expand'}
+                                </Button>
+                            </div>
+                            <pre style={{
                                 color: 'var(--text-secondary)',
-                                display: '-webkit-box',
-                                WebkitLineClamp: 3,
-                                WebkitBoxOrient: 'vertical',
-                                overflow: 'hidden',
+                                maxHeight: expandedResult ? 240 : 72,
+                                overflow: 'auto',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                                margin: 0,
+                                background: 'var(--bg-primary)',
+                                padding: 8,
+                                borderRadius: 6,
                             }}>
                                 {step.action_result}
-                            </span>
+                            </pre>
                         </div>
                     )}
                 </div>
@@ -174,10 +197,20 @@ const getMainSteps = (steps: ThinkingStep[]): ThinkingStep[] => {
     });
 };
 
-export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ process, isFinished }) => {
+export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
+    process,
+    isFinished,
+    canControl = false,
+    onPause,
+    onResume,
+    onSkipStep,
+    paused = false,
+    controlDisabled = false,
+    controlBusy = false,
+    controlBusyAction = null,
+}) => {
     // Default to collapsed when finished, expanded when active
     const [isExpanded, setIsExpanded] = useState(!isFinished && process.status === 'active');
-    const contentRef = useRef<HTMLDivElement>(null);
 
     // Calculate main steps count for display
     const mainStepsCount = getMainSteps(process.steps).length;
@@ -272,6 +305,27 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({ process, isFin
                         </div>
                     </div>
                 </div>
+
+                {canControl && (
+                    <div style={{ padding: '0 16px 10px', display: 'flex', gap: 8 }}>
+                        <Button
+                            size="small"
+                            onClick={paused ? onResume : onPause}
+                            disabled={controlDisabled}
+                            loading={controlBusy && ((paused && controlBusyAction === 'resume') || (!paused && controlBusyAction === 'pause'))}
+                        >
+                            {paused ? 'Resume' : 'Pause'}
+                        </Button>
+                        <Button
+                            size="small"
+                            onClick={onSkipStep}
+                            disabled={controlDisabled}
+                            loading={controlBusy && controlBusyAction === 'skip_step'}
+                        >
+                            Skip Step
+                        </Button>
+                    </div>
+                )}
 
                 {/* Content Area */}
                 <AnimatePresence initial={false}>

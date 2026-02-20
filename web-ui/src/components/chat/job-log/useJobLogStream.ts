@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { ENV } from '@/config/env';
 import { planTreeApi } from '@api/planTree';
-import type { ActionLogEntry, DecompositionJobStatus, JobLogEvent } from '@/types';
+import type { ActionLogEntry, DecompositionJobStatus, JobLogEvent, ThinkingProcess, ThinkingStep } from '@/types';
 import { dispatchPlanSyncEvent } from '@utils/planSyncEvents';
 import { FINAL_STATUSES, MAX_RENDER_LOGS, parseStreamData } from './constants';
 
@@ -11,6 +11,226 @@ interface UseJobLogStreamOptions {
   planId?: number | null;
   jobType?: string | null;
 }
+
+const _normalizeThinkingStatus = (value: unknown): ThinkingStep['status'] => {
+  const key = String(value ?? '').trim().toLowerCase();
+  if (
+    key === 'pending' ||
+    key === 'thinking' ||
+    key === 'calling_tool' ||
+    key === 'analyzing' ||
+    key === 'done' ||
+    key === 'completed' ||
+    key === 'error'
+  ) {
+    return key;
+  }
+  return 'thinking';
+};
+
+const _extractActionTool = (action: unknown): string | null => {
+  if (typeof action !== 'string' || !action.trim()) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(action);
+    if (parsed && typeof parsed === 'object' && typeof parsed.tool === 'string') {
+      return parsed.tool.trim().toLowerCase();
+    }
+  } catch (_error) {
+    // Keep best-effort fallback for non-JSON action text.
+  }
+  return action.trim().toLowerCase();
+};
+
+const _stringifyToolPayload = (payload: any): string => {
+  if (typeof payload?.summary === 'string' && payload.summary.trim()) {
+    return payload.summary;
+  }
+  if (typeof payload?.error === 'string' && payload.error.trim()) {
+    return payload.error;
+  }
+  try {
+    return JSON.stringify(payload ?? {}, null, 2);
+  } catch (_error) {
+    return String(payload ?? '');
+  }
+};
+
+const _mergeToolResultIntoSteps = (
+  steps: ThinkingStep[],
+  tool: string,
+  payload: any
+): ThinkingStep[] => {
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return steps;
+  }
+  const next = [...steps];
+  const toolName = String(tool || '').trim().toLowerCase();
+  const iteration = Number(payload?.iteration);
+
+  let targetIndex = Number.isFinite(iteration) && iteration > 0
+    ? next.findIndex((item) => item.iteration === iteration)
+    : -1;
+
+  if (targetIndex < 0 && toolName) {
+    for (let idx = next.length - 1; idx >= 0; idx -= 1) {
+      const itemTool = _extractActionTool(next[idx]?.action);
+      if (itemTool && itemTool === toolName) {
+        targetIndex = idx;
+        break;
+      }
+    }
+  }
+
+  if (targetIndex < 0) {
+    targetIndex = next.length - 1;
+  }
+  if (targetIndex < 0) {
+    return next;
+  }
+
+  const current = next[targetIndex];
+  const success = typeof payload?.success === 'boolean' ? payload.success : true;
+  const nextResult = current.action_result || _stringifyToolPayload(payload);
+
+  next[targetIndex] = {
+    ...current,
+    status: success ? 'done' : 'error',
+    action_result: nextResult,
+  };
+  return next;
+};
+
+const _rebuildThinkingFromLogs = (
+  logs: JobLogEvent[],
+  jobStatus?: string | null
+): {
+  process: ThinkingProcess;
+  streamPaused: boolean;
+  lastRuntimeControlAction: string | null;
+  lastRuntimeControlAt: string | null;
+} => {
+  const steps: ThinkingStep[] = [];
+  let streamPaused = false;
+  let lastRuntimeControlAction: string | null = null;
+  let lastRuntimeControlAt: string | null = null;
+
+  const upsertStep = (step: ThinkingStep) => {
+    if (!Number.isFinite(step.iteration) || step.iteration <= 0) {
+      return;
+    }
+    const index = steps.findIndex((item) => item.iteration === step.iteration);
+    if (index >= 0) {
+      steps[index] = {
+        ...steps[index],
+        ...step,
+      };
+    } else {
+      steps.push(step);
+    }
+    steps.sort((a, b) => a.iteration - b.iteration);
+  };
+
+  const appendDelta = (iteration: number, delta: string) => {
+    if (!Number.isFinite(iteration) || iteration <= 0 || !delta) {
+      return;
+    }
+    const index = steps.findIndex((item) => item.iteration === iteration);
+    if (index >= 0) {
+      steps[index] = {
+        ...steps[index],
+        thought: `${steps[index].thought || ''}${delta}`,
+        status: steps[index].status || 'thinking',
+      };
+      return;
+    }
+    steps.push({
+      iteration,
+      thought: delta,
+      status: 'thinking',
+    });
+    steps.sort((a, b) => a.iteration - b.iteration);
+  };
+
+  for (const event of logs || []) {
+    const metadata = event?.metadata ?? {};
+    const subType = String(metadata?.sub_type || '').trim().toLowerCase();
+    if (!subType) {
+      continue;
+    }
+
+    if (subType === 'thinking_step') {
+      const rawStep = metadata?.step ?? {};
+      const iteration = Number(rawStep?.iteration ?? 0);
+      if (!Number.isFinite(iteration) || iteration <= 0) {
+        continue;
+      }
+      upsertStep({
+        iteration,
+        thought: String(rawStep?.thought ?? ''),
+        action: rawStep?.action ?? null,
+        action_result: rawStep?.action_result ?? null,
+        status: _normalizeThinkingStatus(rawStep?.status),
+        timestamp: typeof rawStep?.timestamp === 'string' ? rawStep.timestamp : undefined,
+        self_correction:
+          rawStep?.self_correction == null ? null : String(rawStep?.self_correction),
+        started_at: typeof rawStep?.started_at === 'string' ? rawStep.started_at : undefined,
+        finished_at: typeof rawStep?.finished_at === 'string' ? rawStep.finished_at : undefined,
+      });
+      continue;
+    }
+
+    if (subType === 'thinking_delta') {
+      appendDelta(
+        Number(metadata?.iteration ?? 0),
+        String(metadata?.delta ?? '')
+      );
+      continue;
+    }
+
+    if (subType === 'tool_call_result') {
+      const merged = _mergeToolResultIntoSteps(
+        steps,
+        String(metadata?.tool ?? ''),
+        metadata?.payload
+      );
+      steps.splice(0, steps.length, ...merged);
+      continue;
+    }
+
+    if (subType === 'runtime_control') {
+      const actionRaw = String(metadata?.action || '').trim().toLowerCase();
+      const action = actionRaw === 'skip' ? 'skip_step' : actionRaw;
+      if (action === 'pause') {
+        streamPaused = true;
+      } else if (action === 'resume') {
+        streamPaused = false;
+      }
+      lastRuntimeControlAction = action || null;
+      if (typeof event?.timestamp === 'string' && event.timestamp) {
+        lastRuntimeControlAt = event.timestamp;
+      }
+      continue;
+    }
+  }
+
+  const normalizedStatus = String(jobStatus || '').trim().toLowerCase();
+  let processStatus: ThinkingProcess['status'] = 'active';
+  if (FINAL_STATUSES.has(normalizedStatus)) {
+    processStatus = normalizedStatus === 'failed' ? 'error' : 'completed';
+  }
+
+  return {
+    process: {
+      status: processStatus,
+      steps,
+    },
+    streamPaused,
+    lastRuntimeControlAction,
+    lastRuntimeControlAt,
+  };
+};
 
 export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJobType }: UseJobLogStreamOptions) {
   const PROGRESS_SYNC_THROTTLE_MS = 10000;
@@ -34,6 +254,15 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
   const [cliLogError, setCliLogError] = React.useState<string | null>(null);
   const [cliLogTruncated, setCliLogTruncated] = React.useState(false);
   const [cliLogPath, setCliLogPath] = React.useState<string | null>(null);
+  const [thinkingProcess, setThinkingProcess] = React.useState<ThinkingProcess>({
+    status: 'active',
+    steps: [],
+  });
+  const [streamPaused, setStreamPaused] = React.useState(false);
+  const [lastRuntimeControlAction, setLastRuntimeControlAction] = React.useState<string | null>(null);
+  const [lastRuntimeControlAt, setLastRuntimeControlAt] = React.useState<string | null>(null);
+  const [runtimeControlBusy, setRuntimeControlBusy] = React.useState(false);
+  const [runtimeControlBusyAction, setRuntimeControlBusyAction] = React.useState<'pause' | 'resume' | 'skip_step' | null>(null);
 
   const sourceRef = React.useRef<EventSource | null>(null);
   const pollerRef = React.useRef<number | null>(null);
@@ -63,7 +292,13 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
       setResolvedPlanId(snapshot.plan_id);
     }
     if (Array.isArray(snapshot.logs)) {
-      setLogs(snapshot.logs.slice(-MAX_RENDER_LOGS));
+      const replayLogs = snapshot.logs.slice(-MAX_RENDER_LOGS);
+      setLogs(replayLogs);
+      const rebuilt = _rebuildThinkingFromLogs(replayLogs, snapshot.status);
+      setThinkingProcess(rebuilt.process);
+      setStreamPaused(rebuilt.streamPaused);
+      setLastRuntimeControlAction(rebuilt.lastRuntimeControlAction);
+      setLastRuntimeControlAt(rebuilt.lastRuntimeControlAt);
     }
     if (Array.isArray(snapshot.action_logs)) {
       setActionLogs(snapshot.action_logs);
@@ -82,6 +317,65 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
         return next.slice(-MAX_RENDER_LOGS);
       }
       return next;
+    });
+  }, []);
+
+  const mergeThinkingStep = React.useCallback((step: ThinkingStep) => {
+    setThinkingProcess((prev) => {
+      const nextSteps = [...(prev.steps || [])];
+      const idx = nextSteps.findIndex((item) => item.iteration === step.iteration);
+      if (idx >= 0) {
+        nextSteps[idx] = {
+          ...nextSteps[idx],
+          ...step,
+        };
+      } else {
+        nextSteps.push(step);
+      }
+      nextSteps.sort((a, b) => a.iteration - b.iteration);
+      return {
+        ...prev,
+        status: 'active',
+        steps: nextSteps,
+      };
+    });
+  }, []);
+
+  const appendThinkingDelta = React.useCallback((iteration: number, delta: string) => {
+    if (!delta) return;
+    setThinkingProcess((prev) => {
+      const nextSteps = [...(prev.steps || [])];
+      const idx = nextSteps.findIndex((item) => item.iteration === iteration);
+      if (idx >= 0) {
+        nextSteps[idx] = {
+          ...nextSteps[idx],
+          thought: `${nextSteps[idx].thought || ''}${delta}`,
+          status: nextSteps[idx].status || 'thinking',
+        };
+      } else {
+        nextSteps.push({
+          iteration,
+          thought: delta,
+          status: 'thinking',
+        });
+      }
+      nextSteps.sort((a, b) => a.iteration - b.iteration);
+      return {
+        ...prev,
+        status: 'active',
+        steps: nextSteps,
+      };
+    });
+  }, []);
+
+  const mergeToolResult = React.useCallback((tool: string, payload: any) => {
+    setThinkingProcess((prev) => {
+      const currentSteps = Array.isArray(prev.steps) ? prev.steps : [];
+      return {
+        ...prev,
+        status: 'active',
+        steps: _mergeToolResultIntoSteps(currentSteps, tool, payload),
+      };
     });
   }, []);
 
@@ -196,6 +490,77 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
     }
   }, [jobId]);
 
+  const pauseExecution = React.useCallback(async () => {
+    setRuntimeControlBusy(true);
+    setRuntimeControlBusyAction('pause');
+    try {
+      const resp = await planTreeApi.controlJob(jobId, { action: 'pause' });
+      if (resp.success) {
+        setStreamPaused(true);
+        setLastRuntimeControlAction('pause');
+        setLastRuntimeControlAt(new Date().toISOString());
+      }
+      return resp;
+    } catch (err) {
+      return {
+        success: false,
+        job_id: jobId,
+        action: 'pause',
+        message: err instanceof Error ? err.message : 'Failed to pause execution',
+      };
+    } finally {
+      setRuntimeControlBusy(false);
+      setRuntimeControlBusyAction(null);
+    }
+  }, [jobId]);
+
+  const resumeExecution = React.useCallback(async () => {
+    setRuntimeControlBusy(true);
+    setRuntimeControlBusyAction('resume');
+    try {
+      const resp = await planTreeApi.controlJob(jobId, { action: 'resume' });
+      if (resp.success) {
+        setStreamPaused(false);
+        setLastRuntimeControlAction('resume');
+        setLastRuntimeControlAt(new Date().toISOString());
+      }
+      return resp;
+    } catch (err) {
+      return {
+        success: false,
+        job_id: jobId,
+        action: 'resume',
+        message: err instanceof Error ? err.message : 'Failed to resume execution',
+      };
+    } finally {
+      setRuntimeControlBusy(false);
+      setRuntimeControlBusyAction(null);
+    }
+  }, [jobId]);
+
+  const skipCurrentStep = React.useCallback(async () => {
+    setRuntimeControlBusy(true);
+    setRuntimeControlBusyAction('skip_step');
+    try {
+      const resp = await planTreeApi.controlJob(jobId, { action: 'skip_step' });
+      if (resp.success) {
+        setLastRuntimeControlAction('skip_step');
+        setLastRuntimeControlAt(new Date().toISOString());
+      }
+      return resp;
+    } catch (err) {
+      return {
+        success: false,
+        job_id: jobId,
+        action: 'skip_step',
+        message: err instanceof Error ? err.message : 'Failed to skip current step',
+      };
+    } finally {
+      setRuntimeControlBusy(false);
+      setRuntimeControlBusyAction(null);
+    }
+  }, [jobId]);
+
   React.useEffect(() => {
     applySnapshot(initialJob ?? null);
   }, [applySnapshot, initialJob, jobId]);
@@ -218,6 +583,12 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
   React.useEffect(() => {
     completionNotifiedRef.current = false;
     progressSyncAtRef.current = 0;
+    setThinkingProcess({ status: 'active', steps: [] });
+    setStreamPaused(false);
+    setLastRuntimeControlAction(null);
+    setLastRuntimeControlAt(null);
+    setRuntimeControlBusy(false);
+    setRuntimeControlBusyAction(null);
   }, [jobId]);
 
   React.useEffect(() => {
@@ -352,6 +723,12 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
           if (parsed.status) {
             setStatus(parsed.status);
             statusRef.current = parsed.status;
+            if (FINAL_STATUSES.has(parsed.status)) {
+              setThinkingProcess((prev) => ({
+                ...prev,
+                status: parsed.status === 'failed' ? 'error' : 'completed',
+              }));
+            }
           }
           if (parsed.stats) {
             setStats(parsed.stats);
@@ -369,6 +746,42 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
             setJobMetadata(parsed.metadata);
           }
           appendLogEvent(parsed.event);
+          const subType = parsed.event?.metadata?.sub_type;
+          if (subType === 'thinking_step') {
+            const rawStep = parsed.event?.metadata?.step ?? {};
+            mergeThinkingStep({
+              iteration: Number(rawStep.iteration ?? 0),
+              thought: String(rawStep.thought ?? ''),
+              action: rawStep.action ?? null,
+              action_result: rawStep.action_result ?? null,
+              status: (rawStep.status as ThinkingStep['status']) || 'thinking',
+              timestamp: rawStep.timestamp ?? undefined,
+            });
+          } else if (subType === 'thinking_delta') {
+            appendThinkingDelta(
+              Number(parsed.event?.metadata?.iteration ?? 0),
+              String(parsed.event?.metadata?.delta ?? '')
+            );
+          } else if (subType === 'tool_call_result') {
+            mergeToolResult(
+              String(parsed.event?.metadata?.tool ?? ''),
+              parsed.event?.metadata?.payload
+            );
+          } else if (subType === 'runtime_control') {
+            const actionRaw = String(parsed.event?.metadata?.action || '').toLowerCase();
+            const action = actionRaw === 'skip' ? 'skip_step' : actionRaw;
+            setLastRuntimeControlAction(action || null);
+            setLastRuntimeControlAt(
+              typeof parsed.event?.timestamp === 'string' && parsed.event.timestamp
+                ? parsed.event.timestamp
+                : new Date().toISOString()
+            );
+            if (action === 'pause') {
+              setStreamPaused(true);
+            } else if (action === 'resume') {
+              setStreamPaused(false);
+            }
+          }
           setLastUpdatedAt(new Date().toISOString());
 
           if (parsed.status && FINAL_STATUSES.has(parsed.status)) {
@@ -398,7 +811,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
       closeStream();
       stopPolling();
     };
-  }, [appendLogEvent, applySnapshot, closeStream, emitPlanProgressSync, jobId, startPolling, stopPolling]);
+  }, [appendLogEvent, appendThinkingDelta, applySnapshot, closeStream, emitPlanProgressSync, jobId, mergeThinkingStep, mergeToolResult, startPolling, stopPolling]);
 
   return {
     logs,
@@ -424,5 +837,15 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
     cliLogTruncated,
     cliLogPath,
     fetchCliLog,
+    thinkingProcess,
+    streamPaused,
+    setStreamPaused,
+    lastRuntimeControlAction,
+    lastRuntimeControlAt,
+    runtimeControlBusy,
+    runtimeControlBusyAction,
+    pauseExecution,
+    resumeExecution,
+    skipCurrentStep,
   };
 }

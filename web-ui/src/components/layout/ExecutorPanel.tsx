@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { Button, Progress, Space, Tag, Tooltip, Typography } from 'antd';
-import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { ReloadOutlined, SearchOutlined, DownOutlined, UpOutlined } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { planTreeApi } from '@api/planTree';
+import JobLogPanel from '@components/chat/JobLogPanel';
 import type {
   BackgroundTaskBoardResponse,
   BackgroundTaskCategory,
@@ -228,6 +229,132 @@ const resolveItemProgress = (
   };
 };
 
+interface TaskRowProps {
+  item: BackgroundTaskItem;
+  currentPlanId: number | null;
+  isExpanded: boolean;
+  canExpand: boolean;
+  isProcessing: boolean;
+  onToggle: (jobId: string) => void;
+  onSendMessage: (msg: string, meta?: any) => void;
+}
+
+const _itemFingerprint = (item: BackgroundTaskItem): string =>
+  `${item.job_id}|${item.status}|${item.progress_percent ?? ''}|${item.progress_text ?? ''}|${item.done_steps ?? ''}|${item.total_steps ?? ''}|${item.current_step ?? ''}|${item.current_task_id ?? ''}|${item.error ?? ''}`;
+
+const TaskRow = React.memo<TaskRowProps>(
+  ({ item, currentPlanId, isExpanded, canExpand, isProcessing, onToggle, onSendMessage }) => {
+    const normalized = normalizeJobStatus(item.status);
+    const duration = formatDuration(item.started_at, item.finished_at);
+    const progress = resolveItemProgress(item);
+    const remoteMeta =
+      item.category === 'phagescope'
+        ? [item.remote_status, item.phase].filter((v) => typeof v === 'string' && v.trim()).join(' / ')
+        : '';
+    const countMeta =
+      item.category === 'phagescope' && item.counts
+        ? `${item.counts.done}/${item.counts.total}`
+        : '';
+    return (
+      <React.Fragment>
+        <tr
+          className={`task-row${canExpand ? ' task-row-expandable' : ''}`}
+          onClick={canExpand ? () => onToggle(item.job_id) : undefined}
+          style={canExpand ? { cursor: 'pointer' } : undefined}
+        >
+          <td className="task-id" title={item.job_id}>
+            <Space size={4}>
+              {canExpand && (isExpanded ? <UpOutlined style={{ fontSize: 10 }} /> : <DownOutlined style={{ fontSize: 10 }} />)}
+              <span>{getDisplayId(item)}</span>
+            </Space>
+          </td>
+          <td className="task-content" title={item.label}>
+            <div>{item.label}</div>
+            {remoteMeta ? (
+              <div className="task-content-meta">status: {remoteMeta}</div>
+            ) : null}
+            {countMeta ? (
+              <div className="task-content-meta">progress: {countMeta}</div>
+            ) : null}
+            {item.error ? (
+              <div className="task-content-meta task-content-error">{item.error}</div>
+            ) : null}
+            <div className="task-progress-wrap">
+              <Progress
+                percent={progress.percent}
+                status={progress.status}
+                size="small"
+                showInfo={false}
+                strokeLinecap="round"
+              />
+              <div className="task-progress-meta">
+                <span className="task-progress-percent">{progress.percent}%</span>
+                {progress.text ? <span className="task-progress-text">{progress.text}</span> : null}
+              </div>
+            </div>
+          </td>
+          <td className="task-status">
+            <span className={`task-status-dot ${normalized}`} />
+            <span className="task-status-text">{getStatusLabel(item.status)}</span>
+            {duration ? <span className="task-status-meta">{duration}</span> : null}
+            <span className="task-status-meta">{formatRelativeTime(item.created_at)}</span>
+            {normalized === 'completed' && (
+              <Tooltip title="Ask Agent to analyze task results">
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<SearchOutlined />}
+                  disabled={isProcessing}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const displayId = getDisplayId(item);
+                    if (item.category === 'phagescope') {
+                      const taskidHint = item.taskid ? `taskid=${item.taskid}` : `job_id=${item.job_id}`;
+                      const prompt =
+                        `/think PhageScope task (${taskidHint}) completed. ` +
+                        `Please run phagescope save_all to download results, then use file_operations to read ` +
+                        `summary.json, phage_info.json, quality.json, and proteins.tsv, and provide a concise analysis.`;
+                      onSendMessage(prompt);
+                    } else {
+                      const prompt =
+                        `Background task "${item.label}" (${displayId}) completed. ` +
+                        `Please review execution logs, analyze task result status, and summarize key outcomes and issues.`;
+                      onSendMessage(prompt, { analysis_only: true, source_job_id: item.job_id });
+                    }
+                  }}
+                  style={{ padding: '0 4px', fontSize: 11, height: 'auto', lineHeight: 1 }}
+                >
+                  Analyze
+                </Button>
+              </Tooltip>
+            )}
+          </td>
+        </tr>
+        {canExpand && isExpanded && (
+          <tr>
+            <td colSpan={3} style={{ padding: 0 }}>
+              <div style={{ padding: '4px 8px 12px', maxHeight: 480, overflowY: 'auto' }}>
+                <JobLogPanel
+                  jobId={item.job_id}
+                  targetTaskName={item.label}
+                  planId={item.plan_id ?? currentPlanId}
+                  jobType={item.job_type}
+                />
+              </div>
+            </td>
+          </tr>
+        )}
+      </React.Fragment>
+    );
+  },
+  (prev, next) =>
+    prev.isExpanded === next.isExpanded &&
+    prev.canExpand === next.canExpand &&
+    prev.isProcessing === next.isProcessing &&
+    prev.currentPlanId === next.currentPlanId &&
+    _itemFingerprint(prev.item) === _itemFingerprint(next.item)
+);
+
 const ExecutorPanel: React.FC = () => {
   const currentSessionId = useChatStore(
   (state) => state.currentSession?.session_id ?? state.currentSession?.id ?? null
@@ -239,6 +366,21 @@ const ExecutorPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expandedJobIds, setExpandedJobIds] = useState<Set<string>>(new Set());
+
+  const toggleJobExpand = useCallback((jobId: string) => {
+  setExpandedJobIds((prev) => {
+  const next = new Set(prev);
+  if (next.has(jobId)) {
+  next.delete(jobId);
+  } else {
+  next.add(jobId);
+  }
+  return next;
+  });
+  }, []);
+
+  const boardFingerprintRef = React.useRef<string>('');
 
   const fetchBoard = useCallback(
   async (silent = false) => {
@@ -251,6 +393,7 @@ const ExecutorPanel: React.FC = () => {
   if (!currentSessionId && !currentPlanId) {
   setBoard(EMPTY_BOARD());
   setError(null);
+  boardFingerprintRef.current = '';
   return;
   }
   const snapshot = await planTreeApi.getBackgroundTaskBoard({
@@ -259,7 +402,15 @@ const ExecutorPanel: React.FC = () => {
   plan_id: currentPlanId ?? undefined,
   include_finished: true,
   });
+  const fp = GROUP_ORDER.map((key) => {
+  const group = snapshot?.groups?.[key];
+  if (!group?.items?.length) return `${key}:0`;
+  return `${key}:${group.items.map(_itemFingerprint).join(',')}`;
+  }).join('|');
+  if (fp !== boardFingerprintRef.current) {
+  boardFingerprintRef.current = fp;
   setBoard(snapshot);
+  }
   setError(null);
   } catch (err: any) {
   setError(err?.message || 'Failed to load background tasks');
@@ -312,6 +463,35 @@ const ExecutorPanel: React.FC = () => {
   const groups: BackgroundTaskGroup[] = useMemo(() => {
   if (!board) return [];
   return GROUP_ORDER.map((key) => board.groups[key]).filter(Boolean);
+  }, [board]);
+
+  useEffect(() => {
+  if (!board) return;
+  const autoExpand = new Set<string>();
+  for (const key of GROUP_ORDER) {
+  const group = board.groups[key];
+  if (!group?.items) continue;
+  for (const item of group.items) {
+  const isExecuteJob = item.job_type === 'plan_execute';
+  const isRunning = normalizeJobStatus(item.status) === 'running';
+  if (isExecuteJob && isRunning) {
+  autoExpand.add(item.job_id);
+  }
+  }
+  }
+  if (autoExpand.size > 0) {
+  setExpandedJobIds((prev) => {
+  const merged = new Set(prev);
+  let changed = false;
+  autoExpand.forEach((id) => {
+  if (!merged.has(id)) {
+  merged.add(id);
+  changed = true;
+  }
+  });
+  return changed ? merged : prev;
+  });
+  }
   }, [board]);
 
   const totalItems = useMemo(() => groups.reduce((acc, group) => acc + (group?.items?.length || 0), 0), [groups]);
@@ -380,87 +560,21 @@ const ExecutorPanel: React.FC = () => {
   </thead>
   <tbody>
   {group.items.map((item) => {
-  const normalized = normalizeJobStatus(item.status);
-  const duration = formatDuration(item.started_at, item.finished_at);
-  const progress = resolveItemProgress(item);
-  const remoteMeta =
-  item.category === 'phagescope'
-  ? [item.remote_status, item.phase].filter((v) => typeof v === 'string' && v.trim()).join(' / ')
-  : '';
-  const countMeta =
-  item.category === 'phagescope' && item.counts
-  ? `${item.counts.done}/${item.counts.total}`
-  : '';
-  return (
-  <tr key={item.job_id} className="task-row">
-  <td className="task-id" title={item.job_id}>
-  {getDisplayId(item)}
-  </td>
-  <td className="task-content" title={item.label}>
-  <div>{item.label}</div>
-  {remoteMeta ? (
-  <div className="task-content-meta">status: {remoteMeta}</div>
-  ) : null}
-  {countMeta ? (
-  <div className="task-content-meta">progress: {countMeta}</div>
-  ) : null}
-  {item.error ? (
-  <div className="task-content-meta task-content-error">{item.error}</div>
-  ) : null}
-  <div className="task-progress-wrap">
-  <Progress
-  percent={progress.percent}
-  status={progress.status}
-  size="small"
-  showInfo={false}
-  strokeLinecap="round"
-  />
-  <div className="task-progress-meta">
-  <span className="task-progress-percent">{progress.percent}%</span>
-  {progress.text ? <span className="task-progress-text">{progress.text}</span> : null}
-  </div>
-  </div>
-  </td>
-  <td className="task-status">
-  <span className={`task-status-dot ${normalized}`} />
-  <span className="task-status-text">{getStatusLabel(item.status)}</span>
-  {duration ? <span className="task-status-meta">{duration}</span> : null}
-  <span className="task-status-meta">{formatRelativeTime(item.created_at)}</span>
-  {normalized === 'completed' && (
-  <Tooltip title="Ask Agent to analyze task results">
-  <Button
-  type="link"
-  size="small"
-  icon={<SearchOutlined />}
-  disabled={isProcessing}
-  onClick={() => {
-  const displayId = getDisplayId(item);
-  if (item.category === 'phagescope') {
-  // PhageScope: use DeepThink to download + read files + analyze in one loop
-  const taskidHint = item.taskid ? `taskid=${item.taskid}` : `job_id=${item.job_id}`;
-  const prompt =
-  `/think PhageScope task (${taskidHint}) completed. ` +
-  `Please run phagescope save_all to download results, then use file_operations to read ` +
-  `summary.json, phage_info.json, quality.json, and proteins.tsv, and provide a concise analysis.`;
-  void sendMessage(prompt);
-  } else {
-  // Other tasks: text-only analysis
-  const prompt =
-  `Background task "${item.label}" (${displayId}) completed. ` +
-  `Please review execution logs, analyze task result status, and summarize key outcomes and issues.`;
-  void sendMessage(prompt, { analysis_only: true, source_job_id: item.job_id });
-  }
-  }}
-  style={{ padding: '0 4px', fontSize: 11, height: 'auto', lineHeight: 1 }}
-  >
-  Analyze
-  </Button>
-  </Tooltip>
-  )}
-  </td>
-  </tr>
-  );
-  })}
+   const normalized = normalizeJobStatus(item.status);
+   const canExpand = item.job_type === 'plan_execute' || (item.category === 'claude_code' && normalized === 'running');
+   return (
+   <TaskRow
+   key={item.job_id}
+   item={item}
+   currentPlanId={currentPlanId}
+   isExpanded={expandedJobIds.has(item.job_id)}
+   canExpand={canExpand}
+   isProcessing={isProcessing}
+   onToggle={toggleJobExpand}
+   onSendMessage={sendMessage}
+   />
+   );
+   })}
   </tbody>
   </table>
   </div>

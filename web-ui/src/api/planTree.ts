@@ -43,6 +43,18 @@ export interface ExecuteTaskWithDepsPayload {
   session_id?: string;
 }
 
+export interface JobControlPayload {
+  action: 'pause' | 'resume' | 'skip_step';
+}
+
+export interface JobControlResponse {
+  success: boolean;
+  job_id: string;
+  action: string;
+  status?: string | null;
+  message: string;
+}
+
 class PlanTreeApi extends BaseApi {
   listPlans = async (): Promise<PlanSummary[]> => {
   return this.get<PlanSummary[]>('/plans');
@@ -89,6 +101,13 @@ class PlanTreeApi extends BaseApi {
   include_finished?: boolean;
   }): Promise<BackgroundTaskBoardResponse> => {
   return this.get<BackgroundTaskBoardResponse>('/jobs/board', options);
+  };
+
+  controlJob = async (
+    jobId: string,
+    payload: JobControlPayload
+  ): Promise<JobControlResponse> => {
+  return this.post<JobControlResponse>(`/jobs/${jobId}/control`, payload);
   };
 
   getPlanResults = async (

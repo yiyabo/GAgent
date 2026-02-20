@@ -97,6 +97,14 @@
   background: rgba(0, 0, 0, 0.03);
 }
 
+.task-row-expandable {
+  cursor: pointer;
+}
+
+.task-row-expandable:hover {
+  background: rgba(24, 144, 255, 0.04);
+}
+
 .task-id {
   width: 92px;
   font-variant-numeric: tabular-nums;

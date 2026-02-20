@@ -160,9 +160,11 @@ export interface ThinkingStep {
   thought: string;
   action?: string | null;
   action_result?: string | null;
-  status: 'thinking' | 'calling_tool' | 'analyzing' | 'done' | 'error';
+  status: 'pending' | 'thinking' | 'calling_tool' | 'analyzing' | 'done' | 'completed' | 'error';
   timestamp?: string;
   self_correction?: string | null;
+  started_at?: string;
+  finished_at?: string;
 }
 
 export interface ThinkingProcess {
