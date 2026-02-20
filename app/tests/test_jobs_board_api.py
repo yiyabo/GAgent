@@ -85,14 +85,15 @@ def _insert_job_index(
     *,
     job_id: str,
     plan_id: int,
+    job_type: str = "plan_decompose",
     created_at: str,
 ) -> None:
     conn.execute(
         """
   INSERT INTO plan_decomposition_job_index (job_id, plan_id, job_type, created_at)
-  VALUES (?, ?, 'plan_decompose', ?)
+  VALUES (?, ?, ?, ?)
   """,
-        (job_id, plan_id, created_at),
+        (job_id, plan_id, job_type, created_at),
     )
     conn.commit()
 
@@ -355,3 +356,57 @@ def test_jobs_board_uses_session_plan_binding_for_task_creation(
                     for item in groups["task_creation"]["items"]}
     assert "job_plan_77" in creation_ids
     assert "job_plan_88" not in creation_ids
+
+
+def test_jobs_board_includes_plan_execute_jobs_in_claude_group(
+    board_api_env: Tuple[sqlite3.Connection, Dict[str, Dict[str, Any]], TestClient],
+) -> None:
+    conn, payloads, client = board_api_env
+
+    _insert_job_index(
+        conn,
+        job_id="job_exec_1",
+        plan_id=42,
+        job_type="plan_execute",
+        created_at="2026-02-19 13:00:00",
+    )
+    payloads["job_exec_1"] = {
+        "job_id": "job_exec_1",
+        "job_type": "plan_execute",
+        "status": "running",
+        "created_at": "2026-02-19T13:00:00Z",
+        "started_at": "2026-02-19T13:00:02Z",
+        "metadata": {
+            "session_id": "sess-exec",
+            "target_task_id": 1,
+            "target_task_name": "Run hello world task chain",
+        },
+        "params": {"steps": 4},
+        "stats": {
+            "executed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "total_steps": 4,
+            "current_step": 2,
+            "current_task_id": 9,
+            "progress_percent": 25,
+        },
+    }
+
+    response = client.get("/jobs/board", params={"plan_id": 42})
+    assert response.status_code == 200
+    groups = response.json()["groups"]
+
+    claude_items = groups["claude_code"]["items"]
+    assert len(claude_items) == 1
+    exec_item = claude_items[0]
+    assert exec_item["job_id"] == "job_exec_1"
+    assert exec_item["job_type"] == "plan_execute"
+    assert exec_item["label"] == "Run hello world task chain"
+    assert exec_item["progress_percent"] == 25
+    assert exec_item["progress_status"] == "running"
+    assert exec_item["progress_text"] == "1/4"
+    assert exec_item["current_step"] == 2
+    assert exec_item["current_task_id"] == 9
+    assert exec_item["done_steps"] == 1
+    assert exec_item["total_steps"] == 4

@@ -168,6 +168,9 @@ When a task requires tool execution, request one of these tools:
 - claude_code: Execute one concrete implementation task (data analysis, visualization, model building)
   Parameters: {"task": "<atomic implementation instruction only>", "allowed_tools": "Bash,Edit"}
   IMPORTANT: Never ask claude_code to do planning/decomposition/roadmap work.
+  IMPORTANT: Default to direct objective execution. Do NOT request standalone CLI preflight
+  checks (for example version/install/environment diagnostics) unless the user explicitly asks
+  for diagnostics or a prior execution has already failed due to environment/tooling issues.
 
 **INFORMATION RETRIEVAL:**
 - web_search: Search the web for information
@@ -196,6 +199,8 @@ When a task requires tool execution, request one of these tools:
 - For data analysis/visualization/charts → use claude_code (status: "needs_tool")
 - For model code building/training → use claude_code (status: "needs_tool")
 - Never use claude_code for task planning or decomposition; planning stays in the orchestration layer.
+- For claude_code coding tasks, request direct implementation/execution first; avoid standalone
+  "check CLI/version/environment" steps unless diagnostics are explicitly requested or needed after a failure.
 - For web information lookup → use web_search (status: "needs_tool")
 - For reading text files (PDF/TXT) → use document_reader (status: "needs_tool")
 - For reading images/scanned docs → use vision_reader (status: "needs_tool")
@@ -281,6 +286,14 @@ When a task requires tool execution, request one of these tools:
             if user_message:
                 lines.append("\n=== USER REQUEST ===")
                 lines.append(f"{user_message}")
+
+            if session_context.get("deep_think_enabled"):
+                lines.append("\n=== EXECUTION MODE ===")
+                lines.append(
+                    "Deep-think mode is enabled: reason carefully, verify assumptions, "
+                    "prefer robust and testable outputs, and explicitly validate edge cases "
+                    "before finalizing your response."
+                )
 
             chat_history = session_context.get("chat_history", [])
             if chat_history:
@@ -1152,10 +1165,7 @@ class PlanExecutor:
                 "summary": summary,
             }
             if not tool_success:
-                if isinstance(result, dict):
-                    payload["error"] = result.get("error") or result.get("message") or "Tool execution returned success=false."
-                else:
-                    payload["error"] = "Tool execution returned success=false."
+                payload["error"] = self._build_tool_failure_error(tool_name, result)
             if publish_report is not None:
                 payload["deliverables"] = publish_report.to_dict()
             return payload
@@ -1171,6 +1181,58 @@ class PlanExecutor:
                 {"tool": tool_name, "task_id": node.id, "error": str(exc)},
             )
             return {"success": False, "error": str(exc)}
+
+    @staticmethod
+    def _clip_tool_text(value: Any, *, limit: int = 320) -> str:
+        if value is None:
+            return ""
+        text = " ".join(str(value).split()).strip()
+        if not text:
+            return ""
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)] + "..."
+
+    def _build_tool_failure_error(self, tool_name: str, result: Any) -> str:
+        if not isinstance(result, dict):
+            return f"{tool_name} failed: Tool execution returned success=false."
+
+        direct_error = self._clip_tool_text(
+            result.get("error") or result.get("message"),
+            limit=600,
+        )
+        if direct_error:
+            return direct_error
+
+        parts: List[str] = []
+        exit_code = result.get("exit_code")
+        if exit_code is not None:
+            parts.append(f"exit_code={exit_code}")
+
+        blocked_reason = self._clip_tool_text(result.get("blocked_reason"), limit=200)
+        if blocked_reason:
+            parts.append(f"blocked_reason={blocked_reason}")
+
+        stderr = self._clip_tool_text(result.get("stderr"), limit=320)
+        if stderr:
+            parts.append(f"stderr={stderr}")
+
+        stdout = self._clip_tool_text(result.get("stdout"), limit=220)
+        if stdout:
+            parts.append(f"stdout={stdout}")
+
+        nested_result = result.get("result")
+        if isinstance(nested_result, dict):
+            nested_error = self._clip_tool_text(
+                nested_result.get("error") or nested_result.get("message"),
+                limit=600,
+            )
+            if nested_error:
+                parts.append(f"detail={nested_error}")
+
+        if not parts:
+            return "Tool execution returned success=false."
+        return f"{tool_name} failed: {'; '.join(parts)}"
 
     def _summarize_tool_result(self, tool_name: str, result: Any) -> str:
         """Generate a brief summary of tool execution result."""

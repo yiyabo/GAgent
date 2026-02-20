@@ -21,6 +21,7 @@ import type {
   ToolResultPayload,
 } from '@/types';
 import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
+import JobLogPanel from '@components/chat/JobLogPanel';
 import { TaskDrawerContent, copyJsonToClipboard } from './TaskDetailSections';
 import TaskExecuteModal from './TaskExecuteModal';
 
@@ -124,6 +125,36 @@ const TaskDetailDrawer: React.FC = () => {
 
   const [executeModalOpen, setExecuteModalOpen] = useState(false);
   const [executeButtonLoading, setExecuteButtonLoading] = useState(false);
+  const [latestExecution, setLatestExecution] = useState<{
+    jobId: string;
+    taskId: number;
+    planId: number | null;
+  } | null>(null);
+
+  const activeExecutionJobId = useMemo(() => {
+    if (!latestExecution) {
+      return null;
+    }
+    if (!selectedTaskId || latestExecution.taskId !== selectedTaskId) {
+      return null;
+    }
+    if ((latestExecution.planId ?? null) !== (currentPlanId ?? null)) {
+      return null;
+    }
+    return latestExecution.jobId;
+  }, [currentPlanId, latestExecution, selectedTaskId]);
+
+  useEffect(() => {
+    if (!isTaskDrawerOpen) {
+      setLatestExecution(null);
+    }
+  }, [isTaskDrawerOpen]);
+
+  useEffect(() => {
+    if (selectedTaskId == null) {
+      setLatestExecution(null);
+    }
+  }, [selectedTaskId]);
 
   useEffect(() => {
     if (!isTaskDrawerOpen || !currentPlanId || !selectedTaskId) {
@@ -265,19 +296,42 @@ const TaskDetailDrawer: React.FC = () => {
       ) : !activeTask ? (
         <Empty description="Task not found; it may have been deleted" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : (
-        <TaskDrawerContent
-          activeTask={activeTask}
-          handleDependencyClick={handleDependencyClick}
-          recentToolResults={recentToolResults}
-          resultLoading={resultLoading}
-          taskResult={taskResult}
-          cachedResult={cachedResult}
-        />
+        <Space direction="vertical" size="large" style={{ width: '100%' }}>
+          <TaskDrawerContent
+            activeTask={activeTask}
+            handleDependencyClick={handleDependencyClick}
+            recentToolResults={recentToolResults}
+            resultLoading={resultLoading}
+            taskResult={taskResult}
+            cachedResult={cachedResult}
+          />
+          {activeExecutionJobId && (
+            <section>
+              <Title level={5}>Execution Chain</Title>
+              <JobLogPanel
+                jobId={activeExecutionJobId}
+                targetTaskName={activeTask?.name ?? null}
+                planId={currentPlanId}
+                jobType="plan_execute"
+              />
+            </section>
+          )}
+        </Space>
       )}
 
       <TaskExecuteModal
         open={executeModalOpen}
         onClose={() => setExecuteModalOpen(false)}
+        onExecutionStarted={(jobId) => {
+          if (!selectedTaskId) {
+            return;
+          }
+          setLatestExecution({
+            jobId,
+            taskId: selectedTaskId,
+            planId: currentPlanId ?? null,
+          });
+        }}
         onLoadingChange={setExecuteButtonLoading}
         currentPlanId={currentPlanId}
         selectedTaskId={selectedTaskId}

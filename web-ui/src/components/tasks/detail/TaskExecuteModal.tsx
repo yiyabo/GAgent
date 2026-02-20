@@ -20,6 +20,7 @@ const { Text } = Typography;
 interface TaskExecuteModalProps {
   open: boolean;
   onClose: () => void;
+  onExecutionStarted?: (jobId: string) => void;
   onLoadingChange?: (loading: boolean) => void;
   currentPlanId: number | null;
   selectedTaskId: number | null;
@@ -35,6 +36,7 @@ interface TaskExecuteModalProps {
 const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   open,
   onClose,
+  onExecutionStarted,
   onLoadingChange,
   currentPlanId,
   selectedTaskId,
@@ -63,7 +65,10 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   setExecuteError(null);
   setDependencyPlan(null);
   setDependencyPlanLoading(true);
-  planTreeApi.getTaskDependencyPlan(currentPlanId, selectedTaskId)
+  planTreeApi.getTaskDependencyPlan(currentPlanId, selectedTaskId, {
+  include_dependencies: true,
+  include_subtasks: true,
+  })
   .then((plan) => setDependencyPlan(plan))
   .catch((err: any) => setExecuteError(err?.message || 'Failed to load dependency plan'))
   .finally(() => setDependencyPlanLoading(false));
@@ -103,6 +108,8 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   try {
   const resp = await planTreeApi.executeTaskWithDeps(currentPlanId, selectedTaskId, {
   include_dependencies: true,
+  include_subtasks: true,
+  deep_think: true,
   async_mode: true,
   session_id: currentSessionId ?? undefined,
   });
@@ -117,6 +124,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   return;
   }
   setExecuteJobId(jobId);
+  onExecutionStarted?.(jobId);
   message.success('Task execution started in background.');
   void refetchPlanTasks();
   void refetchTaskResult();
@@ -133,6 +141,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   refetchPlanTasks,
   refetchTaskResult,
   selectedTaskId,
+  onExecutionStarted,
   ]);
 
   return (

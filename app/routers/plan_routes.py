@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+import heapq
+from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -215,8 +216,162 @@ def _to_dependency_plan_response(
     )
 
 
+def _normalize_task_status(value: Optional[str]) -> str:
+    return str(value or "").strip().lower()
+
+
+def _collect_subtree_node_ids(tree: "PlanTree", root_task_id: int) -> List[int]:
+    if root_task_id not in tree.nodes:
+        return []
+    ordered: List[int] = []
+    stack: List[int] = [root_task_id]
+    visited: Set[int] = set()
+    while stack:
+        current = stack.pop()
+        if current in visited or current not in tree.nodes:
+            continue
+        visited.add(current)
+        ordered.append(current)
+        children = list(tree.children_ids(current))
+        for child_id in reversed(children):
+            if child_id not in visited:
+                stack.append(child_id)
+    return ordered
+
+
+def _topological_task_order(tree: "PlanTree", node_ids: Iterable[int]) -> Tuple[List[int], bool]:
+    selected: Set[int] = {nid for nid in node_ids if nid in tree.nodes}
+    if not selected:
+        return [], False
+
+    in_degree: Dict[int, int] = {nid: 0 for nid in selected}
+    outgoing: Dict[int, Set[int]] = {nid: set() for nid in selected}
+
+    def _add_edge(src: int, dst: int) -> None:
+        if src == dst:
+            return
+        if src not in selected or dst not in selected:
+            return
+        edges = outgoing.setdefault(src, set())
+        if dst in edges:
+            return
+        edges.add(dst)
+        in_degree[dst] += 1
+
+    for node_id in selected:
+        node = tree.nodes[node_id]
+        for dep_id in node.dependencies:
+            _add_edge(dep_id, node_id)
+        for child_id in tree.children_ids(node_id):
+            # Parent execution should happen after child execution so parent output can
+            # summarize/compose child results.
+            _add_edge(child_id, node_id)
+
+    heap: List[int] = [nid for nid, degree in in_degree.items() if degree == 0]
+    heapq.heapify(heap)
+    order: List[int] = []
+
+    while heap:
+        current = heapq.heappop(heap)
+        order.append(current)
+        for nxt in sorted(outgoing.get(current, set())):
+            in_degree[nxt] -= 1
+            if in_degree[nxt] == 0:
+                heapq.heappush(heap, nxt)
+
+    has_cycle = len(order) != len(selected)
+    return order, has_cycle
+
+
+def _dedupe_cycle_paths(cycle_paths: Iterable[List[int]]) -> List[List[int]]:
+    deduped: List[List[int]] = []
+    seen: Set[Tuple[int, ...]] = set()
+    for path in cycle_paths:
+        if not path:
+            continue
+        key = tuple(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(list(path))
+    return deduped
+
+
+def _build_execution_dependency_plan(
+    tree: "PlanTree",
+    target_task_id: int,
+    *,
+    include_dependencies: bool,
+    include_subtasks: bool,
+) -> DependencyPlan:
+    base_plan = compute_dependency_plan(tree, target_task_id, include_target_in_order=False)
+    subtree_node_ids = (
+        _collect_subtree_node_ids(tree, target_task_id)
+        if include_subtasks
+        else [target_task_id]
+    )
+    subtree_set: Set[int] = set(subtree_node_ids)
+
+    satisfied = (
+        set(base_plan.satisfied_statuses)
+        if base_plan.satisfied_statuses
+        else {"completed", "done"}
+    )
+    closure: Set[int] = set(base_plan.closure_dependencies)
+    missing: Set[int] = set(base_plan.missing_dependencies)
+    running: Set[int] = set(base_plan.running_dependencies)
+    cycle_detected = bool(base_plan.cycle_detected)
+    cycle_paths: List[List[int]] = [list(path) for path in base_plan.cycle_paths]
+
+    if include_dependencies and include_subtasks:
+        for node_id in subtree_node_ids:
+            if node_id == target_task_id:
+                continue
+            child_plan = compute_dependency_plan(
+                tree,
+                node_id,
+                include_target_in_order=False,
+            )
+            closure.update(child_plan.closure_dependencies)
+            missing.update(child_plan.missing_dependencies)
+            running.update(child_plan.running_dependencies)
+            if child_plan.cycle_detected:
+                cycle_detected = True
+            cycle_paths.extend(list(path) for path in child_plan.cycle_paths)
+
+    to_run: Set[int] = set(subtree_set)
+    if include_dependencies:
+        for dep_id in closure:
+            if dep_id not in tree.nodes:
+                continue
+            dep_status = _normalize_task_status(tree.nodes[dep_id].status)
+            if dep_status not in satisfied:
+                to_run.add(dep_id)
+                missing.add(dep_id)
+
+    order, topo_cycle = _topological_task_order(tree, to_run)
+    if topo_cycle:
+        cycle_detected = True
+    cycle_paths = _dedupe_cycle_paths(cycle_paths)
+
+    return DependencyPlan(
+        plan_id=base_plan.plan_id,
+        target_task_id=base_plan.target_task_id,
+        satisfied_statuses=tuple(sorted(satisfied)),
+        direct_dependencies=list(base_plan.direct_dependencies),
+        closure_dependencies=sorted(closure),
+        missing_dependencies=sorted(missing),
+        running_dependencies=sorted(running),
+        execution_order=order,
+        cycle_detected=cycle_detected,
+        cycle_paths=cycle_paths,
+    )
+
+
 class ExecuteTaskRequest(BaseModel):
     include_dependencies: bool = True
+    include_subtasks: bool = True
+    deep_think: bool = True
     async_mode: bool = True
     session_id: Optional[str] = None
 
@@ -237,6 +392,7 @@ def _run_task_chain_job(
     plan_id: int,
     target_task_id: int,
     task_order: List[int],
+    deep_think: bool = True,
     session_id: Optional[str] = None,
 ) -> None:
     token = set_current_job(job_id)
@@ -297,6 +453,7 @@ def _run_task_chain_job(
                 "target_task_id": target_task_id,
                 "steps": len(task_order),
                 "task_order": task_order,
+                "deep_think": deep_think,
             },
         )
         _publish_progress(
@@ -306,9 +463,13 @@ def _run_task_chain_job(
 
         session_ctx = {
             "session_id": session_id,
-            "user_message": f"Execute task chain for task #{target_task_id} (UI-triggered).",
+            "user_message": (
+                f"Execute task chain for task #{target_task_id} "
+                f"(UI-triggered, deep_think={'on' if deep_think else 'off'})."
+            ),
             "chat_history": [],
             "recent_tool_results": [],
+            "deep_think_enabled": bool(deep_think),
         }
 
         for idx, task_id in enumerate(task_order, start=1):
@@ -540,6 +701,14 @@ def get_task_result(task_id: int, plan_id: int = Query(..., description="plan ID
 def get_task_dependency_plan(
     task_id: int,
     plan_id: int = Query(..., description="plan ID"),
+    include_dependencies: bool = Query(
+        True,
+        description="Whether to include unresolved dependency closure in execution planning",
+    ),
+    include_subtasks: bool = Query(
+        False,
+        description="Whether to include subtree tasks rooted at target task in execution planning",
+    ),
 ):
     try:
         tree = _plan_repo.get_plan_tree(plan_id)
@@ -548,7 +717,12 @@ def get_task_dependency_plan(
     if not tree.has_node(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
 
-    plan = compute_dependency_plan(tree, task_id)
+    plan = _build_execution_dependency_plan(
+        tree,
+        task_id,
+        include_dependencies=bool(include_dependencies),
+        include_subtasks=bool(include_subtasks),
+    )
     return _to_dependency_plan_response(tree, plan)
 
 
@@ -570,7 +744,12 @@ def execute_task_with_dependencies(
     if not tree.has_node(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
 
-    dep_plan = compute_dependency_plan(tree, task_id)
+    dep_plan = _build_execution_dependency_plan(
+        tree,
+        task_id,
+        include_dependencies=bool(request.include_dependencies),
+        include_subtasks=bool(request.include_subtasks),
+    )
     dep_response = _to_dependency_plan_response(tree, dep_plan)
 
     if dep_plan.cycle_detected:
@@ -584,7 +763,7 @@ def execute_task_with_dependencies(
             result=None,
         )
 
-    if dep_plan.running_dependencies:
+    if request.include_dependencies and dep_plan.running_dependencies:
         return ExecuteTaskResponse(
             success=False,
             message="Some dependencies are still running. Wait for completion and retry.",
@@ -595,9 +774,7 @@ def execute_task_with_dependencies(
             result=None,
         )
 
-    task_order = [task_id]
-    if request.include_dependencies:
-        task_order = list(dep_plan.execution_order) or [task_id]
+    task_order = list(dep_plan.execution_order) or [task_id]
 
     if not request.async_mode:
         # Synchronous path (best-effort; may take a long time depending on LLM/tool calls).
@@ -607,9 +784,13 @@ def execute_task_with_dependencies(
         for tid in task_order:
             session_ctx = {
                 "session_id": request.session_id,
-                "user_message": f"Execute task chain for task #{task_id} (UI-triggered).",
+                "user_message": (
+                    f"Execute task chain for task #{task_id} "
+                    f"(UI-triggered, deep_think={'on' if request.deep_think else 'off'})."
+                ),
                 "chat_history": [],
                 "recent_tool_results": [],
+                "deep_think_enabled": bool(request.deep_think),
             }
             exec_config = ExecutionConfig(session_context=session_ctx)
             result = _plan_executor.execute_task(plan_id, tid, config=exec_config)
@@ -644,6 +825,8 @@ def execute_task_with_dependencies(
         job_type="plan_execute",
         params={
             "include_dependencies": request.include_dependencies,
+            "include_subtasks": request.include_subtasks,
+            "deep_think": request.deep_think,
             "steps": len(task_order),
         },
         metadata={
@@ -664,6 +847,7 @@ def execute_task_with_dependencies(
             "job_type": job.job_type,
             "mode": job.mode,
             "steps": len(task_order),
+            "deep_think": request.deep_think,
         },
     )
 
@@ -674,6 +858,7 @@ def execute_task_with_dependencies(
             "plan_id": plan_id,
             "target_task_id": task_id,
             "task_order": task_order,
+            "deep_think": request.deep_think,
             "session_id": request.session_id,
         },
         daemon=True,
