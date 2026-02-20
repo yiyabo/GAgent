@@ -185,12 +185,15 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   <Spin tip="Loading execution prerequisites..." />
   </div>
   ) : executeJobId ? (
+  <Space direction="vertical" size="small" style={{ width: '100%' }}>
+  <Text type="secondary">Deep Think execution is active. You can monitor the thinking timeline in real time.</Text>
   <JobLogPanel
   jobId={executeJobId}
   targetTaskName={activeTask?.name ?? null}
   planId={currentPlanId}
   jobType="plan_execute"
   />
+  </Space>
   ) : (
   <Space direction="vertical" size="middle" style={{ width: '100%' }}>
   {executeError && (

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Card, Button, Space, Tag, Typography, Tooltip, Alert, Divider, Modal, Spin } from 'antd';
+import { App as AntdApp, Card, Button, Space, Tag, Typography, Tooltip, Alert, Divider, Modal, Spin } from 'antd';
 import {
   PlayCircleOutlined,
   PauseCircleOutlined,
@@ -15,12 +15,14 @@ import type { JobLogPanelProps } from './constants';
 import { useJobLogStream } from './useJobLogStream';
 import { ActionLogs, LogList } from './LogSection';
 import { ResultSummary, ProgressBar } from './ResultSection';
+import { ThinkingProcess } from '@components/chat/ThinkingProcess';
 
 dayjs.extend(relativeTime);
 
 const { Text, Paragraph } = Typography;
 
 const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTaskName, planId, jobType: initialJobType }) => {
+  const { message } = AntdApp.useApp();
   const {
     logs,
     actionLogs,
@@ -45,6 +47,15 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
     cliLogTruncated,
     cliLogPath,
     fetchCliLog,
+    thinkingProcess,
+    streamPaused,
+    lastRuntimeControlAction,
+    lastRuntimeControlAt,
+    runtimeControlBusy,
+    runtimeControlBusyAction,
+    pauseExecution,
+    resumeExecution,
+    skipCurrentStep,
   } = useJobLogStream({ jobId, initialJob, planId, jobType: initialJobType });
 
   const statusInfo = statusMeta[status] || statusMeta.queued;
@@ -74,6 +85,17 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
     if (!lastUpdatedAt) return null;
     return dayjs(lastUpdatedAt).fromNow();
   }, [lastUpdatedAt]);
+
+  const lastControlText = React.useMemo(() => {
+    if (!lastRuntimeControlAction || !lastRuntimeControlAt) return null;
+    const actionLabel =
+      lastRuntimeControlAction === 'pause'
+        ? 'Paused'
+        : lastRuntimeControlAction === 'resume'
+        ? 'Resumed'
+        : 'Skipped step';
+    return `${actionLabel} ${dayjs(lastRuntimeControlAt).fromNow()}`;
+  }, [lastRuntimeControlAction, lastRuntimeControlAt]);
 
   return (
     <>
@@ -151,7 +173,74 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
               />
             )}
 
+            {!error && thinkingProcess.steps.length > 0 && (
+              <Alert
+                type={
+                  streamPaused
+                    ? 'warning'
+                    : lastRuntimeControlAction === 'skip_step'
+                    ? 'success'
+                    : 'info'
+                }
+                message={
+                  streamPaused
+                    ? 'Execution paused'
+                    : lastRuntimeControlAction === 'skip_step'
+                    ? 'Current step skipped'
+                    : 'Execution running'
+                }
+                description={
+                  streamPaused
+                    ? 'Deep Think is paused. Click Resume to continue.'
+                    : lastRuntimeControlAction === 'skip_step'
+                    ? 'The agent skipped the current reasoning branch and moved to the next step.'
+                    : 'Deep Think is processing and streaming structured steps in real time.'
+                }
+                showIcon
+              />
+            )}
+            {!error && lastControlText && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Last control action: {lastControlText}
+              </Text>
+            )}
+
             <ProgressBar jobType={jobType} status={status} logs={logs} stats={stats} jobParams={jobParams} />
+            {thinkingProcess.steps.length > 0 && (
+              <ThinkingProcess
+                process={thinkingProcess}
+                isFinished={FINAL_STATUSES.has(status)}
+                canControl
+                paused={streamPaused}
+                controlDisabled={FINAL_STATUSES.has(status)}
+                controlBusy={runtimeControlBusy}
+                controlBusyAction={runtimeControlBusyAction}
+                onPause={async () => {
+                  const resp = await pauseExecution();
+                  if (!resp.success) {
+                    message.warning(resp.message || 'Pause not available');
+                  } else {
+                    message.success('Execution paused');
+                  }
+                }}
+                onResume={async () => {
+                  const resp = await resumeExecution();
+                  if (!resp.success) {
+                    message.warning(resp.message || 'Resume not available');
+                  } else {
+                    message.success('Execution resumed');
+                  }
+                }}
+                onSkipStep={async () => {
+                  const resp = await skipCurrentStep();
+                  if (!resp.success) {
+                    message.warning(resp.message || 'Skip step not available');
+                  } else {
+                    message.success('Current step skipped');
+                  }
+                }}
+              />
+            )}
             <ActionLogs actionLogs={actionLogs} />
             <LogList logs={logs} missingJob={missingJob} />
             <ResultSummary result={result} jobType={jobType} />

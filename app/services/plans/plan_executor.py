@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
@@ -10,7 +12,9 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ...config.executor_config import ExecutorSettings, get_executor_settings
 from ...llm import LLMClient
+from ..deep_think_agent import DeepThinkAgent, TaskExecutionContext, ThinkingStep
 from ..deliverables import get_deliverable_publisher
+from ..execution.tool_executor import ToolExecutionContext, UnifiedToolExecutor
 from ..llm.llm_service import LLMService
 from .plan_models import PlanNode, PlanTree
 
@@ -287,14 +291,6 @@ When a task requires tool execution, request one of these tools:
                 lines.append("\n=== USER REQUEST ===")
                 lines.append(f"{user_message}")
 
-            if session_context.get("deep_think_enabled"):
-                lines.append("\n=== EXECUTION MODE ===")
-                lines.append(
-                    "Deep-think mode is enabled: reason carefully, verify assumptions, "
-                    "prefer robust and testable outputs, and explicitly validate edge cases "
-                    "before finalizing your response."
-                )
-
             chat_history = session_context.get("chat_history", [])
             if chat_history:
                 lines.append("\n=== RECENT CONVERSATION ===")
@@ -446,6 +442,7 @@ class PlanExecutor:
         self._llm = llm_service or PlanExecutorLLMService(settings=self._settings)
         self._prompt_builder = prompt_builder or ExecutorPromptBuilder()
         self._deliverable_publisher = get_deliverable_publisher()
+        self._tool_executor = UnifiedToolExecutor()
 
     def execute_plan(
         self,
@@ -701,6 +698,17 @@ class PlanExecutor:
 
         outline = tree.to_outline(max_depth=4, max_nodes=80) if config.include_plan_outline else None
 
+        if self._should_use_deep_think(config):
+            return self._run_task_with_deep_think(
+                plan_id=plan_id,
+                node=node,
+                parent=parent,
+                dependencies=dependencies,
+                plan_outline=outline,
+                tree=tree,
+                config=config,
+            )
+
         prompt = self._prompt_builder.build(
             node=node,
             parent=parent,
@@ -851,6 +859,261 @@ class PlanExecutor:
             },
         )
         return result
+
+    def _should_use_deep_think(self, config: ExecutionConfig) -> bool:
+        _ = config
+        return True
+
+    def _run_task_with_deep_think(
+        self,
+        *,
+        plan_id: int,
+        node: PlanNode,
+        parent: Optional[PlanNode],
+        dependencies: List[PlanNode],
+        plan_outline: Optional[str],
+        tree: PlanTree,
+        config: ExecutionConfig,
+    ) -> ExecutionResult:
+        try:
+            self._repo.update_task(plan_id, node.id, status="running")
+            node.status = "running"
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Failed to mark task %s as running for plan %s: %s",
+                node.id,
+                plan_id,
+                exc,
+            )
+
+        session_context = dict(config.session_context or {})
+        user_query = (node.instruction or node.display_name() or f"Execute task #{node.id}").strip()
+        dep_outputs: List[Dict[str, Any]] = []
+        for dep in dependencies:
+            dep_outputs.append(
+                {
+                    "id": dep.id,
+                    "name": dep.display_name(),
+                    "status": dep.status,
+                    "execution_result": self._prompt_builder._summarize_long_result(
+                        dep.execution_result or "(not executed)",
+                        max_length=1200,
+                    ),
+                }
+            )
+
+        task_context = TaskExecutionContext(
+            task_id=node.id,
+            task_name=node.display_name(),
+            task_instruction=user_query,
+            dependency_outputs=dep_outputs,
+            plan_outline=plan_outline,
+            constraints=[
+                "Produce actionable output for this task only.",
+                "Honor dependency outputs and do not redo completed dependencies.",
+            ],
+        )
+
+        async def on_thinking(step: ThinkingStep) -> None:
+            _log_job(
+                "info",
+                "DeepThink step update",
+                {
+                    "sub_type": "thinking_step",
+                    "task_id": node.id,
+                    "step": {
+                        "iteration": step.iteration,
+                        "thought": step.thought,
+                        "action": step.action,
+                        "action_result": step.action_result,
+                        "status": step.status,
+                        "timestamp": step.timestamp.isoformat() if step.timestamp else None,
+                    },
+                },
+            )
+
+        async def on_thinking_delta(iteration: int, delta: str) -> None:
+            _log_job(
+                "info",
+                "DeepThink delta update",
+                {
+                    "sub_type": "thinking_delta",
+                    "task_id": node.id,
+                    "iteration": iteration,
+                    "delta": delta,
+                },
+            )
+
+        async def on_tool_start(tool: str, params: Dict[str, Any]) -> None:
+            _log_job(
+                "info",
+                f"DeepThink tool start: {tool}",
+                {
+                    "sub_type": "tool_call_start",
+                    "task_id": node.id,
+                    "tool": tool,
+                    "params": params,
+                },
+            )
+
+        async def on_tool_result(tool: str, payload: Dict[str, Any]) -> None:
+            _log_job(
+                "info" if payload.get("success") else "error",
+                f"DeepThink tool finished: {tool}",
+                {
+                    "sub_type": "tool_call_result",
+                    "task_id": node.id,
+                    "tool": tool,
+                    "payload": payload,
+                },
+            )
+
+        async def _tool_wrapper(tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+            return await self._tool_executor.execute(
+                tool_name,
+                params,
+                context=ToolExecutionContext(
+                    plan_id=node.plan_id,
+                    task_id=node.id,
+                    task_name=node.display_name(),
+                    task_instruction=node.instruction,
+                    session_id=session_context.get("session_id"),
+                    current_job_id=self._current_job_id(),
+                    channel="plan_executor",
+                    mode="task_execution",
+                ),
+            )
+
+        deep_think_agent = DeepThinkAgent(
+            llm_client=self._llm._llm,
+            available_tools=[
+                "web_search",
+                "graph_rag",
+                "claude_code",
+                "file_operations",
+                "document_reader",
+                "vision_reader",
+                "bio_tools",
+                "phagescope",
+                "result_interpreter",
+                "plan_operation",
+                "manuscript_writer",
+            ],
+            tool_executor=_tool_wrapper,
+            max_iterations=12,
+            tool_timeout=UnifiedToolExecutor.DEFAULT_TIMEOUT_SECONDS,
+            on_thinking=on_thinking,
+            on_thinking_delta=on_thinking_delta,
+            on_tool_start=on_tool_start,
+            on_tool_result=on_tool_result,
+        )
+        current_job_id = self._current_job_id()
+        if current_job_id:
+            try:
+                from .decomposition_jobs import JobRuntimeController, plan_decomposition_jobs
+
+                plan_decomposition_jobs.register_runtime_controller(
+                    current_job_id,
+                    JobRuntimeController(
+                        pause=deep_think_agent.pause,
+                        resume=deep_think_agent.resume,
+                        skip_step=deep_think_agent.skip_step,
+                    ),
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Failed to register runtime controller: %s", exc)
+
+        try:
+            result = self._run_coroutine_sync(
+                deep_think_agent.think(
+                    user_query,
+                    context=session_context,
+                    task_context=task_context,
+                )
+            )
+            payload = {
+                "status": "success",
+                "content": result.final_answer,
+                "notes": [result.thinking_summary] if result.thinking_summary else [],
+                "metadata": {
+                    "deep_think": True,
+                    "confidence": result.confidence,
+                    "tools_used": result.tools_used,
+                    "thinking_process": {
+                        "status": "completed",
+                        "total_iterations": result.total_iterations,
+                        "summary": result.thinking_summary,
+                        "steps": [
+                            {
+                                "iteration": step.iteration,
+                                "thought": step.thought,
+                                "action": step.action,
+                                "action_result": step.action_result,
+                                "status": step.status,
+                                "timestamp": step.timestamp.isoformat() if step.timestamp else None,
+                            }
+                            for step in result.thinking_steps
+                        ],
+                    },
+                },
+            }
+            raw_response = json.dumps(payload, ensure_ascii=False)
+            self._persist_execution(plan_id, node.id, payload, status="completed")
+            node.execution_result = raw_response
+            node.status = "completed"
+            tree.nodes[node.id] = node
+            if parent:
+                tree.nodes[parent.id] = parent
+            return ExecutionResult(
+                plan_id=plan_id,
+                task_id=node.id,
+                status="completed",
+                content=result.final_answer,
+                notes=[result.thinking_summary] if result.thinking_summary else [],
+                metadata=payload["metadata"],
+                raw_response=raw_response,
+                attempts=1,
+            )
+        except Exception as exc:
+            logger.exception("DeepThink task execution failed for task %s: %s", node.id, exc)
+            failure_payload = {
+                "status": "failed",
+                "content": str(exc),
+                "notes": ["deep think execution failed"],
+                "metadata": {"deep_think": True},
+            }
+            self._persist_execution(plan_id, node.id, failure_payload, status="failed")
+            node.status = "failed"
+            tree.nodes[node.id] = node
+            return ExecutionResult(
+                plan_id=plan_id,
+                task_id=node.id,
+                status="failed",
+                content=str(exc),
+                notes=["deep think execution failed"],
+                metadata={"deep_think": True},
+                raw_response=json.dumps(failure_payload, ensure_ascii=False),
+                attempts=1,
+            )
+        finally:
+            if current_job_id:
+                try:
+                    from .decomposition_jobs import plan_decomposition_jobs
+
+                    plan_decomposition_jobs.unregister_runtime_controller(current_job_id)
+                except Exception:  # pragma: no cover - defensive
+                    pass
+
+    def _run_coroutine_sync(self, coro: Any) -> Any:
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop and running_loop.is_running():
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                return executor.submit(lambda: asyncio.run(coro)).result()
+        return asyncio.run(coro)
 
     def _persist_execution(
         self,
@@ -1055,42 +1318,13 @@ class PlanExecutor:
         Returns:
             Dict with success status, result/error, and summary
         """
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
-        from tool_box import execute_tool
-
         tool_name = tool_call.name
         params = dict(tool_call.parameters)
-
-        if tool_name == "claude_code":
-            for key in (
-                "require_task_context",
-                "skip_permissions",
-                "output_format",
-                "model",
-                "setting_sources",
-                "auth_mode",
-            ):
-                params.pop(key, None)
-            legacy_target_task_id = params.pop("target_task_id", None)
-            if params.get("task_id") is None:
-                params["task_id"] = (
-                    legacy_target_task_id
-                    if legacy_target_task_id is not None
-                    else node.id
-                )
-            if params.get("plan_id") is None:
-                params["plan_id"] = node.plan_id
-            params["require_task_context"] = True
-            params["auth_mode"] = "api_env"
-            params["setting_sources"] = "project"
-        else:
-            params.pop("target_task_id", None)
-
+        session_id = None
         if config.session_context:
-            session_id = config.session_context.get("session_id")
-            if session_id:
-                params["session_id"] = session_id
+            maybe_session = config.session_context.get("session_id")
+            if isinstance(maybe_session, str) and maybe_session.strip():
+                session_id = maybe_session.strip()
 
         logger.info(
             "PlanExecutor executing tool %s for task %s with params: %s",
@@ -1103,71 +1337,24 @@ class PlanExecutor:
         )
 
         try:
-            try:
-                running_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                running_loop = None
-
-            if running_loop and running_loop.is_running():
-                def _run_in_worker() -> Any:
-                    return asyncio.run(execute_tool(tool_name, **params))
-
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    result = executor.submit(_run_in_worker).result()
-            else:
-                result = asyncio.run(execute_tool(tool_name, **params))
-
-            summary = self._summarize_tool_result(tool_name, result)
-            tool_success = not (
-                isinstance(result, dict)
-                and result.get("success") is False
+            payload = self._tool_executor.execute_sync(
+                tool_name,
+                params,
+                context=ToolExecutionContext(
+                    plan_id=node.plan_id,
+                    task_id=node.id,
+                    task_name=node.display_name(),
+                    task_instruction=node.instruction,
+                    session_id=session_id,
+                    current_job_id=self._current_job_id(),
+                    channel="plan_executor",
+                    mode="task_execution",
+                ),
             )
-            publish_report = None
-            session_id = None
-            if config.session_context:
-                maybe_session = config.session_context.get("session_id")
-                if isinstance(maybe_session, str) and maybe_session.strip():
-                    session_id = maybe_session.strip()
-
-            if session_id:
-                try:
-                    publish_report = self._deliverable_publisher.publish_from_tool_result(
-                        session_id=session_id,
-                        tool_name=tool_name,
-                        raw_result=result,
-                        summary=summary,
-                        source={
-                            "channel": "plan_executor",
-                            "mode": "task_execution",
-                        },
-                        job_id=self._current_job_id(),
-                        plan_id=node.plan_id,
-                        task_id=node.id,
-                        task_name=node.display_name(),
-                        task_instruction=node.instruction,
-                        publish_status="final" if tool_success else "draft",
-                    )
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.warning(
-                        "Failed to publish deliverables for plan %s task %s: %s",
-                        node.plan_id,
-                        node.id,
-                        exc,
-                    )
-
             logger.info(
                 "Tool %s execution succeeded for task %s",
                 tool_name, node.id
             )
-            payload: Dict[str, Any] = {
-                "success": tool_success,
-                "result": result,
-                "summary": summary,
-            }
-            if not tool_success:
-                payload["error"] = self._build_tool_failure_error(tool_name, result)
-            if publish_report is not None:
-                payload["deliverables"] = publish_report.to_dict()
             return payload
 
         except Exception as exc:

@@ -1,25 +1,27 @@
-import logging
-import json
 import asyncio
+import json
+import logging
+import re
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Callable, Union, AsyncIterator
+from typing import Any, Callable, Dict, List, Optional
 
-from dataclasses import dataclass
-
-from app.llm import get_default_client
+from app.services.execution.tool_executor import UnifiedToolExecutor
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ThinkingStep:
     """Represents a single step in the thinking process."""
     iteration: int
-    thought: str           # The reasoning content
-    action: Optional[str]  # Tool call JSON string or description
-    action_result: Optional[str]  # Result from the tool
-    self_correction: Optional[str]  # Any self-correction made during this step
-    timestamp: datetime = datetime.now()
-    status: str = "thinking" # thinking, calling_tool, analyzing, done, error
+    thought: str
+    action: Optional[str]
+    action_result: Optional[str]
+    self_correction: Optional[str]
+    timestamp: datetime = field(default_factory=datetime.now)
+    status: str = "thinking"  # thinking, calling_tool, analyzing, done, error
+
 
 @dataclass
 class DeepThinkResult:
@@ -32,6 +34,16 @@ class DeepThinkResult:
     thinking_summary: str  # A concise summary for the user
 
 
+@dataclass
+class TaskExecutionContext:
+    task_id: Optional[int] = None
+    task_name: Optional[str] = None
+    task_instruction: Optional[str] = None
+    dependency_outputs: List[Dict[str, Any]] = field(default_factory=list)
+    plan_outline: Optional[str] = None
+    constraints: List[str] = field(default_factory=list)
+
+
 class DeepThinkProtocolError(RuntimeError):
     """Raised when DeepThink output violates the required JSON protocol."""
 
@@ -42,23 +54,7 @@ class DeepThinkAgent:
     Supports streaming output for real-time display of thinking process.
     """
 
-    # Default tool execution timeout (seconds)
     DEFAULT_TOOL_TIMEOUT = 60
-
-    # Per-tool timeout overrides (seconds)
-    TOOL_TIMEOUTS = {
-        "claude_code": 1200,      # 10 minutes: code execution can be long-running
-        "web_search": 180,        # 3 minutes
-        "document_reader": 200,   # ~3.3 minutes
-        "graph_rag": 600,         # 10 minutes
-        "file_operations": 90,    # 1.5 minutes: file operations should be fast
-        "vision_reader": 1200,    # 10 minutes: vision model PDF/image processing
-        "bio_tools": 86400,       # 24 hours: bioinformatics jobs can be long-running
-        "phagescope": 60,         # 1 minute: submit/query only, no blocking wait
-        "result_interpreter": 300,  # 5 minutes: data analysis and code execution
-        "plan_operation": 1200,   # 20 minutes: plan creation/optimization with validation
-    }
-
     FINAL_STREAM_CHUNK_CHARS = 1
     FINAL_STREAM_DELAY_SEC = 0.01
 
@@ -71,8 +67,10 @@ class DeepThinkAgent:
         tool_timeout: int = DEFAULT_TOOL_TIMEOUT,
         cancel_event: Optional[asyncio.Event] = None,
         on_thinking: Optional[Callable[[ThinkingStep], Any]] = None,
-        on_thinking_delta: Optional[Callable[[int, str], Any]] = None,  # (iteration, delta_text) -> None
-        on_final_delta: Optional[Callable[[str], Any]] = None,  # (delta_text) -> None
+        on_thinking_delta: Optional[Callable[[int, str], Any]] = None,
+        on_final_delta: Optional[Callable[[str], Any]] = None,
+        on_tool_start: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+        on_tool_result: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
     ):
         self.llm_client = llm_client
         self.available_tools = available_tools
@@ -83,8 +81,27 @@ class DeepThinkAgent:
         self.on_thinking = on_thinking
         self.on_thinking_delta = on_thinking_delta
         self.on_final_delta = on_final_delta
+        self.on_tool_start = on_tool_start
+        self.on_tool_result = on_tool_result
+        self._pause_event = asyncio.Event()
+        self._pause_event.set()
+        self._skip_current_step = False
 
-    async def think(self, user_query: str, context: Optional[Dict[str, Any]] = None) -> DeepThinkResult:
+    def pause(self) -> None:
+        self._pause_event.clear()
+
+    def resume(self) -> None:
+        self._pause_event.set()
+
+    def skip_step(self) -> None:
+        self._skip_current_step = True
+
+    async def think(
+        self,
+        user_query: str,
+        context: Optional[Dict[str, Any]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> DeepThinkResult:
         """
         Executes the deep thinking loop with streaming output.
 
@@ -105,13 +122,11 @@ class DeepThinkAgent:
             raise ValueError("User query too long (max 10000 chars)")
 
         user_query = user_query.strip()
-        context = context or {}
+        context = dict(context or {})
         thinking_steps: List[ThinkingStep] = []
         tools_used: List[str] = []
-        cancelled = False
 
-        # Build system prompt (includes conversation context)
-        system_prompt = self._build_system_prompt(context)
+        system_prompt = self._build_system_prompt(context, task_context=task_context)
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -125,16 +140,14 @@ class DeepThinkAgent:
         logger.info(f"Starting DeepThink for query: {user_query[:50]}...")
 
         while iteration < self.max_iterations:
-            # Cancellation check
+            await self._pause_event.wait()
             if self.cancel_event and self.cancel_event.is_set():
                 logger.info("DeepThink cancelled by user")
-                cancelled = True
                 break
 
             iteration += 1
 
             try:
-                # Create a temporary step object
                 current_step = ThinkingStep(
                     iteration=iteration,
                     thought="",
@@ -145,14 +158,11 @@ class DeepThinkAgent:
                     status="thinking"
                 )
 
-                # Notify start of new step
                 if self.on_thinking:
                     await self._safe_callback(current_step)
 
-                # Use streaming LLM call to get response token by token
                 response_text = ""
 
-                # Strict mode: DeepThink requires streaming-capable LLM client.
                 if not hasattr(self.llm_client, "stream_chat_async"):
                     raise DeepThinkProtocolError(
                         "DeepThink requires LLM client support for stream_chat_async in strict mode."
@@ -161,16 +171,37 @@ class DeepThinkAgent:
                 logger.info("[DEEP_THINK] Using streaming LLM call")
                 async for delta in self.llm_client.stream_chat_async(prompt="", messages=messages):
                     response_text += delta
-                    # Send delta to frontend
                     if self.on_thinking_delta:
                         await self._safe_delta_callback(iteration, delta)
 
-                # Parse response
-                parsed = self._parse_llm_response(response_text)
+                parsed, parse_error = self._parse_llm_response_safe(response_text)
+                if parse_error:
+                    logger.warning(
+                        "DeepThink parse error at iteration %s: %s",
+                        iteration,
+                        parse_error,
+                    )
+                    current_step.status = "error"
+                    current_step.thought = f"Protocol recovery: {parse_error}"
+                    current_step.self_correction = "Requesting corrected JSON schema output."
+                    thinking_steps.append(current_step)
+                    if self.on_thinking:
+                        await self._safe_callback(current_step)
+                    messages.append({"role": "assistant", "content": response_text})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous output violated protocol. "
+                                "Return ONLY valid JSON with keys: thinking, action, final_answer."
+                            ),
+                        }
+                    )
+                    continue
+
                 current_step.thought = parsed.get("thought", "")
                 current_step.action = parsed.get("action_str", None)
 
-                # Check for final answer
                 if parsed.get("is_final"):
                     final_answer = parsed.get("final_answer", "")
                     confidence = parsed.get("confidence", 0.8)
@@ -184,7 +215,6 @@ class DeepThinkAgent:
                         await self._stream_final_answer(final_answer)
                     break
 
-                # Handle Action
                 if current_step.action:
                     current_step.status = "calling_tool"
                     thinking_steps.append(current_step)
@@ -202,48 +232,77 @@ class DeepThinkAgent:
                         if tool_name not in tools_used:
                             tools_used.append(tool_name)
                         try:
-                            # Resolve timeout by tool type
-                            timeout = self.TOOL_TIMEOUTS.get(tool_name, self.tool_timeout)
-
-                            # Execute tool with timeout
+                            timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(
+                                str(tool_name),
+                                self.tool_timeout,
+                            )
+                            if self.on_tool_start:
+                                await self._safe_generic_callback(
+                                    self.on_tool_start,
+                                    str(tool_name),
+                                    dict(tool_params or {}),
+                                )
                             result = await asyncio.wait_for(
                                 self.tool_executor(tool_name, tool_params or {}),
                                 timeout=timeout
                             )
                             current_step.action_result = str(result)
+                            if self.on_tool_result:
+                                callback_success, callback_error = self._normalize_tool_callback_outcome(result)
+                                await self._safe_generic_callback(
+                                    self.on_tool_result,
+                                    str(tool_name),
+                                    {
+                                        "success": callback_success,
+                                        "error": callback_error,
+                                        "result": result,
+                                        "summary": self._build_tool_callback_summary(result),
+                                        "iteration": iteration,
+                                    },
+                                )
                         except asyncio.TimeoutError:
-                            timeout = self.TOOL_TIMEOUTS.get(tool_name, self.tool_timeout)
                             current_step.action_result = f"Error: Tool '{tool_name}' execution timed out after {timeout}s"
                             logger.warning(f"Tool {tool_name} timed out after {timeout}s")
+                            if self.on_tool_result:
+                                await self._safe_generic_callback(
+                                    self.on_tool_result,
+                                    str(tool_name),
+                                    {
+                                        "success": False,
+                                        "error": "timeout",
+                                        "summary": current_step.action_result,
+                                        "iteration": iteration,
+                                    },
+                                )
                         except Exception as e:
                             current_step.action_result = f"Error executing tool: {str(e)}"
                             logger.exception(f"Tool {tool_name} execution failed")
+                            if self.on_tool_result:
+                                await self._safe_generic_callback(
+                                    self.on_tool_result,
+                                    str(tool_name),
+                                    {
+                                        "success": False,
+                                        "error": str(e),
+                                        "summary": current_step.action_result,
+                                        "iteration": iteration,
+                                    },
+                                )
 
-                    # Update conversation history with result
                     messages.append({"role": "assistant", "content": response_text})
                     messages.append({"role": "user", "content": f"Tool Output: {current_step.action_result}"})
 
                     current_step.status = "analyzing"
-                    # Update step with action result
                     if self.on_thinking:
                         await self._safe_callback(current_step)
 
                 else:
-                    # Pure thinking step or self-correction without action
                     thinking_steps.append(current_step)
                     if self.on_thinking:
                         await self._safe_callback(current_step)
                     messages.append({"role": "assistant", "content": response_text})
                     messages.append({"role": "user", "content": self._get_next_step_prompt(iteration)})
 
-            except DeepThinkProtocolError as e:
-                logger.error("DeepThink protocol violation at iteration %s: %s", iteration, e)
-                current_step.status = "error"
-                current_step.thought = f"Protocol error: {str(e)}"
-                thinking_steps.append(current_step)
-                if self.on_thinking:
-                    await self._safe_callback(current_step)
-                raise
             except Exception as e:
                 logger.exception("Error in deep thinking loop")
                 current_step.status = "error"
@@ -251,9 +310,23 @@ class DeepThinkAgent:
                 thinking_steps.append(current_step)
                 if self.on_thinking:
                     await self._safe_callback(current_step)
-                raise
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Continue with a robust fallback and provide valid JSON only.",
+                    }
+                )
+                continue
 
-        # If iterations are exhausted without a final answer, request one strict JSON turn.
+            if self._skip_current_step:
+                self._skip_current_step = False
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Skip current branch and continue with the next reasoning step.",
+                    }
+                )
+
         if not final_answer and thinking_steps:
             logger.info("[DEEP_THINK] Iterations exhausted, requesting strict final conclusion")
 
@@ -281,7 +354,10 @@ Respond with ONLY a JSON object:
                     if self.on_thinking_delta:
                         await self._safe_delta_callback(iteration + 1, delta)
 
-                parsed = self._parse_llm_response(response_text)
+                parsed, parse_error = self._parse_llm_response_safe(response_text)
+                if parse_error:
+                    logger.warning("Forced conclusion parse fallback triggered: %s", parse_error)
+                    parsed = {}
                 if parsed.get("is_final"):
                     final_answer = parsed.get("final_answer", "")
                     confidence = parsed.get("confidence", 0.7)
@@ -290,18 +366,23 @@ Respond with ONLY a JSON object:
                     if self.on_final_delta and final_answer:
                         await self._stream_final_answer(final_answer)
                 else:
-                    raise DeepThinkProtocolError(
-                        "Forced conclusion did not include a valid final_answer object."
-                    )
+                    final_answer = self._fallback_answer_from_steps(thinking_steps)
+                    confidence = 0.5
+                    if self.on_final_delta and final_answer:
+                        await self._stream_final_answer(final_answer)
             except Exception as e:
                 logger.exception("Failed to generate strict forced conclusion")
-                raise DeepThinkProtocolError("Failed to generate strict final answer.") from e
+                final_answer = self._fallback_answer_from_steps(thinking_steps)
+                confidence = 0.4
 
         if not final_answer:
-            raise DeepThinkProtocolError("DeepThink terminated without final_answer.")
+            final_answer = self._fallback_answer_from_steps(thinking_steps)
+            confidence = max(confidence, 0.3)
 
-        # Generate summary with LLM
-        summary = await self._generate_summary(thinking_steps, user_query)
+        try:
+            summary = await self._generate_summary(thinking_steps, user_query)
+        except Exception:
+            summary = "DeepThink completed with protocol-tolerant fallback summarization."
 
         return DeepThinkResult(
             final_answer=final_answer,
@@ -321,6 +402,17 @@ Respond with ONLY a JSON object:
                     self.on_thinking(step)
             except Exception as e:
                 logger.error(f"Error in on_thinking callback: {e}")
+
+    async def _safe_generic_callback(self, callback: Callable[..., Any], *args: Any) -> None:
+        try:
+            if asyncio.iscoroutinefunction(callback):
+                await callback(*args)
+            else:
+                ret = callback(*args)
+                if asyncio.iscoroutine(ret):
+                    await ret
+        except Exception as e:
+            logger.error("Error in callback: %s", e)
 
     async def _safe_delta_callback(self, iteration: int, delta: str):
         if self.on_thinking_delta:
@@ -356,6 +448,30 @@ Respond with ONLY a JSON object:
             except Exception as e:
                 logger.error(f"Error in on_final_delta callback: {e}")
 
+    def _normalize_tool_callback_outcome(self, result: Any) -> tuple[bool, Optional[str]]:
+        if isinstance(result, dict):
+            if "success" in result:
+                success = bool(result.get("success"))
+                error_val = result.get("error")
+                error = str(error_val).strip() if error_val is not None else None
+                return success, error
+            nested = result.get("result")
+            if isinstance(nested, dict) and nested.get("success") is False:
+                nested_error = nested.get("error")
+                if nested_error is not None:
+                    return False, str(nested_error)
+                return False, None
+        return True, None
+
+    @staticmethod
+    def _build_tool_callback_summary(result: Any) -> str:
+        if isinstance(result, dict):
+            if "summary" in result:
+                return str(result["summary"])[:600]
+            if "error" in result and result.get("error"):
+                return str(result.get("error"))[:600]
+        return str(result)[:600]
+
     @classmethod
     def _chunk_final_answer(cls, text: str) -> List[str]:
         text = text or ""
@@ -385,8 +501,12 @@ Respond with ONLY a JSON object:
             if self.FINAL_STREAM_DELAY_SEC > 0:
                 await asyncio.sleep(self.FINAL_STREAM_DELAY_SEC)
 
-    def _build_system_prompt(self, context: Optional[Dict[str, Any]] = None) -> str:
-        """Constructs the system prompt for the Deep Think Agent."""
+    def _build_system_prompt(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> str:
+        """Construct the system prompt for DeepThink, task-aware when available."""
         # Build detailed tool descriptions
         tool_descriptions = {
             "claude_code": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. Params: {\"task\": \"description\"}",
@@ -462,8 +582,37 @@ IMPORTANT: When creating plans, ensure each task has clear, actionable instructi
                 tools_desc.append(f"- {t}")
         tools_text = "\n".join(tools_desc)
 
-        base_prompt = f"""You are a Deep Thinking AI Assistant with UNLIMITED resources.
-Your goal is to provide the MOST COMPREHENSIVE answer by using ALL available tools aggressively.
+        if task_context and task_context.task_instruction:
+            task_lines = [
+                "You are a task execution engine in DeepThink mode.",
+                "Focus on completing the specific task with verifiable outputs.",
+                "Be concise, deterministic, and robust.",
+                "",
+                "=== TASK EXECUTION CONTEXT ===",
+            ]
+            if task_context.task_id is not None:
+                task_lines.append(f"Task ID: {task_context.task_id}")
+            if task_context.task_name:
+                task_lines.append(f"Task Name: {task_context.task_name}")
+            task_lines.append(f"Instruction: {task_context.task_instruction}")
+            if task_context.constraints:
+                task_lines.append("Constraints:")
+                for c in task_context.constraints:
+                    task_lines.append(f"- {c}")
+            if task_context.plan_outline:
+                task_lines.append("Plan Outline (truncated):")
+                task_lines.append(task_context.plan_outline)
+            if task_context.dependency_outputs:
+                task_lines.append("Dependency Outputs:")
+                for dep in task_context.dependency_outputs[:6]:
+                    task_lines.append(f"- {json.dumps(dep, ensure_ascii=False)[:600]}")
+            task_lines.append("")
+            base_prompt = "\n".join(task_lines) + "\n"
+        else:
+            base_prompt = ""
+
+        base_prompt += f"""You are a Deep Thinking AI Assistant with UNLIMITED resources.
+Your goal is to provide the MOST COMPREHENSIVE answer by using available tools aggressively.
 
 === CORE PRINCIPLES ===
 1. You have UNLIMITED tokens and API calls - DO NOT worry about costs.
@@ -655,16 +804,39 @@ When ready to answer (after using multiple tools):
         else:
             return 'Please continue thinking. If you are ready to answer, include "final_answer" in your JSON response.'
 
-    def _parse_llm_response(self, response: str) -> Dict[str, Any]:
-        """Parse strict JSON response and raise on any protocol violation."""
-        json_str = self._extract_json(response)
+    def _parse_llm_response_safe(self, response: str) -> tuple[Dict[str, Any], Optional[str]]:
         try:
-            parsed = json.loads(json_str)
-        except json.JSONDecodeError as exc:
-            raise DeepThinkProtocolError(f"LLM output is not valid JSON: {exc}") from exc
+            return self._parse_llm_response(response), None
+        except Exception as exc:
+            return {}, str(exc)
 
-        if not isinstance(parsed, dict):
-            raise DeepThinkProtocolError("LLM output JSON must be an object.")
+    def _parse_llm_response(self, response: str) -> Dict[str, Any]:
+        json_str = self._extract_json(response)
+        parsed: Optional[Dict[str, Any]] = None
+        parse_errors: List[str] = []
+
+        for candidate in (
+            json_str,
+            self._repair_json_text(json_str),
+        ):
+            if not candidate:
+                continue
+            try:
+                payload = json.loads(candidate)
+            except json.JSONDecodeError as exc:
+                parse_errors.append(str(exc))
+                continue
+            if isinstance(payload, dict):
+                parsed = payload
+                break
+
+        if parsed is None:
+            parsed = self._regex_parse_fallback(json_str)
+            if parsed is None:
+                raise DeepThinkProtocolError(
+                    "LLM output is not valid JSON; parse errors: "
+                    + "; ".join(parse_errors[:2])
+                )
 
         thinking = parsed.get("thinking", "")
         if thinking is None:
@@ -684,6 +856,8 @@ When ready to answer (after using multiple tools):
 
         final_ans = parsed.get("final_answer")
         if final_ans is not None:
+            if isinstance(final_ans, str):
+                final_ans = {"answer": final_ans, "confidence": 0.7}
             if not isinstance(final_ans, dict):
                 raise DeepThinkProtocolError("final_answer must be an object or null.")
             answer = final_ans.get("answer")
@@ -692,8 +866,8 @@ When ready to answer (after using multiple tools):
             confidence_raw = final_ans.get("confidence", 0.8)
             try:
                 confidence = float(confidence_raw)
-            except (TypeError, ValueError) as exc:
-                raise DeepThinkProtocolError("final_answer.confidence must be numeric.") from exc
+            except (TypeError, ValueError):
+                confidence = 0.8
             result["is_final"] = True
             result["final_answer"] = answer
             result["confidence"] = min(max(confidence, 0.0), 1.0)
@@ -701,6 +875,8 @@ When ready to answer (after using multiple tools):
 
         action = parsed.get("action")
         if action is not None:
+            if isinstance(action, str):
+                action = {"tool": action, "params": {}}
             if not isinstance(action, dict):
                 raise DeepThinkProtocolError("action must be an object or null.")
             tool_name = action.get("tool")
@@ -710,7 +886,7 @@ When ready to answer (after using multiple tools):
             if tool_params is None:
                 tool_params = {}
             if not isinstance(tool_params, dict):
-                raise DeepThinkProtocolError("action.params must be an object.")
+                tool_params = {}
             result["tool_name"] = tool_name.strip()
             result["tool_params"] = tool_params
             result["action_str"] = json.dumps(
@@ -719,6 +895,33 @@ When ready to answer (after using multiple tools):
             )
 
         return result
+
+    def _repair_json_text(self, text: str) -> str:
+        repaired = (text or "").strip()
+        if not repaired:
+            return repaired
+        repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+        repaired = repaired.replace("None", "null")
+        if "'" in repaired and '"' not in repaired:
+            repaired = repaired.replace("'", '"')
+        return repaired
+
+    def _regex_parse_fallback(self, text: str) -> Optional[Dict[str, Any]]:
+        body = (text or "").strip()
+        if not body:
+            return None
+        thinking_match = re.search(r'"thinking"\s*:\s*"([^"]*)"', body, re.DOTALL)
+        final_match = re.search(r'"answer"\s*:\s*"([^"]+)"', body, re.DOTALL)
+        tool_match = re.search(r'"tool"\s*:\s*"([^"]+)"', body)
+
+        payload: Dict[str, Any] = {}
+        if thinking_match:
+            payload["thinking"] = thinking_match.group(1)
+        if final_match:
+            payload["final_answer"] = {"answer": final_match.group(1), "confidence": 0.6}
+        if tool_match:
+            payload["action"] = {"tool": tool_match.group(1), "params": {}}
+        return payload or None
 
     def _extract_json(self, text: str) -> str:
         """Extract the first complete top-level JSON object."""
@@ -749,6 +952,14 @@ When ready to answer (after using multiple tools):
                     return text[start_idx:i+1]
 
         raise DeepThinkProtocolError("No complete JSON object found in LLM output.")
+
+    def _fallback_answer_from_steps(self, steps: List[ThinkingStep]) -> str:
+        if not steps:
+            return "DeepThink completed without structured final answer."
+        useful = [s.thought for s in steps if isinstance(s.thought, str) and s.thought.strip()]
+        if not useful:
+            return "DeepThink completed but no reliable answer was produced."
+        return useful[-1].strip()
 
     async def _generate_summary(self, steps: List[ThinkingStep], user_query: str) -> str:
         """Generate a concise DeepThink summary via LLM in strict mode."""

@@ -132,6 +132,50 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
   const status = metadata?.status;
   const isStreaming =
     unifiedStream && (status === 'pending' || status === 'running');
+  const deepThinkJobId =
+    typeof (metadata as any)?.deep_think_job_id === 'string'
+      ? ((metadata as any).deep_think_job_id as string)
+      : null;
+  const deepThinkPausedFromMetadata = Boolean((metadata as any)?.deep_think_paused);
+  const [deepThinkPaused, setDeepThinkPaused] = useState<boolean>(deepThinkPausedFromMetadata);
+  const [deepThinkControlBusyAction, setDeepThinkControlBusyAction] = useState<
+    'pause' | 'resume' | 'skip_step' | null
+  >(null);
+  const thinkingIsFinished =
+    message.metadata?.status === 'completed' ||
+    message.metadata?.status === 'failed' ||
+    message.thinking_process?.status === 'completed' ||
+    message.thinking_process?.status === 'error';
+  const deepThinkCanControl = Boolean(
+    deepThinkJobId &&
+      message.thinking_process?.status === 'active' &&
+      !thinkingIsFinished,
+  );
+  const deepThinkControlDisabled =
+    !deepThinkJobId || deepThinkControlBusyAction !== null;
+
+  React.useEffect(() => {
+    setDeepThinkPaused(deepThinkPausedFromMetadata);
+  }, [deepThinkPausedFromMetadata, deepThinkJobId]);
+
+  const issueDeepThinkControl = React.useCallback(
+    async (action: 'pause' | 'resume' | 'skip_step') => {
+      if (!deepThinkJobId || deepThinkControlBusyAction !== null) return;
+      setDeepThinkControlBusyAction(action);
+      try {
+        const response = await planTreeApi.controlJob(deepThinkJobId, { action });
+        if (response.success) {
+          if (action === 'pause') setDeepThinkPaused(true);
+          if (action === 'resume') setDeepThinkPaused(false);
+        }
+      } catch (error) {
+        console.warn('Failed to control deep think runtime:', error);
+      } finally {
+        setDeepThinkControlBusyAction(null);
+      }
+    },
+    [deepThinkJobId, deepThinkControlBusyAction],
+  );
 
   // In unified stream mode, show typing indicator only at initial pending stage
   // when there is no preface/actions and no thinking steps yet.
@@ -332,7 +376,21 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
                   {message.thinking_process && (
                     <ThinkingProcess
                       process={message.thinking_process}
-                      isFinished={message.metadata?.status === 'completed' || message.metadata?.status === 'failed'}
+                      isFinished={thinkingIsFinished}
+                      canControl={deepThinkCanControl}
+                      onPause={() => {
+                        void issueDeepThinkControl('pause');
+                      }}
+                      onResume={() => {
+                        void issueDeepThinkControl('resume');
+                      }}
+                      onSkipStep={() => {
+                        void issueDeepThinkControl('skip_step');
+                      }}
+                      paused={deepThinkPaused}
+                      controlDisabled={deepThinkControlDisabled}
+                      controlBusy={deepThinkControlBusyAction !== null}
+                      controlBusyAction={deepThinkControlBusyAction}
                     />
                   )}
                   {summaryBlock}
@@ -345,7 +403,21 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
                 {message.thinking_process && (
                   <ThinkingProcess
                     process={message.thinking_process}
-                    isFinished={message.metadata?.status === 'completed' || message.metadata?.status === 'failed'}
+                    isFinished={thinkingIsFinished}
+                    canControl={deepThinkCanControl}
+                    onPause={() => {
+                      void issueDeepThinkControl('pause');
+                    }}
+                    onResume={() => {
+                      void issueDeepThinkControl('resume');
+                    }}
+                    onSkipStep={() => {
+                      void issueDeepThinkControl('skip_step');
+                    }}
+                    paused={deepThinkPaused}
+                    controlDisabled={deepThinkControlDisabled}
+                    controlBusy={deepThinkControlBusyAction !== null}
+                    controlBusyAction={deepThinkControlBusyAction}
                   />
                 )}
                 {summaryBlock ?? renderContent()}

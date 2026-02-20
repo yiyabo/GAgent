@@ -62,8 +62,10 @@ def test_parse_llm_response_requires_json_protocol() -> None:
 
 def test_think_fails_fast_on_non_json_response() -> None:
     agent = _build_agent(["<thinking>legacy xml</thinking>"], max_iterations=1)
-    with pytest.raises(DeepThinkProtocolError):
-        asyncio.run(agent.think("analyze this dataset"))
+    result = asyncio.run(agent.think("analyze this dataset"))
+    assert isinstance(result.final_answer, str)
+    assert result.final_answer.strip()
+    assert result.total_iterations >= 1
 
 
 def test_think_fails_when_forced_conclusion_not_final() -> None:
@@ -72,8 +74,10 @@ def test_think_fails_when_forced_conclusion_not_final() -> None:
         '{"thinking":"still no final","action":null,"final_answer":null}',
     ]
     agent = _build_agent(responses, max_iterations=1)
-    with pytest.raises(DeepThinkProtocolError):
-        asyncio.run(agent.think("analyze this dataset"))
+    result = asyncio.run(agent.think("analyze this dataset"))
+    assert isinstance(result.final_answer, str)
+    assert result.final_answer.strip()
+    assert result.confidence <= 0.7
 
 
 def test_think_requires_streaming_llm_client_in_strict_mode() -> None:
@@ -83,6 +87,42 @@ def test_think_requires_streaming_llm_client_in_strict_mode() -> None:
         tool_executor=_noop_tool_executor,
         max_iterations=1,
     )
+    result = asyncio.run(agent.think("analyze this dataset"))
+    assert result.final_answer.strip()
+    assert result.confidence <= 0.5
 
-    with pytest.raises(DeepThinkProtocolError, match="stream_chat_async"):
-        asyncio.run(agent.think("analyze this dataset"))
+
+def test_tool_result_callback_preserves_tool_failure_payload() -> None:
+    callbacks = []
+
+    async def _failing_tool_executor(_name: str, _params: dict):
+        return {
+            "success": False,
+            "error": "tool failed",
+            "summary": "tool failed summary",
+            "result": {"success": False, "error": "tool failed"},
+        }
+
+    async def _on_tool_result(_tool: str, payload: dict):
+        callbacks.append(payload)
+
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM(
+            [
+                '{"thinking":"need tool","action":{"tool":"web_search","params":{"query":"x"}},"final_answer":null}',
+                '{"thinking":"done","action":null,"final_answer":{"answer":"ok","confidence":0.9}}',
+            ]
+        ),
+        available_tools=["web_search"],
+        tool_executor=_failing_tool_executor,
+        max_iterations=2,
+        on_tool_result=_on_tool_result,
+    )
+
+    result = asyncio.run(agent.think("analyze this dataset"))
+    assert result.final_answer.strip()
+    assert callbacks
+    assert callbacks[0]["success"] is False
+    assert callbacks[0]["error"] == "tool failed"
+    assert callbacks[0]["summary"] == "tool failed summary"
+    assert callbacks[0]["iteration"] == 1

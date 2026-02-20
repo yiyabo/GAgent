@@ -313,6 +313,118 @@ export function handleThinkingDelta(ctx: StreamHandlerContext, event: any): void
   ctx.scheduleFlush();
 }
 
+function _extractToolNameFromAction(action: unknown): string | null {
+  if (typeof action !== 'string' || !action.trim()) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(action);
+    if (parsed && typeof parsed.tool === 'string' && parsed.tool.trim()) {
+      return parsed.tool.trim().toLowerCase();
+    }
+  } catch {
+    // ignore parse errors and fallback to raw text matching
+  }
+  return action.toLowerCase();
+}
+
+function _resolveToolOutputStepIndex(steps: Array<Record<string, any>>, event: any): number {
+  const iteration =
+    typeof event?.iteration === 'number' && Number.isFinite(event.iteration)
+      ? event.iteration
+      : null;
+  if (iteration !== null) {
+    const byIteration = steps.findIndex((step) => step?.iteration === iteration);
+    if (byIteration >= 0) return byIteration;
+  }
+
+  const toolName =
+    typeof event?.tool === 'string' && event.tool.trim()
+      ? event.tool.trim().toLowerCase()
+      : null;
+  if (toolName) {
+    for (let idx = steps.length - 1; idx >= 0; idx -= 1) {
+      const stepTool = _extractToolNameFromAction(steps[idx]?.action);
+      if (stepTool && stepTool.includes(toolName)) {
+        return idx;
+      }
+    }
+  }
+
+  for (let idx = steps.length - 1; idx >= 0; idx -= 1) {
+    const status = steps[idx]?.status;
+    if (status === 'calling_tool' || status === 'analyzing') {
+      return idx;
+    }
+  }
+  return steps.length - 1;
+}
+
+export function handleControlAck(ctx: StreamHandlerContext, event: any): void {
+  const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
+  if (!targetMessage) return;
+  const existingMetadata: ChatResponseMetadata = {
+    ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}),
+  };
+
+  const nextMetadata: ChatResponseMetadata = { ...existingMetadata };
+  if (typeof event?.job_id === 'string' && event.job_id.trim()) {
+    (nextMetadata as any).deep_think_job_id = event.job_id.trim();
+  }
+  if (typeof event?.available === 'boolean') {
+    (nextMetadata as any).deep_think_control_available = event.available;
+  }
+  if (typeof event?.paused === 'boolean') {
+    (nextMetadata as any).deep_think_paused = event.paused;
+  }
+  if (typeof event?.action === 'string' && event.action.trim()) {
+    (nextMetadata as any).deep_think_last_control_action = event.action.trim();
+  }
+
+  ctx.get().updateMessage(ctx.assistantMessageId, {
+    metadata: nextMetadata,
+  });
+  ctx.scheduleFlush();
+}
+
+export function handleToolOutput(ctx: StreamHandlerContext, event: any): void {
+  const line = typeof event?.content === 'string' ? event.content : '';
+  if (!line.trim()) return;
+  const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
+  if (!targetMessage?.thinking_process?.steps?.length) return;
+
+  const stream = typeof event?.stream === 'string' ? event.stream.toLowerCase() : 'stdout';
+  const linePrefix = stream === 'stderr' ? '[stderr]' : '[stdout]';
+  const lineText = `${linePrefix} ${line}`;
+
+  const currentProcess = targetMessage.thinking_process;
+  const updatedSteps = [...currentProcess.steps];
+  const stepIndex = _resolveToolOutputStepIndex(updatedSteps as any[], event);
+  if (stepIndex < 0 || stepIndex >= updatedSteps.length) return;
+
+  const targetStep = updatedSteps[stepIndex] ?? {};
+  const existingResult = typeof targetStep.action_result === 'string' ? targetStep.action_result : '';
+  const appended = existingResult ? `${existingResult}\n${lineText}` : lineText;
+  const MAX_OUTPUT_CHARS = 12000;
+  const normalizedOutput =
+    appended.length > MAX_OUTPUT_CHARS
+      ? `... [tool output truncated]\n${appended.slice(-MAX_OUTPUT_CHARS)}`
+      : appended;
+
+  updatedSteps[stepIndex] = {
+    ...targetStep,
+    action_result: normalizedOutput,
+  };
+
+  ctx.get().updateMessage(ctx.assistantMessageId, {
+    thinking_process: {
+      ...currentProcess,
+      steps: updatedSteps,
+    },
+  });
+  ctx.scheduleFlush();
+}
+
 export function processBackgroundDispatch(ctx: StreamHandlerContext): void {
   ctx.set({ isProcessing: false });
   // Persist session metadata so reload picks up context.
@@ -364,6 +476,15 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
     content: (assistantMetadata as any).unified_stream === true ? (assistantMetadata.analysis_text?.trim() ? assistantMetadata.analysis_text : (((assistantMetadata as any).plan_message as string) || assistantMetadata.final_summary || '')) : (result.response ?? ctx.state.streamedContent),
     metadata: assistantMetadata,
   });
+  const postFinalMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
+  if (postFinalMessage?.thinking_process) {
+    ctx.get().updateMessage(ctx.assistantMessageId, {
+      thinking_process: {
+        ...postFinalMessage.thinking_process,
+        status: initialStatus === 'failed' ? 'error' : 'completed',
+      },
+    });
+  }
   ctx.set({ isProcessing: false });
 
   const trackingIdForPoll = typeof assistantMetadata.tracking_id === 'string' ? assistantMetadata.tracking_id : null;

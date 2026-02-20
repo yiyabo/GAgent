@@ -442,6 +442,16 @@ def _run_task_chain_job(
                 current_task_id=current_task_id,
             ),
         )
+        log_job_event(
+            "info",
+            "Task chain progress update.",
+            {
+                "sub_type": "task_progress",
+                "task_id": current_task_id,
+                "step": current_step,
+                "total": total_steps,
+            },
+        )
 
     try:
         plan_decomposition_jobs.mark_running(job_id)
