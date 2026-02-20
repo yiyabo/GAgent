@@ -3,6 +3,7 @@ import {
   ChatMessage,
   ChatActionStatus,
   Memory,
+  ThinkingProcess,
 } from '@/types';
 import {
   streamChatEvents,
@@ -21,10 +22,75 @@ import {
   handleFinal,
   handleThinkingStep,
   handleThinkingDelta,
+  handleControlAck,
+  handleToolOutput,
   processBackgroundDispatch,
   processFinalPayload,
 } from './streamHandlers';
 import type { StreamMutableState, StreamHandlerContext } from './types';
+
+const _normalizeThinkingProcessStatus = (status: any): 'active' | 'completed' | 'error' => {
+  if (status === 'completed' || status === 'done') return 'completed';
+  if (status === 'error' || status === 'failed') return 'error';
+  return 'active';
+};
+
+const _normalizeThinkingStepStatus = (status: any): 'pending' | 'thinking' | 'calling_tool' | 'analyzing' | 'done' | 'completed' | 'error' => {
+  const value = typeof status === 'string' ? status.trim().toLowerCase() : '';
+  if (value === 'pending') return 'pending';
+  if (value === 'thinking') return 'thinking';
+  if (value === 'calling_tool') return 'calling_tool';
+  if (value === 'analyzing') return 'analyzing';
+  if (value === 'done') return 'done';
+  if (value === 'completed') return 'completed';
+  if (value === 'error' || value === 'failed') return 'error';
+  return 'thinking';
+};
+
+const _hydrateThinkingProcess = (raw: any): ThinkingProcess | undefined => {
+  let payload = raw;
+  if (typeof payload === 'string') {
+    try {
+      payload = JSON.parse(payload);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!payload || typeof payload !== 'object') {
+    return undefined;
+  }
+  const rawSteps = Array.isArray((payload as any).steps) ? (payload as any).steps : [];
+  const steps = rawSteps
+    .filter((step: any) => step && typeof step === 'object')
+    .map((step: any, index: number) => {
+      const rawIteration = Number(step.iteration);
+      const iteration = Number.isFinite(rawIteration) && rawIteration > 0 ? rawIteration : index + 1;
+      return {
+        iteration,
+        thought: typeof step.thought === 'string' ? step.thought : '',
+        action: step.action ?? null,
+        action_result: step.action_result ?? null,
+        status: _normalizeThinkingStepStatus(step.status),
+        timestamp: typeof step.timestamp === 'string' ? step.timestamp : undefined,
+        self_correction: step.self_correction ?? null,
+        started_at: typeof step.started_at === 'string' ? step.started_at : undefined,
+        finished_at: typeof step.finished_at === 'string' ? step.finished_at : undefined,
+      };
+    });
+  const totalIterationsRaw = Number((payload as any).total_iterations);
+  const inferredIterations = steps.reduce((max, step) => Math.max(max, step.iteration || 0), 0);
+  const totalIterations =
+    Number.isFinite(totalIterationsRaw) && totalIterationsRaw > 0
+      ? Math.max(totalIterationsRaw, inferredIterations)
+      : inferredIterations;
+  return {
+    steps,
+    status: _normalizeThinkingProcessStatus((payload as any).status),
+    total_iterations: totalIterations,
+    summary: typeof (payload as any).summary === 'string' ? (payload as any).summary : undefined,
+    error: typeof (payload as any).error === 'string' ? (payload as any).error : undefined,
+  };
+};
 
 export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   messages: [],
@@ -139,8 +205,13 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   metadata.tool_results = toolResults;
   }
 
-  // Hydrate thinking_process from metadata
-  const thinkingProcess = metadata.thinking_process;
+  // Hydrate thinking_process from metadata with schema normalization.
+  const thinkingProcess = _hydrateThinkingProcess(metadata.thinking_process);
+  if (thinkingProcess) {
+  metadata.thinking_process = thinkingProcess;
+  } else if ('thinking_process' in metadata) {
+  delete (metadata as any).thinking_process;
+  }
 
   const backendId = typeof msg.id === 'number' ? msg.id : null;
   const messageId = backendId !== null ? `${sessionId}_${backendId}` : `${sessionId}_${index}`;
@@ -333,6 +404,8 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   if (event.type === 'final') { if (handleFinal(ctx, event)) break; continue; }
   if (event.type === 'thinking_step') { handleThinkingStep(ctx, event); continue; }
   if (event.type === 'thinking_delta') { handleThinkingDelta(ctx, event); continue; }
+  if (event.type === 'control_ack') { handleControlAck(ctx, event); continue; }
+  if (event.type === 'tool_output') { handleToolOutput(ctx, event); continue; }
   if (event.type === 'error') throw new Error(event.message || 'Stream error');
   }
 

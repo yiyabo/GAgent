@@ -70,7 +70,9 @@ export type ChatStreamEvent =
     | { type: 'job_update'; payload: Record<string, any> }
     | { type: 'error'; message?: string; error_type?: string }
     | { type: 'thinking_step'; step: ThinkingStep }
-    | { type: 'thinking_delta'; iteration: number; delta: string };
+    | { type: 'thinking_delta'; iteration: number; delta: string }
+    | { type: 'control_ack'; job_id?: string; available?: boolean; paused?: boolean; action?: string | null }
+    | { type: 'tool_output'; tool?: string; stream?: string; content?: string; iteration?: number | null };
 
 export const parseChatStreamEvent = (raw: string): ChatStreamEvent | null => {
     const lines = raw.split('\n');

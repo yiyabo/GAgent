@@ -9,7 +9,7 @@ from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Deque, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from ...repository.plan_storage import (
     append_decomposition_job_log,
@@ -520,6 +520,13 @@ class PlanDecompositionSubscriber:
 
 
 @dataclass
+class JobRuntimeController:
+    pause: Optional[Callable[[], None]] = None
+    resume: Optional[Callable[[], None]] = None
+    skip_step: Optional[Callable[[], None]] = None
+
+
+@dataclass
 class PlanDecompositionJob:
     job_id: str
     plan_id: Optional[int]
@@ -595,6 +602,7 @@ class PlanDecompositionJobManager:
 
     def __init__(self, *, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
         self._jobs: Dict[str, PlanDecompositionJob] = {}
+        self._controllers: Dict[str, JobRuntimeController] = {}
         self._lock = threading.Lock()
         self._ttl_seconds = ttl_seconds
 
@@ -898,6 +906,49 @@ class PlanDecompositionJobManager:
         with self._lock:
             self._cleanup_expired_locked()
 
+    def register_runtime_controller(
+        self,
+        job_id: str,
+        controller: JobRuntimeController,
+    ) -> bool:
+        with self._lock:
+            if job_id not in self._jobs:
+                return False
+            self._controllers[job_id] = controller
+            return True
+
+    def unregister_runtime_controller(self, job_id: str) -> None:
+        with self._lock:
+            self._controllers.pop(job_id, None)
+
+    def control_runtime(self, job_id: str, action: str) -> bool:
+        action_key = str(action or "").strip().lower()
+        with self._lock:
+            controller = self._controllers.get(job_id)
+            job = self._jobs.get(job_id)
+        if controller is None or job is None:
+            return False
+        if job.status not in {"queued", "running"}:
+            return False
+
+        callback: Optional[Callable[[], None]] = None
+        if action_key == "pause":
+            callback = controller.pause
+        elif action_key == "resume":
+            callback = controller.resume
+        elif action_key in {"skip_step", "skip"}:
+            callback = controller.skip_step
+        if callback is None:
+            return False
+        callback()
+        self.append_log(
+            job_id,
+            "info",
+            "Runtime control command accepted.",
+            {"sub_type": "runtime_control", "action": action_key},
+        )
+        return True
+
     def attach_plan(self, job_id: str, plan_id: int) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -970,6 +1021,7 @@ class PlanDecompositionJobManager:
                 expired.append(job_id)
         for job_id in expired:
             self._jobs.pop(job_id, None)
+            self._controllers.pop(job_id, None)
 
     def _load_persisted_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         entry = lookup_decomposition_job_entry(job_id)
@@ -1164,6 +1216,7 @@ __all__ = [
     "PlanDecompositionJobManager",
     "PlanDecompositionLogEvent",
     "PlanDecompositionSubscriber",
+    "JobRuntimeController",
     "plan_decomposition_jobs",
     "log_job_event",
     "execute_decomposition_job",

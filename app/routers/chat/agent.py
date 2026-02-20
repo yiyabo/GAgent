@@ -21,6 +21,7 @@ from app.services.llm.decomposer_service import PlanDecomposerLLMService
 from app.services.llm.llm_service import LLMService, get_llm_service
 from app.services.llm.structured_response import LLMAction, LLMStructuredResponse, schema_as_json
 from app.services.plans.decomposition_jobs import (
+    JobRuntimeController,
     get_current_job,
     log_job_event,
     plan_decomposition_jobs,
@@ -899,39 +900,136 @@ User message:
         """
         Execute deep thinking process and yield SSE events with streaming support.
         """
-        # Create a queue for events
-        queue = asyncio.Queue()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        deep_think_job_id: Optional[str] = f"dt_{uuid4().hex}"
+        deep_think_job_created = False
+        deep_think_job_queue: Optional[asyncio.Queue[Any]] = None
+        active_tool_iteration: Optional[int] = None
+
+        if deep_think_job_id:
+            try:
+                plan_decomposition_jobs.create_job(
+                    plan_id=self.plan_session.plan_id,
+                    task_id=None,
+                    mode="chat_deep_think",
+                    job_type="chat_deep_think",
+                    params={
+                        "session_id": self.session_id,
+                    },
+                    metadata={
+                        "session_id": self.session_id,
+                        "origin": "chat_deep_think",
+                        "message_preview": str(user_message or "")[:200],
+                    },
+                    job_id=deep_think_job_id,
+                )
+                plan_decomposition_jobs.mark_running(deep_think_job_id)
+                deep_think_job_created = True
+                deep_think_job_queue = plan_decomposition_jobs.register_subscriber(
+                    deep_think_job_id, asyncio.get_running_loop()
+                )
+            except Exception as job_err:
+                logger.warning(
+                    "[CHAT][DEEP_THINK] Failed to create runtime control job: %s",
+                    job_err,
+                )
+                deep_think_job_id = None
+                deep_think_job_created = False
+                deep_think_job_queue = None
 
         async def on_thinking(step: ThinkingStep):
-            await queue.put({
-                "type": "thinking_step",
-                "step": {
-                    "iteration": step.iteration,
-                    "thought": step.thought,
-                    "action": step.action,
-                    "status": step.status,
-                    "action_result": step.action_result
+            nonlocal active_tool_iteration
+            active_tool_iteration = step.iteration
+            await queue.put(
+                {
+                    "type": "thinking_step",
+                    "step": {
+                        "iteration": step.iteration,
+                        "thought": step.thought,
+                        "action": step.action,
+                        "status": step.status,
+                        "action_result": step.action_result,
+                    },
                 }
-            })
+            )
 
         async def on_thinking_delta(iteration: int, delta: str):
             """Send token-level updates for thinking process."""
-            logger.debug(f"[DEEP_THINK_DELTA] iteration={iteration} delta_len={len(delta)}")
-            await queue.put({
-                "type": "thinking_delta",
-                "iteration": iteration,
-                "delta": delta
-            })
+            logger.debug(
+                "[DEEP_THINK_DELTA] iteration=%s delta_len=%s",
+                iteration,
+                len(delta),
+            )
+            await queue.put(
+                {
+                    "type": "thinking_delta",
+                    "iteration": iteration,
+                    "delta": delta,
+                }
+            )
 
         async def on_final_delta(delta: str):
             """Send token-level updates for final answer."""
-            await queue.put({
-                "type": "delta",
-                "content": delta
-            })
+            await queue.put({"type": "delta", "content": delta})
+
+        async def relay_job_events() -> None:
+            if deep_think_job_queue is None:
+                return
+            while True:
+                payload = await deep_think_job_queue.get()
+                if not isinstance(payload, dict):
+                    continue
+                event_payload = payload.get("event")
+                if not isinstance(event_payload, dict):
+                    continue
+                level = str(event_payload.get("level") or "").strip().lower()
+                message = event_payload.get("message")
+
+                if level in {"stdout", "stderr"} and isinstance(message, str):
+                    await queue.put(
+                        {
+                            "type": "tool_output",
+                            "tool": "claude_code",
+                            "stream": level,
+                            "content": message,
+                            "iteration": active_tool_iteration,
+                        }
+                    )
+                    continue
+
+                metadata = (
+                    event_payload.get("metadata")
+                    if isinstance(event_payload.get("metadata"), dict)
+                    else {}
+                )
+                if level == "info" and metadata.get("sub_type") == "runtime_control":
+                    action = str(metadata.get("action") or "").strip().lower()
+                    paused_state: Optional[bool] = None
+                    if action == "pause":
+                        paused_state = True
+                    elif action == "resume":
+                        paused_state = False
+                    await queue.put(
+                        {
+                            "type": "control_ack",
+                            "job_id": deep_think_job_id,
+                            "available": True,
+                            "paused": paused_state,
+                            "action": action or None,
+                        }
+                    )
 
         async def run_agent():
+            relay_task: Optional[asyncio.Task[Any]] = None
+            job_token = (
+                set_current_job(deep_think_job_id)
+                if deep_think_job_created and deep_think_job_id
+                else None
+            )
             try:
+                if deep_think_job_queue is not None:
+                    relay_task = asyncio.create_task(relay_job_events())
+
                 deep_think_tool_order = 0
                 deep_think_bg_category: Optional[str] = None
 
@@ -959,70 +1057,94 @@ User message:
                                 "DeepThink tool wrapper expected a dict `result` payload."
                             )
 
-                            result = dict(result_payload)
-                            if isinstance(step.message, str) and step.message.strip():
-                                result.setdefault("summary", step.message.strip())
-                            storage_payload = details.get("storage")
-                            if storage_payload is not None:
-                                result.setdefault("storage", storage_payload)
-                            deliverables_payload = details.get("deliverables")
-                            if deliverables_payload is not None:
-                                result.setdefault("deliverables", deliverables_payload)
+                        result = dict(result_payload)
+                        if isinstance(step.message, str) and step.message.strip():
+                            result.setdefault("summary", step.message.strip())
+                        storage_payload = details.get("storage")
+                        if storage_payload is not None:
+                            result.setdefault("storage", storage_payload)
+                        deliverables_payload = details.get("deliverables")
+                        if deliverables_payload is not None:
+                            result.setdefault("deliverables", deliverables_payload)
 
-                            # DeepThink PhageScope submit: register tracking job so
-                            # the task status panel can show progress.
-                            if (
-                                name == "phagescope"
-                                and str(safe_params.get("action") or "").strip().lower() == "submit"
-                                and result.get("success") is not False
-                            ):
-                                taskid = _extract_taskid_from_result(result)
-                                if taskid:
-                                    try:
-                                        tracking_id = f"act_{uuid4().hex}"
-                                        modulelist_raw = safe_params.get("modulelist")
-                                        module_items = _normalize_modulelist_value(modulelist_raw) if modulelist_raw else None
-                                        job = plan_decomposition_jobs.create_job(
-                                            plan_id=self.plan_session.plan_id,
-                                            task_id=None,
-                                            mode="phagescope_track",
-                                            job_type="phagescope_track",
-                                            params={"taskid": taskid, "session_id": self.session_id},
-                                            metadata={"session_id": self.session_id, "origin": "deep_think", "remote_taskid": taskid},
-                                            job_id=tracking_id,
-                                        )
-                                        create_action_run(
-                                            run_id=tracking_id,
-                                            session_id=self.session_id,
-                                            user_message=f"[DeepThink] PhageScope submit (taskid={taskid})",
-                                            mode="phagescope_track",
-                                            plan_id=self.plan_session.plan_id,
-                                            context={"origin": "deep_think"},
-                                            history=[],
-                                            structured_json=json.dumps({
-                                                "llm_reply": {"message": f"PhageScope submit taskid={taskid}"},
-                                                "actions": [{"kind": "tool_operation", "name": "phagescope", "parameters": safe_params}],
-                                            }),
-                                        )
-                                        update_action_run(tracking_id, status="running")
-                                        start_phagescope_track_job_thread(
-                                            job_id=tracking_id,
-                                            remote_taskid=str(taskid),
-                                            modulelist=module_items,
-                                            poll_interval=30.0,
-                                            poll_timeout=172800.0,
-                                            request_timeout=40.0,
-                                        )
-                                        logger.info(
-                                            "[DeepThink] Registered PhageScope tracking job %s for taskid=%s",
-                                            tracking_id, taskid,
-                                        )
-                                    except Exception as track_exc:
-                                        logger.warning(
-                                            "[DeepThink] Failed to register PhageScope tracking: %s", track_exc,
-                                        )
+                        # DeepThink PhageScope submit: register tracking job so
+                        # the task status panel can show progress.
+                        if (
+                            name == "phagescope"
+                            and str(safe_params.get("action") or "").strip().lower()
+                            == "submit"
+                            and result.get("success") is not False
+                        ):
+                            taskid = _extract_taskid_from_result(result)
+                            if taskid:
+                                try:
+                                    tracking_id = f"act_{uuid4().hex}"
+                                    modulelist_raw = safe_params.get("modulelist")
+                                    module_items = (
+                                        _normalize_modulelist_value(modulelist_raw)
+                                        if modulelist_raw
+                                        else None
+                                    )
+                                    plan_decomposition_jobs.create_job(
+                                        plan_id=self.plan_session.plan_id,
+                                        task_id=None,
+                                        mode="phagescope_track",
+                                        job_type="phagescope_track",
+                                        params={
+                                            "taskid": taskid,
+                                            "session_id": self.session_id,
+                                        },
+                                        metadata={
+                                            "session_id": self.session_id,
+                                            "origin": "deep_think",
+                                            "remote_taskid": taskid,
+                                        },
+                                        job_id=tracking_id,
+                                    )
+                                    create_action_run(
+                                        run_id=tracking_id,
+                                        session_id=self.session_id,
+                                        user_message=f"[DeepThink] PhageScope submit (taskid={taskid})",
+                                        mode="phagescope_track",
+                                        plan_id=self.plan_session.plan_id,
+                                        context={"origin": "deep_think"},
+                                        history=[],
+                                        structured_json=json.dumps(
+                                            {
+                                                "llm_reply": {
+                                                    "message": f"PhageScope submit taskid={taskid}"
+                                                },
+                                                "actions": [
+                                                    {
+                                                        "kind": "tool_operation",
+                                                        "name": "phagescope",
+                                                        "parameters": safe_params,
+                                                    }
+                                                ],
+                                            }
+                                        ),
+                                    )
+                                    update_action_run(tracking_id, status="running")
+                                    start_phagescope_track_job_thread(
+                                        job_id=tracking_id,
+                                        remote_taskid=str(taskid),
+                                        modulelist=module_items,
+                                        poll_interval=30.0,
+                                        poll_timeout=172800.0,
+                                        request_timeout=40.0,
+                                    )
+                                    logger.info(
+                                        "[DeepThink] Registered PhageScope tracking job %s for taskid=%s",
+                                        tracking_id,
+                                        taskid,
+                                    )
+                                except Exception as track_exc:
+                                    logger.warning(
+                                        "[DeepThink] Failed to register PhageScope tracking: %s",
+                                        track_exc,
+                                    )
 
-                            return result
+                        return result
 
                     result = await execute_tool(name, **safe_params)
 
@@ -1038,11 +1160,28 @@ User message:
                                     self.extra_context["plan_id"] = plan_id
                                     self._dirty = True
 
+                                    if (
+                                        deep_think_job_created
+                                        and deep_think_job_id
+                                    ):
+                                        try:
+                                            plan_id_int = int(plan_id)
+                                        except (TypeError, ValueError):
+                                            plan_id_int = None
+                                        if plan_id_int is not None:
+                                            plan_decomposition_jobs.attach_plan(
+                                                deep_think_job_id, plan_id_int
+                                            )
+
                                     # CRITICAL: Also update the database session record
                                     # so that frontend can fetch the new plan_id
                                     if self.session_id:
                                         _set_session_plan_id(self.session_id, plan_id)
-                                        logger.info(f"[DeepThink] Updated database session {self.session_id} with plan_id={plan_id}")
+                                        logger.info(
+                                            "[DeepThink] Updated database session %s with plan_id=%s",
+                                            self.session_id,
+                                            plan_id,
+                                        )
 
                                     # CRITICAL: Trigger automatic task decomposition
                                     # This ensures DeepThink-created plans get the same
@@ -1101,7 +1240,11 @@ User message:
                                         plan_id,
                                     )
                                 except Exception as bind_err:
-                                    logger.warning(f"[DeepThink] Failed to bind plan {plan_id}: {bind_err}")
+                                    logger.warning(
+                                        "[DeepThink] Failed to bind plan %s: %s",
+                                        plan_id,
+                                        bind_err,
+                                    )
 
                     return result
 
@@ -1112,7 +1255,9 @@ User message:
                 try:  # pragma: no cover - compatibility bridge
                     from app.routers import chat_routes as compat_chat_routes
 
-                    compat_candidate = getattr(compat_chat_routes, "DeepThinkAgent", None)
+                    compat_candidate = getattr(
+                        compat_chat_routes, "DeepThinkAgent", None
+                    )
                     if inspect.isclass(compat_candidate):
                         dt_agent_cls = compat_candidate
                 except Exception:
@@ -1120,14 +1265,43 @@ User message:
 
                 dt_agent = dt_agent_cls(
                     llm_client=self.llm_service,
-                    available_tools=["web_search", "graph_rag", "claude_code", "file_operations", "document_reader", "vision_reader", "bio_tools", "phagescope", "result_interpreter", "plan_operation"],
+                    available_tools=[
+                        "web_search",
+                        "graph_rag",
+                        "claude_code",
+                        "file_operations",
+                        "document_reader",
+                        "vision_reader",
+                        "bio_tools",
+                        "phagescope",
+                        "result_interpreter",
+                        "plan_operation",
+                    ],
                     tool_executor=tool_wrapper,
                     max_iterations=100,
                     tool_timeout=120,  # 2-minute tool timeout.
                     on_thinking=on_thinking,
                     on_thinking_delta=on_thinking_delta,
-                    on_final_delta=on_final_delta
+                    on_final_delta=on_final_delta,
                 )
+
+                if deep_think_job_created and deep_think_job_id:
+                    control_available = plan_decomposition_jobs.register_runtime_controller(
+                        deep_think_job_id,
+                        JobRuntimeController(
+                            pause=dt_agent.pause,
+                            resume=dt_agent.resume,
+                            skip_step=dt_agent.skip_step,
+                        ),
+                    )
+                    await queue.put(
+                        {
+                            "type": "control_ack",
+                            "job_id": deep_think_job_id,
+                            "available": control_available,
+                            "paused": False,
+                        }
+                    )
 
                 # Build context including chat history.
                 think_context = {
@@ -1138,16 +1312,50 @@ User message:
 
                 # Run think
                 result = await dt_agent.think(user_message, think_context)
-                await queue.put({
-                    "type": "result",
-                    "result": result,
-                    "bg_category": deep_think_bg_category,
-                })
+                if deep_think_job_created and deep_think_job_id:
+                    plan_decomposition_jobs.mark_success(
+                        deep_think_job_id,
+                        result={
+                            "final_answer": str(result.final_answer or "")[:2000],
+                            "total_iterations": result.total_iterations,
+                            "tools_used": result.tools_used,
+                            "confidence": result.confidence,
+                        },
+                        stats={
+                            "iterations": result.total_iterations,
+                            "tool_count": len(result.tools_used),
+                        },
+                    )
+                await queue.put(
+                    {
+                        "type": "result",
+                        "result": result,
+                        "bg_category": deep_think_bg_category,
+                        "job_id": deep_think_job_id if deep_think_job_created else None,
+                    }
+                )
             except Exception as e:
                 logger.exception("Deep think execution failed")
+                if deep_think_job_created and deep_think_job_id:
+                    plan_decomposition_jobs.mark_failure(
+                        deep_think_job_id,
+                        str(e),
+                        result={"error": str(e)},
+                    )
                 await queue.put({"type": "error", "error": str(e)})
             finally:
-                await queue.put(None) # Signal end
+                if relay_task is not None:
+                    relay_task.cancel()
+                    await asyncio.gather(relay_task, return_exceptions=True)
+                if deep_think_job_created and deep_think_job_id:
+                    plan_decomposition_jobs.unregister_runtime_controller(deep_think_job_id)
+                    if deep_think_job_queue is not None:
+                        plan_decomposition_jobs.unregister_subscriber(
+                            deep_think_job_id, deep_think_job_queue
+                        )
+                if job_token is not None:
+                    reset_current_job(job_token)
+                await queue.put(None)  # Signal end
 
         # Start agent in background
         asyncio.create_task(run_agent())
@@ -1158,20 +1366,25 @@ User message:
             if item is None:
                 break
 
-            if item.get("type") == "thinking_step":
-                # Yield thinking event
+            event_type = item.get("type")
+            if event_type in {
+                "thinking_step",
+                "thinking_delta",
+                "delta",
+                "control_ack",
+                "tool_output",
+            }:
                 yield _sse_message(item)
-            elif item.get("type") == "thinking_delta":
-                # Yield thinking delta for streaming display
-                yield _sse_message(item)
-            elif item.get("type") == "delta":
-                # Yield final answer delta for streaming display
-                yield _sse_message(item)
-            elif item.get("type") == "error":
+            elif event_type == "error":
                 yield _sse_message({"type": "error", "message": item["error"]})
-            elif item.get("type") == "result":
+            elif event_type == "result":
                 # Final result, yield as standard chat message
                 res: DeepThinkResult = item["result"]
+                result_job_id = (
+                    str(item.get("job_id"))
+                    if isinstance(item.get("job_id"), str) and item.get("job_id")
+                    else None
+                )
 
                 # Construct final content for display and saving
                 final_content_parts = []
@@ -1184,46 +1397,51 @@ User message:
                 # 💾 Save Deep Think response to database
                 if self.session_id and full_response:
                     try:
+                        metadata_payload: Dict[str, Any] = {
+                            "deep_think": True,
+                            "iterations": res.total_iterations,
+                            "tools_used": res.tools_used,
+                            "confidence": res.confidence,
+                            "thinking_process": {
+                                "status": "completed",
+                                "total_iterations": res.total_iterations,
+                                "steps": [
+                                    {
+                                        "iteration": s.iteration,
+                                        "thought": s.thought,
+                                        "action": s.action,
+                                        "action_result": s.action_result,
+                                        "status": "done"
+                                        if s.status == "done"
+                                        else "completed",  # Normalize status for history
+                                        "timestamp": s.timestamp.isoformat()
+                                        if s.timestamp
+                                        else None,
+                                    }
+                                    for s in res.thinking_steps
+                                ],
+                            },
+                        }
+                        if result_job_id:
+                            metadata_payload["deep_think_job_id"] = result_job_id
                         _save_chat_message(
                             self.session_id,
                             "assistant",
                             full_response,
-                            metadata={
-                                "deep_think": True,
-                                "iterations": res.total_iterations,
-                                "tools_used": res.tools_used,
-                                "confidence": res.confidence,
-                                "thinking_process": {
-                                    "status": "completed",
-                                    "total_iterations": res.total_iterations,
-                                    "steps": [
-                                        {
-                                            "iteration": s.iteration,
-                                            "thought": s.thought,
-                                            "action": s.action,
-                                            "action_result": s.action_result,
-                                            "status": "done" if s.status == "done" else "completed", # Normalize status for history
-                                            "timestamp": s.timestamp.isoformat() if s.timestamp else None
-                                        }
-                                        for s in res.thinking_steps
-                                    ]
-                                }
-                            }
+                            metadata=metadata_payload,
                         )
-                        logger.info("[CHAT][DEEP_THINK] Response saved to database for session=%s", self.session_id)
+                        logger.info(
+                            "[CHAT][DEEP_THINK] Response saved to database for session=%s",
+                            self.session_id,
+                        )
                     except Exception as save_err:
-                        logger.warning("[CHAT][DEEP_THINK] Failed to save response: %s", save_err)
-
-                # Thinking Summary removed per user request
-                # if res.thinking_summary:
-                #    yield _sse_message({"type": "delta", "content": f"**Thinking Summary:** {res.thinking_summary}"})
-                pass
+                        logger.warning(
+                            "[CHAT][DEEP_THINK] Failed to save response: %s",
+                            save_err,
+                        )
 
                 # Note: final_answer was already streamed via on_final_delta callback
                 # No need to yield it again here to avoid duplication
-
-                # Mock a final structure event to satisfy frontend if needed, 
-                # or just let the stream end (frontend usually handles text)
                 bg_category = item.get("bg_category")
                 final_metadata: Dict[str, Any] = {
                     "plan_id": self.plan_session.plan_id,  # Include plan_id so frontend can update
@@ -1231,6 +1449,8 @@ User message:
                 }
                 if bg_category:
                     final_metadata["background_category"] = bg_category
+                if result_job_id:
+                    final_metadata["deep_think_job_id"] = result_job_id
                 payload = {
                     "llm_reply": {"message": res.final_answer},
                     "actions": [],

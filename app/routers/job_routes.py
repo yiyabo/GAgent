@@ -7,7 +7,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,18 @@ class JobLogTailResponse(BaseModel):
     total_lines: int
     lines: List[str]
     truncated: bool
+
+
+class JobControlRequest(BaseModel):
+    action: Literal["pause", "resume", "skip_step"]
+
+
+class JobControlResponse(BaseModel):
+    success: bool
+    job_id: str
+    action: str
+    status: Optional[str] = None
+    message: str
 
 
 class BackgroundTaskItem(BaseModel):
@@ -798,6 +810,38 @@ def get_background_task_board(
         generated_at=generated_at,
         total=total,
         groups=groups,
+    )
+
+
+@job_router.post(
+    "/{job_id}/control",
+    response_model=JobControlResponse,
+    summary="Control running deep-think execution (pause/resume/skip)",
+)
+def control_job_runtime(
+    job_id: str,
+    request: JobControlRequest = Body(...),
+):
+    payload = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    accepted = plan_decomposition_jobs.control_runtime(job_id, request.action)
+    if not accepted:
+        return JobControlResponse(
+            success=False,
+            job_id=job_id,
+            action=request.action,
+            status=payload.get("status"),
+            message="Runtime control is unavailable for this job at current state.",
+        )
+    refreshed = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False) or payload
+    return JobControlResponse(
+        success=True,
+        job_id=job_id,
+        action=request.action,
+        status=refreshed.get("status"),
+        message=f"Action '{request.action}' accepted.",
     )
 
 
