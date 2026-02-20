@@ -2,7 +2,9 @@ import pytest
 
 from tool_box.tools_impl.claude_code import (
     _DEFAULT_ALLOWED_TOOL_NAMES,
+    _build_cli_failure_error,
     _build_claude_subprocess_env,
+    _compact_cli_text,
     _coerce_positive_int,
     _detect_scope_blocked,
     _is_path_within,
@@ -37,6 +39,22 @@ def test_detect_scope_blocked_reads_marker_from_stdout_and_json() -> None:
         "result": "STATUS: BLOCKED_SCOPE\nREASON: NEED_ATOMIC_TASK\nDETAIL: task is not atomic"
     }
     assert _detect_scope_blocked("", output_data) == "task is not atomic"
+
+
+def test_build_cli_failure_error_includes_exit_and_stream_excerpts() -> None:
+    message = _build_cli_failure_error(
+        return_code=127,
+        stderr="claude: command not found",
+        stdout="",
+    )
+    assert "exit_code=127" in message
+    assert "stderr=claude: command not found" in message
+
+
+def test_compact_cli_text_truncates_and_normalizes_whitespace() -> None:
+    value = "line1\nline2\tline3   line4"
+    compact = _compact_cli_text(value, limit=12)
+    assert compact == "line1 lin..."
 
 
 def test_resolve_allowed_tools_enforces_strict_allowlist() -> None:
