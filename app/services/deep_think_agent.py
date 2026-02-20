@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from app.services.execution.tool_executor import UnifiedToolExecutor
+from app.services.tool_schemas import build_tool_schemas
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,16 @@ class DeepThinkAgent:
     FINAL_STREAM_CHUNK_CHARS = 1
     FINAL_STREAM_DELAY_SEC = 0.01
 
+    ARTIFACT_PATH_RE = re.compile(
+        r'(?:saved?|writ(?:ten|e)|created?|generated?|output|produced?|exported?)\s+'
+        r'(?:to|at|in|as|file)?\s*[:\-]?\s*'
+        r'[`"\']?(/[^\s`"\'<>]+\.\w{1,6})[`"\']?',
+        re.IGNORECASE,
+    )
+    BARE_PATH_RE = re.compile(
+        r'(/(?:[\w._-]+/)+[\w._-]+\.(?:csv|tsv|xlsx|png|jpg|jpeg|pdf|svg|html|json|txt|fasta|fa|fq|fastq|gff|bed))\b'
+    )
+
     def __init__(
         self,
         llm_client: Any,
@@ -71,6 +82,7 @@ class DeepThinkAgent:
         on_final_delta: Optional[Callable[[str], Any]] = None,
         on_tool_start: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
         on_tool_result: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+        on_artifact: Optional[Callable[[Dict[str, Any]], Any]] = None,
     ):
         self.llm_client = llm_client
         self.available_tools = available_tools
@@ -83,6 +95,7 @@ class DeepThinkAgent:
         self.on_final_delta = on_final_delta
         self.on_tool_start = on_tool_start
         self.on_tool_result = on_tool_result
+        self.on_artifact = on_artifact
         self._pause_event = asyncio.Event()
         self._pause_event.set()
         self._skip_current_step = False
@@ -96,6 +109,11 @@ class DeepThinkAgent:
     def skip_step(self) -> None:
         self._skip_current_step = True
 
+    def _supports_native_tools(self) -> bool:
+        return hasattr(self.llm_client, "stream_chat_with_tools_async") and callable(
+            getattr(self.llm_client, "stream_chat_with_tools_async")
+        )
+
     async def think(
         self,
         user_query: str,
@@ -105,23 +123,289 @@ class DeepThinkAgent:
         """
         Executes the deep thinking loop with streaming output.
 
-        Args:
-            user_query: The user's question/request
-            context: Optional context including chat_history, session_id, etc.
-
-        Returns:
-            DeepThinkResult with final answer and thinking steps
-
-        Raises:
-            ValueError: If user_query is empty or too long
+        Automatically uses native tool calling when the LLM client supports it,
+        falling back to prompt-based JSON parsing otherwise.
         """
-        # Input validation
         if not user_query or not user_query.strip():
             raise ValueError("User query cannot be empty")
         if len(user_query) > 10000:
             raise ValueError("User query too long (max 10000 chars)")
 
-        user_query = user_query.strip()
+        if self._supports_native_tools():
+            logger.info("[DEEP_THINK] Using native tool calling path")
+            return await self._think_native(user_query.strip(), context, task_context)
+
+        return await self._think_prompt_based(user_query.strip(), context, task_context)
+
+    # ------------------------------------------------------------------ #
+    #  Native tool calling path                                           #
+    # ------------------------------------------------------------------ #
+
+    async def _think_native(
+        self,
+        user_query: str,
+        context: Optional[Dict[str, Any]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> DeepThinkResult:
+        context = dict(context or {})
+        thinking_steps: List[ThinkingStep] = []
+        tools_used: List[str] = []
+        tool_schemas = build_tool_schemas(self.available_tools)
+
+        system_prompt = self._build_native_system_prompt(context, task_context)
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query},
+        ]
+
+        iteration = 0
+        final_answer = ""
+        confidence = 0.0
+
+        logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
+
+        while iteration < self.max_iterations:
+            await self._pause_event.wait()
+            if self.cancel_event and self.cancel_event.is_set():
+                logger.info("[DEEP_THINK_NATIVE] Cancelled by user")
+                break
+
+            iteration += 1
+            current_step = ThinkingStep(
+                iteration=iteration,
+                thought="",
+                action=None,
+                action_result=None,
+                self_correction=None,
+                timestamp=datetime.now(),
+                status="thinking",
+            )
+            if self.on_thinking:
+                await self._safe_callback(current_step)
+
+            try:
+                async def _on_delta(chunk: str) -> None:
+                    if self.on_thinking_delta:
+                        await self._safe_delta_callback(iteration, chunk)
+
+                result = await self.llm_client.stream_chat_with_tools_async(
+                    messages=messages,
+                    tools=tool_schemas,
+                    tool_choice="auto",
+                    on_content_delta=_on_delta,
+                )
+            except Exception as exc:
+                logger.exception("[DEEP_THINK_NATIVE] LLM call failed at iteration %d", iteration)
+                current_step.status = "error"
+                current_step.thought = f"Error: {exc}"
+                thinking_steps.append(current_step)
+                if self.on_thinking:
+                    await self._safe_callback(current_step)
+                continue
+
+            current_step.thought = result.content or ""
+
+            if result.tool_calls:
+                for tc in result.tool_calls:
+                    if tc.name == "submit_final_answer":
+                        final_answer = tc.arguments.get("answer", "")
+                        raw_conf = tc.arguments.get("confidence", 0.8)
+                        try:
+                            confidence = max(0.0, min(1.0, float(raw_conf)))
+                        except (TypeError, ValueError):
+                            confidence = 0.8
+                        current_step.status = "done"
+                        thinking_steps.append(current_step)
+                        if self.on_thinking:
+                            await self._safe_callback(current_step)
+                        if self.on_final_delta and final_answer:
+                            await self._stream_final_answer(final_answer)
+                        break
+
+                    # Regular tool call
+                    tool_name = tc.name
+                    tool_params = tc.arguments
+                    current_step.action = json.dumps(
+                        {"tool": tool_name, "params": tool_params},
+                        ensure_ascii=False,
+                    )
+                    current_step.status = "calling_tool"
+                    thinking_steps.append(current_step)
+                    if self.on_thinking:
+                        await self._safe_callback(current_step)
+
+                    if tool_name not in self.available_tools:
+                        tool_result_str = f"Error: Tool '{tool_name}' is not available."
+                    else:
+                        if tool_name not in tools_used:
+                            tools_used.append(tool_name)
+                        timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(tool_name, self.tool_timeout)
+                        if self.on_tool_start:
+                            await self._safe_generic_callback(self.on_tool_start, tool_name, tool_params)
+                        try:
+                            tool_result = await asyncio.wait_for(
+                                self.tool_executor(tool_name, tool_params),
+                                timeout=timeout,
+                            )
+                            tool_result_str = str(tool_result)
+                            await self._emit_artifacts(tool_name, tool_result, iteration)
+                            if self.on_tool_result:
+                                cb_ok, cb_err = self._normalize_tool_callback_outcome(tool_result)
+                                await self._safe_generic_callback(
+                                    self.on_tool_result,
+                                    tool_name,
+                                    {
+                                        "success": cb_ok,
+                                        "error": cb_err,
+                                        "result": tool_result,
+                                        "summary": self._build_tool_callback_summary(tool_result),
+                                        "iteration": iteration,
+                                    },
+                                )
+                        except asyncio.TimeoutError:
+                            tool_result_str = f"Error: Tool '{tool_name}' timed out after {timeout}s"
+                            if self.on_tool_result:
+                                await self._safe_generic_callback(
+                                    self.on_tool_result, tool_name,
+                                    {"success": False, "error": "timeout", "summary": tool_result_str, "iteration": iteration},
+                                )
+                        except Exception as e:
+                            tool_result_str = f"Error executing tool: {e}"
+                            logger.exception("Tool %s failed", tool_name)
+                            if self.on_tool_result:
+                                await self._safe_generic_callback(
+                                    self.on_tool_result, tool_name,
+                                    {"success": False, "error": str(e), "summary": tool_result_str, "iteration": iteration},
+                                )
+
+                    current_step.action_result = tool_result_str
+                    current_step.status = "analyzing"
+                    if self.on_thinking:
+                        await self._safe_callback(current_step)
+
+                    # Append assistant message with tool_calls and tool result
+                    assistant_msg: Dict[str, Any] = {"role": "assistant", "content": result.content or ""}
+                    assistant_msg["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {"name": tc.name, "arguments": json.dumps(tc.arguments, ensure_ascii=False)},
+                        }
+                    ]
+                    messages.append(assistant_msg)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": tool_result_str,
+                    })
+                    break  # only process first tool call per iteration
+
+                if final_answer:
+                    break
+            else:
+                # No tool calls – pure thinking text
+                thinking_steps.append(current_step)
+                if self.on_thinking:
+                    await self._safe_callback(current_step)
+                messages.append({"role": "assistant", "content": result.content or ""})
+                messages.append({"role": "user", "content": self._get_next_step_prompt(iteration)})
+
+            if self._skip_current_step:
+                self._skip_current_step = False
+                messages.append({"role": "user", "content": "Skip current branch and continue with the next reasoning step."})
+
+        if not final_answer:
+            final_answer = self._fallback_answer_from_steps(thinking_steps)
+            confidence = max(confidence, 0.3)
+            if self.on_final_delta and final_answer:
+                await self._stream_final_answer(final_answer)
+
+        try:
+            summary = await self._generate_summary(thinking_steps, user_query)
+        except Exception:
+            summary = "DeepThink completed via native tool calling."
+
+        return DeepThinkResult(
+            final_answer=final_answer,
+            thinking_steps=thinking_steps,
+            total_iterations=iteration,
+            tools_used=tools_used,
+            confidence=confidence,
+            thinking_summary=summary,
+        )
+
+    def _build_native_system_prompt(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> str:
+        """System prompt for native tool calling mode (no JSON formatting rules)."""
+        task_preamble = ""
+        if task_context and task_context.task_instruction:
+            lines = [
+                "You are a task execution engine in DeepThink mode.",
+                "Focus on completing the specific task with verifiable outputs.",
+                "",
+                "=== TASK CONTEXT ===",
+            ]
+            if task_context.task_id is not None:
+                lines.append(f"Task ID: {task_context.task_id}")
+            if task_context.task_name:
+                lines.append(f"Task Name: {task_context.task_name}")
+            lines.append(f"Instruction: {task_context.task_instruction}")
+            if task_context.constraints:
+                lines.append("Constraints:")
+                for c in task_context.constraints:
+                    lines.append(f"- {c}")
+            if task_context.plan_outline:
+                lines.append(f"Plan Outline (truncated):\n{task_context.plan_outline}")
+            if task_context.dependency_outputs:
+                lines.append("Dependency Outputs:")
+                for dep in task_context.dependency_outputs[:6]:
+                    lines.append(f"- {json.dumps(dep, ensure_ascii=False)[:600]}")
+            lines.append("")
+            task_preamble = "\n".join(lines) + "\n"
+
+        prompt = task_preamble + (
+            "You are a Deep Thinking AI Assistant with UNLIMITED resources.\n"
+            "Your goal is to provide the MOST COMPREHENSIVE answer by using available tools aggressively.\n\n"
+            "=== WORKFLOW ===\n"
+            "1. Think step by step. Express your reasoning as plain text.\n"
+            "2. Call tools whenever you need information. You may call multiple tools across iterations.\n"
+            "3. When you have gathered enough information, call the submit_final_answer tool with your comprehensive answer.\n\n"
+            "=== RULES ===\n"
+            "- Be THOROUGH. It is better to call 5 tools than to give an incomplete answer.\n"
+            "- For bioinformatics tasks, ALWAYS try bio_tools first before claude_code.\n"
+            "- For plan creation, use web_search to research first, then plan_operation.\n"
+            "- Do NOT call submit_final_answer prematurely. Gather sufficient information first.\n"
+            "- Each text response you give is visible to the user as your 'thinking process'.\n"
+        )
+
+        if context:
+            history = context.get("chat_history", [])
+            if history:
+                recent = history[-30:] if len(history) > 30 else history
+                lines = []
+                for msg in recent:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    if len(content) > 500:
+                        content = content[:500] + "..."
+                    lines.append(f"[{role}]: {content}")
+                prompt += "\n=== RECENT CONVERSATION ===\n" + "\n".join(lines)
+
+        return prompt
+
+    # ------------------------------------------------------------------ #
+    #  Prompt-based (legacy) path                                         #
+    # ------------------------------------------------------------------ #
+
+    async def _think_prompt_based(
+        self,
+        user_query: str,
+        context: Optional[Dict[str, Any]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> DeepThinkResult:
         context = dict(context or {})
         thinking_steps: List[ThinkingStep] = []
         tools_used: List[str] = []
@@ -247,6 +531,7 @@ class DeepThinkAgent:
                                 timeout=timeout
                             )
                             current_step.action_result = str(result)
+                            await self._emit_artifacts(str(tool_name), result, iteration)
                             if self.on_tool_result:
                                 callback_success, callback_error = self._normalize_tool_callback_outcome(result)
                                 await self._safe_generic_callback(
@@ -462,6 +747,36 @@ Respond with ONLY a JSON object:
                     return False, str(nested_error)
                 return False, None
         return True, None
+
+    def _extract_artifact_paths(self, tool_name: str, result: Any) -> List[str]:
+        """Extract file paths from tool results that look like produced artifacts."""
+        text = str(result) if result is not None else ""
+        if not text:
+            return []
+        paths: List[str] = []
+        for m in self.ARTIFACT_PATH_RE.finditer(text):
+            paths.append(m.group(1))
+        for m in self.BARE_PATH_RE.finditer(text):
+            candidate = m.group(1)
+            if candidate not in paths:
+                paths.append(candidate)
+        return list(dict.fromkeys(paths))
+
+    async def _emit_artifacts(self, tool_name: str, result: Any, iteration: int) -> None:
+        if not self.on_artifact:
+            return
+        paths = self._extract_artifact_paths(tool_name, result)
+        for path in paths:
+            ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+            await self._safe_generic_callback(
+                self.on_artifact,
+                {
+                    "path": path,
+                    "extension": ext,
+                    "source_tool": tool_name,
+                    "iteration": iteration,
+                },
+            )
 
     @staticmethod
     def _build_tool_callback_summary(result: Any) -> str:

@@ -3,7 +3,8 @@ import logging
 import os
 import random
 import time
-from typing import Any, AsyncIterator, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 from urllib import error, request
 
 import httpx
@@ -12,6 +13,22 @@ from .interfaces import LLMProvider
 from .services.foundation.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class NativeToolCall:
+    """A single tool call returned by the model via native function calling."""
+    id: str
+    name: str
+    arguments: Dict[str, Any]
+
+
+@dataclass
+class NativeStreamResult:
+    """Accumulated result from a streaming response with native tool calls."""
+    content: str = ""
+    tool_calls: List[NativeToolCall] = field(default_factory=list)
+    finish_reason: Optional[str] = None
 
 
 def _truthy(val: Optional[str]) -> bool:
@@ -261,6 +278,114 @@ class LLMClient(LLMProvider):
                     delta = self._extract_stream_delta(obj)
                     if delta:
                         yield delta
+
+    async def stream_chat_with_tools_async(
+        self,
+        messages: list,
+        tools: List[Dict[str, Any]],
+        tool_choice: str = "auto",
+        on_content_delta: Optional[Callable[[str], Any]] = None,
+    ) -> NativeStreamResult:
+        """
+        Stream a chat completion with native tool calling support.
+
+        Calls *on_content_delta* for each text chunk so the caller can relay
+        thinking tokens in real time.  Returns a ``NativeStreamResult`` with
+        the full accumulated content **and** any tool calls the model decided
+        to make.
+        """
+        if not self.api_key:
+            raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set")
+
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "stream": True,
+        }
+        headers = self._build_headers()
+
+        result = NativeStreamResult()
+        # Accumulator for streamed tool_calls keyed by index
+        tc_accum: Dict[int, Dict[str, str]] = {}
+
+        timeout = httpx.Timeout(self.timeout)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", self.url, headers=headers, json=payload) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = obj.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice = choices[0]
+                    if not isinstance(choice, dict):
+                        continue
+
+                    fr = choice.get("finish_reason")
+                    if isinstance(fr, str):
+                        result.finish_reason = fr
+
+                    delta = choice.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+
+                    # Content delta
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        result.content += content
+                        if on_content_delta is not None:
+                            try:
+                                ret = on_content_delta(content)
+                                import asyncio
+                                if asyncio.iscoroutine(ret):
+                                    await ret
+                            except Exception:
+                                pass
+
+                    # Tool call deltas
+                    tcs = delta.get("tool_calls")
+                    if isinstance(tcs, list):
+                        for tc_delta in tcs:
+                            if not isinstance(tc_delta, dict):
+                                continue
+                            idx = tc_delta.get("index", 0)
+                            if idx not in tc_accum:
+                                tc_accum[idx] = {"id": "", "name": "", "arguments": ""}
+                            tc_id = tc_delta.get("id")
+                            if isinstance(tc_id, str):
+                                tc_accum[idx]["id"] = tc_id
+                            fn = tc_delta.get("function")
+                            if isinstance(fn, dict):
+                                fn_name = fn.get("name")
+                                if isinstance(fn_name, str):
+                                    tc_accum[idx]["name"] = fn_name
+                                fn_args = fn.get("arguments")
+                                if isinstance(fn_args, str):
+                                    tc_accum[idx]["arguments"] += fn_args
+
+        # Parse accumulated tool calls
+        for idx in sorted(tc_accum.keys()):
+            raw = tc_accum[idx]
+            try:
+                args = json.loads(raw["arguments"]) if raw["arguments"] else {}
+            except json.JSONDecodeError:
+                args = {"_raw": raw["arguments"]}
+            result.tool_calls.append(
+                NativeToolCall(id=raw["id"], name=raw["name"], arguments=args)
+            )
+
+        return result
 
     def _extract_stream_delta(self, payload: Dict[str, Any]) -> Optional[str]:
         choices = payload.get("choices")
