@@ -1,0 +1,267 @@
+/* ThinkingProcess – Progressive Disclosure & Error Recovery */
+
+.tp-step-tool-card {
+  margin-top: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+.tp-step-tool-card:hover {
+  border-color: var(--primary-color);
+}
+
+.tp-step-tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: var(--bg-tertiary);
+  user-select: none;
+  transition: background 0.15s ease;
+}
+
+.tp-step-tool-header:hover {
+  background: color-mix(in srgb, var(--bg-tertiary) 85%, var(--primary-color) 15%);
+}
+
+.tp-step-tool-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.tp-step-tool-label {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp-step-tool-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.tp-step-tool-chevron {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.tp-step-tool-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.tp-step-result-summary {
+  padding: 4px 12px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-top: 1px dashed var(--border-color);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.tp-step-detail-box {
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-color);
+  overflow: hidden;
+}
+
+.tp-step-detail-section {
+  padding: 8px 12px;
+}
+
+.tp-step-detail-section + .tp-step-detail-section {
+  border-top: 1px dashed var(--border-color);
+}
+
+.tp-step-detail-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.tp-step-detail-pre {
+  margin: 0;
+  padding: 8px;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+  line-height: 1.5;
+}
+
+/* --- Error Recovery Flow --- */
+
+.tp-recovery-flow {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 77, 79, 0.2);
+  background: linear-gradient(135deg, rgba(255, 77, 79, 0.04) 0%, rgba(250, 173, 20, 0.04) 100%);
+}
+
+.tp-recovery-stage {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tp-recovery-stage + .tp-recovery-stage {
+  margin-top: 2px;
+}
+
+.tp-recovery-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.tp-recovery-connector {
+  display: flex;
+  align-items: center;
+  padding: 0 0 0 3px;
+  height: 12px;
+}
+
+.tp-recovery-connector-line {
+  width: 2px;
+  height: 100%;
+  background: var(--border-color);
+}
+
+.tp-recovery-label {
+  font-weight: 500;
+}
+
+.tp-recovery-detail {
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* --- Thought Truncation --- */
+
+.tp-thought-text {
+  color: var(--text-primary);
+  line-height: 1.7;
+  letter-spacing: 0.02em;
+}
+
+.tp-thought-toggle {
+  display: inline;
+  margin-left: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--primary-color);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.15s;
+}
+
+.tp-thought-toggle:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+/* --- Control Bar --- */
+
+.tp-control-bar {
+  padding: 0 16px 10px;
+  display: flex;
+  gap: 8px;
+}
+
+/* --- Scrollbar for content area (finished + expanded) --- */
+
+.tp-content-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.tp-content-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tp-content-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 2px;
+}
+
+.tp-content-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.18);
+}
+
+/* --- Scrollbar for detail boxes --- */
+
+.tp-step-detail-pre::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.tp-step-detail-pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tp-step-detail-pre::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 2px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tp-recovery-flow {
+    border-color: rgba(255, 77, 79, 0.15);
+    background: linear-gradient(135deg, rgba(255, 77, 79, 0.06) 0%, rgba(250, 173, 20, 0.06) 100%);
+  }
+
+  .tp-content-scroll::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  .tp-content-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  .tp-step-detail-pre::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+  }
+}

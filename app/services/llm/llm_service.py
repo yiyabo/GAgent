@@ -108,6 +108,13 @@ class LLMService:
                 yield chunk
             return
         raise RuntimeError("LLM client does not support streaming")
+
+    async def stream_chat_with_tools_async(self, messages: list, tools: list, **kwargs):
+        """Pass-through to the underlying client's native tool calling method."""
+        fn = getattr(self.client, "stream_chat_with_tools_async", None)
+        if not callable(fn):
+            raise RuntimeError("LLM client does not support native tool calling")
+        return await fn(messages=messages, tools=tools, **kwargs)
     
     def _execute_chat(self, prompt: str, **kwargs) -> str:
         """
