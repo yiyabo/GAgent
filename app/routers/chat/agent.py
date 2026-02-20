@@ -1263,6 +1263,9 @@ User message:
                 except Exception:
                     pass
 
+                async def on_artifact(meta: Dict[str, Any]) -> None:
+                    await queue.put({"type": "artifact", **meta})
+
                 dt_agent = dt_agent_cls(
                     llm_client=self.llm_service,
                     available_tools=[
@@ -1283,6 +1286,7 @@ User message:
                     on_thinking=on_thinking,
                     on_thinking_delta=on_thinking_delta,
                     on_final_delta=on_final_delta,
+                    on_artifact=on_artifact,
                 )
 
                 if deep_think_job_created and deep_think_job_id:
@@ -1373,6 +1377,7 @@ User message:
                 "delta",
                 "control_ack",
                 "tool_output",
+                "artifact",
             }:
                 yield _sse_message(item)
             elif event_type == "error":

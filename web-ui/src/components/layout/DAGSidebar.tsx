@@ -74,6 +74,12 @@ const DAGSidebar: React.FC = () => {
   currentPlanTitle ?? undefined
   );
   const [activeTab, setActiveTab] = useState<string>('plan');
+
+  useEffect(() => {
+    const onArtifact = () => { setActiveTab('artifacts'); };
+    window.addEventListener('artifactProduced', onArtifact);
+    return () => { window.removeEventListener('artifactProduced', onArtifact); };
+  }, []);
   const [showFullscreenDAG, setShowFullscreenDAG] = useState(false);
   const [decomposeSnapshot, setDecomposeSnapshot] = useState<Record<string, any> | null>(null);
 

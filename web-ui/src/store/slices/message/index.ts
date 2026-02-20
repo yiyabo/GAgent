@@ -406,6 +406,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   if (event.type === 'thinking_delta') { handleThinkingDelta(ctx, event); continue; }
   if (event.type === 'control_ack') { handleControlAck(ctx, event); continue; }
   if (event.type === 'tool_output') { handleToolOutput(ctx, event); continue; }
+  if (event.type === 'artifact') { window.dispatchEvent(new CustomEvent('artifactProduced', { detail: event })); continue; }
   if (event.type === 'error') throw new Error(event.message || 'Stream error');
   }
 

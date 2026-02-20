@@ -6,6 +6,7 @@ import {
   Input,
   Segmented,
   Space,
+  Table,
   Tag,
   Tooltip,
   Tree,
@@ -14,12 +15,14 @@ import {
 import {
   FileImageOutlined,
   FileOutlined,
+  FilePdfOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
   FullscreenExitOutlined,
   FullscreenOutlined,
   LinkOutlined,
   ReloadOutlined,
+  TableOutlined,
 } from '@ant-design/icons';
 import {
   artifactsApi,
@@ -28,12 +31,72 @@ import {
 } from '@api/artifacts';
 import type { ArtifactItem, DeliverableItem } from '@/types';
 import type { DataNode } from 'antd/es/tree';
+import type { ColumnsType } from 'antd/es/table';
 import { useLayoutStore } from '@store/layout';
 
 const { Text } = Typography;
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
+const CSV_EXTS = new Set(['csv', 'tsv']);
+const PDF_EXTS = new Set(['pdf']);
 const TEXT_EXTS = new Set(['md', 'txt', 'csv', 'tsv', 'json', 'log', 'py', 'r', 'html', 'tex', 'bib']);
+
+/* ---- CSV / TSV parsing ---- */
+
+interface ParsedTable {
+  columns: string[];
+  rows: string[][];
+}
+
+function parseDelimited(content: string, delimiter: string): ParsedTable {
+  const lines = content.trim().split('\n').filter((l) => l.trim());
+  if (!lines.length) return { columns: [], rows: [] };
+  const parse = (line: string) =>
+    line.split(delimiter).map((c) => c.trim().replace(/^"|"$/g, ''));
+  return { columns: parse(lines[0]), rows: lines.slice(1).map(parse) };
+}
+
+const CSVTablePreview: React.FC<{ content: string; extension: string }> = ({ content, extension }) => {
+  const delimiter = extension === 'tsv' ? '\t' : ',';
+  const { columns, rows } = React.useMemo(() => parseDelimited(content, delimiter), [content, delimiter]);
+
+  const antColumns: ColumnsType<Record<string, string>> = columns.map((col, i) => ({
+    title: col,
+    dataIndex: `col_${i}`,
+    key: `col_${i}`,
+    ellipsis: true,
+    sorter: (a: Record<string, string>, b: Record<string, string>) =>
+      (a[`col_${i}`] ?? '').localeCompare(b[`col_${i}`] ?? ''),
+  }));
+
+  const dataSource = rows.map((row, ri) => {
+    const record: Record<string, string> = { key: String(ri) };
+    columns.forEach((_, ci) => { record[`col_${ci}`] = row[ci] ?? ''; });
+    return record;
+  });
+
+  if (!columns.length) return <Empty description="No tabular data detected" />;
+
+  return (
+    <div style={{ overflow: 'auto' }}>
+      <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <TableOutlined style={{ color: 'var(--primary-color)' }} />
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {rows.length} rows x {columns.length} columns
+        </Text>
+      </div>
+      <Table
+        columns={antColumns}
+        dataSource={dataSource}
+        size="small"
+        pagination={rows.length > 100 ? { pageSize: 100, showSizeChanger: true } : false}
+        scroll={{ x: 'max-content' }}
+        bordered
+        style={{ fontSize: 12 }}
+      />
+    </div>
+  );
+};
 
 const formatSize = (size = 0) => {
   if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
@@ -161,6 +224,8 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   }, [filteredItems, selectedPath]);
 
   const isImage = selectedItem?.extension ? IMAGE_EXTS.has(selectedItem.extension) : false;
+  const isCSV = selectedItem?.extension ? CSV_EXTS.has(selectedItem.extension) : false;
+  const isPDF = selectedItem?.extension ? PDF_EXTS.has(selectedItem.extension) : false;
   const isText = selectedItem?.extension ? TEXT_EXTS.has(selectedItem.extension) : false;
 
   const { data: textPreview, isLoading: textLoading } = useQuery({
@@ -226,6 +291,10 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const ext = item.extension ?? '';
   const icon = IMAGE_EXTS.has(ext)
   ? <FileImageOutlined />
+  : CSV_EXTS.has(ext)
+  ? <TableOutlined />
+  : PDF_EXTS.has(ext)
+  ? <FilePdfOutlined />
   : TEXT_EXTS.has(ext)
   ? <FileTextOutlined />
   : <FileOutlined />;
@@ -433,7 +502,25 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   />
   )}
 
-  {isText && (
+  {isPDF && fileUrl && (
+  <iframe
+  src={fileUrl}
+  title={selectedItem.name}
+  style={{
+  width: '100%',
+  flex: 1,
+  minHeight: 500,
+  border: '1px solid var(--border-color)',
+  borderRadius: 8,
+  }}
+  />
+  )}
+
+  {isCSV && isText && !textLoading && textPreview?.content && (
+  <CSVTablePreview content={textPreview.content} extension={selectedItem.extension ?? 'csv'} />
+  )}
+
+  {isText && !isCSV && (
   <div
   style={{
   border: '1px solid var(--border-color)',
@@ -455,7 +542,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   </div>
   )}
 
-  {!isImage && !isText && (
+  {!isImage && !isPDF && !isText && (
   <Empty
   image={Empty.PRESENTED_IMAGE_SIMPLE}
   description="File type is not supported for preview"
