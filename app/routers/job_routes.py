@@ -143,6 +143,8 @@ def _classify_action_run(
         return "phagescope"
     if job_type == "plan_decompose":
         return "task_creation"
+    if job_type == "plan_execute":
+        return "claude_code"
 
     has_claude_code = False
     has_phagescope = False
@@ -439,21 +441,29 @@ def _append_item(group: BackgroundTaskGroup, item: BackgroundTaskItem) -> None:
         group.failed += 1
 
 
-def _list_task_creation_job_ids(limit: int) -> List[str]:
+def _list_task_creation_job_ids(
+    limit: int,
+    *,
+    job_type: str = "plan_decompose",
+) -> List[str]:
     try:
         with get_db() as conn:
             rows = conn.execute(
                 """
                 SELECT job_id
                 FROM plan_decomposition_job_index
-                WHERE job_type='plan_decompose'
+                WHERE job_type=?
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (job_type, limit),
             ).fetchall()
     except Exception as exc:  # pragma: no cover - defensive
-        _logger.warning("jobs.board: failed to query plan_decomposition_job_index: %s", exc)
+        _logger.warning(
+            "jobs.board: failed to query plan_decomposition_job_index job_type=%s: %s",
+            job_type,
+            exc,
+        )
         return []
     return [str(row["job_id"]) for row in rows if row and row["job_id"]]
 
@@ -479,24 +489,30 @@ def _lookup_session_plan_id(session_id: Optional[str]) -> Optional[int]:
         return None
 
 
-def _list_task_creation_job_ids_filtered(limit: int, *, plan_id: Optional[int] = None) -> List[str]:
+def _list_task_creation_job_ids_filtered(
+    limit: int,
+    *,
+    plan_id: Optional[int] = None,
+    job_type: str = "plan_decompose",
+) -> List[str]:
     if plan_id is None:
-        return _list_task_creation_job_ids(limit)
+        return _list_task_creation_job_ids(limit, job_type=job_type)
     try:
         with get_db() as conn:
             rows = conn.execute(
                 """
                 SELECT job_id
                 FROM plan_decomposition_job_index
-                WHERE job_type='plan_decompose' AND plan_id=?
+                WHERE job_type=? AND plan_id=?
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (plan_id, limit),
+                (job_type, plan_id, limit),
             ).fetchall()
     except Exception as exc:  # pragma: no cover - defensive
         _logger.warning(
-            "jobs.board: failed to query plan_decomposition_job_index for plan_id=%s: %s",
+            "jobs.board: failed to query plan_decomposition_job_index for job_type=%s plan_id=%s: %s",
+            job_type,
             plan_id,
             exc,
         )
@@ -504,7 +520,12 @@ def _list_task_creation_job_ids_filtered(limit: int, *, plan_id: Optional[int] =
     return [str(row["job_id"]) for row in rows if row and row["job_id"]]
 
 
-def _list_task_creation_job_ids_by_plan_ids(limit: int, plan_ids: List[int]) -> List[str]:
+def _list_task_creation_job_ids_by_plan_ids(
+    limit: int,
+    plan_ids: List[int],
+    *,
+    job_type: str = "plan_decompose",
+) -> List[str]:
     normalized_ids: List[int] = []
     for pid in plan_ids:
         try:
@@ -521,17 +542,18 @@ def _list_task_creation_job_ids_by_plan_ids(limit: int, plan_ids: List[int]) -> 
         f"""
         SELECT job_id
         FROM plan_decomposition_job_index
-        WHERE job_type='plan_decompose' AND plan_id IN ({placeholders})
+        WHERE job_type=? AND plan_id IN ({placeholders})
         ORDER BY created_at DESC
         LIMIT ?
         """
     )
     try:
         with get_db() as conn:
-            rows = conn.execute(sql, (*normalized_ids, limit)).fetchall()
+            rows = conn.execute(sql, (job_type, *normalized_ids, limit)).fetchall()
     except Exception as exc:  # pragma: no cover - defensive
         _logger.warning(
-            "jobs.board: failed to query plan_decomposition_job_index for plan_ids=%s: %s",
+            "jobs.board: failed to query plan_decomposition_job_index for job_type=%s plan_ids=%s: %s",
+            job_type,
             normalized_ids,
             exc,
         )
@@ -649,11 +671,13 @@ def get_background_task_board(
         task_creation_ids = _list_task_creation_job_ids_by_plan_ids(
             limit * 4,
             candidate_plan_ids,
+            job_type="plan_decompose",
         )
     else:
         task_creation_ids = _list_task_creation_job_ids_filtered(
             limit * 4,
             plan_id=effective_plan_id if (session_id or plan_id is not None) else None,
+            job_type="plan_decompose",
         )
     for job_id in task_creation_ids:
         if job_id in seen:
@@ -690,6 +714,61 @@ def get_background_task_board(
             error=job_payload.get("error"),
         )
         _append_item(groups["task_creation"], item)
+        seen.add(job_id)
+
+    # 3) Explicit plan execution jobs from decomposition index.
+    plan_execute_ids: List[str]
+    if session_id and effective_plan_id is None:
+        plan_execute_ids = _list_task_creation_job_ids_by_plan_ids(
+            limit * 4,
+            candidate_plan_ids,
+            job_type="plan_execute",
+        )
+    else:
+        plan_execute_ids = _list_task_creation_job_ids_filtered(
+            limit * 4,
+            plan_id=effective_plan_id if (session_id or plan_id is not None) else None,
+            job_type="plan_execute",
+        )
+    for job_id in plan_execute_ids:
+        if job_id in seen:
+            continue
+        job_payload = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False)
+        if not job_payload:
+            continue
+
+        status = str(job_payload.get("status") or "queued")
+        if not include_finished and _normalize_status(status) in {"succeeded", "failed"}:
+            continue
+
+        metadata = job_payload.get("metadata") if isinstance(job_payload.get("metadata"), dict) else {}
+        target_task_name = str(metadata.get("target_task_name") or "").strip()
+        target_task_id = metadata.get("target_task_id")
+        label = target_task_name or (
+            f"Execute task #{target_task_id}"
+            if target_task_id is not None
+            else "Plan Task Execution"
+        )
+        session_value = metadata.get("session_id")
+        item = BackgroundTaskItem(
+            category="claude_code",
+            job_id=job_id,
+            job_type=str(job_payload.get("job_type") or "plan_execute"),
+            status=status,
+            label=label,
+            session_id=session_value if isinstance(session_value, str) and session_value.strip() else None,
+            plan_id=job_payload.get("plan_id"),
+            created_at=job_payload.get("created_at"),
+            started_at=job_payload.get("started_at"),
+            finished_at=job_payload.get("finished_at"),
+            **_extract_item_progress(
+                category="claude_code",
+                status=status,
+                job_payload=job_payload,
+            ),
+            error=job_payload.get("error"),
+        )
+        _append_item(groups["claude_code"], item)
         seen.add(job_id)
 
     # cap each group and total

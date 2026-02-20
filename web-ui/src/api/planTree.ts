@@ -37,6 +37,8 @@ interface DecomposeTaskResponse {
 
 export interface ExecuteTaskWithDepsPayload {
   include_dependencies?: boolean;
+  include_subtasks?: boolean;
+  deep_think?: boolean;
   async_mode?: boolean;
   session_id?: string;
 }
@@ -110,10 +112,16 @@ class PlanTreeApi extends BaseApi {
 
   getTaskDependencyPlan = async (
   planId: number,
-  taskId: number
+  taskId: number,
+  options?: {
+    include_dependencies?: boolean;
+    include_subtasks?: boolean;
+  }
   ): Promise<DependencyPlanResponse> => {
   return this.get<DependencyPlanResponse>(`/tasks/${taskId}/dependency-plan`, {
   plan_id: planId,
+  include_dependencies: options?.include_dependencies,
+  include_subtasks: options?.include_subtasks,
   });
   };
 

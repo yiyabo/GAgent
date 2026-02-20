@@ -13,6 +13,7 @@ interface UseJobLogStreamOptions {
 }
 
 export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJobType }: UseJobLogStreamOptions) {
+  const PROGRESS_SYNC_THROTTLE_MS = 10000;
   const [logs, setLogs] = React.useState<JobLogEvent[]>(initialJob?.logs ?? []);
   const [actionLogs, setActionLogs] = React.useState<ActionLogEntry[]>(initialJob?.action_logs ?? []);
   const [status, setStatus] = React.useState<string>(initialJob?.status ?? 'queued');
@@ -40,6 +41,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
   const statusRef = React.useRef<string>(initialJob?.status ?? 'queued');
   const actionCursorRef = React.useRef<string | null>(initialJob?.action_cursor ?? null);
   const completionNotifiedRef = React.useRef(false);
+  const progressSyncAtRef = React.useRef(0);
 
   const applySnapshot = React.useCallback((snapshot: DecompositionJobStatus | null) => {
     if (!snapshot) return;
@@ -83,6 +85,50 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
     });
   }, []);
 
+  const emitPlanProgressSync = React.useCallback(
+    (payload?: {
+      status?: string | null;
+      jobType?: string | null;
+      planId?: number | null;
+      metadata?: Record<string, any> | null;
+    }) => {
+      const now = Date.now();
+      if (now - progressSyncAtRef.current < PROGRESS_SYNC_THROTTLE_MS) {
+        return;
+      }
+      progressSyncAtRef.current = now;
+
+      const metadata = payload?.metadata ?? jobMetadata;
+      const planIdForEvent =
+        payload?.planId ??
+        resolvedPlanId ??
+        (typeof metadata?.plan_id === 'number' ? metadata.plan_id : null) ??
+        null;
+      const planTitle =
+        typeof metadata?.plan_title === 'string' ? metadata.plan_title : null;
+      const statusForEvent = payload?.status ?? statusRef.current ?? null;
+      const jobTypeForEvent = payload?.jobType ?? jobType ?? null;
+
+      dispatchPlanSyncEvent(
+        {
+          type: 'task_changed',
+          plan_id: planIdForEvent,
+          plan_title: planTitle,
+          job_id: jobId,
+          job_type: jobTypeForEvent,
+          status: statusForEvent,
+        },
+        {
+          jobId,
+          jobType: jobTypeForEvent,
+          status: statusForEvent,
+          source: 'job.log.progress',
+        }
+      );
+    },
+    [jobId, jobMetadata, jobType, resolvedPlanId]
+  );
+
   const closeStream = React.useCallback(() => {
     if (sourceRef.current) {
       sourceRef.current.close();
@@ -104,6 +150,17 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
       try {
         const snapshot = await planTreeApi.getJobStatus(jobId);
         applySnapshot(snapshot);
+        if (!FINAL_STATUSES.has(snapshot.status)) {
+          emitPlanProgressSync({
+            status: snapshot.status,
+            jobType: snapshot.job_type ?? null,
+            planId: snapshot.plan_id ?? null,
+            metadata:
+              snapshot.metadata && typeof snapshot.metadata === 'object'
+                ? (snapshot.metadata as Record<string, any>)
+                : null,
+          });
+        }
         if (FINAL_STATUSES.has(snapshot.status)) {
           stopPolling();
         }
@@ -117,7 +174,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
         }
       }
     }, 5000);
-  }, [applySnapshot, jobId, stopPolling]);
+  }, [applySnapshot, emitPlanProgressSync, jobId, stopPolling]);
 
   const fetchCliLog = React.useCallback(async () => {
     setCliLogLoading(true);
@@ -160,6 +217,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
 
   React.useEffect(() => {
     completionNotifiedRef.current = false;
+    progressSyncAtRef.current = 0;
   }, [jobId]);
 
   React.useEffect(() => {
@@ -215,6 +273,17 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
         }
         setMissingJob(false);
         applySnapshot(snapshot);
+        if (!FINAL_STATUSES.has(snapshot.status)) {
+          emitPlanProgressSync({
+            status: snapshot.status,
+            jobType: snapshot.job_type ?? null,
+            planId: snapshot.plan_id ?? null,
+            metadata:
+              snapshot.metadata && typeof snapshot.metadata === 'object'
+                ? (snapshot.metadata as Record<string, any>)
+                : null,
+          });
+        }
       } catch (err) {
         if (cancelled) return;
         if (isNotFoundError(err)) {
@@ -239,6 +308,17 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
 
           if (parsed.type === 'snapshot') {
             applySnapshot(parsed.job);
+            if (!FINAL_STATUSES.has(parsed.job.status)) {
+              emitPlanProgressSync({
+                status: parsed.job.status,
+                jobType: parsed.job.job_type ?? null,
+                planId: parsed.job.plan_id ?? null,
+                metadata:
+                  parsed.job.metadata && typeof parsed.job.metadata === 'object'
+                    ? (parsed.job.metadata as Record<string, any>)
+                    : null,
+              });
+            }
             return;
           }
 
@@ -254,6 +334,17 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
             }
             if (parsed.job.plan_id !== undefined && parsed.job.plan_id !== null) {
               setResolvedPlanId(parsed.job.plan_id);
+            }
+            if (!FINAL_STATUSES.has(parsed.job.status)) {
+              emitPlanProgressSync({
+                status: parsed.job.status,
+                jobType: parsed.job.job_type ?? null,
+                planId: parsed.job.plan_id ?? null,
+                metadata:
+                  parsed.job.metadata && typeof parsed.job.metadata === 'object'
+                    ? (parsed.job.metadata as Record<string, any>)
+                    : null,
+              });
             }
             return;
           }
@@ -307,7 +398,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
       closeStream();
       stopPolling();
     };
-  }, [appendLogEvent, applySnapshot, closeStream, jobId, startPolling, stopPolling]);
+  }, [appendLogEvent, applySnapshot, closeStream, emitPlanProgressSync, jobId, startPolling, stopPolling]);
 
   return {
     logs,

@@ -99,6 +99,30 @@ def _detect_scope_blocked(stdout: str, output_data: Optional[Dict[str, Any]]) ->
         return "Blocked by execution scope guardrail."
     return None
 
+
+def _compact_cli_text(value: Optional[str], *, limit: int = 320) -> str:
+    text = " ".join((value or "").split()).strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _build_cli_failure_error(*, return_code: Optional[int], stderr: str, stdout: str) -> str:
+    parts: List[str] = []
+    if return_code is not None:
+        parts.append(f"exit_code={return_code}")
+    stderr_excerpt = _compact_cli_text(stderr, limit=360)
+    if stderr_excerpt:
+        parts.append(f"stderr={stderr_excerpt}")
+    stdout_excerpt = _compact_cli_text(stdout, limit=220)
+    if stdout_excerpt:
+        parts.append(f"stdout={stdout_excerpt}")
+    if not parts:
+        return "Claude CLI execution failed (success=false)."
+    return f"Claude CLI execution failed: {'; '.join(parts)}"
+
 # Project root directory
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 
@@ -680,6 +704,7 @@ async def claude_code_handler(
             f"CONSTRAINTS:\n"
             f"- Execute ONLY the task described below, nothing more\n"
             f"- Do NOT decompose into multiple sub-projects or expand scope\n"
+            f"- Default to direct task execution; do NOT run standalone preflight checks like CLI version/install/environment diagnostics unless explicitly requested or required after an observed failure\n"
             f"- If the task is too complex, report it and stop (let the outer agent decompose it)\n"
             f"- Focus on producing concrete outputs for THIS task only\n\n"
             f"SCOPE GUARDRAIL (MANDATORY):\n"
@@ -833,6 +858,12 @@ async def claude_code_handler(
             "produced_files": produced_files,
             "produced_files_count": len(produced_files),
         }
+        if not success and not blocked_detail:
+            result_payload["error"] = _build_cli_failure_error(
+                return_code=return_code,
+                stderr=stderr,
+                stdout=stdout,
+            )
         if blocked_detail:
             result_payload["blocked_by_scope_guardrail"] = True
             result_payload["blocked_reason"] = blocked_detail
