@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,15 +26,23 @@ SECTION_TITLES: Dict[str, str] = {
 }
 
 SECTION_KEYWORDS: Dict[str, Tuple[str, ...]] = {
-    "abstract": ("abstract", "summary"),
-    "introduction": ("introduction", "intro", "", ""),
-    "method": ("method", "methods", "approach", ""),
-    "experiment": ("experiment", "experiments", "evaluation", "benchmark", "ablation", "", "evaluation"),
-    "result": ("result", "results", "finding", "performance", "result", ""),
-    "conclusion": ("conclusion", "summary", "future work", "", "", ""),
+    "abstract": ("abstract", "structured abstract", "overview"),
+    "introduction": ("introduction", "intro", "background", "motivation"),
+    "method": ("methods", "method", "methodology", "approach", "pipeline"),
+    "experiment": ("experiments", "experiment", "evaluation", "benchmark", "ablation"),
+    "result": ("results", "result", "findings", "finding", "performance"),
+    "conclusion": ("conclusion", "conclusions", "discussion", "future work"),
 }
 
 PLACEHOLDER_MARKER = "AUTO_PLACEHOLDER"
+_TRUTHY_VALUES = {"1", "true", "yes", "on", "y"}
+
+
+def _env_enabled(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in _TRUTHY_VALUES
 
 
 @dataclass(frozen=True)
@@ -53,6 +62,25 @@ class PaperStatus:
 
 
 class PaperBuilder:
+    def _legacy_infer_section(self, text: str) -> Optional[str]:
+        haystack = str(text or "").strip().lower()
+        if not haystack:
+            return None
+        for section in SECTION_ORDER:
+            keywords = SECTION_KEYWORDS.get(section, ())
+            if any(keyword and keyword in haystack for keyword in keywords):
+                return section
+        # Backward-compat fallback for emergency rollback.
+        return "introduction"
+
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        return re.findall(r"[a-z0-9]+", text.lower())
+
+    @staticmethod
+    def _contains_phrase(haystack: str, phrase: str) -> bool:
+        return bool(re.search(rf"\b{re.escape(phrase)}\b", haystack))
+
     def infer_section(
         self,
         task_name: Optional[str],
@@ -66,15 +94,40 @@ class PaperBuilder:
             section_key = str(explicit_section).strip().lower()
             if section_key in SECTION_ORDER:
                 return section_key
-        # Only task_name is used for inference; task_instruction and text are not,
-        task_haystack = str(task_name or "").strip().lower()
+        candidates: List[str] = []
+        if task_name:
+            candidates.append(str(task_name))
+        if task_instruction:
+            candidates.append(str(task_instruction))
+        task_haystack = " ".join(part.strip() for part in candidates if part and str(part).strip()).lower()
         if not task_haystack:
             return None
+
+        if not _env_enabled("PAPER_SECTION_INFER_V2", True):
+            return self._legacy_infer_section(task_haystack)
+
+        tokens = set(self._tokenize(task_haystack))
+        best_section: Optional[str] = None
+        best_score = 0
         for section in SECTION_ORDER:
-            keywords = SECTION_KEYWORDS.get(section, ())
-            if any(keyword.lower() in task_haystack for keyword in keywords):
-                return section
-        return None
+            keywords = tuple(k.strip().lower() for k in SECTION_KEYWORDS.get(section, ()) if k and k.strip())
+            score = 0
+            keyword_count = len(keywords)
+            for idx, keyword in enumerate(keywords):
+                # Earlier keywords are higher-priority anchors.
+                weight = (keyword_count - idx) * 10
+                if " " in keyword:
+                    if self._contains_phrase(task_haystack, keyword):
+                        score = max(score, 200 + weight)
+                else:
+                    if keyword in tokens:
+                        score = max(score, 200 + weight)
+                    elif self._contains_phrase(task_haystack, keyword):
+                        score = max(score, 100 + weight)
+            if score > best_score:
+                best_score = score
+                best_section = section
+        return best_section
 
     def ensure_structure(
         self,

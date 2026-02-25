@@ -81,6 +81,46 @@ def test_publish_creates_incremental_paper_docs_and_refs(tmp_path: Path):
     assert "smith2026" in refs_bib.read_text(encoding="utf-8")
 
 
+def test_publish_maps_manuscript_writer_outputs_to_paper_and_docs(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    section_file = tmp_path / "workspace" / "sections" / "01_introduction.md"
+    section_file.parent.mkdir(parents=True, exist_ok=True)
+    section_file.write_text("## Introduction\\nManuscript section text.\\n", encoding="utf-8")
+    output_file = tmp_path / "workspace" / "final.md"
+    output_file.write_text("## Final Manuscript\\nBody text.\\n", encoding="utf-8")
+    analysis_file = tmp_path / "workspace" / "final.md.analysis.md"
+    analysis_file.write_text("# Analysis\\nAudit notes.\\n", encoding="utf-8")
+
+    report = publisher.publish_from_tool_result(
+        session_id="paper_map001",
+        tool_name="manuscript_writer",
+        raw_result={
+            "tool": "manuscript_writer",
+            "sections": [
+                {
+                    "section": "introduction",
+                    "path": str(section_file),
+                }
+            ],
+            "output_path": str(output_file),
+            "analysis_path": str(analysis_file),
+        },
+        summary="manuscript finished",
+        task_name="Write introduction",
+    )
+
+    assert report is not None
+    latest_root = tmp_path / "runtime" / "session_paper_map001" / "deliverables" / "latest"
+    intro_tex = latest_root / "paper" / "sections" / "introduction.tex"
+    assert intro_tex.exists()
+    intro_tex_text = intro_tex.read_text(encoding="utf-8")
+    assert "Manuscript section text." in intro_tex_text
+    assert "manuscript finished" not in intro_tex_text
+    assert (latest_root / "docs" / "introduction.md").exists()
+    assert (latest_root / "docs" / "analysis.md").exists()
+    assert (latest_root / "docs" / "report.md").exists()
+
+
 def test_publish_keeps_single_latest_snapshot_without_history(tmp_path: Path):
     publisher = _build_publisher(tmp_path)
     source_dir = tmp_path / "workspace"

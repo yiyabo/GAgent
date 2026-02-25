@@ -171,6 +171,7 @@ const _rebuildThinkingFromLogs = (
         thought: String(rawStep?.thought ?? ''),
         action: rawStep?.action ?? null,
         action_result: rawStep?.action_result ?? null,
+        evidence: Array.isArray(rawStep?.evidence) ? rawStep.evidence : undefined,
         status: _normalizeThinkingStatus(rawStep?.status),
         timestamp: typeof rawStep?.timestamp === 'string' ? rawStep.timestamp : undefined,
         self_correction:
@@ -754,8 +755,11 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
               thought: String(rawStep.thought ?? ''),
               action: rawStep.action ?? null,
               action_result: rawStep.action_result ?? null,
+              evidence: Array.isArray(rawStep?.evidence) ? rawStep.evidence : undefined,
               status: (rawStep.status as ThinkingStep['status']) || 'thinking',
               timestamp: rawStep.timestamp ?? undefined,
+              started_at: typeof rawStep?.started_at === 'string' ? rawStep.started_at : undefined,
+              finished_at: typeof rawStep?.finished_at === 'string' ? rawStep.finished_at : undefined,
             });
           } else if (subType === 'thinking_delta') {
             appendThinkingDelta(

@@ -50,6 +50,14 @@ _DEFAULT_SECTIONS = [
     "conclusion",
     "references",
 ]
+_TRUTHY_VALUES = {"1", "true", "yes", "on", "y"}
+
+
+def _env_enabled(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in _TRUTHY_VALUES
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -191,6 +199,27 @@ def _extract_bibtex_keys(text: str) -> List[str]:
         if k and k not in keys:
             keys.append(k)
     return keys
+
+
+def _validate_citations(
+    *,
+    body_text: str,
+    references_text: str,
+    bib_keys: List[str],
+) -> Dict[str, Any]:
+    body_citekeys = _extract_markdown_citekeys(body_text)
+    reference_citekeys = _extract_markdown_citekeys(references_text)
+    allowed = set(bib_keys)
+    unknown_citekeys = [key for key in body_citekeys if key not in allowed]
+    missing_in_references = [key for key in body_citekeys if key not in set(reference_citekeys)]
+    return {
+        "body_citekeys": body_citekeys,
+        "reference_citekeys": reference_citekeys,
+        "allowed_bib_keys": list(bib_keys),
+        "unknown_citekeys": unknown_citekeys,
+        "missing_reference_citekeys": missing_in_references,
+        "pass": len(unknown_citekeys) == 0 and len(missing_in_references) == 0,
+    }
 
 
 def _render_references_section(citekeys: List[str]) -> str:
@@ -431,17 +460,22 @@ async def manuscript_writer_handler(
         }
 
     try:
+        strict_gate = _env_enabled("MANUSCRIPT_STRICT_GATE", True)
         output_file = _resolve_project_path(output_path)
         session_dir = _resolve_session_dir(session_id)
         if session_dir and not _is_relative_to(output_file, session_dir):
             output_file = session_dir / output_file.name
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
+        if analysis_path and str(analysis_path).strip():
+            analysis_file = _resolve_project_path(str(analysis_path).strip())
+        else:
+            analysis_file = _default_analysis_path(output_file)
+        analysis_file.parent.mkdir(parents=True, exist_ok=True)
+
         run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         work_dir = (session_dir or output_file.parent) / f".manuscript_writer_{run_id}"
         work_dir.mkdir(parents=True, exist_ok=True)
-
-        analysis_file = work_dir / f"{output_file.name}.analysis.md"
 
         # Normalize numeric params
         try:
@@ -484,47 +518,134 @@ async def manuscript_writer_handler(
         analysis_memo = await _chat(gen_llm, analysis_prompt, gen_model)
         analysis_file.write_text(analysis_memo, encoding="utf-8")
 
-        base_dir = work_dir
-        sections_dir = base_dir / "sections"
-        reviews_dir = base_dir / "reviews"
-        merge_dir = base_dir / "merge"
+        sections_dir = work_dir / "sections"
+        reviews_dir = work_dir / "reviews"
+        merge_dir = work_dir / "merge"
         sections_dir.mkdir(parents=True, exist_ok=True)
         reviews_dir.mkdir(parents=True, exist_ok=True)
         merge_dir.mkdir(parents=True, exist_ok=True)
 
         section_results: List[Dict[str, Any]] = []
+        section_scores: Dict[str, float] = {}
+        failed_sections: List[str] = []
         passed_sections: List[Tuple[str, Path]] = []
         drafted_texts: List[str] = []
+        section_text_map: Dict[str, str] = {}
+
+        def _to_rel(path: Optional[Path]) -> Optional[str]:
+            if path is None:
+                return None
+            return str(path.relative_to(_PROJECT_ROOT))
+
+        def _build_stats(*, citation_report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            total = len(section_list) or 1
+            passed_count = len([row for row in section_results if row.get("passed")])
+            rewrite_attempts_total = 0
+            failure_distribution: Dict[str, int] = {}
+            for row in section_results:
+                attempts = int(row.get("attempts") or 0)
+                rewrite_attempts_total += max(0, attempts - 1)
+                if not row.get("passed"):
+                    section_name = str(row.get("section") or "unknown")
+                    failure_distribution[section_name] = failure_distribution.get(section_name, 0) + 1
+            citation_payload = citation_report or {}
+            cited = citation_payload.get("body_citekeys") if isinstance(citation_payload, dict) else []
+            missing_ref = (
+                citation_payload.get("missing_reference_citekeys")
+                if isinstance(citation_payload, dict)
+                else []
+            )
+            cited_count = len(cited) if isinstance(cited, list) else 0
+            missing_ref_count = len(missing_ref) if isinstance(missing_ref, list) else 0
+            return {
+                "section_pass_rate": round(passed_count / total, 4),
+                "rewrite_attempts_total": rewrite_attempts_total,
+                "failure_distribution": failure_distribution,
+                "final_chars": 0,
+                "citation_coverage_rate": (
+                    round((cited_count - missing_ref_count) / cited_count, 4)
+                    if cited_count > 0
+                    else 1.0
+                ),
+                "cited_keys_count": cited_count,
+                "missing_reference_keys_count": missing_ref_count,
+            }
+
+        def _build_failure_payload(
+            *,
+            error_code: str,
+            manifest_path: Path,
+            combined_partial: str,
+            citation_validation_path: Optional[Path] = None,
+            citation_report: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            partial_path = merge_dir / "combined_partial.md"
+            partial_path.write_text(combined_partial, encoding="utf-8")
+            partial_output = output_file.with_suffix(output_file.suffix + ".partial.md")
+            try:
+                partial_output.write_text(combined_partial, encoding="utf-8")
+            except Exception:
+                pass
+            stats = _build_stats(citation_report=citation_report)
+            return {
+                "tool": "manuscript_writer",
+                "success": False,
+                "error": error_code,
+                "error_code": error_code,
+                "quality_gate_passed": False,
+                "failed_sections": list(failed_sections),
+                "section_scores": dict(section_scores),
+                "output_path": _to_rel(output_file),
+                "analysis_path": _to_rel(analysis_file),
+                "effective_output_path": _to_rel(output_file),
+                "effective_analysis_path": _to_rel(analysis_file),
+                "sections_dir": _to_rel(sections_dir),
+                "reviews_dir": _to_rel(reviews_dir),
+                "merge_queue": _to_rel(manifest_path),
+                "combined_partial": _to_rel(partial_path),
+                "partial_output_path": _to_rel(partial_output),
+                "citation_validation_path": _to_rel(citation_validation_path),
+                "citation_validation": citation_report,
+                "temp_workspace": _to_rel(work_dir),
+                "sections": section_results,
+                "run_stats": stats,
+            }
 
         for idx, section in enumerate(section_list, start=1):
             section_filename = f"{idx:02d}_{section}.md"
             section_path = sections_dir / section_filename
             requirements = _section_requirements(section)
 
-            # Special-case: build References section deterministically from citekeys + provided BibTeX.
+            # Build References deterministically from citekeys + provided BibTeX.
             if section.lower() == "references" and bib_keys:
                 cited = _extract_markdown_citekeys("\n\n".join(drafted_texts))
                 allowed = set(bib_keys)
                 missing = [k for k in cited if k not in allowed]
                 used = [k for k in cited if k in allowed]
-                # If nothing was cited yet, include a limited slice of the library to avoid empty references.
                 if not used:
                     used = bib_keys[: min(30, len(bib_keys))]
                 section_text = _render_references_section(used)
                 section_path.write_text(section_text, encoding="utf-8")
-                section_results.append(
-                    {
-                        "section": section,
-                        "path": str(section_path.relative_to(_PROJECT_ROOT)),
-                        "attempts": 0,
-                        "passed": True,
-                        "evaluation_path": None,
-                        "reference_keys_used": len(used),
-                        "reference_keys_missing": missing[:50] if missing else None,
-                    }
-                )
-                passed_sections.append((section, section_path))
-                drafted_texts.append(section_text)
+                passed = (not missing) if strict_gate else True
+                score = 1.0 if passed else 0.0
+                row = {
+                    "section": section,
+                    "path": _to_rel(section_path),
+                    "attempts": 0,
+                    "passed": passed,
+                    "score": score,
+                    "evaluation_path": None,
+                    "reference_keys_used": len(used),
+                    "reference_keys_missing": missing[:50] if missing else None,
+                }
+                section_results.append(row)
+                section_scores[section] = score
+                section_text_map[section] = section_text
+                if passed:
+                    passed_sections.append((section, section_path))
+                    drafted_texts.append(section_text)
+                else:
+                    failed_sections.append(section)
                 continue
 
             section_text = await _chat(
@@ -536,6 +657,7 @@ async def manuscript_writer_handler(
             evaluation_data: Optional[Dict[str, Any]] = None
             passed = False
             attempts = 0
+            avg_score = 0.0
 
             for attempt in range(1, max_revisions + 1):
                 attempts = attempt
@@ -581,28 +703,30 @@ async def manuscript_writer_handler(
                 section_text = await _chat(gen_llm, revision_prompt, gen_model)
 
             section_path.write_text(section_text, encoding="utf-8")
-            section_results.append(
-                {
-                    "section": section,
-                    "path": str(section_path.relative_to(_PROJECT_ROOT)),
-                    "attempts": attempts,
-                    "passed": passed,
-                    "evaluation_path": str(
-                        (reviews_dir / f"{section}_eval_{attempts}.json").relative_to(_PROJECT_ROOT)
-                    ),
-                }
-            )
+            section_text_map[section] = section_text
+            row = {
+                "section": section,
+                "path": _to_rel(section_path),
+                "attempts": attempts,
+                "passed": passed,
+                "score": round(avg_score, 4),
+                "evaluation_path": _to_rel(reviews_dir / f"{section}_eval_{attempts}.json"),
+            }
+            section_results.append(row)
+            section_scores[section] = round(avg_score, 4)
             if passed:
                 passed_sections.append((section, section_path))
                 drafted_texts.append(section_text)
+            else:
+                failed_sections.append(section)
+
+        manifest_path = merge_dir / "merge_queue.json"
+        manifest_path.write_text(
+            json.dumps(section_results, ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
 
         if len(passed_sections) != len(section_list):
-            manifest_path = merge_dir / "merge_queue.json"
-            manifest_path.write_text(
-                json.dumps(section_results, ensure_ascii=True, indent=2),
-                encoding="utf-8",
-            )
-            # Best-effort: still emit a partial combined draft for human iteration.
             try:
                 combined_partial = "\n\n".join(
                     (sections_dir / f"{i:02d}_{sec}.md").read_text(encoding="utf-8")
@@ -613,43 +737,51 @@ async def manuscript_writer_handler(
                     section_path.read_text(encoding="utf-8")
                     for _, section_path in passed_sections
                 )
-            partial_path = merge_dir / "combined_partial.md"
-            partial_path.write_text(combined_partial, encoding="utf-8")
-            partial_output = output_file.with_suffix(output_file.suffix + ".partial.md")
-            try:
-                partial_output.write_text(combined_partial, encoding="utf-8")
-            except Exception:
-                pass
-            return {
-                "tool": "manuscript_writer",
-                "success": False,
-                "error": "section_evaluation_failed",
-                "analysis_path": str(analysis_file.relative_to(_PROJECT_ROOT)),
-                "sections_dir": str(sections_dir.relative_to(_PROJECT_ROOT)),
-                "reviews_dir": str(reviews_dir.relative_to(_PROJECT_ROOT)),
-                "merge_queue": str(manifest_path.relative_to(_PROJECT_ROOT)),
-                "combined_partial": str(partial_path.relative_to(_PROJECT_ROOT)),
-                "partial_output_path": str(partial_output.relative_to(_PROJECT_ROOT)),
-                "temp_workspace": str(work_dir.relative_to(_PROJECT_ROOT)),
-                "sections": section_results,
-            }
+            return _build_failure_payload(
+                error_code="section_evaluation_failed",
+                manifest_path=manifest_path,
+                combined_partial=combined_partial,
+            )
 
         combined_text = "\n\n".join(
-            section_path.read_text(encoding="utf-8") for _, section_path in passed_sections
+            section_text_map.get(section, "").strip() for section in section_list if section_text_map.get(section, "").strip()
         )
         combined_path = merge_dir / "combined_draft.md"
         combined_path.write_text(combined_text, encoding="utf-8")
+
+        body_text = "\n\n".join(
+            section_text_map.get(section, "").strip()
+            for section in section_list
+            if section != "references" and section_text_map.get(section, "").strip()
+        )
+        references_text = section_text_map.get("references", "")
+        citation_report = _validate_citations(
+            body_text=body_text,
+            references_text=references_text,
+            bib_keys=bib_keys,
+        )
+        citation_validation_path = merge_dir / "citation_validation.json"
+        citation_validation_path.write_text(
+            json.dumps(citation_report, ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+        if not citation_report.get("pass"):
+            if "references" not in failed_sections:
+                failed_sections.append("references")
+            if strict_gate:
+                return _build_failure_payload(
+                    error_code="citation_validation_failed",
+                    manifest_path=manifest_path,
+                    combined_partial=combined_text,
+                    citation_validation_path=citation_validation_path,
+                    citation_report=citation_report,
+                )
 
         final_prompt = _build_merge_prompt(task, analysis_memo, combined_text)
         final_text = await _chat(merge_llm, final_prompt, merge_model_name)
         output_file.write_text(final_text, encoding="utf-8")
 
-        manifest_path = merge_dir / "merge_queue.json"
-        manifest_path.write_text(
-            json.dumps(section_results, ensure_ascii=True, indent=2),
-            encoding="utf-8",
-        )
-
+        quality_gate_passed = len(failed_sections) == 0 and bool(citation_report.get("pass"))
         cleanup_errors: List[str] = []
         if not keep_workspace:
             try:
@@ -657,20 +789,30 @@ async def manuscript_writer_handler(
             except Exception as exc:
                 cleanup_errors.append(str(exc))
 
+        stats = _build_stats(citation_report=citation_report)
+        stats["final_chars"] = len(final_text or "")
         return {
             "tool": "manuscript_writer",
             "success": True,
-            "analysis_path": None,
-            "sections_dir": None,
-            "reviews_dir": None,
-            "combined_path": None,
-            "merge_queue": None,
-            "output_path": str(output_file.relative_to(_PROJECT_ROOT)),
+            "quality_gate_passed": quality_gate_passed,
+            "failed_sections": list(failed_sections),
+            "section_scores": dict(section_scores),
+            "analysis_path": _to_rel(analysis_file),
+            "effective_analysis_path": _to_rel(analysis_file),
+            "sections_dir": None if not keep_workspace else _to_rel(sections_dir),
+            "reviews_dir": None if not keep_workspace else _to_rel(reviews_dir),
+            "combined_path": None if not keep_workspace else _to_rel(combined_path),
+            "merge_queue": None if not keep_workspace else _to_rel(manifest_path),
+            "citation_validation_path": None if not keep_workspace else _to_rel(citation_validation_path),
+            "citation_validation": citation_report if keep_workspace else None,
+            "output_path": _to_rel(output_file),
+            "effective_output_path": _to_rel(output_file),
             "sections": section_results,
             "draft_chars": len(final_text or ""),
             "intermediate_purged": not keep_workspace,
-            "temp_workspace": str(work_dir.relative_to(_PROJECT_ROOT)),
+            "temp_workspace": _to_rel(work_dir),
             "cleanup_errors": cleanup_errors,
+            "run_stats": stats,
         }
     except Exception as exc:
         logger.exception("Manuscript writer failed")

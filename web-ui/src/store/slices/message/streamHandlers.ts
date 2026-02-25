@@ -225,7 +225,15 @@ export function handleFinal(ctx: StreamHandlerContext, event: any): boolean {
 }
 
 export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void {
-  const step = event.step;
+  flushPendingThinkingDeltas(ctx);
+  const rawStep = event.step ?? {};
+  const step = {
+    ...rawStep,
+    evidence: Array.isArray(rawStep.evidence) ? rawStep.evidence : undefined,
+    started_at: typeof rawStep.started_at === 'string' ? rawStep.started_at : undefined,
+    finished_at: typeof rawStep.finished_at === 'string' ? rawStep.finished_at : undefined,
+    timestamp: typeof rawStep.timestamp === 'string' ? rawStep.timestamp : undefined,
+  };
   const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
   if (!targetMessage) return;
 
@@ -262,9 +270,9 @@ export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void 
   ctx.scheduleFlush();
 }
 
-export function handleThinkingDelta(ctx: StreamHandlerContext, event: any): void {
-  // Handle streaming delta for thinking content
-  const { iteration, delta } = event;
+function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext): void {
+  const pendingEntries = Object.entries(ctx.state.pendingThinkingDeltas);
+  if (pendingEntries.length === 0) return;
   const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
   if (!targetMessage) return;
 
@@ -272,45 +280,69 @@ export function handleThinkingDelta(ctx: StreamHandlerContext, event: any): void
   const currentProcess = targetMessage.thinking_process ?? {
     steps: [],
     status: 'active' as const,
-    total_iterations: 0
+    total_iterations: 0,
   };
-
   const updatedSteps = [...currentProcess.steps];
-  // Find or create the step for this iteration
-  let stepIndex = updatedSteps.findIndex((s: any) => s.iteration === iteration);
-  if (stepIndex < 0) {
-    // Create new step
-    updatedSteps.push({
-      iteration,
-      thought: delta,
-      action: null,
-      action_result: null,
-      status: 'thinking' as const,
-      timestamp: new Date().toISOString(),
-      self_correction: null
-    });
-  } else {
-    // Append delta to existing step's thought
-    updatedSteps[stepIndex] = {
-      ...updatedSteps[stepIndex],
-      thought: (updatedSteps[stepIndex].thought || '') + delta
+
+  for (const [iterationKey, delta] of pendingEntries) {
+    const iteration = Number(iterationKey);
+    if (!Number.isFinite(iteration)) continue;
+    const idx = updatedSteps.findIndex((s: any) => s.iteration === iteration);
+    if (idx < 0) {
+      updatedSteps.push({
+        iteration,
+        thought: delta,
+        action: null,
+        action_result: null,
+        status: 'thinking' as const,
+        timestamp: new Date().toISOString(),
+        self_correction: null,
+      });
+      continue;
+    }
+    updatedSteps[idx] = {
+      ...updatedSteps[idx],
+      thought: (updatedSteps[idx].thought || '') + delta,
     };
   }
 
-  const updatedProcess = {
-    ...currentProcess,
-    steps: updatedSteps,
-    total_iterations: Math.max(currentProcess.total_iterations ?? 0, iteration),
-    status: 'active' as const
-  };
-
+  ctx.state.pendingThinkingDeltas = {};
   ctx.get().updateMessage(ctx.assistantMessageId, {
     metadata: existingMetadata,
-    thinking_process: updatedProcess
+    thinking_process: {
+      ...currentProcess,
+      steps: updatedSteps,
+      status: 'active' as const,
+      total_iterations: Math.max(
+        currentProcess.total_iterations ?? 0,
+        ...updatedSteps.map((s: any) => Number(s?.iteration) || 0),
+      ),
+    },
   });
-
-  // Allow UI to re-render with streaming content
   ctx.scheduleFlush();
+}
+
+export function handleThinkingDelta(ctx: StreamHandlerContext, event: any): void {
+  const { iteration, delta } = event;
+  if (typeof iteration !== 'number' || !Number.isFinite(iteration)) return;
+  if (typeof delta !== 'string' || delta.length === 0) return;
+
+  ctx.state.pendingThinkingDeltas[iteration] =
+    (ctx.state.pendingThinkingDeltas[iteration] || '') + delta;
+
+  if (ctx.state.thinkingDeltaFlushHandle !== null) return;
+  ctx.state.thinkingDeltaFlushHandle = window.setTimeout(() => {
+    ctx.state.thinkingDeltaFlushHandle = null;
+    _flushThinkingDeltaBuffer(ctx);
+  }, 80);
+}
+
+export function flushPendingThinkingDeltas(ctx: StreamHandlerContext): void {
+  if (ctx.state.thinkingDeltaFlushHandle !== null) {
+    window.clearTimeout(ctx.state.thinkingDeltaFlushHandle);
+    ctx.state.thinkingDeltaFlushHandle = null;
+  }
+  _flushThinkingDeltaBuffer(ctx);
 }
 
 function _extractToolNameFromAction(action: unknown): string | null {

@@ -10,17 +10,71 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
+import shlex
+import threading
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from string import Formatter
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from .remote_executor import (
+    RemoteExecutionConfig,
+    create_remote_run_dirs,
+    download_remote_run_dir,
+    execute_remote_command,
+    resolve_auth,
+    resolve_remote_uid_gid,
+    upload_files,
+)
 
 logger = logging.getLogger(__name__)
 
 # 
 BIO_TOOLS_CONFIG_PATH = Path(__file__).parent / "tools_config.json"
-RUNTIME_BASE_DIR = os.getenv("BIO_TOOLS_RUNTIME_DIR", "/home/zczhao/GAgent/runtime/bio_tools")
-DEFAULT_TIMEOUT = 3600  # 1
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_BASE_DIR = os.getenv(
+    "BIO_TOOLS_RUNTIME_DIR",
+    str(PROJECT_ROOT / "runtime" / "bio_tools"),
+)
+DEFAULT_TIMEOUT = int(os.getenv("BIO_TOOLS_DEFAULT_TIMEOUT", "3600"))
+DEFAULT_EXECUTION_MODE = "local"
+BIO_TOOLS_BACKGROUND_JOB_TYPE = "bio_tools_run"
+BIO_TOOLS_BACKGROUND_MODE = "bio_tools_background"
+JOB_STATUS_OPERATION = "job_status"
+
+_CONTROL_PARAM_KEYS = {"background", "async", "detached", "wait", "job_id"}
+
+INPUT_PATH_PARAM_KEYS = {
+    "reference",
+    "query",
+    "target",
+    "db",
+    "index",
+    "depth",
+    "r1",
+    "r2",
+    "contigs",
+    "bam_files",
+    "bins",
+    "snakefile",
+    "pipeline",
+    "genome_dir",
+    "tree",
+    "abundance",
+    "coverage",
+    "input",
+}
+OUTPUT_PATH_PARAM_KEYS = {
+    "output",
+    "output_dir",
+    "output_prefix",
+    "index_prefix",
+    "protein",
+    "nucleotide",
+}
+MULTI_PATH_PARAM_KEYS = {"bam_files", "bins"}
 
 
 def load_tools_config() -> Dict[str, Any]:
@@ -66,12 +120,78 @@ def ensure_tool_directory(tool_name: str) -> Path:
     return tool_dir
 
 
+def _needs_container_shell(command: str) -> bool:
+    return any(token in command for token in ("|", ">", "<", "&&", "||", ";"))
+
+
+def _template_fields(template: str) -> List[str]:
+    fields: List[str] = []
+    for _, field_name, _, _ in Formatter().parse(template):
+        if not field_name:
+            continue
+        if field_name not in fields:
+            fields.append(field_name)
+    return fields
+
+
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
+
+
+def _normalize_handler_timeout(timeout: Any) -> Optional[int]:
+    if timeout is None:
+        return None
+    try:
+        parsed = int(timeout)
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _extract_control_flags(
+    params: Optional[Dict[str, Any]],
+    background: Optional[bool],
+    job_id: Optional[str],
+) -> Tuple[Dict[str, Any], bool, Optional[str]]:
+    source = dict(params or {})
+    requested_background = _coerce_bool(background, default=False)
+    for key in ("background", "async", "detached"):
+        if key in source:
+            requested_background = _coerce_bool(source.get(key), default=requested_background)
+
+    requested_job_id = (str(job_id).strip() if job_id is not None else "")
+    if not requested_job_id:
+        raw_job_id = source.get("job_id")
+        if raw_job_id is not None:
+            requested_job_id = str(raw_job_id).strip()
+
+    clean_params = {k: v for k, v in source.items() if k not in _CONTROL_PARAM_KEYS}
+    return clean_params, requested_background, (requested_job_id or None)
+
+
 def build_docker_command(
     tool_name: str,
     operation: str,
     input_file: Optional[str] = None,
     output_file: Optional[str] = None,
-    extra_params: Optional[Dict[str, str]] = None,
+    extra_params: Optional[Dict[str, Any]] = None,
+    work_dir_override: Optional[str] = None,
+    validate_input_exists: bool = True,
+    run_as_user: Optional[Tuple[int, int]] = None,
 ) -> str:
     """ Docker """
     config = get_tools_config()
@@ -90,11 +210,13 @@ def build_docker_command(
     image = tool_config["image"]
     command_template = op_config["command"]
     
-    # 
-    tool_dir = ensure_tool_directory(tool_name)
-    
-    #  - 
-    tool_dir_abs = str(tool_dir.resolve())
+    #  / 
+    if work_dir_override:
+        tool_dir_abs = str(Path(work_dir_override).expanduser())
+    else:
+        tool_dir = ensure_tool_directory(tool_name)
+        tool_dir_abs = str(tool_dir.resolve())
+
     mounts = [f"-v {tool_dir_abs}:/work"]
     
     # ，
@@ -108,7 +230,7 @@ def build_docker_command(
             input_dir_abs = str(input_path.parent.resolve())
             mounts.append(f"-v {input_dir_abs}:/input:ro")
             input_file = f"/input/{input_path.name}"
-        else:
+        elif validate_input_exists:
             logger.warning(f"Input file not found: {input_path}")
     
     #  checkv，
@@ -129,7 +251,10 @@ def build_docker_command(
     
     #  iphop，
     if tool_name == "iphop":
-        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/iphop"
+        db_path = os.getenv(
+            "BIO_TOOLS_IPHOP_DB_PATH",
+            "/home/zczhao/GAgent/data/databases/bio_tools/iphop/Aug_2023_pub_rw",
+        )
         mounts.append(f"-v {db_path}:/work/database")
 
     #  checkm，
@@ -145,13 +270,21 @@ def build_docker_command(
     # 
     params = {
         "input": input_file or "",
-        "output": f"/work/{output_file}" if output_file else "",
+        "output": output_file or "",
         "output_dir": "/work",
     }
 
     # 
     if extra_params:
         params.update(extra_params)
+
+    required_fields = _template_fields(command_template)
+    if "query" in required_fields and not params.get("query") and params.get("input"):
+        params["query"] = params["input"]
+    if "output" in required_fields and not params.get("output"):
+        params["output"] = f"{tool_name}_{operation}.out"
+    if "output_dir" in required_fields and not params.get("output_dir"):
+        params["output_dir"] = "/work"
 
     #  db ，
     db_path = params.get('db')
@@ -172,7 +305,7 @@ def build_docker_command(
 
     #  bakta，
     if tool_name == "bakta":
-        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/bakta/db"
+        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/bakta/db/db"
         mounts.append(f"-v {db_path}:/work/database")
 
     #  minimap2 filter，
@@ -181,62 +314,179 @@ def build_docker_command(
         if ref_path.endswith('.mmi'):
             ref_dir = str(Path(ref_path).parent.resolve())
             mounts.append(f"-v {ref_dir}:/work/reference:ro")
+
+    # Avoid duplicated /work prefix when templates already include /work/{param}
+    for key, value in list(params.items()):
+        if not isinstance(value, str):
+            continue
+        if value.startswith("/work/") and f"/work/{{{key}}}" in command_template:
+            params[key] = value[len("/work/") :]
+
+    missing_fields = [name for name in required_fields if params.get(name) in ("", None)]
+    if missing_fields:
+        raise ValueError(
+            f"Missing required parameters for {tool_name}.{operation}: {', '.join(sorted(missing_fields))}"
+        )
     
     # 
     command = command_template.format(**params)
+    if _needs_container_shell(command):
+        command = f"sh -lc {shlex.quote(command)}"
     
     #  Docker 
     mount_str = " ".join(mounts)
-    import os
-    uid = os.getuid()
-    gid = os.getgid()
+    env_flags = ["-e HOME=/work"]
+    if tool_name == "nextflow":
+        nextflow_home = os.getenv("BIO_TOOLS_NEXTFLOW_HOME_IN_CONTAINER", "/tmp/.nextflow").strip() or "/tmp/.nextflow"
+        env_flags.extend(
+            [
+                f"-e NXF_HOME={nextflow_home}",
+                f"-e NXF_ASSETS={nextflow_home}/assets",
+            ]
+        )
+    if tool_name == "virsorter2":
+        env_flags.extend(
+            [
+                "-e SNAKEMAKE_CONDA_PREFIX=/work/output/conda_envs",
+                "-e CONDA_PKGS_DIRS=/work/output/.conda/pkgs",
+            ]
+        )
+    env_str = " ".join(env_flags)
+    if run_as_user is not None:
+        uid, gid = int(run_as_user[0]), int(run_as_user[1])
+    else:
+        uid = os.getuid()
+        gid = os.getgid()
     user_flag = f"--user {uid}:{gid}"
-    docker_cmd = f"docker run --rm {user_flag} {mount_str} -w /work {image} {command}"
+    docker_cmd = f"docker run --rm {user_flag} {env_str} {mount_str} -w /work {image} {command}"
     
     return docker_cmd
 
 
 async def execute_docker_command(
     command: str,
-    timeout: int = DEFAULT_TIMEOUT,
+    timeout: Optional[int] = DEFAULT_TIMEOUT,
     capture_output: bool = True,
+    log_callback: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
-    """ Docker """
+    """Execute a Docker command.
+
+    When *log_callback* is provided the process's stdout and stderr are read
+    line-by-line as they arrive and each non-empty line is forwarded to the
+    callback as ``log_callback(line: str, stream: str)`` where *stream* is
+    ``"stdout"`` or ``"stderr"``.  The full combined output is still returned
+    in the result dict so that callers that rely on it continue to work.
+    """
     logger.info(f"Executing: {command}")
-    
     start_time = datetime.now()
-    
+
     try:
-        #  asyncio.create_subprocess_shell 
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE if capture_output else None,
             stderr=asyncio.subprocess.PIPE if capture_output else None,
         )
-        
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout
-        )
-        
-        duration = (datetime.now() - start_time).total_seconds()
-        
-        result = {
-            "success": process.returncode == 0,
-            "exit_code": process.returncode,
-            "duration_seconds": duration,
-            "command": command,
-        }
-        
-        if capture_output:
-            result["stdout"] = stdout.decode("utf-8", errors="replace") if stdout else ""
-            result["stderr"] = stderr.decode("utf-8", errors="replace") if stderr else ""
-        
+
+        if log_callback and capture_output:
+            # ── Streaming mode: read lines as they arrive ────────────────────
+            stdout_lines: List[str] = []
+            stderr_lines: List[str] = []
+
+            async def _drain(stream: Optional[asyncio.StreamReader], chunks: List[str], label: str) -> None:
+                if stream is None:
+                    return
+                while True:
+                    try:
+                        raw = await stream.readline()
+                    except Exception:
+                        break
+                    if not raw:
+                        break
+                    line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                    chunks.append(line)
+                    if line.strip():
+                        try:
+                            log_callback(line, label)
+                        except Exception:
+                            pass
+
+            drain_coro = asyncio.gather(
+                _drain(process.stdout, stdout_lines, "stdout"),
+                _drain(process.stderr, stderr_lines, "stderr"),
+            )
+
+            timed_out = False
+            try:
+                if timeout is not None:
+                    await asyncio.wait_for(drain_coro, timeout=timeout)
+                else:
+                    await drain_coro
+            except asyncio.TimeoutError:
+                timed_out = True
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                try:
+                    await process.wait()
+                except Exception:
+                    pass
+
+            if not timed_out:
+                await process.wait()
+
+            duration = (datetime.now() - start_time).total_seconds()
+
+            if timed_out:
+                logger.error(f"Command timed out after {timeout}s: {command}")
+                return {
+                    "success": False,
+                    "error": f"Command timed out after {timeout} seconds",
+                    "exit_code": -1,
+                    "duration_seconds": duration,
+                    "command": command,
+                    "stdout": "\n".join(stdout_lines),
+                    "stderr": "\n".join(stderr_lines),
+                }
+
+            result: Dict[str, Any] = {
+                "success": process.returncode == 0,
+                "exit_code": process.returncode,
+                "duration_seconds": duration,
+                "command": command,
+                "stdout": "\n".join(stdout_lines),
+                "stderr": "\n".join(stderr_lines),
+            }
+
+        else:
+            # ── Original blocking mode ────────────────────────────────────────
+            if timeout is None:
+                stdout, stderr = await process.communicate()
+            else:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=timeout,
+                )
+
+            duration = (datetime.now() - start_time).total_seconds()
+            result = {
+                "success": process.returncode == 0,
+                "exit_code": process.returncode,
+                "duration_seconds": duration,
+                "command": command,
+            }
+            if capture_output:
+                result["stdout"] = stdout.decode("utf-8", errors="replace") if stdout else ""
+                result["stderr"] = stderr.decode("utf-8", errors="replace") if stderr else ""
+
         if process.returncode != 0:
-            logger.warning(f"Command failed with exit code {process.returncode}: {result.get('stderr', '')[:500]}")
-        
+            logger.warning(
+                f"Command failed with exit code {process.returncode}: "
+                f"{result.get('stderr', '')[:500]}"
+            )
+
         return result
-        
+
     except asyncio.TimeoutError:
         logger.error(f"Command timed out after {timeout}s: {command}")
         return {
@@ -253,13 +503,716 @@ async def execute_docker_command(
         }
 
 
+def _normalize_execution_mode(value: Optional[str]) -> str:
+    mode = (value or DEFAULT_EXECUTION_MODE).strip().lower()
+    if mode not in {"local", "remote", "auto"}:
+        return DEFAULT_EXECUTION_MODE
+    return mode
+
+
+def _effective_execution_mode(config: RemoteExecutionConfig) -> str:
+    configured = _normalize_execution_mode(os.getenv("BIO_TOOLS_EXECUTION_MODE"))
+    if configured in {"local", "remote"}:
+        return configured
+
+    # auto mode: use remote only when minimal remote config is available
+    if not config.missing_required():
+        return "remote"
+    return "local"
+
+
+def _is_definitely_local_missing(path_value: str) -> bool:
+    p = (path_value or "").strip()
+    if not p:
+        return False
+    # macOS absolute paths are highly likely local user paths.
+    if p.startswith("./") or p.startswith("../"):
+        return True
+    if p.startswith("~"):
+        return True
+    if p.startswith("/Users/") or p.startswith("/Volumes/"):
+        return True
+    if not p.startswith("/"):
+        # Plain tokens like database/index prefixes are not filesystem paths.
+        if "/" not in p and "\\" not in p:
+            return False
+        return True
+    return False
+
+
+def _normalize_output_fragment(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return "output"
+    text = text.replace("\\", "/")
+    if text.startswith("/work/"):
+        text = text[len("/work/") :]
+    text = text.lstrip("/")
+    if text == "output" or text.startswith("output/"):
+        return text
+    return f"output/{text}"
+
+
+def _allocate_upload_name(
+    local_path: str,
+    *,
+    used_names: set,
+    index: int,
+) -> str:
+    base = Path(local_path).name
+    if not base:
+        base = f"input_{index}"
+    candidate = base
+    if candidate in used_names:
+        candidate = f"{index}_{base}"
+    used_names.add(candidate)
+    return candidate
+
+
+def _register_upload(
+    local_path: str,
+    remote_run_dir: str,
+    uploads: List[Tuple[str, str]],
+    used_names: set,
+) -> str:
+    local_abs = str(Path(local_path).expanduser().resolve())
+    for existing_local, existing_remote in uploads:
+        if existing_local == local_abs:
+            return f"/work/input/{Path(existing_remote).name}"
+    idx = len(uploads) + 1
+    upload_name = _allocate_upload_name(local_abs, used_names=used_names, index=idx)
+    remote_target = f"{remote_run_dir}/input/{upload_name}"
+    uploads.append((local_abs, remote_target))
+    return f"/work/input/{upload_name}"
+
+
+def _register_hmmer_sidecars(
+    *,
+    db_path: Path,
+    remote_run_dir: str,
+    uploads: List[Tuple[str, str]],
+    used_upload_names: set,
+) -> None:
+    # hmmscan expects hmmpress-generated sidecars next to the DB path.
+    sidecar_suffixes = (".h3f", ".h3i", ".h3m", ".h3p")
+    for suffix in sidecar_suffixes:
+        sidecar = db_path.with_name(db_path.name + suffix)
+        if sidecar.exists() and sidecar.is_file():
+            _register_upload(
+                str(sidecar),
+                remote_run_dir,
+                uploads,
+                used_upload_names,
+            )
+
+
+def _register_bam_index_sidecars(
+    *,
+    bam_path: Path,
+    remote_run_dir: str,
+    uploads: List[Tuple[str, str]],
+    used_upload_names: set,
+) -> None:
+    # Sniffles2 and other BAM consumers expect index sidecars near the BAM path.
+    candidates = [
+        bam_path.with_name(bam_path.name + ".bai"),
+        bam_path.with_name(bam_path.name + ".csi"),
+        bam_path.with_suffix(".bai"),
+        bam_path.with_suffix(".csi"),
+    ]
+    seen: set = set()
+    for sidecar in candidates:
+        sidecar_str = str(sidecar.resolve()) if sidecar.exists() else str(sidecar)
+        if sidecar_str in seen:
+            continue
+        seen.add(sidecar_str)
+        if sidecar.exists() and sidecar.is_file():
+            _register_upload(
+                str(sidecar),
+                remote_run_dir,
+                uploads,
+                used_upload_names,
+            )
+
+
+def _rewrite_remote_path_value(
+    *,
+    key: str,
+    value: str,
+    remote_run_dir: str,
+    uploads: List[Tuple[str, str]],
+    used_upload_names: set,
+) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return raw
+
+    parts = [p.strip() for p in raw.split(",")] if key in MULTI_PATH_PARAM_KEYS else [raw]
+    rewritten_parts: List[str] = []
+    for part in parts:
+        if not part:
+            continue
+        path_obj = Path(part).expanduser()
+        if path_obj.exists() and path_obj.is_file():
+            resolved_path = path_obj.resolve()
+            rewritten = _register_upload(
+                str(resolved_path),
+                remote_run_dir,
+                uploads,
+                used_upload_names,
+            )
+            if resolved_path.suffix.lower() == ".bam":
+                _register_bam_index_sidecars(
+                    bam_path=resolved_path,
+                    remote_run_dir=remote_run_dir,
+                    uploads=uploads,
+                    used_upload_names=used_upload_names,
+                )
+            if key == "db":
+                _register_hmmer_sidecars(
+                    db_path=resolved_path,
+                    remote_run_dir=remote_run_dir,
+                    uploads=uploads,
+                    used_upload_names=used_upload_names,
+                )
+            rewritten_parts.append(rewritten)
+            continue
+        if _is_definitely_local_missing(part):
+            raise ValueError(f"Local input path not found: {part}")
+        rewritten_parts.append(part)
+
+    if key in MULTI_PATH_PARAM_KEYS:
+        return ",".join(rewritten_parts)
+    return rewritten_parts[0] if rewritten_parts else raw
+
+
+def _prepare_remote_io(
+    *,
+    input_file: Optional[str],
+    output_file: Optional[str],
+    params: Optional[Dict[str, Any]],
+    remote_run_dir: str,
+) -> Tuple[Optional[str], Optional[str], Dict[str, Any], List[Tuple[str, str]]]:
+    uploads: List[Tuple[str, str]] = []
+    used_upload_names: set = set()
+    rewritten_params: Dict[str, Any] = dict(params or {})
+
+    rewritten_input = input_file
+    if input_file:
+        rewritten_input = _rewrite_remote_path_value(
+            key="input",
+            value=input_file,
+            remote_run_dir=remote_run_dir,
+            uploads=uploads,
+            used_upload_names=used_upload_names,
+        )
+
+    rewritten_output_file = output_file
+    if output_file:
+        rewritten_output_file = _normalize_output_fragment(output_file)
+
+    for key, value in list(rewritten_params.items()):
+        if not isinstance(value, str):
+            continue
+        if key in INPUT_PATH_PARAM_KEYS:
+            rewritten_params[key] = _rewrite_remote_path_value(
+                key=key,
+                value=value,
+                remote_run_dir=remote_run_dir,
+                uploads=uploads,
+                used_upload_names=used_upload_names,
+            )
+        elif key in OUTPUT_PATH_PARAM_KEYS:
+            rewritten_params[key] = _normalize_output_fragment(value)
+
+    return rewritten_input, rewritten_output_file, rewritten_params, uploads
+
+
+def _apply_execution_metadata(result: Dict[str, Any], *, mode: str, host: str) -> Dict[str, Any]:
+    result["execution_mode"] = mode
+    result["execution_host"] = host
+    return result
+
+
+async def _execute_local_bio_tool(
+    *,
+    tool_name: str,
+    operation: str,
+    input_file: Optional[str],
+    output_file: Optional[str],
+    params: Optional[Dict[str, Any]],
+    timeout: Optional[int],
+    log_callback: Optional[Callable[[str, str], None]] = None,
+) -> Dict[str, Any]:
+    docker_cmd = build_docker_command(
+        tool_name=tool_name,
+        operation=operation,
+        input_file=input_file,
+        output_file=output_file,
+        extra_params=params,
+    )
+    result = await execute_docker_command(docker_cmd, timeout=timeout, log_callback=log_callback)
+    result["tool"] = tool_name
+    result["operation"] = operation
+    if output_file and result.get("success"):
+        tool_dir = ensure_tool_directory(tool_name)
+        result["output_path"] = str(tool_dir / output_file)
+    return _apply_execution_metadata(result, mode="local", host="local")
+
+
+async def _execute_remote_bio_tool(
+    *,
+    tool_name: str,
+    operation: str,
+    input_file: Optional[str],
+    output_file: Optional[str],
+    params: Optional[Dict[str, Any]],
+    timeout: Optional[int],
+    remote_config: RemoteExecutionConfig,
+) -> Dict[str, Any]:
+    missing = remote_config.missing_required()
+    if missing:
+        return {
+            "success": False,
+            "tool": tool_name,
+            "operation": operation,
+            "execution_mode": "remote",
+            "execution_host": remote_config.host or "unknown",
+            "error": "Remote execution configuration incomplete",
+            "missing_configuration": missing,
+        }
+
+    run_id = uuid.uuid4().hex[:12]
+    remote_run_dir = f"{remote_config.runtime_dir}/_runs/{tool_name}/{run_id}"
+    local_artifact_dir = (
+        Path(remote_config.local_artifact_root).expanduser() / tool_name / run_id
+    )
+
+    try:
+        rewritten_input, rewritten_output, rewritten_params, uploads = _prepare_remote_io(
+            input_file=input_file,
+            output_file=output_file,
+            params=params,
+            remote_run_dir=remote_run_dir,
+        )
+    except ValueError as exc:
+        return {
+            "success": False,
+            "tool": tool_name,
+            "operation": operation,
+            "execution_mode": "remote",
+            "execution_host": remote_config.host,
+            "run_id": run_id,
+            "remote_run_dir": remote_run_dir,
+            "local_artifact_dir": str(local_artifact_dir),
+            "error": str(exc),
+        }
+
+    try:
+        auth = await resolve_auth(remote_config)
+    except Exception as exc:
+        return {
+            "success": False,
+            "tool": tool_name,
+            "operation": operation,
+            "execution_mode": "remote",
+            "execution_host": remote_config.host,
+            "run_id": run_id,
+            "remote_run_dir": remote_run_dir,
+            "local_artifact_dir": str(local_artifact_dir),
+            "error": f"Remote authentication failed: {exc}",
+        }
+
+    try:
+        remote_uid, remote_gid = await resolve_remote_uid_gid(remote_config, auth)
+    except Exception as exc:
+        return {
+            "success": False,
+            "tool": tool_name,
+            "operation": operation,
+            "execution_mode": "remote",
+            "execution_host": remote_config.host,
+            "run_id": run_id,
+            "remote_run_dir": remote_run_dir,
+            "local_artifact_dir": str(local_artifact_dir),
+            "error": f"Failed to resolve remote uid/gid: {exc}",
+        }
+
+    mk_result = await create_remote_run_dirs(remote_config, auth, remote_run_dir)
+    if not mk_result.get("success"):
+        return {
+            "success": False,
+            "tool": tool_name,
+            "operation": operation,
+            "execution_mode": "remote",
+            "execution_host": remote_config.host,
+            "run_id": run_id,
+            "remote_run_dir": remote_run_dir,
+            "local_artifact_dir": str(local_artifact_dir),
+            "error": mk_result.get("stderr") or mk_result.get("error") or "Failed to create remote run directory",
+        }
+
+    upload_result = await upload_files(remote_config, auth, uploads)
+    failed_upload = next((item for item in upload_result if not item.get("success")), None)
+    if failed_upload:
+        return {
+            "success": False,
+            "tool": tool_name,
+            "operation": operation,
+            "execution_mode": "remote",
+            "execution_host": remote_config.host,
+            "run_id": run_id,
+            "remote_run_dir": remote_run_dir,
+            "local_artifact_dir": str(local_artifact_dir),
+            "uploaded_files": upload_result,
+            "error": failed_upload.get("stderr")
+            or failed_upload.get("error")
+            or f"Failed to upload file: {failed_upload.get('local_path', 'unknown')}",
+        }
+
+    docker_cmd = build_docker_command(
+        tool_name=tool_name,
+        operation=operation,
+        input_file=rewritten_input,
+        output_file=rewritten_output,
+        extra_params=rewritten_params,
+        work_dir_override=remote_run_dir,
+        validate_input_exists=False,
+        run_as_user=(remote_uid, remote_gid),
+    )
+
+    command_result = await execute_remote_command(
+        remote_config,
+        auth,
+        docker_cmd,
+        timeout=timeout,
+    )
+
+    sync_result = await download_remote_run_dir(
+        remote_config,
+        auth,
+        remote_run_dir=remote_run_dir,
+        local_target_dir=str(local_artifact_dir),
+    )
+
+    result: Dict[str, Any] = {
+        "success": bool(command_result.get("success")),
+        "tool": tool_name,
+        "operation": operation,
+        "command": docker_cmd,
+        "run_id": run_id,
+        "remote_run_dir": remote_run_dir,
+        "local_artifact_dir": str(local_artifact_dir),
+        "remote_uid": remote_uid,
+        "remote_gid": remote_gid,
+        "uploaded_files": upload_result,
+        "sync_result": sync_result,
+    }
+    for key in ("stdout", "stderr", "exit_code", "duration_seconds", "error"):
+        if key in command_result:
+            result[key] = command_result[key]
+    if rewritten_output:
+        result["output_path"] = str(local_artifact_dir / rewritten_output)
+    if not sync_result.get("success"):
+        result["sync_warning"] = sync_result.get("stderr") or sync_result.get("error") or "Failed to sync remote artifacts"
+    if command_result.get("sudo_retry"):
+        result["sudo_retry"] = True
+    result = _apply_execution_metadata(result, mode="remote", host=remote_config.host)
+    return result
+
+
+async def _execute_bio_tool_once(
+    *,
+    tool_name: str,
+    operation: str,
+    input_file: Optional[str],
+    output_file: Optional[str],
+    params: Optional[Dict[str, Any]],
+    timeout: Optional[int],
+    log_callback: Optional[Callable[[str, str], None]] = None,
+) -> Dict[str, Any]:
+    remote_config = RemoteExecutionConfig.from_env()
+    requested_mode = _normalize_execution_mode(os.getenv("BIO_TOOLS_EXECUTION_MODE"))
+    execution_mode = _effective_execution_mode(remote_config)
+
+    if execution_mode == "remote":
+        remote_result = await _execute_remote_bio_tool(
+            tool_name=tool_name,
+            operation=operation,
+            input_file=input_file,
+            output_file=output_file,
+            params=params,
+            timeout=timeout,
+            remote_config=remote_config,
+        )
+        if requested_mode == "auto" and not remote_result.get("success"):
+            local_result = await _execute_local_bio_tool(
+                tool_name=tool_name,
+                operation=operation,
+                input_file=input_file,
+                output_file=output_file,
+                params=params,
+                timeout=timeout,
+                log_callback=log_callback,
+            )
+            local_result["remote_fallback"] = True
+            local_result["remote_fallback_error"] = remote_result.get(
+                "error", "remote execution failed"
+            )
+            return local_result
+        return remote_result
+
+    return await _execute_local_bio_tool(
+        tool_name=tool_name,
+        operation=operation,
+        input_file=input_file,
+        output_file=output_file,
+        params=params,
+        timeout=timeout,
+        log_callback=log_callback,
+    )
+
+
+def _get_plan_job_manager() -> Any:
+    from app.services.plans.decomposition_jobs import plan_decomposition_jobs
+
+    return plan_decomposition_jobs
+
+
+def _set_current_job_context(job_id: str) -> Any:
+    from app.services.plans.decomposition_jobs import set_current_job
+
+    return set_current_job(job_id)
+
+
+def _reset_current_job_context(token: Any) -> None:
+    from app.services.plans.decomposition_jobs import reset_current_job
+
+    reset_current_job(token)
+
+
+def _resolve_bio_tools_job_payload(job_id: str) -> Optional[Dict[str, Any]]:
+    manager = _get_plan_job_manager()
+    payload = manager.get_job_payload(job_id)
+    if payload is None:
+        return None
+    if payload.get("job_type") != BIO_TOOLS_BACKGROUND_JOB_TYPE:
+        return None
+    return payload
+
+
+def _build_job_status_result(job_id: str) -> Dict[str, Any]:
+    job_payload = _resolve_bio_tools_job_payload(job_id)
+    if job_payload is None:
+        return {
+            "success": False,
+            "operation": JOB_STATUS_OPERATION,
+            "job_id": job_id,
+            "error": f"Background bio_tools job '{job_id}' not found.",
+        }
+
+    return {
+        "success": True,
+        "operation": JOB_STATUS_OPERATION,
+        "job_id": job_id,
+        "status": job_payload.get("status"),
+        "job": job_payload,
+    }
+
+
+def _run_background_bio_tools_job(
+    *,
+    job_id: str,
+    tool_name: str,
+    operation: str,
+    input_file: Optional[str],
+    output_file: Optional[str],
+    params: Optional[Dict[str, Any]],
+    timeout: Optional[int],
+) -> None:
+    manager = _get_plan_job_manager()
+    ctx_token = _set_current_job_context(job_id)
+
+    # ── Throttled log-forwarding callback ────────────────────────────────────
+    _log_buf: List[str] = []
+    _log_lock = threading.Lock()
+    _last_flush: List[float] = [time.monotonic()]
+    _FLUSH_LINES = 20   # flush after this many buffered lines
+    _FLUSH_SECS = 4.0   # or after this many seconds
+
+    def _flush_log_buf() -> None:
+        with _log_lock:
+            if not _log_buf:
+                return
+            lines = _log_buf[:]
+            _log_buf.clear()
+            _last_flush[0] = time.monotonic()
+        text = "\n".join(lines)
+        try:
+            manager.append_log(job_id, "debug", text, {"source": "docker_stream"})
+        except Exception:
+            pass
+
+    def _docker_log_callback(line: str, stream: str) -> None:
+        with _log_lock:
+            _log_buf.append(line)
+            buf_len = len(_log_buf)
+            elapsed = time.monotonic() - _last_flush[0]
+        if buf_len >= _FLUSH_LINES or elapsed >= _FLUSH_SECS:
+            _flush_log_buf()
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    try:
+        manager.mark_running(job_id)
+        manager.append_log(
+            job_id,
+            "info",
+            "Bio-tools background execution started.",
+            {
+                "tool_name": tool_name,
+                "operation": operation,
+                "timeout_seconds": timeout,
+                "timeout_disabled": timeout is None,
+            },
+        )
+
+        result = asyncio.run(
+            _execute_bio_tool_once(
+                tool_name=tool_name,
+                operation=operation,
+                input_file=input_file,
+                output_file=output_file,
+                params=params,
+                timeout=timeout,
+                log_callback=_docker_log_callback,
+            )
+        )
+        # Flush any remaining buffered lines before processing result
+        _flush_log_buf()
+        stats = {
+            "tool_progress": {
+                "tool": "bio_tools",
+                "tool_name": tool_name,
+                "operation": operation,
+                "phase": "done" if result.get("success") else "failed",
+                "run_id": result.get("run_id"),
+            }
+        }
+
+        if result.get("success"):
+            manager.mark_success(job_id, result=result, stats=stats)
+            manager.append_log(
+                job_id,
+                "info",
+                "Bio-tools background execution completed successfully.",
+                {
+                    "tool_name": tool_name,
+                    "operation": operation,
+                    "run_id": result.get("run_id"),
+                },
+            )
+            return
+
+        error_message = (
+            str(result.get("error")).strip()
+            if result.get("error") is not None
+            else ""
+        ) or (
+            str(result.get("stderr")).strip()
+            if result.get("stderr") is not None
+            else ""
+        ) or f"{tool_name}:{operation} execution failed."
+        manager.mark_failure(job_id, error_message, result=result, stats=stats)
+    except Exception as exc:  # pragma: no cover - defensive
+        manager.mark_failure(
+            job_id,
+            f"Background bio_tools execution crashed: {exc}",
+            result={"success": False, "error": str(exc)},
+        )
+    finally:
+        _reset_current_job_context(ctx_token)
+
+
+def _submit_background_bio_tools_job(
+    *,
+    tool_name: str,
+    operation: str,
+    input_file: Optional[str],
+    output_file: Optional[str],
+    params: Optional[Dict[str, Any]],
+    timeout: Optional[int],
+) -> Dict[str, Any]:
+    manager = _get_plan_job_manager()
+    job_id = f"bio_{uuid.uuid4().hex}"
+    safe_params = dict(params or {})
+    manager.create_job(
+        plan_id=None,
+        task_id=None,
+        mode=BIO_TOOLS_BACKGROUND_MODE,
+        job_type=BIO_TOOLS_BACKGROUND_JOB_TYPE,
+        params={
+            "tool_name": tool_name,
+            "operation": operation,
+            "input_file": input_file,
+            "output_file": output_file,
+            "params": safe_params,
+            "timeout": timeout,
+        },
+        metadata={
+            "tool_name": tool_name,
+            "operation": operation,
+            "timeout_seconds": timeout,
+            "timeout_disabled": timeout is None,
+        },
+        job_id=job_id,
+    )
+    manager.append_log(
+        job_id,
+        "info",
+        "Bio-tools background job queued.",
+        {"tool_name": tool_name, "operation": operation},
+    )
+
+    thread = threading.Thread(
+        target=_run_background_bio_tools_job,
+        kwargs={
+            "job_id": job_id,
+            "tool_name": tool_name,
+            "operation": operation,
+            "input_file": input_file,
+            "output_file": output_file,
+            "params": safe_params,
+            "timeout": timeout,
+        },
+        daemon=True,
+    )
+    thread.start()
+
+    return {
+        "success": True,
+        "background": True,
+        "job_id": job_id,
+        "status": "queued",
+        "tool": tool_name,
+        "operation": operation,
+        "timeout_seconds": timeout,
+        "timeout_disabled": timeout is None,
+        "query_hint": (
+            "Use bio_tools with operation='job_status' and params={'job_id': '<job_id>'} to query status."
+        ),
+    }
+
+
 async def bio_tools_handler(
     tool_name: str,
     operation: str = "help",
     input_file: Optional[str] = None,
     output_file: Optional[str] = None,
-    params: Optional[Dict[str, str]] = None,
-    timeout: int = DEFAULT_TIMEOUT,
+    params: Optional[Dict[str, Any]] = None,
+    timeout: Optional[int] = DEFAULT_TIMEOUT,
+    background: Optional[bool] = None,
+    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     
@@ -276,6 +1229,12 @@ async def bio_tools_handler(
         
     """
     logger.info(f"Bio tools handler called: tool={tool_name}, operation={operation}")
+    clean_params, run_in_background, requested_job_id = _extract_control_flags(
+        params=params,
+        background=background,
+        job_id=job_id,
+    )
+    effective_timeout = _normalize_handler_timeout(timeout)
     
     # ：
     if tool_name == "list" or operation == "list":
@@ -286,6 +1245,15 @@ async def bio_tools_handler(
             "tools": tools,
             "count": len(tools),
         }
+
+    if operation == JOB_STATUS_OPERATION:
+        if not requested_job_id:
+            return {
+                "success": False,
+                "operation": JOB_STATUS_OPERATION,
+                "error": "job_id is required for operation='job_status'.",
+            }
+        return _build_job_status_result(requested_job_id)
     
     # ：
     if operation == "help":
@@ -298,15 +1266,24 @@ async def bio_tools_handler(
             }
         
         tool_config = config[tool_name]
-        # ， notes  extra_params
         operations_detail = {}
         for op, info in tool_config.get("operations", {}).items():
+            raw_params = info.get("extra_params", [])
+            # 兼容旧格式（列表）和新格式（字典）
+            if isinstance(raw_params, list):
+                params_detail = {
+                    k: {"type": "string", "required": True, "description": ""}
+                    for k in raw_params
+                }
+            else:
+                params_detail = raw_params
             operations_detail[op] = {
                 "description": info.get("description", ""),
-                "extra_params": info.get("extra_params", []),
+                "params": params_detail,
+                "command_template": info.get("command", ""),
                 "notes": info.get("notes", ""),
             }
-        
+
         return {
             "success": True,
             "tool": tool_name,
@@ -326,28 +1303,24 @@ async def bio_tools_handler(
         }
     
     try:
-        #  Docker 
-        docker_cmd = build_docker_command(
+        if run_in_background:
+            return _submit_background_bio_tools_job(
+                tool_name=tool_name,
+                operation=operation,
+                input_file=input_file,
+                output_file=output_file,
+                params=clean_params,
+                timeout=effective_timeout,
+            )
+
+        return await _execute_bio_tool_once(
             tool_name=tool_name,
             operation=operation,
             input_file=input_file,
             output_file=output_file,
-            extra_params=params,
+            params=clean_params,
+            timeout=effective_timeout,
         )
-        
-        # 
-        result = await execute_docker_command(docker_cmd, timeout=timeout)
-        
-        # 
-        result["tool"] = tool_name
-        result["operation"] = operation
-        
-        # ，
-        if output_file and result.get("success"):
-            tool_dir = ensure_tool_directory(tool_name)
-            result["output_path"] = str(tool_dir / output_file)
-        
-        return result
         
     except ValueError as e:
         return {
@@ -391,7 +1364,10 @@ Use operation="help" with a tool_name to see available operations.""",
             },
             "operation": {
                 "type": "string",
-                "description": "Operation to perform (e.g., stats, blastn, predict). Use 'help' to see available operations."
+                "description": (
+                    "Operation to perform (e.g., stats, blastn, predict). "
+                    "Use 'help' to see available operations or 'job_status' to query a background job."
+                )
             },
             "input_file": {
                 "type": "string",
@@ -407,7 +1383,18 @@ Use operation="help" with a tool_name to see available operations.""",
             },
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in seconds (default: 3600)"
+                "description": "Timeout in seconds (default: 3600). Set <=0 to disable execution timeout."
+            },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "If true, submit execution in background and return job_id immediately. "
+                    "Recommended for long-running operations only."
+                )
+            },
+            "job_id": {
+                "type": "string",
+                "description": "Background job id, mainly used with operation='job_status'."
             }
         },
         "required": ["tool_name"]

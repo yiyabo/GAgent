@@ -6,8 +6,10 @@ analysis/execution handlers used by the chat API endpoints.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -19,7 +21,8 @@ from app.repository.chat_action_runs import (
     update_action_run,
 )
 from app.repository.plan_storage import append_action_log_entry, record_decomposition_job, record_phagescope_tracking
-from app.services.llm.structured_response import LLMStructuredResponse
+from app.services.deep_think_agent import DeepThinkAgent
+from app.services.llm.structured_response import LLMAction, LLMStructuredResponse
 from app.services.plans.decomposition_jobs import (
     get_current_job,
     plan_decomposition_jobs,
@@ -63,6 +66,210 @@ if TYPE_CHECKING:
     from .models import AgentStep
 
 logger = logging.getLogger(__name__)
+
+_AUTO_DEEP_THINK_RETRY_ENV = "CHAT_AUTO_DEEP_THINK_RETRY_ON_BLOCKING_FAILURE"
+_AUTO_DEEP_THINK_RETRY_MAX_ITER_ENV = "CHAT_AUTO_DEEP_THINK_RETRY_MAX_ITERATIONS"
+_AUTO_DEEP_THINK_RETRY_TOOL_TIMEOUT_ENV = "CHAT_AUTO_DEEP_THINK_RETRY_TOOL_TIMEOUT"
+_AUTO_DEEP_THINK_RETRY_CONTEXT_KEY = "auto_deep_think_retry_on_blocking_failure"
+_AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
+    "web_search",
+    "graph_rag",
+    "claude_code",
+    "file_operations",
+    "document_reader",
+    "vision_reader",
+    "bio_tools",
+    "phagescope",
+    "result_interpreter",
+]
+
+
+def _truthy(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _parse_int(value: Any, default: int, *, min_value: int = 1) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if parsed < min_value:
+        return min_value
+    return parsed
+
+
+def _clip_text(value: Any, *, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _extract_blocking_failures(steps: List[Any]) -> List[Dict[str, Any]]:
+    failures: List[Dict[str, Any]] = []
+    for step in steps or []:
+        action = getattr(step, "action", None)
+        if action is None:
+            continue
+        if not bool(getattr(action, "blocking", False)):
+            continue
+        if bool(getattr(step, "success", False)):
+            continue
+        details = step.details if isinstance(step.details, dict) else {}
+        failures.append(
+            {
+                "kind": str(getattr(action, "kind", "") or ""),
+                "name": str(getattr(action, "name", "") or ""),
+                "message": _clip_text(getattr(step, "message", "")),
+                "parameters": dict(getattr(action, "parameters", {}) or {}),
+                "details_error": _clip_text(details.get("error")),
+            }
+        )
+    return failures
+
+
+def _auto_deep_think_retry_enabled(context: Dict[str, Any]) -> bool:
+    context_value = context.get(_AUTO_DEEP_THINK_RETRY_CONTEXT_KEY)
+    if context_value is not None:
+        return _truthy(context_value, default=True)
+    return _truthy(os.getenv(_AUTO_DEEP_THINK_RETRY_ENV, "1"), default=True)
+
+
+def _build_blocking_failure_retry_prompt(
+    *,
+    user_message: str,
+    failures: List[Dict[str, Any]],
+) -> str:
+    failure_lines: List[str] = []
+    for idx, item in enumerate(failures, start=1):
+        failure_lines.append(
+            f"{idx}. {item.get('kind')}/{item.get('name')} failed: {item.get('message') or item.get('details_error') or 'unknown'}"
+        )
+        params = item.get("parameters")
+        if isinstance(params, dict) and params:
+            failure_lines.append(f"   params={json.dumps(params, ensure_ascii=False, default=str)[:1200]}")
+
+    failure_text = "\n".join(failure_lines) if failure_lines else "(none)"
+    return (
+        "You are executing one automatic recovery attempt after a blocking action failure.\n"
+        "Goal: complete the user's original request with available tools.\n"
+        "Rules:\n"
+        "1) Retry only once in this run; prioritize fixing failed blocking actions.\n"
+        "2) If tool params were wrong, correct them and rerun.\n"
+        "3) If still failing, provide the best actionable fallback and clearly state remaining blockers.\n\n"
+        f"Original user request:\n{user_message}\n\n"
+        f"Blocking failures from previous run:\n{failure_text}\n"
+    )
+
+
+async def _run_blocking_failure_deep_think_retry_once(
+    *,
+    agent: Any,
+    run_id: str,
+    user_message: str,
+    context: Dict[str, Any],
+    failures: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not user_message.strip():
+        return {
+            "attempted": True,
+            "success": False,
+            "error": "Missing user message for DeepThink retry",
+        }
+
+    async def _fallback_tool_executor(name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        safe_params = params if isinstance(params, dict) else {}
+        action = LLMAction(
+            kind="tool_operation",
+            name=str(name),
+            parameters=safe_params,
+            order=1,
+            blocking=True,
+            metadata={"origin": "auto_deep_think_retry"},
+        )
+        step = await agent._handle_tool_action(action)
+        details = step.details if isinstance(step.details, dict) else {}
+        result_payload = details.get("result")
+        if isinstance(result_payload, dict):
+            result: Dict[str, Any] = dict(result_payload)
+        else:
+            error_text = (
+                details.get("error")
+                or step.message
+                or "Tool execution returned malformed result payload."
+            )
+            result = {
+                "success": False,
+                "tool": str(name),
+                "error": str(error_text),
+                "summary": _clip_text(step.message or error_text, limit=600),
+                "protocol_warning": True,
+                "parameters": dict(safe_params),
+            }
+        if "success" not in result:
+            result["success"] = bool(step.success)
+        if isinstance(step.message, str) and step.message.strip():
+            result.setdefault("summary", step.message.strip())
+        return result
+
+    dt_agent_cls = DeepThinkAgent
+    try:  # pragma: no cover - compatibility bridge
+        from app.routers import chat_routes as compat_chat_routes
+
+        compat_candidate = getattr(compat_chat_routes, "DeepThinkAgent", None)
+        if inspect.isclass(compat_candidate):
+            dt_agent_cls = compat_candidate
+    except Exception:
+        pass
+
+    max_iterations = _parse_int(
+        os.getenv(_AUTO_DEEP_THINK_RETRY_MAX_ITER_ENV, "12"),
+        default=12,
+        min_value=1,
+    )
+    tool_timeout = _parse_int(
+        os.getenv(_AUTO_DEEP_THINK_RETRY_TOOL_TIMEOUT_ENV, "120"),
+        default=120,
+        min_value=1,
+    )
+
+    retry_prompt = _build_blocking_failure_retry_prompt(
+        user_message=user_message,
+        failures=failures,
+    )
+    retry_context = dict(context or {})
+    retry_context["auto_deep_think_retry"] = True
+    retry_context["auto_deep_think_retry_tracking_id"] = run_id
+    retry_context["blocking_failures"] = failures
+
+    dt_agent = dt_agent_cls(
+        llm_client=agent.llm_service,
+        available_tools=_AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS,
+        tool_executor=_fallback_tool_executor,
+        max_iterations=max_iterations,
+        tool_timeout=tool_timeout,
+    )
+    result = await dt_agent.think(retry_prompt, retry_context)
+    final_answer = str(getattr(result, "final_answer", "") or "").strip()
+    return {
+        "attempted": True,
+        "success": bool(final_answer),
+        "final_answer": final_answer,
+        "tools_used": list(getattr(result, "tools_used", []) or []),
+        "iterations": int(getattr(result, "total_iterations", 0) or 0),
+        "confidence": float(getattr(result, "confidence", 0.0) or 0.0),
+    }
 
 
 def resolve_job_meta(agent: Any) -> Tuple[str, str]:
@@ -896,17 +1103,83 @@ async def _execute_action_run(run_id: str) -> None:
             )
             return
 
-        status = "completed" if result.success else "failed"
         result_dict = result.model_dump()
+        effective_success = bool(result.success)
+        effective_errors = list(result.errors or [])
+        deep_think_retry_payload: Optional[Dict[str, Any]] = None
+        blocking_failures = _extract_blocking_failures(result.steps)
+        if (
+            not effective_success
+            and blocking_failures
+            and _auto_deep_think_retry_enabled(context)
+        ):
+            plan_decomposition_jobs.append_log(
+                job.job_id,
+                "warning",
+                "Blocking action failed; escalating to one DeepThink retry attempt.",
+                {
+                    "tracking_id": run_id,
+                    "blocking_failures": blocking_failures,
+                },
+            )
+            try:
+                deep_think_retry_payload = await _run_blocking_failure_deep_think_retry_once(
+                    agent=agent,
+                    run_id=run_id,
+                    user_message=str(record.get("user_message") or ""),
+                    context=context,
+                    failures=blocking_failures,
+                )
+            except Exception as retry_exc:  # pragma: no cover - defensive
+                deep_think_retry_payload = {
+                    "attempted": True,
+                    "success": False,
+                    "error": str(retry_exc),
+                }
+
+            result_dict["deep_think_retry"] = deep_think_retry_payload
+            result_dict["blocking_failures"] = blocking_failures
+            result_dict["initial_result_success"] = bool(result.success)
+            if deep_think_retry_payload.get("success"):
+                effective_success = True
+                effective_errors = []
+                plan_decomposition_jobs.append_log(
+                    job.job_id,
+                    "info",
+                    "DeepThink retry recovered the failed blocking execution path.",
+                    {
+                        "tracking_id": run_id,
+                        "iterations": deep_think_retry_payload.get("iterations"),
+                        "tools_used": deep_think_retry_payload.get("tools_used"),
+                    },
+                )
+            else:
+                retry_error = str(deep_think_retry_payload.get("error") or "").strip()
+                if retry_error:
+                    effective_errors.append(f"DeepThink retry failed: {retry_error}")
+                plan_decomposition_jobs.append_log(
+                    job.job_id,
+                    "error",
+                    "DeepThink retry did not recover the failed blocking execution path.",
+                    {
+                        "tracking_id": run_id,
+                        "error": retry_error or None,
+                    },
+                )
+
+        status = "completed" if effective_success else "failed"
+        result_dict["success"] = effective_success
+        result_dict["errors"] = effective_errors
         tool_results_payload: List[Dict[str, Any]] = []
 
         # Diagnostic logging: record all steps.
         logger.info(
-            "[CHAT][TOOL_RESULTS] session=%s tracking=%s total_steps=%d success=%s",
+            "[CHAT][TOOL_RESULTS] session=%s tracking=%s total_steps=%d success=%s effective_success=%s",
             record.get("session_id"),
             run_id,
             len(result.steps),
             result.success,
+            effective_success,
         )
 
         for step in result.steps:
@@ -977,7 +1250,12 @@ async def _execute_action_run(run_id: str) -> None:
         llm_provider = _normalize_llm_provider(
             (context or {}).get("default_llm_provider")
         )
-        if result.success and tool_results_payload:
+        if deep_think_retry_payload and deep_think_retry_payload.get("success"):
+            deep_think_answer = str(deep_think_retry_payload.get("final_answer") or "").strip()
+            if deep_think_answer:
+                analysis_text = deep_think_answer
+                result_dict["analysis_source"] = "deep_think_retry"
+        if effective_success and tool_results_payload and not analysis_text:
             logger.info(
                 "[CHAT][SUMMARY] session=%s tracking=%s Starting analysis generation...",
                 record.get("session_id"),
@@ -1036,7 +1314,7 @@ async def _execute_action_run(run_id: str) -> None:
         update_kwargs: Dict[str, Any] = {
             "status": status,
             "result": result_dict,
-            "errors": result.errors,
+            "errors": effective_errors,
         }
         if result.bound_plan_id is not None:
             update_kwargs["plan_id"] = result.bound_plan_id
@@ -1062,7 +1340,7 @@ async def _execute_action_run(run_id: str) -> None:
                 actions=[step.action_payload for step in result.steps],
                 actions_summary=result.actions_summary,
                 tool_results=tool_results_payload,
-                errors=result.errors,
+                errors=effective_errors,
                 job_id=job.job_id,
                 job_payload=job_snapshot,
                 job_type=getattr(job, "job_type", None),
@@ -1080,11 +1358,11 @@ async def _execute_action_run(run_id: str) -> None:
 
         stats_payload = {
             "step_count": len(result.steps),
-            "success": result.success,
-            "error_count": len(result.errors),
+            "success": effective_success,
+            "error_count": len(effective_errors),
         }
 
-        if result.success:
+        if effective_success:
             plan_decomposition_jobs.append_log(
                 job.job_id,
                 "info",
@@ -1097,12 +1375,12 @@ async def _execute_action_run(run_id: str) -> None:
                 stats=stats_payload,
             )
         else:
-            error_message = result.errors[0] if result.errors else "Some actions failed"
+            error_message = effective_errors[0] if effective_errors else "Some actions failed"
             plan_decomposition_jobs.append_log(
                 job.job_id,
                 "error",
                 "Structured actions finished with failures in some steps.",
-                {**stats_payload, "errors": result.errors},
+                {**stats_payload, "errors": effective_errors},
             )
             plan_decomposition_jobs.mark_failure(
                 job.job_id,
@@ -1116,7 +1394,7 @@ async def _execute_action_run(run_id: str) -> None:
             run_id,
             status,
             result.bound_plan_id,
-            result.errors,
+            effective_errors,
         )
     finally:
         reset_current_job(job_token)

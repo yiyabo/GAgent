@@ -813,6 +813,79 @@ def get_background_task_board(
     )
 
 
+@job_router.get(
+    "/board/stream",
+    summary="Stream background task board updates via SSE",
+)
+async def stream_background_task_board(
+    limit: int = Query(50, ge=1, le=500),
+    session_id: Optional[str] = Query(None),
+    plan_id: Optional[int] = Query(None, ge=1),
+    include_finished: bool = Query(True),
+):
+    """SSE endpoint that pushes board snapshots whenever data changes.
+
+    Sends an initial snapshot immediately, then re-queries every 3 seconds and
+    pushes a new snapshot only when the fingerprint changes.  A heartbeat is
+    emitted every 15 seconds of inactivity to keep the connection alive.
+    """
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+
+    def _build_snapshot() -> Dict[str, Any]:
+        """Synchronous board snapshot builder – mirrors get_background_task_board."""
+        from fastapi import Request as _Req  # noqa: F401 – not used, just isolation marker
+        # Re-use the same sync logic by calling the board function directly.
+        # We build the response dict to avoid Pydantic serialization overhead.
+        snapshot = get_background_task_board(
+            limit=limit,
+            session_id=session_id,
+            plan_id=plan_id,
+            include_finished=include_finished,
+        )
+        return snapshot.model_dump() if hasattr(snapshot, "model_dump") else snapshot.dict()
+
+    def _fingerprint(snap: Dict[str, Any]) -> str:
+        groups = snap.get("groups") or {}
+        parts = []
+        for key in ("task_creation", "phagescope", "claude_code"):
+            items = (groups.get(key) or {}).get("items") or []
+            parts.append(f"{key}:{len(items)}:" + ",".join(
+                f"{it.get('job_id','')}|{it.get('status','')}|{it.get('progress_percent','')}"
+                for it in items
+            ))
+        return "|".join(parts)
+
+    async def event_generator() -> AsyncIterator[str]:
+        loop = asyncio.get_running_loop()
+        last_fp = ""
+        heartbeat_counter = 0
+
+        try:
+            while True:
+                # Run sync board query in thread pool to avoid blocking event loop
+                snap = await loop.run_in_executor(None, _build_snapshot)
+                fp = _fingerprint(snap)
+
+                if fp != last_fp:
+                    last_fp = fp
+                    heartbeat_counter = 0
+                    yield _sse_message({"type": "snapshot", "board": snap})
+                else:
+                    heartbeat_counter += 1
+                    if heartbeat_counter >= 5:  # 5 * 3s = 15s -> heartbeat
+                        heartbeat_counter = 0
+                        yield _sse_message({"type": "heartbeat"})
+
+                await asyncio.sleep(3)
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
+
+
 @job_router.post(
     "/{job_id}/control",
     response_model=JobControlResponse,

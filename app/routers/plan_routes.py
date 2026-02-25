@@ -5,6 +5,7 @@ import json
 import logging
 import threading
 import heapq
+import os
 from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query
@@ -31,6 +32,13 @@ _plan_repo = PlanRepository()
 _plan_decomposer = PlanDecomposer(repo=_plan_repo)
 _plan_executor = PlanExecutor(repo=_plan_repo)
 logger = logging.getLogger(__name__)
+
+
+def _default_plan_paper_mode() -> bool:
+    raw = os.getenv("PLAN_PAPER_MODE_DEFAULT")
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
 def _sse_message(payload: Dict[str, Any]) -> str:
@@ -374,6 +382,7 @@ class ExecuteTaskRequest(BaseModel):
     deep_think: bool = True
     async_mode: bool = True
     session_id: Optional[str] = None
+    paper_mode: bool = Field(default_factory=_default_plan_paper_mode)
 
 
 class ExecuteTaskResponse(BaseModel):
@@ -394,6 +403,7 @@ def _run_task_chain_job(
     task_order: List[int],
     deep_think: bool = True,
     session_id: Optional[str] = None,
+    paper_mode: bool = False,
 ) -> None:
     token = set_current_job(job_id)
     executed: List[int] = []
@@ -464,6 +474,7 @@ def _run_task_chain_job(
                 "steps": len(task_order),
                 "task_order": task_order,
                 "deep_think": deep_think,
+                "paper_mode": paper_mode,
             },
         )
         _publish_progress(
@@ -480,6 +491,7 @@ def _run_task_chain_job(
             "chat_history": [],
             "recent_tool_results": [],
             "deep_think_enabled": bool(deep_think),
+            "paper_mode": bool(paper_mode),
         }
 
         for idx, task_id in enumerate(task_order, start=1):
@@ -497,7 +509,7 @@ def _run_task_chain_job(
             _publish_progress(current_step=idx, current_task_id=task_id)
 
             try:
-                exec_config = ExecutionConfig(session_context=session_ctx)
+                exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=bool(paper_mode))
                 result = _plan_executor.execute_task(
                     plan_id,
                     task_id,
@@ -801,8 +813,9 @@ def execute_task_with_dependencies(
                 "chat_history": [],
                 "recent_tool_results": [],
                 "deep_think_enabled": bool(request.deep_think),
+                "paper_mode": bool(request.paper_mode),
             }
-            exec_config = ExecutionConfig(session_context=session_ctx)
+            exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=bool(request.paper_mode))
             result = _plan_executor.execute_task(plan_id, tid, config=exec_config)
             if result.status == "completed":
                 executed.append(tid)
@@ -837,6 +850,7 @@ def execute_task_with_dependencies(
             "include_dependencies": request.include_dependencies,
             "include_subtasks": request.include_subtasks,
             "deep_think": request.deep_think,
+            "paper_mode": request.paper_mode,
             "steps": len(task_order),
         },
         metadata={
@@ -858,6 +872,7 @@ def execute_task_with_dependencies(
             "mode": job.mode,
             "steps": len(task_order),
             "deep_think": request.deep_think,
+            "paper_mode": request.paper_mode,
         },
     )
 
@@ -870,6 +885,7 @@ def execute_task_with_dependencies(
             "task_order": task_order,
             "deep_think": request.deep_think,
             "session_id": request.session_id,
+            "paper_mode": request.paper_mode,
         },
         daemon=True,
     )
