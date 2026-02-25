@@ -20,6 +20,14 @@ export interface ArtifactTextResponse {
   truncated: boolean;
 }
 
+export interface ArtifactRenderResponse {
+  path: string;
+  format: 'pdf' | 'html' | 'text';
+  url?: string;
+  content?: string;
+  rendered_at: string;
+}
+
 export type DeliverableModule =
   | 'code'
   | 'docs'
