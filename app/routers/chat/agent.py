@@ -949,6 +949,10 @@ User message:
                         "action": step.action,
                         "status": step.status,
                         "action_result": step.action_result,
+                        "evidence": step.evidence,
+                        "started_at": step.started_at.isoformat() if step.started_at else None,
+                        "finished_at": step.finished_at.isoformat() if step.finished_at else None,
+                        "timestamp": step.timestamp.isoformat() if step.timestamp else None,
                     },
                 }
             )
@@ -1032,13 +1036,105 @@ User message:
 
                 deep_think_tool_order = 0
                 deep_think_bg_category: Optional[str] = None
+                bio_failure_active = False
+                failed_tool_name: Optional[str] = None
+                help_seen_after_failure = False
+                retry_seen_after_help = False
+
+                def _safe_text(value: Any, *, limit: int = 600) -> str:
+                    text = str(value or "").strip()
+                    if len(text) <= limit:
+                        return text
+                    return text[: max(0, limit - 3)] + "..."
+
+                def _normalize_deep_think_tool_result(
+                    *,
+                    step: AgentStep,
+                    tool_name: str,
+                    tool_params: Dict[str, Any],
+                    iteration: int,
+                ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+                    details = step.details if isinstance(step.details, dict) else {}
+                    result_payload = details.get("result")
+                    if isinstance(result_payload, dict):
+                        result: Dict[str, Any] = dict(result_payload)
+                    else:
+                        message_text = _safe_text(step.message, limit=600)
+                        detail_error = _safe_text(details.get("error"), limit=600)
+                        error_text = (
+                            detail_error
+                            or message_text
+                            or "Tool execution returned malformed result payload."
+                        )
+                        result = {
+                            "success": False,
+                            "tool": tool_name,
+                            "error": error_text,
+                            "summary": message_text or error_text,
+                            "protocol_warning": True,
+                            "parameters": dict(tool_params),
+                            "iteration": iteration,
+                            "result_payload_type": type(result_payload).__name__,
+                        }
+                        preview = _safe_text(result_payload, limit=280)
+                        if preview:
+                            result["result_payload_preview"] = preview
+                        logger.warning(
+                            "[DeepThink] Tool wrapper recovered malformed result payload: tool=%s payload_type=%s",
+                            tool_name,
+                            type(result_payload).__name__,
+                        )
+
+                    if "success" not in result:
+                        result["success"] = bool(step.success)
+                    if isinstance(step.message, str) and step.message.strip():
+                        result.setdefault("summary", step.message.strip())
+                    storage_payload = details.get("storage")
+                    if storage_payload is not None:
+                        result.setdefault("storage", storage_payload)
+                    deliverables_payload = details.get("deliverables")
+                    if deliverables_payload is not None:
+                        result.setdefault("deliverables", deliverables_payload)
+
+                    return result, details
+
+                def _build_bio_recovery_blocked_payload() -> Dict[str, Any]:
+                    summary = (
+                        "claude_code fallback is blocked until bio_tools recovery completes "
+                        "(run bio_tools help, then retry a bio_tools operation once)."
+                    )
+                    payload: Dict[str, Any] = {
+                        "success": False,
+                        "tool": "claude_code",
+                        "error": summary,
+                        "summary": summary,
+                        "blocked_reason": "bio_tools_recovery_not_completed",
+                        "recovery_required": "bio_tools help -> retry",
+                    }
+                    if failed_tool_name:
+                        payload["failed_tool_name"] = failed_tool_name
+                    return payload
 
                 # Wrapper for tool execution with plan_operation binding
                 async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
                     nonlocal deep_think_tool_order, deep_think_bg_category
+                    nonlocal bio_failure_active, failed_tool_name
+                    nonlocal help_seen_after_failure, retry_seen_after_help
                     safe_params = params if isinstance(params, dict) else {}
 
                     if name != "plan_operation":
+                        if (
+                            name == "claude_code"
+                            and bio_failure_active
+                            and not (help_seen_after_failure and retry_seen_after_help)
+                        ):
+                            blocked_payload = _build_bio_recovery_blocked_payload()
+                            logger.warning(
+                                "[DeepThink] Blocked claude_code fallback before bio_tools recovery: failed_tool=%s",
+                                failed_tool_name or "unknown",
+                            )
+                            return blocked_payload
+
                         deep_think_tool_order += 1
                         synthetic_action = LLMAction(
                             kind="tool_operation",
@@ -1050,22 +1146,31 @@ User message:
                         )
                         step = await self._handle_tool_action(synthetic_action)
 
-                        details = step.details if isinstance(step.details, dict) else {}
-                        result_payload = details.get("result")
-                        if not isinstance(result_payload, dict):
-                            raise DeepThinkProtocolError(
-                                "DeepThink tool wrapper expected a dict `result` payload."
-                            )
+                        result, _details = _normalize_deep_think_tool_result(
+                            step=step,
+                            tool_name=name,
+                            tool_params=safe_params,
+                            iteration=deep_think_tool_order,
+                        )
 
-                        result = dict(result_payload)
-                        if isinstance(step.message, str) and step.message.strip():
-                            result.setdefault("summary", step.message.strip())
-                        storage_payload = details.get("storage")
-                        if storage_payload is not None:
-                            result.setdefault("storage", storage_payload)
-                        deliverables_payload = details.get("deliverables")
-                        if deliverables_payload is not None:
-                            result.setdefault("deliverables", deliverables_payload)
+                        if name == "bio_tools":
+                            operation_name = str(safe_params.get("operation") or "").strip().lower()
+                            result_success = result.get("success") is not False
+                            if not bio_failure_active and operation_name != "help" and not result_success:
+                                bio_failure_active = True
+                                failed_tool_name = (
+                                    str(safe_params.get("tool_name") or "").strip() or None
+                                )
+                                help_seen_after_failure = False
+                                retry_seen_after_help = False
+                            elif bio_failure_active and operation_name == "help":
+                                help_seen_after_failure = True
+                            elif (
+                                bio_failure_active
+                                and help_seen_after_failure
+                                and operation_name != "help"
+                            ):
+                                retry_seen_after_help = True
 
                         # DeepThink PhageScope submit: register tracking job so
                         # the task status panel can show progress.
@@ -1416,9 +1521,16 @@ User message:
                                         "thought": s.thought,
                                         "action": s.action,
                                         "action_result": s.action_result,
+                                        "evidence": s.evidence,
                                         "status": "done"
                                         if s.status == "done"
                                         else "completed",  # Normalize status for history
+                                        "started_at": s.started_at.isoformat()
+                                        if getattr(s, "started_at", None)
+                                        else None,
+                                        "finished_at": s.finished_at.isoformat()
+                                        if getattr(s, "finished_at", None)
+                                        else None,
                                         "timestamp": s.timestamp.isoformat()
                                         if s.timestamp
                                         else None,

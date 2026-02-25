@@ -1,7 +1,39 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Spin } from 'antd';
+import { Spin, Tooltip } from 'antd';
 import { PlanTaskNode } from '@/types';
 import './PlanTreeVisualization.css';
+
+/** Format milliseconds to a human-readable duration string */
+const formatDurationMs = (ms: number): string => {
+  if (ms < 1000) return '<1s';
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
+  if (ms < 3_600_000) {
+    const m = Math.floor(ms / 60_000);
+    const s = Math.floor((ms % 60_000) / 1000);
+    return s > 0 ? `${m}m${s}s` : `${m}m`;
+  }
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  return m > 0 ? `${h}h${m}m` : `${h}h`;
+};
+
+/** Compute task duration label from Task timestamps */
+const getTaskDuration = (task: PlanTaskNode): string | null => {
+  if (!task.created_at) return null;
+  const start = new Date(task.created_at).getTime();
+  if (Number.isNaN(start)) return null;
+  // Use updated_at as end time if task is completed/failed, otherwise show live elapsed
+  if (task.status === 'running' || task.status === 'pending') {
+    const now = Date.now();
+    const elapsed = now - start;
+    if (elapsed < 0) return null;
+    return formatDurationMs(elapsed);
+  }
+  if (!task.updated_at) return null;
+  const end = new Date(task.updated_at).getTime();
+  if (Number.isNaN(end) || end < start) return null;
+  return formatDurationMs(end - start);
+};
 
 export interface PlanTreeVisualizationProps {
   tasks: PlanTaskNode[];
@@ -127,29 +159,31 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   
   const cleanName = (task.short_name || task.name || '').replace(/^(ROOT|COMPOSITE|ATOMIC):\s*/i, '');
   const displayName = cleanName.length > 36 ? cleanName.substring(0, 36) + '…' : cleanName;
+  const duration = getTaskDuration(task);
+  const isFailed = task.status === 'failed';
+  const failedTooltip = isFailed ? `Task failed · Click to view details` : undefined;
 
-  return (
+  const nodeInner = (
   <div
-  key={task.id}
   className={`tree-item ${isSelected ? 'selected' : ''} ${isRoot ? 'root' : ''}`}
   style={{ '--depth': depth } as React.CSSProperties}
   onClick={() => handleSelectTask(task)}
   >
-  {}
+  {/* Indent guides */}
   <div className="tree-indent">
   {Array.from({ length: depth }).map((_, i) => (
   <span key={i} className="tree-indent-guide" />
   ))}
   </div>
 
-  {}
-  <div 
+  {/* Collapse toggle */}
+  <div
   className={`tree-toggle ${hasChildren ? 'has-children' : ''}`}
   onClick={(e) => hasChildren && toggleCollapse(task.id, e)}
   >
   {hasChildren && (
-  <svg 
-  viewBox="0 0 12 12" 
+  <svg
+  viewBox="0 0 12 12"
   className={`tree-chevron ${isCollapsed ? '' : 'expanded'}`}
   >
   <path d="M4.5 2L8.5 6L4.5 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -157,18 +191,32 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   )}
   </div>
 
-  {}
+  {/* Status dot */}
   <div className={`tree-status status-${task.status}`} title={task.status} />
 
-  {}
+  {/* Name */}
   <span className="tree-name" title={cleanName}>
   {displayName}
   </span>
 
-  {}
+  {/* Duration badge */}
+  {duration && (
+  <span className="tree-duration">{duration}</span>
+  )}
+
+  {/* ROOT badge */}
   {isRoot && <span className="tree-badge">ROOT</span>}
   </div>
   );
+
+  if (failedTooltip) {
+  return (
+  <Tooltip key={task.id} title={failedTooltip} placement="right" color="#ff4d4f">
+  {nodeInner}
+  </Tooltip>
+  );
+  }
+  return <React.Fragment key={task.id}>{nodeInner}</React.Fragment>;
   })}
   </div>
   </div>

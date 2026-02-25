@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, Iterable, List, Optional
@@ -136,6 +137,11 @@ class DecompositionPromptBuilder:
             "  {",
             '  "name": "<task name>",',
             '  "instruction": "<execution details>",',
+            '  "metadata": {',
+            '  "paper_section": "<optional: abstract|introduction|methods|experiments|results|conclusion|references>",',
+            '  "paper_role": "<optional: evidence_collector|section_writer|manuscript_assembler|citation_validator>",',
+            '  "paper_context_paths": ["<optional artifact path>", "..."]',
+            "  },",
             '  "dependencies": [<int>],',
             '  "leaf": <true|false>,',
             '  "context": {',
@@ -156,6 +162,7 @@ class DecompositionPromptBuilder:
             "\nSTRICT REQUIREMENTS:",
             "- The entire response must be valid JSON (no comments, no trailing commas, no Markdown code fences).",
             "- `children` must be an array. Each child must include `name`, `instruction`, `dependencies`, `leaf`, and `context`.",
+            "- For paper-writing tasks, include `metadata.paper_section`, `metadata.paper_role`, and `metadata.paper_context_paths` when known.",
             "- `context.sections` must be an array of JSON objects, never strings. Every object must provide `title` and `content` keys.",
             "- Use empty arrays (`[]`) or empty objects (`{}`) when there is no data.",
             "- Do not invent additional top-level keys beyond this schema.",
@@ -553,6 +560,70 @@ class PlanDecomposer:
     ) -> List[DecompositionChild]:
         return list(children)[: max(limit, 0)]
 
+    @staticmethod
+    def _infer_paper_section(name: str, instruction: str) -> Optional[str]:
+        text = f"{name}\n{instruction}".lower()
+        patterns = {
+            "abstract": (r"\babstract\b",),
+            "introduction": (r"\bintroduction\b", r"\bintro\b"),
+            "methods": (r"\bmethods?\b", r"\bmethodology\b", r"\bapproach\b"),
+            "experiments": (r"\bexperiments?\b", r"\bevaluation\b", r"\bbenchmark\b", r"\bablation\b"),
+            "results": (r"\bresults?\b", r"\bfindings?\b"),
+            "conclusion": (r"\bconclusions?\b", r"\bfuture work\b", r"\bdiscussion\b"),
+            "references": (r"\breferences?\b", r"\bbib(tex)?\b", r"\bcitation(s)?\b"),
+        }
+        for section, regexes in patterns.items():
+            if any(re.search(pattern, text) for pattern in regexes):
+                return section
+        return None
+
+    @staticmethod
+    def _infer_paper_role(name: str, instruction: str, section: Optional[str]) -> Optional[str]:
+        text = f"{name}\n{instruction}".lower()
+        if section:
+            if section == "references":
+                return "citation_validator"
+            return "section_writer"
+        if any(token in text for token in ("evidence", "literature", "retrieval", "collect", "survey")):
+            return "evidence_collector"
+        if any(token in text for token in ("assemble", "merge", "stitch", "full draft", "manuscript_writer")):
+            return "manuscript_assembler"
+        return None
+
+    def _derive_paper_metadata(self, child: DecompositionChild) -> Dict[str, Any]:
+        metadata = dict(child.metadata or {})
+        section = metadata.get("paper_section")
+        if not isinstance(section, str) or not section.strip():
+            section = self._infer_paper_section(child.name or "", child.instruction or "")
+        else:
+            section = section.strip().lower()
+
+        role = metadata.get("paper_role")
+        if not isinstance(role, str) or not role.strip():
+            role = self._infer_paper_role(child.name or "", child.instruction or "", section)
+        else:
+            role = role.strip().lower()
+
+        raw_paths = metadata.get("paper_context_paths")
+        if not isinstance(raw_paths, list):
+            raw_paths = child.context_meta.get("paper_context_paths") if isinstance(child.context_meta, dict) else []
+        paper_context_paths: List[str] = []
+        if isinstance(raw_paths, list):
+            for item in raw_paths:
+                text = str(item).strip()
+                if text and text not in paper_context_paths:
+                    paper_context_paths.append(text)
+
+        if section:
+            metadata["paper_section"] = section
+        if role:
+            metadata["paper_role"] = role
+        if paper_context_paths:
+            metadata["paper_context_paths"] = paper_context_paths
+        if section or role or paper_context_paths:
+            metadata["paper_mode"] = True
+        return metadata
+
     def _create_child_node(
         self,
         plan_id: int,
@@ -568,12 +639,14 @@ class PlanDecomposer:
             raw_deps=child.dependencies,
             created_sibling_ids=created_sibling_ids,
         )
+        child_metadata = self._derive_paper_metadata(child)
 
         node = self._repo.create_task(
             plan_id,
             name=child.name,
             instruction=child.instruction,
             parent_id=parent_id,
+            metadata=child_metadata if child_metadata else None,
             dependencies=validated_deps,
         )
         has_context = any(

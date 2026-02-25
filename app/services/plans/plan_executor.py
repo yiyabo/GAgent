@@ -130,6 +130,7 @@ class ExecutionConfig:
     max_tasks: Optional[int] = None
     session_context: Optional[Dict[str, Any]] = None
     enforce_dependencies: bool = True
+    paper_mode: bool = False
 
     @classmethod
     def from_settings(cls, settings: ExecutorSettings) -> "ExecutionConfig":
@@ -142,6 +143,7 @@ class ExecutionConfig:
             dependency_throttle=settings.dependency_throttle,
             max_tasks=settings.max_tasks,
             enforce_dependencies=getattr(settings, 'enforce_dependencies', True),
+            paper_mode=bool(getattr(settings, "paper_mode", False)),
         )
 
 
@@ -167,6 +169,7 @@ When a task requires tool execution, request one of these tools:
 - bio_tools: Execute bioinformatics Docker tools (seqkit, blast, prodigal, hmmer, checkv, etc.)
   Parameters: {"tool_name": "seqkit|blast|prodigal|...", "operation": "stats|blastn|predict|help", "input_file": "<path>", "params": {...}}
   NOTE: Always call operation="help" first if unsure about parameters!
+  NOTE: If unsure which tool/operation should be used for the requested analysis, request web_search first with a focused query, then return a bio_tools call.
 
 **CODE EXECUTION & DATA ANALYSIS:**
 - claude_code: Execute one concrete implementation task (data analysis, visualization, model building)
@@ -200,6 +203,7 @@ When a task requires tool execution, request one of these tools:
 === WHEN TO USE TOOLS ===
 - For design/architecture/planning/text writing → respond with text only (status: "success")
 - For FASTA/FASTQ/sequence analysis → use bio_tools FIRST (status: "needs_tool")
+- If bioinformatics tool/operation routing is uncertain, use web_search first to disambiguate, then call bio_tools (status: "needs_tool")
 - For data analysis/visualization/charts → use claude_code (status: "needs_tool")
 - For model code building/training → use claude_code (status: "needs_tool")
 - Never use claude_code for task planning or decomposition; planning stays in the orchestration layer.
@@ -316,6 +320,46 @@ When a task requires tool execution, request one of these tools:
         if node.instruction:
             lines.append(f"Instruction: {node.instruction.strip()}")
         lines.append(f"Path: {node.path}")
+        node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        paper_mode = bool(
+            node_metadata.get("paper_mode")
+            or (session_context or {}).get("paper_mode")
+        )
+        paper_section = (
+            str(node_metadata.get("paper_section")).strip()
+            if node_metadata.get("paper_section") is not None
+            else ""
+        )
+        paper_role = (
+            str(node_metadata.get("paper_role")).strip()
+            if node_metadata.get("paper_role") is not None
+            else ""
+        )
+        raw_paper_context_paths = node_metadata.get("paper_context_paths")
+        paper_context_paths = (
+            [str(item).strip() for item in raw_paper_context_paths if str(item).strip()]
+            if isinstance(raw_paper_context_paths, list)
+            else []
+        )
+        if paper_mode:
+            lines.append("\n=== PAPER MODE ===")
+            if paper_section:
+                lines.append(f"- paper_section: {paper_section}")
+            if paper_role:
+                lines.append(f"- paper_role: {paper_role}")
+            if paper_context_paths:
+                lines.append("- paper_context_paths:")
+                for path in paper_context_paths[:10]:
+                    lines.append(f"  - {path}")
+            lines.extend(
+                [
+                    "- Execution template:",
+                    "  1) evidence organization task -> produce artifact paths and references",
+                    "  2) section tasks -> write focused section drafts",
+                    "  3) assembly task -> call manuscript_writer main chain",
+                    "  4) citation integrity check -> block success on citekey mismatch",
+                ]
+            )
         if parent:
             lines.append("\n=== PARENT TASK ===")
             lines.append(f"Parent ID: {parent.id}")
@@ -887,9 +931,27 @@ class PlanExecutor:
             )
 
         session_context = dict(config.session_context or {})
+        node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        paper_mode = bool(
+            config.paper_mode
+            or session_context.get("paper_mode")
+            or node_metadata.get("paper_mode")
+        )
         user_query = (node.instruction or node.display_name() or f"Execute task #{node.id}").strip()
         dep_outputs: List[Dict[str, Any]] = []
+        paper_context_paths: List[str] = []
+        raw_paper_context_paths = node_metadata.get("paper_context_paths")
+        if isinstance(raw_paper_context_paths, list):
+            for item in raw_paper_context_paths:
+                if isinstance(item, str) and item.strip():
+                    paper_context_paths.append(item.strip())
         for dep in dependencies:
+            artifact_context = self._dependency_artifact_context(dep)
+            artifact_paths = artifact_context.get("artifact_paths") or []
+            if isinstance(artifact_paths, list):
+                for artifact_path in artifact_paths:
+                    if isinstance(artifact_path, str) and artifact_path not in paper_context_paths:
+                        paper_context_paths.append(artifact_path)
             dep_outputs.append(
                 {
                     "id": dep.id,
@@ -899,19 +961,35 @@ class PlanExecutor:
                         dep.execution_result or "(not executed)",
                         max_length=1200,
                     ),
+                    "artifact_paths": artifact_paths,
+                    "deliverable_manifest": artifact_context.get("deliverable_manifest"),
+                    "published_modules": artifact_context.get("published_modules"),
                 }
             )
 
+        if paper_mode:
+            session_context["paper_mode"] = True
+            if paper_context_paths:
+                session_context["paper_context_paths"] = paper_context_paths[:40]
+
+        constraints = [
+            "Produce actionable output for this task only.",
+            "Honor dependency outputs and do not redo completed dependencies.",
+        ]
+        if paper_mode:
+            constraints.extend(
+                [
+                    "Paper mode is enabled: prioritize dependency artifact_paths and paper_context_paths as primary evidence.",
+                    "Do not claim completion without explicit citation integrity checks against provided reference files.",
+                ]
+            )
         task_context = TaskExecutionContext(
             task_id=node.id,
             task_name=node.display_name(),
             task_instruction=user_query,
             dependency_outputs=dep_outputs,
             plan_outline=plan_outline,
-            constraints=[
-                "Produce actionable output for this task only.",
-                "Honor dependency outputs and do not redo completed dependencies.",
-            ],
+            constraints=constraints,
         )
 
         async def on_thinking(step: ThinkingStep) -> None:
@@ -926,7 +1004,10 @@ class PlanExecutor:
                         "thought": step.thought,
                         "action": step.action,
                         "action_result": step.action_result,
+                        "evidence": step.evidence,
                         "status": step.status,
+                        "started_at": step.started_at.isoformat() if step.started_at else None,
+                        "finished_at": step.finished_at.isoformat() if step.finished_at else None,
                         "timestamp": step.timestamp.isoformat() if step.timestamp else None,
                     },
                 },
@@ -1049,7 +1130,10 @@ class PlanExecutor:
                                 "thought": step.thought,
                                 "action": step.action,
                                 "action_result": step.action_result,
+                                "evidence": step.evidence,
                                 "status": step.status,
+                                "started_at": step.started_at.isoformat() if step.started_at else None,
+                                "finished_at": step.finished_at.isoformat() if step.finished_at else None,
                                 "timestamp": step.timestamp.isoformat() if step.timestamp else None,
                             }
                             for step in result.thinking_steps
@@ -1239,6 +1323,97 @@ class PlanExecutor:
             if dep is not None:
                 deps.append(dep)
         return deps
+
+    @staticmethod
+    def _extract_path_like_values(payload: Any) -> List[str]:
+        if payload is None:
+            return []
+        path_keys = {
+            "path",
+            "output_path",
+            "analysis_path",
+            "effective_output_path",
+            "effective_analysis_path",
+            "partial_output_path",
+            "combined_path",
+            "combined_partial",
+            "sections_dir",
+            "reviews_dir",
+            "merge_queue",
+            "citation_validation_path",
+            "manifest_path",
+            "result_path",
+            "preview_path",
+            "references_bib",
+            "evidence_md",
+            "library_jsonl",
+            "pdf_dir",
+        }
+        found: List[str] = []
+        seen: set[str] = set()
+
+        def _add(value: Any) -> None:
+            if not isinstance(value, str):
+                return
+            text = value.strip()
+            if not text or text in seen:
+                return
+            if "\n" in text or "\r" in text:
+                return
+            if "/" not in text and "." not in text:
+                return
+            seen.add(text)
+            found.append(text)
+
+        def _visit(value: Any, key: Optional[str] = None) -> None:
+            if value is None:
+                return
+            if isinstance(value, dict):
+                for item_key, item_value in value.items():
+                    lowered = str(item_key).strip().lower()
+                    if lowered in path_keys or lowered.endswith("_path") or lowered.endswith("_file") or lowered.endswith("_dir"):
+                        _add(item_value)
+                    if isinstance(item_value, (dict, list, tuple, set)):
+                        _visit(item_value, key=lowered)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    _visit(item, key=key)
+                return
+            if isinstance(value, str) and key:
+                if key in path_keys or key.endswith("_path") or key.endswith("_file") or key.endswith("_dir"):
+                    _add(value)
+
+        _visit(payload)
+        return found[:40]
+
+    def _dependency_artifact_context(self, dep: PlanNode) -> Dict[str, Any]:
+        if not dep.execution_result:
+            return {"artifact_paths": [], "deliverable_manifest": None}
+        payload: Any = dep.execution_result
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {"content": payload}
+        if not isinstance(payload, dict):
+            return {"artifact_paths": [], "deliverable_manifest": None}
+
+        deliverables = payload.get("metadata", {}).get("deliverables") if isinstance(payload.get("metadata"), dict) else None
+        if not isinstance(deliverables, dict):
+            deliverables = {}
+        manifest_path = deliverables.get("manifest_path")
+        if not isinstance(manifest_path, str):
+            manifest_path = None
+
+        artifact_paths = self._extract_path_like_values(payload)
+        if manifest_path and manifest_path not in artifact_paths:
+            artifact_paths.insert(0, manifest_path)
+        return {
+            "artifact_paths": artifact_paths[:40],
+            "deliverable_manifest": manifest_path,
+            "published_modules": deliverables.get("published_modules") if isinstance(deliverables.get("published_modules"), list) else [],
+        }
 
     def _generate_plan_summary(
         self,

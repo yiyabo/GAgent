@@ -1,0 +1,2652 @@
+{
+  "meta": {
+    "generated_at": "2026-02-23 03:07:44 CST",
+    "execution_mode": "remote",
+    "assets_dir": "/private/tmp/bio_tools_matrix_assets",
+    "tools_count": 32,
+    "operations_count": 62,
+    "timeouts": {
+      "tier1": 180,
+      "tier2": 300
+    },
+    "remote_db_status": {
+      "bakta": true,
+      "checkm": true,
+      "checkv": true,
+      "genomad": true,
+      "gtdbtk": true,
+      "virsorter2": true,
+      "iphop": true
+    }
+  },
+  "tier0": [
+    {
+      "tool": "bakta",
+      "operation": "annotate",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "bakta",
+        "operation": "annotate"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "blast",
+      "operation": "blastn",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "blast",
+        "operation": "blastn"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "blast",
+      "operation": "blastp",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "blast",
+        "operation": "blastp"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "blast",
+      "operation": "makeblastdb",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "blast",
+        "operation": "makeblastdb"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "bowtie2",
+      "operation": "align",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "bowtie2",
+        "operation": "align"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "bowtie2",
+      "operation": "build",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "bowtie2",
+        "operation": "build"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "bwa",
+      "operation": "index",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "bwa",
+        "operation": "index"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "bwa",
+      "operation": "mem",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "bwa",
+        "operation": "mem"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "checkm",
+      "operation": "lineage_wf",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "checkm",
+        "operation": "lineage_wf"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "checkm",
+      "operation": "qa",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "checkm",
+        "operation": "qa"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "checkv",
+      "operation": "complete_genomes",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "checkv",
+        "operation": "complete_genomes"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "checkv",
+      "operation": "completeness",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "checkv",
+        "operation": "completeness"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "checkv",
+      "operation": "end_to_end",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "checkv",
+        "operation": "end_to_end"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "concoct",
+      "operation": "bin",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "concoct",
+        "operation": "bin"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "das_tool",
+      "operation": "integrate",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "das_tool",
+        "operation": "integrate"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "dorado",
+      "operation": "basecall",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "dorado",
+        "operation": "basecall"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "dorado",
+      "operation": "demux",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "dorado",
+        "operation": "demux"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "fastani",
+      "operation": "compare",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "fastani",
+        "operation": "compare"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "flye",
+      "operation": "hifi",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "flye",
+        "operation": "hifi"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "flye",
+      "operation": "meta",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "flye",
+        "operation": "meta"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "flye",
+      "operation": "ont",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "flye",
+        "operation": "ont"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "genomad",
+      "operation": "annotate",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "genomad",
+        "operation": "annotate"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "genomad",
+      "operation": "end_to_end",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "genomad",
+        "operation": "end_to_end"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "genomad",
+      "operation": "find_proviruses",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "genomad",
+        "operation": "find_proviruses"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "gtdbtk",
+      "operation": "classify_wf",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "gtdbtk",
+        "operation": "classify_wf"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "hmmer",
+      "operation": "hmmbuild",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "hmmer",
+        "operation": "hmmbuild"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "hmmer",
+      "operation": "hmmpress",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "hmmer",
+        "operation": "hmmpress"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "hmmer",
+      "operation": "hmmscan",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "hmmer",
+        "operation": "hmmscan"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "hmmer",
+      "operation": "hmmsearch",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "hmmer",
+        "operation": "hmmsearch"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "iphop",
+      "operation": "predict",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "iphop",
+        "operation": "predict"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "maxbin2",
+      "operation": "bin",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "maxbin2",
+        "operation": "bin"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "megahit",
+      "operation": "assemble",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "megahit",
+        "operation": "assemble"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "metabat2",
+      "operation": "bin",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "metabat2",
+        "operation": "bin"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "metabat2",
+      "operation": "depth",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "metabat2",
+        "operation": "depth"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "minimap2",
+      "operation": "filter",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "minimap2",
+        "operation": "filter"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "minimap2",
+      "operation": "map",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "minimap2",
+        "operation": "map"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "mmseqs2",
+      "operation": "easy_linclust",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "mmseqs2",
+        "operation": "easy_linclust"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "mmseqs2",
+      "operation": "easy_search",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "mmseqs2",
+        "operation": "easy_search"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "nanoplot",
+      "operation": "basic",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "nanoplot",
+        "operation": "basic"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "nextflow",
+      "operation": "clean",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "nextflow",
+        "operation": "clean"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "nextflow",
+      "operation": "run",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "nextflow",
+        "operation": "run"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "ngmlr",
+      "operation": "map",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "ngmlr",
+        "operation": "map"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "prodigal",
+      "operation": "meta",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "prodigal",
+        "operation": "meta"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "prodigal",
+      "operation": "predict",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "prodigal",
+        "operation": "predict"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "samtools",
+      "operation": "index",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "samtools",
+        "operation": "index"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "samtools",
+      "operation": "sort",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "samtools",
+        "operation": "sort"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "samtools",
+      "operation": "stats",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "samtools",
+        "operation": "stats"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "samtools",
+      "operation": "view",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "samtools",
+        "operation": "view"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "samtools",
+      "operation": "view_filter_unmapped",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "samtools",
+        "operation": "view_filter_unmapped"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "seqkit",
+      "operation": "grep",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqkit",
+        "operation": "grep"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "seqkit",
+      "operation": "head",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqkit",
+        "operation": "head"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "seqkit",
+      "operation": "seq",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqkit",
+        "operation": "seq"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "seqkit",
+      "operation": "stats",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqkit",
+        "operation": "stats"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "seqtk",
+      "operation": "sample",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqtk",
+        "operation": "sample"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "seqtk",
+      "operation": "size",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqtk",
+        "operation": "size"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "snakemake",
+      "operation": "dry_run",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "snakemake",
+        "operation": "dry_run"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "snakemake",
+      "operation": "run",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "snakemake",
+        "operation": "run"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "sniffles2",
+      "operation": "call",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "sniffles2",
+        "operation": "call"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "trim_galore",
+      "operation": "trim",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "trim_galore",
+        "operation": "trim"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "trim_galore",
+      "operation": "trim_paired",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "trim_galore",
+        "operation": "trim_paired"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "vibrant",
+      "operation": "run",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "vibrant",
+        "operation": "run"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "virsorter2",
+      "operation": "run",
+      "tier": "Tier-0",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "virsorter2",
+        "operation": "run"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    }
+  ],
+  "execution": [
+    {
+      "tool": "blast",
+      "operation": "makeblastdb",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "blast",
+        "operation": "makeblastdb",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "type": "nucl",
+          "db": "test_db"
+        }
+      },
+      "last_run_id": "33659112ac8a",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/blast/33659112ac8a",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/blast/33659112ac8a",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.413015
+    },
+    {
+      "tool": "bowtie2",
+      "operation": "build",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "bowtie2",
+        "operation": "build",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "index_prefix": "bowtie2_build_index"
+        }
+      },
+      "last_run_id": "ba0ed530806c",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/bowtie2/ba0ed530806c",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/bowtie2/ba0ed530806c",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "ex.4.bt2\nRenaming /work/output/bowtie2_build_index.1.bt2.tmp to /work/output/bowtie2_build_index.1.bt2\nRenaming /work/output/bowtie2_build_index.2.bt2.tmp to /work/output/bowtie2_build_index.2.bt2\nRenaming /work/output/bowtie2_build_index.rev.1.bt2.tmp to /work/output/bowtie2_build_index.rev.1.bt2\nRenaming /work/output/bowtie2_build_index.rev.2.bt2.tmp to /work/output/bowtie2_build_index.rev.2.bt2",
+      "duration": 20.062909
+    },
+    {
+      "tool": "bwa",
+      "operation": "index",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "bwa",
+        "operation": "index",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta"
+      },
+      "last_run_id": "f637b90d9282",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/bwa/f637b90d9282",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/bwa/f637b90d9282",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "[bwa_index] Pack FASTA... 0.00 sec\n[bwa_index] Construct BWT for the packed sequence...\n[bwa_index] 0.00 seconds elapse.\n[bwa_index] Update BWT... 0.00 sec\n[bwa_index] Pack forward-only FASTA... 0.00 sec\n[bwa_index] Construct SA from BWT and Occ... 0.00 sec\n[main] Version: 0.7.19-r1273\n[main] CMD: bwa index /work/input/test_short.fasta\n[main] Real time: 0.022 sec; CPU: 0.065 sec",
+      "duration": 5.105979
+    },
+    {
+      "tool": "hmmer",
+      "operation": "hmmbuild",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "hmmer",
+        "operation": "hmmbuild",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_aligned.fasta",
+        "params": {
+          "output": "hmmer_profile.hmm"
+        }
+      },
+      "last_run_id": "24699ff49f76",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/hmmer/24699ff49f76",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/hmmer/24699ff49f76",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.23117
+    },
+    {
+      "tool": "hmmer",
+      "operation": "hmmpress",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "hmmer",
+        "operation": "hmmpress",
+        "params": {
+          "db": "/Volumes/BIOINFO2/docker/remote_bio_tools/hmmer/24699ff49f76/output/hmmer_profile.hmm"
+        }
+      },
+      "last_run_id": "7958c3ca43bf",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/hmmer/7958c3ca43bf",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/hmmer/7958c3ca43bf",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.013302
+    },
+    {
+      "tool": "samtools",
+      "operation": "view",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "samtools",
+        "operation": "view",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/reads.sam",
+        "params": {
+          "threads": 1,
+          "output": "samtools_view.bam"
+        }
+      },
+      "last_run_id": "4f20d97ed913",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/samtools/4f20d97ed913",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/4f20d97ed913",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.25214
+    },
+    {
+      "tool": "hmmer",
+      "operation": "hmmscan",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "hmmer",
+        "operation": "hmmscan",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "db": "/Volumes/BIOINFO2/docker/remote_bio_tools/hmmer/7958c3ca43bf/input/hmmer_profile.hmm",
+          "output": "hmmer_hmmscan.tbl"
+        }
+      },
+      "last_run_id": "5fad1626722d",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/hmmer/5fad1626722d",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/hmmer/5fad1626722d",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.033055
+    },
+    {
+      "tool": "hmmer",
+      "operation": "hmmsearch",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "hmmer",
+        "operation": "hmmsearch",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "db": "/Volumes/BIOINFO2/docker/remote_bio_tools/hmmer/7958c3ca43bf/input/hmmer_profile.hmm",
+          "output": "hmmer_hmmsearch.tbl"
+        }
+      },
+      "last_run_id": "964575313bc7",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/hmmer/964575313bc7",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/hmmer/964575313bc7",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.196864
+    },
+    {
+      "tool": "samtools",
+      "operation": "sort",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "samtools",
+        "operation": "sort",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/reads.sam",
+        "params": {
+          "threads": 1,
+          "output": "samtools_sorted.bam"
+        }
+      },
+      "last_run_id": "ecfc17c19def",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/samtools/ecfc17c19def",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/ecfc17c19def",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.200322
+    },
+    {
+      "tool": "samtools",
+      "operation": "index",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "samtools",
+        "operation": "index",
+        "input_file": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/ecfc17c19def/output/samtools_sorted.bam"
+      },
+      "last_run_id": "f23a40cf509a",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/samtools/f23a40cf509a",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/f23a40cf509a",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 4.934002
+    },
+    {
+      "tool": "bakta",
+      "operation": "annotate",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "remote bakta database version is incompatible with container image (requires v6.x)",
+      "params_template": {
+        "tool_name": "bakta",
+        "operation": "annotate",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "prefix": "bakta_annotate",
+          "output": "bakta_annotate_output.out"
+        }
+      },
+      "last_run_id": "bd0918ec45d3",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/bakta/bd0918ec45d3",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/bakta/bd0918ec45d3",
+        "output_path": null
+      },
+      "exit_code": 1,
+      "stderr_tail": "ERROR: wrong database version detected!\nBakta version 1.11.4 requires database version 6.x, but 5.1 was detected. Please, update the database from https://doi.org/10.5281/zenodo.4247253",
+      "duration": 18.795323
+    },
+    {
+      "tool": "checkm",
+      "operation": "lineage_wf",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "checkm container runtime bug (python exception in checkmData) on remote image",
+      "params_template": {
+        "tool_name": "checkm",
+        "operation": "lineage_wf",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "output": "checkm_lineage_wf_output.out",
+          "output_dir": "checkm_lineage_wf_out"
+        }
+      },
+      "last_run_id": "5f766270d93d",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/checkm/5f766270d93d",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/checkm/5f766270d93d",
+        "output_path": null
+      },
+      "exit_code": 1,
+      "stderr_tail": "ocal/lib/python3.10/dist-packages/checkm/checkmData.py\", line 145, in __init__\n    if not self.setRoot():\n  File \"/usr/local/lib/python3.10/dist-packages/checkm/checkmData.py\", line 168, in setRoot\n    if not self.config.checkPermissions():\n  File \"/usr/local/lib/python3.10/dist-packages/checkm/checkmData.py\", line 96, in checkPermissions\n    except (IOError, e):\nNameError: name 'e' is not defined",
+      "duration": 7.593936
+    },
+    {
+      "tool": "checkm",
+      "operation": "qa",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires tree/output from prior checkm lineage workflow run",
+      "params_template": {
+        "tool_name": "checkm",
+        "operation": "qa"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "checkv",
+      "operation": "end_to_end",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "checkv",
+        "operation": "end_to_end",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_long.fasta",
+        "params": {
+          "output": "checkv_end_to_end_out",
+          "threads": 1
+        }
+      },
+      "last_run_id": "e7d712024d50",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/checkv/e7d712024d50",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/checkv/e7d712024d50",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "..\n[7/7] Writing results...\nRun time: 0.0 seconds\nPeak mem: 1.69 GB\n\nCheckV v1.0.1: quality_summary\n[1/6] Reading input sequences...\n[2/6] Reading results from contamination module...\n[3/6] Reading results from completeness module...\n[4/6] Reading results from complete genomes module...\n[5/6] Classifying contigs into quality tiers...\n[6/6] Writing results...\nRun time: 0.0 seconds\nPeak mem: 1.69 GB",
+      "duration": 108.345936
+    },
+    {
+      "tool": "concoct",
+      "operation": "bin",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires coverage/depth table for concoct bin",
+      "params_template": {
+        "tool_name": "concoct",
+        "operation": "bin"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "das_tool",
+      "operation": "integrate",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires pre-generated multiple binning result sets and labels",
+      "params_template": {
+        "tool_name": "das_tool",
+        "operation": "integrate"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "dorado",
+      "operation": "basecall",
+      "tier": "Tier-1",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires POD5/FAST5 raw signal dataset not included in smoke assets",
+      "params_template": {
+        "tool_name": "dorado",
+        "operation": "basecall"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "dorado",
+      "operation": "demux",
+      "tier": "Tier-1",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires Dorado basecall output/BAM layout not included in smoke assets",
+      "params_template": {
+        "tool_name": "dorado",
+        "operation": "demux"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "fastani",
+      "operation": "compare",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "fastani",
+        "operation": "compare",
+        "params": {
+          "query": "/private/tmp/bio_tools_matrix_assets/test_long.fasta",
+          "reference": "/private/tmp/bio_tools_matrix_assets/test_long.fasta",
+          "output": "fastani_compare.tsv",
+          "threads": 1
+        }
+      },
+      "last_run_id": "da01e0da1745",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/fastani/da01e0da1745",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/fastani/da01e0da1745",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "izers during lookup.\nINFO [thread 0], skch::main, Time spent sketching the reference : 0.00360605 sec\nINFO [thread 0], skch::main, Start Map 1\nINFO [thread 0], skch::main, Time spent mapping fragments in query #1 : 0.00843919 sec\nINFO [thread 0], skch::main, Time spent post mapping : 9.111e-06 sec\nINFO [thread 0], skch::main, ready to exit the loop\nINFO, skch::main, parallel_for execution finished",
+      "duration": 4.88403
+    },
+    {
+      "tool": "flye",
+      "operation": "hifi",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "flye",
+        "operation": "hifi",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/reads_long.fastq",
+        "params": {
+          "output": "flye_hifi_out"
+        }
+      },
+      "last_run_id": "e85638d68c29",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/flye/e85638d68c29",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/flye/e85638d68c29",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "e: 0.000000\n[2026-02-22 18:19:25] INFO: Correcting bubbles\n0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100% \n[2026-02-22 18:19:28] INFO: >>>STAGE: finalize\n[2026-02-22 18:19:28] INFO: Assembly statistics:\n\n\tTotal length:\t120000\n\tFragments:\t1\n\tFragments N50:\t120000\n\tLargest frg:\t120000\n\tScaffolds:\t0\n\tMean coverage:\t15\n\n[2026-02-22 18:19:28] INFO: Final assembly: /work/output/flye_hifi_out/assembly.fasta",
+      "duration": 44.878545
+    },
+    {
+      "tool": "flye",
+      "operation": "meta",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "flye",
+        "operation": "meta",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/reads_long.fastq",
+        "params": {
+          "output": "flye_meta_out"
+        }
+      },
+      "last_run_id": "562159f2a28e",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/flye/562159f2a28e",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/flye/562159f2a28e",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "e: 0.000000\n[2026-02-22 18:22:32] INFO: Correcting bubbles\n0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100% \n[2026-02-22 18:22:35] INFO: >>>STAGE: finalize\n[2026-02-22 18:22:35] INFO: Assembly statistics:\n\n\tTotal length:\t120000\n\tFragments:\t1\n\tFragments N50:\t120000\n\tLargest frg:\t120000\n\tScaffolds:\t0\n\tMean coverage:\t15\n\n[2026-02-22 18:22:35] INFO: Final assembly: /work/output/flye_meta_out/assembly.fasta",
+      "duration": 157.796143
+    },
+    {
+      "tool": "flye",
+      "operation": "ont",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "flye",
+        "operation": "ont",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/reads_long.fastq",
+        "params": {
+          "output": "flye_ont_out"
+        }
+      },
+      "last_run_id": "4c660f43aa5b",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/flye/4c660f43aa5b",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/flye/4c660f43aa5b",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "te: 0.000000\n[2026-02-22 18:25:37] INFO: Correcting bubbles\n0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100% \n[2026-02-22 18:25:40] INFO: >>>STAGE: finalize\n[2026-02-22 18:25:40] INFO: Assembly statistics:\n\n\tTotal length:\t120000\n\tFragments:\t1\n\tFragments N50:\t120000\n\tLargest frg:\t120000\n\tScaffolds:\t0\n\tMean coverage:\t15\n\n[2026-02-22 18:25:40] INFO: Final assembly: /work/output/flye_ont_out/assembly.fasta",
+      "duration": 156.383533
+    },
+    {
+      "tool": "genomad",
+      "operation": "annotate",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "genomad remote database content/schema is incompatible with current container",
+      "params_template": {
+        "tool_name": "genomad",
+        "operation": "annotate",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "output": "genomad_annotate_out"
+        }
+      },
+      "last_run_id": "9d368a276ed6",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/genomad/9d368a276ed6",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/genomad/9d368a276ed6",
+        "output_path": null
+      },
+      "exit_code": 1,
+      "stderr_tail": "ine 217, in main\n    write_genes_output(\n  File \"/usr/local/lib/python3.10/site-packages/genomad/modules/annotate.py\", line 9, in write_genes_output\n    marker_annotation_dict = database_obj.get_marker_annotation()\n  File \"/usr/local/lib/python3.10/site-packages/genomad/database.py\", line 71, in get_marker_annotation\n    int(virus_hallmark),\nValueError: invalid literal for int() with base 10: 'NA'",
+      "duration": 21.423133
+    },
+    {
+      "tool": "genomad",
+      "operation": "end_to_end",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "genomad remote database content/schema is incompatible with current container",
+      "params_template": {
+        "tool_name": "genomad",
+        "operation": "end_to_end",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "output": "genomad_end_to_end_out"
+        }
+      },
+      "last_run_id": "abd75e389c14",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/genomad/abd75e389c14",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/genomad/abd75e389c14",
+        "output_path": null
+      },
+      "exit_code": 1,
+      "stderr_tail": "ine 217, in main\n    write_genes_output(\n  File \"/usr/local/lib/python3.10/site-packages/genomad/modules/annotate.py\", line 9, in write_genes_output\n    marker_annotation_dict = database_obj.get_marker_annotation()\n  File \"/usr/local/lib/python3.10/site-packages/genomad/database.py\", line 71, in get_marker_annotation\n    int(virus_hallmark),\nValueError: invalid literal for int() with base 10: 'NA'",
+      "duration": 8.841585
+    },
+    {
+      "tool": "genomad",
+      "operation": "find_proviruses",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires annotate-generated *_genes.tsv and *_proteins.faa in the same run directory",
+      "params_template": {
+        "tool_name": "genomad",
+        "operation": "find_proviruses"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "gtdbtk",
+      "operation": "classify_wf",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires directory-based genome_dir upload workflow not covered by current minimal smoke assets",
+      "params_template": {
+        "tool_name": "gtdbtk",
+        "operation": "classify_wf"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "iphop",
+      "operation": "predict",
+      "tier": "Tier-2",
+      "status": "FAIL",
+      "reason": "Command timed out after 1200 seconds",
+      "params_template": {
+        "tool_name": "iphop",
+        "operation": "predict",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "output": "iphop_predict_output.out",
+          "threads": 1
+        }
+      },
+      "last_run_id": "bab5e634dd8e",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/iphop/bab5e634dd8e",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/iphop/bab5e634dd8e",
+        "output_path": null
+      },
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "maxbin2",
+      "operation": "bin",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires abundance profile for maxbin2 bin",
+      "params_template": {
+        "tool_name": "maxbin2",
+        "operation": "bin"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "megahit",
+      "operation": "assemble",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "megahit",
+        "operation": "assemble",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+        "params": {
+          "r1": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+          "r2": "/private/tmp/bio_tools_matrix_assets/reads_R2.fastq",
+          "output": "megahit_assemble_output.out"
+        }
+      },
+      "last_run_id": "1976dc23f4e3",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/megahit/1976dc23f4e3",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/megahit/1976dc23f4e3",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "- Build graph for k = 21 \n2026-02-22 18:48:41 - Assemble contigs from SdBG for k = 21\n2026-02-22 18:48:42 - Local assembly for k = 21\n2026-02-22 18:48:42 - Extract iterative edges from k = 21 to 29 \n2026-02-22 18:48:42 - Merging to output final contigs \n2026-02-22 18:48:42 - 0 contigs, total 0 bp, min 0 bp, max 0 bp, avg 0 bp, N50 0 bp\n2026-02-22 18:48:42 - ALL DONE. Time elapsed: 3.653957 seconds",
+      "duration": 18.369855
+    },
+    {
+      "tool": "minimap2",
+      "operation": "filter",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "minimap2",
+        "operation": "filter",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "reference": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+          "output": "minimap2_filter.sam",
+          "threads": 1
+        }
+      },
+      "last_run_id": "8f77a23be48c",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/minimap2/8f77a23be48c",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/minimap2/8f77a23be48c",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "#seq: 2\n[M::mm_idx_stat::0.029*0.19] distinct minimizers: 2 (0.00% are singletons); average occurrences: 4.000; average spacing: 7.000; total length: 56\n[M::worker_pipeline::0.030*0.20] mapped 2 sequences\n[M::main] Version: 2.30-r1287\n[M::main] CMD: minimap2 -t 1 -ax map-ont /work/input/test_short.fasta /work/input/test_short.fasta\n[M::main] Real time: 0.030 sec; CPU: 0.007 sec; Peak RSS: 0.001 GB",
+      "duration": 8.892732
+    },
+    {
+      "tool": "minimap2",
+      "operation": "map",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "minimap2",
+        "operation": "map",
+        "params": {
+          "preset": "map-ont",
+          "reference": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+          "query": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+          "output": "minimap2_map.sam"
+        }
+      },
+      "last_run_id": "87fc70f7fea1",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/minimap2/87fc70f7fea1",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/minimap2/87fc70f7fea1",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": ": 0; #seq: 2\n[M::mm_idx_stat::0.003*2.45] distinct minimizers: 2 (0.00% are singletons); average occurrences: 4.000; average spacing: 7.000; total length: 56\n[M::worker_pipeline::0.004*2.35] mapped 2 sequences\n[M::main] Version: 2.30-r1287\n[M::main] CMD: minimap2 -ax map-ont /work/input/test_short.fasta /work/input/test_short.fasta\n[M::main] Real time: 0.004 sec; CPU: 0.009 sec; Peak RSS: 0.001 GB",
+      "duration": 8.024066
+    },
+    {
+      "tool": "mmseqs2",
+      "operation": "easy_linclust",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "mmseqs2",
+        "operation": "easy_linclust",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "output": "mmseqs2_easy_linclust_output.out",
+          "min_seq_id": 0.9,
+          "threads": 1
+        }
+      },
+      "last_run_id": "7fe3826bfda3",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/mmseqs2/7fe3826bfda3",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/mmseqs2/7fe3826bfda3",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 8.625131
+    },
+    {
+      "tool": "mmseqs2",
+      "operation": "easy_search",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "mmseqs2",
+        "operation": "easy_search",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "query": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+          "target": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+          "output": "mmseqs2_easy_search_output.out",
+          "search_type": 3,
+          "threads": 1
+        }
+      },
+      "last_run_id": "2882ba6b629f",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/mmseqs2/2882ba6b629f",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/mmseqs2/2882ba6b629f",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 30.10701
+    },
+    {
+      "tool": "nanoplot",
+      "operation": "basic",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "nanoplot",
+        "operation": "basic",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+        "params": {
+          "output": "nanoplot_basic_output.out",
+          "prefix": "nanoplot_basic"
+        }
+      },
+      "last_run_id": "842112fc0ac8",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/nanoplot/842112fc0ac8",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/nanoplot/842112fc0ac8",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "me\n\n; falling back to explicit px size\nWARNING:root:No static plots are saved due to an export problem:\nWARNING:root:\n\nKaleido requires Google Chrome to be installed.\n\nEither download and install Chrome yourself following Google's instructions for your operating system,\nor install it from your terminal by running:\n\n    $ plotly_get_chrome\n\n\nNo variation in 'read lengths', skipping bivariate plots.",
+      "duration": 23.354145
+    },
+    {
+      "tool": "ngmlr",
+      "operation": "map",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "ngmlr",
+        "operation": "map",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "reference": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+          "output": "ngmlr_map_output.out",
+          "preset": "map-ont",
+          "threads": 1
+        }
+      },
+      "last_run_id": "27087b63e0ee",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/ngmlr/27087b63e0ee",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/ngmlr/27087b63e0ee",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "/work/input/test_short.fasta-ht-13-2.2.ngm\nWriting to disk took 0.20s\nOpening query file /work/input/test_short.fasta\nMapping reads...\nProcessed: 2 (1.00), R/S: 1.00, RL: 28, Time: 50.00 0.00 0.00, Align: 1.00, 67, 0.00\n\u001b[A\u001b[2KProcessed: 2 (1.00), R/S: 1.00, RL: 28, Time: 50.00 0.00 0.00, Align: 1.00, 67, 0.00\nDone (2 reads mapped (100.00%), 0 reads not mapped, 3 lines written)(elapsed: 0m, 0 r/s)",
+      "duration": 11.770907
+    },
+    {
+      "tool": "prodigal",
+      "operation": "meta",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "prodigal",
+        "operation": "meta",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "protein": "prodigal_meta.faa"
+        }
+      },
+      "last_run_id": "815cabb5d157",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/prodigal/815cabb5d157",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/prodigal/815cabb5d157",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "DIGAL v2.6.3 [February, 2016]         \nUniv of Tenn / Oak Ridge National Lab\nDoug Hyatt, Loren Hauser, et al.     \n-------------------------------------\nRequest:  Metagenomic, Phase:  Training\nInitializing training files...done!\n-------------------------------------\nRequest:  Metagenomic, Phase:  Gene Finding\nFinding genes in sequence #1 (36 bp)...done!\nFinding genes in sequence #2 (20 bp)...done!",
+      "duration": 6.087419
+    },
+    {
+      "tool": "prodigal",
+      "operation": "predict",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "prodigal",
+        "operation": "predict",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_long.fasta",
+        "params": {
+          "protein": "prodigal_predict.faa",
+          "nucleotide": "prodigal_predict.fna"
+        }
+      },
+      "last_run_id": "09de39b25efc",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/prodigal/09de39b25efc",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/prodigal/09de39b25efc",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "otential starts and stops...977 nodes\nLooking for GC bias in different frames...frame bias scores: 1.06 0.80 1.14\nBuilding initial set of genes to train from...done!\nCreating coding model and scoring nodes...done!\nExamining upstream regions and training starts...done!\n-------------------------------------\nRequest:  Single Genome, Phase:  Gene Finding\nFinding genes in sequence #1 (25000 bp)...done!",
+      "duration": 5.594769
+    },
+    {
+      "tool": "samtools",
+      "operation": "stats",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "samtools",
+        "operation": "stats",
+        "input_file": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/ecfc17c19def/output/samtools_sorted.bam",
+        "params": {
+          "output": "samtools_stats.txt",
+          "threads": 1
+        }
+      },
+      "last_run_id": "58126ab354a2",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/samtools/58126ab354a2",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/58126ab354a2",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 6.140025
+    },
+    {
+      "tool": "seqkit",
+      "operation": "grep",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqkit",
+        "operation": "grep",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "pattern": "seq1",
+          "output": "seqkit_grep_output.out"
+        }
+      },
+      "last_run_id": "f3e4b0bc629e",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/seqkit/f3e4b0bc629e",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/seqkit/f3e4b0bc629e",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 6.044748
+    },
+    {
+      "tool": "seqkit",
+      "operation": "head",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqkit",
+        "operation": "head",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "count": 1
+        }
+      },
+      "last_run_id": "5c24288ee5da",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/seqkit/5c24288ee5da",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/seqkit/5c24288ee5da",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.469431
+    },
+    {
+      "tool": "seqkit",
+      "operation": "seq",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqkit",
+        "operation": "seq",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "output": "seqkit_seq_output.out"
+        }
+      },
+      "last_run_id": "d471d374655d",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/seqkit/d471d374655d",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/seqkit/d471d374655d",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.612671
+    },
+    {
+      "tool": "seqkit",
+      "operation": "stats",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqkit",
+        "operation": "stats",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta"
+      },
+      "last_run_id": "92cff6c38a3f",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/seqkit/92cff6c38a3f",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/seqkit/92cff6c38a3f",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.251562
+    },
+    {
+      "tool": "seqtk",
+      "operation": "sample",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqtk",
+        "operation": "sample",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "fraction": 1.0,
+          "output": "seqtk_sample_output.out"
+        }
+      },
+      "last_run_id": "2d4811d07283",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/seqtk/2d4811d07283",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/seqtk/2d4811d07283",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.266981
+    },
+    {
+      "tool": "seqtk",
+      "operation": "size",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "seqtk",
+        "operation": "size",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta"
+      },
+      "last_run_id": "89152864f40c",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/seqtk/89152864f40c",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/seqtk/89152864f40c",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 4.997294
+    },
+    {
+      "tool": "snakemake",
+      "operation": "dry_run",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "snakemake",
+        "operation": "dry_run",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "snakefile": "/private/tmp/bio_tools_matrix_assets/Snakefile"
+        }
+      },
+      "last_run_id": "da0a21163e3a",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/snakemake/da0a21163e3a",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/snakemake/da0a21163e3a",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 17.299829
+    },
+    {
+      "tool": "snakemake",
+      "operation": "run",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "snakemake",
+        "operation": "run",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "snakefile": "/private/tmp/bio_tools_matrix_assets/Snakefile",
+          "cores": 1
+        }
+      },
+      "last_run_id": "17e7736b68f8",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/snakemake/17e7736b68f8",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/snakemake/17e7736b68f8",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "e_result)\n1 of 2 steps (50%) done\nSelect jobs to execute...\nExecute 1 jobs...\n\n[Sun Feb 22 18:58:47 2026]\nlocalrule all:\n    input: result.txt\n    jobid: 0\n    reason: Input files updated by another job: result.txt\n    resources: tmpdir=/tmp\n[Sun Feb 22 18:58:47 2026]\nFinished jobid: 0 (Rule: all)\n2 of 2 steps (100%) done\nComplete log(s): /work/.snakemake/log/2026-02-22T185847.023145.snakemake.log",
+      "duration": 8.721919
+    },
+    {
+      "tool": "sniffles2",
+      "operation": "call",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "sniffles2",
+        "operation": "call",
+        "input_file": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/f23a40cf509a/input/samtools_sorted.bam",
+        "params": {
+          "output": "sniffles2_call_output.out",
+          "reference": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+          "threads": 1
+        }
+      },
+      "last_run_id": "424786ea99af",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/sniffles2/424786ea99af",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/sniffles2/424786ea99af",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 8.318207
+    },
+    {
+      "tool": "trim_galore",
+      "operation": "trim",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "trim_galore",
+        "operation": "trim",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+        "params": {
+          "quality": 20,
+          "min_length": 20,
+          "cores": 1
+        }
+      },
+      "last_run_id": "cdc530e01fc9",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/trim_galore/cdc530e01fc9",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/trim_galore/cdc530e01fc9",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "                   0 bp (0.0%)\nTotal written (filtered):         14,400 bp (100.0%)\n\n=== Adapter 1 ===\n\nSequence: AGATCGGAAGAGC; Type: regular 3'; Length: 13; Trimmed: 0 times\n\nRUN STATISTICS FOR INPUT FILE: /work/input/reads_R1.fastq\n=============================================\n12 sequences processed in total\nSequences removed because they became shorter than the length cutoff of 20 bp:\t0 (0.0%)",
+      "duration": 7.866708
+    },
+    {
+      "tool": "trim_galore",
+      "operation": "trim_paired",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "trim_galore",
+        "operation": "trim_paired",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+        "params": {
+          "r1": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+          "r2": "/private/tmp/bio_tools_matrix_assets/reads_R2.fastq",
+          "quality": 20,
+          "min_length": 20,
+          "cores": 1
+        }
+      },
+      "last_run_id": "bf526cc36e66",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/trim_galore/bf526cc36e66",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/trim_galore/bf526cc36e66",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "ting validated paired-end Read 2 reads to reads_R2_val_2.fq\n\nTotal number of sequences analysed: 12\n\nNumber of sequence pairs removed because at least one read was shorter than the length cutoff (20 bp): 0 (0.00%)\n\nDeleting both intermediate output files reads_R1_trimmed.fq and reads_R2_trimmed.fq\n\n====================================================================================================",
+      "duration": 6.08442
+    },
+    {
+      "tool": "vibrant",
+      "operation": "run",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "vibrant",
+        "operation": "run",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "output": "vibrant_run_output.out",
+          "threads": 1
+        }
+      },
+      "last_run_id": "562b7b76af5b",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/vibrant/562b7b76af5b",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/vibrant/562b7b76af5b",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "ecationWarning: `np.float` is a deprecated alias for the builtin `float`. To silence this warning, use `float` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.float64` here.\nDeprecated in NumPy 1.20; for more details and guidance: https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations\n  EPS = np.finfo(np.float).eps",
+      "duration": 17.044961
+    },
+    {
+      "tool": "virsorter2",
+      "operation": "run",
+      "tier": "Tier-2",
+      "status": "FAIL",
+      "reason": "e; note that snakemake uses bash strict mode!)\n\nExiting because a job execution failed. Look above for error message\n\n\n*** An error occurred. Detailed errors may not be printed for certain rules. Refer to the log file of the failed command for troubleshooting\nIssues can be raised at: https://github.com/jiarong/VirSorter2/issues\nOr send an email to virsorter2 near gmail.com if you do not use GitHub",
+      "params_template": {
+        "tool_name": "virsorter2",
+        "operation": "run",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "output": "virsorter2_run_output.out",
+          "min_score": 0.5,
+          "threads": 1
+        }
+      },
+      "last_run_id": "e0fe108ff685",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/virsorter2/e0fe108ff685",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/virsorter2/e0fe108ff685",
+        "output_path": null
+      },
+      "exit_code": 1,
+      "stderr_tail": "e; note that snakemake uses bash strict mode!)\n\nExiting because a job execution failed. Look above for error message\n\n\n*** An error occurred. Detailed errors may not be printed for certain rules. Refer to the log file of the failed command for troubleshooting\nIssues can be raised at: https://github.com/jiarong/VirSorter2/issues\nOr send an email to virsorter2 near gmail.com if you do not use GitHub",
+      "duration": 11.260446
+    },
+    {
+      "tool": "samtools",
+      "operation": "view_filter_unmapped",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "samtools",
+        "operation": "view_filter_unmapped",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/reads.sam",
+        "params": {
+          "threads": 1,
+          "output": "samtools_view_filter_unmapped_output.out"
+        }
+      },
+      "last_run_id": "c7315fdb74ed",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/samtools/c7315fdb74ed",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/c7315fdb74ed",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "[M::bam2fq_mainloop] discarded 0 singletons\n[M::bam2fq_mainloop] processed 1 reads",
+      "duration": 5.093828
+    },
+    {
+      "tool": "checkv",
+      "operation": "completeness",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "checkv",
+        "operation": "completeness",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_long.fasta",
+        "params": {
+          "output": "checkv_completeness_out",
+          "threads": 1
+        }
+      },
+      "last_run_id": "83e0ac2161ba",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/checkv/83e0ac2161ba",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/checkv/83e0ac2161ba",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "eteness\n[1/8] Calling genes with Prodigal...\n[2/8] Initializing queries and database...\n[3/8] Running DIAMOND blastp search...\n[4/8] Computing AAI...\n[5/8] Running AAI based completeness estimation...\n[6/8] Skipping HMM based completeness estimation: requires output from 'checkv contamination'\n[7/8] Determining genome copy number...\n[8/8] Writing results...\nRun time: 31.5 seconds\nPeak mem: 1.69 GB",
+      "duration": 40.529841
+    },
+    {
+      "tool": "metabat2",
+      "operation": "depth",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "metabat2",
+        "operation": "depth",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "output": "metabat_depth.tsv",
+          "bam_files": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/ecfc17c19def/output/samtools_sorted.bam"
+        }
+      },
+      "last_run_id": "47ceb50e8cf0",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/metabat2/47ceb50e8cf0",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/metabat2/47ceb50e8cf0",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "no NM aux field. PercentID will be invalid!!! read1\nWarning 0 or negative alignment for read1 alignstart=0 alignend=0\nWarning: SAM 1.3 M not 1.4 =/X and there is no NM aux field. PercentID will be invalid!!! read1\nThread 0 finished: samtools_sorted.bam with 2 reads and 1 readsWellMapped\nCreating depth matrix file: /work/output/metabat_depth.tsv\nClosing most bam files\nClosing last bam file\nFinished",
+      "duration": 5.877134
+    },
+    {
+      "tool": "nextflow",
+      "operation": "run",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "nextflow",
+        "operation": "run",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "pipeline": "/private/tmp/bio_tools_matrix_assets/main.nf"
+        }
+      },
+      "last_run_id": "d7e33096e46b",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/nextflow/d7e33096e46b",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/nextflow/d7e33096e46b",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "/26 KB   48/204 KB   \r26/26 KB   64/204 KB   \r26/26 KB   80/204 KB   \r26/26 KB   96/204 KB   \r26/26 KB   112/204 KB   \r26/26 KB   128/204 KB   \r26/26 KB   144/204 KB   \r26/26 KB   160/204 KB   \r26/26 KB   176/204 KB   \r26/26 KB   192/204 KB   \r26/26 KB   204/204 KB   \r                        \r                        \r/usr/local/bin/nextflow: line 439: /.nextflow/launch-classpath: Permission denied",
+      "duration": 71.831234
+    },
+    {
+      "tool": "blast",
+      "operation": "blastn",
+      "tier": "Tier-1",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires BLAST DB side-files packaging across runs, which is not supported by current matrix runner",
+      "params_template": {
+        "tool_name": "blast",
+        "operation": "blastn"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "blast",
+      "operation": "blastp",
+      "tier": "Tier-1",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires BLAST DB side-files packaging across runs, which is not supported by current matrix runner",
+      "params_template": {
+        "tool_name": "blast",
+        "operation": "blastp"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "bowtie2",
+      "operation": "align",
+      "tier": "Tier-2",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires bowtie2 index prefix with multi-file side outputs from a prior run",
+      "params_template": {
+        "tool_name": "bowtie2",
+        "operation": "align"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "bwa",
+      "operation": "mem",
+      "tier": "Tier-1",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires reference side-index files alongside reference path",
+      "params_template": {
+        "tool_name": "bwa",
+        "operation": "mem"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    },
+    {
+      "tool": "checkv",
+      "operation": "complete_genomes",
+      "tier": "Tier-2",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "checkv",
+        "operation": "complete_genomes",
+        "input_file": "/Volumes/BIOINFO2/docker/remote_bio_tools/checkv/83e0ac2161ba/output/checkv_completeness_out/completeness.tsv",
+        "params": {
+          "output": "checkv_complete_genomes_out"
+        }
+      },
+      "last_run_id": "568b8d7557fc",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/checkv/568b8d7557fc",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/checkv/568b8d7557fc",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "You input FASTA file is empty or not properly formatted.",
+      "duration": 5.611454
+    },
+    {
+      "tool": "metabat2",
+      "operation": "bin",
+      "tier": "Tier-1",
+      "status": "PASS",
+      "reason": null,
+      "params_template": {
+        "tool_name": "metabat2",
+        "operation": "bin",
+        "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+        "params": {
+          "contigs": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+          "depth": "/Volumes/BIOINFO2/docker/remote_bio_tools/metabat2/47ceb50e8cf0/output/metabat_depth.tsv",
+          "output_prefix": "metabat_bins/bin"
+        }
+      },
+      "last_run_id": "6d04481fe3a4",
+      "artifacts": {
+        "execution_mode": "remote",
+        "execution_host": "119.147.24.196",
+        "remote_run_dir": "/home/zczhao/GAgent/runtime/bio_tools/_runs/metabat2/6d04481fe3a4",
+        "local_artifact_dir": "/Volumes/BIOINFO2/docker/remote_bio_tools/metabat2/6d04481fe3a4",
+        "output_path": null
+      },
+      "exit_code": 0,
+      "stderr_tail": "",
+      "duration": 5.083827
+    },
+    {
+      "tool": "nextflow",
+      "operation": "clean",
+      "tier": "Tier-1",
+      "status": "SKIPPED_PRECONDITION",
+      "reason": "requires same working directory and execution history from a prior nextflow run, but matrix runner uses isolated run dirs per operation",
+      "params_template": {
+        "tool_name": "nextflow",
+        "operation": "clean"
+      },
+      "last_run_id": null,
+      "artifacts": {},
+      "exit_code": null,
+      "stderr_tail": "",
+      "duration": null
+    }
+  ],
+  "summary": {
+    "tier0_total": 62,
+    "tier0_pass": 62,
+    "tier0_fail": 0,
+    "execution_total": 62,
+    "execution_pass": 43,
+    "execution_fail": 2,
+    "execution_skipped_precondition": 17
+  },
+  "api_sampling": {
+    "sample_size": 12,
+    "success_count": 12,
+    "failure_count": 0,
+    "cases": [
+      {
+        "tool": "blast",
+        "operation": "makeblastdb",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "bowtie2",
+        "operation": "build",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "bwa",
+        "operation": "index",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "hmmer",
+        "operation": "hmmbuild",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "hmmer",
+        "operation": "hmmpress",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "samtools",
+        "operation": "view",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "hmmer",
+        "operation": "hmmscan",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "hmmer",
+        "operation": "hmmsearch",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "samtools",
+        "operation": "sort",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "samtools",
+        "operation": "index",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "fastani",
+        "operation": "compare",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      },
+      {
+        "tool": "minimap2",
+        "operation": "filter",
+        "status_code": 200,
+        "success": true,
+        "error": null
+      }
+    ]
+  },
+  "skills_discovery": {
+    "available_skills": [
+      "bio-data-interpreter",
+      "bio-tools-execution-playbook",
+      "bio-tools-router",
+      "bio-tools-troubleshooting",
+      "scientific-report-writer",
+      "visualization-generator",
+      "xlsx"
+    ],
+    "required_skills_detected": [
+      "bio-tools-execution-playbook",
+      "bio-tools-router",
+      "bio-tools-troubleshooting"
+    ],
+    "missing_required_skills": []
+  }
+}

@@ -1,0 +1,376 @@
+{
+  "blast::makeblastdb": {
+    "tool_name": "blast",
+    "operation": "makeblastdb",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "type": "nucl",
+      "db": "test_db"
+    }
+  },
+  "bowtie2::build": {
+    "tool_name": "bowtie2",
+    "operation": "build",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "index_prefix": "bowtie2_build_index"
+    }
+  },
+  "bwa::index": {
+    "tool_name": "bwa",
+    "operation": "index",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta"
+  },
+  "checkv::complete_genomes": {
+    "tool_name": "checkv",
+    "operation": "complete_genomes",
+    "input_file": "/Volumes/BIOINFO2/docker/remote_bio_tools/checkv/83e0ac2161ba/output/checkv_completeness_out/completeness.tsv",
+    "params": {
+      "output": "checkv_complete_genomes_out"
+    }
+  },
+  "checkv::completeness": {
+    "tool_name": "checkv",
+    "operation": "completeness",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_long.fasta",
+    "params": {
+      "output": "checkv_completeness_out",
+      "threads": 1
+    }
+  },
+  "checkv::end_to_end": {
+    "tool_name": "checkv",
+    "operation": "end_to_end",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_long.fasta",
+    "params": {
+      "output": "checkv_end_to_end_out",
+      "threads": 1
+    }
+  },
+  "fastani::compare": {
+    "tool_name": "fastani",
+    "operation": "compare",
+    "params": {
+      "query": "/private/tmp/bio_tools_matrix_assets/test_long.fasta",
+      "reference": "/private/tmp/bio_tools_matrix_assets/test_long.fasta",
+      "output": "fastani_compare.tsv",
+      "threads": 1
+    }
+  },
+  "flye::hifi": {
+    "tool_name": "flye",
+    "operation": "hifi",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/reads_long.fastq",
+    "params": {
+      "output": "flye_hifi_out"
+    }
+  },
+  "flye::meta": {
+    "tool_name": "flye",
+    "operation": "meta",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/reads_long.fastq",
+    "params": {
+      "output": "flye_meta_out"
+    }
+  },
+  "flye::ont": {
+    "tool_name": "flye",
+    "operation": "ont",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/reads_long.fastq",
+    "params": {
+      "output": "flye_ont_out"
+    }
+  },
+  "hmmer::hmmbuild": {
+    "tool_name": "hmmer",
+    "operation": "hmmbuild",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_aligned.fasta",
+    "params": {
+      "output": "hmmer_profile.hmm"
+    }
+  },
+  "hmmer::hmmpress": {
+    "tool_name": "hmmer",
+    "operation": "hmmpress",
+    "params": {
+      "db": "/Volumes/BIOINFO2/docker/remote_bio_tools/hmmer/24699ff49f76/output/hmmer_profile.hmm"
+    }
+  },
+  "hmmer::hmmscan": {
+    "tool_name": "hmmer",
+    "operation": "hmmscan",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "db": "/Volumes/BIOINFO2/docker/remote_bio_tools/hmmer/7958c3ca43bf/input/hmmer_profile.hmm",
+      "output": "hmmer_hmmscan.tbl"
+    }
+  },
+  "hmmer::hmmsearch": {
+    "tool_name": "hmmer",
+    "operation": "hmmsearch",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "db": "/Volumes/BIOINFO2/docker/remote_bio_tools/hmmer/7958c3ca43bf/input/hmmer_profile.hmm",
+      "output": "hmmer_hmmsearch.tbl"
+    }
+  },
+  "megahit::assemble": {
+    "tool_name": "megahit",
+    "operation": "assemble",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+    "params": {
+      "r1": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+      "r2": "/private/tmp/bio_tools_matrix_assets/reads_R2.fastq",
+      "output": "megahit_assemble_output.out"
+    }
+  },
+  "metabat2::bin": {
+    "tool_name": "metabat2",
+    "operation": "bin",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "contigs": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+      "depth": "/Volumes/BIOINFO2/docker/remote_bio_tools/metabat2/47ceb50e8cf0/output/metabat_depth.tsv",
+      "output_prefix": "metabat_bins/bin"
+    }
+  },
+  "metabat2::depth": {
+    "tool_name": "metabat2",
+    "operation": "depth",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "output": "metabat_depth.tsv",
+      "bam_files": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/ecfc17c19def/output/samtools_sorted.bam"
+    }
+  },
+  "minimap2::filter": {
+    "tool_name": "minimap2",
+    "operation": "filter",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "reference": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+      "output": "minimap2_filter.sam",
+      "threads": 1
+    }
+  },
+  "minimap2::map": {
+    "tool_name": "minimap2",
+    "operation": "map",
+    "params": {
+      "preset": "map-ont",
+      "reference": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+      "query": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+      "output": "minimap2_map.sam"
+    }
+  },
+  "mmseqs2::easy_linclust": {
+    "tool_name": "mmseqs2",
+    "operation": "easy_linclust",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "output": "mmseqs2_easy_linclust_output.out",
+      "min_seq_id": 0.9,
+      "threads": 1
+    }
+  },
+  "mmseqs2::easy_search": {
+    "tool_name": "mmseqs2",
+    "operation": "easy_search",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "query": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+      "target": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+      "output": "mmseqs2_easy_search_output.out",
+      "search_type": 3,
+      "threads": 1
+    }
+  },
+  "nanoplot::basic": {
+    "tool_name": "nanoplot",
+    "operation": "basic",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+    "params": {
+      "output": "nanoplot_basic_output.out",
+      "prefix": "nanoplot_basic"
+    }
+  },
+  "nextflow::run": {
+    "tool_name": "nextflow",
+    "operation": "run",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "pipeline": "/private/tmp/bio_tools_matrix_assets/main.nf"
+    }
+  },
+  "ngmlr::map": {
+    "tool_name": "ngmlr",
+    "operation": "map",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "reference": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+      "output": "ngmlr_map_output.out",
+      "preset": "map-ont",
+      "threads": 1
+    }
+  },
+  "prodigal::meta": {
+    "tool_name": "prodigal",
+    "operation": "meta",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "protein": "prodigal_meta.faa"
+    }
+  },
+  "prodigal::predict": {
+    "tool_name": "prodigal",
+    "operation": "predict",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_long.fasta",
+    "params": {
+      "protein": "prodigal_predict.faa",
+      "nucleotide": "prodigal_predict.fna"
+    }
+  },
+  "samtools::index": {
+    "tool_name": "samtools",
+    "operation": "index",
+    "input_file": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/ecfc17c19def/output/samtools_sorted.bam"
+  },
+  "samtools::sort": {
+    "tool_name": "samtools",
+    "operation": "sort",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/reads.sam",
+    "params": {
+      "threads": 1,
+      "output": "samtools_sorted.bam"
+    }
+  },
+  "samtools::stats": {
+    "tool_name": "samtools",
+    "operation": "stats",
+    "input_file": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/ecfc17c19def/output/samtools_sorted.bam",
+    "params": {
+      "output": "samtools_stats.txt",
+      "threads": 1
+    }
+  },
+  "samtools::view": {
+    "tool_name": "samtools",
+    "operation": "view",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/reads.sam",
+    "params": {
+      "threads": 1,
+      "output": "samtools_view.bam"
+    }
+  },
+  "samtools::view_filter_unmapped": {
+    "tool_name": "samtools",
+    "operation": "view_filter_unmapped",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/reads.sam",
+    "params": {
+      "threads": 1,
+      "output": "samtools_view_filter_unmapped_output.out"
+    }
+  },
+  "seqkit::grep": {
+    "tool_name": "seqkit",
+    "operation": "grep",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "pattern": "seq1",
+      "output": "seqkit_grep_output.out"
+    }
+  },
+  "seqkit::head": {
+    "tool_name": "seqkit",
+    "operation": "head",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "count": 1
+    }
+  },
+  "seqkit::seq": {
+    "tool_name": "seqkit",
+    "operation": "seq",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "output": "seqkit_seq_output.out"
+    }
+  },
+  "seqkit::stats": {
+    "tool_name": "seqkit",
+    "operation": "stats",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta"
+  },
+  "seqtk::sample": {
+    "tool_name": "seqtk",
+    "operation": "sample",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "fraction": 1.0,
+      "output": "seqtk_sample_output.out"
+    }
+  },
+  "seqtk::size": {
+    "tool_name": "seqtk",
+    "operation": "size",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta"
+  },
+  "snakemake::dry_run": {
+    "tool_name": "snakemake",
+    "operation": "dry_run",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "snakefile": "/private/tmp/bio_tools_matrix_assets/Snakefile"
+    }
+  },
+  "snakemake::run": {
+    "tool_name": "snakemake",
+    "operation": "run",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "snakefile": "/private/tmp/bio_tools_matrix_assets/Snakefile",
+      "cores": 1
+    }
+  },
+  "sniffles2::call": {
+    "tool_name": "sniffles2",
+    "operation": "call",
+    "input_file": "/Volumes/BIOINFO2/docker/remote_bio_tools/samtools/f23a40cf509a/input/samtools_sorted.bam",
+    "params": {
+      "output": "sniffles2_call_output.out",
+      "reference": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+      "threads": 1
+    }
+  },
+  "trim_galore::trim": {
+    "tool_name": "trim_galore",
+    "operation": "trim",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+    "params": {
+      "quality": 20,
+      "min_length": 20,
+      "cores": 1
+    }
+  },
+  "trim_galore::trim_paired": {
+    "tool_name": "trim_galore",
+    "operation": "trim_paired",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+    "params": {
+      "r1": "/private/tmp/bio_tools_matrix_assets/reads_R1.fastq",
+      "r2": "/private/tmp/bio_tools_matrix_assets/reads_R2.fastq",
+      "quality": 20,
+      "min_length": 20,
+      "cores": 1
+    }
+  },
+  "vibrant::run": {
+    "tool_name": "vibrant",
+    "operation": "run",
+    "input_file": "/private/tmp/bio_tools_matrix_assets/test_short.fasta",
+    "params": {
+      "output": "vibrant_run_output.out",
+      "threads": 1
+    }
+  }
+}

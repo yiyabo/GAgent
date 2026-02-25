@@ -227,3 +227,48 @@ def test_optional_file_read_failure_remains_failed(
     result = step.details.get("result")
     assert isinstance(result, dict)
     assert result.get("success") is False
+
+
+def test_bio_tools_is_supported_in_tool_action_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = None
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        assert name == "bio_tools"
+        assert kwargs.get("tool_name") == "seqkit"
+        assert kwargs.get("operation") == "stats"
+        assert kwargs.get("input_file") == "/tmp/a.fa"
+        assert isinstance(kwargs.get("params"), dict)
+        return {
+            "success": False,
+            "tool": "bio_tools",
+            "error": "intentional test failure",
+        }
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="bio_tools",
+        parameters={
+            "tool_name": "seqkit",
+            "operation": "stats",
+            "input_file": "/tmp/a.fa",
+            "params": {"k": "v"},
+        },
+        order=1,
+    )
+
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is False
+    assert isinstance(step.details, dict)
+    result = step.details.get("result")
+    assert isinstance(result, dict)
+    assert result.get("tool") == "bio_tools"
+    assert result.get("error") == "intentional test failure"

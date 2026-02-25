@@ -5,6 +5,32 @@ from typing import Any, Dict, Iterable, List, Optional
 from pydantic import BaseModel, Field
 
 
+class PaperTaskMetadata(BaseModel):
+    """Optional paper-task metadata contract used by plan decomposition/execution."""
+
+    paper_section: Optional[str] = None
+    paper_role: Optional[str] = None
+    paper_context_paths: List[str] = Field(default_factory=list)
+
+    @classmethod
+    def from_metadata(cls, metadata: Optional[Dict[str, Any]]) -> "PaperTaskMetadata":
+        payload = metadata if isinstance(metadata, dict) else {}
+        section = payload.get("paper_section")
+        role = payload.get("paper_role")
+        raw_paths = payload.get("paper_context_paths")
+        paths: List[str] = []
+        if isinstance(raw_paths, list):
+            for item in raw_paths:
+                text = str(item).strip()
+                if text:
+                    paths.append(text)
+        return cls(
+            paper_section=str(section).strip() if section is not None else None,
+            paper_role=str(role).strip() if role is not None else None,
+            paper_context_paths=paths,
+        )
+
+
 class PlanSummary(BaseModel):
     """Lightweight plan metadata used for list operations."""
 
@@ -39,6 +65,9 @@ class PlanNode(BaseModel):
     def display_name(self) -> str:
         """Short helper for prompt rendering."""
         return self.name.strip() or f"Task {self.id}"
+
+    def paper_metadata(self) -> PaperTaskMetadata:
+        return PaperTaskMetadata.from_metadata(self.metadata)
 
 
 class PlanTree(BaseModel):

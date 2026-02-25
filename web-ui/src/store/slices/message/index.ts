@@ -22,6 +22,7 @@ import {
   handleFinal,
   handleThinkingStep,
   handleThinkingDelta,
+  flushPendingThinkingDeltas,
   handleControlAck,
   handleToolOutput,
   processBackgroundDispatch,
@@ -70,6 +71,16 @@ const _hydrateThinkingProcess = (raw: any): ThinkingProcess | undefined => {
         thought: typeof step.thought === 'string' ? step.thought : '',
         action: step.action ?? null,
         action_result: step.action_result ?? null,
+        evidence: Array.isArray(step.evidence)
+          ? step.evidence
+              .filter((ev: any) => ev && typeof ev === 'object')
+              .map((ev: any) => ({
+                type: typeof ev.type === 'string' ? ev.type : 'output',
+                title: typeof ev.title === 'string' ? ev.title : undefined,
+                ref: typeof ev.ref === 'string' ? ev.ref : undefined,
+                snippet: typeof ev.snippet === 'string' ? ev.snippet : undefined,
+              }))
+          : undefined,
         status: _normalizeThinkingStepStatus(step.status),
         timestamp: typeof step.timestamp === 'string' ? step.timestamp : undefined,
         self_correction: step.self_correction ?? null,
@@ -376,6 +387,8 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   streamedContent: '',
   lastFlushedContent: '',
   flushHandle: null,
+  thinkingDeltaFlushHandle: null,
+  pendingThinkingDeltas: {},
   finalPayload: null,
   jobFinalized: false,
   isBackgroundDispatch: false,
@@ -401,7 +414,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   for await (const event of streamChatEvents(chatRequest)) {
   if (event.type === 'delta') { handleDelta(ctx, event); continue; }
   if (event.type === 'job_update') { await handleJobUpdate(ctx, event); continue; }
-  if (event.type === 'final') { if (handleFinal(ctx, event)) break; continue; }
+  if (event.type === 'final') { flushPendingThinkingDeltas(ctx); if (handleFinal(ctx, event)) break; continue; }
   if (event.type === 'thinking_step') { handleThinkingStep(ctx, event); continue; }
   if (event.type === 'thinking_delta') { handleThinkingDelta(ctx, event); continue; }
   if (event.type === 'control_ack') { handleControlAck(ctx, event); continue; }
@@ -411,6 +424,8 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   }
 
   if (state.flushHandle !== null) { window.cancelAnimationFrame(state.flushHandle); state.flushHandle = null; }
+  if (state.thinkingDeltaFlushHandle !== null) { window.clearTimeout(state.thinkingDeltaFlushHandle); state.thinkingDeltaFlushHandle = null; }
+  flushPendingThinkingDeltas(ctx);
   boundFlush(true);
 
   if (state.isBackgroundDispatch) {
