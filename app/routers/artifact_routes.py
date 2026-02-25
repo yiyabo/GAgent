@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
+import re
+import shutil
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -16,6 +21,13 @@ from app.config.deliverable_config import get_deliverable_settings
 from app.services.session_paths import normalize_session_base
 
 from . import register_router
+
+# Optional markdown import
+try:
+    import markdown
+    MARKDOWN_AVAILABLE = True
+except ImportError:
+    MARKDOWN_AVAILABLE = False
 
 RUNTIME_DIR = Path(__file__).parent.parent.parent.resolve() / "runtime"
 INFO_SESSIONS_DIR = Path(__file__).parent.parent.parent.resolve() / "data" / "information_sessions"
@@ -82,6 +94,15 @@ class DeliverableManifestResponse(BaseModel):
     manifest_path: Optional[str] = None
     manifest: Dict[str, Any] = Field(default_factory=dict)
     available_versions: List[DeliverableVersionSummary] = Field(default_factory=list)
+
+
+class ArtifactRenderResponse(BaseModel):
+    path: str
+    format: Literal["pdf", "html", "text"]
+    url: Optional[str] = None
+    content: Optional[str] = None
+    rendered_at: str
+    cached: bool = False
 
 
 def _strip_session_prefixes(value: str) -> str:
@@ -696,6 +717,266 @@ async def get_session_deliverable_text(
         raw = raw[:max_bytes]
     content = raw.decode("utf-8", errors="replace")
     return ArtifactTextResponse(path=path, content=content, truncated=truncated)
+
+
+# ----- Document Rendering (LaTeX -> PDF, Markdown -> HTML) -----
+
+# Cache directory for rendered files
+RENDER_CACHE_DIR = Path(__file__).parent.parent.parent.resolve() / "runtime" / ".render_cache"
+
+
+def _get_render_cache_path(file_path: Path, extension: str) -> Path:
+    """Get cache path for rendered file based on source file hash."""
+    file_stat = file_path.stat()
+    hash_input = f"{file_path.absolute()}:{file_stat.st_size}:{file_stat.st_mtime}"
+    file_hash = hashlib.md5(hash_input.encode()).hexdigest()[:16]
+    cache_name = f"{file_path.stem}_{file_hash}.{extension}"
+    return RENDER_CACHE_DIR / cache_name
+
+
+def _render_markdown_to_html(content: str) -> str:
+    """Render Markdown content to HTML."""
+    if MARKDOWN_AVAILABLE:
+        md = markdown.Markdown(extensions=['tables', 'fenced_code', 'toc'])
+        html_body = md.convert(content)
+    else:
+        # Fallback: basic HTML conversion
+        html_body = (
+            content
+            .replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+            .replace('\n\n', '</p><p>')
+            .replace('\n', '<br>')
+        )
+        html_body = f'<p>{html_body}</p>'
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 0 20px;
+            color: #333;
+        }}
+        pre {{
+            background: #f5f5f5;
+            padding: 16px;
+            border-radius: 6px;
+            overflow-x: auto;
+        }}
+        code {{
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 0.9em;
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }}
+        pre code {{
+            padding: 0;
+            background: none;
+        }}
+        table {{
+            border-collapse: collapse;
+            width: 100%;
+            margin: 16px 0;
+        }}
+        th, td {{
+            border: 1px solid #ddd;
+            padding: 8px 12px;
+            text-align: left;
+        }}
+        th {{
+            background: #f5f5f5;
+            font-weight: 600;
+        }}
+        img {{
+            max-width: 100%;
+            height: auto;
+        }}
+        h1, h2, h3, h4 {{
+            color: #1a1a1a;
+            margin-top: 24px;
+            margin-bottom: 16px;
+        }}
+        blockquote {{
+            border-left: 4px solid #ddd;
+            margin: 0;
+            padding-left: 16px;
+            color: #666;
+        }}
+    </style>
+</head>
+<body>
+{html_body}
+</body>
+</html>"""
+
+
+def _render_latex_to_pdf(source_path: Path, output_path: Path) -> bool:
+    """Render LaTeX file to PDF using pdflatex or xelatex."""
+    # Try xelatex first (better Unicode support), then pdflatex
+    latex_cmds = ['xelatex', 'pdflatex']
+    latex_cmd = None
+
+    for cmd in latex_cmds:
+        if shutil.which(cmd):
+            latex_cmd = cmd
+            break
+
+    if not latex_cmd:
+        return False
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+
+            # Copy source file to temp directory
+            temp_tex = tmpdir_path / source_path.name
+            temp_tex.write_text(source_path.read_text(encoding='utf-8'), encoding='utf-8')
+
+            # Run latex twice for references
+            for _ in range(2):
+                result = subprocess.run(
+                    [latex_cmd, '-interaction=nonstopmode', '-halt-on-error', temp_tex.name],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if result.returncode != 0:
+                    # Try to extract error message
+                    error_match = re.search(r'! (.*?)(?:\n|$)', result.stderr or result.stdout, re.DOTALL)
+                    error_msg = error_match.group(1).strip() if error_match else 'LaTeX compilation failed'
+                    print(f"LaTeX error: {error_msg}")
+                    # Continue anyway, might still produce PDF
+
+            # Move output PDF to cache location
+            output_pdf = tmpdir_path / temp_tex.with_suffix('.pdf').name
+            if output_pdf.exists():
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(output_pdf), str(output_path))
+                return True
+
+    except subprocess.TimeoutExpired:
+        print("LaTeX compilation timed out")
+    except Exception as e:
+        print(f"LaTeX compilation error: {e}")
+
+    return False
+
+
+@router.get("/sessions/{session_id}/render", response_model=ArtifactRenderResponse)
+async def render_artifact(
+    session_id: str,
+    path: str = Query(..., min_length=1, description="Path to the file to render"),
+    source_type: Literal["raw", "deliverables"] = Query("raw", description="Source type"),
+    version: Optional[str] = Query(None, description="Version for deliverables"),
+) -> ArtifactRenderResponse:
+    """
+    Render a document to preview format:
+    - .tex files -> PDF (via LaTeX compilation)
+    - .md files -> HTML (via Markdown rendering)
+    
+    Rendered files are cached for performance.
+    """
+    # Resolve file path
+    if source_type == "deliverables":
+        session_dir = _resolve_session_dir(session_id, purpose="deliverables")
+        _, _, files_root, _, _ = _resolve_deliverable_view(
+            session_dir=session_dir,
+            scope="history" if version else "latest",
+            version=version,
+        )
+        target = (files_root / path).resolve()
+        root_dir = files_root.resolve()
+    else:
+        session_dir = _resolve_session_dir(session_id, purpose="raw")
+        target = (session_dir / path).resolve()
+        root_dir = session_dir.resolve()
+
+    if not str(target).startswith(str(root_dir)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file path")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    extension = target.suffix.lower().lstrip(".")
+
+    # Initialize render cache directory
+    RENDER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if extension == "tex":
+        # LaTeX -> PDF
+        cache_path = _get_render_cache_path(target, "pdf")
+        cached = cache_path.exists()
+
+        if not cached:
+            success = _render_latex_to_pdf(target, cache_path)
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to compile LaTeX document. Ensure the document is valid and LaTeX is installed."
+                )
+
+        # Return URL to the cached PDF
+        return ArtifactRenderResponse(
+            path=path,
+            format="pdf",
+            url=f"/artifacts/rendered/{cache_path.name}",
+            rendered_at=datetime.fromtimestamp(cache_path.stat().st_mtime).isoformat(),
+            cached=cached,
+        )
+
+    elif extension == "md":
+        # Markdown -> HTML
+        cache_path = _get_render_cache_path(target, "html")
+        cached = cache_path.exists()
+
+        if not cached:
+            content = target.read_text(encoding="utf-8")
+            html = _render_markdown_to_html(content)
+            cache_path.write_text(html, encoding="utf-8")
+
+        return ArtifactRenderResponse(
+            path=path,
+            format="html",
+            content=cache_path.read_text(encoding="utf-8"),
+            rendered_at=datetime.fromtimestamp(cache_path.stat().st_mtime).isoformat(),
+            cached=cached,
+        )
+
+    else:
+        # Return raw text for other files
+        content = target.read_text(encoding="utf-8", errors="replace")[:200000]
+        return ArtifactRenderResponse(
+            path=path,
+            format="text",
+            content=content,
+            rendered_at=datetime.now().isoformat(),
+            cached=False,
+        )
+
+
+@router.get("/rendered/{filename}")
+async def get_rendered_file(filename: str) -> FileResponse:
+    """Serve a cached rendered file (PDF from LaTeX compilation)."""
+    # Sanitize filename to prevent directory traversal
+    safe_filename = Path(filename).name
+    file_path = RENDER_CACHE_DIR / safe_filename
+
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rendered file not found")
+
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=safe_filename,
+    )
 
 
 register_router(

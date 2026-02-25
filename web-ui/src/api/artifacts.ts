@@ -3,6 +3,7 @@ import { ENV } from '@/config/env';
 import type {
   ArtifactListResponse,
   ArtifactTextResponse,
+  ArtifactRenderResponse,
   DeliverableListResponse,
   DeliverableManifestResponse,
 } from '@/types';
@@ -74,6 +75,20 @@ class ArtifactsApi extends BaseApi {
       max_bytes: options?.maxBytes,
     });
   };
+
+  /**
+   * Render file to preview format (LaTeX -> PDF, Markdown -> HTML)
+   */
+  renderArtifact = async (
+    sessionId: string,
+    path: string,
+    options?: { sourceType?: 'raw' | 'deliverables'; version?: string }
+  ): Promise<ArtifactRenderResponse> => {
+    const params: Record<string, string> = { path };
+    if (options?.sourceType) params.source_type = options.sourceType;
+    if (options?.version) params.version = options.version;
+    return this.get<ArtifactRenderResponse>(`/artifacts/sessions/${sessionId}/render`, params);
+  };
 }
 
 export const artifactsApi = new ArtifactsApi();
@@ -91,4 +106,13 @@ export const buildDeliverableFileUrl = (
   const encodedPath = encodeURIComponent(path);
   const encodedVersion = options?.version ? `&version=${encodeURIComponent(options.version)}` : '';
   return `${ENV.API_BASE_URL}/artifacts/sessions/${sessionId}/deliverables/file?path=${encodedPath}${encodedVersion}`;
+};
+
+/**
+ * Build full URL for rendered file (PDF from LaTeX, etc.)
+ */
+export const buildRenderedFileUrl = (renderPath: string) => {
+  // renderPath is like "/artifacts/rendered/{filename}" or just "{filename}"
+  const cleanPath = renderPath.startsWith('/') ? renderPath : `/artifacts/rendered/${renderPath}`;
+  return `${ENV.API_BASE_URL}${cleanPath}`;
 };
