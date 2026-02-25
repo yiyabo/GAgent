@@ -11,12 +11,22 @@ from tool_box import get_cache_stats
 from tool_box import list_available_tools as _list_available_tools
 from tool_box import route_user_request
 from tool_box import execute_tool as _execute_tool
+from . import register_router
 
 from ..execution.executors.tool_enhanced import execute_task_with_tools
 from ..repository.tasks import default_repo
 from ..utils.route_helpers import parse_bool, sanitize_context_options
 
 router = APIRouter(tags=["tools"])
+
+register_router(
+    namespace="tools",
+    version="v1",
+    path="/tools",
+    router=router,
+    tags=["tools"],
+    description="Tool Box and bio_tools execution endpoints",
+)
 
 
 @router.get("/tools/available")
@@ -123,7 +133,9 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
     - input_file: Input file path (optional for some operations)
     - output_file: Output file path (optional)
     - params: Extra tool parameters (optional)
-    - timeout: Timeout in seconds (optional, default 3600)
+    - timeout: Timeout in seconds (optional, default 3600; <=0 disables execution timeout)
+    - background: Run as background job and return immediately (optional)
+    - job_id: Optional job id, mainly for operation="job_status"
 
     Example:
     ```json
@@ -143,6 +155,9 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
         output_file = payload.get("output_file")
         params = payload.get("params", {})
         timeout = payload.get("timeout", 3600)
+        timeout_provided = "timeout" in payload
+        background = parse_bool(payload.get("background"), default=False) if "background" in payload else None
+        job_id = payload.get("job_id")
 
         if not tool_name:
             raise HTTPException(status_code=400, detail="tool_name is required")
@@ -157,8 +172,12 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
             kwargs["output_file"] = output_file
         if params:
             kwargs["params"] = params
-        if timeout:
+        if timeout_provided:
             kwargs["timeout"] = timeout
+        if background is not None:
+            kwargs["background"] = background
+        if job_id is not None:
+            kwargs["job_id"] = str(job_id)
 
         result = await execute_tool("bio_tools", **kwargs)
 
@@ -173,6 +192,29 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"bio_tools execution failed: {str(e)}") from e
+
+
+@router.get("/tools/bio-tools/jobs/{job_id}")
+async def get_bio_tools_job_status(job_id: str):
+    """Query background bio_tools job status."""
+    try:
+        from tool_box import execute_tool
+
+        result = await execute_tool(
+            "bio_tools",
+            tool_name="job",
+            operation="job_status",
+            params={"job_id": job_id},
+        )
+        if not isinstance(result, dict):
+            raise HTTPException(status_code=500, detail="Invalid job status payload")
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("error", "Job not found"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to query bio_tools job: {str(e)}") from e
 
 
 @router.get("/tools/bio-tools/list")

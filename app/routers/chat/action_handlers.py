@@ -645,6 +645,57 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             "overwrite": overwrite,
         }
 
+    elif tool_name == "bio_tools":
+        raw_tool_name = params.get("tool_name")
+        operation = params.get("operation", "help")
+        if not isinstance(raw_tool_name, str) or not raw_tool_name.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="bio_tools requires a non-empty `tool_name` string.",
+                details={"error": "missing_tool_name", "tool": tool_name},
+            )
+        if not isinstance(operation, str) or not operation.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="bio_tools requires a non-empty `operation` string.",
+                details={"error": "missing_operation", "tool": tool_name},
+            )
+
+        clean_params: Dict[str, Any] = {
+            "tool_name": raw_tool_name.strip(),
+            "operation": operation.strip(),
+        }
+
+        for key in ("input_file", "output_file", "job_id"):
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                clean_params[key] = value.strip()
+
+        tool_params = params.get("params")
+        if isinstance(tool_params, dict):
+            clean_params["params"] = tool_params
+
+        timeout_value = params.get("timeout")
+        if timeout_value is not None:
+            try:
+                clean_params["timeout"] = int(timeout_value)
+            except (TypeError, ValueError):
+                pass
+
+        background_value = params.get("background")
+        if isinstance(background_value, bool):
+            clean_params["background"] = background_value
+        elif isinstance(background_value, str):
+            normalized = background_value.strip().lower()
+            if normalized in {"1", "true", "yes", "y", "on"}:
+                clean_params["background"] = True
+            elif normalized in {"0", "false", "no", "n", "off"}:
+                clean_params["background"] = False
+
+        params = clean_params
+
     elif tool_name == "phagescope":
         if "result_kind" not in params:
             for alias in ("resultkind", "resultKind", "result_type", "resultType"):
@@ -803,6 +854,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
     elif tool_name == "manuscript_writer":
         task_value = params.get("task")
         output_path = params.get("output_path")
+        raw_action_params = action.parameters if isinstance(action.parameters, dict) else {}
         if not isinstance(task_value, str) or not task_value.strip():
             return AgentStep(
                 action=action,
@@ -849,39 +901,42 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
 
         sections = params.get("sections")
         if sections is None:
-            sections = action.parameters.get("sections")
+            sections = raw_action_params.get("sections")
         if isinstance(sections, str):
             sections = [sections]
         if isinstance(sections, list):
             params["sections"] = sections
 
-        max_revisions = action.parameters.get("max_revisions")
+        max_revisions = raw_action_params.get("max_revisions")
         if max_revisions is not None:
             params["max_revisions"] = max_revisions
 
-        evaluation_threshold = action.parameters.get("evaluation_threshold")
+        evaluation_threshold = raw_action_params.get("evaluation_threshold")
         if evaluation_threshold is not None:
             params["evaluation_threshold"] = evaluation_threshold
 
-        generation_model = action.parameters.get("generation_model")
+        generation_model = raw_action_params.get("generation_model")
         if generation_model is not None:
             params["generation_model"] = generation_model
-        evaluation_model = action.parameters.get("evaluation_model")
+        evaluation_model = raw_action_params.get("evaluation_model")
         if evaluation_model is not None:
             params["evaluation_model"] = evaluation_model
-        merge_model = action.parameters.get("merge_model")
+        merge_model = raw_action_params.get("merge_model")
         if merge_model is not None:
             params["merge_model"] = merge_model
 
-        generation_provider = action.parameters.get("generation_provider")
+        generation_provider = raw_action_params.get("generation_provider")
         if generation_provider is not None:
             params["generation_provider"] = generation_provider
-        evaluation_provider = action.parameters.get("evaluation_provider")
+        evaluation_provider = raw_action_params.get("evaluation_provider")
         if evaluation_provider is not None:
             params["evaluation_provider"] = evaluation_provider
-        merge_provider = action.parameters.get("merge_provider")
+        merge_provider = raw_action_params.get("merge_provider")
         if merge_provider is not None:
             params["merge_provider"] = merge_provider
+        keep_workspace = raw_action_params.get("keep_workspace")
+        if isinstance(keep_workspace, bool):
+            params["keep_workspace"] = keep_workspace
 
         if agent.session_id:
             params["session_id"] = agent.session_id
@@ -1497,14 +1552,21 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         tree = agent._require_plan_bound()
         if agent.plan_executor is None:
             raise ValueError("Plan executor is not enabled in this environment.")
+        paper_mode_raw = params.get("paper_mode")
+        paper_mode = False
+        if isinstance(paper_mode_raw, bool):
+            paper_mode = paper_mode_raw
+        elif paper_mode_raw is not None:
+            paper_mode = str(paper_mode_raw).strip().lower() in {"1", "true", "yes", "on", "y"}
         # Build session context and pass to plan executor.
         session_ctx = {
             "session_id": agent.session_id,  # For tool calls.
             "user_message": agent._current_user_message if hasattr(agent, "_current_user_message") else None,
             "chat_history": agent.history,
             "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
+            "paper_mode": paper_mode,
         }
-        exec_config = ExecutionConfig(session_context=session_ctx)
+        exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=paper_mode)
         summary = await asyncio.to_thread(agent.plan_executor.execute_plan, tree.id, config=exec_config)
         executed_count = len(summary.executed_task_ids)
         failed_count = len(summary.failed_task_ids)
@@ -1811,14 +1873,21 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
         task_id = agent._coerce_int(task_id_raw, "task_id")
         if agent.plan_executor is None:
             raise ValueError("Plan executor is not enabled in this environment.")
+        paper_mode_raw = params.get("paper_mode")
+        paper_mode = False
+        if isinstance(paper_mode_raw, bool):
+            paper_mode = paper_mode_raw
+        elif paper_mode_raw is not None:
+            paper_mode = str(paper_mode_raw).strip().lower() in {"1", "true", "yes", "on", "y"}
         # Build session context and pass to task executor.
         session_ctx = {
             "session_id": agent.session_id,  # For tool calls.
             "user_message": agent._current_user_message if hasattr(agent, "_current_user_message") else None,
             "chat_history": agent.history,
             "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
+            "paper_mode": paper_mode,
         }
-        exec_config = ExecutionConfig(session_context=session_ctx)
+        exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=paper_mode)
         result = agent.plan_executor.execute_task(tree.id, task_id, config=exec_config)
         status = (result.status or "").strip().lower()
         success = status in {"completed", "done", "success"}

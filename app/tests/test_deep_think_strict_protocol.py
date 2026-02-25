@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from app.llm import NativeStreamResult, NativeToolCall
 from app.services.deep_think_agent import DeepThinkAgent, DeepThinkProtocolError
 
 
@@ -32,6 +33,24 @@ class _NoStreamLLM:
     async def chat_async(self, **kwargs):  # type: ignore[override]
         _ = kwargs
         return '{"thinking":"ok","action":null,"final_answer":{"answer":"done","confidence":0.9}}'
+
+
+class _NativeDummyLLM:
+    def __init__(self, responses: list[NativeStreamResult]) -> None:
+        self._responses = responses
+        self._index = 0
+
+    async def stream_chat_with_tools_async(self, **kwargs):  # type: ignore[override]
+        _ = kwargs
+        if self._index >= len(self._responses):
+            raise RuntimeError("No more native mock responses")
+        value = self._responses[self._index]
+        self._index += 1
+        return value
+
+    async def chat_async(self, **kwargs):  # type: ignore[override]
+        _ = kwargs
+        return "DeepThink native summary"
 
 
 async def _noop_tool_executor(_name: str, _params: dict):
@@ -126,3 +145,64 @@ def test_tool_result_callback_preserves_tool_failure_payload() -> None:
     assert callbacks[0]["error"] == "tool failed"
     assert callbacks[0]["summary"] == "tool failed summary"
     assert callbacks[0]["iteration"] == 1
+
+
+def test_native_multi_tool_calls_execute_concurrently_and_append_results() -> None:
+    started = []
+
+    async def _tool_executor(name: str, params: dict):
+        started.append(name)
+        if name == "file_operations":
+            await asyncio.sleep(0.01)
+            return {
+                "success": True,
+                "path": "/tmp/report.csv",
+                "taskid": "task-123",
+                "summary": "saved to /tmp/report.csv",
+            }
+        if name == "web_search":
+            await asyncio.sleep(0.01)
+            raise RuntimeError("search backend down")
+        return {"success": True, "params": params}
+
+    llm = _NativeDummyLLM(
+        [
+            NativeStreamResult(
+                content="Need parallel tools",
+                tool_calls=[
+                    NativeToolCall(id="tc1", name="file_operations", arguments={"operation": "list", "path": "/tmp"}),
+                    NativeToolCall(id="tc2", name="web_search", arguments={"query": "agent"}),
+                ],
+            ),
+            NativeStreamResult(
+                content="All set",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={"answer": "done", "confidence": 0.9},
+                    )
+                ],
+            ),
+        ]
+    )
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "web_search"],
+        tool_executor=_tool_executor,
+        max_iterations=3,
+    )
+
+    result = asyncio.run(agent.think("run native tools"))
+    assert result.final_answer == "done"
+    assert set(started) == {"file_operations", "web_search"}
+    assert result.total_iterations >= 2
+    assert result.thinking_steps
+    first_step = result.thinking_steps[0]
+    assert first_step.action is not None
+    assert '"tools"' in first_step.action
+    assert first_step.action_result is not None
+    assert "[file_operations]" in first_step.action_result
+    assert "[web_search]" in first_step.action_result
+    assert any((ev.get("type") == "file" and ev.get("ref") == "/tmp/report.csv") for ev in first_step.evidence)
+    assert any((ev.get("type") == "task" and ev.get("ref") == "task-123") for ev in first_step.evidence)

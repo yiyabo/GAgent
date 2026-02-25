@@ -116,6 +116,16 @@ PATH_HINT_KEYS = {
     "library_jsonl",
     "manuscript_output",
     "manuscript_partial",
+    "effective_output_path",
+    "effective_analysis_path",
+    "analysis_path",
+    "partial_output_path",
+    "sections_dir",
+    "reviews_dir",
+    "combined_path",
+    "combined_partial",
+    "merge_queue",
+    "citation_validation_path",
     "out_dir",
     "output_dir",
     "task_directory",
@@ -269,6 +279,10 @@ class DeliverablePublisher:
             "task_name": task_name,
             "source": source or {},
         }
+        if isinstance(raw_result, dict):
+            run_stats = raw_result.get("run_stats")
+            if isinstance(run_stats, dict):
+                source_payload["run_stats"] = run_stats
         items: List[Dict[str, Any]] = []
 
         explicit_file_candidates = self._extract_explicit_file_candidates(raw_result)
@@ -328,22 +342,44 @@ class DeliverablePublisher:
                 }
             )
 
+        manuscript_items = self._publish_manuscript_outputs(
+            latest_root=latest_root,
+            raw_result=raw_result,
+            publish_status=publish_status,
+            updated_at=now,
+            source_task_id=task_id,
+            task_name=task_name,
+        )
+        if manuscript_items:
+            items.extend(manuscript_items)
+
+        manuscript_has_section_artifacts = any(
+            isinstance(item, dict)
+            and str(item.get("module") or "").strip().lower() == "paper"
+            and str(item.get("path") or "").strip().startswith("paper/sections/")
+            for item in manuscript_items
+        )
+
         text_blob = self._extract_text_blob(raw_result=raw_result, summary=summary)
         section: Optional[str] = None
         normalized_tool = str(tool_name or "").strip().lower()
-        if normalized_tool == "claude_code":
-            # CC: only publish to paper when task_name implies a section; do not use instruction/text
-            section = self._paper_builder.infer_section(
-                task_name=task_name,
-                task_instruction=None,
-                text=None,
-            )
-        elif self._should_publish_text_blob(tool_name=tool_name, raw_result=raw_result):
-            section = self._paper_builder.infer_section(
-                task_name=task_name,
-                task_instruction=task_instruction,
-                text=text_blob,
-            )
+        # manuscript_writer outputs with explicit section artifacts should be source of truth;
+        # skip generic text-based section inference to avoid overwriting section content with
+        # summaries (e.g., "manuscript finished").
+        if not manuscript_has_section_artifacts:
+            if normalized_tool == "claude_code":
+                # CC: only publish to paper when task_name implies a section; do not use instruction/text
+                section = self._paper_builder.infer_section(
+                    task_name=task_name,
+                    task_instruction=None,
+                    text=None,
+                )
+            elif self._should_publish_text_blob(tool_name=tool_name, raw_result=raw_result):
+                section = self._paper_builder.infer_section(
+                    task_name=task_name,
+                    task_instruction=task_instruction,
+                    text=text_blob,
+                )
         title = task_name or "Research Project"
         paper_dir = latest_root / "paper"
         refs_dir = latest_root / "refs"
@@ -439,6 +475,163 @@ class DeliverablePublisher:
             manifest_path=str(latest_manifest_path),
             paper_status=paper_status,
         )
+
+    @staticmethod
+    def _normalize_manuscript_section(section: Optional[str]) -> Optional[str]:
+        if not isinstance(section, str):
+            return None
+        key = section.strip().lower()
+        mapping = {
+            "methods": "method",
+            "method": "method",
+            "experiments": "experiment",
+            "experiment": "experiment",
+            "results": "result",
+            "result": "result",
+            "abstract": "abstract",
+            "introduction": "introduction",
+            "conclusion": "conclusion",
+        }
+        return mapping.get(key)
+
+    def _publish_manuscript_outputs(
+        self,
+        *,
+        latest_root: Path,
+        raw_result: Any,
+        publish_status: str,
+        updated_at: str,
+        source_task_id: Optional[int],
+        task_name: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(raw_result, dict):
+            return []
+
+        normalized_tool = str(raw_result.get("tool") or "").strip().lower()
+        if normalized_tool != "manuscript_writer":
+            return []
+
+        items: List[Dict[str, Any]] = []
+        title = task_name or "Research Project"
+        paper_dir = latest_root / "paper"
+        refs_dir = latest_root / "refs"
+        docs_dir = latest_root / "docs"
+        self._paper_builder.ensure_structure(paper_dir=paper_dir, refs_dir=refs_dir, title=title)
+        docs_dir.mkdir(parents=True, exist_ok=True)
+
+        sections_payload = raw_result.get("sections")
+        if isinstance(sections_payload, list):
+            for row in sections_payload:
+                if not isinstance(row, dict):
+                    continue
+                raw_section = str(row.get("section") or "").strip().lower()
+                section_key = self._normalize_manuscript_section(raw_section)
+                raw_path = row.get("path")
+                if not isinstance(raw_path, str):
+                    continue
+                source = self._resolve_path(raw_path, session_dir=latest_root.parent.parent)
+                if source is None or not source.is_file():
+                    continue
+                try:
+                    text = source.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                if raw_section in {"reference", "references"}:
+                    references_doc = docs_dir / "references.md"
+                    ref_text = text.strip()
+                    references_doc.write_text(ref_text + ("\n" if ref_text else ""), encoding="utf-8")
+                    items.append(
+                        {
+                            "module": "docs",
+                            "path": str(references_doc.relative_to(latest_root)),
+                            "status": publish_status,
+                            "size": references_doc.stat().st_size,
+                            "updated_at": updated_at,
+                            "source_path": self._to_project_relative(source),
+                        }
+                    )
+                    continue
+                if not section_key:
+                    continue
+                section_path = self._paper_builder.update_section(
+                    paper_dir=paper_dir,
+                    section=section_key,
+                    content=text,
+                )
+                items.append(
+                    {
+                        "module": "paper",
+                        "path": str(section_path.relative_to(latest_root)),
+                        "status": publish_status,
+                        "size": section_path.stat().st_size,
+                        "updated_at": updated_at,
+                        "source_path": self._to_project_relative(source),
+                    }
+                )
+                doc_stem = "methods" if section_key == "method" else section_key
+                if doc_stem in DOC_ALLOWED_STEMS:
+                    doc_path = docs_dir / f"{doc_stem}.md"
+                    doc_text = text.strip()
+                    doc_path.write_text(doc_text + ("\n" if doc_text else ""), encoding="utf-8")
+                    items.append(
+                        {
+                            "module": "docs",
+                            "path": str(doc_path.relative_to(latest_root)),
+                            "status": publish_status,
+                            "size": doc_path.stat().st_size,
+                            "updated_at": updated_at,
+                            "source_path": self._to_project_relative(source),
+                        }
+                    )
+
+        analysis_ref = raw_result.get("effective_analysis_path") or raw_result.get("analysis_path")
+        if isinstance(analysis_ref, str) and analysis_ref.strip():
+            analysis_source = self._resolve_path(analysis_ref, session_dir=latest_root.parent.parent)
+            if analysis_source is not None and analysis_source.is_file():
+                try:
+                    analysis_text = analysis_source.read_text(encoding="utf-8").strip()
+                except Exception:
+                    analysis_text = ""
+                analysis_doc = docs_dir / "analysis.md"
+                analysis_doc.write_text(analysis_text + ("\n" if analysis_text else ""), encoding="utf-8")
+                items.append(
+                    {
+                        "module": "docs",
+                        "path": str(analysis_doc.relative_to(latest_root)),
+                        "status": publish_status,
+                        "size": analysis_doc.stat().st_size,
+                        "updated_at": updated_at,
+                        "source_path": self._to_project_relative(analysis_source),
+                    }
+                )
+
+        output_ref = raw_result.get("effective_output_path") or raw_result.get("output_path")
+        if isinstance(output_ref, str) and output_ref.strip():
+            output_source = self._resolve_path(output_ref, session_dir=latest_root.parent.parent)
+            if output_source is not None and output_source.is_file():
+                try:
+                    output_text = output_source.read_text(encoding="utf-8").strip()
+                except Exception:
+                    output_text = ""
+                report_doc = docs_dir / "report.md"
+                report_doc.write_text(output_text + ("\n" if output_text else ""), encoding="utf-8")
+                items.append(
+                    {
+                        "module": "docs",
+                        "path": str(report_doc.relative_to(latest_root)),
+                        "status": publish_status,
+                        "size": report_doc.stat().st_size,
+                        "updated_at": updated_at,
+                        "source_path": self._to_project_relative(output_source),
+                    }
+                )
+
+        # Keep source task info explicit for generated synthetic files.
+        source_tag = f"task:{source_task_id or 'unknown'}"
+        for item in items:
+            if not item.get("source_path"):
+                item["source_path"] = source_tag
+        return items
 
     def _extract_explicit_file_candidates(self, payload: Any) -> List[str]:
         found: Set[str] = set()

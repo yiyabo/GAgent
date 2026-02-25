@@ -17,6 +17,7 @@ import {
   ProjectOutlined,
   WarningOutlined,
   SyncOutlined,
+  ClockCircleOutlined,
 } from '@ant-design/icons';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from 'antd';
@@ -69,6 +70,18 @@ function extractSemanticLabel(actionStr: string | null | undefined): ToolSemanti
     parsed = JSON.parse(actionStr);
   } catch {
     return { icon: <ToolOutlined />, label: 'Running tool', toolName: 'unknown' };
+  }
+  if (Array.isArray(parsed?.tools) && parsed.tools.length > 0) {
+    const toolNames = parsed.tools
+      .map((item: any) => (typeof item?.tool === 'string' ? item.tool : null))
+      .filter((name: string | null): name is string => !!name);
+    const preview = toolNames.slice(0, 2).join(', ');
+    const suffix = toolNames.length > 2 ? ` +${toolNames.length - 2}` : '';
+    return {
+      icon: <ToolOutlined />,
+      label: `Running ${toolNames.length} tools${preview ? ` (${preview}${suffix})` : ''}`,
+      toolName: toolNames[0] || 'multi_tool',
+    };
   }
   const toolName: string = parsed?.tool || 'unknown';
   const params: Record<string, any> = parsed?.params || {};
@@ -126,6 +139,26 @@ function stepHasToolError(step: ThinkingStep): boolean {
   if (step.status === 'error') return true;
   const r = step.action_result;
   return typeof r === 'string' && /^Error[ :]/.test(r);
+}
+
+function _toMs(value?: string): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function formatDurationMs(ms: number | null): string {
+  if (ms === null || !Number.isFinite(ms)) return '--';
+  if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${(ms / 60_000).toFixed(1)}m`;
+}
+
+function stepDurationMs(step: ThinkingStep): number | null {
+  const start = _toMs(step.started_at) ?? _toMs(step.timestamp);
+  const end = _toMs(step.finished_at) ?? _toMs(step.timestamp);
+  if (start === null || end === null) return null;
+  return Math.max(0, end - start);
 }
 
 /* ------------------------------------------------------------------ */
@@ -227,6 +260,7 @@ const ThinkingStepItem: React.FC<{
   const isTool = !!step.action;
   const isError = stepHasToolError(step);
   const hasResult = !!step.action_result;
+  const duration = stepDurationMs(step);
   const isStepComplete =
     step.status === 'done' ||
     step.status === 'completed' ||
@@ -423,6 +457,22 @@ const ThinkingStepItem: React.FC<{
                     <pre className="tp-step-detail-pre">{step.action_result}</pre>
                   </div>
                 )}
+                {Array.isArray(step.evidence) && step.evidence.length > 0 && (
+                  <div className="tp-step-detail-section">
+                    <div className="tp-step-detail-label">Evidence</div>
+                    <div className="tp-evidence-list">
+                      {step.evidence.map((ev, evIdx) => (
+                        <div className="tp-evidence-item" key={`${ev.ref || 'ev'}_${evIdx}`}>
+                          <div className="tp-evidence-item-title">
+                            {ev.title || ev.type || 'Evidence'}
+                          </div>
+                          {ev.ref && <div className="tp-evidence-item-ref">{ev.ref}</div>}
+                          {ev.snippet && <div className="tp-evidence-item-snippet">{ev.snippet}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -433,6 +483,10 @@ const ThinkingStepItem: React.FC<{
       {isError && (
         <ErrorRecoveryFlow step={step} nextStep={nextStep} />
       )}
+      <div className="tp-step-meta-row">
+        <ClockCircleOutlined />
+        <span>{formatDurationMs(duration)}</span>
+      </div>
     </motion.div>
   );
 };
@@ -447,6 +501,15 @@ const getMainSteps = (steps: ThinkingStep[]): ThinkingStep[] =>
     if (step.thought && step.thought.length > 50) return true;
     return false;
   });
+
+type PhaseKey = 'Planning' | 'Tooling' | 'Synthesis' | 'Final';
+
+function classifyPhase(step: ThinkingStep): PhaseKey {
+  if (step.status === 'done' || step.status === 'completed') return 'Final';
+  if (step.action) return 'Tooling';
+  if (step.status === 'analyzing') return 'Synthesis';
+  return 'Planning';
+}
 
 /* ------------------------------------------------------------------ */
 /*  ThinkingProcess (exported)                                         */
@@ -467,6 +530,20 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   const [isExpanded, setIsExpanded] = useState(!isFinished && process.status === 'active');
   const mainStepsCount = getMainSteps(process.steps).length;
   const isActive = process.status === 'active' && !isFinished;
+  const phaseStats = useMemo(() => {
+    const phases: Record<PhaseKey, { count: number; duration: number }> = {
+      Planning: { count: 0, duration: 0 },
+      Tooling: { count: 0, duration: 0 },
+      Synthesis: { count: 0, duration: 0 },
+      Final: { count: 0, duration: 0 },
+    };
+    for (const step of process.steps) {
+      const phase = classifyPhase(step);
+      phases[phase].count += 1;
+      phases[phase].duration += stepDurationMs(step) || 0;
+    }
+    return phases;
+  }, [process.steps]);
 
   useEffect(() => {
     if (!isFinished && process.status === 'active') {
@@ -602,6 +679,22 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                     : { maxHeight: '70vh', overflowY: 'auto' as const }),
                 }}
               >
+                <div className="tp-phase-grid">
+                  {(Object.keys(phaseStats) as PhaseKey[]).map((phase) => (
+                    <div
+                      key={phase}
+                      className={`tp-phase-card${
+                        phaseStats[phase].count > 0 ? ' active' : ''
+                      }`}
+                    >
+                      <div className="tp-phase-title">{phase}</div>
+                      <div className="tp-phase-meta">
+                        <span>{phaseStats[phase].count} step{phaseStats[phase].count === 1 ? '' : 's'}</span>
+                        <span>{formatDurationMs(phaseStats[phase].duration || null)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
                 <div style={{ paddingLeft: 8, paddingTop: 8 }}>
                   {process.steps.map((step, idx) => (
                     <ThinkingStepItem

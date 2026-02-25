@@ -17,6 +17,7 @@ Notes:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,14 @@ from .manuscript_writer import manuscript_writer_handler
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
+_TRUTHY_VALUES = {"1", "true", "yes", "on", "y"}
+
+
+def _env_enabled(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in _TRUTHY_VALUES
 
 
 def _bar(done: int, total: int, width: int = 24) -> str:
@@ -170,14 +179,34 @@ async def review_pack_writer_handler(
     stage = 2
 
     draft_ok = isinstance(draft, dict) and bool(draft.get("success"))
+    quality_gate_passed = (
+        bool(draft.get("quality_gate_passed"))
+        if isinstance(draft, dict) and draft.get("quality_gate_passed") is not None
+        else draft_ok
+    )
     partial_path = (
         draft.get("partial_output_path")
         if isinstance(draft, dict) and isinstance(draft.get("partial_output_path"), str)
         else None
     )
-    ok = bool(draft_ok or partial_path)
+    strict_gate = _env_enabled("MANUSCRIPT_STRICT_GATE", True)
+    if strict_gate:
+        ok = bool(draft_ok and quality_gate_passed)
+    else:
+        ok = bool(draft_ok or partial_path)
+    partial = bool(partial_path and not ok)
+    error_code: Optional[str] = None
+    if not ok:
+        if isinstance(draft, dict):
+            draft_error = draft.get("error")
+            if isinstance(draft_error, str) and draft_error.strip():
+                error_code = draft_error.strip()
+        if partial and not error_code:
+            error_code = "section_evaluation_failed"
+        if not error_code:
+            error_code = "manuscript_writer_failed"
     warnings: List[str] = []
-    if not draft_ok and partial_path:
+    if partial:
         warnings.append(
             "manuscript_writer did not pass section evaluation; a partial draft was still produced. "
             f"See {partial_path}"
@@ -185,7 +214,9 @@ async def review_pack_writer_handler(
     return {
         "tool": "review_pack_writer",
         "success": True if ok else False,
-        "partial": True if (not draft_ok and partial_path) else False,
+        "partial": partial,
+        "error_code": error_code,
+        "partial_output_path": partial_path,
         "warnings": warnings if warnings else None,
         "topic": topic,
         "query": final_query,

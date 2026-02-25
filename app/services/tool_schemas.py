@@ -7,7 +7,48 @@ OpenAI-compatible function calling format used by Qwen, OpenAI, and Kimi.
 
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_BIO_TOOLS_CONFIG_PATH = _PROJECT_ROOT / "tool_box" / "bio_tools" / "tools_config.json"
+_BIO_TOOLS_FALLBACK = ["seqkit", "blast", "prodigal", "hmmer", "checkv"]
+
+
+def _load_bio_tool_names() -> List[str]:
+    """Load bio tool names from tools_config.json with safe fallback."""
+    try:
+        if not _BIO_TOOLS_CONFIG_PATH.exists():
+            return list(_BIO_TOOLS_FALLBACK)
+        config = json.loads(_BIO_TOOLS_CONFIG_PATH.read_text(encoding="utf-8"))
+        names = [str(name).strip() for name in config.keys() if str(name).strip()]
+        if not names:
+            return list(_BIO_TOOLS_FALLBACK)
+        return sorted(set(names))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to load bio tools config for schema enum: %s", exc)
+        return list(_BIO_TOOLS_FALLBACK)
+
+
+_BIO_TOOL_NAMES = _load_bio_tool_names()
+
+
+def _build_bio_tools_schema_description() -> str:
+    names_text = ", ".join(_BIO_TOOL_NAMES)
+    return (
+        "PREFERRED for bioinformatics: Docker-based tools for FASTA/FASTQ/sequence "
+        "analysis. Tool list is synced from tools_config.json. "
+        f"Available tools: {names_text}. "
+        "Use operation='help' first to inspect exact operations and parameters. "
+        "For heavy runs, set background=true to submit asynchronously and query "
+        "later with operation='job_status' and job_id. "
+        "Do not use background mode for quick checks that must return immediately."
+    )
 
 
 def build_tool_schemas(available_tools: List[str]) -> List[Dict[str, Any]]:
@@ -187,31 +228,52 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "type": "function",
         "function": {
             "name": "bio_tools",
-            "description": (
-                "PREFERRED for bioinformatics: Docker-based tools for FASTA/FASTQ/sequence "
-                "analysis. Available tools: seqkit (stats/grep/seq/head), blast (blastn/blastp/"
-                "makeblastdb), prodigal (predict/meta), hmmer (hmmscan/hmmsearch), checkv "
-                "(end_to_end/completeness). Use operation='help' to see tool usage."
-            ),
+            "description": _build_bio_tools_schema_description(),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "tool_name": {
                         "type": "string",
-                        "enum": ["seqkit", "blast", "prodigal", "hmmer", "checkv"],
+                        "enum": _BIO_TOOL_NAMES,
                         "description": "The bioinformatics tool to run.",
                     },
                     "operation": {
                         "type": "string",
-                        "description": "Operation to perform (e.g., stats, grep, predict, help).",
+                        "description": (
+                            "Operation to perform (e.g., stats, grep, predict, help). "
+                            "Use 'job_status' to query a submitted background job."
+                        ),
                     },
                     "input_file": {
                         "type": "string",
                         "description": "Absolute path to the input file.",
                     },
+                    "output_file": {
+                        "type": "string",
+                        "description": "Output filename or directory fragment.",
+                    },
                     "params": {
                         "type": "object",
                         "description": "Additional tool-specific parameters.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": (
+                            "Execution timeout in seconds. <=0 disables execution timeout "
+                            "(for long-running tools)."
+                        ),
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, submit bio_tools execution as a background job and "
+                            "return immediately with job_id. Recommended only for long-running "
+                            "operations that do not need immediate in-turn output."
+                        ),
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "description": "Background job id used with operation='job_status'.",
                     },
                 },
                 "required": ["tool_name", "operation"],

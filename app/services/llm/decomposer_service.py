@@ -25,12 +25,16 @@ class DecompositionChild(BaseModel):
     context_combined: Optional[str] = None
     context_sections: list[Dict[str, Any]] = Field(default_factory=list)
     context_meta: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> "DecompositionChild":
         """Normalise payload that may contain nested `context` objects."""
         data = dict(payload)
         context = data.pop("context", None) or {}
+        raw_metadata = data.get("metadata")
+        if not isinstance(raw_metadata, dict):
+            data["metadata"] = {}
         normalized_sections: list[Dict[str, Any]] = []
         if isinstance(context, dict):
             data.setdefault("context_combined", context.get("combined"))

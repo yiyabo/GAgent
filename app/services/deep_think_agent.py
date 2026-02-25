@@ -4,12 +4,52 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.tool_schemas import build_tool_schemas
 
 logger = logging.getLogger(__name__)
+
+
+_BIO_TOOLS_FALLBACK_CATALOG: Dict[str, List[str]] = {
+    "seqkit": ["stats", "grep", "seq", "head"],
+    "blast": ["blastn", "blastp", "makeblastdb"],
+    "prodigal": ["predict", "meta"],
+    "hmmer": ["hmmscan", "hmmsearch", "hmmpress", "hmmbuild"],
+    "checkv": ["end_to_end", "completeness", "complete_genomes"],
+}
+
+
+def _load_bio_tools_catalog() -> Dict[str, List[str]]:
+    config_path = Path(__file__).resolve().parents[2] / "tool_box" / "bio_tools" / "tools_config.json"
+    try:
+        if not config_path.exists():
+            return dict(_BIO_TOOLS_FALLBACK_CATALOG)
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        catalog: Dict[str, List[str]] = {}
+        for tool_name, info in raw.items():
+            ops = sorted((info or {}).get("operations", {}).keys())
+            catalog[str(tool_name)] = [str(op) for op in ops]
+        if not catalog:
+            return dict(_BIO_TOOLS_FALLBACK_CATALOG)
+        return catalog
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to load bio tools catalog for DeepThink prompt: %s", exc)
+        return dict(_BIO_TOOLS_FALLBACK_CATALOG)
+
+
+def _format_bio_tools_catalog(catalog: Dict[str, List[str]]) -> str:
+    return "; ".join(
+        f"{tool} ({', '.join(ops) if ops else 'no operations'})"
+        for tool, ops in sorted(catalog.items())
+    )
+
+
+_BIO_TOOLS_CATALOG = _load_bio_tools_catalog()
+_BIO_TOOLS_NAMES = sorted(_BIO_TOOLS_CATALOG.keys())
+_BIO_TOOLS_CATALOG_TEXT = _format_bio_tools_catalog(_BIO_TOOLS_CATALOG)
 
 
 @dataclass
@@ -22,6 +62,9 @@ class ThinkingStep:
     self_correction: Optional[str]
     timestamp: datetime = field(default_factory=datetime.now)
     status: str = "thinking"  # thinking, calling_tool, analyzing, done, error
+    evidence: List[Dict[str, str]] = field(default_factory=list)
+    started_at: datetime = field(default_factory=datetime.now)
+    finished_at: Optional[datetime] = None
 
 
 @dataclass
@@ -56,7 +99,7 @@ class DeepThinkAgent:
     """
 
     DEFAULT_TOOL_TIMEOUT = 60
-    FINAL_STREAM_CHUNK_CHARS = 1
+    FINAL_STREAM_CHUNK_CHARS = 24
     FINAL_STREAM_DELAY_SEC = 0.01
 
     ARTIFACT_PATH_RE = re.compile(
@@ -68,6 +111,7 @@ class DeepThinkAgent:
     BARE_PATH_RE = re.compile(
         r'(/(?:[\w._-]+/)+[\w._-]+\.(?:csv|tsv|xlsx|png|jpg|jpeg|pdf|svg|html|json|txt|fasta|fa|fq|fastq|gff|bed))\b'
     )
+    URL_RE = re.compile(r"https?://[^\s`\"'<>]+", re.IGNORECASE)
 
     def __init__(
         self,
@@ -198,6 +242,7 @@ class DeepThinkAgent:
                 logger.exception("[DEEP_THINK_NATIVE] LLM call failed at iteration %d", iteration)
                 current_step.status = "error"
                 current_step.thought = f"Error: {exc}"
+                current_step.finished_at = datetime.now()
                 thinking_steps.append(current_step)
                 if self.on_thinking:
                     await self._safe_callback(current_step)
@@ -206,104 +251,100 @@ class DeepThinkAgent:
             current_step.thought = result.content or ""
 
             if result.tool_calls:
-                for tc in result.tool_calls:
-                    if tc.name == "submit_final_answer":
-                        final_answer = tc.arguments.get("answer", "")
-                        raw_conf = tc.arguments.get("confidence", 0.8)
-                        try:
-                            confidence = max(0.0, min(1.0, float(raw_conf)))
-                        except (TypeError, ValueError):
-                            confidence = 0.8
-                        current_step.status = "done"
-                        thinking_steps.append(current_step)
-                        if self.on_thinking:
-                            await self._safe_callback(current_step)
-                        if self.on_final_delta and final_answer:
-                            await self._stream_final_answer(final_answer)
-                        break
+                tool_calls = list(result.tool_calls)
+                final_call = next((tc for tc in tool_calls if tc.name == "submit_final_answer"), None)
+                executable_calls = [tc for tc in tool_calls if tc.name != "submit_final_answer"]
 
-                    # Regular tool call
-                    tool_name = tc.name
-                    tool_params = tc.arguments
-                    current_step.action = json.dumps(
-                        {"tool": tool_name, "params": tool_params},
-                        ensure_ascii=False,
-                    )
+                if executable_calls:
+                    action_payload = {
+                        "tools": [
+                            {
+                                "tool": tc.name,
+                                "params": tc.arguments,
+                                "tool_call_id": tc.id or f"native_{iteration}_{idx}",
+                            }
+                            for idx, tc in enumerate(executable_calls)
+                        ]
+                    }
+                    current_step.action = json.dumps(action_payload, ensure_ascii=False)
                     current_step.status = "calling_tool"
                     thinking_steps.append(current_step)
                     if self.on_thinking:
                         await self._safe_callback(current_step)
 
-                    if tool_name not in self.available_tools:
-                        tool_result_str = f"Error: Tool '{tool_name}' is not available."
-                    else:
-                        if tool_name not in tools_used:
+                    tool_results = await asyncio.gather(
+                        *[
+                            self._execute_native_tool_call(tc=tc, iteration=iteration, index=idx)
+                            for idx, tc in enumerate(executable_calls)
+                        ]
+                    )
+                    tool_results.sort(
+                        key=lambda item: (
+                            item.get("index", 0),
+                            str(item.get("tool_call_id") or ""),
+                        )
+                    )
+
+                    for item in tool_results:
+                        tool_name = str(item.get("tool_name") or "")
+                        if tool_name and tool_name not in tools_used:
                             tools_used.append(tool_name)
-                        timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(tool_name, self.tool_timeout)
-                        if self.on_tool_start:
-                            await self._safe_generic_callback(self.on_tool_start, tool_name, tool_params)
-                        try:
-                            tool_result = await asyncio.wait_for(
-                                self.tool_executor(tool_name, tool_params),
-                                timeout=timeout,
-                            )
-                            tool_result_str = str(tool_result)
-                            await self._emit_artifacts(tool_name, tool_result, iteration)
-                            if self.on_tool_result:
-                                cb_ok, cb_err = self._normalize_tool_callback_outcome(tool_result)
-                                await self._safe_generic_callback(
-                                    self.on_tool_result,
-                                    tool_name,
-                                    {
-                                        "success": cb_ok,
-                                        "error": cb_err,
-                                        "result": tool_result,
-                                        "summary": self._build_tool_callback_summary(tool_result),
-                                        "iteration": iteration,
-                                    },
-                                )
-                        except asyncio.TimeoutError:
-                            tool_result_str = f"Error: Tool '{tool_name}' timed out after {timeout}s"
-                            if self.on_tool_result:
-                                await self._safe_generic_callback(
-                                    self.on_tool_result, tool_name,
-                                    {"success": False, "error": "timeout", "summary": tool_result_str, "iteration": iteration},
-                                )
-                        except Exception as e:
-                            tool_result_str = f"Error executing tool: {e}"
-                            logger.exception("Tool %s failed", tool_name)
-                            if self.on_tool_result:
-                                await self._safe_generic_callback(
-                                    self.on_tool_result, tool_name,
-                                    {"success": False, "error": str(e), "summary": tool_result_str, "iteration": iteration},
-                                )
 
-                    current_step.action_result = tool_result_str
-                    current_step.status = "analyzing"
-                    if self.on_thinking:
-                        await self._safe_callback(current_step)
-
-                    # Append assistant message with tool_calls and tool result
                     assistant_msg: Dict[str, Any] = {"role": "assistant", "content": result.content or ""}
                     assistant_msg["tool_calls"] = [
                         {
-                            "id": tc.id,
+                            "id": item["tool_call_id"],
                             "type": "function",
-                            "function": {"name": tc.name, "arguments": json.dumps(tc.arguments, ensure_ascii=False)},
+                            "function": {
+                                "name": item["tool_name"],
+                                "arguments": json.dumps(item.get("tool_params") or {}, ensure_ascii=False),
+                            },
                         }
+                        for item in tool_results
                     ]
                     messages.append(assistant_msg)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": tool_result_str,
-                    })
-                    break  # only process first tool call per iteration
+                    for item in tool_results:
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": item["tool_call_id"],
+                                "content": item["tool_result_text"],
+                            }
+                        )
 
-                if final_answer:
+                    per_tool_text = [
+                        f"[{item['tool_name']}] {item['tool_result_text']}"
+                        for item in tool_results
+                    ]
+                    current_step.action_result = "\n\n".join(per_tool_text)
+                    merged_evidence: List[Dict[str, str]] = []
+                    for item in tool_results:
+                        merged_evidence.extend(item.get("evidence") or [])
+                    current_step.evidence = merged_evidence
+                    current_step.status = "analyzing"
+                    current_step.finished_at = datetime.now()
+                    if self.on_thinking:
+                        await self._safe_callback(current_step)
+                    continue
+
+                if final_call:
+                    final_answer = final_call.arguments.get("answer", "")
+                    raw_conf = final_call.arguments.get("confidence", 0.8)
+                    try:
+                        confidence = max(0.0, min(1.0, float(raw_conf)))
+                    except (TypeError, ValueError):
+                        confidence = 0.8
+                    current_step.status = "done"
+                    current_step.finished_at = datetime.now()
+                    thinking_steps.append(current_step)
+                    if self.on_thinking:
+                        await self._safe_callback(current_step)
+                    if self.on_final_delta and final_answer:
+                        await self._stream_final_answer(final_answer)
                     break
             else:
                 # No tool calls – pure thinking text
+                current_step.finished_at = datetime.now()
                 thinking_steps.append(current_step)
                 if self.on_thinking:
                     await self._safe_callback(current_step)
@@ -778,6 +819,197 @@ Respond with ONLY a JSON object:
                 },
             )
 
+    async def _execute_native_tool_call(
+        self,
+        tc: Any,
+        iteration: int,
+        index: int,
+    ) -> Dict[str, Any]:
+        tool_name = str(getattr(tc, "name", "") or "")
+        tool_params = getattr(tc, "arguments", {}) or {}
+        tool_call_id = str(getattr(tc, "id", "") or f"native_{iteration}_{index}")
+        timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(tool_name, self.tool_timeout)
+
+        if self.on_tool_start and tool_name:
+            await self._safe_generic_callback(self.on_tool_start, tool_name, tool_params)
+
+        if tool_name not in self.available_tools:
+            error_payload = {
+                "success": False,
+                "error": f"tool_not_available:{tool_name}",
+                "summary": f"Tool '{tool_name}' is not available.",
+                "iteration": iteration,
+            }
+            if self.on_tool_result and tool_name:
+                await self._safe_generic_callback(self.on_tool_result, tool_name, error_payload)
+            tool_result_text = json.dumps(error_payload, ensure_ascii=False)
+            return {
+                "index": index,
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "tool_params": tool_params,
+                "tool_result_text": tool_result_text,
+                "evidence": [],
+            }
+
+        try:
+            tool_result = await asyncio.wait_for(
+                self.tool_executor(tool_name, tool_params),
+                timeout=timeout,
+            )
+            callback_success, callback_error = self._normalize_tool_callback_outcome(tool_result)
+            callback_payload = {
+                "success": callback_success,
+                "error": callback_error,
+                "result": tool_result,
+                "summary": self._build_tool_callback_summary(tool_result),
+                "iteration": iteration,
+            }
+            if not callback_success:
+                logger.warning(
+                    "[DEEP_THINK_NATIVE] Tool returned success=false: tool=%s tool_call_id=%s summary=%s error=%s",
+                    tool_name,
+                    tool_call_id,
+                    self._clip_log_text(callback_payload.get("summary"), limit=360),
+                    self._clip_log_text(callback_error, limit=240),
+                )
+            if self.on_tool_result:
+                await self._safe_generic_callback(self.on_tool_result, tool_name, callback_payload)
+            await self._emit_artifacts(tool_name, tool_result, iteration)
+            normalized_payload = {
+                "success": callback_success,
+                "tool": tool_name,
+                "result": tool_result,
+                "error": callback_error,
+            }
+            tool_result_text = json.dumps(normalized_payload, ensure_ascii=False, default=str)
+            evidence = self._extract_evidence(tool_name, tool_params, tool_result)
+            return {
+                "index": index,
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "tool_params": tool_params,
+                "tool_result_text": tool_result_text,
+                "evidence": evidence,
+            }
+        except asyncio.TimeoutError:
+            timeout_payload = {
+                "success": False,
+                "tool": tool_name,
+                "error": "timeout",
+                "summary": f"Tool '{tool_name}' timed out after {timeout}s",
+            }
+            if self.on_tool_result:
+                await self._safe_generic_callback(
+                    self.on_tool_result,
+                    tool_name,
+                    {
+                        "success": False,
+                        "error": "timeout",
+                        "summary": timeout_payload["summary"],
+                        "iteration": iteration,
+                    },
+                )
+            return {
+                "index": index,
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "tool_params": tool_params,
+                "tool_result_text": json.dumps(timeout_payload, ensure_ascii=False),
+                "evidence": [],
+            }
+        except Exception as exc:
+            logger.exception(
+                "Tool %s failed (tool_call_id=%s, params=%s)",
+                tool_name,
+                tool_call_id,
+                self._sanitize_tool_params_for_log(tool_params),
+            )
+            failure_payload = {
+                "success": False,
+                "tool": tool_name,
+                "error": str(exc),
+                "summary": f"Error executing tool: {exc}",
+            }
+            if self.on_tool_result:
+                await self._safe_generic_callback(
+                    self.on_tool_result,
+                    tool_name,
+                    {
+                        "success": False,
+                        "error": str(exc),
+                        "summary": failure_payload["summary"],
+                        "iteration": iteration,
+                    },
+                )
+            return {
+                "index": index,
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "tool_params": tool_params,
+                "tool_result_text": json.dumps(failure_payload, ensure_ascii=False),
+                "evidence": [],
+            }
+
+    def _extract_evidence(
+        self,
+        tool_name: str,
+        tool_params: Dict[str, Any],
+        tool_result: Any,
+    ) -> List[Dict[str, str]]:
+        text = str(tool_result or "")
+        evidence: List[Dict[str, str]] = []
+
+        for path in self._extract_artifact_paths(tool_name, tool_result):
+            evidence.append(
+                {
+                    "type": "file",
+                    "title": "Generated file",
+                    "ref": path,
+                    "snippet": f"{tool_name} produced {path}",
+                }
+            )
+        for m in self.URL_RE.finditer(text):
+            url = m.group(0)
+            evidence.append(
+                {
+                    "type": "url",
+                    "title": "External source",
+                    "ref": url,
+                    "snippet": f"{tool_name} referenced {url}",
+                }
+            )
+        task_id = None
+        if isinstance(tool_result, dict):
+            for key in ("taskid", "task_id", "job_id"):
+                val = tool_result.get(key)
+                if isinstance(val, (str, int)) and str(val).strip():
+                    task_id = str(val).strip()
+                    break
+        if task_id:
+            evidence.append(
+                {
+                    "type": "task",
+                    "title": "Background task",
+                    "ref": task_id,
+                    "snippet": f"{tool_name} created task {task_id}",
+                }
+            )
+        if not evidence:
+            snippet = (text or "").strip().replace("\n", " ")
+            if len(snippet) > 240:
+                snippet = snippet[:240] + "..."
+            if snippet:
+                evidence.append(
+                    {
+                        "type": "output",
+                        "title": "Tool output",
+                        "ref": tool_name,
+                        "snippet": snippet,
+                    }
+                )
+        return evidence[:8]
+
     @staticmethod
     def _build_tool_callback_summary(result: Any) -> str:
         if isinstance(result, dict):
@@ -786,6 +1018,45 @@ Respond with ONLY a JSON object:
             if "error" in result and result.get("error"):
                 return str(result.get("error"))[:600]
         return str(result)[:600]
+
+    @staticmethod
+    def _clip_log_text(value: Any, *, limit: int = 400) -> str:
+        text = " ".join(str(value or "").split()).strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)] + "..."
+
+    @classmethod
+    def _sanitize_tool_params_for_log(cls, params: Any) -> str:
+        redact_tokens = ("password", "passwd", "secret", "token", "api_key", "apikey", "authorization")
+
+        def _sanitize(value: Any, depth: int = 0) -> Any:
+            if depth >= 4:
+                return "<truncated>"
+            if isinstance(value, dict):
+                sanitized: Dict[str, Any] = {}
+                for key, item in value.items():
+                    key_text = str(key)
+                    key_lower = key_text.lower()
+                    if any(token in key_lower for token in redact_tokens):
+                        sanitized[key_text] = "<redacted>"
+                        continue
+                    sanitized[key_text] = _sanitize(item, depth + 1)
+                return sanitized
+            if isinstance(value, list):
+                return [_sanitize(item, depth + 1) for item in value[:20]]
+            if isinstance(value, tuple):
+                return [_sanitize(item, depth + 1) for item in value[:20]]
+            if isinstance(value, str):
+                return cls._clip_log_text(value, limit=240)
+            return value
+
+        try:
+            sanitized_params = _sanitize(params)
+            raw = json.dumps(sanitized_params, ensure_ascii=False, default=str)
+        except Exception:
+            raw = str(params)
+        return cls._clip_log_text(raw, limit=800)
 
     @classmethod
     def _chunk_final_answer(cls, text: str) -> List[str]:
@@ -830,7 +1101,16 @@ Respond with ONLY a JSON object:
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
             "document_reader": "Read local documents with format-aware parsing. Use this first for .docx/.pdf/.txt content extraction. Params: {\"operation\": \"read_any|read_pdf|read_text\", \"file_path\": \"/abs/path\"}",
             "vision_reader": "Read PDFs and images using vision model. Use for visual OCR/figures/equations, not for DOCX. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\"}",
-            "bio_tools": "PREFERRED for bioinformatics: Execute Docker-based tools for FASTA/FASTQ/sequence analysis. For sequence stats, use seqkit. Example: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/absolute/path/to/file.fasta\"}. NOTE: input_file MUST be absolute path. Available tools: seqkit (stats, grep, seq), blast (blastn, blastp), prodigal (predict genes), hmmer (hmmscan), checkv (virus quality). Use operation='help' to see tool usage.",
+            "bio_tools": (
+                "PREFERRED for bioinformatics: Execute Docker-based tools for FASTA/FASTQ/sequence analysis. "
+                "Example: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/absolute/path/to/file.fasta\"}. "
+                "NOTE: input_file SHOULD be absolute path. "
+                f"Available tools (synced from tools_config.json): {', '.join(_BIO_TOOLS_NAMES)}. "
+                "Use operation='help' first for exact params and prefer operations verified in bio_tool_list.md. "
+                "Background policy: use background=true ONLY for long-running bio_tools operations when "
+                "the current turn does not require immediate result-dependent reasoning. "
+                "Keep short/interactive checks synchronous."
+            ),
             "phagescope": """PhageScope cloud platform for phage genome analysis.
 IMPORTANT: This is an ASYNC service - tasks run remotely and take minutes to hours.
 
@@ -958,7 +1238,8 @@ For comprehensive analysis, consider this workflow:
 === TOOL SELECTION GUIDE ===
 - LOCAL DIRECTORY LISTING: file_operations(operation="list", path="...")
 - READ TEXT FILES: file_operations(operation="read") or document_reader
-- **BIOINFORMATICS (FASTA/FASTQ/sequences)**: bio_tools - MUST TRY FIRST for any .fasta, .fa, .fq, .fastq files. Use seqkit for stats, blast for alignment, prodigal for gene prediction.
+- **BIOINFORMATICS (FASTA/FASTQ/sequences)**: bio_tools - MUST TRY FIRST for any .fasta, .fa, .fq, .fastq files. Prefer operations verified in bio_tool_list.md and use operation="help" when uncertain.
+- **BIO TOOL ROUTING WHEN UNSURE**: if you are unsure which bio tool/operation matches the required analysis, use web_search with targeted queries (tool + analysis type + operation keywords), then choose and run bio_tools.
 - COMPLEX ANALYSIS/CODE: claude_code - ONLY use after bio_tools fails or for custom analysis not supported by bio_tools
 - IMAGES/FIGURES/PDF: vision_reader - for OCR, figure description, equation reading
 - WEB INFORMATION: web_search - for internet queries, background research
@@ -1015,12 +1296,14 @@ When user asks about FASTA, FASTQ, or sequence files:
 2. THEN: Decide if additional analysis is needed
 3. ONLY IF bio_tools cannot do it: Fall back to claude_code for custom Python analysis
 
-IMPORTANT - bio_tools operations (do NOT guess, use these exact names):
-- seqkit: stats, grep, seq, head
-- blast: blastn, blastp, makeblastdb (requires database param)
-- prodigal: predict, meta (requires protein_output param)
-- hmmer: hmmscan, hmmsearch (requires database param)
-- checkv: end_to_end, completeness (requires database param)
+IMPORTANT - bio_tools catalog (synced from tools_config.json):
+{_BIO_TOOLS_CATALOG_TEXT}
+Do NOT guess parameters. Always call bio_tools(tool_name="xxx", operation="help") before first use of an operation in this turn.
+If uncertain which operation fits the requested analysis objective, run web_search first with a focused query, then pick the tool/operation and execute.
+Background decision rule (strict):
+- Keep synchronous for quick/interactive steps that must feed immediate reasoning in this turn (e.g., web_search, quick validation, help/stats checks).
+- Use background=true only for long-running bio_tools operations where immediate output is not required to finish this turn.
+- After background submit, return the job_id and query with operation="job_status" in follow-up turns.
 
 === BIO_TOOLS SELF-CORRECTION PROTOCOL (CRITICAL!) ===
 When bio_tools fails, follow this recovery sequence. NEVER give up after first failure!
@@ -1029,9 +1312,10 @@ When bio_tools fails, follow this recovery sequence. NEVER give up after first f
 - Call bio_tools(tool_name="xxx", operation="help") to see exact parameters
 - Read the output carefully for required vs optional params
 
-**Step 2: Web Search (if help is unclear)**
+**Step 2: Web Search (if help is unclear OR routing is uncertain)**
 - Call web_search(query="<tool_name> bioinformatics usage parameters example")
-- Look for official documentation or tutorials
+- If tool selection is uncertain, call web_search(query="<analysis_type> bioinformatics tool operation best practice")
+- Look for official documentation or tutorials and map back to the most suitable bio_tools operation
 
 **Step 3: Inspect via Shell (if still failing)**
 - Call claude_code with task: "Run <tool> --help to see command options"
@@ -1052,12 +1336,12 @@ When bio_tools fails, follow this recovery sequence. NEVER give up after first f
 - "Docker error" → report to user, may need admin intervention
 
 **Example Recovery Flow:**
-1. Error: "Execution failed: 'protein_output'"
-2. Action: bio_tools(tool_name="prodigal", operation="help")
-3. Learn: protein_output is required, should be a file path
-4. Retry: bio_tools(tool_name="prodigal", operation="predict", input_file="...", params={{"protein_output": "output.faa"}})
-5. Still failing? → web_search("prodigal protein prediction parameters")
-6. Still failing? → claude_code to run prodigal directly and debug
+1. Error: operation parameter mismatch or missing field
+2. Action: bio_tools(tool_name="<tool>", operation="help")
+3. Learn: exact required params from help output
+4. Retry: bio_tools with corrected params and absolute/local input path
+5. Still failing? → web_search("<tool> bioinformatics usage parameters example")
+6. Still failing? → claude_code to run direct shell debug with small test input
 
 Try at least 3 different approaches before reporting failure to user!
 

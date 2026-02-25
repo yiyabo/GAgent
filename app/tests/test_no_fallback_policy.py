@@ -272,7 +272,18 @@ def test_chat_stream_emits_strict_error_event_without_generic_fallback(
     assert "Please try again" not in payload.get("message", "")
 
 
-class _DeepThinkToolResultProtocolProbe:
+class _DeepThinkProbeBase:
+    def pause(self) -> None:
+        return
+
+    def resume(self) -> None:
+        return
+
+    def skip_step(self) -> None:
+        return
+
+
+class _DeepThinkToolResultProtocolProbe(_DeepThinkProbeBase):
     def __init__(
         self,
         *,
@@ -284,6 +295,10 @@ class _DeepThinkToolResultProtocolProbe:
         on_thinking,
         on_thinking_delta,
         on_final_delta,
+        on_tool_start=None,
+        on_tool_result=None,
+        on_artifact=None,
+        **_kwargs,
     ) -> None:
         _ = (
             llm_client,
@@ -293,14 +308,17 @@ class _DeepThinkToolResultProtocolProbe:
             on_thinking,
             on_thinking_delta,
             on_final_delta,
+            on_tool_start,
+            on_tool_result,
+            on_artifact,
         )
         self._tool_executor = tool_executor
 
     async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
         _ = (user_query, context)
-        await self._tool_executor("web_search", {"query": "strict protocol"})
+        tool_result = await self._tool_executor("web_search", {"query": "strict protocol"})
         return DeepThinkResult(
-            final_answer="ok",
+            final_answer=json.dumps({"tool_result": tool_result}, ensure_ascii=False),
             thinking_steps=[],
             total_iterations=1,
             tools_used=[],
@@ -309,17 +327,219 @@ class _DeepThinkToolResultProtocolProbe:
         )
 
 
-def test_deep_think_tool_wrapper_fails_on_non_dict_tool_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkToolResultProtocolProbe)
+class _DeepThinkBioFailThenClaudeProbe(_DeepThinkProbeBase):
+    def __init__(
+        self,
+        *,
+        llm_client,
+        available_tools,
+        tool_executor,
+        max_iterations,
+        tool_timeout,
+        on_thinking,
+        on_thinking_delta,
+        on_final_delta,
+        on_tool_start=None,
+        on_tool_result=None,
+        on_artifact=None,
+        **_kwargs,
+    ) -> None:
+        _ = (
+            llm_client,
+            available_tools,
+            max_iterations,
+            tool_timeout,
+            on_thinking,
+            on_thinking_delta,
+            on_final_delta,
+            on_tool_start,
+            on_tool_result,
+            on_artifact,
+        )
+        self._tool_executor = tool_executor
 
+    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+        _ = (user_query, context)
+        bio_result = await self._tool_executor(
+            "bio_tools",
+            {"tool_name": "seqkit", "operation": "stats", "input_file": "/tmp/fake.fa"},
+        )
+        claude_result = await self._tool_executor(
+            "claude_code",
+            {"task": "fallback after bio failure"},
+        )
+        return DeepThinkResult(
+            final_answer=json.dumps(
+                {"bio_tools": bio_result, "claude_code": claude_result},
+                ensure_ascii=False,
+            ),
+            thinking_steps=[],
+            total_iterations=1,
+            tools_used=["bio_tools", "claude_code"],
+            confidence=1.0,
+            thinking_summary="ok",
+        )
+
+
+class _DeepThinkBioRecoverThenClaudeProbe(_DeepThinkProbeBase):
+    def __init__(
+        self,
+        *,
+        llm_client,
+        available_tools,
+        tool_executor,
+        max_iterations,
+        tool_timeout,
+        on_thinking,
+        on_thinking_delta,
+        on_final_delta,
+        on_tool_start=None,
+        on_tool_result=None,
+        on_artifact=None,
+        **_kwargs,
+    ) -> None:
+        _ = (
+            llm_client,
+            available_tools,
+            max_iterations,
+            tool_timeout,
+            on_thinking,
+            on_thinking_delta,
+            on_final_delta,
+            on_tool_start,
+            on_tool_result,
+            on_artifact,
+        )
+        self._tool_executor = tool_executor
+
+    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+        _ = (user_query, context)
+        first_bio_result = await self._tool_executor(
+            "bio_tools",
+            {"tool_name": "seqkit", "operation": "stats", "input_file": "/tmp/fake.fa"},
+        )
+        help_result = await self._tool_executor(
+            "bio_tools",
+            {"tool_name": "seqkit", "operation": "help"},
+        )
+        retry_result = await self._tool_executor(
+            "bio_tools",
+            {"tool_name": "seqkit", "operation": "stats", "input_file": "/tmp/fake.fa"},
+        )
+        claude_result = await self._tool_executor(
+            "claude_code",
+            {"task": "fallback after help and retry"},
+        )
+        return DeepThinkResult(
+            final_answer=json.dumps(
+                {
+                    "bio_first": first_bio_result,
+                    "bio_help": help_result,
+                    "bio_retry": retry_result,
+                    "claude_code": claude_result,
+                },
+                ensure_ascii=False,
+            ),
+            thinking_steps=[],
+            total_iterations=1,
+            tools_used=["bio_tools", "claude_code"],
+            confidence=1.0,
+            thinking_summary="ok",
+        )
+
+
+class _DeepThinkBioSuccessThenClaudeProbe(_DeepThinkProbeBase):
+    def __init__(
+        self,
+        *,
+        llm_client,
+        available_tools,
+        tool_executor,
+        max_iterations,
+        tool_timeout,
+        on_thinking,
+        on_thinking_delta,
+        on_final_delta,
+        on_tool_start=None,
+        on_tool_result=None,
+        on_artifact=None,
+        **_kwargs,
+    ) -> None:
+        _ = (
+            llm_client,
+            available_tools,
+            max_iterations,
+            tool_timeout,
+            on_thinking,
+            on_thinking_delta,
+            on_final_delta,
+            on_tool_start,
+            on_tool_result,
+            on_artifact,
+        )
+        self._tool_executor = tool_executor
+
+    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+        _ = (user_query, context)
+        bio_result = await self._tool_executor(
+            "bio_tools",
+            {"tool_name": "seqkit", "operation": "stats", "input_file": "/tmp/fake.fa"},
+        )
+        claude_result = await self._tool_executor(
+            "claude_code",
+            {"task": "regular custom analysis"},
+        )
+        return DeepThinkResult(
+            final_answer=json.dumps(
+                {"bio_tools": bio_result, "claude_code": claude_result},
+                ensure_ascii=False,
+            ),
+            thinking_steps=[],
+            total_iterations=1,
+            tools_used=["bio_tools", "claude_code"],
+            confidence=1.0,
+            thinking_summary="ok",
+        )
+
+
+def _build_deep_think_test_agent() -> StructuredChatAgent:
     agent = StructuredChatAgent.__new__(StructuredChatAgent)
     agent.plan_session = SimpleNamespace(plan_id=None)
     agent.extra_context = {}
     agent.history = []
     agent.session_id = None
     agent.llm_service = object()
+    return agent
+
+
+async def _collect_deep_think_events(
+    agent: StructuredChatAgent, user_message: str
+) -> list[dict]:
+    events: list[dict] = []
+    async for chunk in agent.process_deep_think_stream(user_message):
+        text = chunk.decode("utf-8").strip() if isinstance(chunk, bytes) else str(chunk).strip()
+        assert text.startswith("data: ")
+        payload = json.loads(text[len("data: ") :])
+        events.append(payload)
+    return events
+
+
+def _extract_final_message(events: list[dict]) -> str:
+    final_events = [evt for evt in events if evt.get("type") == "final"]
+    assert final_events, "Expected a final DeepThink SSE event."
+    final_payload = final_events[-1].get("payload") or {}
+    llm_reply = final_payload.get("llm_reply") or {}
+    message = llm_reply.get("message")
+    assert isinstance(message, str) and message.strip()
+    return message
+
+
+def test_deep_think_tool_wrapper_tolerates_non_dict_tool_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkToolResultProtocolProbe)
+
+    agent = _build_deep_think_test_agent()
 
     async def _fake_handle_tool_action(action):  # type: ignore[no-untyped-def]
         return AgentStep(
@@ -331,19 +551,216 @@ def test_deep_think_tool_wrapper_fails_on_non_dict_tool_result(
 
     agent._handle_tool_action = _fake_handle_tool_action
 
-    async def _collect_events() -> list[dict]:
-        events: list[dict] = []
-        async for chunk in agent.process_deep_think_stream("analyze deeply"):
-            text = chunk.strip()
-            assert text.startswith("data: ")
-            payload = json.loads(text[len("data: ") :])
-            events.append(payload)
-        return events
-
-    events = asyncio.run(_collect_events())
+    events = asyncio.run(_collect_deep_think_events(agent, "analyze deeply"))
     error_events = [evt for evt in events if evt.get("type") == "error"]
-    assert error_events, "Expected DeepThink stream to emit strict protocol error event."
-    assert "expected a dict `result` payload" in error_events[0].get("message", "")
+    assert not error_events, "DeepThink should continue when tool result payload is malformed."
+    final_message = _extract_final_message(events)
+    parsed = json.loads(final_message)
+    tool_result = parsed["tool_result"]
+    assert tool_result.get("success") is False
+    assert tool_result.get("protocol_warning") is True
+    assert tool_result.get("recovery_required") is None
+
+
+def test_deep_think_blocks_claude_code_until_bio_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkBioFailThenClaudeProbe)
+    agent = _build_deep_think_test_agent()
+    call_counts = {"claude_code": 0}
+
+    async def _fake_handle_tool_action(action):  # type: ignore[no-untyped-def]
+        if action.name == "bio_tools":
+            return AgentStep(
+                action=action,
+                success=False,
+                message="bio_tools stats failed",
+                details={
+                    "result": {
+                        "success": False,
+                        "error": "bio_tools stats failed",
+                    }
+                },
+            )
+        if action.name == "claude_code":
+            call_counts["claude_code"] += 1
+            return AgentStep(
+                action=action,
+                success=True,
+                message="claude_code executed",
+                details={"result": {"success": True}},
+            )
+        return AgentStep(
+            action=action,
+            success=True,
+            message="ok",
+            details={"result": {"success": True}},
+        )
+
+    agent._handle_tool_action = _fake_handle_tool_action
+
+    events = asyncio.run(_collect_deep_think_events(agent, "analyze deeply"))
+    assert not [evt for evt in events if evt.get("type") == "error"]
+    final_message = _extract_final_message(events)
+    parsed = json.loads(final_message)
+    blocked = parsed["claude_code"]
+    assert blocked.get("success") is False
+    assert blocked.get("blocked_reason") == "bio_tools_recovery_not_completed"
+    assert blocked.get("recovery_required") == "bio_tools help -> retry"
+    assert call_counts["claude_code"] == 0
+
+
+def test_deep_think_allows_claude_code_after_bio_help_and_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkBioRecoverThenClaudeProbe)
+    agent = _build_deep_think_test_agent()
+    call_counts = {"bio_stats": 0, "claude_code": 0}
+
+    async def _fake_handle_tool_action(action):  # type: ignore[no-untyped-def]
+        if action.name == "bio_tools":
+            operation = str(action.parameters.get("operation") or "").strip().lower()
+            if operation == "help":
+                return AgentStep(
+                    action=action,
+                    success=True,
+                    message="help ok",
+                    details={"result": {"success": True, "operation": "help"}},
+                )
+            if operation == "stats":
+                call_counts["bio_stats"] += 1
+                if call_counts["bio_stats"] == 1:
+                    return AgentStep(
+                        action=action,
+                        success=False,
+                        message="initial stats failed",
+                        details={"result": {"success": False, "error": "initial fail"}},
+                    )
+                return AgentStep(
+                    action=action,
+                    success=True,
+                    message="retry stats ok",
+                    details={"result": {"success": True, "operation": "stats"}},
+                )
+        if action.name == "claude_code":
+            call_counts["claude_code"] += 1
+            return AgentStep(
+                action=action,
+                success=True,
+                message="claude_code executed",
+                details={"result": {"success": True}},
+            )
+        return AgentStep(
+            action=action,
+            success=True,
+            message="ok",
+            details={"result": {"success": True}},
+        )
+
+    agent._handle_tool_action = _fake_handle_tool_action
+
+    events = asyncio.run(_collect_deep_think_events(agent, "analyze deeply"))
+    assert not [evt for evt in events if evt.get("type") == "error"]
+    final_message = _extract_final_message(events)
+    parsed = json.loads(final_message)
+    claude_result = parsed["claude_code"]
+    assert claude_result.get("success") is True
+    assert "blocked_reason" not in claude_result
+    assert call_counts["claude_code"] == 1
+
+
+def test_deep_think_normal_bio_success_does_not_block_claude_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkBioSuccessThenClaudeProbe)
+    agent = _build_deep_think_test_agent()
+    call_counts = {"claude_code": 0}
+
+    async def _fake_handle_tool_action(action):  # type: ignore[no-untyped-def]
+        if action.name == "bio_tools":
+            return AgentStep(
+                action=action,
+                success=True,
+                message="bio_tools stats ok",
+                details={"result": {"success": True, "operation": "stats"}},
+            )
+        if action.name == "claude_code":
+            call_counts["claude_code"] += 1
+            return AgentStep(
+                action=action,
+                success=True,
+                message="claude_code executed",
+                details={"result": {"success": True}},
+            )
+        return AgentStep(
+            action=action,
+            success=True,
+            message="ok",
+            details={"result": {"success": True}},
+        )
+
+    agent._handle_tool_action = _fake_handle_tool_action
+
+    events = asyncio.run(_collect_deep_think_events(agent, "analyze deeply"))
+    assert not [evt for evt in events if evt.get("type") == "error"]
+    final_message = _extract_final_message(events)
+    parsed = json.loads(final_message)
+    claude_result = parsed["claude_code"]
+    assert claude_result.get("success") is True
+    assert "blocked_reason" not in claude_result
+    assert call_counts["claude_code"] == 1
+
+
+def test_deep_think_allows_claude_code_after_help_and_failed_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkBioRecoverThenClaudeProbe)
+    agent = _build_deep_think_test_agent()
+    call_counts = {"bio_stats": 0, "claude_code": 0}
+
+    async def _fake_handle_tool_action(action):  # type: ignore[no-untyped-def]
+        if action.name == "bio_tools":
+            operation = str(action.parameters.get("operation") or "").strip().lower()
+            if operation == "help":
+                return AgentStep(
+                    action=action,
+                    success=True,
+                    message="help ok",
+                    details={"result": {"success": True, "operation": "help"}},
+                )
+            if operation == "stats":
+                call_counts["bio_stats"] += 1
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message=f"stats failed #{call_counts['bio_stats']}",
+                    details={"result": {"success": False, "error": "still failing"}},
+                )
+        if action.name == "claude_code":
+            call_counts["claude_code"] += 1
+            return AgentStep(
+                action=action,
+                success=True,
+                message="claude_code executed",
+                details={"result": {"success": True}},
+            )
+        return AgentStep(
+            action=action,
+            success=True,
+            message="ok",
+            details={"result": {"success": True}},
+        )
+
+    agent._handle_tool_action = _fake_handle_tool_action
+
+    events = asyncio.run(_collect_deep_think_events(agent, "analyze deeply"))
+    assert not [evt for evt in events if evt.get("type") == "error"]
+    final_message = _extract_final_message(events)
+    parsed = json.loads(final_message)
+    claude_result = parsed["claude_code"]
+    assert claude_result.get("success") is True
+    assert "blocked_reason" not in claude_result
+    assert call_counts["claude_code"] == 1
 
 
 def test_meta_evaluator_fails_without_llm_payload(

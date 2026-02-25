@@ -13,6 +13,9 @@ import {
   Typography,
 } from 'antd';
 import {
+  CheckCircleOutlined,
+  CloudDownloadOutlined,
+  EditOutlined,
   FileImageOutlined,
   FileOutlined,
   FilePdfOutlined,
@@ -22,6 +25,7 @@ import {
   FullscreenOutlined,
   LinkOutlined,
   ReloadOutlined,
+  StopOutlined,
   TableOutlined,
 } from '@ant-design/icons';
 import {
@@ -128,6 +132,7 @@ interface DisplayFileItem {
   size?: number;
   module?: string;
   sourceType: PanelMode;
+  status?: string;
 }
 
 const isNotFoundError = (error: unknown): boolean => {
@@ -190,6 +195,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   size: item.size,
   module: item.module,
   sourceType: 'deliverables',
+  status: item.status,
   }));
   }
   return (rawData?.items ?? [])
@@ -481,6 +487,15 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   {selectedItem.sourceType === 'deliverables' && selectedItem.module && (
   <Tag color="blue">{formatModuleName(selectedItem.module)}</Tag>
   )}
+  {selectedItem.sourceType === 'deliverables' && selectedItem.status === 'draft' && (
+  <Tag icon={<EditOutlined />} color="orange">draft</Tag>
+  )}
+  {selectedItem.sourceType === 'deliverables' && selectedItem.status === 'final' && (
+  <Tag icon={<CheckCircleOutlined />} color="green">final</Tag>
+  )}
+  {selectedItem.sourceType === 'deliverables' && selectedItem.status === 'superseded' && (
+  <Tag icon={<StopOutlined />} color="default">superseded</Tag>
+  )}
   <Tooltip title="Open file">
   <Button
   size="small"
@@ -535,8 +550,27 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   >
   {textLoading ? 'Loading text preview...' : textPreview?.content ?? ''}
   {textPreview?.truncated && (
-  <div style={{ marginTop: 8 }}>
-  <Text type="secondary">Content is truncated.</Text>
+  <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+  <Text type="secondary" style={{ fontSize: 12 }}>Content is truncated (showing first 200 KB).</Text>
+  <Tooltip title="Download full file">
+  <Button
+  size="small"
+  type="primary"
+  icon={<CloudDownloadOutlined />}
+  onClick={() => {
+  if (fileUrl) {
+  const a = document.createElement('a');
+  a.href = fileUrl;
+  a.download = selectedItem?.name ?? 'download';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  }
+  }}
+  >
+  Download
+  </Button>
+  </Tooltip>
   </div>
   )}
   </div>

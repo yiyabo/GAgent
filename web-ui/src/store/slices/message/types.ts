@@ -7,6 +7,8 @@ export interface StreamMutableState {
   streamedContent: string;
   lastFlushedContent: string;
   flushHandle: number | null;
+  thinkingDeltaFlushHandle: number | null;
+  pendingThinkingDeltas: Record<number, string>;
   finalPayload: ChatResponsePayload | null;
   jobFinalized: boolean;
   isBackgroundDispatch: boolean;

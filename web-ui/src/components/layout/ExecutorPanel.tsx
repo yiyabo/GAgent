@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { Button, Progress, Space, Tag, Tooltip, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined, DownOutlined, UpOutlined } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { planTreeApi } from '@api/planTree';
+import { ENV } from '@/config/env';
 import JobLogPanel from '@components/chat/JobLogPanel';
 import type {
   BackgroundTaskBoardResponse,
@@ -367,6 +368,7 @@ const ExecutorPanel: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedJobIds, setExpandedJobIds] = useState<Set<string>>(new Set());
+  const [sseConnected, setSseConnected] = useState(false);
 
   const toggleJobExpand = useCallback((jobId: string) => {
   setExpandedJobIds((prev) => {
@@ -380,16 +382,30 @@ const ExecutorPanel: React.FC = () => {
   });
   }, []);
 
-  const boardFingerprintRef = React.useRef<string>('');
+  const boardFingerprintRef = useRef<string>('');
+  const sseSourceRef = useRef<EventSource | null>(null);
+  const pollerRef = useRef<number | null>(null);
+
+  // ── helpers ──────────────────────────────────────────────────────────────
+
+  const applySnapshot = useCallback((snapshot: BackgroundTaskBoardResponse) => {
+  const fp = GROUP_ORDER.map((key) => {
+  const group = snapshot?.groups?.[key];
+  if (!group?.items?.length) return `${key}:0`;
+  return `${key}:${group.items.map(_itemFingerprint).join(',')}`;
+  }).join('|');
+  if (fp !== boardFingerprintRef.current) {
+  boardFingerprintRef.current = fp;
+  setBoard(snapshot);
+  }
+  setError(null);
+  }, []);
 
   const fetchBoard = useCallback(
   async (silent = false) => {
   try {
-  if (!silent) {
-  setRefreshing(true);
-  } else {
-  setLoading(true);
-  }
+  if (!silent) setRefreshing(true);
+  else setLoading(true);
   if (!currentSessionId && !currentPlanId) {
   setBoard(EMPTY_BOARD());
   setError(null);
@@ -402,16 +418,7 @@ const ExecutorPanel: React.FC = () => {
   plan_id: currentPlanId ?? undefined,
   include_finished: true,
   });
-  const fp = GROUP_ORDER.map((key) => {
-  const group = snapshot?.groups?.[key];
-  if (!group?.items?.length) return `${key}:0`;
-  return `${key}:${group.items.map(_itemFingerprint).join(',')}`;
-  }).join('|');
-  if (fp !== boardFingerprintRef.current) {
-  boardFingerprintRef.current = fp;
-  setBoard(snapshot);
-  }
-  setError(null);
+  applySnapshot(snapshot);
   } catch (err: any) {
   setError(err?.message || 'Failed to load background tasks');
   } finally {
@@ -419,21 +426,97 @@ const ExecutorPanel: React.FC = () => {
   setRefreshing(false);
   }
   },
-  [currentPlanId, currentSessionId]
+  [currentPlanId, currentSessionId, applySnapshot]
   );
 
+  // ── SSE connection (with polling fallback) ────────────────────────────────
+
+  const stopPolling = useCallback(() => {
+  if (pollerRef.current !== null) {
+  window.clearInterval(pollerRef.current);
+  pollerRef.current = null;
+  }
+  }, []);
+
+  const startPolling = useCallback(() => {
+  if (pollerRef.current !== null) return;
+  pollerRef.current = window.setInterval(() => {
+  void fetchBoard(true);
+  }, 8000);
+  }, [fetchBoard]);
+
+  const closeSse = useCallback(() => {
+  if (sseSourceRef.current) {
+  sseSourceRef.current.close();
+  sseSourceRef.current = null;
+  setSseConnected(false);
+  }
+  }, []);
+
   useEffect(() => {
+  // Initial REST fetch so there's immediate data while SSE connects
   void fetchBoard(true);
   }, [fetchBoard]);
 
-  const timeoutIdsRef = React.useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => {
+  // Build SSE URL with current filters
+  const params = new URLSearchParams({ limit: '50', include_finished: 'true' });
+  if (currentSessionId) params.set('session_id', currentSessionId);
+  if (currentPlanId != null) params.set('plan_id', String(currentPlanId));
+  const sseUrl = `${ENV.API_BASE_URL}/jobs/board/stream?${params.toString()}`;
+
+  closeSse();
+  stopPolling();
+
+  try {
+  const source = new EventSource(sseUrl);
+  sseSourceRef.current = source;
+
+  source.onopen = () => {
+  setSseConnected(true);
+  setError(null);
+  stopPolling(); // SSE is live; no need for polling
+  };
+
+  source.onmessage = (event) => {
+  try {
+  const data = JSON.parse(event.data);
+  if (data?.type === 'snapshot' && data.board) {
+  applySnapshot(data.board as BackgroundTaskBoardResponse);
+  }
+  // heartbeat: do nothing
+  } catch (_) {
+  // ignore parse errors
+  }
+  };
+
+  source.onerror = () => {
+  // SSE dropped – fall back to polling
+  setSseConnected(false);
+  closeSse();
+  startPolling();
+  };
+  } catch (_) {
+  // EventSource not supported or URL invalid – fall back to polling
+  startPolling();
+  }
+
+  return () => {
+  closeSse();
+  stopPolling();
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSessionId, currentPlanId]);
+
+  // ── tasksUpdated event: force an immediate REST refresh ───────────────────
+  const timeoutIdsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => {
   const onTasksUpdated = () => {
   timeoutIdsRef.current.forEach((id) => clearTimeout(id));
   timeoutIdsRef.current = [];
-  const t1 = setTimeout(() => void fetchBoard(true), 2000);
-  const t2 = setTimeout(() => void fetchBoard(true), 6000);
-  timeoutIdsRef.current = [t1, t2];
+  // Trigger fast refresh; SSE will catch subsequent changes
+  const t1 = setTimeout(() => void fetchBoard(true), 1000);
+  timeoutIdsRef.current = [t1];
   };
   window.addEventListener('tasksUpdated', onTasksUpdated);
   return () => {
@@ -442,23 +525,6 @@ const ExecutorPanel: React.FC = () => {
   timeoutIdsRef.current = [];
   };
   }, [fetchBoard]);
-
-  const runningExists = useMemo(() => {
-  if (!board) return false;
-  return GROUP_ORDER.some((key) => {
-  const group = board.groups[key];
-  if (!group || !Array.isArray(group.items)) return false;
-  return group.items.some((item) => !FINAL_STATUSES.has(String(item.status || '').toLowerCase()));
-  });
-  }, [board]);
-
-  useEffect(() => {
-  if (!runningExists) return undefined;
-  const timer = window.setInterval(() => {
-  void fetchBoard(true);
-  }, 8000);
-  return () => window.clearInterval(timer);
-  }, [runningExists, fetchBoard]);
 
   const groups: BackgroundTaskGroup[] = useMemo(() => {
   if (!board) return [];
@@ -472,9 +538,10 @@ const ExecutorPanel: React.FC = () => {
   const group = board.groups[key];
   if (!group?.items) continue;
   for (const item of group.items) {
-  const isExecuteJob = item.job_type === 'plan_execute';
+  const isExpandableJob =
+    item.job_type === 'plan_execute' || item.job_type === 'bio_tools_run';
   const isRunning = normalizeJobStatus(item.status) === 'running';
-  if (isExecuteJob && isRunning) {
+  if (isExpandableJob && isRunning) {
   autoExpand.add(item.job_id);
   }
   }
@@ -520,6 +587,18 @@ const ExecutorPanel: React.FC = () => {
   <Text type="secondary" style={{ fontSize: 12 }}>
   {totalItems} tasks
   </Text>
+  <Tooltip title={sseConnected ? 'Live updates (SSE)' : 'Polling mode'}>
+  <span
+  style={{
+  display: 'inline-block',
+  width: 6,
+  height: 6,
+  borderRadius: '50%',
+  background: sseConnected ? '#52c41a' : '#faad14',
+  flexShrink: 0,
+  }}
+  />
+  </Tooltip>
   </Space>
   <Text type="secondary" style={{ fontSize: 12 }}>
   Updated: {board?.generated_at ? formatRelativeTime(board.generated_at) : '-'}
@@ -561,7 +640,10 @@ const ExecutorPanel: React.FC = () => {
   <tbody>
   {group.items.map((item) => {
    const normalized = normalizeJobStatus(item.status);
-   const canExpand = item.job_type === 'plan_execute' || (item.category === 'claude_code' && normalized === 'running');
+   const canExpand =
+     item.job_type === 'plan_execute' ||
+     (item.category === 'claude_code' && normalized === 'running') ||
+     item.job_type === 'bio_tools_run';
    return (
    <TaskRow
    key={item.job_id}
