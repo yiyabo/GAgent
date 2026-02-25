@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 import threading
 import time
@@ -17,7 +18,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from string import Formatter
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .remote_executor import (
     RemoteExecutionConfig,
@@ -45,6 +46,14 @@ BIO_TOOLS_BACKGROUND_MODE = "bio_tools_background"
 JOB_STATUS_OPERATION = "job_status"
 
 _CONTROL_PARAM_KEYS = {"background", "async", "detached", "wait", "job_id"}
+_SYSTEM_RESERVED_PARAM_KEYS = {
+    "input_file",
+    "output_file",
+    "params",
+    "timeout",
+    "background",
+    "job_id",
+}
 
 INPUT_PATH_PARAM_KEYS = {
     "reference",
@@ -75,6 +84,26 @@ OUTPUT_PATH_PARAM_KEYS = {
     "nucleotide",
 }
 MULTI_PATH_PARAM_KEYS = {"bam_files", "bins"}
+
+_PATH_SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9._/\-,:+=@~]+$")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+_QUOTED_PLACEHOLDER_RE = re.compile(r"""(['"])\{([a-zA-Z_][a-zA-Z0-9_]*)\}\1""")
+_PATH_FORBIDDEN_SUBSTRINGS = (
+    ";",
+    "|",
+    "&&",
+    "||",
+    ">",
+    "<",
+    "$",
+    "`",
+)
+
+
+class UnsafeParameterError(ValueError):
+    def __init__(self, key: str):
+        super().__init__(f"Invalid/unsafe parameter: {key}")
+        self.key = key
 
 
 def load_tools_config() -> Dict[str, Any]:
@@ -134,6 +163,114 @@ def _template_fields(template: str) -> List[str]:
     return fields
 
 
+def _normalize_quoted_placeholders(template: str) -> str:
+    # Command templates like -p '{pattern}' should be normalized to -p {pattern}
+    # so each placeholder is quoted exactly once by the safe renderer.
+    return _QUOTED_PLACEHOLDER_RE.sub(r"{\2}", template)
+
+
+def _reject_control_chars(value: str, *, key: str) -> None:
+    if _CONTROL_CHAR_RE.search(value):
+        raise UnsafeParameterError(key)
+
+
+def _normalize_operation_declared_params(op_config: Dict[str, Any]) -> set:
+    raw_params = op_config.get("extra_params", {})
+    if isinstance(raw_params, dict):
+        return {str(k) for k in raw_params.keys()}
+    if isinstance(raw_params, list):
+        return {str(k) for k in raw_params}
+    return set()
+
+
+def _sanitize_path_component(key: str, value: str) -> str:
+    text = value.strip()
+    _reject_control_chars(text, key=key)
+    if not text:
+        return text
+    if any(token in text for token in _PATH_FORBIDDEN_SUBSTRINGS):
+        raise UnsafeParameterError(key)
+    if not _PATH_SAFE_VALUE_RE.fullmatch(text):
+        raise UnsafeParameterError(key)
+    return text
+
+
+def _sanitize_param_value(
+    key: str,
+    value: Any,
+    *,
+    path_like: bool,
+    multi_path: bool,
+) -> str:
+    if value is None:
+        raw = ""
+    elif isinstance(value, bool):
+        raw = "true" if value else "false"
+    else:
+        raw = str(value)
+
+    _reject_control_chars(raw, key=key)
+
+    if path_like:
+        if multi_path:
+            parts = [p.strip() for p in raw.split(",")]
+            safe_parts = [_sanitize_path_component(key, part) for part in parts if part]
+            return ",".join(safe_parts)
+        return _sanitize_path_component(key, raw)
+
+    # Free text is shell-quoted per-parameter before it enters templates.
+    return shlex.quote(raw)
+
+
+def _validate_and_normalize_operation_params(
+    tool_name: str,
+    operation: str,
+    params: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    config = get_tools_config()
+    tool_config = config.get(tool_name, {})
+    op_config = tool_config.get("operations", {}).get(operation, {})
+    declared_keys = _normalize_operation_declared_params(op_config)
+    allowed_keys = declared_keys | _SYSTEM_RESERVED_PARAM_KEYS
+
+    normalized: Dict[str, Any] = {}
+    for raw_key, raw_value in dict(params or {}).items():
+        key = str(raw_key)
+        if key not in allowed_keys:
+            raise UnsafeParameterError(key)
+        if key in _SYSTEM_RESERVED_PARAM_KEYS and key not in declared_keys:
+            continue
+
+        path_like = key in INPUT_PATH_PARAM_KEYS or key in OUTPUT_PATH_PARAM_KEYS
+        if path_like:
+            normalized[key] = _sanitize_param_value(
+                key,
+                raw_value,
+                path_like=True,
+                multi_path=key in MULTI_PATH_PARAM_KEYS,
+            )
+            continue
+
+        if raw_value is None:
+            normalized[key] = ""
+            continue
+
+        if isinstance(raw_value, (str, int, float, bool)):
+            text = str(raw_value)
+            _reject_control_chars(text, key=key)
+            normalized[key] = text
+            continue
+
+        raise UnsafeParameterError(key)
+
+    return normalized
+
+
+def _render_safe_command(template: str, safe_params: Dict[str, Any]) -> str:
+    normalized_template = _normalize_quoted_placeholders(template)
+    return normalized_template.format(**safe_params)
+
+
 def _coerce_bool(value: Any, *, default: bool = False) -> bool:
     if value is None:
         return default
@@ -183,7 +320,7 @@ def _extract_control_flags(
     return clean_params, requested_background, (requested_job_id or None)
 
 
-def build_docker_command(
+def _build_docker_command_args(
     tool_name: str,
     operation: str,
     input_file: Optional[str] = None,
@@ -192,24 +329,30 @@ def build_docker_command(
     work_dir_override: Optional[str] = None,
     validate_input_exists: bool = True,
     run_as_user: Optional[Tuple[int, int]] = None,
-) -> str:
-    """ Docker """
+) -> List[str]:
+    """Build docker command as argv list."""
     config = get_tools_config()
-    
+
     if tool_name not in config:
         raise ValueError(f"Unknown tool: {tool_name}")
-    
+
     tool_config = config[tool_name]
     operations = tool_config.get("operations", {})
-    
+
     if operation not in operations:
         available_ops = list(operations.keys())
         raise ValueError(f"Unknown operation '{operation}' for {tool_name}. Available: {available_ops}")
-    
+
     op_config = operations[operation]
     image = tool_config["image"]
-    command_template = op_config["command"]
-    
+    command_template = _normalize_quoted_placeholders(op_config["command"])
+    needs_container_shell = _needs_container_shell(command_template)
+    validated_extra_params = _validate_and_normalize_operation_params(
+        tool_name,
+        operation,
+        extra_params,
+    )
+
     #  / 
     if work_dir_override:
         tool_dir_abs = str(Path(work_dir_override).expanduser())
@@ -217,55 +360,55 @@ def build_docker_command(
         tool_dir = ensure_tool_directory(tool_name)
         tool_dir_abs = str(tool_dir.resolve())
 
-    mounts = [f"-v {tool_dir_abs}:/work"]
-    
+    mounts = [f"{tool_dir_abs}:/work"]
+
     # ，
     if input_file:
         input_path = Path(input_file)
         # 
         if not input_path.is_absolute():
             input_path = input_path.resolve()
-        
+
         if input_path.exists():
             input_dir_abs = str(input_path.parent.resolve())
-            mounts.append(f"-v {input_dir_abs}:/input:ro")
+            mounts.append(f"{input_dir_abs}:/input:ro")
             input_file = f"/input/{input_path.name}"
         elif validate_input_exists:
             logger.warning(f"Input file not found: {input_path}")
-    
+
     #  checkv，
     if tool_name == "checkv":
         # CheckV  ()
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5"
-        mounts.append(f"-v {db_path}:/work/database")
-    
+        mounts.append(f"{db_path}:/work/database")
+
     #  genomad，
     if tool_name == "genomad":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/genomad/genomad_db"
-        mounts.append(f"-v {db_path}:/work/database")
-    
+        mounts.append(f"{db_path}:/work/database")
+
     #  virsorter2，
     if tool_name == "virsorter2":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/virsorter2/db/db"
-        mounts.append(f"-v {db_path}:/work/database")
-    
+        mounts.append(f"{db_path}:/work/database")
+
     #  iphop，
     if tool_name == "iphop":
         db_path = os.getenv(
             "BIO_TOOLS_IPHOP_DB_PATH",
             "/home/zczhao/GAgent/data/databases/bio_tools/iphop/Aug_2023_pub_rw",
         )
-        mounts.append(f"-v {db_path}:/work/database")
+        mounts.append(f"{db_path}:/work/database")
 
     #  checkm，
     if tool_name == "checkm":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/checkm_data"
-        mounts.append(f"-v {db_path}:/work/database")
+        mounts.append(f"{db_path}:/work/database")
 
     #  gtdbtk，
     if tool_name == "gtdbtk":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/gtdbtk/gtdbtk_r220_data"
-        mounts.append(f"-v {db_path}:/work/database")
+        mounts.append(f"{db_path}:/work/database")
 
     # 
     params = {
@@ -275,8 +418,8 @@ def build_docker_command(
     }
 
     # 
-    if extra_params:
-        params.update(extra_params)
+    if validated_extra_params:
+        params.update(validated_extra_params)
 
     required_fields = _template_fields(command_template)
     if "query" in required_fields and not params.get("query") and params.get("input"):
@@ -294,9 +437,9 @@ def build_docker_command(
         if db_path_obj.is_absolute() and db_path_obj.exists():
             db_dir_abs = str(db_path_obj.parent.resolve())
             # 
-            mount_exists = any(f"-v {db_dir_abs}:" in m for m in mounts)
+            mount_exists = any(m.startswith(f"{db_dir_abs}:") for m in mounts)
             if not mount_exists:
-                mounts.append(f"-v {db_dir_abs}:/db:ro")
+                mounts.append(f"{db_dir_abs}:/db:ro")
                 # 
                 params['db'] = f"/db/{db_path_obj.name}"
         elif not db_path_obj.is_absolute():
@@ -306,14 +449,14 @@ def build_docker_command(
     #  bakta，
     if tool_name == "bakta":
         db_path = "/home/zczhao/GAgent/data/databases/bio_tools/bakta/db/db"
-        mounts.append(f"-v {db_path}:/work/database")
+        mounts.append(f"{db_path}:/work/database")
 
     #  minimap2 filter，
     if tool_name == "minimap2" and operation == "filter":
         ref_path = params.get('reference', '')
         if ref_path.endswith('.mmi'):
             ref_dir = str(Path(ref_path).parent.resolve())
-            mounts.append(f"-v {ref_dir}:/work/reference:ro")
+            mounts.append(f"{ref_dir}:/work/reference:ro")
 
     # Avoid duplicated /work prefix when templates already include /work/{param}
     for key, value in list(params.items()):
@@ -327,44 +470,88 @@ def build_docker_command(
         raise ValueError(
             f"Missing required parameters for {tool_name}.{operation}: {', '.join(sorted(missing_fields))}"
         )
-    
+
+    safe_params: Dict[str, str] = {}
+    for key, value in params.items():
+        safe_params[key] = _sanitize_param_value(
+            key,
+            value,
+            path_like=(key in INPUT_PATH_PARAM_KEYS or key in OUTPUT_PATH_PARAM_KEYS),
+            multi_path=(key in MULTI_PATH_PARAM_KEYS),
+        )
+
     # 
-    command = command_template.format(**params)
-    if _needs_container_shell(command):
-        command = f"sh -lc {shlex.quote(command)}"
-    
+    container_command = _render_safe_command(command_template, safe_params)
+    container_args: List[str]
+    if needs_container_shell:
+        container_args = ["sh", "-lc", container_command]
+    else:
+        container_args = shlex.split(container_command)
+
     #  Docker 
-    mount_str = " ".join(mounts)
-    env_flags = ["-e HOME=/work"]
+    env_values = ["HOME=/work"]
     if tool_name == "nextflow":
         nextflow_home = os.getenv("BIO_TOOLS_NEXTFLOW_HOME_IN_CONTAINER", "/tmp/.nextflow").strip() or "/tmp/.nextflow"
-        env_flags.extend(
+        env_values.extend(
             [
-                f"-e NXF_HOME={nextflow_home}",
-                f"-e NXF_ASSETS={nextflow_home}/assets",
+                f"NXF_HOME={nextflow_home}",
+                f"NXF_ASSETS={nextflow_home}/assets",
             ]
         )
     if tool_name == "virsorter2":
-        env_flags.extend(
+        env_values.extend(
             [
-                "-e SNAKEMAKE_CONDA_PREFIX=/work/output/conda_envs",
-                "-e CONDA_PKGS_DIRS=/work/output/.conda/pkgs",
+                "SNAKEMAKE_CONDA_PREFIX=/work/output/conda_envs",
+                "CONDA_PKGS_DIRS=/work/output/.conda/pkgs",
             ]
         )
-    env_str = " ".join(env_flags)
+
     if run_as_user is not None:
         uid, gid = int(run_as_user[0]), int(run_as_user[1])
     else:
         uid = os.getuid()
         gid = os.getgid()
-    user_flag = f"--user {uid}:{gid}"
-    docker_cmd = f"docker run --rm {user_flag} {env_str} {mount_str} -w /work {image} {command}"
-    
-    return docker_cmd
+    docker_args: List[str] = [
+        "docker",
+        "run",
+        "--rm",
+        "--user",
+        f"{uid}:{gid}",
+    ]
+    for env_value in env_values:
+        docker_args.extend(["-e", env_value])
+    for mount in mounts:
+        docker_args.extend(["-v", mount])
+    docker_args.extend(["-w", "/work", image])
+    docker_args.extend(container_args)
+    return docker_args
+
+
+def build_docker_command(
+    tool_name: str,
+    operation: str,
+    input_file: Optional[str] = None,
+    output_file: Optional[str] = None,
+    extra_params: Optional[Dict[str, Any]] = None,
+    work_dir_override: Optional[str] = None,
+    validate_input_exists: bool = True,
+    run_as_user: Optional[Tuple[int, int]] = None,
+) -> str:
+    docker_args = _build_docker_command_args(
+        tool_name=tool_name,
+        operation=operation,
+        input_file=input_file,
+        output_file=output_file,
+        extra_params=extra_params,
+        work_dir_override=work_dir_override,
+        validate_input_exists=validate_input_exists,
+        run_as_user=run_as_user,
+    )
+    return shlex.join(docker_args)
 
 
 async def execute_docker_command(
-    command: str,
+    command: Union[str, Sequence[str]],
     timeout: Optional[int] = DEFAULT_TIMEOUT,
     capture_output: bool = True,
     log_callback: Optional[Callable[[str, str], None]] = None,
@@ -377,15 +564,39 @@ async def execute_docker_command(
     ``"stdout"`` or ``"stderr"``.  The full combined output is still returned
     in the result dict so that callers that rely on it continue to work.
     """
-    logger.info(f"Executing: {command}")
+    use_shell = False
+    shell_command: Optional[str] = None
+    exec_args: Optional[List[str]] = None
+    if isinstance(command, str):
+        shell_command = command
+        try:
+            exec_args = shlex.split(command)
+        except ValueError:
+            exec_args = None
+            use_shell = True
+    else:
+        exec_args = [str(arg) for arg in command]
+    if exec_args is not None and not exec_args:
+        return {"success": False, "error": "Command is empty", "command": ""}
+
+    command_display = shell_command or (shlex.join(exec_args) if exec_args else "")
+    logger.info(f"Executing: {command_display}")
     start_time = datetime.now()
 
     try:
-        process = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE if capture_output else None,
-            stderr=asyncio.subprocess.PIPE if capture_output else None,
-        )
+        if use_shell:
+            logger.warning("Using deprecated shell execution path for docker command")
+            process = await asyncio.create_subprocess_shell(
+                shell_command or "",
+                stdout=asyncio.subprocess.PIPE if capture_output else None,
+                stderr=asyncio.subprocess.PIPE if capture_output else None,
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                *(exec_args or []),
+                stdout=asyncio.subprocess.PIPE if capture_output else None,
+                stderr=asyncio.subprocess.PIPE if capture_output else None,
+            )
 
         if log_callback and capture_output:
             # ── Streaming mode: read lines as they arrive ────────────────────
@@ -438,13 +649,13 @@ async def execute_docker_command(
             duration = (datetime.now() - start_time).total_seconds()
 
             if timed_out:
-                logger.error(f"Command timed out after {timeout}s: {command}")
+                logger.error(f"Command timed out after {timeout}s: {command_display}")
                 return {
                     "success": False,
                     "error": f"Command timed out after {timeout} seconds",
                     "exit_code": -1,
                     "duration_seconds": duration,
-                    "command": command,
+                    "command": command_display,
                     "stdout": "\n".join(stdout_lines),
                     "stderr": "\n".join(stderr_lines),
                 }
@@ -453,7 +664,7 @@ async def execute_docker_command(
                 "success": process.returncode == 0,
                 "exit_code": process.returncode,
                 "duration_seconds": duration,
-                "command": command,
+                "command": command_display,
                 "stdout": "\n".join(stdout_lines),
                 "stderr": "\n".join(stderr_lines),
             }
@@ -473,7 +684,7 @@ async def execute_docker_command(
                 "success": process.returncode == 0,
                 "exit_code": process.returncode,
                 "duration_seconds": duration,
-                "command": command,
+                "command": command_display,
             }
             if capture_output:
                 result["stdout"] = stdout.decode("utf-8", errors="replace") if stdout else ""
@@ -488,18 +699,18 @@ async def execute_docker_command(
         return result
 
     except asyncio.TimeoutError:
-        logger.error(f"Command timed out after {timeout}s: {command}")
+        logger.error(f"Command timed out after {timeout}s: {command_display}")
         return {
             "success": False,
             "error": f"Command timed out after {timeout} seconds",
-            "command": command,
+            "command": command_display,
         }
     except Exception as e:
         logger.exception(f"Command execution failed: {e}")
         return {
             "success": False,
             "error": str(e),
-            "command": command,
+            "command": command_display,
         }
 
 
@@ -744,14 +955,15 @@ async def _execute_local_bio_tool(
     timeout: Optional[int],
     log_callback: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
-    docker_cmd = build_docker_command(
+    docker_args = _build_docker_command_args(
         tool_name=tool_name,
         operation=operation,
         input_file=input_file,
         output_file=output_file,
         extra_params=params,
     )
-    result = await execute_docker_command(docker_cmd, timeout=timeout, log_callback=log_callback)
+    result = await execute_docker_command(docker_args, timeout=timeout, log_callback=log_callback)
+    result["command"] = shlex.join(docker_args)
     result["tool"] = tool_name
     result["operation"] = operation
     if output_file and result.get("success"):
@@ -870,7 +1082,7 @@ async def _execute_remote_bio_tool(
             or f"Failed to upload file: {failed_upload.get('local_path', 'unknown')}",
         }
 
-    docker_cmd = build_docker_command(
+    docker_args = _build_docker_command_args(
         tool_name=tool_name,
         operation=operation,
         input_file=rewritten_input,
@@ -880,11 +1092,12 @@ async def _execute_remote_bio_tool(
         validate_input_exists=False,
         run_as_user=(remote_uid, remote_gid),
     )
+    docker_cmd = shlex.join(docker_args)
 
     command_result = await execute_remote_command(
         remote_config,
         auth,
-        docker_cmd,
+        docker_args,
         timeout=timeout,
     )
 
@@ -1301,15 +1514,29 @@ async def bio_tools_handler(
             "error": f"Unknown tool: {tool_name}",
             "available_tools": list(config.keys()),
         }
+
+    operations = config[tool_name].get("operations", {})
+    if operation not in operations:
+        return {
+            "success": False,
+            "error": f"Unknown operation '{operation}' for {tool_name}. Available: {list(operations.keys())}",
+            "tool": tool_name,
+            "operation": operation,
+        }
     
     try:
+        validated_params = _validate_and_normalize_operation_params(
+            tool_name,
+            operation,
+            clean_params,
+        )
         if run_in_background:
             return _submit_background_bio_tools_job(
                 tool_name=tool_name,
                 operation=operation,
                 input_file=input_file,
                 output_file=output_file,
-                params=clean_params,
+                params=validated_params,
                 timeout=effective_timeout,
             )
 
@@ -1318,10 +1545,17 @@ async def bio_tools_handler(
             operation=operation,
             input_file=input_file,
             output_file=output_file,
-            params=clean_params,
+            params=validated_params,
             timeout=effective_timeout,
         )
         
+    except UnsafeParameterError as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "tool": tool_name,
+            "operation": operation,
+        }
     except ValueError as e:
         return {
             "success": False,

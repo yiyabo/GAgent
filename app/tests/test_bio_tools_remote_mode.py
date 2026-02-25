@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -260,6 +261,55 @@ def test_execute_remote_command_retries_with_sudo_on_permission_denied(
     assert len(calls) == 2
 
 
+def test_execute_remote_command_joins_list_command_with_safe_quoting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = remote_executor.RemoteExecutionConfig(
+        host="example.com",
+        user="user",
+        port=22,
+        runtime_dir="/remote/runtime",
+        local_artifact_root="/tmp/local",
+        ssh_key_path=None,
+        password=None,
+        sudo_policy="never",
+        connect_timeout=5,
+    )
+    auth = remote_executor.ResolvedAuth(mode="password")
+    captured: Dict[str, Any] = {}
+
+    async def _fake_run_ssh_command(config_obj, auth_obj, command, timeout, display_command=None):
+        _ = (config_obj, auth_obj, timeout, display_command)
+        captured["command"] = command
+        return {"success": True, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr(remote_executor, "_run_ssh_command", _fake_run_ssh_command)
+
+    result = asyncio.run(
+        remote_executor.execute_remote_command(
+            config,
+            auth,
+            command=[
+                "docker",
+                "run",
+                "--rm",
+                "seqkit:latest",
+                "seqkit",
+                "grep",
+                "-p",
+                "x;touch /tmp/pwn",
+                "/work/input.fa",
+            ],
+            timeout=30,
+        )
+    )
+
+    assert result["success"] is True
+    rendered = captured["command"]
+    assert "'x;touch /tmp/pwn'" in rendered
+    assert " -p x;touch /tmp/pwn " not in rendered
+
+
 def test_download_remote_run_dir_returns_error_when_local_dir_unwritable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -422,9 +472,9 @@ def test_execute_remote_bio_tool_uses_remote_uid_gid_for_docker_user(
         _ = (config_obj, auth_obj, uploads)
         return []
 
-    def _fake_build_docker_command(**kwargs):
+    def _fake_build_docker_command_args(**kwargs):
         captured["run_as_user"] = kwargs.get("run_as_user")
-        return "docker run --rm fake-image true"
+        return ["docker", "run", "--rm", "fake-image", "true"]
 
     async def _fake_execute_remote_command(config_obj, auth_obj, command, timeout):
         _ = (config_obj, auth_obj, command, timeout)
@@ -438,7 +488,7 @@ def test_execute_remote_bio_tool_uses_remote_uid_gid_for_docker_user(
     monkeypatch.setattr(bio_handler_module, "resolve_remote_uid_gid", _fake_resolve_uid_gid)
     monkeypatch.setattr(bio_handler_module, "create_remote_run_dirs", _fake_create_dirs)
     monkeypatch.setattr(bio_handler_module, "upload_files", _fake_upload)
-    monkeypatch.setattr(bio_handler_module, "build_docker_command", _fake_build_docker_command)
+    monkeypatch.setattr(bio_handler_module, "_build_docker_command_args", _fake_build_docker_command_args)
     monkeypatch.setattr(bio_handler_module, "execute_remote_command", _fake_execute_remote_command)
     monkeypatch.setattr(bio_handler_module, "download_remote_run_dir", _fake_download)
 
@@ -491,9 +541,9 @@ def test_execute_remote_bio_tool_marks_sync_warning_without_failing_execution(
         _ = (config_obj, auth_obj, uploads)
         return []
 
-    def _fake_build_docker_command(**kwargs):
+    def _fake_build_docker_command_args(**kwargs):
         _ = kwargs
-        return "docker run --rm fake-image true"
+        return ["docker", "run", "--rm", "fake-image", "true"]
 
     async def _fake_execute_remote_command(config_obj, auth_obj, command, timeout):
         _ = (config_obj, auth_obj, command, timeout)
@@ -507,7 +557,7 @@ def test_execute_remote_bio_tool_marks_sync_warning_without_failing_execution(
     monkeypatch.setattr(bio_handler_module, "resolve_remote_uid_gid", _fake_resolve_uid_gid)
     monkeypatch.setattr(bio_handler_module, "create_remote_run_dirs", _fake_create_dirs)
     monkeypatch.setattr(bio_handler_module, "upload_files", _fake_upload)
-    monkeypatch.setattr(bio_handler_module, "build_docker_command", _fake_build_docker_command)
+    monkeypatch.setattr(bio_handler_module, "_build_docker_command_args", _fake_build_docker_command_args)
     monkeypatch.setattr(bio_handler_module, "execute_remote_command", _fake_execute_remote_command)
     monkeypatch.setattr(bio_handler_module, "download_remote_run_dir", _fake_download)
 
@@ -526,6 +576,93 @@ def test_execute_remote_bio_tool_marks_sync_warning_without_failing_execution(
     assert result["success"] is True
     assert "sync_warning" in result
     assert "artifact sync unavailable" in result["sync_warning"]
+
+
+def test_execute_docker_command_prefers_subprocess_exec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: Dict[str, Any] = {}
+
+    class _FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return (b"ok\n", b"")
+
+    async def _fake_exec(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _FakeProcess()
+
+    async def _fake_shell(*args, **kwargs):  # pragma: no cover - guard rail
+        _ = (args, kwargs)
+        raise AssertionError("Shell execution path should not be used")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", _fake_shell)
+
+    result = asyncio.run(
+        bio_handler_module.execute_docker_command(
+            ["docker", "run", "--rm", "hello-world"],
+            timeout=5,
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["args"][:2] == ("docker", "run")
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "x;touch /tmp/pwn",
+        "$(id)",
+        "`id`",
+    ],
+)
+def test_build_docker_command_safely_quotes_free_text_parameter(pattern: str) -> None:
+    cmd = bio_handler_module.build_docker_command(
+        tool_name="seqkit",
+        operation="grep",
+        input_file="/work/input/test.fa",
+        output_file=None,
+        extra_params={
+            "pattern": pattern,
+            "output": "result.fa",
+        },
+        work_dir_override="/tmp/remote-run",
+        validate_input_exists=False,
+        run_as_user=(1000, 1001),
+    )
+
+    assert " sh -lc " not in cmd
+    assert f"-p {shlex.quote(pattern)}" in cmd
+    assert f" -p {pattern} " not in cmd
+
+
+@pytest.mark.parametrize(
+    "bad_db",
+    [
+        "/tmp/db;touch /tmp/pwn",
+        "/tmp/db|cat /etc/passwd",
+        "/tmp/db&&id",
+        "/tmp/db\nid",
+        "$(id)",
+        "`id`",
+    ],
+)
+def test_build_docker_command_rejects_unsafe_path_parameters(bad_db: str) -> None:
+    with pytest.raises(ValueError, match="Invalid/unsafe parameter: db"):
+        bio_handler_module.build_docker_command(
+            tool_name="blast",
+            operation="blastn",
+            input_file="/work/input/query.fa",
+            output_file=None,
+            extra_params={"db": bad_db, "output": "hits.tsv"},
+            work_dir_override="/tmp/remote-run",
+            validate_input_exists=False,
+            run_as_user=(1000, 1001),
+        )
 
 
 def test_build_docker_command_wraps_shell_metacharacters_inside_container() -> None:
@@ -653,6 +790,26 @@ def test_build_docker_command_raises_for_missing_required_placeholders() -> None
         )
 
 
+def test_bio_tools_handler_returns_unified_error_for_unsafe_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BIO_TOOLS_EXECUTION_MODE", "local")
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="blast",
+            operation="blastn",
+            input_file="/work/input/query.fa",
+            params={
+                "db": "/tmp/db;touch /tmp/pwn",
+                "output": "hits.tsv",
+            },
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "Invalid/unsafe parameter: db"
+
+
 def test_tools_bio_tools_endpoint_returns_backward_compatible_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -718,8 +875,8 @@ def test_bio_tools_handler_background_mode_submits_job(
     result = asyncio.run(
         bio_handler_module.bio_tools_handler(
             tool_name="seqkit",
-            operation="stats",
-            params={"background": True, "threads": 1},
+            operation="head",
+            params={"background": True, "count": 1},
             timeout=0,
         )
     )
@@ -728,7 +885,7 @@ def test_bio_tools_handler_background_mode_submits_job(
     assert result["background"] is True
     assert result["job_id"] == "bio_test_job"
     assert captured["timeout"] is None
-    assert captured["params"] == {"threads": 1}
+    assert captured["params"] == {"count": "1"}
 
 
 def test_bio_tools_handler_job_status_operation(

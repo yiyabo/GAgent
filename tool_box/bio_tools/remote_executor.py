@@ -14,7 +14,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 _AUTH_FAILURE_MARKERS = (
     "permission denied",
@@ -212,6 +212,12 @@ async def _run_subprocess(
         }
 
 
+def _normalize_remote_command(command: Union[str, Sequence[str]]) -> str:
+    if isinstance(command, str):
+        return command
+    return shlex.join([str(token) for token in command])
+
+
 def _build_ssh_base(config: RemoteExecutionConfig, auth: ResolvedAuth) -> List[str]:
     args: List[str] = []
     if auth.mode == "password":
@@ -312,14 +318,15 @@ async def _run_scp_with_retries(
 async def _run_ssh_command(
     config: RemoteExecutionConfig,
     auth: ResolvedAuth,
-    command: str,
+    command: Union[str, Sequence[str]],
     timeout: Optional[int],
     *,
     display_command: Optional[str] = None,
 ) -> dict:
+    command_text = _normalize_remote_command(command)
     base = _build_ssh_base(config, auth)
     target = f"{config.user}@{config.host}"
-    args = base + [target, _remote_shell_arg(command)]
+    args = base + [target, _remote_shell_arg(command_text)]
     return await _run_subprocess(args, timeout, display_command=display_command)
 
 
@@ -459,16 +466,17 @@ def _wrap_with_sudo(config: RemoteExecutionConfig, command: str) -> str:
 async def execute_remote_command(
     config: RemoteExecutionConfig,
     auth: ResolvedAuth,
-    command: str,
+    command: Union[str, Sequence[str]],
     timeout: Optional[int],
 ) -> dict:
     policy = config.sudo_policy
+    command_text = _normalize_remote_command(command)
 
-    effective_command = command
+    effective_command = command_text
     used_sudo = False
 
     if policy == "always":
-        effective_command = _wrap_with_sudo(config, command)
+        effective_command = _wrap_with_sudo(config, command_text)
         used_sudo = True
 
     result = await _run_ssh_command(
@@ -485,7 +493,7 @@ async def execute_remote_command(
         and _needs_sudo_retry((result.get("stderr") or "") + "\n" + (result.get("stdout") or ""))
         and config.password
     ):
-        retry_cmd = _wrap_with_sudo(config, command)
+        retry_cmd = _wrap_with_sudo(config, command_text)
         retry_result = await _run_ssh_command(
             config,
             auth,
