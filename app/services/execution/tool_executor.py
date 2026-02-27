@@ -31,6 +31,7 @@ class UnifiedToolExecutor:
     TOOL_TIMEOUTS = {
         "claude_code": 1200,
         "web_search": 180,
+        "sequence_fetch": 120,
         "document_reader": 200,
         "graph_rag": 600,
         "file_operations": 90,
@@ -311,4 +312,3 @@ class UnifiedToolExecutor:
                 return str(result)[:1000]
 
         return str(result)[:1000]
-

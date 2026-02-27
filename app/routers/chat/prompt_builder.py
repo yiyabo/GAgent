@@ -109,10 +109,9 @@ def compose_plan_status(agent: Any, plan_bound: bool) -> str:
         assert agent.plan_session.plan_id is not None
         return f"Currently bound Plan ID: {agent.plan_session.plan_id}"
     return (
-        "This session is not bound to any plan. Continue clarifying requirements, "
-        "sharing suggestions, or using tools to assist the discussion. Only trigger "
-        "plan-related actions when the user explicitly requests a new plan or wants "
-        "to take over an existing one."
+        "This session is not bound to any plan. For complex or multi-step requests, "
+        "automatically create and manage a plan. For simple single-step requests, "
+        "respond directly without creating a plan."
     )
 
 

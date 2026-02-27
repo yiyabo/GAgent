@@ -166,9 +166,13 @@ class ExecutorPromptBuilder:
 When a task requires tool execution, request one of these tools:
 
 **BIOINFORMATICS (FASTA/FASTQ/sequences):**
+- sequence_fetch: Deterministic accession-to-FASTA download with strict allowlist
+  Parameters: {"accession": "<id>" | "accessions": ["<id1>", "<id2>"], "database": "nuccore|protein", "format": "fasta", optional "session_id"/"output_name"}
+  NOTE: Use this first when the user asks to download FASTA by accession IDs.
 - bio_tools: Execute bioinformatics Docker tools (seqkit, blast, prodigal, hmmer, checkv, etc.)
-  Parameters: {"tool_name": "seqkit|blast|prodigal|...", "operation": "stats|blastn|predict|help", "input_file": "<path>", "params": {...}}
+  Parameters: {"tool_name": "seqkit|blast|prodigal|...", "operation": "stats|blastn|predict|help", "input_file": "<path>", "sequence_text": "<inline FASTA/raw sequence>", "params": {...}}
   NOTE: Always call operation="help" first if unsure about parameters!
+  NOTE: If no file is provided but sequence text is available, pass it via sequence_text.
   NOTE: If unsure which tool/operation should be used for the requested analysis, request web_search first with a focused query, then return a bio_tools call.
 
 **CODE EXECUTION & DATA ANALYSIS:**
@@ -202,8 +206,12 @@ When a task requires tool execution, request one of these tools:
     TASK_TYPE_GUIDANCE = """
 === WHEN TO USE TOOLS ===
 - For design/architecture/planning/text writing → respond with text only (status: "success")
+- For accession-based FASTA download → use sequence_fetch first (status: "needs_tool")
 - For FASTA/FASTQ/sequence analysis → use bio_tools FIRST (status: "needs_tool")
+- If the user provides sequence text instead of a file, call bio_tools with sequence_text.
 - If bioinformatics tool/operation routing is uncertain, use web_search first to disambiguate, then call bio_tools (status: "needs_tool")
+- Do not use claude_code as fallback for bio_tools input conversion/parsing failures.
+- Do not use claude_code as fallback for sequence_fetch download/input failures.
 - For data analysis/visualization/charts → use claude_code (status: "needs_tool")
 - For model code building/training → use claude_code (status: "needs_tool")
 - Never use claude_code for task planning or decomposition; planning stays in the orchestration layer.
@@ -220,7 +228,7 @@ When a task requires tool execution, request one of these tools:
   "status": "success" | "failed" | "skipped" | "needs_tool",
   "content": "<main result text or reasoning for tool request>",
   "tool_call": {  // REQUIRED when status is "needs_tool", otherwise omit
-    "name": "bio_tools" | "claude_code" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "manuscript_writer",
+    "name": "sequence_fetch" | "bio_tools" | "claude_code" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "manuscript_writer",
     "parameters": { <tool-specific parameters> }
   },
   "notes": ["optional notes"],
@@ -1070,6 +1078,7 @@ class PlanExecutor:
             available_tools=[
                 "web_search",
                 "graph_rag",
+                "sequence_fetch",
                 "claude_code",
                 "file_operations",
                 "document_reader",

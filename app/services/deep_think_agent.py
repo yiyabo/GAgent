@@ -158,6 +158,57 @@ class DeepThinkAgent:
             getattr(self.llm_client, "stream_chat_with_tools_async")
         )
 
+    def _build_shared_strategy_block(self) -> str:
+        return (
+            "=== CORE PRINCIPLES ===\n"
+            "1. You have UNLIMITED tokens and API calls.\n"
+            "2. Use MULTIPLE tools to gather complementary evidence.\n"
+            "3. Be THOROUGH - it is better to call 5 tools than to provide an incomplete answer.\n"
+            "4. Do not finish early; only conclude when evidence is sufficient.\n\n"
+            "=== TOOL PRIORITY ===\n"
+            "- For accession-based FASTA downloads, call sequence_fetch first.\n"
+            "- For FASTA/FASTQ/sequence work, ALWAYS try bio_tools first before claude_code.\n"
+            "- If the user provides inline sequence text (not a file), pass it as bio_tools(sequence_text=...).\n"
+            "- If bio_tools routing is uncertain, call bio_tools(operation='help') first; use web_search only when help is insufficient.\n"
+            "- For complex custom analysis not covered by bio_tools, then use claude_code.\n"
+            "- Never use claude_code as fallback for sequence_fetch failures.\n"
+            "- Never use claude_code as fallback for bio_tools input-conversion/parsing failures.\n"
+            "- For plan creation, research first (web_search), then use plan_operation.\n"
+        )
+
+    def _build_protocol_boundary_block(self, mode: str) -> str:
+        if mode == "native":
+            return (
+                "=== PROTOCOL BOUNDARY (NATIVE TOOL CALLING) ===\n"
+                "- Use native tool calls for actions and submit_final_answer to finish.\n"
+                "- Do NOT output legacy JSON keys like thinking/action/final_answer in plain text.\n"
+                "- Do NOT output structured-agent JSON keys like llm_reply/actions.\n"
+            )
+        return (
+            "=== PROTOCOL BOUNDARY (LEGACY JSON) ===\n"
+            "- Respond with valid JSON only using keys: thinking, action, final_answer.\n"
+            "- Do NOT output structured-agent JSON keys like llm_reply/actions.\n"
+            "- action is null or an object: {\"tool\": \"name\", \"params\": {...}}.\n"
+            "- final_answer is null until you are ready to conclude.\n"
+        )
+
+    @staticmethod
+    def _append_recent_chat_history(prompt: str, context: Optional[Dict[str, Any]]) -> str:
+        if not context:
+            return prompt
+        history = context.get("chat_history", [])
+        if not history:
+            return prompt
+        recent = history[-30:] if len(history) > 30 else history
+        lines = []
+        for msg in recent:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if len(content) > 500:
+                content = content[:500] + "..."
+            lines.append(f"[{role}]: {content}")
+        return prompt + "\n=== RECENT CONVERSATION ===\n" + "\n".join(lines)
+
     async def think(
         self,
         user_query: str,
@@ -410,32 +461,19 @@ class DeepThinkAgent:
         prompt = task_preamble + (
             "You are a Deep Thinking AI Assistant with UNLIMITED resources.\n"
             "Your goal is to provide the MOST COMPREHENSIVE answer by using available tools aggressively.\n\n"
-            "=== WORKFLOW ===\n"
-            "1. Think step by step. Express your reasoning as plain text.\n"
-            "2. Call tools whenever you need information. You may call multiple tools across iterations.\n"
-            "3. When you have gathered enough information, call the submit_final_answer tool with your comprehensive answer.\n\n"
-            "=== RULES ===\n"
-            "- Be THOROUGH. It is better to call 5 tools than to give an incomplete answer.\n"
-            "- For bioinformatics tasks, ALWAYS try bio_tools first before claude_code.\n"
-            "- For plan creation, use web_search to research first, then plan_operation.\n"
-            "- Do NOT call submit_final_answer prematurely. Gather sufficient information first.\n"
-            "- Each text response you give is visible to the user as your 'thinking process'.\n"
+            + self._build_shared_strategy_block()
+            + "\n=== WORKFLOW ===\n"
+            "1. Think step by step and provide concise reasoning text.\n"
+            "2. Call tools whenever needed; multiple tool calls across iterations are expected.\n"
+            "3. Call submit_final_answer only when evidence is sufficient.\n"
+            "4. Keep iterative reasoning visible to the user.\n\n"
+            + self._build_protocol_boundary_block("native")
+            + "\n=== RULES ===\n"
+            "- Do NOT call submit_final_answer prematurely.\n"
+            "- Keep quick checks synchronous; use background workflows only for clearly long-running operations.\n"
+            "- Prioritize evidence-backed conclusions over speculation.\n"
         )
-
-        if context:
-            history = context.get("chat_history", [])
-            if history:
-                recent = history[-30:] if len(history) > 30 else history
-                lines = []
-                for msg in recent:
-                    role = msg.get("role", "unknown")
-                    content = msg.get("content", "")
-                    if len(content) > 500:
-                        content = content[:500] + "..."
-                    lines.append(f"[{role}]: {content}")
-                prompt += "\n=== RECENT CONVERSATION ===\n" + "\n".join(lines)
-
-        return prompt
+        return self._append_recent_chat_history(prompt, context)
 
     # ------------------------------------------------------------------ #
     #  Prompt-based (legacy) path                                         #
@@ -1095,6 +1133,14 @@ Respond with ONLY a JSON object:
         """Construct the system prompt for DeepThink, task-aware when available."""
         # Build detailed tool descriptions
         tool_descriptions = {
+            "sequence_fetch": (
+                "Deterministic accession-to-FASTA downloader. "
+                "Use for FASTA downloads by accession IDs before analysis. "
+                "Params: {\"accession\": \"NC_001416.1\"} or "
+                "{\"accessions\": [\"NC_001416.1\", \"NC_001417.1\"], "
+                "\"database\": \"nuccore|protein\", \"format\": \"fasta\"}. "
+                "Do not use claude_code as fallback when sequence_fetch fails."
+            ),
             "claude_code": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. Params: {\"task\": \"description\"}",
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. Params: {\"query\": \"search query\"}",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
@@ -1104,6 +1150,7 @@ Respond with ONLY a JSON object:
             "bio_tools": (
                 "PREFERRED for bioinformatics: Execute Docker-based tools for FASTA/FASTQ/sequence analysis. "
                 "Example: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/absolute/path/to/file.fasta\"}. "
+                "For inline sequence content, pass sequence_text instead of input_file. "
                 "NOTE: input_file SHOULD be absolute path. "
                 f"Available tools (synced from tools_config.json): {', '.join(_BIO_TOOLS_NAMES)}. "
                 "Use operation='help' first for exact params and prefer operations verified in bio_tool_list.md. "
@@ -1209,190 +1256,59 @@ IMPORTANT: When creating plans, ensure each task has clear, actionable instructi
         base_prompt += f"""You are a Deep Thinking AI Assistant with UNLIMITED resources.
 Your goal is to provide the MOST COMPREHENSIVE answer by using available tools aggressively.
 
-=== CORE PRINCIPLES ===
-1. You have UNLIMITED tokens and API calls - DO NOT worry about costs.
-2. Use MULTIPLE TOOLS to gather complete information from different angles.
-3. Be THOROUGH - it's better to call 5 tools than to give an incomplete answer.
-4. Each tool provides unique insights - combine them for best results.
-
-=== THINKING PROCESS ===
-1. Break down the user's question into sub-problems.
-2. For EACH sub-problem, determine which tool(s) can help.
-3. Call tools ONE BY ONE, analyze results, then decide what else is needed.
-4. Synthesize information from ALL tool results into a comprehensive answer.
-5. Only provide final_answer when you have gathered enough information.
+{self._build_shared_strategy_block()}
+=== THINKING WORKFLOW ===
+1. Break the query into sub-problems.
+2. Choose tools for each sub-problem.
+3. Execute tools iteratively and synthesize evidence.
+4. Provide final_answer only when evidence is sufficient.
 
 === AVAILABLE TOOLS ===
 {tools_text}
 
-=== MULTI-TOOL STRATEGY ===
-For comprehensive analysis, consider this workflow:
-1. **Explore**: Use file_operations(list) to see what files exist
-2. **Read**: Use document_reader or file_operations(read) to read key files
-3. **Analyze**: Use claude_code for complex data analysis or code execution
-4. **Visualize**: Use claude_code to create charts/visualizations if needed
-5. **Research**: Use web_search for external context or comparison
-6. **Vision**: Use vision_reader for images, figures, or scanned documents
-7. **Knowledge**: Use graph_rag for structured knowledge queries
+=== BIO_TOOLS OPERATING RULES ===
+- For accession-based FASTA download, call sequence_fetch first and use its output_file for downstream steps.
+- For FASTA/FASTQ/sequence tasks, start with bio_tools (typically seqkit stats for first-pass diagnostics).
+- Use operation="help" before first use of uncertain operations; do not guess parameters.
+- If routing remains uncertain after help, use focused web_search and retry bio_tools.
+- Keep quick checks synchronous; use background=true only for clearly long-running jobs and return job_id for job_status follow-ups.
+- Bio_tools catalog (synced from tools_config.json): {_BIO_TOOLS_CATALOG_TEXT}
 
-=== TOOL SELECTION GUIDE ===
-- LOCAL DIRECTORY LISTING: file_operations(operation="list", path="...")
-- READ TEXT FILES: file_operations(operation="read") or document_reader
-- **BIOINFORMATICS (FASTA/FASTQ/sequences)**: bio_tools - MUST TRY FIRST for any .fasta, .fa, .fq, .fastq files. Prefer operations verified in bio_tool_list.md and use operation="help" when uncertain.
-- **BIO TOOL ROUTING WHEN UNSURE**: if you are unsure which bio tool/operation matches the required analysis, use web_search with targeted queries (tool + analysis type + operation keywords), then choose and run bio_tools.
-- COMPLEX ANALYSIS/CODE: claude_code - ONLY use after bio_tools fails or for custom analysis not supported by bio_tools
-- IMAGES/FIGURES/PDF: vision_reader - for OCR, figure description, equation reading
-- WEB INFORMATION: web_search - for internet queries, background research
-- KNOWLEDGE QUERIES: graph_rag - for structured knowledge retrieval
-- **PLAN CREATION**: plan_operation - for creating and optimizing structured task plans
+=== BIO_TOOLS RECOVERY PROTOCOL (MANDATORY) ===
+1. Call bio_tools(..., operation="help") and inspect required parameters.
+2. Retry bio_tools with corrected parameters and verified absolute paths.
+3. If still failing, run targeted web_search for operation/parameter mapping.
+4. If still failing for reasons other than input parsing/conversion, use claude_code for minimal shell-level diagnostics.
+Try at least 3 different recovery attempts before reporting failure.
 
-=== PLAN CREATION STRATEGY ===
-When user asks to create a plan, research project, or structured task breakdown:
+=== PLAN CREATION RULE ===
+When creating a plan, research first with web_search, then use plan_operation create/review/optimize/get.
 
-**Step 1: Research First (CRITICAL!)**
-- Use web_search to gather information about:
-  - Latest technologies and best practices for the domain
-  - Similar successful projects or methodologies
-  - Potential challenges and proven solutions
-- This ensures your plan is based on current, accurate information
-
-**Step 2: Create Initial Plan**
-- Use plan_operation(operation="create") with:
-  - Clear, descriptive title
-  - Specific goal/description
-  - Well-structured tasks with research-grade instructions
-  - Proper dependencies between tasks
-
-Research-grade instruction requirements (CRITICAL):
-- Each task must specify: Objective; Rationale (why); Methods & Tools; Data/Inputs; Outputs/Artifacts;
-  Baselines/Controls; Metrics & QC; Acceptance criteria; Reproducibility notes (parameters/versions/seeds).
-- Avoid shallow or slogan-like steps.
-
-**Step 3: Review Plan**
-- Use plan_operation(operation="review") to check:
-  - No circular dependencies
-  - Task granularity is appropriate (not too coarse or too fine)
-  - All necessary steps are included
-  - Health score is acceptable (aim for 80+)
-  - Rubric score is acceptable (aim for 80+), especially scientific_rigor and reproducibility
-
-**Step 4: Iterate if Needed**
-- If review finds issues, use plan_operation(operation="optimize") to:
-  - Add missing tasks
-  - Update unclear instructions
-  - Fix dependency issues
-  - Adjust task granularity
-  - Add baselines/controls, explicit metrics/QC, and acceptance thresholds
-  - Add tool/I-O/parameterization details for reproducibility
-- Then review again until satisfied
-
-**Step 5: Report Final Plan**
-- Use plan_operation(operation="get") to show final structure
-- Summarize the plan to the user with key tasks and timeline
-
-=== BIOINFORMATICS PRIORITY RULE ===
-When user asks about FASTA, FASTQ, or sequence files:
-1. FIRST: Call bio_tools with tool_name="seqkit", operation="stats" to get basic stats
-2. THEN: Decide if additional analysis is needed
-3. ONLY IF bio_tools cannot do it: Fall back to claude_code for custom Python analysis
-
-IMPORTANT - bio_tools catalog (synced from tools_config.json):
-{_BIO_TOOLS_CATALOG_TEXT}
-Do NOT guess parameters. Always call bio_tools(tool_name="xxx", operation="help") before first use of an operation in this turn.
-If uncertain which operation fits the requested analysis objective, run web_search first with a focused query, then pick the tool/operation and execute.
-Background decision rule (strict):
-- Keep synchronous for quick/interactive steps that must feed immediate reasoning in this turn (e.g., web_search, quick validation, help/stats checks).
-- Use background=true only for long-running bio_tools operations where immediate output is not required to finish this turn.
-- After background submit, return the job_id and query with operation="job_status" in follow-up turns.
-
-=== BIO_TOOLS SELF-CORRECTION PROTOCOL (CRITICAL!) ===
-When bio_tools fails, follow this recovery sequence. NEVER give up after first failure!
-
-**Step 1: Check Help**
-- Call bio_tools(tool_name="xxx", operation="help") to see exact parameters
-- Read the output carefully for required vs optional params
-
-**Step 2: Web Search (if help is unclear OR routing is uncertain)**
-- Call web_search(query="<tool_name> bioinformatics usage parameters example")
-- If tool selection is uncertain, call web_search(query="<analysis_type> bioinformatics tool operation best practice")
-- Look for official documentation or tutorials and map back to the most suitable bio_tools operation
-
-**Step 3: Inspect via Shell (if still failing)**
-- Call claude_code with task: "Run <tool> --help to see command options"
-- Check if input file format is correct with: seqkit stats <file>
-
-**Step 4: Try Alternative Tools**
-- seqkit failed → try biopython via claude_code
-- blast failed → check database path, try diamond as alternative
-- prodigal failed → check input format with seqkit first
-- assembly tools → verify FASTA format, check sequence lengths
-
-**Error Pattern Recognition:**
-- "Permission denied" → check file paths and permissions
-- "File not found" → verify absolute path, check if file exists with ls
-- "Invalid parameter" → call help, check parameter spelling/format
-- "Database not found" → verify database param path is correct
-- "Memory error" → try smaller input or request chunked processing
-- "Docker error" → report to user, may need admin intervention
-
-**Example Recovery Flow:**
-1. Error: operation parameter mismatch or missing field
-2. Action: bio_tools(tool_name="<tool>", operation="help")
-3. Learn: exact required params from help output
-4. Retry: bio_tools with corrected params and absolute/local input path
-5. Still failing? → web_search("<tool> bioinformatics usage parameters example")
-6. Still failing? → claude_code to run direct shell debug with small test input
-
-Try at least 3 different approaches before reporting failure to user!
-
-DO NOT use vision_reader for BIO files - it's only for PDFs and images!
-
-=== IMPORTANT ===
-- DO NOT hesitate to use multiple tools - resources are unlimited!
-- Call different tools to get different perspectives on the same data.
-- If one tool's result is incomplete, try another tool for more info.
-- For file analysis: first LIST the directory, then READ interesting files, then ANALYZE with code.
-
+{self._build_protocol_boundary_block("legacy")}
 === OUTPUT FORMAT ===
 Respond with valid JSON only (no markdown fences):
 
 {{
-  "thinking": "Describe what you're analyzing and WHY you're choosing this tool...",
+  "thinking": "What you are analyzing and why...",
   "action": {{"tool": "tool_name", "params": {{...}}}},
   "final_answer": null
 }}
 
-When ready to answer (after using multiple tools):
+When ready to answer:
 {{
-  "thinking": "Synthesizing information from [tool1], [tool2], [tool3]...",
+  "thinking": "Synthesis based on tool evidence...",
   "action": null,
   "final_answer": {{"answer": "Comprehensive answer here", "confidence": 0.9}}
 }}
 
 === RULES ===
 1. Output valid JSON only.
-2. Use "action" to call tools, one at a time per response.
-3. Call MULTIPLE tools before providing final_answer.
-4. Include which tools you used in your final answer's thinking.
-5. Be thorough - incomplete answers are worse than using more tools.
-6. For PhageScope submit, prioritize non-blocking backend execution over immediate result fetching.
+2. Use action to call one tool per response.
+3. Call MULTIPLE tools before providing final_answer when evidence gathering is required.
+4. Include key tool evidence before concluding.
+5. For PhageScope submit, prioritize non-blocking backend execution over immediate result fetching.
 """
-
-        # Append recent conversation context
-        if context:
-            chat_history = context.get("chat_history", [])
-            if chat_history:
-                history_lines = []
-                recent = chat_history[-30:] if len(chat_history) > 30 else chat_history
-                for msg in recent:
-                    role = msg.get("role", "unknown")
-                    content = msg.get("content", "")
-                    if len(content) > 500:
-                        content = content[:500] + "..."
-                    history_lines.append(f"[{role}]: {content}")
-                base_prompt += f"\n=== RECENT CONVERSATION ===\n" + "\n".join(history_lines)
-
-        return base_prompt
+        return self._append_recent_chat_history(base_prompt, context)
 
     def _get_next_step_prompt(self, iteration: int) -> str:
         """Generate prompt for the next step, encouraging completion if steps are getting long."""

@@ -44,6 +44,8 @@ def test_remote_mode_dispatches_to_remote_executor(
         bio_handler_module.bio_tools_handler(
             tool_name="seqkit",
             operation="stats",
+            sequence_text=">seq1\nACGT\n",
+            session_id="session_remote_dispatch",
         )
     )
 
@@ -72,6 +74,8 @@ def test_auto_mode_falls_back_to_local_when_remote_fails(
         bio_handler_module.bio_tools_handler(
             tool_name="seqkit",
             operation="stats",
+            sequence_text=">seq1\nACGT\n",
+            session_id="session_auto_fallback",
         )
     )
 
@@ -810,6 +814,99 @@ def test_bio_tools_handler_returns_unified_error_for_unsafe_parameters(
     assert result["error"] == "Invalid/unsafe parameter: db"
 
 
+def test_bio_tools_handler_converts_fasta_sequence_text_to_input_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: Dict[str, Any] = {}
+
+    async def _fake_local(**kwargs: Any) -> Dict[str, Any]:
+        captured.update(kwargs)
+        return {"success": True, "tool": "seqkit", "operation": "stats"}
+
+    monkeypatch.setenv("BIO_TOOLS_EXECUTION_MODE", "local")
+    monkeypatch.setattr(bio_handler_module, "_execute_local_bio_tool", _fake_local)
+
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="seqkit",
+            operation="stats",
+            sequence_text=">seq1\nACGTNN\n",
+            session_id="session_inline_fasta",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["input_origin"] == "sequence_text_fasta"
+    generated = result.get("generated_input_file")
+    assert isinstance(generated, str) and generated.endswith(".fasta")
+    assert captured.get("input_file") == generated
+    assert Path(generated).exists()
+    assert ">seq1" in Path(generated).read_text(encoding="utf-8")
+
+
+def test_bio_tools_handler_converts_raw_sequence_text_to_fasta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: Dict[str, Any] = {}
+
+    async def _fake_local(**kwargs: Any) -> Dict[str, Any]:
+        captured.update(kwargs)
+        return {"success": True, "tool": "seqkit", "operation": "stats"}
+
+    monkeypatch.setenv("BIO_TOOLS_EXECUTION_MODE", "local")
+    monkeypatch.setattr(bio_handler_module, "_execute_local_bio_tool", _fake_local)
+
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="seqkit",
+            operation="stats",
+            sequence_text=" acgt nnnn ",
+            session_id="session_inline_raw",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["input_origin"] == "sequence_text_raw"
+    generated = result.get("generated_input_file")
+    assert isinstance(generated, str)
+    content = Path(generated).read_text(encoding="utf-8")
+    assert content.startswith(">seq_1\n")
+    assert "acgtnnnn" in content.lower()
+    assert captured.get("input_file") == generated
+
+
+def test_bio_tools_handler_rejects_invalid_sequence_text_and_sets_no_claude_fallback() -> None:
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="seqkit",
+            operation="stats",
+            sequence_text="ACGT;touch /tmp/pwn",
+            session_id="session_inline_invalid",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_sequence_text"
+    assert result["error_stage"] == "input_preparation"
+    assert result["no_claude_fallback"] is True
+
+
+def test_bio_tools_handler_rejects_ambiguous_input_file_and_sequence_text() -> None:
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="seqkit",
+            operation="stats",
+            input_file="/tmp/a.fa",
+            sequence_text=">x\nACGT\n",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "sequence_input_ambiguous"
+    assert result["error_stage"] == "input_preparation"
+    assert result["no_claude_fallback"] is True
+
+
 def test_tools_bio_tools_endpoint_returns_backward_compatible_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -852,6 +949,46 @@ def test_tools_bio_tools_endpoint_returns_backward_compatible_payload(
         client.close()
 
 
+def test_tools_bio_tools_endpoint_forwards_sequence_text_and_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_execute_tool(name: str, **kwargs: Any) -> Dict[str, Any]:
+        assert name == "bio_tools"
+        assert kwargs["tool_name"] == "seqkit"
+        assert kwargs["operation"] == "stats"
+        assert kwargs["sequence_text"].startswith(">seq1")
+        assert kwargs["session_id"] == "session_api_inline"
+        return {
+            "success": True,
+            "tool": "seqkit",
+            "operation": "stats",
+            "input_origin": "sequence_text_fasta",
+            "generated_input_file": "/tmp/generated.fasta",
+        }
+
+    monkeypatch.setattr(tool_box, "execute_tool", _fake_execute_tool)
+
+    app = FastAPI()
+    app.include_router(tool_routes.router)
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/tools/bio-tools",
+            json={
+                "tool_name": "seqkit",
+                "operation": "stats",
+                "sequence_text": ">seq1\nACGT\n",
+                "session_id": "session_api_inline",
+            },
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["result"]["input_origin"] == "sequence_text_fasta"
+    finally:
+        client.close()
+
+
 def test_bio_tools_handler_background_mode_submits_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -876,6 +1013,8 @@ def test_bio_tools_handler_background_mode_submits_job(
         bio_handler_module.bio_tools_handler(
             tool_name="seqkit",
             operation="head",
+            sequence_text=">seq1\nACGT\n",
+            session_id="session_bg_submit",
             params={"background": True, "count": 1},
             timeout=0,
         )

@@ -28,6 +28,13 @@ def test_bio_tools_schema_description_mentions_dynamic_sync() -> None:
 
     assert "tools_config.json" in description
     assert "Use operation='help'" in description
+    assert "sequence_text" in description
+
+
+def test_bio_tools_schema_exposes_sequence_text_parameter() -> None:
+    schema = tool_schemas.TOOL_REGISTRY["bio_tools"]
+    props = schema["function"]["parameters"]["properties"]
+    assert "sequence_text" in props
 
 
 def test_skills_loader_discovers_bio_tools_skills() -> None:

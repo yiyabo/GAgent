@@ -125,6 +125,19 @@ def apply_phagescope_fallback(
         ]
         return any(token in tl for token in triggers)
 
+    def _extract_accessions(text: str) -> List[str]:
+        pattern = re.compile(r"\b[A-Za-z]{1,6}_?\d+(?:\.\d+)?\b")
+        matches = pattern.findall(text or "")
+        deduped: List[str] = []
+        seen = set()
+        for item in matches:
+            key = item.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped
+
     def _extract_taskid_from_text(text: str) -> Optional[str]:
         # Support patterns like taskid=36322 / task 36322.
         m = re.search(r"(?:taskid\s*=?\s*|task\s*)(\d{4,})", text, flags=re.IGNORECASE)
@@ -134,6 +147,56 @@ def apply_phagescope_fallback(
         if m:
             return m.group(1)
         return None
+
+    # Deterministic sequence download guardrail:
+    # when user requests FASTA download by accession, inject sequence_fetch.
+    if _wants_download(user_message):
+        history_text = " ".join(
+            str(item.get("content") or "") for item in agent.history[-6:]
+        )
+        accession_candidates = _extract_accessions(user_message) or _extract_accessions(history_text)
+        if accession_candidates:
+            try:
+                actions: List[LLMAction] = [
+                    LLMAction(
+                        kind="tool_operation",
+                        name="sequence_fetch",
+                        parameters={
+                            "accessions": accession_candidates,
+                            "database": "nuccore",
+                            "format": "fasta",
+                        },
+                        blocking=True,
+                        order=1,
+                    )
+                ]
+                if _wants_analysis(user_message):
+                    actions.append(
+                        LLMAction(
+                            kind="tool_operation",
+                            name="bio_tools",
+                            parameters={
+                                "tool_name": "seqkit",
+                                "operation": "stats",
+                                "input_file": "{{ previous.output_file }}",
+                            },
+                            blocking=True,
+                            order=2,
+                        )
+                    )
+                structured.actions = actions
+                if structured.llm_reply and structured.llm_reply.message:
+                    if _wants_analysis(user_message):
+                        structured.llm_reply.message = (
+                            "I will first download FASTA via sequence_fetch, then run seqkit stats via bio_tools."
+                        )
+                    else:
+                        structured.llm_reply.message = (
+                            "I will download the requested FASTA using sequence_fetch and return the saved path."
+                        )
+                return structured
+            except Exception:
+                return structured
 
     # Guardrail: for long-running PhageScope workflows, prefer submit-only in this turn.
     # If the model emits submit + result/save_all/download in one response, keep submit only.
