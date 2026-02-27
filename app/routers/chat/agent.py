@@ -1040,6 +1040,8 @@ User message:
                 failed_tool_name: Optional[str] = None
                 help_seen_after_failure = False
                 retry_seen_after_help = False
+                bio_input_block_key = "bio_tools_no_claude_fallback"
+                sequence_input_block_key = "sequence_fetch_no_claude_fallback"
 
                 def _safe_text(value: Any, *, limit: int = 600) -> str:
                     text = str(value or "").strip()
@@ -1115,6 +1117,54 @@ User message:
                         payload["failed_tool_name"] = failed_tool_name
                     return payload
 
+                def _build_bio_input_blocked_payload(
+                    block_context: Optional[Dict[str, Any]]
+                ) -> Dict[str, Any]:
+                    root_cause = ""
+                    if isinstance(block_context, dict):
+                        root_cause = str(block_context.get("summary") or "").strip()
+                    summary = (
+                        "claude_code fallback is blocked because bio_tools input preparation failed. "
+                        "Retry bio_tools with valid input_file or sequence_text."
+                    )
+                    if root_cause:
+                        summary = f"{summary} Root cause: {root_cause}"
+                    payload: Dict[str, Any] = {
+                        "success": False,
+                        "tool": "claude_code",
+                        "error": summary,
+                        "summary": summary,
+                        "blocked_reason": "bio_tools_input_preparation_failed",
+                        "error_code": "bio_tools_input_preparation_failed",
+                    }
+                    if isinstance(block_context, dict):
+                        payload["bio_tools_block_context"] = block_context
+                    return payload
+
+                def _build_sequence_input_blocked_payload(
+                    block_context: Optional[Dict[str, Any]]
+                ) -> Dict[str, Any]:
+                    root_cause = ""
+                    if isinstance(block_context, dict):
+                        root_cause = str(block_context.get("summary") or "").strip()
+                    summary = (
+                        "claude_code fallback is blocked because sequence_fetch failed in input/download stage. "
+                        "Retry sequence_fetch with valid accession input."
+                    )
+                    if root_cause:
+                        summary = f"{summary} Root cause: {root_cause}"
+                    payload: Dict[str, Any] = {
+                        "success": False,
+                        "tool": "claude_code",
+                        "error": summary,
+                        "summary": summary,
+                        "blocked_reason": "sequence_fetch_failed_no_fallback",
+                        "error_code": "sequence_fetch_failed_no_fallback",
+                    }
+                    if isinstance(block_context, dict):
+                        payload["sequence_fetch_block_context"] = block_context
+                    return payload
+
                 # Wrapper for tool execution with plan_operation binding
                 async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
                     nonlocal deep_think_tool_order, deep_think_bg_category
@@ -1123,6 +1173,23 @@ User message:
                     safe_params = params if isinstance(params, dict) else {}
 
                     if name != "plan_operation":
+                        if name == "claude_code":
+                            sequence_block_context = self.extra_context.get(sequence_input_block_key)
+                            if isinstance(sequence_block_context, dict):
+                                blocked_payload = _build_sequence_input_blocked_payload(sequence_block_context)
+                                logger.warning(
+                                    "[DeepThink] Blocked claude_code fallback due to sequence_fetch failure."
+                                )
+                                return blocked_payload
+
+                            block_context = self.extra_context.get(bio_input_block_key)
+                            if isinstance(block_context, dict):
+                                blocked_payload = _build_bio_input_blocked_payload(block_context)
+                                logger.warning(
+                                    "[DeepThink] Blocked claude_code fallback due to bio_tools input preparation failure."
+                                )
+                                return blocked_payload
+
                         if (
                             name == "claude_code"
                             and bio_failure_active
@@ -1153,9 +1220,42 @@ User message:
                             iteration=deep_think_tool_order,
                         )
 
+                        if name == "sequence_fetch":
+                            result_success = result.get("success") is not False
+                            if result_success:
+                                self.extra_context.pop(sequence_input_block_key, None)
+                            elif result.get("no_claude_fallback") is True:
+                                blocked_summary = str(
+                                    result.get("error")
+                                    or "sequence_fetch failed."
+                                ).strip()
+                                self.extra_context[sequence_input_block_key] = {
+                                    "summary": blocked_summary,
+                                    "blocked_reason": "sequence_fetch_failed_no_fallback",
+                                    "error_code": result.get("error_code"),
+                                    "error_stage": result.get("error_stage"),
+                                    "accessions": result.get("accessions"),
+                                    "provider": result.get("provider"),
+                                }
+
                         if name == "bio_tools":
                             operation_name = str(safe_params.get("operation") or "").strip().lower()
                             result_success = result.get("success") is not False
+                            if result_success:
+                                self.extra_context.pop(bio_input_block_key, None)
+                            elif result.get("no_claude_fallback") is True:
+                                blocked_summary = str(
+                                    result.get("error")
+                                    or "bio_tools input preparation failed."
+                                ).strip()
+                                self.extra_context[bio_input_block_key] = {
+                                    "summary": blocked_summary,
+                                    "blocked_reason": "bio_tools_input_preparation_failed",
+                                    "error_code": result.get("error_code"),
+                                    "error_stage": result.get("error_stage"),
+                                    "tool_name": result.get("tool"),
+                                    "operation": result.get("operation"),
+                                }
                             if not bio_failure_active and operation_name != "help" and not result_success:
                                 bio_failure_active = True
                                 failed_tool_name = (
@@ -1376,6 +1476,7 @@ User message:
                     available_tools=[
                         "web_search",
                         "graph_rag",
+                        "sequence_fetch",
                         "claude_code",
                         "file_operations",
                         "document_reader",

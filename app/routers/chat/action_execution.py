@@ -74,6 +74,7 @@ _AUTO_DEEP_THINK_RETRY_CONTEXT_KEY = "auto_deep_think_retry_on_blocking_failure"
 _AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
     "web_search",
     "graph_rag",
+    "sequence_fetch",
     "claude_code",
     "file_operations",
     "document_reader",

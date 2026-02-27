@@ -84,6 +84,8 @@ _summarize_tool_result_fn = summarize_tool_result
 _drop_callables_fn = drop_callables
 _normalize_dependencies_fn = normalize_dependencies
 _append_recent_tool_result_fn = append_recent_tool_result
+_BIO_TOOLS_NO_CLAUDE_FALLBACK_KEY = "bio_tools_no_claude_fallback"
+_SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY = "sequence_fetch_no_claude_fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +530,136 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 clean_params[key] = val.strip()
         params = clean_params
 
+    elif tool_name == "sequence_fetch":
+        clean_params: Dict[str, Any] = {}
+        accession_value = params.get("accession")
+        accessions_value = params.get("accessions")
+
+        if isinstance(accession_value, str) and accession_value.strip():
+            clean_params["accession"] = accession_value.strip()
+
+        if isinstance(accessions_value, list):
+            accessions_clean = [
+                str(item).strip()
+                for item in accessions_value
+                if str(item).strip()
+            ]
+            if accessions_clean:
+                clean_params["accessions"] = accessions_clean
+
+        if not clean_params.get("accession") and not clean_params.get("accessions"):
+            return AgentStep(
+                action=action,
+                success=False,
+                message="sequence_fetch requires `accession` or `accessions`.",
+                details={"error": "missing_accession", "tool": tool_name},
+            )
+
+        database_value = params.get("database")
+        if isinstance(database_value, str) and database_value.strip():
+            clean_params["database"] = database_value.strip()
+
+        format_value = params.get("format")
+        if isinstance(format_value, str) and format_value.strip():
+            clean_params["format"] = format_value.strip()
+
+        output_name = params.get("output_name")
+        if isinstance(output_name, str) and output_name.strip():
+            clean_params["output_name"] = output_name.strip()
+
+        timeout_sec = params.get("timeout_sec")
+        if timeout_sec is not None:
+            try:
+                clean_params["timeout_sec"] = float(timeout_sec)
+            except (TypeError, ValueError):
+                pass
+
+        max_bytes = params.get("max_bytes")
+        if max_bytes is not None:
+            try:
+                clean_params["max_bytes"] = int(max_bytes)
+            except (TypeError, ValueError):
+                pass
+
+        session_id_value = params.get("session_id")
+        if isinstance(session_id_value, str) and session_id_value.strip():
+            clean_params["session_id"] = session_id_value.strip()
+        elif isinstance(agent.session_id, str) and agent.session_id.strip():
+            clean_params["session_id"] = agent.session_id.strip()
+
+        params = clean_params
+
     elif tool_name == "claude_code":
+        seq_block_payload = agent.extra_context.get(_SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY)
+        if seq_block_payload:
+            seq_root_reason = (
+                str(seq_block_payload.get("summary") or "").strip()
+                if isinstance(seq_block_payload, dict)
+                else ""
+            )
+            seq_reason_text = (
+                "claude_code fallback is blocked because sequence_fetch failed in input/download stage. "
+                "Retry sequence_fetch with valid accession input."
+            )
+            if seq_root_reason:
+                seq_reason_text = f"{seq_reason_text} Root cause: {seq_root_reason}"
+            seq_details = {
+                "error": seq_reason_text,
+                "error_code": "sequence_fetch_failed_no_fallback",
+                "blocked_reason": "sequence_fetch_failed_no_fallback",
+                "tool": tool_name,
+                "result": {
+                    "success": False,
+                    "tool": tool_name,
+                    "error": seq_reason_text,
+                    "error_code": "sequence_fetch_failed_no_fallback",
+                    "blocked_reason": "sequence_fetch_failed_no_fallback",
+                },
+            }
+            if isinstance(seq_block_payload, dict):
+                seq_details["sequence_fetch_block_context"] = seq_block_payload
+            return AgentStep(
+                action=action,
+                success=False,
+                message=seq_reason_text,
+                details=seq_details,
+            )
+
+        block_payload = agent.extra_context.get(_BIO_TOOLS_NO_CLAUDE_FALLBACK_KEY)
+        if block_payload:
+            root_reason = (
+                str(block_payload.get("summary") or "").strip()
+                if isinstance(block_payload, dict)
+                else ""
+            )
+            reason_text = (
+                "claude_code fallback is blocked because bio_tools input preparation failed. "
+                "Retry bio_tools with a valid FASTA/raw sequence input."
+            )
+            if root_reason:
+                reason_text = f"{reason_text} Root cause: {root_reason}"
+            details = {
+                "error": reason_text,
+                "error_code": "bio_tools_input_preparation_failed",
+                "blocked_reason": "bio_tools_input_preparation_failed",
+                "tool": tool_name,
+                "result": {
+                    "success": False,
+                    "tool": tool_name,
+                    "error": reason_text,
+                    "error_code": "bio_tools_input_preparation_failed",
+                    "blocked_reason": "bio_tools_input_preparation_failed",
+                },
+            }
+            if isinstance(block_payload, dict):
+                details["bio_tools_block_context"] = block_payload
+            return AgentStep(
+                action=action,
+                success=False,
+                message=reason_text,
+                details=details,
+            )
+
         prepared = await agent._prepare_claude_code_params(
             action=action,
             tool_name=tool_name,
@@ -673,6 +804,10 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             if isinstance(value, str) and value.strip():
                 clean_params[key] = value.strip()
 
+        sequence_text = params.get("sequence_text")
+        if isinstance(sequence_text, str) and sequence_text.strip():
+            clean_params["sequence_text"] = sequence_text.strip()
+
         tool_params = params.get("params")
         if isinstance(tool_params, dict):
             clean_params["params"] = tool_params
@@ -693,6 +828,9 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 clean_params["background"] = True
             elif normalized in {"0", "false", "no", "n", "off"}:
                 clean_params["background"] = False
+
+        if isinstance(agent.session_id, str) and agent.session_id.strip():
+            clean_params["session_id"] = agent.session_id.strip()
 
         params = clean_params
 
@@ -1165,6 +1303,49 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             sanitized = patched
     except Exception:
         pass
+
+    if tool_name == "sequence_fetch":
+        if (
+            isinstance(raw_result, dict)
+            and raw_result.get("success") is False
+            and raw_result.get("no_claude_fallback") is True
+        ):
+            blocked_summary = str(
+                raw_result.get("error")
+                or "sequence_fetch failed and claude_code fallback is blocked."
+            ).strip()
+            agent.extra_context[_SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY] = {
+                "summary": blocked_summary,
+                "blocked_reason": "sequence_fetch_failed_no_fallback",
+                "error_code": raw_result.get("error_code"),
+                "error_stage": raw_result.get("error_stage"),
+                "accessions": raw_result.get("accessions"),
+                "provider": raw_result.get("provider"),
+            }
+        elif sanitized.get("success") is not False:
+            agent.extra_context.pop(_SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY, None)
+
+    if tool_name == "bio_tools":
+        if (
+            isinstance(raw_result, dict)
+            and raw_result.get("success") is False
+            and raw_result.get("no_claude_fallback") is True
+        ):
+            blocked_summary = str(
+                raw_result.get("error")
+                or "bio_tools input preparation failed; claude_code fallback is blocked."
+            ).strip()
+            agent.extra_context[_BIO_TOOLS_NO_CLAUDE_FALLBACK_KEY] = {
+                "summary": blocked_summary,
+                "blocked_reason": "bio_tools_input_preparation_failed",
+                "error_code": raw_result.get("error_code"),
+                "error_stage": raw_result.get("error_stage"),
+                "tool_name": raw_result.get("tool"),
+                "operation": raw_result.get("operation"),
+            }
+        elif sanitized.get("success") is not False:
+            agent.extra_context.pop(_BIO_TOOLS_NO_CLAUDE_FALLBACK_KEY, None)
+
     summary = _summarize_tool_result_fn(tool_name, sanitized)
     _append_recent_tool_result_fn(agent.extra_context, tool_name, summary, sanitized)
 

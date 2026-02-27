@@ -272,3 +272,231 @@ def test_bio_tools_is_supported_in_tool_action_handler(
     assert isinstance(result, dict)
     assert result.get("tool") == "bio_tools"
     assert result.get("error") == "intentional test failure"
+
+
+def test_claude_code_is_blocked_after_bio_tools_input_preparation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = None
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    call_counts = {"claude_code": 0}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        if name == "bio_tools":
+            return {
+                "success": False,
+                "tool": "bio_tools",
+                "operation": kwargs.get("operation"),
+                "error": "sequence_text contains unsupported characters",
+                "error_code": "invalid_sequence_text",
+                "error_stage": "input_preparation",
+                "no_claude_fallback": True,
+            }
+        if name == "claude_code":
+            call_counts["claude_code"] += 1
+            return {"success": True}
+        return {"success": True}
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+
+    bio_action = LLMAction(
+        kind="tool_operation",
+        name="bio_tools",
+        parameters={
+            "tool_name": "seqkit",
+            "operation": "stats",
+            "sequence_text": "ACGT;touch /tmp/pwn",
+        },
+        order=1,
+    )
+    bio_step = asyncio.run(agent._handle_tool_action(bio_action))
+    assert bio_step.success is False
+
+    claude_action = LLMAction(
+        kind="tool_operation",
+        name="claude_code",
+        parameters={"task": "write script"},
+        order=2,
+    )
+    claude_step = asyncio.run(agent._handle_tool_action(claude_action))
+
+    assert claude_step.success is False
+    assert "blocked" in claude_step.message.lower()
+    assert isinstance(claude_step.details, dict)
+    assert claude_step.details.get("error_code") == "bio_tools_input_preparation_failed"
+    assert call_counts["claude_code"] == 0
+
+
+def test_bio_tools_sequence_text_is_forwarded_with_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = "session_abc123"
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        assert name == "bio_tools"
+        assert str(kwargs.get("sequence_text") or "").strip() == ">seq1\nACGT"
+        assert kwargs.get("session_id") == "session_abc123"
+        return {"success": True, "tool": "bio_tools", "operation": "stats"}
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="bio_tools",
+        parameters={
+            "tool_name": "seqkit",
+            "operation": "stats",
+            "sequence_text": ">seq1\nACGT\n",
+        },
+        order=1,
+    )
+    step = asyncio.run(agent._handle_tool_action(action))
+    assert step.success is True
+
+
+def test_claude_code_is_blocked_after_sequence_fetch_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = None
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    call_counts = {"claude_code": 0}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        if name == "sequence_fetch":
+            return {
+                "success": False,
+                "tool": "sequence_fetch",
+                "error": "invalid accession",
+                "error_code": "invalid_accession",
+                "error_stage": "input_validation",
+                "no_claude_fallback": True,
+            }
+        if name == "claude_code":
+            call_counts["claude_code"] += 1
+            return {"success": True}
+        return {"success": True}
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+
+    fetch_action = LLMAction(
+        kind="tool_operation",
+        name="sequence_fetch",
+        parameters={"accession": "bad$$id"},
+        order=1,
+    )
+    fetch_step = asyncio.run(agent._handle_tool_action(fetch_action))
+    assert fetch_step.success is False
+
+    claude_action = LLMAction(
+        kind="tool_operation",
+        name="claude_code",
+        parameters={"task": "fallback download script"},
+        order=2,
+    )
+    claude_step = asyncio.run(agent._handle_tool_action(claude_action))
+
+    assert claude_step.success is False
+    assert isinstance(claude_step.details, dict)
+    assert claude_step.details.get("error_code") == "sequence_fetch_failed_no_fallback"
+    assert call_counts["claude_code"] == 0
+
+
+def test_sequence_fetch_success_clears_block_and_reenables_claude_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = None
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    call_counts = {"sequence_fetch": 0, "claude_code": 0}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        if name == "sequence_fetch":
+            call_counts["sequence_fetch"] += 1
+            if call_counts["sequence_fetch"] == 1:
+                return {
+                    "success": False,
+                    "tool": "sequence_fetch",
+                    "error": "invalid accession",
+                    "error_code": "invalid_accession",
+                    "error_stage": "input_validation",
+                    "no_claude_fallback": True,
+                }
+            return {
+                "success": True,
+                "tool": "sequence_fetch",
+                "accessions": ["NC_001416.1"],
+                "output_file": "/tmp/nc_001416.fasta",
+                "record_count": 1,
+            }
+        if name == "claude_code":
+            call_counts["claude_code"] += 1
+            return {"success": True}
+        return {"success": True}
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+
+    first_fetch = LLMAction(
+        kind="tool_operation",
+        name="sequence_fetch",
+        parameters={"accession": "bad$$id"},
+        order=1,
+    )
+    first_step = asyncio.run(agent._handle_tool_action(first_fetch))
+    assert first_step.success is False
+
+    second_fetch = LLMAction(
+        kind="tool_operation",
+        name="sequence_fetch",
+        parameters={"accession": "NC_001416.1"},
+        order=2,
+    )
+    second_step = asyncio.run(agent._handle_tool_action(second_fetch))
+    assert second_step.success is True
+
+    claude_action = LLMAction(
+        kind="tool_operation",
+        name="claude_code",
+        parameters={"task": "analyze downloaded fasta"},
+        order=3,
+    )
+    claude_step = asyncio.run(agent._handle_tool_action(claude_action))
+
+    assert claude_step.success is True
+    assert call_counts["claude_code"] == 1
+
+
+def test_guardrail_injects_sequence_fetch_then_bio_tools_for_download_and_analysis() -> None:
+    agent = _build_minimal_agent()
+    agent._current_user_message = "Please download NC_001416.1 FASTA and analyze it."
+    agent.history = []
+
+    structured = LLMStructuredResponse(
+        llm_reply=LLMReply(message="working on it"),
+        actions=[],
+    )
+    patched = agent._apply_phagescope_fallback(structured)
+
+    assert len(patched.actions) == 2
+    first = patched.actions[0]
+    second = patched.actions[1]
+    assert first.name == "sequence_fetch"
+    assert first.parameters.get("accessions") == ["NC_001416.1"]
+    assert second.name == "bio_tools"
+    assert second.parameters.get("tool_name") == "seqkit"
+    assert second.parameters.get("operation") == "stats"
+    assert second.parameters.get("input_file") == "{{ previous.output_file }}"

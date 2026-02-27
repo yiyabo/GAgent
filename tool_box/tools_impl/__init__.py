@@ -21,6 +21,7 @@ from .review_pack_writer import review_pack_writer_tool
 from .phagescope import phagescope_tool
 from .result_interpreter import result_interpreter_tool
 from .plan_tools import plan_operation_tool
+from .sequence_fetch import sequence_fetch_tool
 
 __all__ = [
     "web_search_tool",
@@ -39,4 +40,5 @@ __all__ = [
     "phagescope_tool",
     "result_interpreter_tool",
     "plan_operation_tool",
+    "sequence_fetch_tool",
 ]
