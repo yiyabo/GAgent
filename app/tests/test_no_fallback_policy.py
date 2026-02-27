@@ -502,6 +502,122 @@ class _DeepThinkBioSuccessThenClaudeProbe(_DeepThinkProbeBase):
         )
 
 
+class _DeepThinkSequenceFetchFailThenClaudeProbe(_DeepThinkProbeBase):
+    def __init__(
+        self,
+        *,
+        llm_client,
+        available_tools,
+        tool_executor,
+        max_iterations,
+        tool_timeout,
+        on_thinking,
+        on_thinking_delta,
+        on_final_delta,
+        on_tool_start=None,
+        on_tool_result=None,
+        on_artifact=None,
+        **_kwargs,
+    ) -> None:
+        _ = (
+            llm_client,
+            available_tools,
+            max_iterations,
+            tool_timeout,
+            on_thinking,
+            on_thinking_delta,
+            on_final_delta,
+            on_tool_start,
+            on_tool_result,
+            on_artifact,
+        )
+        self._tool_executor = tool_executor
+
+    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+        _ = (user_query, context)
+        fetch_result = await self._tool_executor(
+            "sequence_fetch",
+            {"accession": "bad$$id", "database": "nuccore", "format": "fasta"},
+        )
+        claude_result = await self._tool_executor(
+            "claude_code",
+            {"task": "fallback download via script"},
+        )
+        return DeepThinkResult(
+            final_answer=json.dumps(
+                {"sequence_fetch": fetch_result, "claude_code": claude_result},
+                ensure_ascii=False,
+            ),
+            thinking_steps=[],
+            total_iterations=1,
+            tools_used=["sequence_fetch", "claude_code"],
+            confidence=1.0,
+            thinking_summary="ok",
+        )
+
+
+class _DeepThinkSequenceRecoverThenClaudeProbe(_DeepThinkProbeBase):
+    def __init__(
+        self,
+        *,
+        llm_client,
+        available_tools,
+        tool_executor,
+        max_iterations,
+        tool_timeout,
+        on_thinking,
+        on_thinking_delta,
+        on_final_delta,
+        on_tool_start=None,
+        on_tool_result=None,
+        on_artifact=None,
+        **_kwargs,
+    ) -> None:
+        _ = (
+            llm_client,
+            available_tools,
+            max_iterations,
+            tool_timeout,
+            on_thinking,
+            on_thinking_delta,
+            on_final_delta,
+            on_tool_start,
+            on_tool_result,
+            on_artifact,
+        )
+        self._tool_executor = tool_executor
+
+    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+        _ = (user_query, context)
+        first_fetch = await self._tool_executor(
+            "sequence_fetch",
+            {"accession": "bad$$id", "database": "nuccore", "format": "fasta"},
+        )
+        retry_fetch = await self._tool_executor(
+            "sequence_fetch",
+            {"accession": "NC_001416.1", "database": "nuccore", "format": "fasta"},
+        )
+        claude_result = await self._tool_executor(
+            "claude_code",
+            {"task": "analyze downloaded fasta"},
+        )
+        return DeepThinkResult(
+            final_answer=json.dumps(
+                {
+                    "sequence_fetch_first": first_fetch,
+                    "sequence_fetch_retry": retry_fetch,
+                    "claude_code": claude_result,
+                },
+                ensure_ascii=False,
+            ),
+            thinking_steps=[],
+            total_iterations=1,
+            tools_used=["sequence_fetch", "claude_code"],
+            confidence=1.0,
+            thinking_summary="ok",
+        )
+
+
 def _build_deep_think_test_agent() -> StructuredChatAgent:
     agent = StructuredChatAgent.__new__(StructuredChatAgent)
     agent.plan_session = SimpleNamespace(plan_id=None)
@@ -607,6 +723,58 @@ def test_deep_think_blocks_claude_code_until_bio_recovery(
     assert blocked.get("success") is False
     assert blocked.get("blocked_reason") == "bio_tools_recovery_not_completed"
     assert blocked.get("recovery_required") == "bio_tools help -> retry"
+    assert call_counts["claude_code"] == 0
+
+
+def test_deep_think_blocks_claude_code_after_bio_input_preparation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkBioFailThenClaudeProbe)
+    agent = _build_deep_think_test_agent()
+    call_counts = {"claude_code": 0}
+
+    async def _fake_handle_tool_action(action):  # type: ignore[no-untyped-def]
+        if action.name == "bio_tools":
+            return AgentStep(
+                action=action,
+                success=False,
+                message="invalid sequence text",
+                details={
+                    "result": {
+                        "success": False,
+                        "tool": "bio_tools",
+                        "operation": "stats",
+                        "error": "sequence_text contains unsupported characters",
+                        "error_code": "invalid_sequence_text",
+                        "error_stage": "input_preparation",
+                        "no_claude_fallback": True,
+                    }
+                },
+            )
+        if action.name == "claude_code":
+            call_counts["claude_code"] += 1
+            return AgentStep(
+                action=action,
+                success=True,
+                message="claude_code executed",
+                details={"result": {"success": True}},
+            )
+        return AgentStep(
+            action=action,
+            success=True,
+            message="ok",
+            details={"result": {"success": True}},
+        )
+
+    agent._handle_tool_action = _fake_handle_tool_action
+
+    events = asyncio.run(_collect_deep_think_events(agent, "analyze deeply"))
+    assert not [evt for evt in events if evt.get("type") == "error"]
+    final_message = _extract_final_message(events)
+    parsed = json.loads(final_message)
+    blocked = parsed["claude_code"]
+    assert blocked.get("success") is False
+    assert blocked.get("blocked_reason") == "bio_tools_input_preparation_failed"
     assert call_counts["claude_code"] == 0
 
 
@@ -754,6 +922,123 @@ def test_deep_think_allows_claude_code_after_help_and_failed_retry(
     agent._handle_tool_action = _fake_handle_tool_action
 
     events = asyncio.run(_collect_deep_think_events(agent, "analyze deeply"))
+    assert not [evt for evt in events if evt.get("type") == "error"]
+    final_message = _extract_final_message(events)
+    parsed = json.loads(final_message)
+    claude_result = parsed["claude_code"]
+    assert claude_result.get("success") is True
+    assert "blocked_reason" not in claude_result
+    assert call_counts["claude_code"] == 1
+
+
+def test_deep_think_blocks_claude_code_after_sequence_fetch_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkSequenceFetchFailThenClaudeProbe)
+    agent = _build_deep_think_test_agent()
+    call_counts = {"claude_code": 0}
+
+    async def _fake_handle_tool_action(action):  # type: ignore[no-untyped-def]
+        if action.name == "sequence_fetch":
+            return AgentStep(
+                action=action,
+                success=False,
+                message="invalid accession",
+                details={
+                    "result": {
+                        "success": False,
+                        "tool": "sequence_fetch",
+                        "error": "invalid accession",
+                        "error_code": "invalid_accession",
+                        "error_stage": "input_validation",
+                        "no_claude_fallback": True,
+                    }
+                },
+            )
+        if action.name == "claude_code":
+            call_counts["claude_code"] += 1
+            return AgentStep(
+                action=action,
+                success=True,
+                message="claude_code executed",
+                details={"result": {"success": True}},
+            )
+        return AgentStep(
+            action=action,
+            success=True,
+            message="ok",
+            details={"result": {"success": True}},
+        )
+
+    agent._handle_tool_action = _fake_handle_tool_action
+
+    events = asyncio.run(_collect_deep_think_events(agent, "download accession fasta"))
+    assert not [evt for evt in events if evt.get("type") == "error"]
+    final_message = _extract_final_message(events)
+    parsed = json.loads(final_message)
+    blocked = parsed["claude_code"]
+    assert blocked.get("success") is False
+    assert blocked.get("blocked_reason") == "sequence_fetch_failed_no_fallback"
+    assert call_counts["claude_code"] == 0
+
+
+def test_deep_think_sequence_fetch_success_clears_claude_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkSequenceRecoverThenClaudeProbe)
+    agent = _build_deep_think_test_agent()
+    call_counts = {"sequence_fetch": 0, "claude_code": 0}
+
+    async def _fake_handle_tool_action(action):  # type: ignore[no-untyped-def]
+        if action.name == "sequence_fetch":
+            call_counts["sequence_fetch"] += 1
+            if call_counts["sequence_fetch"] == 1:
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="invalid accession",
+                    details={
+                        "result": {
+                            "success": False,
+                            "tool": "sequence_fetch",
+                            "error": "invalid accession",
+                            "error_code": "invalid_accession",
+                            "error_stage": "input_validation",
+                            "no_claude_fallback": True,
+                        }
+                    },
+                )
+            return AgentStep(
+                action=action,
+                success=True,
+                message="downloaded",
+                details={
+                    "result": {
+                        "success": True,
+                        "tool": "sequence_fetch",
+                        "output_file": "/tmp/nc_001416.fasta",
+                        "record_count": 1,
+                    }
+                },
+            )
+        if action.name == "claude_code":
+            call_counts["claude_code"] += 1
+            return AgentStep(
+                action=action,
+                success=True,
+                message="claude_code executed",
+                details={"result": {"success": True}},
+            )
+        return AgentStep(
+            action=action,
+            success=True,
+            message="ok",
+            details={"result": {"success": True}},
+        )
+
+    agent._handle_tool_action = _fake_handle_tool_action
+
+    events = asyncio.run(_collect_deep_think_events(agent, "download and analyze accession fasta"))
     assert not [evt for evt in events if evt.get("type") == "error"]
     final_message = _extract_final_message(events)
     parsed = json.loads(final_message)

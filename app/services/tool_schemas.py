@@ -45,6 +45,8 @@ def _build_bio_tools_schema_description() -> str:
         "analysis. Tool list is synced from tools_config.json. "
         f"Available tools: {names_text}. "
         "Use operation='help' first to inspect exact operations and parameters. "
+        "If the user provides inline sequence text instead of a file, pass it via "
+        "sequence_text and let bio_tools convert it to FASTA safely. "
         "For heavy runs, set background=true to submit asynchronously and query "
         "later with operation='job_status' and job_id. "
         "Do not use background mode for quick checks that must return immediately."
@@ -104,6 +106,60 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    "sequence_fetch": {
+        "type": "function",
+        "function": {
+            "name": "sequence_fetch",
+            "description": (
+                "Deterministic accession-to-FASTA downloader with strict domain allowlist. "
+                "Use this when the user asks to download FASTA by accession IDs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "accession": {
+                        "type": "string",
+                        "description": "Single accession ID (mutually exclusive with accessions).",
+                    },
+                    "accessions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Multiple accession IDs (mutually exclusive with accession).",
+                    },
+                    "database": {
+                        "type": "string",
+                        "enum": ["nuccore", "protein"],
+                        "description": "NCBI database type.",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["fasta"],
+                        "description": "Output format (FASTA only).",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session id for session-scoped output storage.",
+                    },
+                    "output_name": {
+                        "type": "string",
+                        "description": "Optional output filename.",
+                    },
+                    "timeout_sec": {
+                        "type": "number",
+                        "description": "Network timeout in seconds.",
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "description": "Maximum response payload size in bytes.",
+                    },
+                },
+                "anyOf": [
+                    {"required": ["accession"]},
+                    {"required": ["accessions"]},
+                ],
             },
         },
     },
@@ -247,6 +303,13 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     "input_file": {
                         "type": "string",
                         "description": "Absolute path to the input file.",
+                    },
+                    "sequence_text": {
+                        "type": "string",
+                        "description": (
+                            "Inline FASTA or raw sequence text. Use this when no input file is "
+                            "available. Mutually exclusive with input_file."
+                        ),
                     },
                     "output_file": {
                         "type": "string",

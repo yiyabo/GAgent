@@ -184,6 +184,19 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             "language",
             "experiment_id",
             "card",
+            "error_code",
+            "error_stage",
+            "no_claude_fallback",
+            "input_origin",
+            "generated_input_file",
+            "output_file",
+            "output_file_rel",
+            "record_count",
+            "accessions",
+            "bytes",
+            "sha256",
+            "database",
+            "format",
         ):
             if key in raw_result:
                 sanitized[key] = raw_result[key]
@@ -457,6 +470,26 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             return f"Document reader{page_info} succeeded. Content preview: {text.strip()}"
 
         return "Document reader succeeded, but no text content was extracted."
+
+    if tool_name == "sequence_fetch":
+        if result.get("success") is False:
+            error = result.get("error") or "Sequence fetch failed"
+            return f"Sequence fetch failed: {error}"
+        accessions = result.get("accessions")
+        accession_count = len(accessions) if isinstance(accessions, list) else None
+        record_count = result.get("record_count")
+        output_file = result.get("output_file") or result.get("output_file_rel")
+        provider = result.get("provider")
+        parts: List[str] = ["Sequence fetch succeeded"]
+        if isinstance(accession_count, int) and accession_count > 0:
+            parts.append(f"accessions={accession_count}")
+        if isinstance(record_count, int):
+            parts.append(f"records={record_count}")
+        if isinstance(provider, str) and provider:
+            parts.append(f"provider={provider}")
+        if isinstance(output_file, str) and output_file:
+            parts.append(f"saved to {output_file}")
+        return "; ".join(parts) + "."
 
     return f"{tool_name} finished execution."
 

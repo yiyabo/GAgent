@@ -88,6 +88,8 @@ MULTI_PATH_PARAM_KEYS = {"bam_files", "bins"}
 _PATH_SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9._/\-,:+=@~]+$")
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 _QUOTED_PLACEHOLDER_RE = re.compile(r"""(['"])\{([a-zA-Z_][a-zA-Z0-9_]*)\}\1""")
+_INLINE_NAME_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_SEQUENCE_ALLOWED_CHARS_RE = re.compile(r"^[A-Za-z*?.-]+$")
 _PATH_FORBIDDEN_SUBSTRINGS = (
     ";",
     "|",
@@ -98,6 +100,7 @@ _PATH_FORBIDDEN_SUBSTRINGS = (
     "$",
     "`",
 )
+_DEFAULT_SEQUENCE_TEXT_MAX_BYTES = 5 * 1024 * 1024
 
 
 class UnsafeParameterError(ValueError):
@@ -318,6 +321,161 @@ def _extract_control_flags(
 
     clean_params = {k: v for k, v in source.items() if k not in _CONTROL_PARAM_KEYS}
     return clean_params, requested_background, (requested_job_id or None)
+
+
+def _build_bio_tools_error(
+    *,
+    tool_name: str,
+    operation: str,
+    error: str,
+    error_code: Optional[str] = None,
+    error_stage: Optional[str] = None,
+    no_claude_fallback: bool = False,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "success": False,
+        "error": error,
+        "tool": tool_name,
+        "operation": operation,
+    }
+    if error_code:
+        payload["error_code"] = error_code
+    if error_stage:
+        payload["error_stage"] = error_stage
+    if no_claude_fallback:
+        payload["no_claude_fallback"] = True
+    if isinstance(extra, dict):
+        payload.update(extra)
+    return payload
+
+
+def _operation_requires_input(tool_name: str, operation: str) -> bool:
+    config = get_tools_config()
+    op_config = config.get(tool_name, {}).get("operations", {}).get(operation, {})
+    return bool(op_config.get("requires_input"))
+
+
+def _get_sequence_text_max_bytes() -> int:
+    raw = str(os.getenv("BIO_TOOLS_SEQUENCE_TEXT_MAX_BYTES", "") or "").strip()
+    if not raw:
+        return _DEFAULT_SEQUENCE_TEXT_MAX_BYTES
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_SEQUENCE_TEXT_MAX_BYTES
+    if parsed <= 0:
+        return _DEFAULT_SEQUENCE_TEXT_MAX_BYTES
+    return parsed
+
+
+def _validate_sequence_string(sequence: str, *, label: str) -> str:
+    compact = re.sub(r"\s+", "", sequence or "")
+    if not compact:
+        raise ValueError(f"{label} is empty.")
+    if not _SEQUENCE_ALLOWED_CHARS_RE.fullmatch(compact):
+        raise ValueError(
+            f"{label} contains unsupported characters; allowed characters are letters and '*', '-', '.', '?'."
+        )
+    return compact
+
+
+def _parse_and_normalize_fasta_text(sequence_text: str) -> str:
+    records: List[Tuple[str, str]] = []
+    current_header: Optional[str] = None
+    current_seq_lines: List[str] = []
+
+    for raw_line in sequence_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if current_header is not None:
+                normalized_seq = _validate_sequence_string(
+                    "".join(current_seq_lines),
+                    label=f"FASTA record '{current_header}'",
+                )
+                records.append((current_header, normalized_seq))
+            current_header = line[1:].strip()
+            if not current_header:
+                raise ValueError("FASTA header cannot be empty.")
+            current_seq_lines = []
+            continue
+
+        if current_header is None:
+            raise ValueError("FASTA content must start with a '>' header line.")
+        current_seq_lines.append(line)
+
+    if current_header is None:
+        raise ValueError("No FASTA records found in sequence_text.")
+
+    normalized_seq = _validate_sequence_string(
+        "".join(current_seq_lines),
+        label=f"FASTA record '{current_header}'",
+    )
+    records.append((current_header, normalized_seq))
+
+    lines: List[str] = []
+    for header, sequence in records:
+        lines.append(f">{header}")
+        lines.append(sequence)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _resolve_inline_input_dir(session_id: Optional[str]) -> Path:
+    if session_id:
+        try:
+            from app.services.session_paths import get_runtime_session_dir
+
+            session_dir = get_runtime_session_dir(str(session_id), create=True)
+            target = session_dir / "tool_outputs" / "bio_tools_inputs"
+            target.mkdir(parents=True, exist_ok=True)
+            return target.resolve()
+        except Exception as exc:
+            logger.warning("Failed to resolve session-scoped bio_tools input directory: %s", exc)
+
+    fallback = Path(RUNTIME_BASE_DIR) / "inline_inputs"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback.resolve()
+
+
+def _prepare_sequence_input(
+    *,
+    tool_name: str,
+    operation: str,
+    sequence_text: str,
+    session_id: Optional[str],
+) -> Tuple[str, str]:
+    text = str(sequence_text or "").strip()
+    if not text:
+        raise ValueError("sequence_text must be a non-empty string.")
+
+    max_bytes = _get_sequence_text_max_bytes()
+    raw_size = len(text.encode("utf-8"))
+    if raw_size > max_bytes:
+        raise ValueError(
+            f"sequence_text is too large ({raw_size} bytes). Maximum allowed is {max_bytes} bytes."
+        )
+
+    stripped = text.lstrip()
+    if stripped.startswith(">"):
+        normalized_fasta = _parse_and_normalize_fasta_text(text)
+        input_origin = "sequence_text_fasta"
+    else:
+        normalized_seq = _validate_sequence_string(text, label="Sequence text")
+        normalized_fasta = f">seq_1\n{normalized_seq}\n"
+        input_origin = "sequence_text_raw"
+
+    target_dir = _resolve_inline_input_dir(session_id)
+    safe_tool = _INLINE_NAME_SAFE_RE.sub("_", tool_name).strip("_") or "tool"
+    safe_operation = _INLINE_NAME_SAFE_RE.sub("_", operation).strip("_") or "operation"
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    suffix = uuid.uuid4().hex[:8]
+    filename = f"inline_{safe_tool}_{safe_operation}_{timestamp}_{suffix}.fasta"
+    target_path = (target_dir / filename).resolve()
+    target_path.write_text(normalized_fasta, encoding="utf-8")
+    return str(target_path), input_origin
 
 
 def _build_docker_command_args(
@@ -1421,11 +1579,13 @@ async def bio_tools_handler(
     tool_name: str,
     operation: str = "help",
     input_file: Optional[str] = None,
+    sequence_text: Optional[str] = None,
     output_file: Optional[str] = None,
     params: Optional[Dict[str, Any]] = None,
     timeout: Optional[int] = DEFAULT_TIMEOUT,
     background: Optional[bool] = None,
     job_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     
@@ -1461,11 +1621,12 @@ async def bio_tools_handler(
 
     if operation == JOB_STATUS_OPERATION:
         if not requested_job_id:
-            return {
-                "success": False,
-                "operation": JOB_STATUS_OPERATION,
-                "error": "job_id is required for operation='job_status'.",
-            }
+            return _build_bio_tools_error(
+                tool_name=tool_name,
+                operation=JOB_STATUS_OPERATION,
+                error="job_id is required for operation='job_status'.",
+                error_code="missing_job_id",
+            )
         return _build_job_status_result(requested_job_id)
     
     # ：
@@ -1517,12 +1678,64 @@ async def bio_tools_handler(
 
     operations = config[tool_name].get("operations", {})
     if operation not in operations:
-        return {
-            "success": False,
-            "error": f"Unknown operation '{operation}' for {tool_name}. Available: {list(operations.keys())}",
-            "tool": tool_name,
-            "operation": operation,
-        }
+        return _build_bio_tools_error(
+            tool_name=tool_name,
+            operation=operation,
+            error=f"Unknown operation '{operation}' for {tool_name}. Available: {list(operations.keys())}",
+            error_code="unknown_operation",
+        )
+
+    normalized_input_file = str(input_file).strip() if isinstance(input_file, str) else ""
+    has_input_file = bool(normalized_input_file)
+    normalized_sequence_text = (
+        str(sequence_text).strip() if isinstance(sequence_text, str) else ""
+    )
+    has_sequence_text = bool(normalized_sequence_text)
+    generated_input_file: Optional[str] = None
+    input_origin: Optional[str] = None
+
+    if has_input_file and has_sequence_text:
+        return _build_bio_tools_error(
+            tool_name=tool_name,
+            operation=operation,
+            error="Provide either input_file or sequence_text, not both.",
+            error_code="sequence_input_ambiguous",
+            error_stage="input_preparation",
+            no_claude_fallback=True,
+        )
+
+    if has_sequence_text:
+        try:
+            generated_input_file, input_origin = _prepare_sequence_input(
+                tool_name=tool_name,
+                operation=operation,
+                sequence_text=normalized_sequence_text,
+                session_id=session_id,
+            )
+            normalized_input_file = generated_input_file
+        except ValueError as exc:
+            return _build_bio_tools_error(
+                tool_name=tool_name,
+                operation=operation,
+                error=str(exc),
+                error_code="invalid_sequence_text",
+                error_stage="input_preparation",
+                no_claude_fallback=True,
+            )
+    elif has_input_file:
+        normalized_input_file = normalized_input_file
+
+    if _operation_requires_input(tool_name, operation) and not normalized_input_file:
+        return _build_bio_tools_error(
+            tool_name=tool_name,
+            operation=operation,
+            error=(
+                f"{tool_name}.{operation} requires input data. "
+                "Provide input_file or sequence_text."
+            ),
+            error_code="missing_input_file",
+            error_stage="input_preparation",
+        )
     
     try:
         validated_params = _validate_and_normalize_operation_params(
@@ -1530,47 +1743,54 @@ async def bio_tools_handler(
             operation,
             clean_params,
         )
+        result: Dict[str, Any]
         if run_in_background:
-            return _submit_background_bio_tools_job(
+            result = _submit_background_bio_tools_job(
                 tool_name=tool_name,
                 operation=operation,
-                input_file=input_file,
+                input_file=normalized_input_file or None,
+                output_file=output_file,
+                params=validated_params,
+                timeout=effective_timeout,
+            )
+        else:
+            result = await _execute_bio_tool_once(
+                tool_name=tool_name,
+                operation=operation,
+                input_file=normalized_input_file or None,
                 output_file=output_file,
                 params=validated_params,
                 timeout=effective_timeout,
             )
 
-        return await _execute_bio_tool_once(
-            tool_name=tool_name,
-            operation=operation,
-            input_file=input_file,
-            output_file=output_file,
-            params=validated_params,
-            timeout=effective_timeout,
-        )
+        if input_origin:
+            result.setdefault("input_origin", input_origin)
+        if generated_input_file:
+            result.setdefault("generated_input_file", generated_input_file)
+        return result
         
     except UnsafeParameterError as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "tool": tool_name,
-            "operation": operation,
-        }
+        return _build_bio_tools_error(
+            tool_name=tool_name,
+            operation=operation,
+            error=str(e),
+            error_code="invalid_parameter",
+        )
     except ValueError as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "tool": tool_name,
-            "operation": operation,
-        }
+        return _build_bio_tools_error(
+            tool_name=tool_name,
+            operation=operation,
+            error=str(e),
+            error_code="validation_error",
+        )
     except Exception as e:
         logger.exception(f"Bio tools execution failed: {e}")
-        return {
-            "success": False,
-            "error": f"Execution failed: {str(e)}",
-            "tool": tool_name,
-            "operation": operation,
-        }
+        return _build_bio_tools_error(
+            tool_name=tool_name,
+            operation=operation,
+            error=f"Execution failed: {str(e)}",
+            error_code="execution_failed",
+        )
 
 
 # （ tool_box）
@@ -1607,6 +1827,10 @@ Use operation="help" with a tool_name to see available operations.""",
                 "type": "string",
                 "description": "Path to input file (FASTA, FASTQ, etc.)"
             },
+            "sequence_text": {
+                "type": "string",
+                "description": "Inline FASTA or raw sequence text. Use this when no input_file is available."
+            },
             "output_file": {
                 "type": "string",
                 "description": "Name for output file (saved in tool's runtime directory)"
@@ -1629,6 +1853,10 @@ Use operation="help" with a tool_name to see available operations.""",
             "job_id": {
                 "type": "string",
                 "description": "Background job id, mainly used with operation='job_status'."
+            },
+            "session_id": {
+                "type": "string",
+                "description": "Optional session id used for session-scoped inline sequence storage."
             }
         },
         "required": ["tool_name"]

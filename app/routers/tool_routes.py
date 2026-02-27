@@ -122,6 +122,50 @@ async def web_search_api(payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=500, detail=f"Web search failed: {e}") from e
 
 
+@router.post("/tools/sequence-fetch")
+async def sequence_fetch_api(payload: Dict[str, Any] = Body(...)):
+    """Deterministically download FASTA by accession(s)."""
+    try:
+        from tool_box import execute_tool
+
+        accession = payload.get("accession")
+        accessions = payload.get("accessions")
+        database = payload.get("database", "nuccore")
+        fmt = payload.get("format", "fasta")
+        session_id = payload.get("session_id")
+        output_name = payload.get("output_name")
+        timeout_sec = payload.get("timeout_sec")
+        max_bytes = payload.get("max_bytes")
+
+        kwargs: Dict[str, Any] = {}
+        if isinstance(accession, str) and accession.strip():
+            kwargs["accession"] = accession.strip()
+        if isinstance(accessions, list):
+            kwargs["accessions"] = accessions
+        if isinstance(database, str) and database.strip():
+            kwargs["database"] = database.strip()
+        if isinstance(fmt, str) and fmt.strip():
+            kwargs["format"] = fmt.strip()
+        if isinstance(session_id, str) and session_id.strip():
+            kwargs["session_id"] = session_id.strip()
+        if isinstance(output_name, str) and output_name.strip():
+            kwargs["output_name"] = output_name.strip()
+        if timeout_sec is not None:
+            kwargs["timeout_sec"] = timeout_sec
+        if max_bytes is not None:
+            kwargs["max_bytes"] = max_bytes
+
+        result = await execute_tool("sequence_fetch", **kwargs)
+        if not isinstance(result, dict):
+            raise HTTPException(status_code=500, detail="Invalid sequence_fetch payload")
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"sequence_fetch execution failed: {str(e)}") from e
+
+
 @router.post("/tools/bio-tools")
 async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
     """
@@ -131,11 +175,13 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
     - tool_name: Tool name (e.g. "seqkit", "blast", "genomad")
     - operation: Operation type (e.g. "stats", "blastn", "end_to_end")
     - input_file: Input file path (optional for some operations)
+    - sequence_text: Inline FASTA/raw sequence text (optional, mutually exclusive with input_file)
     - output_file: Output file path (optional)
     - params: Extra tool parameters (optional)
     - timeout: Timeout in seconds (optional, default 3600; <=0 disables execution timeout)
     - background: Run as background job and return immediately (optional)
     - job_id: Optional job id, mainly for operation="job_status"
+    - session_id: Optional session id for session-scoped inline sequence storage
 
     Example:
     ```json
@@ -152,12 +198,14 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
         tool_name = payload.get("tool_name")
         operation = payload.get("operation", "help")
         input_file = payload.get("input_file")
+        sequence_text = payload.get("sequence_text")
         output_file = payload.get("output_file")
         params = payload.get("params", {})
         timeout = payload.get("timeout", 3600)
         timeout_provided = "timeout" in payload
         background = parse_bool(payload.get("background"), default=False) if "background" in payload else None
         job_id = payload.get("job_id")
+        session_id = payload.get("session_id")
 
         if not tool_name:
             raise HTTPException(status_code=400, detail="tool_name is required")
@@ -168,6 +216,8 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
         }
         if input_file:
             kwargs["input_file"] = input_file
+        if isinstance(sequence_text, str) and sequence_text.strip():
+            kwargs["sequence_text"] = sequence_text
         if output_file:
             kwargs["output_file"] = output_file
         if params:
@@ -178,6 +228,8 @@ async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
             kwargs["background"] = background
         if job_id is not None:
             kwargs["job_id"] = str(job_id)
+        if isinstance(session_id, str) and session_id.strip():
+            kwargs["session_id"] = session_id.strip()
 
         result = await execute_tool("bio_tools", **kwargs)
 

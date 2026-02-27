@@ -27,6 +27,7 @@ from .tools_impl import (
     plan_operation_tool,
     result_interpreter_tool,
     review_pack_writer_tool,
+    sequence_fetch_tool,
     vision_reader_tool,
     web_search_tool,
 )
@@ -50,6 +51,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     graph_rag_tool,
     manuscript_writer_tool,
     phagescope_tool,
+    sequence_fetch_tool,
     bio_tools_tool,
     result_interpreter_tool,
     plan_operation_tool,
