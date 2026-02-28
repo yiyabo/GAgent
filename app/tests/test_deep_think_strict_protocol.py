@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -206,3 +207,55 @@ def test_native_multi_tool_calls_execute_concurrently_and_append_results() -> No
     assert "[web_search]" in first_step.action_result
     assert any((ev.get("type") == "file" and ev.get("ref") == "/tmp/report.csv") for ev in first_step.evidence)
     assert any((ev.get("type") == "task" and ev.get("ref") == "task-123") for ev in first_step.evidence)
+
+
+def test_native_stops_repeated_identical_polling_cycles() -> None:
+    call_count = {"n": 0}
+
+    async def _tool_executor(_name: str, _params: dict):
+        call_count["n"] += 1
+        return {
+            "success": True,
+            "data": {
+                "results": {
+                    "id": 37430,
+                    "status": "Running",
+                    "task_detail": json.dumps(
+                        {
+                            "task_status": "create",
+                            "task_que": [
+                                {"module": "annotation", "module_satus": "COMPLETED"},
+                                {"module": "quality", "module_satus": "COMPLETED"},
+                                {"module": "proteins", "module_satus": "waiting"},
+                            ],
+                        }
+                    ),
+                }
+            },
+        }
+
+    repeated_calls = [
+        NativeStreamResult(
+            content="Polling task status",
+            tool_calls=[
+                NativeToolCall(
+                    id=f"poll_{idx}",
+                    name="phagescope",
+                    arguments={"action": "task_detail", "taskid": 37430},
+                )
+            ],
+        )
+        for idx in range(20)
+    ]
+    llm = _NativeDummyLLM(repeated_calls)
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["phagescope"],
+        tool_executor=_tool_executor,
+        max_iterations=20,
+    )
+
+    result = asyncio.run(agent.think("keep polling"))
+    assert result.total_iterations < 20
+    assert call_count["n"] < 20
+    assert "stopped active polling" in result.final_answer.lower()

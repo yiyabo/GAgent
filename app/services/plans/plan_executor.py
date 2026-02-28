@@ -1085,7 +1085,6 @@ class PlanExecutor:
                 "vision_reader",
                 "bio_tools",
                 "phagescope",
-                "result_interpreter",
                 "plan_operation",
                 "manuscript_writer",
             ],

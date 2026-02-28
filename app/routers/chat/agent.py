@@ -1483,11 +1483,10 @@ User message:
                         "vision_reader",
                         "bio_tools",
                         "phagescope",
-                        "result_interpreter",
                         "plan_operation",
                     ],
                     tool_executor=tool_wrapper,
-                    max_iterations=100,
+                    max_iterations=24,
                     tool_timeout=120,  # 2-minute tool timeout.
                     on_thinking=on_thinking,
                     on_thinking_delta=on_thinking_delta,
