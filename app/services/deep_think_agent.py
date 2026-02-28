@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -101,6 +102,7 @@ class DeepThinkAgent:
     DEFAULT_TOOL_TIMEOUT = 60
     FINAL_STREAM_CHUNK_CHARS = 24
     FINAL_STREAM_DELAY_SEC = 0.01
+    MAX_IDENTICAL_TOOL_CALL_CYCLES = 4
 
     ARTIFACT_PATH_RE = re.compile(
         r'(?:saved?|writ(?:ten|e)|created?|generated?|output|produced?|exported?)\s+'
@@ -173,6 +175,7 @@ class DeepThinkAgent:
             "- For complex custom analysis not covered by bio_tools, then use claude_code.\n"
             "- Never use claude_code as fallback for sequence_fetch failures.\n"
             "- Never use claude_code as fallback for bio_tools input-conversion/parsing failures.\n"
+            "- For status polling tools, if state is unchanged across several checks, stop active polling and summarize current status.\n"
             "- For plan creation, research first (web_search), then use plan_operation.\n"
         )
 
@@ -256,6 +259,8 @@ class DeepThinkAgent:
         iteration = 0
         final_answer = ""
         confidence = 0.0
+        last_tool_cycle_signature: Optional[str] = None
+        identical_tool_cycle_count = 0
 
         logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
 
@@ -372,8 +377,50 @@ class DeepThinkAgent:
                     for item in tool_results:
                         merged_evidence.extend(item.get("evidence") or [])
                     current_step.evidence = merged_evidence
-                    current_step.status = "analyzing"
                     current_step.finished_at = datetime.now()
+
+                    tool_cycle_signature = self._build_tool_cycle_signature(tool_results)
+                    if tool_cycle_signature and tool_cycle_signature == last_tool_cycle_signature:
+                        identical_tool_cycle_count += 1
+                    else:
+                        last_tool_cycle_signature = tool_cycle_signature
+                        identical_tool_cycle_count = 0
+
+                    if identical_tool_cycle_count >= self.MAX_IDENTICAL_TOOL_CALL_CYCLES:
+                        repeated_cycles = identical_tool_cycle_count + 1
+                        current_step.status = "done"
+                        current_step.self_correction = (
+                            "Stopped repeated identical tool polling to avoid an unproductive loop."
+                        )
+                        if self.on_thinking:
+                            await self._safe_callback(current_step)
+                        final_answer = self._build_repetition_stop_answer(
+                            tool_results=tool_results,
+                            repeated_cycles=repeated_cycles,
+                        )
+                        confidence = max(
+                            confidence,
+                            0.75 if self._contains_tool(tool_results, "phagescope") else 0.5,
+                        )
+                        logger.warning(
+                            "[DEEP_THINK_NATIVE] Stopped repeated tool loop at iteration=%s repeated_cycles=%s tools=%s",
+                            iteration,
+                            repeated_cycles,
+                            ",".join(
+                                sorted(
+                                    {
+                                        str(item.get("tool_name") or "")
+                                        for item in tool_results
+                                        if item.get("tool_name")
+                                    }
+                                )
+                            ),
+                        )
+                        if self.on_final_delta and final_answer:
+                            await self._stream_final_answer(final_answer)
+                        break
+
+                    current_step.status = "analyzing"
                     if self.on_thinking:
                         await self._safe_callback(current_step)
                     continue
@@ -1056,6 +1103,155 @@ Respond with ONLY a JSON object:
             if "error" in result and result.get("error"):
                 return str(result.get("error"))[:600]
         return str(result)[:600]
+
+    @staticmethod
+    def _contains_tool(tool_results: List[Dict[str, Any]], tool_name: str) -> bool:
+        for item in tool_results:
+            if str(item.get("tool_name") or "").strip().lower() == tool_name:
+                return True
+        return False
+
+    @classmethod
+    def _build_tool_cycle_signature(cls, tool_results: List[Dict[str, Any]]) -> str:
+        signature_parts: List[str] = []
+        for item in tool_results:
+            tool_name = str(item.get("tool_name") or "").strip().lower()
+            tool_params = item.get("tool_params") or {}
+            result_marker = cls._extract_tool_result_marker(tool_name, item.get("tool_result_text"))
+            try:
+                params_text = json.dumps(tool_params, ensure_ascii=False, sort_keys=True, default=str)
+            except Exception:
+                params_text = str(tool_params)
+            signature_parts.append(f"{tool_name}|{params_text}|{result_marker}")
+        raw = "\n".join(signature_parts)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _extract_tool_result_marker(cls, tool_name: str, tool_result_text: Any) -> str:
+        raw_text = str(tool_result_text or "")
+        if tool_name == "phagescope":
+            state = cls._extract_phagescope_state(raw_text)
+            if state:
+                return (
+                    f"task={state.get('task_id')};status={state.get('status')};"
+                    f"task_status={state.get('task_status')};progress={state.get('progress')};"
+                    f"waiting={state.get('waiting')};running={state.get('running')};failed={state.get('failed')}"
+                )
+        normalized = cls._normalize_marker_text(raw_text)
+        return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _normalize_marker_text(raw_text: str) -> str:
+        text = raw_text or ""
+        # Remove timestamp-like values to make stability detection resilient.
+        text = re.sub(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?", "<ts>", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 600:
+            text = text[:600]
+        return text
+
+    @classmethod
+    def _extract_phagescope_state(cls, tool_result_text: str) -> Optional[Dict[str, Any]]:
+        try:
+            payload = json.loads(tool_result_text)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            return None
+
+        data = result.get("data")
+        results = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(results, dict):
+            return None
+
+        task_id = results.get("id") or result.get("taskid") or result.get("task_id") or ""
+        status = str(results.get("status") or "").strip()
+        task_status = ""
+        progress = ""
+        waiting = 0
+        running = 0
+        failed = 0
+        completed = 0
+        total = 0
+
+        detail_raw = results.get("task_detail")
+        detail: Optional[Dict[str, Any]] = None
+        if isinstance(detail_raw, dict):
+            detail = detail_raw
+        elif isinstance(detail_raw, str):
+            stripped = detail_raw.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, dict):
+                        detail = parsed
+                except Exception:
+                    detail = None
+
+        if isinstance(detail, dict):
+            task_status = str(detail.get("task_status") or "").strip()
+            queue = detail.get("task_que")
+            if isinstance(queue, list):
+                total = len(queue)
+                for module_item in queue:
+                    if not isinstance(module_item, dict):
+                        continue
+                    module_status = str(module_item.get("module_satus") or "").strip().lower()
+                    if module_status == "completed":
+                        completed += 1
+                    elif module_status in {"waiting", "wait"}:
+                        waiting += 1
+                    elif module_status in {"running", "create", "queued"}:
+                        running += 1
+                    elif module_status in {"failed", "error"}:
+                        failed += 1
+            if total > 0:
+                progress = f"{completed}/{total}"
+
+        return {
+            "task_id": str(task_id),
+            "status": status,
+            "task_status": task_status,
+            "progress": progress,
+            "waiting": waiting,
+            "running": running,
+            "failed": failed,
+        }
+
+    @classmethod
+    def _build_repetition_stop_answer(
+        cls,
+        tool_results: List[Dict[str, Any]],
+        repeated_cycles: int,
+    ) -> str:
+        phagescope_state: Optional[Dict[str, Any]] = None
+        for item in tool_results:
+            if str(item.get("tool_name") or "").strip().lower() != "phagescope":
+                continue
+            phagescope_state = cls._extract_phagescope_state(str(item.get("tool_result_text") or ""))
+            if phagescope_state:
+                break
+
+        if phagescope_state:
+            task_id = phagescope_state.get("task_id") or "unknown"
+            status = phagescope_state.get("status") or "unknown"
+            task_status = phagescope_state.get("task_status") or "unknown"
+            progress = phagescope_state.get("progress") or "unknown"
+            return (
+                f"PhageScope task {task_id} is still unchanged after {repeated_cycles} polling cycles "
+                f"(status={status}, task_status={task_status}, module_progress={progress}).\n\n"
+                "DeepThink stopped active polling to avoid an infinite loop. "
+                "Please retry status check later, or continue once the remote task state changes."
+            )
+
+        return (
+            "Tool outputs remained unchanged across repeated cycles, so DeepThink stopped active polling "
+            f"after {repeated_cycles} repeats to avoid an infinite loop. "
+            "Please retry later or provide new constraints."
+        )
 
     @staticmethod
     def _clip_log_text(value: Any, *, limit: int = 400) -> str:
