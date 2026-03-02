@@ -19,6 +19,8 @@ from app.llm import LLMClient
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
 VALID_BASE_MODELS = {"qwen3.5-plus", "qwen3-max-2026-01-23", "qwen-turbo"}
 VALID_LLM_PROVIDERS = {"qwen"}
+_PHAGESCOPE_TASKID_RE = re.compile(r"(?<![A-Za-z0-9])(\d{4,})(?![A-Za-z0-9])")
+_PHAGESCOPE_TRACKING_JOB_RE = re.compile(r"^act_[A-Za-z0-9]+$")
 
 logger = logging.getLogger(__name__)
 
@@ -264,16 +266,109 @@ def _find_key_recursive(value: Any, key: str) -> Optional[Any]:
     return None
 
 
+def _find_all_keys_recursive(value: Any, key: str) -> List[Any]:
+    matches: List[Any] = []
+    if isinstance(value, dict):
+        if key in value:
+            matches.append(value.get(key))
+        for item in value.values():
+            matches.extend(_find_all_keys_recursive(item, key))
+        return matches
+    if isinstance(value, list):
+        for item in value:
+            matches.extend(_find_all_keys_recursive(item, key))
+    return matches
+
+
+def _normalize_phagescope_taskid(value: Any) -> Optional[str]:
+    if isinstance(value, int):
+        return str(value) if value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return text
+    match = _PHAGESCOPE_TASKID_RE.search(text)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _lookup_phagescope_remote_taskid_by_job_id(
+    job_id: str,
+    *,
+    session_id: Optional[str] = None,
+) -> Optional[str]:
+    from ...database import get_db  # lazy import to avoid cycles
+
+    token = str(job_id or "").strip()
+    if not token:
+        return None
+    with get_db() as conn:
+        row = None
+        if session_id:
+            row = conn.execute(
+                """
+                SELECT remote_taskid
+                FROM phagescope_tracking
+                WHERE job_id=? AND session_id=?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (token, session_id),
+            ).fetchone()
+        if row is None:
+            row = conn.execute(
+                """
+                SELECT remote_taskid
+                FROM phagescope_tracking
+                WHERE job_id=?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (token,),
+            ).fetchone()
+    if not row:
+        return None
+    return _normalize_phagescope_taskid(row["remote_taskid"])
+
+
+def _resolve_phagescope_taskid_alias(
+    taskid: Any,
+    *,
+    session_id: Optional[str] = None,
+) -> Optional[str]:
+    normalized = _normalize_phagescope_taskid(taskid)
+    if normalized:
+        return normalized
+
+    task_text = str(taskid or "").strip()
+    if not task_text:
+        return None
+    if not _PHAGESCOPE_TRACKING_JOB_RE.fullmatch(task_text):
+        return None
+
+    try:
+        resolved = _lookup_phagescope_remote_taskid_by_job_id(
+            task_text, session_id=session_id
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Failed to resolve PhageScope tracking job %s: %s", task_text, exc)
+        return None
+    return resolved
+
+
 def _extract_taskid_from_result(result: Any) -> Optional[str]:
     if not isinstance(result, dict):
         return None
-    for key in ("taskid", "task_id"):
-        found = _find_key_recursive(result, key)
-        if found is not None:
-            try:
-                return str(found)
-            except Exception:
-                return None
+    for key in ("taskid", "remote_taskid", "task_id", "remote_task_id"):
+        candidates = _find_all_keys_recursive(result, key)
+        for candidate in candidates:
+            normalized = _normalize_phagescope_taskid(candidate)
+            if normalized:
+                return normalized
     return None
 
 

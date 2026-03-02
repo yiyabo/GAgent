@@ -56,6 +56,7 @@ from .models import AgentStep, AgentResult
 from .session_helpers import (
     _lookup_phagescope_task_memory,
     _normalize_search_provider,
+    _resolve_phagescope_taskid_alias,
     _record_phagescope_task_memory,
     _update_session_metadata,
 )
@@ -927,9 +928,13 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             "poll_timeout",
             "sequence",
             "file_path",
+            "session_id",
         ):
             if key in params and params[key] is not None:
                 clean_params[key] = params[key]
+
+        if isinstance(agent.session_id, str) and agent.session_id.strip():
+            clean_params["session_id"] = agent.session_id.strip()
 
         for int_key in ("page", "pagesize", "preview_bytes"):
             if int_key in clean_params:
@@ -959,13 +964,18 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             clean_params["rundemo"] = "true" if clean_params["rundemo"] else "false"
 
         action_value = clean_params.get("action")
-        if action_value in {"result", "quality", "task_detail", "save_all"} and "taskid" in clean_params:
-            try:
-                int(str(clean_params.get("taskid")).strip())
-            except (TypeError, ValueError):
+        raw_taskid_value = clean_params.get("taskid")
+        if "taskid" in clean_params:
+            resolved_taskid = _resolve_phagescope_taskid_alias(
+                clean_params.get("taskid"),
+                session_id=agent.session_id if isinstance(agent.session_id, str) else None,
+            )
+            if resolved_taskid:
+                clean_params["taskid"] = resolved_taskid
+            else:
                 clean_params.pop("taskid", None)
         if (
-            action_value in {"result", "quality", "task_detail", "save_all"}
+            action_value in {"result", "quality", "task_detail", "save_all", "task_log"}
             and not clean_params.get("taskid")
             and agent.session_id
         ):
@@ -977,6 +987,46 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             )
             if cached_taskid:
                 clean_params["taskid"] = cached_taskid
+
+        if (
+            action_value in {"save_all", "task_log"}
+            and raw_taskid_value is not None
+            and not clean_params.get("taskid")
+        ):
+            return AgentStep(
+                action=action,
+                success=False,
+                message=(
+                    "phagescope requires a numeric remote `taskid` (for example 37468). "
+                    "The provided value looks like a local job id alias and could not be mapped."
+                ),
+                details={
+                    "error": "invalid_taskid",
+                    "tool": tool_name,
+                    "provided_taskid": str(raw_taskid_value),
+                },
+            )
+
+        if (
+            action_value == "task_detail"
+            and raw_taskid_value is not None
+            and not clean_params.get("taskid")
+            and not clean_params.get("phageid")
+            and not clean_params.get("phageids")
+        ):
+            return AgentStep(
+                action=action,
+                success=False,
+                message=(
+                    "phagescope task_detail requires a numeric remote `taskid` "
+                    "(for example 37468) when phageid is not provided."
+                ),
+                details={
+                    "error": "invalid_taskid",
+                    "tool": tool_name,
+                    "provided_taskid": str(raw_taskid_value),
+                },
+            )
 
         if action_value == "quality" or (
             action_value == "result"

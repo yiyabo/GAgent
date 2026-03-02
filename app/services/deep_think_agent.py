@@ -1065,12 +1065,16 @@ Respond with ONLY a JSON object:
                 }
             )
         task_id = None
+        job_id = None
         if isinstance(tool_result, dict):
-            for key in ("taskid", "task_id", "job_id"):
+            for key in ("taskid", "task_id", "remote_taskid", "remote_task_id"):
                 val = tool_result.get(key)
                 if isinstance(val, (str, int)) and str(val).strip():
                     task_id = str(val).strip()
                     break
+            job_val = tool_result.get("job_id")
+            if isinstance(job_val, (str, int)) and str(job_val).strip():
+                job_id = str(job_val).strip()
         if task_id:
             evidence.append(
                 {
@@ -1078,6 +1082,15 @@ Respond with ONLY a JSON object:
                     "title": "Background task",
                     "ref": task_id,
                     "snippet": f"{tool_name} created task {task_id}",
+                }
+            )
+        if job_id and job_id != task_id:
+            evidence.append(
+                {
+                    "type": "job",
+                    "title": "Background job",
+                    "ref": job_id,
+                    "snippet": f"{tool_name} created job {job_id}",
                 }
             )
         if not evidence:
@@ -1375,6 +1388,7 @@ Parameter rules (CRITICAL):
 - `submit` requires `userid` + `modulelist` + `phageid/phageids`.
 - `input_check` requires `phageid/phageids`.
 - `result` requires `taskid` + `result_kind` (quality/proteins/phage_detail/modules/tree/phagefasta).
+- `taskid` must be the numeric remote task id (e.g., 37468), not a local job id like `act_xxx`.
 
 Params: {"action": "submit|task_list|task_detail|result|save_all|download", "userid": "...", "phageid": "...", "phageids": "...", "taskid": "...", "result_kind": "..."}""",
             "result_interpreter": """Data analysis and result interpretation tool.

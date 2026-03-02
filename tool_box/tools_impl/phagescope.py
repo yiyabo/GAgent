@@ -22,6 +22,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://phageapi.deepomics.org"
+_PHAGESCOPE_TASKID_RE = re.compile(r"(?<![A-Za-z0-9])(\d{4,})(?![A-Za-z0-9])")
+_PHAGESCOPE_TRACKING_JOB_RE = re.compile(r"^act_[A-Za-z0-9]+$")
 
 # Result endpoint map
 RESULT_ENDPOINTS = {
@@ -126,6 +128,83 @@ CLUSTER_MODULES = {"clustering", "phylogenetic", "alignment"}
 
 def _get_base_url(base_url: Optional[str]) -> str:
     return (base_url or os.getenv("PHAGESCOPE_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+
+
+def _normalize_phagescope_taskid(value: Any) -> Optional[str]:
+    if isinstance(value, int):
+        return str(value) if value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return text
+    match = _PHAGESCOPE_TASKID_RE.search(text)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _lookup_remote_taskid_by_tracking_job(
+    job_id: str,
+    *,
+    session_id: Optional[str] = None,
+) -> Optional[str]:
+    token = str(job_id or "").strip()
+    if not token:
+        return None
+    try:
+        from app.database import get_db  # lazy import to avoid tool bootstrap cycles
+
+        with get_db() as conn:
+            row = None
+            if session_id:
+                row = conn.execute(
+                    """
+                    SELECT remote_taskid
+                    FROM phagescope_tracking
+                    WHERE job_id=? AND session_id=?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (token, session_id),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT remote_taskid
+                    FROM phagescope_tracking
+                    WHERE job_id=?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (token,),
+                ).fetchone()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Failed to resolve PhageScope tracking alias %s: %s", token, exc)
+        return None
+
+    if not row:
+        return None
+    return _normalize_phagescope_taskid(row["remote_taskid"])
+
+
+def _resolve_phagescope_taskid(
+    taskid: Any,
+    *,
+    session_id: Optional[str] = None,
+) -> Optional[str]:
+    normalized = _normalize_phagescope_taskid(taskid)
+    if normalized:
+        return normalized
+
+    task_text = str(taskid or "").strip()
+    if not task_text:
+        return None
+    if not _PHAGESCOPE_TRACKING_JOB_RE.fullmatch(task_text):
+        return None
+    return _lookup_remote_taskid_by_tracking_job(task_text, session_id=session_id)
 
 
 def _resolve_session_phagescope_root(session_id: Optional[str]) -> Optional[Path]:
@@ -711,6 +790,42 @@ async def phagescope_handler(
     if action == "quality":
         action = "result"
         result_kind = result_kind or "quality"
+    raw_taskid = taskid
+    taskid = _resolve_phagescope_taskid(taskid, session_id=session_id)
+
+    if (
+        action in {"save_all", "task_log"}
+        and raw_taskid is not None
+        and not taskid
+    ):
+        return {
+            "success": False,
+            "status_code": 400,
+            "action": action,
+            "error": (
+                "taskid must be a numeric PhageScope task id (for example 37468), "
+                "not a local job id alias."
+            ),
+            "error_code": "invalid_taskid",
+        }
+
+    if (
+        action == "task_detail"
+        and raw_taskid is not None
+        and not taskid
+        and not phageid
+        and not phageids
+    ):
+        return {
+            "success": False,
+            "status_code": 400,
+            "action": action,
+            "error": (
+                "task_detail requires a numeric taskid when phageid is not provided."
+            ),
+            "error_code": "invalid_taskid",
+        }
+
     if action == "query":
         # Heuristic alias to avoid failing when the caller uses "query".
         resolved_taskid = taskid
