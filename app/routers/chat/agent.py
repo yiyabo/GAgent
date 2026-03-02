@@ -121,6 +121,7 @@ from .session_helpers import (
     _normalize_base_model,
     _normalize_llm_provider,
     _normalize_modulelist_value,
+    _resolve_phagescope_taskid_alias,
     _normalize_search_provider,
     _record_phagescope_task_memory,
     _save_chat_message,
@@ -601,9 +602,15 @@ class StructuredChatAgent:
                         patched = dict(action.parameters)
                         taskid_value = patched.get("taskid")
                         if taskid_value is not None:
-                            try:
-                                int(str(taskid_value).strip())
-                            except (TypeError, ValueError):
+                            resolved_taskid = _resolve_phagescope_taskid_alias(
+                                taskid_value,
+                                session_id=self.session_id
+                                if isinstance(self.session_id, str)
+                                else None,
+                            )
+                            if resolved_taskid:
+                                patched["taskid"] = resolved_taskid
+                            else:
                                 patched.pop("taskid", None)
                         if not patched.get("taskid") and previous_result:
                             extracted_taskid = _extract_taskid_from_result(previous_result)

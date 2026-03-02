@@ -8,6 +8,8 @@ import pytest
 
 from app.routers import chat_routes
 from app.routers.chat_routes import AgentStep, StructuredChatAgent
+from app.routers.chat import action_handlers as action_handlers_module
+from app.routers.chat.session_helpers import _extract_taskid_from_result
 from app.services.llm.structured_response import (
     LLMAction,
     LLMReply,
@@ -500,3 +502,55 @@ def test_guardrail_injects_sequence_fetch_then_bio_tools_for_download_and_analys
     assert second.parameters.get("tool_name") == "seqkit"
     assert second.parameters.get("operation") == "stats"
     assert second.parameters.get("input_file") == "{{ previous.output_file }}"
+
+
+def test_phagescope_save_all_maps_tracking_alias_to_remote_taskid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        captured["name"] = name
+        captured["kwargs"] = kwargs
+        return {"success": True, "action": kwargs.get("action"), "taskid": kwargs.get("taskid")}
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        action_handlers_module,
+        "_resolve_phagescope_taskid_alias",
+        lambda _taskid, session_id=None: "37468",
+    )
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="phagescope",
+        parameters={"action": "save_all", "taskid": "act_a1c0d8007a554d9a98d688d7394f5ecd"},
+        order=1,
+    )
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is True
+    assert captured["name"] == "phagescope"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("taskid") == "37468"
+    assert kwargs.get("action") == "save_all"
+    assert kwargs.get("session_id") == "test-session"
+
+
+def test_extract_taskid_from_result_prefers_numeric_remote_taskid() -> None:
+    payload = {
+        "job_id": "act_a1c0d8007a554d9a98d688d7394f5ecd",
+        "data": {
+            "taskid": "act_zzzzzzzzzz",
+            "remote_taskid": "37468",
+            "results": {"task_id": "taskid=37430"},
+        },
+    }
+
+    assert _extract_taskid_from_result(payload) == "37468"
