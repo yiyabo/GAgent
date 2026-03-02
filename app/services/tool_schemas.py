@@ -363,7 +363,13 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     "userid": {"type": "string", "description": "User ID for the PhageScope platform."},
                     "phageid": {"type": "string", "description": "Single phage ID or accession."},
                     "phageids": {"type": "string", "description": "Comma-separated phage IDs."},
-                    "taskid": {"type": "string", "description": "Task ID for status/result queries."},
+                    "taskid": {
+                        "type": "string",
+                        "description": (
+                            "Numeric PhageScope remote task ID for status/result queries "
+                            "(e.g., 37468), not local job ids like act_xxx."
+                        ),
+                    },
                     "modulelist": {"type": "string", "description": "Comma-separated analysis modules."},
                     "result_kind": {
                         "type": "string",

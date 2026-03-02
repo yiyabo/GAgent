@@ -94,7 +94,7 @@ PROMPTS_EN_US = {
                 "IMPORTANT: Only call `claude_code` for explicit coding/script/file-creation requests or structured data analysis. For project-level requests without plan/task context, create/decompose tasks first and execute one atomic task at a time.",
                 "When the user explicitly asks to replicate a scientific paper or run a bacteriophage experiment baseline such as 'experiment_1', first obtain an ExperimentCard (call `generate_experiment_card` if needed; it can infer the latest uploaded PDF and derives an id), then call `paper_replication` to load it, and finally use `claude_code` with details from the card (targets, code root, constraints).",
                 "For PhageScope long-running jobs, prefer `submit` only in the current turn; do not chain `result`/`save_all`/`download` immediately after submit. Report what is completed now and what is running in background.",
-                "When returning a PhageScope submit response, ensure `llm_reply.message` includes: (1) completed action(s), (2) running background info with taskid and current status if available, (3) next step to refresh status and fetch results later.",
+                "When returning a PhageScope submit response, ensure `llm_reply.message` includes: (1) completed action(s), (2) running background info with numeric remote taskid and current status if available, (3) next step to refresh status and fetch results later. Never use local job ids like act_xxx as `taskid`.",
             ],
             "scenario_rules": {
                 "bound": [
