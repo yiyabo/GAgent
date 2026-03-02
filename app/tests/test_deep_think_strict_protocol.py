@@ -259,3 +259,28 @@ def test_native_stops_repeated_identical_polling_cycles() -> None:
     assert result.total_iterations < 20
     assert call_count["n"] < 20
     assert "stopped active polling" in result.final_answer.lower()
+
+
+def test_prompt_based_stops_repeated_identical_polling_cycles() -> None:
+    responses = [
+        '{"thinking":"poll","action":{"tool":"phagescope","params":{"action":"save_all","taskid":"act_bad_alias"}},"final_answer":null}'
+        for _ in range(20)
+    ]
+
+    async def _tool_executor(_name: str, _params: dict):
+        return {
+            "success": False,
+            "error": "taskid must be a numeric PhageScope task id",
+            "error_code": "invalid_taskid",
+        }
+
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM(responses),
+        available_tools=["phagescope"],
+        tool_executor=_tool_executor,
+        max_iterations=20,
+    )
+
+    result = asyncio.run(agent.think("poll phagescope with alias"))
+    assert result.total_iterations < 20
+    assert "stopped active polling" in result.final_answer.lower()
