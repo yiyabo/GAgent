@@ -9,6 +9,7 @@ import pytest
 from app.routers import chat_routes
 from app.routers.chat_routes import AgentStep, StructuredChatAgent
 from app.routers.chat import action_handlers as action_handlers_module
+from app.routers.chat import session_helpers as session_helpers_module
 from app.routers.chat.session_helpers import _extract_taskid_from_result
 from app.services.llm.structured_response import (
     LLMAction,
@@ -554,3 +555,24 @@ def test_extract_taskid_from_result_prefers_numeric_remote_taskid() -> None:
     }
 
     assert _extract_taskid_from_result(payload) == "37468"
+
+
+def test_resolve_phagescope_taskid_alias_falls_back_to_action_run_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        session_helpers_module,
+        "_lookup_phagescope_remote_taskid_by_job_id",
+        lambda _job_id, session_id=None: None,
+    )
+    monkeypatch.setattr(
+        session_helpers_module,
+        "_lookup_phagescope_remote_taskid_from_action_run",
+        lambda _run_id, session_id=None: "37468",
+    )
+
+    resolved = session_helpers_module._resolve_phagescope_taskid_alias(
+        "act_a1c0d8007a554d9a98d688d7394f5ecd",
+        session_id="session-x",
+    )
+    assert resolved == "37468"

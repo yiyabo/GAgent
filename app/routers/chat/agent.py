@@ -1049,6 +1049,7 @@ User message:
                 retry_seen_after_help = False
                 bio_input_block_key = "bio_tools_no_claude_fallback"
                 sequence_input_block_key = "sequence_fetch_no_claude_fallback"
+                phagescope_taskid_block_key = "phagescope_invalid_taskid_block"
 
                 def _safe_text(value: Any, *, limit: int = 600) -> str:
                     text = str(value or "").strip()
@@ -1085,6 +1086,9 @@ User message:
                             "iteration": iteration,
                             "result_payload_type": type(result_payload).__name__,
                         }
+                        detail_error_code = details.get("error")
+                        if isinstance(detail_error_code, str) and detail_error_code.strip():
+                            result["error_code"] = detail_error_code.strip()
                         preview = _safe_text(result_payload, limit=280)
                         if preview:
                             result["result_payload_preview"] = preview
@@ -1209,6 +1213,37 @@ User message:
                             )
                             return blocked_payload
 
+                        if name == "phagescope":
+                            action_name = str(safe_params.get("action") or "").strip().lower()
+                            taskid_value = str(safe_params.get("taskid") or "").strip()
+                            blocked_context = self.extra_context.get(
+                                phagescope_taskid_block_key
+                            )
+                            if (
+                                isinstance(blocked_context, dict)
+                                and action_name
+                                in {"save_all", "result", "quality", "task_detail", "task_log", "download"}
+                                and taskid_value
+                                and str(blocked_context.get("taskid") or "").strip()
+                                == taskid_value
+                            ):
+                                summary = str(
+                                    blocked_context.get("summary")
+                                    or (
+                                        "PhageScope call is blocked because the provided taskid alias "
+                                        "is not a numeric remote taskid."
+                                    )
+                                ).strip()
+                                return {
+                                    "success": False,
+                                    "tool": "phagescope",
+                                    "error": summary,
+                                    "summary": summary,
+                                    "error_code": "invalid_taskid",
+                                    "blocked_reason": "phagescope_invalid_taskid",
+                                    "taskid": taskid_value,
+                                }
+
                         deep_think_tool_order += 1
                         synthetic_action = LLMAction(
                             kind="tool_operation",
@@ -1278,6 +1313,36 @@ User message:
                                 and operation_name != "help"
                             ):
                                 retry_seen_after_help = True
+
+                        if name == "phagescope":
+                            action_name = str(safe_params.get("action") or "").strip().lower()
+                            taskid_value = str(safe_params.get("taskid") or "").strip()
+                            result_success = result.get("success") is not False
+                            if result_success:
+                                self.extra_context.pop(phagescope_taskid_block_key, None)
+                            elif action_name in {
+                                "save_all",
+                                "result",
+                                "quality",
+                                "task_detail",
+                                "task_log",
+                                "download",
+                            } and taskid_value:
+                                error_code = str(result.get("error_code") or "").strip().lower()
+                                message_text = str(result.get("error") or "").strip().lower()
+                                if error_code == "invalid_taskid" or "numeric remote `taskid`" in message_text:
+                                    blocked_summary = str(
+                                        result.get("error")
+                                        or (
+                                            "Invalid PhageScope taskid alias. Use numeric remote taskid "
+                                            "(for example 37468) or a mappable job id."
+                                        )
+                                    ).strip()
+                                    self.extra_context[phagescope_taskid_block_key] = {
+                                        "taskid": taskid_value,
+                                        "summary": blocked_summary,
+                                        "error_code": "invalid_taskid",
+                                    }
 
                         # DeepThink PhageScope submit: register tracking job so
                         # the task status panel can show progress.

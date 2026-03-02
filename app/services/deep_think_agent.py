@@ -546,6 +546,8 @@ class DeepThinkAgent:
         iteration = 0
         final_answer = ""
         confidence = 0.0
+        last_tool_cycle_signature: Optional[str] = None
+        identical_tool_cycle_count = 0
 
         logger.info(f"Starting DeepThink for query: {user_query[:50]}...")
 
@@ -656,7 +658,12 @@ class DeepThinkAgent:
                                 self.tool_executor(tool_name, tool_params or {}),
                                 timeout=timeout
                             )
-                            current_step.action_result = str(result)
+                            try:
+                                current_step.action_result = json.dumps(
+                                    result, ensure_ascii=False, default=str
+                                )
+                            except Exception:
+                                current_step.action_result = str(result)
                             await self._emit_artifacts(str(tool_name), result, iteration)
                             if self.on_tool_result:
                                 callback_success, callback_error = self._normalize_tool_callback_outcome(result)
@@ -702,6 +709,40 @@ class DeepThinkAgent:
 
                     messages.append({"role": "assistant", "content": response_text})
                     messages.append({"role": "user", "content": f"Tool Output: {current_step.action_result}"})
+
+                    cycle_results = [
+                        {
+                            "tool_name": str(tool_name or ""),
+                            "tool_params": dict(tool_params or {}),
+                            "tool_result_text": current_step.action_result or "",
+                        }
+                    ]
+                    tool_cycle_signature = self._build_tool_cycle_signature(cycle_results)
+                    if tool_cycle_signature and tool_cycle_signature == last_tool_cycle_signature:
+                        identical_tool_cycle_count += 1
+                    else:
+                        last_tool_cycle_signature = tool_cycle_signature
+                        identical_tool_cycle_count = 0
+
+                    if identical_tool_cycle_count >= self.MAX_IDENTICAL_TOOL_CALL_CYCLES:
+                        repeated_cycles = identical_tool_cycle_count + 1
+                        current_step.status = "done"
+                        current_step.self_correction = (
+                            "Stopped repeated identical tool polling to avoid an unproductive loop."
+                        )
+                        if self.on_thinking:
+                            await self._safe_callback(current_step)
+                        final_answer = self._build_repetition_stop_answer(
+                            tool_results=cycle_results,
+                            repeated_cycles=repeated_cycles,
+                        )
+                        confidence = max(
+                            confidence,
+                            0.75 if str(tool_name or "").strip().lower() == "phagescope" else 0.5,
+                        )
+                        if self.on_final_delta and final_answer:
+                            await self._stream_final_answer(final_answer)
+                        break
 
                     current_step.status = "analyzing"
                     if self.on_thinking:
@@ -1173,7 +1214,12 @@ Respond with ONLY a JSON object:
             return None
         result = payload.get("result")
         if not isinstance(result, dict):
-            return None
+            # Prompt-based DeepThink may serialize tool payload directly instead of
+            # wrapping under {"result": ...}. Accept that shape as well.
+            if "data" in payload or "action" in payload or "status_code" in payload:
+                result = payload
+            else:
+                return None
 
         data = result.get("data")
         results = data.get("results") if isinstance(data, dict) else None
