@@ -1129,6 +1129,123 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         if agent.session_id:
             params["session_id"] = agent.session_id
 
+    elif tool_name == "deeppl":
+        action_value = params.get("action", "help")
+        if not isinstance(action_value, str) or not action_value.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="deeppl requires a non-empty `action` string.",
+                details={"error": "missing_action", "tool": tool_name},
+            )
+
+        clean_params: Dict[str, Any] = {
+            "action": action_value.strip(),
+        }
+        for key in (
+            "input_file",
+            "sequence_text",
+            "sample_id",
+            "execution_mode",
+            "remote_profile",
+            "model_path",
+            "predict_script",
+            "python_bin",
+            "job_id",
+            "session_id",
+            "remote_host",
+            "remote_user",
+            "remote_runtime_dir",
+            "remote_project_dir",
+            "remote_predict_script",
+            "remote_python_bin",
+            "remote_password",
+            "remote_ssh_key_path",
+        ):
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                clean_params[key] = value.strip()
+
+        if "remote_port" in params and params.get("remote_port") is not None:
+            try:
+                clean_params["remote_port"] = int(params.get("remote_port"))
+            except (TypeError, ValueError):
+                pass
+
+        if "timeout" in params and params.get("timeout") is not None:
+            try:
+                clean_params["timeout"] = int(params.get("timeout"))
+            except (TypeError, ValueError):
+                pass
+
+        if "background" in params:
+            background_value = params.get("background")
+            if isinstance(background_value, bool):
+                clean_params["background"] = background_value
+            elif isinstance(background_value, str):
+                normalized = background_value.strip().lower()
+                if normalized in {"1", "true", "yes", "y", "on"}:
+                    clean_params["background"] = True
+                elif normalized in {"0", "false", "no", "n", "off"}:
+                    clean_params["background"] = False
+
+        if isinstance(agent.session_id, str) and agent.session_id.strip():
+            clean_params.setdefault("session_id", agent.session_id.strip())
+
+        params = clean_params
+
+    elif tool_name == "terminal_session":
+        operation_value = params.get("operation", "")
+        if not isinstance(operation_value, str) or not operation_value.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="terminal_session requires a non-empty `operation` string.",
+                details={"error": "missing_operation", "tool": tool_name},
+            )
+        clean_params: Dict[str, Any] = {"operation": operation_value.strip().lower()}
+        for key in ("terminal_id", "data", "encoding", "mode", "approval_id"):
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                clean_params[key] = value if key == "data" else value.strip()
+        for int_key in ("cols", "rows", "limit"):
+            if int_key in params and params.get(int_key) is not None:
+                try:
+                    clean_params[int_key] = int(params[int_key])
+                except (TypeError, ValueError):
+                    pass
+        session_id_value = params.get("session_id")
+        if isinstance(session_id_value, str) and session_id_value.strip():
+            clean_params["session_id"] = session_id_value.strip()
+        elif isinstance(agent.session_id, str) and agent.session_id.strip():
+            clean_params["session_id"] = agent.session_id.strip()
+
+        # Auto-ensure: if write needs terminal_id but none provided, call ensure first
+        op = clean_params["operation"]
+        needs_tid = op in ("write", "resize")
+        has_tid = bool(clean_params.get("terminal_id"))
+        if needs_tid and not has_tid:
+            ensure_sid = clean_params.get("session_id") or (
+                agent.session_id if isinstance(agent.session_id, str) and agent.session_id.strip() else None
+            )
+            if not ensure_sid:
+                return AgentStep(
+                    action=action,
+                    success=False,
+                    message="terminal_session write requires a session_id to auto-create a terminal.",
+                    details={"error": "missing_session_id", "tool": tool_name},
+                )
+            try:
+                ensure_result = await execute_tool(
+                    "terminal_session", operation="ensure", session_id=ensure_sid
+                )
+                if isinstance(ensure_result, dict) and ensure_result.get("terminal_id"):
+                    clean_params["terminal_id"] = ensure_result["terminal_id"]
+            except Exception:
+                pass  # let downstream report the missing terminal_id error
+
+        params = clean_params
+
     else:
         return AgentStep(
             action=action,

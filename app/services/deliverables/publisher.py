@@ -179,6 +179,25 @@ NOISE_FILENAMES = {
     "result.json",
 }
 
+BLOCKED_SOURCE_SEGMENTS = {
+    "node_modules",
+    ".git",
+    "__MACOSX",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".tox",
+    ".eggs",
+    "dist",
+}
+
+BLOCKED_SOURCE_FILENAMES = {
+    ".DS_Store",
+    "Thumbs.db",
+}
+
 _CC_RUN_ARTIFACT_RE = re.compile(r"^run_\d{8}_\d{6}_")
 
 CC_INTERMEDIATE_SCRIPT_EXTS = {".py", ".sh", ".bash", ".r", ".jl"}
@@ -943,6 +962,9 @@ class DeliverablePublisher:
             "venv",
             ".pytest_cache",
             ".mypy_cache",
+            ".tox",
+            ".eggs",
+            "dist",
             "tool_outputs",
             "deliverables",
         }
@@ -987,6 +1009,13 @@ class DeliverablePublisher:
         return None
 
     def _is_allowed_source(self, path: Path) -> bool:
+        if path.name in BLOCKED_SOURCE_FILENAMES:
+            return False
+        if path.name.startswith("._"):
+            return False
+        path_parts = set(Path(os.path.abspath(str(path))).parts)
+        if path_parts & BLOCKED_SOURCE_SEGMENTS:
+            return False
         lexical_abs = Path(os.path.abspath(str(path)))
         if self._is_within(lexical_abs, self._project_root):
             return True

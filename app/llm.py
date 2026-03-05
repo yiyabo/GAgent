@@ -189,6 +189,7 @@ class LLMClient(LLMProvider):
         payload = {
             "model": model or self.model,
             "messages": payload_messages,
+            "max_tokens": 16384,
         }
         headers = self._build_headers()
         data = json.dumps(payload).encode("utf-8")
@@ -252,6 +253,7 @@ class LLMClient(LLMProvider):
             "model": model or self.model,
             "messages": payload_messages,
             "stream": True,
+            "max_tokens": 16384,
         }
         headers = self._build_headers()
 
@@ -303,6 +305,7 @@ class LLMClient(LLMProvider):
             "tools": tools,
             "tool_choice": tool_choice,
             "stream": True,
+            "max_tokens": 16384,
         }
         headers = self._build_headers()
 

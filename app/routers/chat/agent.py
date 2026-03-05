@@ -372,8 +372,17 @@ class StructuredChatAgent:
                     context_error,
                     self.extra_context.get("_current_task_source"),
                 )
+                # Inject conversation summary even for unscoped execution
+                from app.routers.chat.claude_code_helpers import build_conversation_summary_for_cc
+                conv_summary = build_conversation_summary_for_cc(getattr(self, 'history', None) or [])
+                unscoped_task = original_task
+                if conv_summary:
+                    unscoped_task = (
+                        f"{original_task}\n\n"
+                        f"[Recent conversation context (reference only)]:\n{conv_summary}"
+                    )
                 prepared_params: Dict[str, Any] = {
-                    "task": original_task,
+                    "task": unscoped_task,
                     "require_task_context": False,
                     "auth_mode": "api_env",
                     "setting_sources": "project",
@@ -452,10 +461,24 @@ class StructuredChatAgent:
         except Exception as amem_err:
             logger.warning("[AMEM] Failed to query experiences: %s", amem_err)
 
+        # Build conversation summary for CC context injection
+        from app.routers.chat.claude_code_helpers import (
+            build_conversation_summary_for_cc,
+            collect_completed_task_outputs,
+        )
+        conversation_summary = build_conversation_summary_for_cc(
+            getattr(self, 'history', None) or []
+        )
+        data_context = collect_completed_task_outputs(
+            self.plan_tree, task_node.id
+        )
+
         constrained_task = self._compose_claude_code_atomic_task_prompt(
             task_node=task_node,
             original_task=original_task,
             amem_hints=amem_hints,
+            data_context=data_context or None,
+            conversation_summary=conversation_summary or None,
         )
 
         prepared_params: Dict[str, Any] = {
@@ -1555,7 +1578,9 @@ User message:
                         "vision_reader",
                         "bio_tools",
                         "phagescope",
+                        "deeppl",
                         "plan_operation",
+                        "terminal_session",
                     ],
                     tool_executor=tool_wrapper,
                     max_iterations=24,

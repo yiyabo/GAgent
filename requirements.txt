@@ -22,3 +22,4 @@ Pillow>=10.0.0
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
 markdown>=3.5.0
+asyncssh>=2.14.2
