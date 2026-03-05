@@ -197,6 +197,19 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             "sha256",
             "database",
             "format",
+            "predicted_label",
+            "predicted_lifestyle",
+            "positive_window_fraction",
+            "thresholds",
+            "sample_id",
+            "execution_mode",
+            "remote_profile",
+            "pythonpath",
+            "input_file_prepared",
+            "run_directory",
+            "background",
+            "job_id",
+            "status",
         ):
             if key in raw_result:
                 sanitized[key] = raw_result[key]
@@ -411,6 +424,26 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             return f"Claude Code execution{file_info} succeeded. Output: {snippet}"
 
         return f"Claude Code execution{file_info} succeeded."
+
+    if tool_name == "deeppl":
+        action = result.get("action") or "deeppl"
+        if result.get("success") is False:
+            error = result.get("error") or "Execution failed"
+            return f"DeepPL {action} failed: {error}"
+        action_text = str(action).strip().lower()
+        if action_text == "predict":
+            label = result.get("predicted_label") or "unknown"
+            lifestyle = result.get("predicted_lifestyle") or "unknown"
+            fraction = result.get("positive_window_fraction")
+            if isinstance(fraction, (int, float)):
+                return (
+                    f"DeepPL predict succeeded: label={label}, "
+                    f"lifestyle={lifestyle}, positive_window_fraction={fraction:.4f}."
+                )
+            return f"DeepPL predict succeeded: label={label}, lifestyle={lifestyle}."
+        if action_text == "job_status":
+            return f"DeepPL job_status: {result.get('status') or 'unknown'}."
+        return f"DeepPL {action} succeeded."
 
     if tool_name == "manuscript_writer":
         if result.get("success") is False:

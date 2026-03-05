@@ -1437,6 +1437,24 @@ Parameter rules (CRITICAL):
 - `taskid` must be the numeric remote task id (e.g., 37468), not a local job id like `act_xxx`.
 
 Params: {"action": "submit|task_list|task_detail|result|save_all|download", "userid": "...", "phageid": "...", "phageids": "...", "taskid": "...", "result_kind": "..."}""",
+            "deeppl": """DeepPL lifecycle prediction tool (DNABERT-based).
+
+Actions:
+1. help: inspect usage, defaults, and environment requirements.
+2. predict: run lifecycle prediction.
+3. job_status: query a background DeepPL job.
+
+Predict rules:
+- Provide exactly one of input_file or sequence_text.
+- Prefer execution_mode='local' unless user clearly requires remote.
+- For split CPU/GPU remote servers, set remote_profile='gpu' or 'cpu' explicitly.
+- model_path is required (or configured via env).
+- Optional background=true for long-running prediction; then query via job_status.
+
+Output fields to report:
+- predicted_label: lysogenic|lytic
+- predicted_lifestyle: temperate|virulent
+- positive_window_fraction and thresholds""",
             "result_interpreter": """Data analysis and result interpretation tool.
 Analyzes CSV, TSV, MAT, NPY data files by generating and executing Python code via Claude Code.
 
@@ -1470,6 +1488,17 @@ WORKFLOW for Plan Creation:
 6. Report final plan to user with summary
 
 IMPORTANT: When creating plans, ensure each task has clear, actionable instructions!""",
+            "terminal_session": """Interactive terminal (PTY shell) for running commands directly.
+
+Operations:
+- write: Send command and get output. Params: {"operation": "write", "data": "pwd\\n"}. terminal_id is auto-resolved — no need to call ensure first. Returns {output, status}. status="completed" means command finished; status="running" means still executing.
+- replay: Get recent terminal output. Params: {"operation": "replay", "terminal_id": "tid", "limit": 50}
+- list: List active terminal sessions. Params: {"operation": "list"}
+- close: Close a terminal session. Params: {"operation": "close", "terminal_id": "tid"}
+- ensure: Explicitly get or create a terminal. Params: {"operation": "ensure", "session_id": "chat_session_id"}. Returns terminal_id.
+
+Typical usage: just call write with data — the system handles terminal creation automatically.
+IMPORTANT: data must end with \\n to execute the command.""",
         }
 
         tools_desc = []

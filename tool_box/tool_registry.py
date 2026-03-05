@@ -15,6 +15,7 @@ from .tools import register_tool
 from .tools_impl import (
     claude_code_tool,
     database_query_tool,
+    deeppl_tool,
     document_reader_tool,
     file_operations_tool,
     generate_experiment_card_tool,
@@ -28,6 +29,7 @@ from .tools_impl import (
     result_interpreter_tool,
     review_pack_writer_tool,
     sequence_fetch_tool,
+    terminal_session_tool,
     vision_reader_tool,
     web_search_tool,
 )
@@ -51,7 +53,9 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     graph_rag_tool,
     manuscript_writer_tool,
     phagescope_tool,
+    deeppl_tool,
     sequence_fetch_tool,
+    terminal_session_tool,
     bio_tools_tool,
     result_interpreter_tool,
     plan_operation_tool,

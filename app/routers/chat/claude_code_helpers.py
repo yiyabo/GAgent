@@ -18,6 +18,74 @@ logger = logging.getLogger(__name__)
 
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*previous\.([^\}]+)\s*\}\}")
 
+# ---------------------------------------------------------------------------
+# Conversation summary builder for CC context injection
+# ---------------------------------------------------------------------------
+
+_CC_CONVERSATION_BUDGET = 16_000  # characters
+
+
+def build_conversation_summary_for_cc(
+    history: List[Dict[str, Any]],
+    budget: int = _CC_CONVERSATION_BUDGET,
+) -> str:
+    """Build a compact conversation summary from recent chat history.
+
+    Iterates from newest to oldest, keeping messages until *budget* characters
+    are exhausted.  Each message is capped at 600 chars to avoid a single huge
+    reply blowing the budget.
+    """
+    if not history:
+        return ""
+    PER_MSG_CAP = 600
+    lines: List[str] = []
+    used = 0
+    for msg in reversed(history[-30:]):
+        role = msg.get("role", "unknown")
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > PER_MSG_CAP:
+            content = content[:PER_MSG_CAP].rstrip() + "..."
+        line = f"[{role}]: {content}"
+        if used + len(line) > budget:
+            break
+        lines.insert(0, line)
+        used += len(line)
+    if not lines:
+        return ""
+    return "\n".join(lines)
+
+
+def collect_completed_task_outputs(
+    plan_tree: Any,
+    current_task_id: int,
+    max_chars: int = 4000,
+) -> str:
+    """Gather execution_result snippets from completed sibling/predecessor tasks."""
+    if plan_tree is None or not hasattr(plan_tree, "nodes"):
+        return ""
+    parts: List[str] = []
+    used = 0
+    for node in plan_tree.nodes.values():
+        if node.id == current_task_id:
+            continue
+        status = (node.status or "").strip().lower()
+        if status not in ("completed", "done"):
+            continue
+        result_text = (node.execution_result or "").strip()
+        if not result_text:
+            continue
+        snippet = result_text[:500]
+        if len(result_text) > 500:
+            snippet += "..."
+        entry = f"- Task [{node.id}] {node.display_name()}: {snippet}"
+        if used + len(entry) > max_chars:
+            break
+        parts.append(entry)
+        used += len(entry)
+    return "\n".join(parts)
+
 
 def resolve_claude_code_task_context(agent: Any) -> Tuple[Optional["PlanNode"], Optional[str]]:
     plan_id = agent.plan_session.plan_id
@@ -157,6 +225,7 @@ def compose_claude_code_atomic_task_prompt(
     original_task: str,
     amem_hints: str = "",
     data_context: Optional[str] = None,
+    conversation_summary: Optional[str] = None,
 ) -> str:
     task_instruction = (task_node.instruction or "").strip() or original_task.strip()
     user_task_context = original_task.strip()
@@ -199,6 +268,15 @@ def compose_claude_code_atomic_task_prompt(
                 "",
                 "Available data from previous steps (use these ABSOLUTE paths directly):",
                 data_context,
+            ]
+        )
+
+    if conversation_summary:
+        lines.extend(
+            [
+                "",
+                "Recent conversation context (reference only, do not expand scope):",
+                conversation_summary,
             ]
         )
 

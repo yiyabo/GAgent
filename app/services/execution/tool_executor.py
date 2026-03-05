@@ -38,6 +38,7 @@ class UnifiedToolExecutor:
         "vision_reader": 1200,
         "bio_tools": 86400,
         "phagescope": 60,
+        "deeppl": 1800,
         "result_interpreter": 300,
         "plan_operation": 1200,
         "manuscript_writer": 600,
@@ -298,6 +299,28 @@ class UnifiedToolExecutor:
                     return f"PhageScope save_all completed: {out_dir}"
                 return "PhageScope save_all completed."
             return f"PhageScope {action} succeeded."
+
+        if tool_name == "deeppl" and isinstance(result, dict):
+            action = str(result.get("action") or "deeppl").strip().lower()
+            if result.get("success") is False:
+                return (
+                    f"DeepPL {action} failed: "
+                    f"{result.get('error') or result.get('message') or 'unknown error'}"
+                )
+            if action == "predict":
+                lifestyle = result.get("predicted_lifestyle") or "unknown"
+                label = result.get("predicted_label") or "unknown"
+                score = result.get("positive_window_fraction")
+                if isinstance(score, (int, float)):
+                    return (
+                        f"DeepPL predict succeeded: label={label}, "
+                        f"lifestyle={lifestyle}, positive_window_fraction={score:.4f}."
+                    )
+                return f"DeepPL predict succeeded: label={label}, lifestyle={lifestyle}."
+            if action == "job_status":
+                status = result.get("status") or "unknown"
+                return f"DeepPL job_status succeeded: status={status}."
+            return f"DeepPL {action} succeeded."
 
         if isinstance(result, dict):
             if "summary" in result:
