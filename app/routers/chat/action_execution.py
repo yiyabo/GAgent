@@ -81,7 +81,9 @@ _AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
     "vision_reader",
     "bio_tools",
     "phagescope",
+    "deeppl",
     "result_interpreter",
+    "terminal_session",
 ]
 
 
@@ -115,6 +117,156 @@ def _clip_text(value: Any, *, limit: int = 240) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)] + "..."
+
+
+def _normalize_lifecycle_label(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if any(token in text for token in ("lysogenic", "temperate", "lysogen")):
+        return "temperate"
+    if any(token in text for token in ("lytic", "virulent")):
+        return "virulent"
+    return None
+
+
+def _extract_deeppl_lifecycle_signal(result_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    candidate_keys = (
+        "predicted_lifestyle",
+        "predicted_label",
+        "label",
+        "lifestyle",
+        "prediction",
+    )
+    for key in candidate_keys:
+        value = result_payload.get(key)
+        normalized = _normalize_lifecycle_label(value)
+        if normalized:
+            signal: Dict[str, Any] = {
+                "label": normalized,
+                "raw_label": str(value),
+            }
+            if "positive_window_fraction" in result_payload:
+                signal["positive_window_fraction"] = result_payload.get("positive_window_fraction")
+            if isinstance(result_payload.get("thresholds"), dict):
+                signal["thresholds"] = result_payload.get("thresholds")
+            return signal
+    return None
+
+
+def _collect_lifecycle_candidates(
+    value: Any,
+    *,
+    key_context: bool = False,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    keyed: List[Dict[str, Any]] = []
+    free: List[Dict[str, Any]] = []
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key).strip().lower()
+            next_key_context = key_context or ("lifestyle" in key_text) or ("life_style" in key_text)
+            child_keyed, child_free = _collect_lifecycle_candidates(
+                item,
+                key_context=next_key_context,
+            )
+            keyed.extend(child_keyed)
+            free.extend(child_free)
+        return keyed, free
+
+    if isinstance(value, list):
+        for item in value:
+            child_keyed, child_free = _collect_lifecycle_candidates(
+                item,
+                key_context=key_context,
+            )
+            keyed.extend(child_keyed)
+            free.extend(child_free)
+        return keyed, free
+
+    normalized = _normalize_lifecycle_label(value)
+    if normalized:
+        entry = {
+            "label": normalized,
+            "raw_label": str(value),
+        }
+        if key_context:
+            keyed.append(entry)
+        else:
+            free.append(entry)
+    return keyed, free
+
+
+def _extract_phagescope_lifecycle_signal(result_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    payloads_to_scan: List[Any] = []
+    if "data" in result_payload:
+        payloads_to_scan.append(result_payload.get("data"))
+    if "result" in result_payload:
+        payloads_to_scan.append(result_payload.get("result"))
+    payloads_to_scan.append(result_payload)
+
+    for payload in payloads_to_scan:
+        keyed, free = _collect_lifecycle_candidates(payload)
+        selected = keyed[0] if keyed else (free[0] if free else None)
+        if selected:
+            signal = dict(selected)
+            action_name = str(result_payload.get("action") or "").strip().lower()
+            if action_name:
+                signal["action"] = action_name
+            result_kind = result_payload.get("result_kind")
+            if isinstance(result_kind, str) and result_kind.strip():
+                signal["result_kind"] = result_kind.strip()
+            return signal
+    return None
+
+
+def _build_lifecycle_consensus_from_tool_results(
+    tool_results_payload: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    deeppl_signal: Optional[Dict[str, Any]] = None
+    phagescope_signal: Optional[Dict[str, Any]] = None
+
+    for item in tool_results_payload or []:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("name") or item.get("tool") or "").strip().lower()
+        raw_result = item.get("result")
+        result_payload = raw_result if isinstance(raw_result, dict) else None
+        if result_payload is None and isinstance(item.get("success"), bool):
+            result_payload = item
+        if result_payload is None:
+            continue
+        if result_payload.get("success") is False:
+            continue
+
+        if tool_name == "deeppl":
+            extracted = _extract_deeppl_lifecycle_signal(result_payload)
+            if extracted is not None:
+                deeppl_signal = extracted
+            continue
+
+        if tool_name == "phagescope":
+            extracted = _extract_phagescope_lifecycle_signal(result_payload)
+            if extracted is not None:
+                phagescope_signal = extracted
+
+    if not deeppl_signal or not phagescope_signal:
+        return None
+
+    is_match = deeppl_signal.get("label") == phagescope_signal.get("label")
+    return {
+        "deeppl": deeppl_signal,
+        "phagescope": phagescope_signal,
+        "consensus": "agree" if is_match else "disagree",
+        "confidence": "high" if is_match else "needs_review",
+        "notes": (
+            "DeepPL and PhageScope lifecycle labels agree."
+            if is_match
+            else "DeepPL and PhageScope lifecycle labels disagree; review integrase/repressor evidence."
+        ),
+    }
 
 
 def _extract_blocking_failures(steps: List[Any]) -> List[Dict[str, Any]]:
@@ -1244,6 +1396,15 @@ async def _execute_action_run(run_id: str) -> None:
                 run_id,
                 len(tool_results_payload),
             )
+            lifecycle_consensus = _build_lifecycle_consensus_from_tool_results(tool_results_payload)
+            if lifecycle_consensus:
+                result_dict["lifecycle_consensus"] = lifecycle_consensus
+                logger.info(
+                    "[CHAT][LIFECYCLE] session=%s tracking=%s consensus=%s",
+                    record.get("session_id"),
+                    run_id,
+                    lifecycle_consensus.get("consensus"),
+                )
 
         # Agent loop: generate detailed analysis + process summary.
         analysis_text: Optional[str] = None
@@ -1472,11 +1633,20 @@ async def get_action_status(tracking_id: str):
                 )
                 result_data["final_summary"] = final_summary
 
+    if not isinstance(result_data.get("lifecycle_consensus"), dict):
+        stored_tool_results = result_data.get("tool_results")
+        if isinstance(stored_tool_results, list):
+            lifecycle_consensus = _build_lifecycle_consensus_from_tool_results(stored_tool_results)
+            if lifecycle_consensus:
+                result_data["lifecycle_consensus"] = lifecycle_consensus
+
     metadata = {}
     if tool_results:
         metadata["tool_results"] = tool_results
     if final_summary:
         metadata["final_summary"] = final_summary
+    if isinstance(result_data.get("lifecycle_consensus"), dict):
+        metadata["lifecycle_consensus"] = result_data.get("lifecycle_consensus")
     if isinstance(job_snapshot, dict):
         metadata["job"] = job_snapshot
         stats_payload = job_snapshot.get("stats")

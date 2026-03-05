@@ -8,6 +8,16 @@
 4. nc 论文仔细复现，把对应的生物信息工具添加上
 5. 阅读csv文件的时候，应该要去使用Claude Code，而不是用document_reader
 
+### PhageScope × DeepPL 联动
+
+1. 先跑 PhageScope 的 Annotation Pipline，至少包含 `quality + lifestyle + annotation + host` 模块，拿到 `taskid`。
+2. 任务完成后执行 `save_all`，保存 `metadata / annotation / sequences` 结果到本地目录。
+3. 从保存结果导出同一条序列，按 DeepPL 输入要求预处理为单条两行 FASTA（仅 `ACTG`，去掉 `N` 和多序列）。
+4. 运行 DeepPL（DNABERT 微调模型）得到 `lytic / lysogenic` 预测标签。
+5. 做一致性判断：`PhageScope lifestyle` 与 `DeepPL` 一致记为高置信；不一致记为待复核（重点查 `integrase/repressor` 等证据）。
+6. 统一输出对照表：`sample_id, phagescope_lifestyle, deeppl_label, consensus, notes`。
+7. 后续补一个自动化脚本，把 `save_all -> DeepPL -> 对照表` 串成一键流程。
+
 ## 服务器部署
 
 1. 至少有1-2个实验需要用到phage scope里面的工具

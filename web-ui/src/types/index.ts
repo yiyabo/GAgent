@@ -5,3 +5,4 @@ export * from './dag';
 export * from './tool';
 export * from './artifact';
 export * from './common';
+export * from './terminal';

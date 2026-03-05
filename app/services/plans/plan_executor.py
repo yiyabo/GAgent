@@ -199,6 +199,9 @@ When a task requires tool execution, request one of these tools:
 - phagescope: PhageScope platform operations (submit jobs, check status, fetch results)
   Parameters: {"action": "submit|task_list|task_detail|task_log|result|quality|download|save_all", optional "session_id", ...}
   IMPORTANT: submit is async and should return taskid quickly. For long-running jobs, prefer submit now and check status later.
+- deeppl: DeepPL lifecycle prediction (DNABERT-based)
+  Parameters: {"action": "help|predict|job_status", for predict exactly one of "input_file" or "sequence_text", optional "execution_mode", "remote_profile", "model_path", "background", "job_id", "session_id"}
+  remote_profile options: gpu | cpu | default
 - manuscript_writer: Generate research manuscripts
   Parameters: {"task": "<writing task>", "output_path": "<path>"}
 """
@@ -222,13 +225,14 @@ When a task requires tool execution, request one of these tools:
 - For reading images/scanned docs → use vision_reader (status: "needs_tool")
 - For phage knowledge queries → use graph_rag (status: "needs_tool")
 - For PhageScope long-running analyses → submit first, do not wait in the same turn; report taskid and current background status.
+- For lifecycle prediction with DeepPL → use deeppl action=predict and include explicit label/confidence in the response.
 """
 
     OUTPUT_SCHEMA = """{
   "status": "success" | "failed" | "skipped" | "needs_tool",
   "content": "<main result text or reasoning for tool request>",
   "tool_call": {  // REQUIRED when status is "needs_tool", otherwise omit
-    "name": "sequence_fetch" | "bio_tools" | "claude_code" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "manuscript_writer",
+    "name": "sequence_fetch" | "bio_tools" | "claude_code" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "deeppl" | "manuscript_writer",
     "parameters": { <tool-specific parameters> }
   },
   "notes": ["optional notes"],
@@ -1085,8 +1089,10 @@ class PlanExecutor:
                 "vision_reader",
                 "bio_tools",
                 "phagescope",
+                "deeppl",
                 "plan_operation",
                 "manuscript_writer",
+                "terminal_session",
             ],
             tool_executor=_tool_wrapper,
             max_iterations=12,
@@ -1635,6 +1641,24 @@ class PlanExecutor:
                     return f"PhageScope save_all completed: {out_dir}"
                 return "PhageScope save_all completed."
             return f"PhageScope {action} succeeded."
+
+        if tool_name == "deeppl" and isinstance(result, dict):
+            action = str(result.get("action") or "deeppl").strip().lower()
+            if result.get("success") is False:
+                return f"DeepPL {action} failed: {result.get('error') or result.get('message') or 'unknown error'}"
+            if action == "predict":
+                label = result.get("predicted_label") or "unknown"
+                lifestyle = result.get("predicted_lifestyle") or "unknown"
+                fraction = result.get("positive_window_fraction")
+                if isinstance(fraction, (int, float)):
+                    return (
+                        f"DeepPL predict succeeded: label={label}, lifestyle={lifestyle}, "
+                        f"positive_window_fraction={fraction:.4f}."
+                    )
+                return f"DeepPL predict succeeded: label={label}, lifestyle={lifestyle}."
+            if action == "job_status":
+                return f"DeepPL job_status succeeded: status={result.get('status') or 'unknown'}."
+            return f"DeepPL {action} succeeded."
 
         if isinstance(result, dict):
             if "summary" in result:

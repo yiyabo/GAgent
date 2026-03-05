@@ -381,6 +381,62 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             },
         },
     },
+    "deeppl": {
+        "type": "function",
+        "function": {
+            "name": "deeppl",
+            "description": (
+                "DeepPL lifecycle prediction (DNABERT-based). "
+                "Actions: help, predict, job_status. "
+                "For predict, provide exactly one of input_file or sequence_text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["help", "predict", "job_status"],
+                        "description": "DeepPL action to perform.",
+                    },
+                    "input_file": {
+                        "type": "string",
+                        "description": "Path to FASTA/raw sequence input file.",
+                    },
+                    "sequence_text": {
+                        "type": "string",
+                        "description": "Inline FASTA or raw sequence text.",
+                    },
+                    "execution_mode": {
+                        "type": "string",
+                        "enum": ["local", "remote"],
+                        "description": "Execution mode for prediction.",
+                    },
+                    "remote_profile": {
+                        "type": "string",
+                        "enum": ["gpu", "cpu", "default"],
+                        "description": "Remote server profile selector when execution_mode=remote.",
+                    },
+                    "model_path": {
+                        "type": "string",
+                        "description": "Model directory path (local/remote).",
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "If true, submit prediction in background.",
+                    },
+                    "job_id": {
+                        "type": "string",
+                        "description": "Background job id for action='job_status'.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session id for runtime-scoped outputs.",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
     "result_interpreter": {
         "type": "function",
         "function": {
@@ -458,6 +514,65 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                         "type": "array",
                         "items": {"type": "object"},
                         "description": "Optimization changes (for optimize).",
+                    },
+                },
+                "required": ["operation"],
+            },
+        },
+    },
+    "terminal_session": {
+        "type": "function",
+        "function": {
+            "name": "terminal_session",
+            "description": (
+                "Manage interactive terminal sessions (sandbox PTY or remote SSH). "
+                "Use 'create' to open a new terminal tied to the current chat session, "
+                "'write' to send commands (plain text or base64), "
+                "'list' to see active sessions, "
+                "'close' to terminate a session, "
+                "'replay' / 'audit' for history. "
+                "Prefer sandbox mode for local scripts/debugging; use ssh mode to reach "
+                "remote servers (e.g. bio-tools GPU node). "
+                "For 'write', terminal_id is auto-resolved if omitted — no need to call 'ensure' first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": [
+                            "create", "ensure", "list", "close",
+                            "write", "resize",
+                            "approve", "reject", "pending_approvals",
+                            "replay", "audit",
+                        ],
+                        "description": "Operation to perform on the terminal session.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Chat session ID to associate the terminal with.",
+                    },
+                    "terminal_id": {
+                        "type": "string",
+                        "description": "Terminal instance UUID (required for write/close/replay/audit).",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["sandbox", "ssh"],
+                        "description": "Terminal backend: 'sandbox' for local PTY, 'ssh' for remote.",
+                    },
+                    "data": {
+                        "type": "string",
+                        "description": "Command text to send (for write operation).",
+                    },
+                    "encoding": {
+                        "type": "string",
+                        "enum": ["utf-8", "base64"],
+                        "description": "Encoding of the data field (default utf-8).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max rows to return for audit/replay (default 500).",
                     },
                 },
                 "required": ["operation"],

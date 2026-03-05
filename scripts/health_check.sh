@@ -16,6 +16,9 @@ VITE_DEV_SERVER_HOST=${VITE_DEV_SERVER_HOST:-0.0.0.0}
 VITE_DEV_SERVER_PORT=${VITE_DEV_SERVER_PORT:-3000}
 AMEM_HOST=${AMEM_HOST:-0.0.0.0}
 AMEM_PORT=${AMEM_PORT:-8001}
+AMEM_HEALTH_TIMEOUT=${AMEM_HEALTH_TIMEOUT:-120}
+BACKEND_HEALTH_TIMEOUT=${BACKEND_HEALTH_TIMEOUT:-120}
+FRONTEND_HEALTH_TIMEOUT=${FRONTEND_HEALTH_TIMEOUT:-60}
 
 normalize_host() {
   local host="$1"
@@ -65,15 +68,15 @@ amem_host="$(normalize_host "$AMEM_HOST")"
 
 failures=0
 
-if ! wait_for_url "amem" "http://${amem_host}:${AMEM_PORT}/health" 120; then
+if ! wait_for_url "amem" "http://${amem_host}:${AMEM_PORT}/health" "$AMEM_HEALTH_TIMEOUT"; then
   failures=$((failures + 1))
 fi
 
-if ! wait_for_url "backend" "http://${backend_host}:${BACKEND_PORT}/health" 60; then
+if ! wait_for_url "backend" "http://${backend_host}:${BACKEND_PORT}/health" "$BACKEND_HEALTH_TIMEOUT"; then
   failures=$((failures + 1))
 fi
 
-if ! wait_for_url "frontend" "http://${frontend_host}:${VITE_DEV_SERVER_PORT}/" 60; then
+if ! wait_for_url "frontend" "http://${frontend_host}:${VITE_DEV_SERVER_PORT}/" "$FRONTEND_HEALTH_TIMEOUT"; then
   failures=$((failures + 1))
 fi
 
