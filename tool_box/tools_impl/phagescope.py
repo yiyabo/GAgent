@@ -129,9 +129,79 @@ MODULE_DEPENDENCIES = {
 # Clustering analysis modules
 CLUSTER_MODULES = {"clustering", "phylogenetic", "alignment"}
 
+# Result-like names that users/models sometimes place into submit modulelist.
+# They are not real submit modules and must be normalized before POST.
+RESULT_DERIVED_SUBMIT_MODULES: Dict[str, str] = {
+    "protein": "annotation",
+    "proteins": "annotation",
+    "tree": "phylogenetic",
+}
+
+RESULT_ONLY_QUERY_KINDS = {"proteins", "phage_detail", "phagefasta", "modules", "tree"}
+
+_TLS_RETRY_WARNING = (
+    "TLS certificate verification failed; PhageScope request retried with verify=False."
+)
+
 
 def _get_base_url(base_url: Optional[str]) -> str:
     return (base_url or os.getenv("PHAGESCOPE_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+
+
+def _ssl_verify_enabled(base_url: str) -> bool:
+    raw = str(os.getenv("PHAGESCOPE_SSL_VERIFY", "true")).strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _should_retry_without_ssl_verify(base_url: str, exc: Exception) -> bool:
+    base = str(base_url or "").lower()
+    if "phageapi.deepomics.org" not in base:
+        return False
+    message = str(exc or "").lower()
+    return "certificate verify failed" in message or "certificateverifyfailed" in message
+
+
+def _attach_transport_warning(payload: Dict[str, Any], message: str) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"raw": str(payload), "_transport_warnings": [message]}
+    warnings = payload.get("_transport_warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+        payload["_transport_warnings"] = warnings
+    if message not in warnings:
+        warnings.append(message)
+    return payload
+
+
+def _decode_httpx_response(response: httpx.Response) -> Dict[str, Any]:
+    content_type = response.headers.get("content-type", "")
+    if "application/json" in content_type:
+        return response.json()
+    return {"raw": response.text}
+
+
+async def _do_httpx_request(
+    method: str,
+    url: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    data: Optional[Dict[str, Any]] = None,
+    files: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: float = 60.0,
+    follow_redirects: bool = False,
+    verify: bool = True,
+) -> httpx.Response:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        headers=headers,
+        follow_redirects=follow_redirects,
+        trust_env=False,
+        verify=verify,
+    ) as client:
+        return await client.request(method, url, params=params, data=data, files=files)
 
 
 def _normalize_phagescope_taskid(value: Any) -> Optional[str]:
@@ -385,6 +455,108 @@ def _parse_modulelist(value: Optional[str]) -> List[str]:
         pass
     
     return []
+
+
+def _normalize_module_token(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return text.replace("-", "_").replace(" ", "_")
+
+
+def _coerce_module_items(value: Any, *, analysistype: Optional[str] = None) -> List[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str) and value.strip().lower() == "all":
+        config = ANALYSIS_TYPES.get(str(analysistype or "").strip())
+        if isinstance(config, dict):
+            modules = config.get("modules")
+            if isinstance(modules, list):
+                return [_normalize_module_token(item) for item in modules if _normalize_module_token(item)]
+
+    items: List[str] = []
+    if isinstance(value, (list, tuple, set)):
+        items = [_normalize_module_token(item) for item in value]
+    elif isinstance(value, dict):
+        items = [
+            _normalize_module_token(key)
+            for key, enabled in value.items()
+            if enabled and _normalize_module_token(key)
+        ]
+    elif isinstance(value, str):
+        raw = value.strip()
+        parsed = _safe_json_loads(raw.replace("'", '"')) if raw.startswith(("{", "[")) else None
+        if isinstance(parsed, dict):
+            items = [
+                _normalize_module_token(key)
+                for key, enabled in parsed.items()
+                if enabled and _normalize_module_token(key)
+            ]
+        elif isinstance(parsed, list):
+            items = [_normalize_module_token(item) for item in parsed]
+        elif "," in raw:
+            items = [_normalize_module_token(item) for item in raw.split(",")]
+        else:
+            items = [_normalize_module_token(raw)]
+    else:
+        items = [_normalize_module_token(value)]
+
+    deduped: List[str] = []
+    seen = set()
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _normalize_submit_module_request(
+    modulelist: Any,
+    *,
+    analysistype: str,
+) -> Tuple[List[str], str, List[str], List[str]]:
+    requested_items = _coerce_module_items(modulelist, analysistype=analysistype)
+    allowed_modules = [
+        _normalize_module_token(item)
+        for item in ANALYSIS_TYPES.get(analysistype, {}).get("modules", [])
+        if _normalize_module_token(item)
+    ]
+    allowed_set = set(allowed_modules)
+    normalized_items: List[str] = []
+    warnings: List[str] = []
+
+    if not allowed_set:
+        normalized_items = list(requested_items)
+    else:
+        for item in requested_items:
+            mapped = RESULT_DERIVED_SUBMIT_MODULES.get(item)
+            if mapped:
+                if mapped not in normalized_items:
+                    normalized_items.append(mapped)
+                warnings.append(
+                    f"module '{item}' is a result/output name, not a submit module; normalized to '{mapped}'."
+                )
+                continue
+
+            if item in RESULT_ONLY_QUERY_KINDS:
+                warnings.append(
+                    f"module '{item}' is a result/output name, not a submit module; it was removed from submit payload."
+                )
+                continue
+
+            if item in allowed_set:
+                if item not in normalized_items:
+                    normalized_items.append(item)
+                continue
+
+            warnings.append(
+                f"module '{item}' is not supported for analysistype '{analysistype}' and was removed."
+            )
+
+    modulelist_json = json.dumps({item: True for item in normalized_items}) if normalized_items else ""
+    return requested_items, modulelist_json, normalized_items, warnings
 
 
 def _safe_json_loads(value: Optional[str]) -> Optional[Any]:
@@ -832,13 +1004,35 @@ async def _request(
     timeout: float = 60.0,
 ) -> Tuple[int, Dict[str, Any]]:
     url = f"{base_url}{path}"
-    # Set trust_env=False to ignore environment proxies (avoid SOCKS dependency issues).
-    async with httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False) as client:
-        response = await client.request(method, url, params=params, data=data, files=files)
-    content_type = response.headers.get("content-type", "")
-    if "application/json" in content_type:
-        return response.status_code, response.json()
-    return response.status_code, {"raw": response.text}
+    verify = _ssl_verify_enabled(base_url)
+    try:
+        response = await _do_httpx_request(
+            method,
+            url,
+            params=params,
+            data=data,
+            files=files,
+            headers=headers,
+            timeout=timeout,
+            verify=verify,
+        )
+        return response.status_code, _decode_httpx_response(response)
+    except httpx.HTTPError as exc:
+        if verify and _should_retry_without_ssl_verify(base_url, exc):
+            logger.warning("PhageScope TLS verification failed for %s; retrying with verify=False", url)
+            response = await _do_httpx_request(
+                method,
+                url,
+                params=params,
+                data=data,
+                files=files,
+                headers=headers,
+                timeout=timeout,
+                verify=False,
+            )
+            payload = _attach_transport_warning(_decode_httpx_response(response), _TLS_RETRY_WARNING)
+            return response.status_code, payload
+        raise
 
 
 async def phagescope_handler(
@@ -1024,31 +1218,51 @@ async def phagescope_handler(
             if not modulelist:
                 return {"success": False, "status_code": 400, "error": "modulelist is required", "action": action}
 
-            # Parse module list for validation.
-            module_items: List[str] = []
-            if isinstance(modulelist, (list, tuple)):
-                module_items = [str(item) for item in modulelist]
-            elif isinstance(modulelist, dict):
-                module_items = list(modulelist.keys())
-            elif isinstance(modulelist, str):
-                parsed = _safe_json_loads(modulelist.replace("'", '"'))
-                if isinstance(parsed, list):
-                    module_items = [str(item) for item in parsed]
-                elif isinstance(parsed, dict):
-                    module_items = list(parsed.keys())
-
-            # Validate module dependencies.
-            is_valid, dep_error = _validate_module_dependencies(module_items)
-            if not is_valid:
-                return {"success": False, "status_code": 400, "error": dep_error, "action": action}
+            requested_module_probe = _coerce_module_items(modulelist, analysistype=analysistype)
 
             # Auto-select the correct endpoint.
             if action == "cluster_submit":
                 endpoint = "/analyze/clusterpipline/"
                 actual_analysistype = "Genome Comparison"
             else:
-                endpoint = _get_analysis_endpoint(analysistype, module_items)
+                endpoint = _get_analysis_endpoint(analysistype, requested_module_probe)
                 actual_analysistype = analysistype
+
+            (
+                requested_module_items,
+                normalized_modulelist_json,
+                module_items,
+                module_warnings,
+            ) = _normalize_submit_module_request(
+                modulelist,
+                analysistype=actual_analysistype,
+            )
+
+            if not module_items:
+                return {
+                    "success": False,
+                    "status_code": 400,
+                    "error": (
+                        "modulelist does not contain any valid submit modules for "
+                        f"analysistype '{actual_analysistype}'"
+                    ),
+                    "action": action,
+                    "requested_modules": requested_module_items,
+                    "warnings": module_warnings,
+                }
+
+            # Validate module dependencies after normalization.
+            is_valid, dep_error = _validate_module_dependencies(module_items)
+            if not is_valid:
+                return {
+                    "success": False,
+                    "status_code": 400,
+                    "error": dep_error,
+                    "action": action,
+                    "requested_modules": requested_module_items,
+                    "normalized_modules": module_items,
+                    "warnings": module_warnings,
+                }
 
             # PhageScope cluster API expects sequence/file payloads and may raise 500
             # for phageid-only requests. Fail fast with a clear local validation error.
@@ -1069,7 +1283,7 @@ async def phagescope_handler(
                     "inputtype": inputtype,
                     "analysistype": actual_analysistype,
                     "userid": userid,
-                    "modulelist": _normalize_modulelist(modulelist),
+                    "modulelist": normalized_modulelist_json,
                     "rundemo": str(rundemo).lower(),
                 }
             )
@@ -1104,6 +1318,9 @@ async def phagescope_handler(
                 "action": action,
                 "endpoint": endpoint,
                 "analysistype": actual_analysistype,
+                "requested_modules": requested_module_items,
+                "normalized_modules": module_items,
+                "warnings": module_warnings or None,
             }
 
         if action == "task_list":
@@ -1367,13 +1584,29 @@ async def phagescope_handler(
             dynamic_rebuild_attempted = False
             dynamic_rebuild_success = False
             
-            async with httpx.AsyncClient(
-                timeout=timeout,
-                headers=headers,
-                follow_redirects=True,
-                trust_env=False,
-            ) as client:
-                response = await client.get(url)
+            verify = _ssl_verify_enabled(base_url)
+            try:
+                response = await _do_httpx_request(
+                    "GET",
+                    url,
+                    headers=headers,
+                    timeout=timeout,
+                    follow_redirects=True,
+                    verify=verify,
+                )
+            except httpx.HTTPError as exc:
+                if verify and _should_retry_without_ssl_verify(base_url, exc):
+                    logger.warning("PhageScope TLS verification failed for %s; retrying download with verify=False", url)
+                    response = await _do_httpx_request(
+                        "GET",
+                        url,
+                        headers=headers,
+                        timeout=timeout,
+                        follow_redirects=True,
+                        verify=False,
+                    )
+                else:
+                    raise
             content_type = response.headers.get("content-type", "")
             content = response.content or b""
 
@@ -1418,13 +1651,31 @@ async def phagescope_handler(
                                     
                                     # Try downloading with the reconstructed path
                                     dynamic_url = f"{base_url}{dynamic_path}"
-                                    async with httpx.AsyncClient(
-                                        timeout=timeout,
-                                        headers=headers,
-                                        follow_redirects=True,
-                                        trust_env=False,
-                                    ) as dynamic_client:
-                                        dynamic_response = await dynamic_client.get(dynamic_url)
+                                    try:
+                                        dynamic_response = await _do_httpx_request(
+                                            "GET",
+                                            dynamic_url,
+                                            headers=headers,
+                                            timeout=timeout,
+                                            follow_redirects=True,
+                                            verify=verify,
+                                        )
+                                    except httpx.HTTPError as exc:
+                                        if verify and _should_retry_without_ssl_verify(base_url, exc):
+                                            logger.warning(
+                                                "PhageScope TLS verification failed for %s; retrying dynamic download with verify=False",
+                                                dynamic_url,
+                                            )
+                                            dynamic_response = await _do_httpx_request(
+                                                "GET",
+                                                dynamic_url,
+                                                headers=headers,
+                                                timeout=timeout,
+                                                follow_redirects=True,
+                                                verify=False,
+                                            )
+                                        else:
+                                            raise
                                     
                                     if dynamic_response.status_code < 400:
                                         logger.info(f"Download action: dynamic path reconstruction succeeded")
@@ -1932,7 +2183,13 @@ phagescope_tool = {
             },
             "userid": {"type": "string", "description": "User ID"},
             "modulelist": {
-                "description": "Module list (array/object/string supported)",
+                "description": (
+                    "Submit modules only (array/object/string supported). "
+                    "For Annotation Pipline use real submit modules such as quality, annotation, host, "
+                    "lifestyle, terminator, taxonomic, trna, anticrispr, crispr, arvf, transmembrane. "
+                    "Do not pass result/output names such as proteins, phage_detail, phagefasta, or tree; "
+                    "proteins are derived from annotation outputs."
+                ),
             },
             "rundemo": {"type": "string", "description": "Run demo task flag", "default": "false"},
             "taskid": {"type": "string", "description": "Task ID"},

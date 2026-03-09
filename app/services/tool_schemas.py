@@ -370,7 +370,15 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                             "(e.g., 37468), not local job ids like act_xxx."
                         ),
                     },
-                    "modulelist": {"type": "string", "description": "Comma-separated analysis modules."},
+                    "modulelist": {
+                        "type": "string",
+                        "description": (
+                            "Comma-separated submit modules only. For Annotation Pipline, use real submit "
+                            "modules such as quality, annotation, host, lifestyle, terminator, taxonomic, "
+                            "trna, anticrispr, crispr, arvf, transmembrane. Do not use result/output names "
+                            "such as proteins, phage_detail, phagefasta, or tree in submit modulelist."
+                        ),
+                    },
                     "result_kind": {
                         "type": "string",
                         "enum": ["quality", "proteins", "phage_detail", "modules", "tree", "phagefasta"],

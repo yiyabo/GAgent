@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.prompts import prompt_manager
 from app.routers.chat.prompt_builder import compose_plan_status
 from app.services.deep_think_agent import DeepThinkAgent
+from app.services import tool_schemas
 
 
 async def _noop_tool_executor(_name: str, _params: dict):
@@ -93,3 +94,25 @@ def test_deep_think_prompt_boundaries_prevent_cross_protocol_confusion() -> None
     assert "Respond with valid JSON only using keys: thinking, action, final_answer" in legacy_prompt
     assert "Do NOT output structured-agent JSON keys like llm_reply/actions" in legacy_prompt
     assert "Respond with valid JSON only using keys: thinking, action, final_answer" not in native_prompt
+
+
+def test_phagescope_prompt_and_schema_mark_proteins_as_result_not_submit_module() -> None:
+    prompts = prompt_manager.get_category("structured_agent")
+    base_actions = prompts["action_catalog"]["base_actions"]
+    phagescope_line = next(line for line in base_actions if "tool_operation: phagescope" in line)
+    assert "proteins" in phagescope_line
+    assert "not a submit module" in phagescope_line
+
+    common_rules = prompts["guidelines"]["common_rules"]
+    phagescope_rule = next(
+        rule for rule in common_rules if "modulelist" in rule and "proteins" in rule
+    )
+    lowered_rule = phagescope_rule.lower()
+    assert "submit modules" in lowered_rule
+    assert "result/output names" in lowered_rule
+
+    schema = tool_schemas.TOOL_REGISTRY["phagescope"]
+    module_desc = schema["function"]["parameters"]["properties"]["modulelist"]["description"].lower()
+    assert "submit modules only" in module_desc
+    assert "proteins" in module_desc
+    assert "not use result/output names" in module_desc
