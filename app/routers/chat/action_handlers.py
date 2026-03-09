@@ -248,7 +248,7 @@ def maybe_synthesize_phagescope_saveall_analysis(agent: Any, steps: List[AgentSt
     else:
         lines.append("  - Could not read `metadata/phage_info.json`, or it is empty.")
 
-    lines.append("- **Protein Annotation**:")
+    lines.append("- **Protein Annotation (derived from annotation outputs)**:")
     if protein_count is not None:
         lines.append(f"  - Protein count: {protein_count}")
     else:
