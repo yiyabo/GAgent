@@ -211,7 +211,26 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
 
             raw = parser.full_text()
             cleaned = agent._strip_code_fence(raw)
-            structured = LLMStructuredResponse.model_validate_json(cleaned)
+            try:
+                structured = LLMStructuredResponse.model_validate_json(cleaned)
+            except Exception as parse_exc:
+                logger.warning(
+                    "LLM response JSON parse failed, falling back to text reply: %s",
+                    parse_exc,
+                )
+                fallback_response = ChatResponse(
+                    response=raw,
+                    suggestions=["The assistant's response could not be parsed as structured JSON. Displayed as plain text."],
+                    actions=[],
+                    metadata={
+                        "status": "completed",
+                        "unified_stream": True,
+                        "parse_error": str(parse_exc),
+                    },
+                )
+                saved = _save_assistant_response(request.session_id, fallback_response)
+                yield _sse_message({"type": "final", "payload": saved.model_dump()})
+                return
             structured = await agent._apply_experiment_fallback(structured)
             structured = agent._apply_plan_first_guardrail(structured)
             structured = agent._apply_phagescope_fallback(structured)

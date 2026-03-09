@@ -1177,6 +1177,7 @@ async def _execute_action_run(run_id: str) -> None:
                             "phagescope_counts": progress_payload.get("counts"),
                             "phagescope_submit_only": True,
                             "job_type": "phagescope_track",
+                            **({"phagescope_skipped_actions": dropped_phagescope_actions} if dropped_phagescope_actions else {}),
                         },
                     )
                 except Exception:

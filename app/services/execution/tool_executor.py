@@ -99,9 +99,13 @@ class UnifiedToolExecutor:
             return payload
 
         summary = self._summarize_tool_result(tool_name, result)
-        tool_success = not (
-            isinstance(result, dict) and result.get("success") is False
-        )
+        if result is None:
+            tool_success = False
+        elif isinstance(result, dict):
+            tool_success = result.get("success") is not False
+        else:
+            # Non-dict, non-None results (e.g. strings) are treated as success.
+            tool_success = True
         payload: Dict[str, Any] = {
             "success": tool_success,
             "result": result,
@@ -128,6 +132,7 @@ class UnifiedToolExecutor:
                 payload["deliverables"] = report.to_dict()
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Deliverable publishing failed: %s", exc)
+                payload["deliverable_error"] = str(exc)
 
         if on_tool_result:
             await self._safe_callback(on_tool_result, tool_name, dict(payload))
