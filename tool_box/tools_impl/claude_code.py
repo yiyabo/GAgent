@@ -799,8 +799,18 @@ async def claude_code_handler(
         )
 
         # Wait for process to finish and streams to close
-        await asyncio.wait([stdout_task, stderr_task])
-        return_code = await process.wait()
+        try:
+            await asyncio.wait([stdout_task, stderr_task])
+            return_code = await process.wait()
+        except (asyncio.CancelledError, Exception) as _wait_exc:
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+            if isinstance(_wait_exc, asyncio.CancelledError):
+                raise
+            raise
 
         success = return_code == 0
         stdout = "\n".join(stdout_lines)
