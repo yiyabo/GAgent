@@ -33,6 +33,10 @@ _plan_decomposer = PlanDecomposer(repo=_plan_repo)
 _plan_executor = PlanExecutor(repo=_plan_repo)
 logger = logging.getLogger(__name__)
 
+# Guard against duplicate concurrent execution of the same plan+task pair.
+_task_execution_locks: Dict[Tuple[int, int], threading.Lock] = {}
+_task_execution_locks_guard = threading.Lock()
+
 
 def _default_plan_paper_mode() -> bool:
     raw = os.getenv("PLAN_PAPER_MODE_DEFAULT")
@@ -876,8 +880,33 @@ def execute_task_with_dependencies(
         },
     )
 
+    # Prevent duplicate concurrent execution of the same plan+task.
+    lock_key = (plan_id, task_id)
+    with _task_execution_locks_guard:
+        if lock_key in _task_execution_locks and _task_execution_locks[lock_key].locked():
+            return ExecuteTaskResponse(
+                success=False,
+                message=f"Task {task_id} in plan {plan_id} is already being executed. Please wait for it to finish.",
+                plan_id=plan_id,
+                task_id=task_id,
+                dependency_plan=dep_response,
+                job=None,
+                result=None,
+            )
+        if lock_key not in _task_execution_locks:
+            _task_execution_locks[lock_key] = threading.Lock()
+        execution_lock = _task_execution_locks[lock_key]
+
+    def _locked_run(**kwargs):
+        with execution_lock:
+            try:
+                _run_task_chain_job(**kwargs)
+            finally:
+                with _task_execution_locks_guard:
+                    _task_execution_locks.pop(lock_key, None)
+
     thread = threading.Thread(
-        target=_run_task_chain_job,
+        target=_locked_run,
         kwargs={
             "job_id": job.job_id,
             "plan_id": plan_id,
