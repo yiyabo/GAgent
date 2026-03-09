@@ -858,6 +858,11 @@ async def execute_docker_command(
 
     except asyncio.TimeoutError:
         logger.error(f"Command timed out after {timeout}s: {command_display}")
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
         return {
             "success": False,
             "error": f"Command timed out after {timeout} seconds",
