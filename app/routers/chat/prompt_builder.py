@@ -40,6 +40,10 @@ def should_use_deep_think(agent: Any, message: str) -> bool:
     return False
 
 
+# Rough char-to-token ratio ~3.5; cap at ~28k tokens.
+_MAX_PROMPT_CHARS = 100_000
+
+
 def build_prompt(agent: Any, user_message: str) -> str:
     plan_bound = agent.plan_session.plan_id is not None
     history_text = format_history(agent)
@@ -84,7 +88,22 @@ def build_prompt(agent: Any, user_message: str) -> str:
         f"\nUser message: {user_message}",
         "Respond with the JSON object now.",
     ])
-    return "\n".join(prompt_parts)
+    prompt = "\n".join(prompt_parts)
+    if len(prompt) > _MAX_PROMPT_CHARS:
+        logger.warning(
+            "Chat prompt too long (%d chars), truncating plan outline.",
+            len(prompt),
+        )
+        # Truncate plan outline first (usually the largest section).
+        outline_marker = "\n=== Plan Overview ==="
+        idx = prompt.find(outline_marker)
+        if idx != -1:
+            end_idx = prompt.find("\nReturn a JSON", idx)
+            if end_idx != -1:
+                prompt = prompt[:idx] + "\n=== Plan Overview ===\n[Omitted due to prompt size limit]\n" + prompt[end_idx:]
+        if len(prompt) > _MAX_PROMPT_CHARS:
+            prompt = prompt[:_MAX_PROMPT_CHARS] + "\n... [TRUNCATED]\nRespond with the JSON object now."
+    return prompt
 
 
 def format_memories(memories: List[Dict[str, Any]]) -> str:

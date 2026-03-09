@@ -239,6 +239,10 @@ When a task requires tool execution, request one of these tools:
   "metadata": {}
 }"""
 
+    # Rough char-to-token ratio ~3.5 for mixed EN/ZH text.
+    # Cap at ~28k tokens (~100k chars) to stay within typical model context windows.
+    MAX_PROMPT_CHARS = 100_000
+
     def _summarize_long_result(self, result: str, max_length: int = 2000) -> str:
         """Summarize long execution results to avoid prompt bloat.
 
@@ -419,7 +423,26 @@ When a task requires tool execution, request one of these tools:
         lines.append("\n=== RESPONSE FORMAT ===")
         lines.append(self.OUTPUT_SCHEMA)
         lines.append("\nOnly return valid JSON, without Markdown or explanations.")
-        return "\n".join(lines)
+        prompt = "\n".join(lines)
+        if len(prompt) > self.MAX_PROMPT_CHARS:
+            logger.warning(
+                "Executor prompt too long (%d chars), truncating plan outline and dependencies.",
+                len(prompt),
+            )
+            # Rebuild without plan outline and with shorter dependency summaries.
+            # Remove the plan outline section to reclaim space.
+            marker = "\n=== PLAN OUTLINE (TRUNCATED) ==="
+            idx = prompt.find(marker)
+            if idx != -1:
+                end_idx = prompt.find("\n===", idx + len(marker))
+                if end_idx == -1:
+                    end_idx = prompt.find(self.TOOL_CATALOG[:30], idx)
+                if end_idx != -1:
+                    prompt = prompt[:idx] + "\n[Plan outline omitted due to prompt size limit]\n" + prompt[end_idx:]
+            # Hard-truncate if still too long.
+            if len(prompt) > self.MAX_PROMPT_CHARS:
+                prompt = prompt[: self.MAX_PROMPT_CHARS] + "\n... [TRUNCATED]\nOnly return valid JSON."
+        return prompt
 
 
 def _strip_code_fences(raw: str) -> str:
