@@ -33,14 +33,28 @@ start_bg() {
   local log_file="$LOG_DIR/${name}.log"
   local pid_file="$LOG_DIR/${name}.pid"
 
-  nohup bash -c "$cmd" > "$log_file" 2>&1 &
-  echo $! > "$pid_file"
-  echo "$name started (pid $(cat "$pid_file"))"
+  # setsid detaches the child from the current process group so that
+  # an SSH disconnect (SIGHUP) or parent script exit does not kill the service.
+  {
+    setsid nohup bash -c "$cmd" > "$log_file" 2>&1 < /dev/null &
+    echo $!
+  } > "$pid_file.tmp"
+  
+  # Read PID and clean up
+  local pid
+  pid=$(cat "$pid_file.tmp")
+  rm -f "$pid_file.tmp"
+  
+  echo "$pid" > "$pid_file"
+  echo "$name started (pid $pid)"
   echo "log: $log_file"
+  
+  # Small delay to let process start
+  sleep 1
 }
 
 start_bg "amem" "bash \"$ROOT_DIR/scripts/start_amem.sh\""
-start_bg "backend" "cd \"$ROOT_DIR\" && bash \"$ROOT_DIR/start_backend.sh\""
+start_bg "backend" "cd \"$ROOT_DIR\" && BACKEND_RELOAD=false bash \"$ROOT_DIR/start_backend.sh\""
 start_bg "frontend" "cd \"$ROOT_DIR/web-ui\" && npm run dev"
 
 echo "All services started."
