@@ -165,12 +165,14 @@ def update_plan_metadata(
 def remove_plan_database(plan_id: int) -> None:
     """delete plan databasefile."""
     db_path = get_plan_db_path(plan_id)
-    try:
-        if db_path.exists():
-            db_path.unlink()
-            logger.info("Removed plan database at %s", db_path)
-    except OSError as exc:  # pragma: no cover - best effort cleanup
-        logger.warning("Failed to remove plan database %s: %s", db_path, exc)
+    for suffix in ("", "-wal", "-shm"):
+        target = db_path.parent / (db_path.name + suffix)
+        try:
+            if target.exists():
+                target.unlink()
+                logger.info("Removed plan database file %s", target)
+        except OSError as exc:  # pragma: no cover - best effort cleanup
+            logger.warning("Failed to remove plan database file %s: %s", target, exc)
 
 
 def _upsert_meta(conn, key: str, value: Optional[str]) -> None:

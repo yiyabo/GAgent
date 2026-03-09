@@ -199,6 +199,11 @@ async def _run_subprocess(
             "command": command_display,
         }
     except asyncio.TimeoutError:
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
         return {
             "success": False,
             "error": f"Command timed out after {effective_timeout} seconds",
