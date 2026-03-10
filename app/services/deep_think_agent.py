@@ -1500,6 +1500,16 @@ Operations:
 
 Typical usage: just call write with data — the system handles terminal creation automatically.
 IMPORTANT: data must end with \\n to execute the command.""",
+            "manuscript_writer": (
+                "PREFERRED tool for writing research papers and manuscripts. "
+                "Generates publication-quality LaTeX/Markdown sections with proper citations. "
+                "Params: {\"task\": \"write the introduction section\", \"output_path\": \"/abs/path/output.md\", "
+                "\"context_paths\": [\"/path/to/refs.bib\", \"/path/to/data.csv\"], "
+                "\"analysis_path\": \"/path/to/analysis_results\"}. "
+                "IMPORTANT: For ANY paper/manuscript writing task (sections, drafts, revisions, assembly), "
+                "ALWAYS use manuscript_writer instead of claude_code. "
+                "claude_code should NEVER be used to write paper content directly."
+            ),
         }
 
         tools_desc = []

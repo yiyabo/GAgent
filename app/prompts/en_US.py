@@ -52,7 +52,7 @@ PROMPTS_EN_US = {
             ],
             "plan_actions": {
                 "bound": [
-                    "- plan_operation: create_plan, list_plans, execute_plan, delete_plan (manage the lifecycle of the current plan; treat this as the primary coordination mechanism for multi-step work)",
+                    "- plan_operation: create_plan, list_plans, execute_plan, delete_plan, review_plan, optimize_plan (manage the lifecycle of the current plan; review_plan runs the rubric evaluator to score plan quality; optimize_plan applies structural changes—requires `changes` list with objects like {action:'add_task', name, instruction, parent_id?, dependencies?}, {action:'update_task', task_id, name?, instruction?, dependencies?}, {action:'delete_task', task_id}, {action:'reorder_task', task_id, new_position})",
                     "- task_operation: create_task, update_task (can modify both `name` and `instruction` together), update_task_instruction, move_task, delete_task, decompose_task, show_tasks, query_status, rerun_task (modify the current plan structure at any time based on the dialogue: create/edit/move/delete/decompose/rerun tasks)",
                     "- context_request: request_subgraph (request additional task context; this response must not include other actions)",
                 ],
@@ -110,6 +110,7 @@ PROMPTS_EN_US = {
                     "Use `web_search`, `sequence_fetch`, `graph_rag`, `phagescope`, `deeppl`, or `bio_tools` when the user explicitly requests those capabilities, or when minimal external verification/attachment-backed evidence is necessary for factual accuracy.",
                     "When `web_search` is used, craft a clear query and summarize results with sources. When `graph_rag` is used, describe phage-related insights and cite triples when helpful.",
                     "After gathering supporting information, continue scheduling or executing the requested plan or tasks; do not stop at preparation only.",
+                    "When the user asks to optimize or improve the plan (especially after a review), use `plan_operation.optimize_plan` with a `changes` list derived from the review feedback. Each change must have an `action` field (add_task/update_task/delete_task/reorder_task) and the corresponding parameters. Prefer batching all changes into a single optimize_plan call rather than issuing many individual task_operations.",
                 ],
                 "unbound": [
                     "When the user describes a multi-step project, experiment, analysis, or long-running workflow that would benefit from structured task management, automatically create a plan using `plan_operation.create_plan` and then build or decompose tasks. Do not ask for confirmation first.",

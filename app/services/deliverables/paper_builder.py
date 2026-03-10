@@ -13,6 +13,7 @@ SECTION_ORDER: Tuple[str, ...] = (
     "method",
     "experiment",
     "result",
+    "discussion",
     "conclusion",
 )
 
@@ -22,6 +23,7 @@ SECTION_TITLES: Dict[str, str] = {
     "method": "Method",
     "experiment": "Experiment",
     "result": "Result",
+    "discussion": "Discussion",
     "conclusion": "Conclusion",
 }
 
@@ -31,7 +33,8 @@ SECTION_KEYWORDS: Dict[str, Tuple[str, ...]] = {
     "method": ("methods", "method", "methodology", "approach", "pipeline"),
     "experiment": ("experiments", "experiment", "evaluation", "benchmark", "ablation"),
     "result": ("results", "result", "findings", "finding", "performance"),
-    "conclusion": ("conclusion", "conclusions", "discussion", "future work"),
+    "discussion": ("discussion", "discussion and conclusion", "interpretation", "implications"),
+    "conclusion": ("conclusion", "conclusions", "future work", "summary"),
 }
 
 PLACEHOLDER_MARKER = "AUTO_PLACEHOLDER"
@@ -258,7 +261,11 @@ class PaperBuilder:
             "\\usepackage{graphicx}\n"
             "\\usepackage{booktabs}\n"
             "\\usepackage{longtable}\n"
+            "\\usepackage{amsmath}\n"
+            "\\usepackage{amssymb}\n"
+            "\\usepackage{amsfonts}\n"
             "\\usepackage[numbers]{natbib}\n"
+            "\\graphicspath{{figures/}}\n"
             "\\geometry{margin=1in}\n"
             f"\\title{{{safe_title}}}\n"
             "\\author{}\n"
@@ -292,13 +299,25 @@ class PaperBuilder:
         lines = text.replace("\r\n", "\n").split("\n")
         output: List[str] = []
         in_list = False
+        in_enum = False
         in_verbatim = False
+        table_lines: List[str] = []
+        in_table = False
+
         for line in lines:
             stripped = line.strip()
+
+            # Code blocks
             if stripped.startswith("```"):
                 if in_list:
                     output.append("\\end{itemize}")
                     in_list = False
+                if in_enum:
+                    output.append("\\end{enumerate}")
+                    in_enum = False
+                if in_table:
+                    output.extend(self._render_table(table_lines))
+                    table_lines, in_table = [], False
                 if in_verbatim:
                     output.append("\\end{verbatim}")
                     in_verbatim = False
@@ -311,23 +330,85 @@ class PaperBuilder:
                 output.append(line)
                 continue
 
+            # Image: ![caption](path)
+            img_match = re.match(r"!\[([^\]]*)\]\(([^)]+)\)", stripped)
+            if img_match:
+                if in_list:
+                    output.append("\\end{itemize}")
+                    in_list = False
+                if in_enum:
+                    output.append("\\end{enumerate}")
+                    in_enum = False
+                if in_table:
+                    output.extend(self._render_table(table_lines))
+                    table_lines, in_table = [], False
+                caption = img_match.group(1).strip()
+                img_path = img_match.group(2).strip()
+                img_ref = self._normalize_figure_reference(img_path)
+                output.append("\\begin{figure}[h]")
+                output.append("\\centering")
+                output.append(f"\\includegraphics[width=0.8\\textwidth]{{{img_ref}}}")
+                if caption:
+                    output.append(f"\\caption{{{self._escape_text(caption)}}}")
+                output.append("\\end{figure}")
+                continue
+
+            # Table detection: lines starting and ending with |
+            if "|" in stripped and stripped.startswith("|") and stripped.endswith("|"):
+                if not in_table:
+                    if in_list:
+                        output.append("\\end{itemize}")
+                        in_list = False
+                    if in_enum:
+                        output.append("\\end{enumerate}")
+                        in_enum = False
+                    in_table = True
+                table_lines.append(stripped)
+                continue
+            elif in_table:
+                output.extend(self._render_table(table_lines))
+                table_lines, in_table = [], False
+
+            # Empty line
             if not stripped:
                 if in_list:
                     output.append("\\end{itemize}")
                     in_list = False
+                if in_enum:
+                    output.append("\\end{enumerate}")
+                    in_enum = False
                 output.append("")
                 continue
 
+            # Unordered list
             if stripped.startswith("- "):
+                if in_enum:
+                    output.append("\\end{enumerate}")
+                    in_enum = False
                 if not in_list:
                     output.append("\\begin{itemize}")
                     in_list = True
                 output.append(f"\\item {self._inline_to_latex(stripped[2:].strip())}")
                 continue
 
+            # Numbered list
+            num_match = re.match(r"(\d+)\.\s+(.+)", stripped)
+            if num_match:
+                if in_list:
+                    output.append("\\end{itemize}")
+                    in_list = False
+                if not in_enum:
+                    output.append("\\begin{enumerate}")
+                    in_enum = True
+                output.append(f"\\item {self._inline_to_latex(num_match.group(2).strip())}")
+                continue
+
             if in_list:
                 output.append("\\end{itemize}")
                 in_list = False
+            if in_enum:
+                output.append("\\end{enumerate}")
+                in_enum = False
 
             if stripped.startswith("### "):
                 output.append(f"\\subsubsection{{{self._escape_text(stripped[4:].strip())}}}")
@@ -345,14 +426,84 @@ class PaperBuilder:
             output.append("\\end{verbatim}")
         if in_list:
             output.append("\\end{itemize}")
+        if in_enum:
+            output.append("\\end{enumerate}")
+        if in_table:
+            output.extend(self._render_table(table_lines))
 
         return "\n".join(output).strip()
 
+    def _render_table(self, lines: List[str]) -> List[str]:
+        """Convert Markdown table lines to LaTeX tabular."""
+        if not lines:
+            return []
+        rows: List[List[str]] = []
+        has_header = False
+        for line in lines:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if all(re.match(r"\s*:?-+:?\s*$", c) for c in cells if c.strip()):
+                has_header = True
+                continue
+            rows.append(cells)
+        if not rows:
+            return []
+        ncols = max(len(r) for r in rows)
+        col_spec = "l" * ncols
+        output = [
+            "\\begin{table}[h]",
+            "\\centering",
+            f"\\begin{{tabular}}{{{col_spec}}}",
+            "\\toprule",
+        ]
+        for i, row in enumerate(rows):
+            while len(row) < ncols:
+                row.append("")
+            cells = " & ".join(self._escape_text(c) for c in row)
+            output.append(f"{cells} \\\\")
+            if i == 0 and has_header:
+                output.append("\\midrule")
+        output.extend([
+            "\\bottomrule",
+            "\\end{tabular}",
+            "\\end{table}",
+        ])
+        return output
+
+    def _normalize_figure_reference(self, img_path: str) -> str:
+        normalized = (img_path or "").strip()
+        if not normalized:
+            return normalized
+        if re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://", normalized):
+            return normalized
+        return Path(normalized.split("?", 1)[0].split("#", 1)[0]).name or normalized
+
     def _inline_to_latex(self, text: str) -> str:
+        # Protect math environments from escaping
+        math_tokens: List[Tuple[str, str]] = []
+
+        def _save_math(match: re.Match[str]) -> str:
+            token = f"\x00MATH{len(math_tokens)}\x00"
+            math_tokens.append((token, match.group(0)))
+            return token
+
+        replaced = re.sub(r"\$\$.+?\$\$", _save_math, text, flags=re.DOTALL)
+        replaced = re.sub(r"\$(?!\$).+?\$", _save_math, replaced)
+
+        # Multi-cite: [@key1; @key2] → \cite{key1, key2}
+        def _multi_cite(m: re.Match[str]) -> str:
+            keys = [k.strip().lstrip("@") for k in m.group(1).split(";")]
+            return "\\cite{" + ", ".join(keys) + "}"
+
+        replaced = re.sub(
+            r"\[(@[A-Za-z0-9._:\-]+(?:\s*;\s*@[A-Za-z0-9._:\-]+)+)\]",
+            _multi_cite,
+            replaced,
+        )
+        # Single cite: [@key] → \cite{key}
         replaced = re.sub(
             r"\[@([A-Za-z0-9._:\-]+)\]",
             lambda m: f"\\cite{{{m.group(1)}}}",
-            text,
+            replaced,
         )
         replaced = re.sub(
             r"\*\*(.+?)\*\*",
@@ -364,7 +515,13 @@ class PaperBuilder:
             lambda m: f"\\textit{{{self._escape_text(m.group(1))}}}",
             replaced,
         )
-        return self._escape_text(replaced, preserve_commands=True)
+        replaced = self._escape_text(replaced, preserve_commands=True)
+
+        # Restore math environments
+        for token, original in math_tokens:
+            replaced = replaced.replace(token, original)
+
+        return replaced
 
     def _escape_text(self, text: str, *, preserve_commands: bool = False) -> str:
         if not text:
@@ -373,7 +530,7 @@ class PaperBuilder:
             tokens: List[Tuple[str, str]] = []
 
             def _capture(match: re.Match[str]) -> str:
-                token = f"@@LATEX_CMD_{len(tokens)}@@"
+                token = f"\x00LCMD{len(tokens)}\x00"
                 tokens.append((token, match.group(0)))
                 return token
 

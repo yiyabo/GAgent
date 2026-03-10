@@ -109,6 +109,8 @@ def _extract_json_block(text: str) -> Optional[Dict[str, Any]]:
     if not isinstance(text, str):
         return None
     raw = text.strip()
+    # Strip <think>...</think> blocks from reasoning models (e.g. qwen3.5-plus)
+    raw = re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
     start = raw.find("{")
     end = raw.rfind("}")
     if start < 0 or end <= start:
@@ -636,7 +638,7 @@ def evaluate_plan_rubric(
     client = evaluator_client
     if client is None:
         try:
-            client = LLMClient(provider=evaluator_provider, model=evaluator_model)
+            client = LLMClient(provider=evaluator_provider, model=evaluator_model, timeout=180)
         except (TypeError, ValueError) as exc:
             logger.warning("Rubric evaluator client init failed: %s", exc)
             client = None
@@ -710,6 +712,7 @@ Your job is to score each subcriterion and provide concrete evidence.
 
     raw = ""
     parsed: Optional[Dict[str, Any]] = None
+    eval_error_reason = ""
     try:
         raw = client.chat(
             "",
@@ -717,9 +720,12 @@ Your job is to score each subcriterion and provide concrete evidence.
             model=evaluator_model,
         )
         parsed = _extract_json_block(raw) or None
+        if not isinstance(parsed, dict):
+            eval_error_reason = "Evaluator returned invalid JSON; strict rubric scoring was aborted."
     except Exception as exc:  # noqa: BLE001 - isolate evaluator failures
         logger.warning("Rubric evaluator call failed: %s", exc)
         parsed = None
+        eval_error_reason = f"Evaluator LLM call failed: {exc}"
 
     if not isinstance(parsed, dict):
         return _build_unavailable_rubric_result(
@@ -729,7 +735,7 @@ Your job is to score each subcriterion and provide concrete evidence.
             evaluator_model=str(getattr(client, "model", evaluator_model or "unknown")),
             evaluated_at=evaluated_at,
             rule_evidence=rule_evidence,
-            reason="Evaluator returned invalid JSON; strict rubric scoring was aborted.",
+            reason=eval_error_reason or "Evaluator returned invalid JSON; strict rubric scoring was aborted.",
             revision_hint="Retry with a stable evaluator model that returns strict JSON matching the schema.",
         )
 
