@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -90,3 +91,41 @@ def test_session_missing_returns_empty_payload(monkeypatch, target: str) -> None
         )
         assert response.manifest == {}
         assert response.manifest_path is None
+
+
+def test_render_cache_hash_changes_when_refs_change(tmp_path: Path) -> None:
+    paper_dir = tmp_path / "deliverables" / "latest" / "paper"
+    refs_dir = tmp_path / "deliverables" / "latest" / "refs"
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    refs_dir.mkdir(parents=True, exist_ok=True)
+
+    main_tex = paper_dir / "main.tex"
+    refs_bib = refs_dir / "references.bib"
+    main_tex.write_text("\\documentclass{article}\n", encoding="utf-8")
+    refs_bib.write_text("@article{a,\n  title={First}\n}\n", encoding="utf-8")
+
+    before = artifact_routes._get_render_cache_path(main_tex, "pdf")
+    refs_bib.write_text("@article{a,\n  title={Updated reference title}\n}\n", encoding="utf-8")
+    os.utime(refs_bib, None)
+    after = artifact_routes._get_render_cache_path(main_tex, "pdf")
+
+    assert before != after
+
+
+def test_render_cache_hash_changes_when_staged_figure_changes(tmp_path: Path) -> None:
+    paper_dir = tmp_path / "deliverables" / "latest" / "paper"
+    figures_dir = paper_dir / "figures"
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    main_tex = paper_dir / "main.tex"
+    figure = figures_dir / "plot.png"
+    main_tex.write_text("\\documentclass{article}\n", encoding="utf-8")
+    figure.write_bytes(b"old-plot")
+
+    before = artifact_routes._get_render_cache_path(main_tex, "pdf")
+    figure.write_bytes(b"new-plot-content")
+    os.utime(figure, None)
+    after = artifact_routes._get_render_cache_path(main_tex, "pdf")
+
+    assert before != after

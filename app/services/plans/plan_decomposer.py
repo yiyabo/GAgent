@@ -138,7 +138,7 @@ class DecompositionPromptBuilder:
             '  "name": "<task name>",',
             '  "instruction": "<execution details>",',
             '  "metadata": {',
-            '  "paper_section": "<optional: abstract|introduction|methods|experiments|results|conclusion|references>",',
+            '  "paper_section": "<optional: abstract|introduction|method|experiment|result|discussion|conclusion|references>",',
             '  "paper_role": "<optional: evidence_collector|section_writer|manuscript_assembler|citation_validator>",',
             '  "paper_context_paths": ["<optional artifact path>", "..."]',
             "  },",
@@ -566,10 +566,11 @@ class PlanDecomposer:
         patterns = {
             "abstract": (r"\babstract\b",),
             "introduction": (r"\bintroduction\b", r"\bintro\b"),
-            "methods": (r"\bmethods?\b", r"\bmethodology\b", r"\bapproach\b"),
-            "experiments": (r"\bexperiments?\b", r"\bevaluation\b", r"\bbenchmark\b", r"\bablation\b"),
-            "results": (r"\bresults?\b", r"\bfindings?\b"),
-            "conclusion": (r"\bconclusions?\b", r"\bfuture work\b", r"\bdiscussion\b"),
+            "method": (r"\bmethods?\b", r"\bmethodology\b", r"\bapproach\b"),
+            "experiment": (r"\bexperiments?\b", r"\bevaluation\b", r"\bbenchmark\b", r"\bablation\b"),
+            "result": (r"\bresults?\b", r"\bfindings?\b"),
+            "discussion": (r"\bdiscussions?\b",),
+            "conclusion": (r"\bconclusions?\b", r"\bfuture work\b"),
             "references": (r"\breferences?\b", r"\bbib(tex)?\b", r"\bcitation(s)?\b"),
         }
         for section, regexes in patterns.items():

@@ -4,20 +4,21 @@ Manuscript Writer Tool
 Generate a research manuscript in staged sections with evaluation and revision.
 Pipeline:
 1) Build a global analysis memo from provided context.
-2) Generate each section (abstract, introduction, methods, experiments, results,
-   conclusion, references).
+2) Generate each section (abstract, introduction, method, experiment, result,
+   discussion, conclusion, references).
 3) Evaluate each section with a strict JSON rubric and revise up to N times.
 4) Merge approved sections and perform a final global rewrite.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import shutil
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -44,12 +45,50 @@ _ALLOWED_TEXT_EXTENSIONS = {
 _DEFAULT_SECTIONS = [
     "abstract",
     "introduction",
-    "methods",
-    "experiments",
-    "results",
+    "method",
+    "experiment",
+    "result",
+    "discussion",
     "conclusion",
     "references",
 ]
+
+# ---------------------------------------------------------------------------
+# Per-section evaluation dimensions & weights
+# ---------------------------------------------------------------------------
+_ALL_EVAL_DIMENSIONS = [
+    "structure",
+    "scientific_rigor",
+    "method_detail",
+    "experiment_detail",
+    "results_analysis",
+    "clarity",
+    "cohesion",
+    "academic_style",
+    "citation_integrity",
+]
+
+_SECTION_EVAL_DIMS: Dict[str, List[str]] = {
+    "abstract": ["structure", "clarity", "cohesion", "academic_style"],
+    "introduction": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion"],
+    "method": ["method_detail", "scientific_rigor", "clarity", "citation_integrity"],
+    "experiment": ["experiment_detail", "method_detail", "results_analysis", "scientific_rigor"],
+    "result": ["results_analysis", "scientific_rigor", "clarity", "citation_integrity"],
+    "discussion": ["scientific_rigor", "results_analysis", "clarity", "cohesion", "citation_integrity"],
+    "conclusion": ["structure", "clarity", "cohesion", "academic_style"],
+}
+
+_DIMENSION_WEIGHTS: Dict[str, float] = {
+    "scientific_rigor": 1.5,
+    "citation_integrity": 1.3,
+    "results_analysis": 1.2,
+    "method_detail": 1.0,
+    "experiment_detail": 1.0,
+    "structure": 1.0,
+    "clarity": 1.0,
+    "cohesion": 0.8,
+    "academic_style": 0.7,
+}
 _TRUTHY_VALUES = {"1", "true", "yes", "on", "y"}
 
 
@@ -164,16 +203,33 @@ def _parse_json_payload(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _average_score(scores: Dict[str, Any]) -> float:
-    values: List[float] = []
-    for value in scores.values():
+def _weighted_score(
+    scores: Dict[str, Any],
+    dimensions: Optional[List[str]] = None,
+) -> float:
+    """Compute weighted average over relevant dimensions for a section."""
+    total_weight = 0.0
+    weighted_sum = 0.0
+    dims = dimensions or list(scores.keys())
+    for dim in dims:
+        value = scores.get(dim)
+        if value is None:
+            continue
         try:
-            values.append(float(value))
+            v = float(value)
         except (TypeError, ValueError):
             continue
-    if not values:
+        w = _DIMENSION_WEIGHTS.get(dim, 1.0)
+        weighted_sum += v * w
+        total_weight += w
+    if total_weight == 0.0:
         return 0.0
-    return sum(values) / len(values)
+    return weighted_sum / total_weight
+
+
+def _average_score(scores: Dict[str, Any]) -> float:
+    """Backward-compatible unweighted average."""
+    return _weighted_score(scores)
 
 
 def _extract_markdown_citekeys(text: str) -> List[str]:
@@ -232,11 +288,26 @@ def _render_references_section(citekeys: List[str]) -> str:
     return "\n".join(lines)
 
 
+def _normalize_section_key(section: str) -> str:
+    """Normalize section name to canonical singular form."""
+    mapping = {
+        "methods": "method",
+        "experiments": "experiment",
+        "results": "result",
+    }
+    key = section.strip().lower()
+    return mapping.get(key, key)
+
+
 def _section_title(section: str) -> str:
     mapping = {
+        "method": "Methods",
         "methods": "Methods",
+        "experiment": "Experiments",
         "experiments": "Experiments",
+        "result": "Results",
         "results": "Results",
+        "discussion": "Discussion",
         "conclusion": "Conclusion",
         "references": "References",
         "abstract": "Abstract",
@@ -245,8 +316,14 @@ def _section_title(section: str) -> str:
     return mapping.get(section.lower(), section.title())
 
 
+def _section_eval_dims(section: str) -> List[str]:
+    """Return evaluation dimensions relevant to *section*."""
+    key = _normalize_section_key(section)
+    return _SECTION_EVAL_DIMS.get(key, _ALL_EVAL_DIMENSIONS)
+
+
 def _section_requirements(section: str) -> List[str]:
-    section = section.lower()
+    section = _normalize_section_key(section)
     if section == "abstract":
         return [
             "Provide background, objective, methods, key results, and conclusion.",
@@ -259,13 +336,13 @@ def _section_requirements(section: str) -> List[str]:
             "Summarize relevant prior work only from provided context.",
             "State study objectives and hypotheses.",
         ]
-    if section == "methods":
+    if section == "method":
         return [
             "Provide full data processing steps and parameter settings.",
             "Describe statistical tests and model configurations.",
             "Include QC thresholds, inclusion/exclusion criteria, and software versions if provided.",
         ]
-    if section == "experiments":
+    if section == "experiment":
         return [
             "Detail experimental setup, datasets, and analysis workflow.",
             "Specify sample groups, inclusion/exclusion criteria, and preprocessing steps.",
@@ -274,11 +351,18 @@ def _section_requirements(section: str) -> List[str]:
             "List controls, baselines, ablations, and validation steps.",
             "Report key numeric results with units and uncertainty where available.",
         ]
-    if section == "results":
+    if section == "result":
         return [
             "Interpret quantitative results and link to figures/tables.",
             "Discuss effect sizes, significance, and practical implications.",
             "Avoid vague statements; ground claims in data.",
+        ]
+    if section == "discussion":
+        return [
+            "Contextualize findings within existing literature.",
+            "Compare with prior studies and highlight novelty.",
+            "Discuss limitations, alternative interpretations, and future work.",
+            "Ground claims in data from the results section.",
         ]
     if section == "conclusion":
         return [
@@ -349,6 +433,9 @@ def _build_evaluation_prompt(
 ) -> str:
     section_title = _section_title(section)
     requirements_text = "\n".join(f"- {item}" for item in requirements)
+    dims = _section_eval_dims(section)
+    dims_text = "\n".join(f"- {d}" for d in dims)
+    scores_example = ", ".join(f'"{d}": 0.0' for d in dims)
     return (
         "You are a strict scientific writing reviewer. "
         "Evaluate the following section and return JSON ONLY.\n\n"
@@ -356,18 +443,10 @@ def _build_evaluation_prompt(
         "Section requirements:\n"
         f"{requirements_text}\n\n"
         "Evaluation dimensions (score each 0.0 to 1.0):\n"
-        "- structure\n"
-        "- scientific_rigor\n"
-        "- method_detail\n"
-        "- experiment_detail\n"
-        "- results_analysis\n"
-        "- clarity\n"
-        "- cohesion\n"
-        "- academic_style\n"
-        "- citation_integrity\n\n"
+        f"{dims_text}\n\n"
         "Return JSON with this schema:\n"
         "{\n"
-        '  "scores": { "structure": 0.0, "scientific_rigor": 0.0, ... },\n'
+        f'  "scores": {{ {scores_example} }},\n'
         '  "defects": ["..."],\n'
         '  "revision_instructions": ["..."],\n'
         '  "pass": true\n'
@@ -473,7 +552,7 @@ async def manuscript_writer_handler(
             analysis_file = _default_analysis_path(output_file)
         analysis_file.parent.mkdir(parents=True, exist_ok=True)
 
-        run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         work_dir = (session_dir or output_file.parent) / f".manuscript_writer_{run_id}"
         work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -499,16 +578,38 @@ async def manuscript_writer_handler(
 
         context_paths = context_paths or []
         section_list = sections or list(_DEFAULT_SECTIONS)
-        section_list = [s.strip().lower() for s in section_list if s and str(s).strip()]
+        section_list = [_normalize_section_key(s) for s in section_list if s and str(s).strip()]
         if not section_list:
             section_list = list(_DEFAULT_SECTIONS)
 
         context_text = _build_context_blocks(context_paths, max_context_bytes)
         bib_keys = _extract_bibtex_keys(context_text)
 
+        # P3-8: Citation coverage precheck — warn early if no .bib keys found
+        bib_precheck_warning: Optional[str] = None
+        if not bib_keys and any(s != "references" for s in section_list):
+            has_bib_file = any(
+                str(p).strip().lower().endswith(".bib")
+                for p in context_paths
+                if p and str(p).strip()
+            )
+            if not has_bib_file:
+                bib_precheck_warning = (
+                    "No .bib file found in context_paths. "
+                    "Citation integrity checks will likely fail. "
+                    "Consider providing a references.bib file."
+                )
+                logger.warning("manuscript_writer: %s", bib_precheck_warning)
+
         gen_model = _resolve_model_name(generation_model)
         eval_model = _resolve_model_name(evaluation_model)
         merge_model_name = _resolve_model_name(merge_model)
+
+        # P2-5: Use different evaluation model by default
+        if eval_model is None:
+            env_eval_model = os.getenv("MANUSCRIPT_EVAL_MODEL")
+            if env_eval_model:
+                eval_model = env_eval_model.strip() or None
 
         gen_llm, gen_model = _build_llm_service(generation_provider, gen_model)
         eval_llm, eval_model = _build_llm_service(evaluation_provider, eval_model)
@@ -609,46 +710,22 @@ async def manuscript_writer_handler(
                 "temp_workspace": _to_rel(work_dir),
                 "sections": section_results,
                 "run_stats": stats,
+                "bib_precheck_warning": bib_precheck_warning,
             }
 
-        for idx, section in enumerate(section_list, start=1):
+        # ---------------------------------------------------------------
+        # Helper: generate + evaluate + revise a single section
+        # ---------------------------------------------------------------
+        async def _gen_eval_section(
+            section: str,
+            idx: int,
+        ) -> Dict[str, Any]:
+            """Generate, evaluate, and revise one section. Returns a result dict."""
             section_filename = f"{idx:02d}_{section}.md"
             section_path = sections_dir / section_filename
             requirements = _section_requirements(section)
 
-            # Build References deterministically from citekeys + provided BibTeX.
-            if section.lower() == "references" and bib_keys:
-                cited = _extract_markdown_citekeys("\n\n".join(drafted_texts))
-                allowed = set(bib_keys)
-                missing = [k for k in cited if k not in allowed]
-                used = [k for k in cited if k in allowed]
-                if not used:
-                    used = bib_keys[: min(30, len(bib_keys))]
-                section_text = _render_references_section(used)
-                section_path.write_text(section_text, encoding="utf-8")
-                passed = (not missing) if strict_gate else True
-                score = 1.0 if passed else 0.0
-                row = {
-                    "section": section,
-                    "path": _to_rel(section_path),
-                    "attempts": 0,
-                    "passed": passed,
-                    "score": score,
-                    "evaluation_path": None,
-                    "reference_keys_used": len(used),
-                    "reference_keys_missing": missing[:50] if missing else None,
-                }
-                section_results.append(row)
-                section_scores[section] = score
-                section_text_map[section] = section_text
-                if passed:
-                    passed_sections.append((section, section_path))
-                    drafted_texts.append(section_text)
-                else:
-                    failed_sections.append(section)
-                continue
-
-            section_text = await _chat(
+            text = await _chat(
                 gen_llm,
                 _build_section_prompt(task, section, analysis_memo, context_text, requirements),
                 gen_model,
@@ -661,7 +738,7 @@ async def manuscript_writer_handler(
 
             for attempt in range(1, max_revisions + 1):
                 attempts = attempt
-                eval_prompt = _build_evaluation_prompt(section, analysis_memo, section_text, requirements)
+                eval_prompt = _build_evaluation_prompt(section, analysis_memo, text, requirements)
                 eval_raw = await _chat(eval_llm, eval_prompt, eval_model)
                 evaluation_data = _parse_json_payload(eval_raw)
 
@@ -677,7 +754,8 @@ async def manuscript_writer_handler(
                     }
 
                 scores = evaluation_data.get("scores") or {}
-                avg_score = _average_score(scores) if isinstance(scores, dict) else 0.0
+                section_dims = _section_eval_dims(section)
+                avg_score = _weighted_score(scores, section_dims) if isinstance(scores, dict) else 0.0
                 pass_flag = evaluation_data.get("pass")
                 if pass_flag is None:
                     pass_flag = avg_score >= evaluation_threshold
@@ -693,32 +771,95 @@ async def manuscript_writer_handler(
                     break
 
                 revision_prompt = _build_revision_prompt(
-                    section,
-                    analysis_memo,
-                    context_text,
-                    section_text,
-                    evaluation_data,
-                    requirements,
+                    section, analysis_memo, context_text, text,
+                    evaluation_data, requirements,
                 )
-                section_text = await _chat(gen_llm, revision_prompt, gen_model)
+                text = await _chat(gen_llm, revision_prompt, gen_model)
 
-            section_path.write_text(section_text, encoding="utf-8")
-            section_text_map[section] = section_text
-            row = {
+            section_path.write_text(text, encoding="utf-8")
+            return {
                 "section": section,
+                "idx": idx,
+                "text": text,
                 "path": _to_rel(section_path),
                 "attempts": attempts,
                 "passed": passed,
                 "score": round(avg_score, 4),
                 "evaluation_path": _to_rel(reviews_dir / f"{section}_eval_{attempts}.json"),
             }
+
+        # ---------------------------------------------------------------
+        # Phase: Generate sections (parallel for non-reference sections)
+        # ---------------------------------------------------------------
+        non_ref_sections = [(idx, s) for idx, s in enumerate(section_list, 1) if s != "references"]
+        ref_sections = [(idx, s) for idx, s in enumerate(section_list, 1) if s == "references"]
+
+        # Generate non-reference sections in parallel
+        if non_ref_sections:
+            parallel_results = await asyncio.gather(
+                *[_gen_eval_section(s, idx) for idx, s in non_ref_sections],
+                return_exceptions=True,
+            )
+            for res in parallel_results:
+                if isinstance(res, Exception):
+                    logger.error("Section generation failed: %s", res)
+                    failed_sections.append("unknown")
+                    continue
+                section_results.append(res)
+                section_scores[res["section"]] = res["score"]
+                section_text_map[res["section"]] = res["text"]
+                if res["passed"]:
+                    passed_sections.append((res["section"], sections_dir / f"{res['idx']:02d}_{res['section']}.md"))
+                    drafted_texts.append(res["text"])
+                else:
+                    failed_sections.append(res["section"])
+
+        # Generate references deterministically (depends on all other sections' citekeys)
+        for idx, section in ref_sections:
+            section_filename = f"{idx:02d}_{section}.md"
+            section_path = sections_dir / section_filename
+
+            if bib_keys:
+                cited = _extract_markdown_citekeys("\n\n".join(drafted_texts))
+                allowed = set(bib_keys)
+                missing = [k for k in cited if k not in allowed]
+                used = [k for k in cited if k in allowed]
+                if not used:
+                    used = bib_keys[: min(30, len(bib_keys))]
+                section_text = _render_references_section(used)
+                section_path.write_text(section_text, encoding="utf-8")
+                passed = (not missing) if strict_gate else True
+                score = 1.0 if passed else 0.0
+                row: Dict[str, Any] = {
+                    "section": section,
+                    "path": _to_rel(section_path),
+                    "attempts": 0,
+                    "passed": passed,
+                    "score": score,
+                    "evaluation_path": None,
+                    "reference_keys_used": len(used),
+                    "reference_keys_missing": missing[:50] if missing else None,
+                }
+            else:
+                # No bib keys — generate via LLM like other sections
+                res = await _gen_eval_section(section, idx)
+                row = res
+                section_text = res["text"]
+                passed = res["passed"]
+                score = res["score"]
+
             section_results.append(row)
-            section_scores[section] = round(avg_score, 4)
+            section_scores[section] = score
+            section_text_map[section] = section_text
             if passed:
                 passed_sections.append((section, section_path))
                 drafted_texts.append(section_text)
             else:
                 failed_sections.append(section)
+
+        # Re-sort section_results by original order
+        order_map = {s: i for i, s in enumerate(section_list)}
+        section_results.sort(key=lambda r: order_map.get(r.get("section", ""), 999))
 
         manifest_path = merge_dir / "merge_queue.json"
         manifest_path.write_text(
@@ -777,8 +918,65 @@ async def manuscript_writer_handler(
                     citation_report=citation_report,
                 )
 
-        final_prompt = _build_merge_prompt(task, analysis_memo, combined_text)
-        final_text = await _chat(merge_llm, final_prompt, merge_model_name)
+        # ---------------------------------------------------------------
+        # Phase: Segmented merge — transition smoothing + final pass
+        # ---------------------------------------------------------------
+        # Step 1: Smooth transitions between adjacent section pairs
+        ordered_sections = [s for s in section_list if s != "references" and section_text_map.get(s, "").strip()]
+        smoothed_texts: Dict[str, str] = dict(section_text_map)  # start with originals
+
+        async def _smooth_transition(sec_a: str, sec_b: str) -> Optional[str]:
+            """Ask LLM to smooth the transition between two adjacent sections."""
+            text_a = section_text_map.get(sec_a, "").strip()
+            text_b = section_text_map.get(sec_b, "").strip()
+            if not text_a or not text_b:
+                return None
+            # Only use last ~800 chars of sec_a and first ~800 chars of sec_b
+            tail_a = text_a[-800:] if len(text_a) > 800 else text_a
+            head_b = text_b[:800] if len(text_b) > 800 else text_b
+            prompt = (
+                "You are a scientific writing editor. "
+                "Improve the transition between these two consecutive sections. "
+                "Return ONLY the revised ending paragraph of the first section "
+                "and the revised opening paragraph of the second section, "
+                "separated by '---SPLIT---'. "
+                "Keep all facts and citations intact. Be concise.\n\n"
+                f"End of '{_section_title(sec_a)}':\n{tail_a}\n\n"
+                f"Start of '{_section_title(sec_b)}':\n{head_b}"
+            )
+            return await _chat(merge_llm, prompt, merge_model_name)
+
+        # Run transition smoothing in parallel for all adjacent pairs
+        if len(ordered_sections) >= 2:
+            pairs = list(zip(ordered_sections[:-1], ordered_sections[1:]))
+            transition_results = await asyncio.gather(
+                *[_smooth_transition(a, b) for a, b in pairs],
+                return_exceptions=True,
+            )
+            for (sec_a, sec_b), result in zip(pairs, transition_results):
+                if isinstance(result, Exception) or result is None:
+                    continue
+                # Best-effort: if the LLM returned a split, apply it
+                if "---SPLIT---" in result:
+                    parts = result.split("---SPLIT---", 1)
+                    if len(parts) == 2:
+                        # Replace last paragraph of sec_a
+                        orig_a = smoothed_texts.get(sec_a, "")
+                        last_para_start = orig_a.rfind("\n\n")
+                        if last_para_start > 0:
+                            smoothed_texts[sec_a] = orig_a[:last_para_start] + "\n\n" + parts[0].strip()
+                        # Replace first paragraph of sec_b
+                        orig_b = smoothed_texts.get(sec_b, "")
+                        first_para_end = orig_b.find("\n\n")
+                        if first_para_end > 0:
+                            smoothed_texts[sec_b] = parts[1].strip() + "\n\n" + orig_b[first_para_end + 2:]
+
+        # Step 2: Combine smoothed sections + references
+        final_text = "\n\n".join(
+            smoothed_texts.get(section, "").strip()
+            for section in section_list
+            if smoothed_texts.get(section, "").strip()
+        )
         output_file.write_text(final_text, encoding="utf-8")
 
         quality_gate_passed = len(failed_sections) == 0 and bool(citation_report.get("pass"))
@@ -813,6 +1011,7 @@ async def manuscript_writer_handler(
             "temp_workspace": _to_rel(work_dir),
             "cleanup_errors": cleanup_errors,
             "run_stats": stats,
+            "bib_precheck_warning": bib_precheck_warning,
         }
     except Exception as exc:
         logger.exception("Manuscript writer failed")
@@ -849,7 +1048,7 @@ manuscript_writer_tool = {
             "sections": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Section list (default: abstract/introduction/methods/experiments/results/conclusion/references).",
+                "description": "Section list (default: abstract/introduction/method/experiment/result/discussion/conclusion/references).",
             },
             "max_revisions": {
                 "type": "integer",

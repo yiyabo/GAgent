@@ -1016,6 +1016,7 @@ class PlanExecutor:
                 [
                     "Paper mode is enabled: prioritize dependency artifact_paths and paper_context_paths as primary evidence.",
                     "Do not claim completion without explicit citation integrity checks against provided reference files.",
+                    "CRITICAL TOOL SELECTION: For writing ANY paper content (sections, drafts, revisions, full assembly), you MUST use manuscript_writer. Do NOT use claude_code to write paper text. claude_code may only be used for data analysis, code generation, or non-writing tasks.",
                 ]
             )
         task_context = TaskExecutionContext(

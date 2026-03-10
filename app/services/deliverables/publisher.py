@@ -93,6 +93,7 @@ DOC_ALLOWED_STEMS = {
     "experiment",
     "result",
     "results",
+    "discussion",
     "conclusion",
     "reference",
     "references",
@@ -101,6 +102,8 @@ DOC_ALLOWED_STEMS = {
     "survey",
     "summary",
 }
+
+SOURCE_OWNERSHIP_MAP = ".source_owners.json"
 
 PATH_HINT_KEYS = {
     "path",
@@ -287,6 +290,8 @@ class DeliverablePublisher:
         self._cleanup_docs_module(latest_root / "docs")
         for module in self._settings.modules:
             (latest_root / module).mkdir(parents=True, exist_ok=True)
+        latest_manifest_path = deliverables_root / "manifest_latest.json"
+        previous_manifest = self._read_manifest(latest_manifest_path)
 
         now = _utc_now()
         source_payload = {
@@ -345,9 +350,17 @@ class DeliverablePublisher:
                         }
                     )
                 continue
+            source_identity = (
+                self._source_identity(file_path)
+                if module == "image_tabular" and file_path.suffix.lower() in IMAGE_EXTS
+                else None
+            )
             target = self._copy_to_module(
                 source_path=file_path,
                 module_dir=(latest_root / module),
+                source_identity=source_identity,
+                latest_root=latest_root,
+                previous_manifest=previous_manifest,
             )
             rel_path = str(target.relative_to(latest_root))
             items.append(
@@ -360,6 +373,22 @@ class DeliverablePublisher:
                     "source_path": self._to_project_relative(file_path),
                 }
             )
+            if module == "image_tabular" and file_path.suffix.lower() in IMAGE_EXTS:
+                staged_figure = self._stage_figure(
+                    latest_root=latest_root,
+                    source_path=file_path,
+                    previous_manifest=previous_manifest,
+                )
+                items.append(
+                    {
+                        "module": "paper",
+                        "path": str(staged_figure.relative_to(latest_root)),
+                        "status": publish_status,
+                        "size": staged_figure.stat().st_size,
+                        "updated_at": now,
+                        "source_path": self._to_project_relative(file_path),
+                    }
+                )
 
         manuscript_items = self._publish_manuscript_outputs(
             latest_root=latest_root,
@@ -368,6 +397,7 @@ class DeliverablePublisher:
             updated_at=now,
             source_task_id=task_id,
             task_name=task_name,
+            previous_manifest=previous_manifest,
         )
         if manuscript_items:
             items.extend(manuscript_items)
@@ -466,8 +496,6 @@ class DeliverablePublisher:
             "completed_count": 0,
         }
 
-        latest_manifest_path = deliverables_root / "manifest_latest.json"
-        previous_manifest = self._read_manifest(latest_manifest_path)
         deduped_updates = self._dedupe_items(items)
         merged_items = self._collect_latest_items(
             latest_root=latest_root,
@@ -509,6 +537,7 @@ class DeliverablePublisher:
             "result": "result",
             "abstract": "abstract",
             "introduction": "introduction",
+            "discussion": "discussion",
             "conclusion": "conclusion",
         }
         return mapping.get(key)
@@ -522,6 +551,7 @@ class DeliverablePublisher:
         updated_at: str,
         source_task_id: Optional[int],
         task_name: Optional[str],
+        previous_manifest: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         if not isinstance(raw_result, dict):
             return []
@@ -555,6 +585,24 @@ class DeliverablePublisher:
                     text = source.read_text(encoding="utf-8")
                 except Exception:
                     continue
+                staged_figures = self._stage_figures_from_section_text(
+                    latest_root=latest_root,
+                    section_source=source,
+                    text=text,
+                    session_dir=latest_root.parent.parent,
+                    previous_manifest=previous_manifest,
+                )
+                for figure_path in staged_figures:
+                    items.append(
+                        {
+                            "module": "paper",
+                            "path": str(figure_path.relative_to(latest_root)),
+                            "status": publish_status,
+                            "size": figure_path.stat().st_size,
+                            "updated_at": updated_at,
+                            "source_path": self._to_project_relative(source),
+                        }
+                    )
                 if raw_section in {"reference", "references"}:
                     references_doc = docs_dir / "references.md"
                     ref_text = text.strip()
@@ -1142,13 +1190,164 @@ class DeliverablePublisher:
     def _is_allowed_doc_file(path: Path) -> bool:
         return path.suffix.lower() in DOC_EXTS and path.stem.lower() in DOC_ALLOWED_STEMS
 
-    def _copy_to_module(self, *, source_path: Path, module_dir: Path) -> Path:
+    def _source_identity(self, source_path: Path) -> str:
+        try:
+            return str(source_path.resolve())
+        except Exception:
+            return str(source_path)
+
+    def _load_source_ownership(self, module_dir: Path) -> Dict[str, str]:
+        map_path = module_dir / SOURCE_OWNERSHIP_MAP
+        if not map_path.exists():
+            return {}
+        try:
+            payload = json.loads(map_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            str(name): str(owner)
+            for name, owner in payload.items()
+            if isinstance(name, str) and isinstance(owner, str)
+        }
+
+    def _write_source_ownership(self, module_dir: Path, owners: Dict[str, str]) -> None:
+        map_path = module_dir / SOURCE_OWNERSHIP_MAP
+        map_path.write_text(
+            json.dumps(owners, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def _manifest_source_identity(
+        self,
+        *,
+        latest_root: Path,
+        module_dir: Path,
+        file_name: str,
+        previous_manifest: Dict[str, Any],
+    ) -> Optional[str]:
+        rel_path = f"{module_dir.relative_to(latest_root).as_posix()}/{file_name}"
+        for row in self._manifest_items_from_manifest(previous_manifest):
+            row_path = str(row.get("path") or "").strip().replace("\\", "/")
+            if row_path != rel_path:
+                continue
+            source_path = row.get("source_path")
+            if not isinstance(source_path, str):
+                return None
+            candidate = source_path.strip()
+            if not candidate or candidate.startswith("task:") or candidate == "inline_bib":
+                return None
+            return candidate
+        return None
+
+    def _copy_to_module(
+        self,
+        *,
+        source_path: Path,
+        module_dir: Path,
+        source_identity: Optional[str] = None,
+        latest_root: Optional[Path] = None,
+        previous_manifest: Optional[Dict[str, Any]] = None,
+    ) -> Path:
         module_dir.mkdir(parents=True, exist_ok=True)
         target = module_dir / source_path.name
+        owners: Dict[str, str] = {}
+        if source_identity:
+            owners = self._load_source_ownership(module_dir)
+            existing_owner = owners.get(source_path.name)
+            if existing_owner is None and latest_root is not None and previous_manifest:
+                existing_owner = self._manifest_source_identity(
+                    latest_root=latest_root,
+                    module_dir=module_dir,
+                    file_name=source_path.name,
+                    previous_manifest=previous_manifest,
+                )
+            if existing_owner and existing_owner != source_identity:
+                raise ValueError(
+                    f"Conflicting deliverable basename '{source_path.name}' from "
+                    f"'{existing_owner}' and '{source_identity}'"
+                )
+            if target.exists() and existing_owner is None and not self._same_file(source_path, target):
+                raise ValueError(
+                    f"Conflicting deliverable basename '{source_path.name}' with unknown existing source in "
+                    f"{module_dir}"
+                )
         if target.exists() and self._same_file(source_path, target):
+            if source_identity and owners.get(source_path.name) != source_identity:
+                owners[source_path.name] = source_identity
+                self._write_source_ownership(module_dir, owners)
             return target
         shutil.copy2(source_path, target)
+        if source_identity:
+            owners[source_path.name] = source_identity
+            self._write_source_ownership(module_dir, owners)
         return target
+
+    def _stage_figure(
+        self,
+        *,
+        latest_root: Path,
+        source_path: Path,
+        previous_manifest: Optional[Dict[str, Any]] = None,
+    ) -> Path:
+        fig_dir = latest_root / "paper" / "figures"
+        return self._copy_to_module(
+            source_path=source_path,
+            module_dir=fig_dir,
+            source_identity=self._source_identity(source_path),
+            latest_root=latest_root,
+            previous_manifest=previous_manifest,
+        )
+
+    def _extract_markdown_image_paths(self, text: str) -> List[str]:
+        if not text:
+            return []
+        return [match.group(1).strip() for match in re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", text)]
+
+    def _resolve_section_asset_path(
+        self,
+        raw_path: str,
+        *,
+        section_source: Path,
+        session_dir: Path,
+    ) -> Optional[Path]:
+        candidate = str(raw_path or "").strip()
+        if not candidate or re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://", candidate):
+            return None
+        local_candidate = (section_source.parent / candidate).resolve()
+        if local_candidate.exists():
+            return local_candidate
+        return self._resolve_path(candidate, session_dir=session_dir)
+
+    def _stage_figures_from_section_text(
+        self,
+        *,
+        latest_root: Path,
+        section_source: Path,
+        text: str,
+        session_dir: Path,
+        previous_manifest: Optional[Dict[str, Any]] = None,
+    ) -> List[Path]:
+        staged: List[Path] = []
+        for raw_path in self._extract_markdown_image_paths(text):
+            resolved = self._resolve_section_asset_path(
+                raw_path,
+                section_source=section_source,
+                session_dir=session_dir,
+            )
+            if resolved is None or not resolved.is_file():
+                continue
+            if resolved.suffix.lower() not in IMAGE_EXTS:
+                continue
+            staged.append(
+                self._stage_figure(
+                    latest_root=latest_root,
+                    source_path=resolved,
+                    previous_manifest=previous_manifest,
+                )
+            )
+        return staged
 
     def _same_file(self, source_path: Path, target: Path) -> bool:
         try:

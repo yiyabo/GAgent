@@ -168,6 +168,46 @@ def test_execute_plan_step_marks_failure_when_plan_has_failed_or_skipped_tasks()
     assert step.details["skipped_task_ids"] == [2]
 
 
+def test_optimize_plan_step_uses_atomic_repo_apply() -> None:
+    tree = SimpleNamespace(id=34, title="Demo plan")
+    recorded: dict[str, object] = {}
+    refreshed = {"count": 0}
+
+    def _apply_changes(plan_id: int, changes: list[dict[str, object]]):
+        recorded["plan_id"] = plan_id
+        recorded["changes"] = changes
+        return [{"action": "reorder_task", "task_id": 2, "new_position": 0, "parent_id": 1}]
+
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent._require_plan_bound = lambda: tree
+    agent.plan_session = SimpleNamespace(
+        plan_id=34,
+        repo=SimpleNamespace(apply_changes_atomically=_apply_changes),
+    )
+    agent._refresh_plan_tree = lambda force_reload=True: refreshed.__setitem__("count", refreshed["count"] + 1)
+    agent.session_id = "s1"
+    agent._current_user_message = "optimize"
+    agent.history = []
+    agent.extra_context = {}
+
+    action = LLMAction(
+        kind="plan_operation",
+        name="optimize_plan",
+        parameters={"changes": [{"action": "reorder_task", "task_id": 2, "new_position": 0}]},
+        order=1,
+    )
+    step = asyncio.run(agent._handle_plan_action(action))
+
+    assert step.success is True
+    assert step.details["applied_changes"] == 1
+    assert step.details["failed_changes"] == 0
+    assert refreshed["count"] == 1
+    assert recorded == {
+        "plan_id": 34,
+        "changes": [{"action": "reorder_task", "task_id": 2, "new_position": 0}],
+    }
+
+
 def test_rerun_task_step_marks_failure_on_skipped_status() -> None:
     tree = SimpleNamespace(id=34)
     result = SimpleNamespace(
