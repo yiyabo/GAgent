@@ -287,15 +287,17 @@ class TaskExecutor:
 
         logger.info(f"Executing task with Claude Code: {task_title}")
 
-        # Optionally ask LLM to select relevant skills.
+        # Optionally load relevant skill content for the task.
         skill_hints = ""
         if use_skill_hints and self.skills_loader:
             selected_skills = await self._select_skills_for_task(task_title, task_description)
             if selected_skills:
-                skill_hints = "\n## Suggested Skills\n"
-                skill_hints += "The following skills may help with this task:\n"
-                for skill_name in selected_skills:
-                    skill_hints += f"- {skill_name}\n"
+                skill_content = self.skills_loader.load_skills_within_budget(
+                    selected_skills,
+                    max_chars=6000,
+                )
+                if skill_content:
+                    skill_hints = f"\n## Skill Guidance\n{skill_content}\n"
                 logger.info(f"LLM selected skills: {selected_skills}")
 
         # Build enriched task description.
@@ -320,7 +322,7 @@ class TaskExecutor:
 - Output directory: {self.output_dir}
 """
 
-        # Append optional skill hints.
+        # Append optional skill guidance.
         if skill_hints:
             enhanced_task += skill_hints
 
