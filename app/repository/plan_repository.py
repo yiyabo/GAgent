@@ -137,61 +137,23 @@ class PlanRepository:
         anchor_task_id: Optional[int] = None,
         anchor_position: Optional[str] = None,
     ) -> PlanNode:
-        status = (status or "pending").strip() or "pending"
-        merged_metadata = _merge_metadata(metadata, dependencies)
-        metadata_json = _dump_json(merged_metadata)
-        deps = _sanitize_dependencies(dependencies)
-
-        context_sections_json = _dump_json_list([])
-        context_meta_json = _dump_json({})
-
         with plan_db_connection(get_plan_db_path(plan_id)) as conn:
-            self._ensure_task_columns(conn, plan_id)
-            parent_info = self._fetch_parent_info(conn, parent_id)
-            position = self._prepare_insert_position(
-                conn=conn,
+            node = self._create_task_with_conn(
+                conn,
+                plan_id,
+                name=name,
+                status=status,
+                instruction=instruction,
                 parent_id=parent_id,
-                requested_position=position,
+                metadata=metadata,
+                dependencies=dependencies,
+                position=position,
                 anchor_task_id=anchor_task_id,
                 anchor_position=anchor_position,
             )
-            if position is None:
-                position = self._next_position(conn, parent_id)
-            depth = (parent_info["depth"] + 1) if parent_info else 0
-            cursor = conn.execute(
-                """
-                INSERT INTO tasks (
-                    name, status, instruction, parent_id, position, depth, path,
-                    metadata, execution_result, context_combined, context_sections, context_meta
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    name,
-                    status,
-                    instruction,
-                    parent_id,
-                    position,
-                    depth,
-                    "",
-                    metadata_json,
-                    None,
-                    None,
-                    context_sections_json,
-                    context_meta_json,
-                ),
-            )
-            task_id = cursor.lastrowid
-            new_path = _build_path(parent_info["path"] if parent_info else "", task_id)
-            conn.execute(
-                "UPDATE tasks SET path=?, depth=? WHERE id=?",
-                (new_path, depth, task_id),
-            )
-            self._replace_dependencies(conn, task_id, deps)
-            self._resequence_children(conn, parent_id)
 
         self._touch_plan(plan_id)
-        return self.get_node(plan_id, task_id)
+        return node
 
     def update_task(
         self,
@@ -208,70 +170,24 @@ class PlanRepository:
         context_meta: Optional[Dict[str, Any]] = None,
         execution_result: Optional[str] = None,
     ) -> PlanNode:
-        sets: List[str] = []
-        params: List[Any] = []
-        if name is not None:
-            sets.append("name=?")
-            params.append(name)
-        if instruction is not None:
-            sets.append("instruction=?")
-            params.append(instruction)
-        if metadata is not None or dependencies is not None:
-            merged_metadata = _merge_metadata(metadata, dependencies)
-            sets.append("metadata=?")
-            params.append(_dump_json(merged_metadata))
-        if status is not None:
-            status = status.strip()
-            sets.append("status=?")
-            params.append(status)
-        if execution_result is not None:
-            sets.append("execution_result=?")
-            params.append(execution_result)
-
-        context_changed = False
-        if context_combined is not None:
-            sets.append("context_combined=?")
-            params.append(context_combined)
-            context_changed = True
-        if context_sections is not None:
-            sets.append("context_sections=?")
-            params.append(_dump_json_list(context_sections))
-            context_changed = True
-        if context_meta is not None:
-            sets.append("context_meta=?")
-            params.append(_dump_json(context_meta))
-            context_changed = True
-        if context_changed:
-            sets.append("context_updated_at=CURRENT_TIMESTAMP")
-
-        deps = dependencies
-
         with plan_db_connection(get_plan_db_path(plan_id)) as conn:
-            self._ensure_task_columns(conn, plan_id)
-            if sets:
-                params.extend([task_id])
-                sql = f"UPDATE tasks SET {', '.join(sets)}, updated_at=CURRENT_TIMESTAMP WHERE id=?"
-                updated = conn.execute(sql, params).rowcount
-                if updated == 0:
-                    raise ValueError(f"Task {task_id} not found in plan {plan_id}")
-                # If a leaf/task completes, auto-complete its ancestors when all siblings are completed.
-                # We intentionally do NOT auto-mark parents as failed/running; parents represent grouping
-                # nodes in many chat-driven plans and should become completed only when fully done.
-                if status is not None:
-                    try:
-                        self._maybe_autocomplete_ancestors(conn, task_id)
-                    except Exception as exc:  # pragma: no cover - defensive
-                        logger.warning(
-                            "Failed to auto-complete ancestors for plan %s task %s: %s",
-                            plan_id,
-                            task_id,
-                            exc,
-                        )
-            if deps is not None:
-                self._replace_dependencies(conn, task_id, _sanitize_dependencies(deps))
+            node = self._update_task_with_conn(
+                conn,
+                plan_id,
+                task_id,
+                name=name,
+                status=status,
+                instruction=instruction,
+                metadata=metadata,
+                dependencies=dependencies,
+                context_combined=context_combined,
+                context_sections=context_sections,
+                context_meta=context_meta,
+                execution_result=execution_result,
+            )
 
         self._touch_plan(plan_id)
-        return self.get_node(plan_id, task_id)
+        return node
 
     def _maybe_autocomplete_ancestors(self, conn, task_id: int) -> int:
         """Mark ancestor nodes as completed if all their direct children are completed/skipped.
@@ -407,19 +323,7 @@ class PlanRepository:
 
     def delete_task(self, plan_id: int, task_id: int) -> None:
         with plan_db_connection(get_plan_db_path(plan_id)) as conn:
-            row = conn.execute(
-                "SELECT path, parent_id FROM tasks WHERE id=?",
-                (task_id,),
-            ).fetchone()
-            if not row:
-                raise ValueError(f"Task {task_id} not found in plan {plan_id}")
-            path = row["path"] or f"/{task_id}"
-            parent_id = row["parent_id"]
-            conn.execute(
-                "DELETE FROM tasks WHERE id=? OR path LIKE ?",
-                (task_id, f"{path}/%"),
-            )
-            self._resequence_children(conn, parent_id)
+            self._delete_task_with_conn(conn, plan_id, task_id)
 
         self._touch_plan(plan_id)
 
@@ -432,57 +336,114 @@ class PlanRepository:
         new_position: Optional[int] = None,
     ) -> PlanNode:
         with plan_db_connection(get_plan_db_path(plan_id)) as conn:
-            node_row = conn.execute(
-                "SELECT id, parent_id, depth, path FROM tasks WHERE id=?",
-                (task_id,),
-            ).fetchone()
-            if not node_row:
-                raise ValueError(f"Task {task_id} not found in plan {plan_id}")
-            if node_row["parent_id"] == new_parent_id and new_position is None:
-                return self.get_node(plan_id, task_id)
-
-            origin_parent = node_row["parent_id"]
-            origin_path = node_row["path"] or f"/{task_id}"
-            origin_depth = node_row["depth"] or 0
-
-            parent_info = self._fetch_parent_info(conn, new_parent_id)
-            if new_position is None:
-                new_position = self._next_position(conn, new_parent_id)
-            new_depth = (parent_info["depth"] + 1) if parent_info else 0
-            new_path_prefix = _build_path(
-                parent_info["path"] if parent_info else "", task_id
+            node = self._move_task_with_conn(
+                conn,
+                plan_id,
+                task_id,
+                new_parent_id=new_parent_id,
+                new_position=new_position,
             )
-
-            conn.execute(
-                """
-                UPDATE tasks
-                SET parent_id=?, position=?, depth=?, path=?, updated_at=CURRENT_TIMESTAMP
-                WHERE id=?
-                """,
-                (new_parent_id, new_position, new_depth, new_path_prefix, task_id),
-            )
-
-            depth_delta = new_depth - origin_depth
-            conn.execute(
-                """
-                UPDATE tasks
-                SET depth = depth + ?, path = REPLACE(path, ?, ?), updated_at=CURRENT_TIMESTAMP
-                WHERE path LIKE ? AND id <> ?
-                """,
-                (
-                    depth_delta,
-                    f"{origin_path}/",
-                    f"{new_path_prefix}/",
-                    f"{origin_path}/%",
-                    task_id,
-                ),
-            )
-
-            self._resequence_children(conn, origin_parent)
-            self._resequence_children(conn, new_parent_id)
 
         self._touch_plan(plan_id)
-        return self.get_node(plan_id, task_id)
+        return node
+
+    def apply_changes_atomically(
+        self,
+        plan_id: int,
+        changes: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not changes or not isinstance(changes, list):
+            raise ValueError("changes must be a non-empty list")
+
+        applied: List[Dict[str, Any]] = []
+        with plan_db_connection(get_plan_db_path(plan_id)) as conn:
+            self._ensure_task_columns(conn, plan_id)
+            for idx, change in enumerate(changes, start=1):
+                if not isinstance(change, dict):
+                    raise ValueError(f"Change #{idx} must be an object")
+                action = str(change.get("action") or "").strip().lower()
+                if action == "add_task":
+                    parent_id = change.get("parent_id")
+                    if parent_id is None:
+                        parent_id = self._default_root_task_id(conn)
+                    node = self._create_task_with_conn(
+                        conn,
+                        plan_id,
+                        name=str(change.get("name") or "New Task"),
+                        status="pending",
+                        instruction=change.get("instruction"),
+                        parent_id=parent_id,
+                        dependencies=change.get("dependencies"),
+                    )
+                    applied.append(
+                        {"action": "add_task", "task_id": node.id, "name": node.name}
+                    )
+                    continue
+
+                if action == "update_task":
+                    task_id = change.get("task_id")
+                    if task_id is None:
+                        raise ValueError(f"Change #{idx} update_task requires task_id")
+                    update_kwargs: Dict[str, Any] = {}
+                    for field in ("name", "instruction", "dependencies"):
+                        if field in change:
+                            update_kwargs[field] = change[field]
+                    if not update_kwargs:
+                        raise ValueError(
+                            f"Change #{idx} update_task requires at least one mutable field"
+                        )
+                    self._update_task_with_conn(conn, plan_id, int(task_id), **update_kwargs)
+                    applied.append(
+                        {
+                            "action": "update_task",
+                            "task_id": int(task_id),
+                            "updated_fields": sorted(update_kwargs.keys()),
+                        }
+                    )
+                    continue
+
+                if action == "delete_task":
+                    task_id = change.get("task_id")
+                    if task_id is None:
+                        raise ValueError(f"Change #{idx} delete_task requires task_id")
+                    self._delete_task_with_conn(conn, plan_id, int(task_id))
+                    applied.append({"action": "delete_task", "task_id": int(task_id)})
+                    continue
+
+                if action == "reorder_task":
+                    task_id = change.get("task_id")
+                    if task_id is None:
+                        raise ValueError(f"Change #{idx} reorder_task requires task_id")
+                    new_position = change.get("new_position")
+                    if new_position is None:
+                        raise ValueError(
+                            f"Change #{idx} reorder_task requires new_position"
+                        )
+                    brief = self._fetch_task_brief(conn, int(task_id))
+                    if brief is None:
+                        raise ValueError(f"Task {task_id} not found in plan {plan_id}")
+                    node = self._move_task_with_conn(
+                        conn,
+                        plan_id,
+                        int(task_id),
+                        new_parent_id=brief["parent_id"],
+                        new_position=int(new_position),
+                    )
+                    applied.append(
+                        {
+                            "action": "reorder_task",
+                            "task_id": node.id,
+                            "new_position": node.position,
+                            "parent_id": node.parent_id,
+                        }
+                    )
+                    continue
+
+                raise ValueError(f"Change #{idx} has unknown action: {action or '<missing>'}")
+
+        if applied:
+            self._touch_plan(plan_id)
+        return applied
 
     def upsert_plan_tree(self, tree: PlanTree, *, note: Optional[str] = None) -> None:
         ordered_nodes = tree.ordered_nodes()
@@ -791,6 +752,37 @@ class PlanRepository:
         ).fetchall()
         return [int(row["depends_on"]) for row in rows]
 
+    def _get_node_from_conn(self, conn, plan_id: int, task_id: int) -> PlanNode:
+        row = conn.execute(
+            """
+            SELECT
+                id,
+                name,
+                status,
+                instruction,
+                parent_id,
+                position,
+                depth,
+                path,
+                metadata,
+                execution_result,
+                context_combined,
+                context_sections,
+                context_meta,
+                context_updated_at
+            FROM tasks
+            WHERE id=?
+            """,
+            (task_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Task {task_id} not found in plan {plan_id}")
+        return _row_to_plan_node(
+            plan_id,
+            row,
+            self._load_dependencies_for_task(conn, task_id),
+        )
+
     def _ensure_task_columns(self, conn, plan_id: int) -> None:
         self._ensure_execution_result_column(conn, plan_id)
         self._ensure_status_column(conn, plan_id)
@@ -842,6 +834,12 @@ class PlanRepository:
             "parent_id": row["parent_id"],
             "position": row["position"] if row["position"] is not None else 0,
         }
+
+    def _default_root_task_id(self, conn) -> Optional[int]:
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE parent_id IS NULL ORDER BY position ASC, id ASC LIMIT 1"
+        ).fetchone()
+        return int(row["id"]) if row else None
 
     def _shift_positions(self, conn, parent_id: Optional[int], start_position: int) -> None:
         if start_position < 0:
@@ -929,6 +927,281 @@ class PlanRepository:
                 "UPDATE tasks SET position=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                 (index, row["id"]),
             )
+
+    def _resequence_children_explicit(
+        self,
+        conn,
+        parent_id: Optional[int],
+        ordered_ids: List[int],
+    ) -> None:
+        for index, task_id in enumerate(ordered_ids):
+            conn.execute(
+                "UPDATE tasks SET position=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (index, task_id),
+            )
+
+    def _normalize_child_position(
+        self,
+        position: Optional[int],
+        sibling_count: int,
+    ) -> int:
+        if position is None:
+            return sibling_count
+        try:
+            normalized = int(position)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("position must be an integer") from exc
+        if normalized < 0:
+            raise ValueError("position must be >= 0")
+        return min(normalized, sibling_count)
+
+    def _create_task_with_conn(
+        self,
+        conn,
+        plan_id: int,
+        *,
+        name: str,
+        status: str = "pending",
+        instruction: Optional[str] = None,
+        parent_id: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        dependencies: Optional[List[int]] = None,
+        position: Optional[int] = None,
+        anchor_task_id: Optional[int] = None,
+        anchor_position: Optional[str] = None,
+    ) -> PlanNode:
+        self._ensure_task_columns(conn, plan_id)
+        status = (status or "pending").strip() or "pending"
+        merged_metadata = _merge_metadata(metadata, dependencies)
+        metadata_json = _dump_json(merged_metadata)
+        deps = _sanitize_dependencies(dependencies)
+
+        context_sections_json = _dump_json_list([])
+        context_meta_json = _dump_json({})
+
+        parent_info = self._fetch_parent_info(conn, parent_id)
+        position = self._prepare_insert_position(
+            conn=conn,
+            parent_id=parent_id,
+            requested_position=position,
+            anchor_task_id=anchor_task_id,
+            anchor_position=anchor_position,
+        )
+        if position is None:
+            position = self._next_position(conn, parent_id)
+        depth = (parent_info["depth"] + 1) if parent_info else 0
+        cursor = conn.execute(
+            """
+            INSERT INTO tasks (
+                name, status, instruction, parent_id, position, depth, path,
+                metadata, execution_result, context_combined, context_sections, context_meta
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                status,
+                instruction,
+                parent_id,
+                position,
+                depth,
+                "",
+                metadata_json,
+                None,
+                None,
+                context_sections_json,
+                context_meta_json,
+            ),
+        )
+        task_id = cursor.lastrowid
+        new_path = _build_path(parent_info["path"] if parent_info else "", task_id)
+        conn.execute(
+            "UPDATE tasks SET path=?, depth=? WHERE id=?",
+            (new_path, depth, task_id),
+        )
+        self._replace_dependencies(conn, task_id, deps)
+        self._resequence_children(conn, parent_id)
+        return self._get_node_from_conn(conn, plan_id, task_id)
+
+    def _update_task_with_conn(
+        self,
+        conn,
+        plan_id: int,
+        task_id: int,
+        *,
+        name: Optional[str] = None,
+        status: Optional[str] = None,
+        instruction: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        dependencies: Optional[List[int]] = None,
+        context_combined: Optional[str] = None,
+        context_sections: Optional[List[Any]] = None,
+        context_meta: Optional[Dict[str, Any]] = None,
+        execution_result: Optional[str] = None,
+    ) -> PlanNode:
+        self._ensure_task_columns(conn, plan_id)
+        sets: List[str] = []
+        params: List[Any] = []
+        if name is not None:
+            sets.append("name=?")
+            params.append(name)
+        if instruction is not None:
+            sets.append("instruction=?")
+            params.append(instruction)
+        if metadata is not None or dependencies is not None:
+            merged_metadata = _merge_metadata(metadata, dependencies)
+            sets.append("metadata=?")
+            params.append(_dump_json(merged_metadata))
+        if status is not None:
+            status = status.strip()
+            sets.append("status=?")
+            params.append(status)
+        if execution_result is not None:
+            sets.append("execution_result=?")
+            params.append(execution_result)
+
+        context_changed = False
+        if context_combined is not None:
+            sets.append("context_combined=?")
+            params.append(context_combined)
+            context_changed = True
+        if context_sections is not None:
+            sets.append("context_sections=?")
+            params.append(_dump_json_list(context_sections))
+            context_changed = True
+        if context_meta is not None:
+            sets.append("context_meta=?")
+            params.append(_dump_json(context_meta))
+            context_changed = True
+        if context_changed:
+            sets.append("context_updated_at=CURRENT_TIMESTAMP")
+
+        deps = dependencies
+        if sets:
+            params.extend([task_id])
+            sql = f"UPDATE tasks SET {', '.join(sets)}, updated_at=CURRENT_TIMESTAMP WHERE id=?"
+            updated = conn.execute(sql, params).rowcount
+            if updated == 0:
+                raise ValueError(f"Task {task_id} not found in plan {plan_id}")
+            if status is not None:
+                try:
+                    self._maybe_autocomplete_ancestors(conn, task_id)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(
+                        "Failed to auto-complete ancestors for plan %s task %s: %s",
+                        plan_id,
+                        task_id,
+                        exc,
+                    )
+        elif deps is None:
+            raise ValueError(f"No updates provided for task {task_id}")
+
+        if deps is not None:
+            self._replace_dependencies(conn, task_id, _sanitize_dependencies(deps))
+
+        return self._get_node_from_conn(conn, plan_id, task_id)
+
+    def _delete_task_with_conn(self, conn, plan_id: int, task_id: int) -> None:
+        self._ensure_task_columns(conn, plan_id)
+        row = conn.execute(
+            "SELECT path, parent_id FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Task {task_id} not found in plan {plan_id}")
+        path = row["path"] or f"/{task_id}"
+        parent_id = row["parent_id"]
+        conn.execute(
+            "DELETE FROM tasks WHERE id=? OR path LIKE ?",
+            (task_id, f"{path}/%"),
+        )
+        self._resequence_children(conn, parent_id)
+
+    def _move_task_with_conn(
+        self,
+        conn,
+        plan_id: int,
+        task_id: int,
+        *,
+        new_parent_id: Optional[int],
+        new_position: Optional[int] = None,
+    ) -> PlanNode:
+        self._ensure_task_columns(conn, plan_id)
+        node_row = conn.execute(
+            "SELECT id, parent_id, position, depth, path FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        if not node_row:
+            raise ValueError(f"Task {task_id} not found in plan {plan_id}")
+
+        origin_parent = node_row["parent_id"]
+        origin_position = node_row["position"] if node_row["position"] is not None else 0
+        origin_path = node_row["path"] or f"/{task_id}"
+        origin_depth = node_row["depth"] or 0
+
+        if new_parent_id == task_id:
+            raise ValueError("Cannot move a task under itself")
+
+        parent_info = self._fetch_parent_info(conn, new_parent_id)
+        if parent_info and (
+            parent_info["path"] == origin_path
+            or str(parent_info["path"]).startswith(f"{origin_path}/")
+        ):
+            raise ValueError("Cannot move a task under its own descendant")
+
+        if origin_parent == new_parent_id:
+            if new_position is None:
+                return self._get_node_from_conn(conn, plan_id, task_id)
+            sibling_rows = conn.execute(
+                "SELECT id FROM tasks WHERE parent_id IS ? AND id <> ? ORDER BY position ASC, id ASC",
+                (origin_parent, task_id),
+            ).fetchall()
+            insert_at = self._normalize_child_position(new_position, len(sibling_rows))
+            if insert_at == origin_position:
+                return self._get_node_from_conn(conn, plan_id, task_id)
+            ordered_ids = [int(row["id"]) for row in sibling_rows]
+            ordered_ids.insert(insert_at, task_id)
+            self._resequence_children_explicit(conn, origin_parent, ordered_ids)
+            return self._get_node_from_conn(conn, plan_id, task_id)
+
+        new_depth = (parent_info["depth"] + 1) if parent_info else 0
+        new_path_prefix = _build_path(parent_info["path"] if parent_info else "", task_id)
+
+        conn.execute(
+            """
+            UPDATE tasks
+            SET parent_id=?, depth=?, path=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (new_parent_id, new_depth, new_path_prefix, task_id),
+        )
+
+        depth_delta = new_depth - origin_depth
+        conn.execute(
+            """
+            UPDATE tasks
+            SET depth = depth + ?, path = REPLACE(path, ?, ?), updated_at=CURRENT_TIMESTAMP
+            WHERE path LIKE ? AND id <> ?
+            """,
+            (
+                depth_delta,
+                f"{origin_path}/",
+                f"{new_path_prefix}/",
+                f"{origin_path}/%",
+                task_id,
+            ),
+        )
+
+        self._resequence_children(conn, origin_parent)
+        destination_rows = conn.execute(
+            "SELECT id FROM tasks WHERE parent_id IS ? AND id <> ? ORDER BY position ASC, id ASC",
+            (new_parent_id, task_id),
+        ).fetchall()
+        insert_at = self._normalize_child_position(new_position, len(destination_rows))
+        ordered_ids = [int(row["id"]) for row in destination_rows]
+        ordered_ids.insert(insert_at, task_id)
+        self._resequence_children_explicit(conn, new_parent_id, ordered_ids)
+        return self._get_node_from_conn(conn, plan_id, task_id)
 
     def _replace_dependencies(
         self, conn, task_id: int, dependencies: Optional[List[int]]

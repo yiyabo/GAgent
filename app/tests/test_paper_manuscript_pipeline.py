@@ -61,6 +61,24 @@ def test_paper_builder_infer_section_returns_none_for_unknown(monkeypatch: pytes
     assert builder.infer_section("Refactor scheduler", None) is None
 
 
+def test_paper_builder_uses_staged_figure_paths(tmp_path: Path) -> None:
+    builder = PaperBuilder()
+    paper_dir = tmp_path / "paper"
+    refs_dir = tmp_path / "refs"
+    builder.ensure_structure(paper_dir=paper_dir, refs_dir=refs_dir, title="Demo")
+
+    main_tex = (paper_dir / "main.tex").read_text(encoding="utf-8")
+    assert "\\graphicspath{{figures/}}" in main_tex
+
+    section_path = builder.update_section(
+        paper_dir=paper_dir,
+        section="result",
+        content="## Results\n![ROC curve](/tmp/generated/roc_curve.png)\n",
+    )
+    section_text = section_path.read_text(encoding="utf-8")
+    assert "\\includegraphics[width=0.8\\textwidth]{roc_curve.png}" in section_text
+
+
 def test_manuscript_writer_respects_analysis_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")

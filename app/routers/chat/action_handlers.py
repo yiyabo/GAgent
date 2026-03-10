@@ -1950,6 +1950,100 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             action=action, success=True, message=message, details=details
         )
 
+    if action.name == "review_plan":
+        tree = agent._require_plan_bound()
+        plan_id = tree.id
+        from app.services.plans.plan_rubric_evaluator import evaluate_plan_rubric
+        try:
+            rubric_result = await asyncio.to_thread(
+                evaluate_plan_rubric,
+                tree,
+                evaluator_provider="qwen",
+                evaluator_model="qwen3.5-plus",
+            )
+        except Exception as exc:
+            logger.warning("review_plan rubric evaluation failed: %s", exc)
+            return AgentStep(
+                action=action, success=False,
+                message=f"Rubric evaluation failed: {exc}",
+                details={"plan_id": plan_id},
+            )
+        # Persist evaluation into plan metadata
+        merged_meta = dict(getattr(tree, "metadata", None) or {})
+        merged_meta["plan_evaluation"] = rubric_result.to_dict()
+        try:
+            agent.plan_session.repo.update_plan_metadata(plan_id, merged_meta)
+        except Exception as meta_exc:
+            logger.warning("Failed to persist plan rubric evaluation: %s", meta_exc)
+        agent._refresh_plan_tree(force_reload=True)
+        message = (
+            f"Plan #{plan_id} review complete. "
+            f"Rubric score: {rubric_result.overall_score}/100."
+        )
+        details = {
+            "plan_id": plan_id,
+            "plan_title": tree.title,
+            "rubric_score": rubric_result.overall_score,
+            "rubric_dimension_scores": rubric_result.dimension_scores,
+            "rubric_subcriteria_scores": rubric_result.subcriteria_scores,
+            "rubric_feedback": rubric_result.feedback,
+            "rubric_evaluator": {
+                "provider": rubric_result.evaluator_provider,
+                "model": rubric_result.evaluator_model,
+                "rubric_version": rubric_result.rubric_version,
+                "evaluated_at": rubric_result.evaluated_at,
+            },
+        }
+        return AgentStep(
+            action=action, success=True, message=message, details=details
+        )
+
+    if action.name == "optimize_plan":
+        tree = agent._require_plan_bound()
+        plan_id = tree.id
+        changes = params.get("changes")
+        if not changes or not isinstance(changes, list):
+            return AgentStep(
+                action=action, success=False,
+                message="optimize_plan requires a non-empty `changes` list.",
+                details={"plan_id": plan_id},
+            )
+
+        repo = agent.plan_session.repo
+        try:
+            applied = repo.apply_changes_atomically(plan_id, changes)
+        except Exception as exc:
+            agent._refresh_plan_tree(force_reload=True)
+            return AgentStep(
+                action=action,
+                success=False,
+                message=f"Plan #{plan_id} optimization failed: {exc}",
+                details={
+                    "plan_id": plan_id,
+                    "applied_changes": 0,
+                    "failed_changes": len(changes),
+                    "changes_detail": {
+                        "applied": [],
+                        "failed": [{"error": str(exc)}],
+                    },
+                },
+            )
+
+        agent._refresh_plan_tree(force_reload=True)
+        message = f"Plan #{plan_id} optimized: {len(applied)} changes applied."
+        details = {
+            "plan_id": plan_id,
+            "applied_changes": len(applied),
+            "failed_changes": 0,
+            "changes_detail": {"applied": applied, "failed": []},
+        }
+        return AgentStep(
+            action=action,
+            success=True,
+            message=message,
+            details=details,
+        )
+
     return handle_unknown_action(agent, action)
 
 

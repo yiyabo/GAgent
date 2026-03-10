@@ -725,11 +725,40 @@ async def get_session_deliverable_text(
 RENDER_CACHE_DIR = Path(__file__).parent.parent.parent.resolve() / "runtime" / ".render_cache"
 
 
+def _iter_render_dependency_files(source_path: Path) -> List[Tuple[str, Path, Path]]:
+    src_dir = source_path.parent
+    roots: List[Tuple[str, Path]] = [("paper", src_dir)]
+    refs_dir = src_dir.parent / "refs"
+    if refs_dir.is_dir():
+        roots.append(("refs", refs_dir))
+
+    files: List[Tuple[str, Path, Path]] = []
+    for label, root in roots:
+        for child in sorted(root.rglob("*")):
+            if child.is_file():
+                files.append((label, root, child))
+    return files
+
+
 def _get_render_cache_path(file_path: Path, extension: str) -> Path:
-    """Get cache path for rendered file based on source file hash."""
+    """Get cache path for rendered file based on source file hash.
+
+    For .tex files, also incorporates the paper tree plus sibling refs/
+    files so that section edits, staged figure updates, and bibliography
+    changes all invalidate the cached PDF.
+    """
     file_stat = file_path.stat()
-    hash_input = f"{file_path.absolute()}:{file_stat.st_size}:{file_stat.st_mtime}"
-    file_hash = hashlib.md5(hash_input.encode()).hexdigest()[:16]
+    hash_parts = [f"{file_path.absolute()}:{file_stat.st_size}:{file_stat.st_mtime}"]
+    if file_path.suffix.lower() == ".tex":
+        for label, root, child in _iter_render_dependency_files(file_path):
+            try:
+                child_stat = child.stat()
+                hash_parts.append(
+                    f"{label}:{child.relative_to(root)}:{child_stat.st_size}:{child_stat.st_mtime}"
+                )
+            except OSError:
+                continue
+    file_hash = hashlib.md5(":".join(hash_parts).encode()).hexdigest()[:16]
     cache_name = f"{file_path.stem}_{file_hash}.{extension}"
     return RENDER_CACHE_DIR / cache_name
 
@@ -835,29 +864,59 @@ def _render_latex_to_pdf(source_path: Path, output_path: Path) -> bool:
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)
+            src_dir = source_path.parent
 
-            # Copy source file to temp directory
-            temp_tex = tmpdir_path / source_path.name
-            temp_tex.write_text(source_path.read_text(encoding='utf-8'), encoding='utf-8')
+            # Copy the entire directory containing the .tex file
+            # (includes sections/ subdirectory for paper projects)
+            work_dir = tmpdir_path / src_dir.name
+            shutil.copytree(src_dir, work_dir)
 
-            # Run latex twice for references
-            for _ in range(2):
-                result = subprocess.run(
-                    [latex_cmd, '-interaction=nonstopmode', '-halt-on-error', temp_tex.name],
-                    cwd=tmpdir,
+            # Copy sibling refs/ if present for bibliography resolution.
+            refs_dir = src_dir.parent / "refs"
+            if refs_dir.is_dir():
+                shutil.copytree(refs_dir, tmpdir_path / "refs")
+
+            temp_tex = work_dir / source_path.name
+            tex_stem = temp_tex.stem
+
+            # Compile: latex → bibtex → latex × 2  (full bibliography flow)
+            # Step 1: first latex pass
+            result = subprocess.run(
+                [latex_cmd, '-interaction=nonstopmode', '-halt-on-error', source_path.name],
+                cwd=str(work_dir),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+            # Step 2: run bibtex if .aux exists (needed for \cite → references)
+            aux_file = work_dir / f"{tex_stem}.aux"
+            bibtex_cmd = shutil.which('bibtex')
+            if bibtex_cmd and aux_file.exists():
+                subprocess.run(
+                    [bibtex_cmd, tex_stem],
+                    cwd=str(work_dir),
                     capture_output=True,
                     text=True,
-                    timeout=60,
+                    timeout=30,
+                )
+
+            # Steps 3-4: two more latex passes to resolve citations & refs
+            for _ in range(2):
+                result = subprocess.run(
+                    [latex_cmd, '-interaction=nonstopmode', '-halt-on-error', source_path.name],
+                    cwd=str(work_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
                 )
                 if result.returncode != 0:
-                    # Try to extract error message
                     error_match = re.search(r'! (.*?)(?:\n|$)', result.stderr or result.stdout, re.DOTALL)
                     error_msg = error_match.group(1).strip() if error_match else 'LaTeX compilation failed'
                     print(f"LaTeX error: {error_msg}")
-                    # Continue anyway, might still produce PDF
 
             # Move output PDF to cache location
-            output_pdf = tmpdir_path / temp_tex.with_suffix('.pdf').name
+            output_pdf = work_dir / f"{tex_stem}.pdf"
             if output_pdf.exists():
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(output_pdf), str(output_path))

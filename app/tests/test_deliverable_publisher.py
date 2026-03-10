@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from app.config.deliverable_config import DeliverableSettings, RESEARCH_MODULES
 from app.services.deliverables.publisher import DeliverablePublisher
 
@@ -357,3 +359,177 @@ def test_publish_accepts_paths_under_project_symlink(tmp_path: Path):
     copied = latest_root / "code" / "train.py"
     assert copied.exists()
     assert copied.read_text(encoding="utf-8") == "print('symlink-source')\n"
+
+
+def test_publish_manuscript_discussion_creates_docs(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    section_file = tmp_path / "workspace" / "sections" / "06_discussion.md"
+    section_file.parent.mkdir(parents=True, exist_ok=True)
+    section_file.write_text("## Discussion\nInterpretation of the findings.\n", encoding="utf-8")
+
+    report = publisher.publish_from_tool_result(
+        session_id="discussion001",
+        tool_name="manuscript_writer",
+        raw_result={
+            "tool": "manuscript_writer",
+            "sections": [{"section": "discussion", "path": str(section_file)}],
+        },
+        summary="discussion ready",
+        task_name="Write discussion",
+    )
+
+    assert report is not None
+    latest_root = tmp_path / "runtime" / "session_discussion001" / "deliverables" / "latest"
+    assert (latest_root / "paper" / "sections" / "discussion.tex").exists()
+    discussion_doc = latest_root / "docs" / "discussion.md"
+    assert discussion_doc.exists()
+    assert "Interpretation of the findings." in discussion_doc.read_text(encoding="utf-8")
+
+
+def test_publish_manuscript_section_stages_markdown_images(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    image = tmp_path / "workspace" / "assets" / "roc.png"
+    section_file = tmp_path / "workspace" / "sections" / "03_result.md"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    section_file.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"roc-image")
+    section_file.write_text(
+        "## Results\n![ROC](../assets/roc.png)\n",
+        encoding="utf-8",
+    )
+
+    report = publisher.publish_from_tool_result(
+        session_id="section_figure001",
+        tool_name="manuscript_writer",
+        raw_result={
+            "tool": "manuscript_writer",
+            "sections": [{"section": "result", "path": str(section_file)}],
+        },
+        summary="result ready",
+        task_name="Write results",
+    )
+
+    assert report is not None
+    staged = (
+        tmp_path
+        / "runtime"
+        / "session_section_figure001"
+        / "deliverables"
+        / "latest"
+        / "paper"
+        / "figures"
+        / "roc.png"
+    )
+    assert staged.exists()
+    assert staged.read_bytes() == b"roc-image"
+
+
+def test_publish_updates_staged_figure_for_same_source_path(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    figure = tmp_path / "workspace" / "plots" / "summary.png"
+    figure.parent.mkdir(parents=True, exist_ok=True)
+    figure.write_bytes(b"old-image")
+
+    first = publisher.publish_from_tool_result(
+        session_id="figure_update001",
+        tool_name="claude_code",
+        raw_result={"output_path": str(figure)},
+        summary="Generated figure.",
+    )
+    assert first is not None
+
+    figure.write_bytes(b"new-image")
+    second = publisher.publish_from_tool_result(
+        session_id="figure_update001",
+        tool_name="claude_code",
+        raw_result={"output_path": str(figure)},
+        summary="Updated figure.",
+    )
+
+    assert second is not None
+    staged = (
+        tmp_path
+        / "runtime"
+        / "session_figure_update001"
+        / "deliverables"
+        / "latest"
+        / "paper"
+        / "figures"
+        / "summary.png"
+    )
+    assert staged.exists()
+    assert staged.read_bytes() == b"new-image"
+
+
+def test_publish_rejects_conflicting_figure_basenames_from_different_sources(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    figure_a = tmp_path / "workspace" / "run_a" / "plot.png"
+    figure_b = tmp_path / "workspace" / "run_b" / "plot.png"
+    figure_a.parent.mkdir(parents=True, exist_ok=True)
+    figure_b.parent.mkdir(parents=True, exist_ok=True)
+    figure_a.write_bytes(b"plot-a")
+    figure_b.write_bytes(b"plot-b")
+
+    first = publisher.publish_from_tool_result(
+        session_id="figure_conflict001",
+        tool_name="claude_code",
+        raw_result={"output_path": str(figure_a)},
+        summary="Generated first figure.",
+    )
+    assert first is not None
+
+    with pytest.raises(ValueError, match="Conflicting deliverable basename 'plot.png'"):
+        publisher.publish_from_tool_result(
+            session_id="figure_conflict001",
+            tool_name="claude_code",
+            raw_result={"output_path": str(figure_b)},
+            summary="Generated conflicting figure.",
+        )
+
+
+def test_publish_uses_previous_manifest_source_for_legacy_figure_updates(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    figure = tmp_path / "workspace" / "legacy" / "plot.png"
+    figure.parent.mkdir(parents=True, exist_ok=True)
+    figure.write_bytes(b"old-bytes")
+
+    session_root = tmp_path / "runtime" / "session_legacy_figure001" / "deliverables"
+    latest_root = session_root / "latest"
+    image_dir = latest_root / "image_tabular"
+    figure_dir = latest_root / "paper" / "figures"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    figure_dir.mkdir(parents=True, exist_ok=True)
+    (image_dir / "plot.png").write_bytes(b"old-bytes")
+    (figure_dir / "plot.png").write_bytes(b"old-bytes")
+    (session_root / "manifest_latest.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "module": "image_tabular",
+                        "path": "image_tabular/plot.png",
+                        "source_path": str(figure),
+                    },
+                    {
+                        "module": "paper",
+                        "path": "paper/figures/plot.png",
+                        "source_path": str(figure),
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    figure.write_bytes(b"new-bytes")
+    report = publisher.publish_from_tool_result(
+        session_id="legacy_figure001",
+        tool_name="claude_code",
+        raw_result={"output_path": str(figure)},
+        summary="Updated legacy figure.",
+    )
+
+    assert report is not None
+    assert (image_dir / "plot.png").read_bytes() == b"new-bytes"
+    assert (figure_dir / "plot.png").read_bytes() == b"new-bytes"
