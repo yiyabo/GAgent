@@ -87,6 +87,7 @@ class TaskExecutionContext:
     dependency_outputs: List[Dict[str, Any]] = field(default_factory=list)
     plan_outline: Optional[str] = None
     constraints: List[str] = field(default_factory=list)
+    skill_context: Optional[str] = None
 
 
 class DeepThinkProtocolError(RuntimeError):
@@ -502,6 +503,10 @@ class DeepThinkAgent:
                 lines.append("Dependency Outputs:")
                 for dep in task_context.dependency_outputs[:6]:
                     lines.append(f"- {json.dumps(dep, ensure_ascii=False)[:600]}")
+            if task_context.skill_context:
+                lines.append("")
+                lines.append("=== SKILL GUIDANCE ===")
+                lines.append(task_context.skill_context)
             lines.append("")
             task_preamble = "\n".join(lines) + "\n"
 
@@ -1544,6 +1549,10 @@ IMPORTANT: data must end with \\n to execute the command.""",
                 task_lines.append("Dependency Outputs:")
                 for dep in task_context.dependency_outputs[:6]:
                     task_lines.append(f"- {json.dumps(dep, ensure_ascii=False)[:600]}")
+            if task_context.skill_context:
+                task_lines.append("")
+                task_lines.append("=== SKILL GUIDANCE ===")
+                task_lines.append(task_context.skill_context)
             task_lines.append("")
             base_prompt = "\n".join(task_lines) + "\n"
         else:

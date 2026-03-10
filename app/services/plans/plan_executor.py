@@ -16,6 +16,7 @@ from ..deep_think_agent import DeepThinkAgent, TaskExecutionContext, ThinkingSte
 from ..deliverables import get_deliverable_publisher
 from ..execution.tool_executor import ToolExecutionContext, UnifiedToolExecutor
 from ..llm.llm_service import LLMService
+from ..skills import get_skills_loader
 from .plan_models import PlanNode, PlanTree
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,8 @@ class ExecutionConfig:
     session_context: Optional[Dict[str, Any]] = None
     enforce_dependencies: bool = True
     paper_mode: bool = False
+    enable_skills: bool = True
+    skill_budget_chars: int = 6000
 
     @classmethod
     def from_settings(cls, settings: ExecutorSettings) -> "ExecutionConfig":
@@ -144,6 +147,8 @@ class ExecutionConfig:
             max_tasks=settings.max_tasks,
             enforce_dependencies=getattr(settings, 'enforce_dependencies', True),
             paper_mode=bool(getattr(settings, "paper_mode", False)),
+            enable_skills=bool(getattr(settings, "enable_skills", True)),
+            skill_budget_chars=int(getattr(settings, "skill_budget_chars", 6000)),
         )
 
 
@@ -552,6 +557,10 @@ class PlanExecutor:
             )
             return summary
 
+        # --- Plan-level skill pre-selection ---
+        if cfg.enable_skills:
+            self._preselect_skills_for_plan(tree, cfg)
+
         for node in order:
             start = time.time()
             _log_job(
@@ -939,6 +948,63 @@ class PlanExecutor:
         )
         return result
 
+    def _preselect_skills_for_plan(
+        self,
+        tree: PlanTree,
+        config: ExecutionConfig,
+    ) -> None:
+        """Select relevant skills for the entire plan and store in session_context.
+
+        Uses the root node's title and description to semantically select
+        skills via LLM.  Results are cached in ``config.session_context``
+        under the ``"plan_skills"`` key so that every task in the plan can
+        access them without repeating the selection call.
+        """
+        if config.session_context is None:
+            config.session_context = {}
+
+        if "plan_skills" in config.session_context:
+            return
+
+        try:
+            loader = get_skills_loader(auto_sync=True)
+            available = loader.list_skills()
+            if not available:
+                logger.info("No skills available; skipping plan-level skill selection")
+                config.session_context["plan_skills"] = []
+                return
+
+            root = None
+            root_ids = tree.root_node_ids()
+            if root_ids:
+                root = tree.nodes.get(root_ids[0])
+
+            plan_title = root.display_name() if root else f"Plan {tree.plan_id}"
+            plan_description = (root.instruction or "") if root else ""
+            if not plan_description:
+                child_names = [
+                    n.display_name() for n in tree.nodes.values()
+                    if n.parent_id == (root.id if root else None)
+                ][:8]
+                plan_description = "Sub-tasks: " + ", ".join(child_names)
+
+            selected = self._run_coroutine_sync(
+                loader.select_skills_for_task(
+                    task_title=plan_title,
+                    task_description=plan_description,
+                    llm_service=self._llm._llm,
+                )
+            )
+            config.session_context["plan_skills"] = selected
+            _log_job(
+                "info",
+                f"Plan-level skill selection completed: {selected}",
+                {"plan_skills": selected},
+            )
+        except Exception as exc:
+            logger.warning("Plan-level skill pre-selection failed (non-blocking): %s", exc)
+            config.session_context["plan_skills"] = []
+
     def _should_use_deep_think(self, config: ExecutionConfig) -> bool:
         _ = config
         return True
@@ -1019,6 +1085,25 @@ class PlanExecutor:
                     "CRITICAL TOOL SELECTION: For writing ANY paper content (sections, drafts, revisions, full assembly), you MUST use manuscript_writer. Do NOT use claude_code to write paper text. claude_code may only be used for data analysis, code generation, or non-writing tasks.",
                 ]
             )
+        # --- Skill content injection ---
+        skill_context = None
+        if config.enable_skills:
+            plan_skills = session_context.get("plan_skills") or []
+            if plan_skills:
+                try:
+                    loader = get_skills_loader(auto_sync=False)
+                    skill_context = loader.load_skills_within_budget(
+                        plan_skills,
+                        max_chars=config.skill_budget_chars,
+                    )
+                    if skill_context:
+                        logger.info(
+                            "Injecting %d chars of skill context for task %s",
+                            len(skill_context), node.id,
+                        )
+                except Exception as exc:
+                    logger.warning("Skill content loading failed (non-blocking): %s", exc)
+
         task_context = TaskExecutionContext(
             task_id=node.id,
             task_name=node.display_name(),
@@ -1026,6 +1111,7 @@ class PlanExecutor:
             dependency_outputs=dep_outputs,
             plan_outline=plan_outline,
             constraints=constraints,
+            skill_context=skill_context,
         )
 
         async def on_thinking(step: ThinkingStep) -> None:
