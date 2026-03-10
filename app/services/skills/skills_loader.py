@@ -284,6 +284,64 @@ Base directory: {skill.directory}
             return None
         return self._available_skills[skill_name].content
 
+    def load_skills_within_budget(
+        self,
+        skill_names: List[str],
+        max_chars: int = 8000,
+    ) -> str:
+        """Load skill contents respecting a character budget.
+
+        Skills are loaded in order.  Once the budget is exhausted, remaining
+        skills are represented by a one-line name + description summary so
+        no information is completely lost.
+
+        Args:
+            skill_names: Ordered list of skill names to load.
+            max_chars: Maximum total character count for the returned text.
+
+        Returns:
+            Concatenated skill content (full or summarized).
+        """
+        if not skill_names:
+            return ""
+
+        parts: List[str] = []
+        used = 0
+        budget_exceeded = False
+
+        for name in skill_names:
+            if name not in self._available_skills:
+                logger.debug(f"Skill '{name}' not found, skipping in budget loader")
+                continue
+
+            skill = self._available_skills[name]
+
+            if budget_exceeded:
+                summary = f"- {skill.name}: {skill.description}"
+                parts.append(summary)
+                continue
+
+            formatted = f"[Skill: {skill.name}]\n{skill.content}"
+            if used + len(formatted) <= max_chars:
+                parts.append(formatted)
+                used += len(formatted)
+            else:
+                remaining = max_chars - used
+                if remaining > 200:
+                    parts.append(formatted[:remaining] + "\n... (truncated)")
+                    used = max_chars
+                else:
+                    summary = f"- {skill.name}: {skill.description}"
+                    parts.append(summary)
+                budget_exceeded = True
+
+        result = "\n\n".join(parts)
+        logger.info(
+            f"Loaded {len(skill_names)} skills within budget "
+            f"({used}/{max_chars} chars used)"
+        )
+        return result
+
     def reset_loaded_skills(self) -> None:
         """load skills """
         self._loaded_skills.clear()
