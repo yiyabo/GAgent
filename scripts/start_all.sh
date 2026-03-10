@@ -33,10 +33,15 @@ start_bg() {
   local log_file="$LOG_DIR/${name}.log"
   local pid_file="$LOG_DIR/${name}.pid"
 
-  # setsid detaches the child from the current process group so that
-  # an SSH disconnect (SIGHUP) or parent script exit does not kill the service.
+  # Detach the child from the current process group so that an SSH disconnect
+  # (SIGHUP) or parent script exit does not kill the service.
+  # setsid is Linux-only; on macOS we fall back to plain nohup.
   {
-    setsid nohup bash -c "$cmd" > "$log_file" 2>&1 < /dev/null &
+    if command -v setsid >/dev/null 2>&1; then
+      setsid nohup bash -c "$cmd" > "$log_file" 2>&1 < /dev/null &
+    else
+      nohup bash -c "$cmd" > "$log_file" 2>&1 < /dev/null &
+    fi
     echo $!
   } > "$pid_file.tmp"
   
