@@ -366,12 +366,12 @@ class LLMClient(LLMProvider):
                             if idx not in tc_accum:
                                 tc_accum[idx] = {"id": "", "name": "", "arguments": ""}
                             tc_id = tc_delta.get("id")
-                            if isinstance(tc_id, str):
+                            if isinstance(tc_id, str) and tc_id:
                                 tc_accum[idx]["id"] = tc_id
                             fn = tc_delta.get("function")
                             if isinstance(fn, dict):
                                 fn_name = fn.get("name")
-                                if isinstance(fn_name, str):
+                                if isinstance(fn_name, str) and fn_name:
                                     tc_accum[idx]["name"] = fn_name
                                 fn_args = fn.get("arguments")
                                 if isinstance(fn_args, str):
