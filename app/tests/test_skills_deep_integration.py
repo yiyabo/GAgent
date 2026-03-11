@@ -1,13 +1,14 @@
 """Tests for skills deep integration into the PlanExecutor execution chain.
 
 Covers:
-- SkillsLoader.load_skills_within_budget (budget truncation)
+- SkillsLoader build/injection behaviour
 - TaskExecutionContext.skill_context field propagation
 - DeepThinkAgent system prompt skill injection
 - ExecutionConfig new skill parameters
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -53,28 +54,27 @@ class TestLoadSkillsWithinBudget:
             ["bio-tools-router"], max_chars=50000
         )
         assert "[Skill: bio-tools-router]" in result
-        assert "Routing rules" in result
+        assert "[Reference: references/verified_ops.md]" in result
 
-    def test_budget_truncates_large_content(self):
+    def test_budget_degrades_to_summary_without_truncating_markdown(self):
         loader = _make_loader()
         result = loader.load_skills_within_budget(
             ["visualization-generator"], max_chars=500
         )
-        assert len(result) <= 600  # some overhead from join
+        assert len(result) <= 500
         assert "[Skill: visualization-generator]" in result
+        assert "Summary:" in result
+        assert "... (truncated)" not in result
 
     def test_budget_fallback_to_summary(self):
-        """When remaining budget is too small for content, fall back to summary."""
+        """When remaining budget is too small, summary mode remains available."""
         loader = _make_loader()
         all_skills = [s["name"] for s in loader.list_skills()]
         result = loader.load_skills_within_budget(all_skills, max_chars=2000)
         assert len(result) > 0
-        parts = result.split("\n\n")
-        has_full = any("[Skill:" in p for p in parts)
-        has_summary = any(p.startswith("- ") for p in parts)
-        assert has_full, "At least one skill should be loaded in full"
-        if len(all_skills) > 1:
-            assert has_summary or len(result) <= 2000
+        assert "[Skill:" in result
+        assert "Summary:" in result
+        assert len(result) <= 2000
 
     def test_all_skills_fit_with_large_budget(self):
         loader = _make_loader()
@@ -83,13 +83,105 @@ class TestLoadSkillsWithinBudget:
         for name in all_skills:
             assert f"[Skill: {name}]" in result
 
-    def test_order_is_preserved(self):
+    def test_injection_order_follows_priority(self):
         loader = _make_loader()
-        ordered = ["bio-tools-router", "bio-tools-troubleshooting"]
+        ordered = ["bio-data-interpreter", "xlsx"]
         result = loader.load_skills_within_budget(ordered, max_chars=50000)
-        idx_router = result.index("[Skill: bio-tools-router]")
-        idx_trouble = result.index("[Skill: bio-tools-troubleshooting]")
-        assert idx_router < idx_trouble
+        idx_xlsx = result.index("[Skill: xlsx]")
+        idx_bio = result.index("[Skill: bio-data-interpreter]")
+        assert idx_xlsx < idx_bio
+
+
+class TestSkillSelectionRuntime:
+    def test_fasta_task_prefers_bio_router(self):
+        loader = _make_loader()
+        llm = MagicMock()
+        result = asyncio.run(
+            loader.select_skills(
+                task_title="Compute FASTA sequence stats",
+                task_description="Compute sequence statistics for the phage genome FASTA",
+                llm_service=llm,
+                dependency_paths=["/tmp/sample.fasta"],
+                tool_hints=[],
+                selection_mode="hybrid",
+                max_skills=3,
+                scope="task",
+            )
+        )
+        assert result.selection_source == "deterministic"
+        assert result.selected_skill_ids[0] == "bio-tools-router"
+        assert "bio-tools-router" in result.selected_skill_ids
+
+    def test_visualization_task_prefers_visualization_generator(self):
+        loader = _make_loader()
+        llm = MagicMock()
+        result = asyncio.run(
+            loader.select_skills(
+                task_title="Build publication figure",
+                task_description="Create a heatmap and scatter plot from the CSV data",
+                llm_service=llm,
+                dependency_paths=["/tmp/metrics.csv"],
+                tool_hints=["claude_code"],
+                selection_mode="hybrid",
+                max_skills=3,
+                scope="task",
+            )
+        )
+        assert "visualization-generator" in result.selected_skill_ids
+
+    def test_report_task_prefers_scientific_writer(self):
+        loader = _make_loader()
+        llm = MagicMock()
+        result = asyncio.run(
+            loader.select_skills(
+                task_title="Write report",
+                task_description="Draft the methods and results sections for the paper",
+                llm_service=llm,
+                dependency_paths=[],
+                tool_hints=["manuscript_writer"],
+                selection_mode="hybrid",
+                max_skills=3,
+                scope="task",
+            )
+        )
+        assert "scientific-report-writer" in result.selected_skill_ids
+
+    def test_task_selection_is_not_hard_limited_by_plan_candidates(self):
+        loader = _make_loader()
+        llm = MagicMock()
+        result = asyncio.run(
+            loader.select_skills(
+                task_title="Generate chart",
+                task_description="Create a chart from CSV output",
+                llm_service=llm,
+                dependency_paths=["/tmp/results.csv"],
+                tool_hints=["claude_code"],
+                preferred_skills=["bio-tools-router"],
+                selection_mode="hybrid",
+                max_skills=3,
+                scope="task",
+            )
+        )
+        assert "visualization-generator" in result.selected_skill_ids
+
+    def test_llm_failure_without_deterministic_match_returns_empty(self):
+        loader = _make_loader()
+        llm = MagicMock()
+        llm.chat.return_value = "not-json"
+        result = asyncio.run(
+            loader.select_skills(
+                task_title="Do a vague thing",
+                task_description="General task with no skill-specific cues",
+                llm_service=llm,
+                dependency_paths=[],
+                tool_hints=[],
+                selection_mode="hybrid",
+                max_skills=3,
+                scope="task",
+            )
+        )
+        assert result.selection_source == "llm_fallback"
+        assert result.selected_skill_ids == []
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +207,16 @@ class TestTaskExecutionContextSkillField:
         assert ctx.task_id == 1
         assert ctx.task_name == "Test"
         assert ctx.skill_context == "guidance"
+
+    def test_task_execution_result_accepts_skill_trace(self):
+        from app.services.interpreter.task_executer import TaskExecutionResult, TaskType
+
+        result = TaskExecutionResult(
+            task_type=TaskType.TEXT_ONLY,
+            success=True,
+            skill_trace={"selection_source": "deterministic"},
+        )
+        assert result.skill_trace == {"selection_source": "deterministic"}
 
 
 # ---------------------------------------------------------------------------
@@ -191,13 +293,25 @@ class TestExecutionConfigSkillParams:
         cfg = ExecutionConfig()
         assert cfg.enable_skills is True
         assert cfg.skill_budget_chars == 6000
+        assert cfg.skill_selection_mode == "hybrid"
+        assert cfg.skill_max_per_task == 3
+        assert cfg.skill_trace_enabled is True
 
     def test_custom_values(self):
         from app.services.plans.plan_executor import ExecutionConfig
 
-        cfg = ExecutionConfig(enable_skills=False, skill_budget_chars=3000)
+        cfg = ExecutionConfig(
+            enable_skills=False,
+            skill_budget_chars=3000,
+            skill_selection_mode="llm_only",
+            skill_max_per_task=2,
+            skill_trace_enabled=False,
+        )
         assert cfg.enable_skills is False
         assert cfg.skill_budget_chars == 3000
+        assert cfg.skill_selection_mode == "llm_only"
+        assert cfg.skill_max_per_task == 2
+        assert cfg.skill_trace_enabled is False
 
     def test_from_settings_defaults(self):
         from app.services.plans.plan_executor import ExecutionConfig
@@ -205,6 +319,8 @@ class TestExecutionConfigSkillParams:
         mock_settings = MagicMock(spec=[
             "model", "max_retries", "timeout", "use_context",
             "include_plan_outline", "dependency_throttle", "max_tasks",
+            "enable_skills", "skill_budget_chars", "skill_selection_mode",
+            "skill_max_per_task", "skill_trace_enabled",
         ])
         mock_settings.model = "test-model"
         mock_settings.max_retries = 2
@@ -213,7 +329,15 @@ class TestExecutionConfigSkillParams:
         mock_settings.include_plan_outline = True
         mock_settings.dependency_throttle = True
         mock_settings.max_tasks = None
+        mock_settings.enable_skills = True
+        mock_settings.skill_budget_chars = 6000
+        mock_settings.skill_selection_mode = "hybrid"
+        mock_settings.skill_max_per_task = 3
+        mock_settings.skill_trace_enabled = True
 
         cfg = ExecutionConfig.from_settings(mock_settings)
         assert cfg.enable_skills is True
         assert cfg.skill_budget_chars == 6000
+        assert cfg.skill_selection_mode == "hybrid"
+        assert cfg.skill_max_per_task == 3
+        assert cfg.skill_trace_enabled is True

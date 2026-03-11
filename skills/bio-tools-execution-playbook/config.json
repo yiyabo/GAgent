@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "category": "template",
+  "scope": "task",
+  "priority": 80,
+  "selection": {
+    "keywords": [
+      "execute",
+      "run",
+      "workflow",
+      "payload",
+      "operation",
+      "params",
+      "request template",
+      "tool_name",
+      "blast",
+      "bwa",
+      "samtools"
+    ],
+    "path_suffixes": [],
+    "tool_hints": [
+      "bio_tools"
+    ]
+  },
+  "injection": {
+    "mode": "summary_with_references",
+    "max_chars": 2400
+  },
+  "references": [
+    "references/request_templates.json"
+  ],
+  "scripts": []
+}

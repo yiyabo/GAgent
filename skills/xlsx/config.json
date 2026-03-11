@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "category": "template",
+  "scope": "task",
+  "priority": 90,
+  "selection": {
+    "keywords": [
+      "xlsx",
+      "excel",
+      "spreadsheet",
+      "workbook",
+      "formula",
+      "sheet",
+      "csv",
+      "tsv"
+    ],
+    "path_suffixes": [
+      ".xlsx",
+      ".xlsm",
+      ".xls",
+      ".csv",
+      ".tsv"
+    ],
+    "tool_hints": [
+      "claude_code"
+    ]
+  },
+  "injection": {
+    "mode": "full",
+    "max_chars": 4500
+  },
+  "references": [],
+  "scripts": [
+    "recalc.py"
+  ]
+}

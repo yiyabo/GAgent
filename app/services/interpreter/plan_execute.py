@@ -54,6 +54,7 @@ class NodeExecutionRecord:
     generated_files: List[str] = field(default_factory=list)
 
     error_message: Optional[str] = None
+    skill_trace: Optional[Dict[str, object]] = None
 
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -451,6 +452,7 @@ class PlanExecutorInterpreter:
 
         record.task_type = result.task_type
         record.generated_files = new_files
+        record.skill_trace = result.skill_trace
         self._all_generated_files.extend(new_files)
 
         if result.success:
@@ -501,7 +503,8 @@ class PlanExecutorInterpreter:
                 "has_visualization": record.has_visualization,
                 "visualization_purpose": record.visualization_purpose,
                 "visualization_analysis": record.visualization_analysis,
-                "error": record.error_message
+                "error": record.error_message,
+                "skill_trace": record.skill_trace,
             }, ensure_ascii=False)
         )
 
@@ -572,6 +575,7 @@ class PlanExecutorInterpreter:
                 text_response=exec_data.get("text_response"),
                 generated_files=exec_data.get("generated_files", []),
                 error_message=exec_data.get("error"),
+                skill_trace=exec_data.get("skill_trace"),
             )
             return record
         except Exception as e:

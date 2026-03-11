@@ -17,11 +17,12 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional, List
+from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from app.config.executor_config import get_executor_settings
 from app.services.llm.llm_service import LLMService, get_llm_service
 from app.services.skills import SkillsLoader, get_skills_loader
 from .metadata import DatasetMetadata, DataProcessor
@@ -61,6 +62,9 @@ class TaskExecutionResult(BaseModel):
     info_gathering_rounds: int = Field(0, description="Number of info-gathering rounds")
 
     error_message: Optional[str] = Field(None, description="Top-level execution error message")
+    skill_trace: Optional[Dict[str, Any]] = Field(
+        None, description="Structured skill selection/injection trace"
+    )
 
 
 class TaskExecutor:
@@ -157,6 +161,7 @@ class TaskExecutor:
 
         # Initialize LLM service (used for task type classification and text-only tasks).
         self.llm_service = llm_service or get_llm_service()
+        self.skill_settings = get_executor_settings()
 
         # Claude Code workspace isolation parameters.
         self.session_id = session_id
@@ -256,22 +261,52 @@ class TaskExecutor:
     async def _select_skills_for_task(
         self,
         task_title: str,
-        task_description: str
-    ) -> List[str]:
-        """Use LLM semantic understanding to select relevant skills."""
-        if not self.skills_loader:
-            return []
+        task_description: str,
+        *,
+        tool_hints: Optional[List[str]] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Select task skills and build the injected guidance block."""
+        trace: Dict[str, Any] = {
+            "candidate_skill_ids": [],
+            "selected_skill_ids": [],
+            "selection_source": "disabled",
+            "injection_mode_by_skill": {},
+            "injected_chars": 0,
+            "selection_latency_ms": 0.0,
+        }
+        if not self.skill_settings.enable_skills or not self.skills_loader:
+            return "", trace
 
         try:
-            selected = await self.skills_loader.select_skills_for_task(
+            selection_result = await self.skills_loader.select_skills(
                 task_title=task_title,
                 task_description=task_description,
-                llm_service=self.llm_service
+                llm_service=self.llm_service,
+                dependency_paths=self.data_file_paths,
+                tool_hints=tool_hints or [],
+                selection_mode=self.skill_settings.skill_selection_mode,
+                max_skills=self.skill_settings.skill_max_per_task,
+                scope="task",
             )
-            return selected
+            injection_result = self.skills_loader.build_skill_context(
+                selection_result.selected_skill_ids,
+                max_chars=self.skill_settings.skill_budget_chars,
+            )
+            trace = {
+                "candidate_skill_ids": list(selection_result.candidate_skill_ids),
+                "selected_skill_ids": list(selection_result.selected_skill_ids),
+                "selection_source": selection_result.selection_source,
+                "injection_mode_by_skill": dict(injection_result.injection_mode_by_skill),
+                "injected_chars": int(injection_result.injected_chars),
+                "selection_latency_ms": selection_result.selection_latency_ms,
+            }
+            if self.skill_settings.skill_trace_enabled:
+                logger.info("TaskExecutor skill trace: %s", trace)
+            if injection_result.content:
+                return f"\n## Skill Guidance\n{injection_result.content}\n", trace
         except Exception as e:
-            logger.warning(f"LLM skill selection failed: {e}")
-            return []
+            logger.warning(f"Skill guidance preparation failed: {e}")
+        return "", trace
 
     async def _execute_code_task(
         self,
@@ -280,25 +315,12 @@ class TaskExecutor:
         subtask_results: str = "",
         is_visualization: bool = False,
         task_id: Optional[int] = None,
-        use_skill_hints: bool = True,
+        skill_hints: str = "",
     ) -> TaskExecutionResult:
         """Execute a code-required task through Claude Code."""
         from tool_box.tools_impl.claude_code import claude_code_handler
 
         logger.info(f"Executing task with Claude Code: {task_title}")
-
-        # Optionally load relevant skill content for the task.
-        skill_hints = ""
-        if use_skill_hints and self.skills_loader:
-            selected_skills = await self._select_skills_for_task(task_title, task_description)
-            if selected_skills:
-                skill_content = self.skills_loader.load_skills_within_budget(
-                    selected_skills,
-                    max_chars=6000,
-                )
-                if skill_content:
-                    skill_hints = f"\n## Skill Guidance\n{skill_content}\n"
-                logger.info(f"LLM selected skills: {selected_skills}")
 
         # Build enriched task description.
         datasets_summary = self._format_datasets_summary()
@@ -418,7 +440,8 @@ class TaskExecutor:
         task_title: str,
         task_description: str,
         subtask_results: str = "",
-        gathered_info: str = ""
+        gathered_info: str = "",
+        skill_hints: str = "",
     ) -> TaskExecutionResult:
         """Execute a text-only task without writing code."""
         datasets_detail = self._format_all_datasets_detail()
@@ -429,6 +452,8 @@ class TaskExecutor:
             task_title=task_title,
             task_description=task_description
         )
+        if skill_hints:
+            prompt += f"\n{skill_hints.strip()}\n"
 
         response = self.llm_service.chat(prompt=prompt)
         return TaskExecutionResult(
@@ -484,6 +509,23 @@ class TaskExecutor:
         else:
             task_type = self._analyze_task_type(task_title, task_description)
 
+        tool_hints: List[str] = []
+        task_text = f"{task_title}\n{task_description}".lower()
+        if task_type == TaskType.CODE_REQUIRED:
+            tool_hints.append("claude_code")
+        if any(str(path).lower().endswith((".fasta", ".fa", ".fna", ".fastq", ".fq", ".sam", ".bam")) for path in self.data_file_paths) or any(
+            token in task_text
+            for token in ("fasta", "fastq", "sequence", "genome", "alignment", "assembly", "annotation", "phage")
+        ):
+            tool_hints.append("bio_tools")
+        if any(token in task_text for token in ("report", "paper", "manuscript", "methods", "results")):
+            tool_hints.append("manuscript_writer")
+        skill_hints, _skill_trace = await self._select_skills_for_task(
+            task_title,
+            task_description,
+            tool_hints=sorted(set(tool_hints)),
+        )
+
         # Execute by task type.
         if task_type == TaskType.CODE_REQUIRED:
             # Use Claude Code for code-required tasks.
@@ -493,6 +535,7 @@ class TaskExecutor:
                 subtask_results=subtask_results,
                 is_visualization=is_visualization,
                 task_id=task_id,
+                skill_hints=skill_hints,
             )
         else:
             # Text-only tasks are handled directly by LLM.
@@ -500,11 +543,15 @@ class TaskExecutor:
                 task_title,
                 task_description,
                 subtask_results=subtask_results,
-                gathered_info=""
+                gathered_info="",
+                skill_hints=skill_hints,
             )
 
         logger.info(f"Task execution finished: success={result.success}")
-
+        if self.skill_settings.skill_trace_enabled:
+            result.skill_trace = _skill_trace
+        else:
+            result.skill_trace = None
 
         return result
 

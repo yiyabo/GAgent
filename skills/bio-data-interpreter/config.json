@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "category": "analysis",
+  "scope": "task",
+  "priority": 70,
+  "selection": {
+    "keywords": [
+      "interpret",
+      "annotation",
+      "assembly quality",
+      "busco",
+      "checkm",
+      "phylogenetic",
+      "metagenomics",
+      "phage analysis",
+      "genome quality",
+      "functional profile"
+    ],
+    "path_suffixes": [
+      ".fasta",
+      ".fa",
+      ".fna",
+      ".faa",
+      ".gff",
+      ".gff3",
+      ".vcf",
+      ".sam",
+      ".bam",
+      ".nwk",
+      ".tree"
+    ],
+    "tool_hints": []
+  },
+  "injection": {
+    "mode": "summary",
+    "max_chars": 1800
+  },
+  "references": [
+    "references/analysis_patterns.md"
+  ],
+  "scripts": []
+}

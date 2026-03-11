@@ -142,6 +142,7 @@ class AnalyzeResponse(BaseModel):
     visualization_purpose: Optional[str] = None
     visualization_analysis: Optional[str] = None
     retries_used: int = 0
+    skill_trace: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
 
@@ -365,6 +366,7 @@ async def run_analysis(request: AnalyzeRequest):
             visualization_purpose=result.visualization_purpose,
             visualization_analysis=result.visualization_analysis,
             retries_used=result.total_attempts - 1 if result.total_attempts > 0 else 0,
+            skill_trace=result.skill_trace,
         )
 
     except HTTPException:
