@@ -15,11 +15,9 @@ from typing import Any, Dict, Iterable, Optional, Sequence
 
 DEFAULT_BASE_URL = "http://127.0.0.1:9000"
 DEFAULT_MESSAGE = (
-    "请直接调用 review_pack_writer 做一个最小 smoke test。"
-    "topic='Pseudomonas phage'，query='pseudomonas phage'，"
-    "max_results=2，download_pdfs=false，sections=['abstract']，"
-    "max_revisions=1，evaluation_threshold=0.55。"
-    "只需要产出一个英文综述初稿，并发布 deliverables。"
+    "请帮我生成一篇关于 Pseudomonas phage 的英文综述初稿，带参考文献。"
+    "先收集文献证据，再生成一个最小 smoke test 版本，只写 abstract 即可。"
+    "请尽量减少外部依赖，控制范围在最小可验证结果，并发布 deliverables。"
 )
 TERMINAL_ACTION_STATUSES = {"completed", "failed", "succeeded"}
 SUCCESS_ACTION_STATUSES = {"completed", "succeeded"}
