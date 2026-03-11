@@ -1515,6 +1515,17 @@ IMPORTANT: data must end with \\n to execute the command.""",
                 "ALWAYS use manuscript_writer instead of claude_code. "
                 "claude_code should NEVER be used to write paper content directly."
             ),
+            "literature_pipeline": (
+                "Collect a literature evidence pack from PubMed/PMC. "
+                "Returns references.bib, evidence.md, and library.jsonl for downstream use. "
+                "Params: {\"query\": \"pseudomonas phage\", optional \"max_results\", \"download_pdfs\", \"session_id\"}."
+            ),
+            "review_pack_writer": (
+                "Generate a literature-backed review draft by chaining literature_pipeline "
+                "and manuscript_writer. "
+                "Params: {\"topic\": \"Pseudomonas phage\", optional \"query\", \"max_results\", "
+                "\"download_pdfs\", \"sections\", \"max_revisions\", \"evaluation_threshold\", \"session_id\"}."
+            ),
         }
 
         tools_desc = []

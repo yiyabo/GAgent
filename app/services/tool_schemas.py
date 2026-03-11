@@ -343,6 +343,119 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             },
         },
     },
+    "literature_pipeline": {
+        "type": "function",
+        "function": {
+            "name": "literature_pipeline",
+            "description": (
+                "Collect a literature evidence pack from PubMed/PMC. "
+                "Produces evidence.md, references.bib, and library.jsonl for downstream drafting."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "PubMed search query.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of PubMed records to collect.",
+                    },
+                    "out_dir": {
+                        "type": "string",
+                        "description": "Optional project-relative output directory.",
+                    },
+                    "download_pdfs": {
+                        "type": "boolean",
+                        "description": "Whether to try downloading PMC PDFs.",
+                    },
+                    "max_pdfs": {
+                        "type": "integer",
+                        "description": "Maximum number of PDFs to download when download_pdfs=true.",
+                    },
+                    "user_agent": {
+                        "type": "string",
+                        "description": "Optional HTTP user-agent override.",
+                    },
+                    "proxy": {
+                        "type": "string",
+                        "description": "Optional HTTP proxy URL.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session id for session-scoped output storage.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    "review_pack_writer": {
+        "type": "function",
+        "function": {
+            "name": "review_pack_writer",
+            "description": (
+                "Generate a literature-backed review draft by first collecting evidence "
+                "with literature_pipeline and then drafting with manuscript_writer."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "High-level review topic.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional explicit PubMed query override.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of PubMed records to collect.",
+                    },
+                    "download_pdfs": {
+                        "type": "boolean",
+                        "description": "Whether to try downloading PMC PDFs.",
+                    },
+                    "max_pdfs": {
+                        "type": "integer",
+                        "description": "Maximum number of PDFs to download when download_pdfs=true.",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Optional project-relative output path for the review draft.",
+                    },
+                    "sections": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional subset of manuscript sections to draft.",
+                    },
+                    "max_revisions": {
+                        "type": "integer",
+                        "description": "Maximum revision rounds per section.",
+                    },
+                    "evaluation_threshold": {
+                        "type": "number",
+                        "description": "Section evaluation pass threshold from 0 to 1.",
+                    },
+                    "keep_workspace": {
+                        "type": "boolean",
+                        "description": "Whether to keep intermediate drafting workspace artifacts.",
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Optional direct manuscript task override.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session id for session-scoped output storage.",
+                    },
+                },
+                "required": ["topic"],
+            },
+        },
+    },
     "phagescope": {
         "type": "function",
         "function": {
@@ -480,6 +593,64 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     },
                 },
                 "required": ["operation"],
+            },
+        },
+    },
+    "manuscript_writer": {
+        "type": "function",
+        "function": {
+            "name": "manuscript_writer",
+            "description": (
+                "Write a research manuscript or section with citation-aware drafting, "
+                "evaluation, and merge support."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Writing task or manuscript instruction.",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Project-relative output file path.",
+                    },
+                    "context_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional supporting context files such as evidence.md or references.bib.",
+                    },
+                    "analysis_path": {
+                        "type": "string",
+                        "description": "Optional project-relative analysis memo path.",
+                    },
+                    "sections": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional subset of manuscript sections to draft.",
+                    },
+                    "max_revisions": {
+                        "type": "integer",
+                        "description": "Maximum revision rounds per section.",
+                    },
+                    "evaluation_threshold": {
+                        "type": "number",
+                        "description": "Section evaluation pass threshold from 0 to 1.",
+                    },
+                    "max_context_bytes": {
+                        "type": "integer",
+                        "description": "Maximum context size loaded from supporting files.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session id for session-scoped output storage.",
+                    },
+                    "keep_workspace": {
+                        "type": "boolean",
+                        "description": "Whether to keep intermediate drafting workspace artifacts.",
+                    },
+                },
+                "required": ["task", "output_path"],
             },
         },
     },
