@@ -15,6 +15,7 @@ def _stub_chat_factory(
     *,
     intro_citation: str = "[@known1]",
     polish_pass: bool = True,
+    final_polish_exc: Exception | None = None,
 ):
     async def _stub_chat(_llm, prompt: str, _model):
         if "produce an ANALYSIS MEMO" in prompt:
@@ -48,8 +49,12 @@ def _stub_chat_factory(
                 }
             )
         if "final manuscript editor" in prompt:
+            if final_polish_exc is not None:
+                raise final_polish_exc
             return "## Final Manuscript\nPolished final manuscript."
         if "revising a manuscript after a final publication-readiness review" in prompt:
+            if final_polish_exc is not None:
+                raise final_polish_exc
             return "## Final Manuscript\nPolished final manuscript after revision."
         if "final release gate reviewer" in prompt:
             return json.dumps(
@@ -191,6 +196,59 @@ def test_manuscript_writer_blocks_release_when_final_polish_fails(
     assert result["public_release_ready"] is False
     assert result["release_state"] == "blocked"
     assert result["release_summary"]
+    assert any(
+        str(item).startswith(".manuscript_writer_") or str(item).startswith("tool_outputs/")
+        for item in (result.get("hidden_artifact_prefixes") or [])
+    )
+
+
+def test_manuscript_writer_blocks_release_when_final_polish_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(manuscript_writer_module, "_build_llm_service", lambda provider, model: (object(), model))
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_chat",
+        _stub_chat_factory(final_polish_exc=asyncio.TimeoutError("The read operation timed out")),
+    )
+    monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_ENABLED", "true")
+    monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_MAX_REVISIONS", "2")
+    monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_THRESHOLD", "0.85")
+    monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_STEP_TIMEOUT_SEC", "1")
+
+    bib_path = tmp_path / "ctx" / "references.bib"
+    bib_path.parent.mkdir(parents=True, exist_ok=True)
+    bib_path.write_text(
+        "@article{known1,\n"
+        "  title={Known Paper},\n"
+        "  author={Doe, Jane},\n"
+        "  year={2025}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Write a manuscript.",
+            output_path="runtime/session_demo/tool_outputs/review_pack_writer/review_draft.md",
+            context_paths=["ctx/references.bib"],
+            sections=["abstract", "introduction", "references"],
+            keep_workspace=True,
+            session_id="demo",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "polish_quality_gate_failed"
+    assert result["polish_gate_passed"] is False
+    assert result["public_release_ready"] is False
+    assert result["release_state"] == "blocked"
+    assert "timed out" in str(result["release_summary"]).lower()
+    release_review = result.get("release_review") or {}
+    assert "polish_generation_timeout" in (release_review.get("defects") or [])
     assert any(
         str(item).startswith(".manuscript_writer_") or str(item).startswith("tool_outputs/")
         for item in (result.get("hidden_artifact_prefixes") or [])
