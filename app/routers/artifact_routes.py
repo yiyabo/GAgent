@@ -84,6 +84,10 @@ class DeliverableListResponse(BaseModel):
     items: List[DeliverableItem] = Field(default_factory=list)
     count: int = 0
     paper_status: Dict[str, Any] = Field(default_factory=dict)
+    release_state: str = "final"
+    public_release_ready: bool = True
+    release_summary: Optional[str] = None
+    hidden_artifact_prefixes: List[str] = Field(default_factory=list)
     available_versions: List[DeliverableVersionSummary] = Field(default_factory=list)
 
 
@@ -93,6 +97,10 @@ class DeliverableManifestResponse(BaseModel):
     version_id: Optional[str] = None
     manifest_path: Optional[str] = None
     manifest: Dict[str, Any] = Field(default_factory=dict)
+    release_state: str = "final"
+    public_release_ready: bool = True
+    release_summary: Optional[str] = None
+    hidden_artifact_prefixes: List[str] = Field(default_factory=list)
     available_versions: List[DeliverableVersionSummary] = Field(default_factory=list)
 
 
@@ -321,6 +329,49 @@ def _paper_status_from_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _release_meta_from_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    release_state = str(manifest.get("release_state") or "final").strip().lower() or "final"
+    public_release_ready = manifest.get("public_release_ready")
+    if public_release_ready is None:
+        public_release_ready = release_state != "blocked"
+    hidden_artifact_prefixes: List[str] = []
+    values = manifest.get("hidden_artifact_prefixes")
+    if isinstance(values, list):
+        for item in values:
+            normalized = str(item or "").strip().lstrip("/").replace("\\", "/")
+            if normalized and normalized not in hidden_artifact_prefixes:
+                hidden_artifact_prefixes.append(normalized)
+    release_summary = manifest.get("release_summary")
+    return {
+        "release_state": release_state,
+        "public_release_ready": bool(public_release_ready),
+        "release_summary": release_summary if isinstance(release_summary, str) and release_summary.strip() else None,
+        "hidden_artifact_prefixes": hidden_artifact_prefixes,
+    }
+
+
+def _path_is_hidden(path: str, hidden_prefixes: List[str]) -> bool:
+    normalized = str(path or "").strip().lstrip("/").replace("\\", "/")
+    if not normalized:
+        return False
+    for prefix in hidden_prefixes:
+        candidate = str(prefix or "").strip().lstrip("/").replace("\\", "/")
+        if not candidate:
+            continue
+        if normalized == candidate or normalized.startswith(candidate.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def _load_hidden_artifact_prefixes(session_id: str) -> List[str]:
+    try:
+        session_dir = _resolve_session_dir(session_id, purpose="deliverables")
+    except HTTPException:
+        return []
+    manifest = _safe_json_load(_deliverables_root(session_dir) / "manifest_latest.json")
+    return list(_release_meta_from_manifest(manifest).get("hidden_artifact_prefixes") or [])
+
+
 def _manifest_items(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     direct_items = manifest.get("items")
@@ -448,6 +499,7 @@ def _iter_items(
     include_dirs: bool,
     limit: int,
     extensions: Optional[List[str]] = None,
+    hidden_prefixes: Optional[List[str]] = None,
 ) -> List[ArtifactItem]:
     items: List[ArtifactItem] = []
     base_dir = base_dir.resolve()
@@ -456,6 +508,9 @@ def _iter_items(
         try:
             rel_path = path.relative_to(base_dir)
         except ValueError:
+            continue
+        normalized_rel = str(rel_path).replace("\\", "/")
+        if _path_is_hidden(normalized_rel, hidden_prefixes or []):
             continue
 
         if max_depth > 0 and len(rel_path.parts) > max_depth:
@@ -467,7 +522,7 @@ def _iter_items(
             items.append(
                 ArtifactItem(
                     name=path.name,
-                    path=str(rel_path),
+                    path=normalized_rel,
                     type="directory",
                     size=0,
                     modified_at=datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
@@ -482,8 +537,8 @@ def _iter_items(
         stat = path.stat()
         items.append(
             ArtifactItem(
-                name=path.name,
-                path=str(rel_path),
+                    name=path.name,
+                    path=normalized_rel,
                 type="file",
                 size=stat.st_size,
                 modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
@@ -507,6 +562,7 @@ async def list_session_artifacts(
     extensions: Optional[str] = Query(None),
 ) -> ArtifactListResponse:
     session_dir = _resolve_session_dir(session_id, purpose="raw")
+    hidden_prefixes = _load_hidden_artifact_prefixes(session_id)
     ext_list = None
     if extensions:
         ext_list = [ext.strip().lower().lstrip(".") for ext in extensions.split(",") if ext.strip()]
@@ -517,6 +573,7 @@ async def list_session_artifacts(
         include_dirs=include_dirs,
         limit=limit,
         extensions=ext_list,
+        hidden_prefixes=hidden_prefixes,
     )
 
     return ArtifactListResponse(
@@ -537,6 +594,10 @@ async def get_session_artifact_file(
 
     if not str(target).startswith(str(session_dir)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid artifact path")
+    hidden_prefixes = _load_hidden_artifact_prefixes(session_id)
+    rel_path = str(target.relative_to(session_dir)).replace("\\", "/")
+    if _path_is_hidden(rel_path, hidden_prefixes):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
 
@@ -559,6 +620,10 @@ async def get_session_artifact_text(
 
     if not str(target).startswith(str(session_dir)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid artifact path")
+    hidden_prefixes = _load_hidden_artifact_prefixes(session_id)
+    rel_path = str(target.relative_to(session_dir)).replace("\\", "/")
+    if _path_is_hidden(rel_path, hidden_prefixes):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
 
@@ -614,8 +679,10 @@ async def list_session_deliverables(
         limit=limit,
     )
     paper_status = _paper_status_from_manifest(manifest)
+    release_meta = _release_meta_from_manifest(manifest)
     if (
         not include_draft
+        and release_meta["release_state"] != "blocked"
         and not items
         and int(paper_status.get("completed_count") or 0) > 0
     ):
@@ -637,6 +704,10 @@ async def list_session_deliverables(
         items=items,
         count=len(items),
         paper_status=paper_status,
+        release_state=release_meta["release_state"],
+        public_release_ready=release_meta["public_release_ready"],
+        release_summary=release_meta["release_summary"],
+        hidden_artifact_prefixes=release_meta["hidden_artifact_prefixes"],
         available_versions=versions,
     )
 
@@ -667,12 +738,17 @@ async def get_session_deliverables_manifest(
     )
 
     versions = _list_deliverable_versions(history_root=_deliverables_history_dir(session_dir))
+    release_meta = _release_meta_from_manifest(manifest)
     return DeliverableManifestResponse(
         session_id=session_id,
         scope=resolved_scope,
         version_id=resolved_version,
         manifest_path=str(manifest_path) if manifest_path.exists() else None,
         manifest=manifest,
+        release_state=release_meta["release_state"],
+        public_release_ready=release_meta["public_release_ready"],
+        release_summary=release_meta["release_summary"],
+        hidden_artifact_prefixes=release_meta["hidden_artifact_prefixes"],
         available_versions=versions,
     )
 

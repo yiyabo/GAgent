@@ -11,7 +11,11 @@ from tool_box.tools_impl import manuscript_writer as manuscript_writer_module
 from tool_box.tools_impl import review_pack_writer as review_pack_writer_module
 
 
-def _stub_chat_factory(*, intro_citation: str = "[@known1]"):
+def _stub_chat_factory(
+    *,
+    intro_citation: str = "[@known1]",
+    polish_pass: bool = True,
+):
     async def _stub_chat(_llm, prompt: str, _model):
         if "produce an ANALYSIS MEMO" in prompt:
             return "# Analysis Memo\n- grounded context"
@@ -41,6 +45,31 @@ def _stub_chat_factory(*, intro_citation: str = "[@known1]"):
                     "defects": [],
                     "revision_instructions": [],
                     "pass": True,
+                }
+            )
+        if "final manuscript editor" in prompt:
+            return "## Final Manuscript\nPolished final manuscript."
+        if "revising a manuscript after a final publication-readiness review" in prompt:
+            return "## Final Manuscript\nPolished final manuscript after revision."
+        if "final release gate reviewer" in prompt:
+            return json.dumps(
+                {
+                    "scores": {
+                        "deduplication": 0.95 if polish_pass else 0.6,
+                        "readability": 0.95 if polish_pass else 0.6,
+                        "section_cohesion": 0.95 if polish_pass else 0.6,
+                        "citation_integrity": 0.95 if polish_pass else 0.8,
+                        "format_integrity": 0.95 if polish_pass else 0.7,
+                        "factual_faithfulness": 0.95,
+                    },
+                    "defects": [] if polish_pass else ["duplication remains"],
+                    "revision_instructions": [] if polish_pass else ["Remove repetition and tighten transitions."],
+                    "release_summary": (
+                        "Ready for publication-quality exposure."
+                        if polish_pass
+                        else "The manuscript still contains duplication and rough transitions."
+                    ),
+                    "pass": polish_pass,
                 }
             )
         if "Perform a global rewrite" in prompt:
@@ -111,10 +140,61 @@ def test_manuscript_writer_respects_analysis_path(monkeypatch: pytest.MonkeyPatc
     assert result["analysis_path"] == "audit/analysis.md"
     assert result["effective_analysis_path"] == "audit/analysis.md"
     assert result["quality_gate_passed"] is True
+    assert result["polish_gate_passed"] is True
+    assert result["public_release_ready"] is True
+    assert result["release_state"] == "final"
+    assert result["pre_polish_output_path"] is not None
+    assert result["polished_output_path"] is not None
 
     analysis_file = tmp_path / "audit" / "analysis.md"
     assert analysis_file.exists()
     assert "Analysis Memo" in analysis_file.read_text(encoding="utf-8")
+
+
+def test_manuscript_writer_blocks_release_when_final_polish_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(manuscript_writer_module, "_build_llm_service", lambda provider, model: (object(), model))
+    monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(polish_pass=False))
+    monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_ENABLED", "true")
+    monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_MAX_REVISIONS", "2")
+    monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_THRESHOLD", "0.85")
+
+    bib_path = tmp_path / "ctx" / "references.bib"
+    bib_path.parent.mkdir(parents=True, exist_ok=True)
+    bib_path.write_text(
+        "@article{known1,\n"
+        "  title={Known Paper},\n"
+        "  author={Doe, Jane},\n"
+        "  year={2025}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Write a manuscript.",
+            output_path="runtime/session_demo/tool_outputs/review_pack_writer/review_draft.md",
+            context_paths=["ctx/references.bib"],
+            sections=["abstract", "introduction", "references"],
+            keep_workspace=True,
+            session_id="demo",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "polish_quality_gate_failed"
+    assert result["polish_gate_passed"] is False
+    assert result["public_release_ready"] is False
+    assert result["release_state"] == "blocked"
+    assert result["release_summary"]
+    assert any(
+        str(item).startswith(".manuscript_writer_") or str(item).startswith("tool_outputs/")
+        for item in (result.get("hidden_artifact_prefixes") or [])
+    )
 
 
 def test_manuscript_writer_fails_on_missing_reference_coverage(
@@ -204,6 +284,10 @@ def test_review_pack_partial_always_failed(monkeypatch: pytest.MonkeyPatch, tmp_
         return {
             "success": False,
             "quality_gate_passed": False,
+            "polish_gate_passed": False,
+            "public_release_ready": False,
+            "release_state": "blocked",
+            "release_summary": "Publication blocked.",
             "error": "section_evaluation_failed",
             "partial_output_path": "runtime/literature/review_draft.partial.md",
         }
@@ -218,6 +302,8 @@ def test_review_pack_partial_always_failed(monkeypatch: pytest.MonkeyPatch, tmp_
     assert result["partial"] is True
     assert result["error_code"] == "section_evaluation_failed"
     assert result["partial_output_path"] == "runtime/literature/review_draft.partial.md"
+    assert result["release_state"] == "blocked"
+    assert result["public_release_ready"] is False
 
 
 def test_literature_pipeline_scopes_default_output_by_session(
@@ -316,8 +402,13 @@ def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
         return {
             "success": True,
             "quality_gate_passed": True,
+            "polish_gate_passed": True,
+            "public_release_ready": True,
+            "release_state": "final",
+            "release_summary": "Ready for publication.",
             "output_path": kwargs["output_path"],
             "temp_workspace": "runtime/session_demo/tool_outputs/review_pack_writer/workspace",
+            "hidden_artifact_prefixes": ["tool_outputs/review_pack_writer/review_pack_20260311_000000"],
         }
 
     monkeypatch.setattr(
@@ -335,6 +426,8 @@ def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
     )
 
     assert result["success"] is True
+    assert result["public_release_ready"] is True
+    assert result["release_state"] == "final"
     assert captured["lit"]["session_id"] == "demo"
     assert captured["draft"]["session_id"] == "demo"
     assert captured["lit"]["out_dir"].startswith(
@@ -343,6 +436,7 @@ def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
     assert captured["draft"]["output_path"].startswith(
         "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_"
     )
+    assert result["hidden_artifact_prefixes"]
 
 
 def test_manuscript_writer_review_mode_relaxes_experiment_and_result_rubrics() -> None:

@@ -116,6 +116,36 @@ def _build_failed_review_pack_result() -> AgentResult:
     )
 
 
+def _build_failed_polish_gate_result() -> AgentResult:
+    failed_step = AgentStep(
+        action=LLMAction(
+            kind="tool_operation",
+            name="manuscript_writer",
+            parameters={"task": "Write a review"},
+            blocking=True,
+            order=1,
+        ),
+        success=False,
+        message="manuscript_writer finished execution.",
+        details={
+            "result": {
+                "success": False,
+                "error_code": "polish_quality_gate_failed",
+                "public_release_ready": False,
+                "release_state": "blocked",
+            }
+        },
+    )
+    return AgentResult(
+        reply="initial reply",
+        steps=[failed_step],
+        suggestions=[],
+        primary_intent=None,
+        success=False,
+        errors=["manuscript blocked"],
+    )
+
+
 def _build_record(run_id: str) -> Dict[str, Any]:
     structured = LLMStructuredResponse(
         llm_reply=LLMReply(message="run"),
@@ -238,6 +268,27 @@ def test_action_run_skips_auto_deep_think_retry_for_review_pack_quality_gate_fai
 
     async def _unexpected_retry(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise AssertionError("deep_think_retry should not run for review pack quality gate failures")
+
+    monkeypatch.setattr(action_execution, "_run_blocking_failure_deep_think_retry_once", _unexpected_retry)
+
+    asyncio.run(action_execution._execute_action_run(run_id))
+
+    final_update = updates[-1]
+    assert final_update["status"] == "failed"
+    payload = final_update["result"]
+    assert payload["success"] is False
+    assert "deep_think_retry" not in payload
+    assert not job_store.mark_success_calls
+    assert job_store.mark_failure_calls
+
+
+def test_action_run_skips_auto_deep_think_retry_for_polish_quality_gate_failure(monkeypatch) -> None:
+    run_id = "run_polish_gate_no_retry"
+    result = _build_failed_polish_gate_result()
+    updates, job_store = _patch_common(monkeypatch, run_id=run_id, result=result)
+
+    async def _unexpected_retry(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("deep_think_retry should not run for polish release gate failures")
 
     monkeypatch.setattr(action_execution, "_run_blocking_failure_deep_think_retry_once", _unexpected_retry)
 

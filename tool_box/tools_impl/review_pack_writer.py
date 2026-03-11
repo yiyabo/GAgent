@@ -55,6 +55,23 @@ def _resolve_default_pack_dir(*, session_id: Optional[str], timestamp: str) -> P
     return (_PROJECT_ROOT / "runtime" / "literature" / f"review_pack_{timestamp}").resolve()
 
 
+def _resolve_session_dir(session_id: Optional[str]) -> Optional[Path]:
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    normalized = session_id.strip()
+    session_name = normalized if normalized.startswith("session_") else f"session_{normalized}"
+    return (_PROJECT_ROOT / "runtime" / session_name).resolve()
+
+
+def _to_session_relative(path: Path, session_dir: Optional[Path]) -> Optional[str]:
+    if session_dir is None:
+        return None
+    try:
+        return str(path.resolve().relative_to(session_dir.resolve()))
+    except Exception:
+        return None
+
+
 def _default_pubmed_query(topic: str) -> str:
     # Focused for: phage-host interactions + phage omics/databases.
     # Users can override with query explicitly.
@@ -203,21 +220,37 @@ async def review_pack_writer_handler(
         if isinstance(draft, dict) and draft.get("quality_gate_passed") is not None
         else draft_ok
     )
+    polish_gate_passed = (
+        bool(draft.get("polish_gate_passed"))
+        if isinstance(draft, dict) and draft.get("polish_gate_passed") is not None
+        else draft_ok
+    )
+    public_release_ready = (
+        bool(draft.get("public_release_ready"))
+        if isinstance(draft, dict) and draft.get("public_release_ready") is not None
+        else bool(draft_ok and quality_gate_passed and polish_gate_passed)
+    )
+    release_state = (
+        str(draft.get("release_state") or "").strip().lower()
+        if isinstance(draft, dict)
+        else ""
+    ) or ("final" if public_release_ready else "blocked")
+    release_summary = (
+        str(draft.get("release_summary") or "").strip()
+        if isinstance(draft, dict)
+        else ""
+    )
     partial_path = (
         draft.get("partial_output_path")
         if isinstance(draft, dict) and isinstance(draft.get("partial_output_path"), str)
         else None
     )
-    strict_gate = _env_enabled("MANUSCRIPT_STRICT_GATE", True)
-    if strict_gate:
-        ok = bool(draft_ok and quality_gate_passed)
-    else:
-        ok = bool(draft_ok or partial_path)
+    ok = bool(draft_ok and quality_gate_passed and polish_gate_passed and public_release_ready)
     partial = bool(partial_path and not ok)
     error_code: Optional[str] = None
     if not ok:
         if isinstance(draft, dict):
-            draft_error = draft.get("error")
+            draft_error = draft.get("error_code") or draft.get("error")
             if isinstance(draft_error, str) and draft_error.strip():
                 error_code = draft_error.strip()
         if partial and not error_code:
@@ -230,6 +263,17 @@ async def review_pack_writer_handler(
             "manuscript_writer did not pass section evaluation; a partial draft was still produced. "
             f"See {partial_path}"
         )
+    session_root = _resolve_session_dir(session_id)
+    hidden_artifact_prefixes: List[str] = []
+    if isinstance(draft, dict):
+        for item in draft.get("hidden_artifact_prefixes") or []:
+            value = str(item or "").strip().lstrip("/").replace("\\", "/")
+            if value and value not in hidden_artifact_prefixes:
+                hidden_artifact_prefixes.append(value)
+    pack_rel = _to_session_relative(pack_dir, session_root)
+    if pack_rel and pack_rel not in hidden_artifact_prefixes:
+        hidden_artifact_prefixes.append(pack_rel)
+
     return {
         "tool": "review_pack_writer",
         "success": True if ok else False,
@@ -237,6 +281,16 @@ async def review_pack_writer_handler(
         "error_code": error_code,
         "partial_output_path": partial_path,
         "warnings": warnings if warnings else None,
+        "quality_gate_passed": quality_gate_passed,
+        "polish_gate_passed": polish_gate_passed,
+        "public_release_ready": public_release_ready,
+        "release_state": release_state,
+        "release_summary": release_summary or (
+            "Publication blocked: the manuscript did not pass the final release gate."
+            if not ok
+            else "Review manuscript passed the final release gate."
+        ),
+        "hidden_artifact_prefixes": hidden_artifact_prefixes,
         "topic": topic,
         "query": final_query,
         "out_dir": str(pack_dir.relative_to(_PROJECT_ROOT)),
