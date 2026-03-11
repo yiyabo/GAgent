@@ -7,6 +7,7 @@ The class retains a thin one-line delegate that forwards ``self``.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -32,6 +33,9 @@ if TYPE_CHECKING:
     from app.services.plans.plan_models import PlanTree
 
 
+logger = logging.getLogger(__name__)
+
+
 # ---------------------------------------------------------------------------
 # Async guardrails
 # ---------------------------------------------------------------------------
@@ -51,7 +55,17 @@ async def apply_experiment_fallback(
         and action.name in {"manuscript_writer", "review_pack_writer"}
     ]
 
-    if not explicit_manuscript_request(user_message):
+    explicit_request = explicit_manuscript_request(user_message)
+    literature_review_request = literature_backed_review_request(user_message)
+
+    logger.info(
+        "[CHAT][GUARDRAIL][WRITE] explicit=%s literature_review=%s actions=%s",
+        explicit_request,
+        literature_review_request,
+        [action.name for action in structured.actions],
+    )
+
+    if not explicit_request:
         structured.actions = [
             action
             for action in structured.actions
@@ -60,12 +74,19 @@ async def apply_experiment_fallback(
                 and action.name in {"manuscript_writer", "review_pack_writer"}
             )
         ]
+        logger.info(
+            "[CHAT][GUARDRAIL][WRITE] stripped writing tools because request is not explicit"
+        )
         return structured
 
     if writing_actions:
+        logger.info("[CHAT][GUARDRAIL][WRITE] keeping existing writing action(s)")
         return structured
 
-    if not literature_backed_review_request(user_message):
+    if not literature_review_request:
+        logger.info(
+            "[CHAT][GUARDRAIL][WRITE] explicit writing request but not literature-backed review"
+        )
         return structured
 
     retrieval_only_tools = {"web_search", "graph_rag", "literature_pipeline"}
@@ -73,6 +94,10 @@ async def apply_experiment_fallback(
         action for action in structured.actions if action.kind == "tool_operation"
     ]
     if tool_actions and not all(action.name in retrieval_only_tools for action in tool_actions):
+        logger.info(
+            "[CHAT][GUARDRAIL][WRITE] leaving actions unchanged because non-retrieval tool present: %s",
+            [action.name for action in tool_actions],
+        )
         return structured
 
     topic = extract_review_topic(user_message) or user_message.strip()
@@ -91,6 +116,11 @@ async def apply_experiment_fallback(
             blocking=True,
         )
     ]
+    logger.info(
+        "[CHAT][GUARDRAIL][WRITE] rewrote retrieval-only actions to review_pack_writer topic=%s sections=%s",
+        parameters.get("topic"),
+        parameters.get("sections"),
+    )
     return structured
 
 
