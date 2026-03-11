@@ -542,6 +542,29 @@ class DeliverablePublisher:
         }
         return mapping.get(key)
 
+    @staticmethod
+    def _extract_manuscript_result(payload: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return None
+
+        normalized_tool = str(payload.get("tool") or "").strip().lower()
+        if normalized_tool == "manuscript_writer":
+            return payload
+
+        if normalized_tool == "review_pack_writer":
+            draft = payload.get("draft")
+            if not isinstance(draft, dict):
+                return None
+            draft_tool = str(draft.get("tool") or "").strip().lower()
+            if draft_tool == "manuscript_writer":
+                return draft
+            if draft_tool:
+                return None
+            if isinstance(draft.get("sections"), list) or isinstance(draft.get("output_path"), str):
+                return draft
+
+        return None
+
     def _publish_manuscript_outputs(
         self,
         *,
@@ -553,11 +576,8 @@ class DeliverablePublisher:
         task_name: Optional[str],
         previous_manifest: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        if not isinstance(raw_result, dict):
-            return []
-
-        normalized_tool = str(raw_result.get("tool") or "").strip().lower()
-        if normalized_tool != "manuscript_writer":
+        manuscript_result = self._extract_manuscript_result(raw_result)
+        if not isinstance(manuscript_result, dict):
             return []
 
         items: List[Dict[str, Any]] = []
@@ -568,7 +588,7 @@ class DeliverablePublisher:
         self._paper_builder.ensure_structure(paper_dir=paper_dir, refs_dir=refs_dir, title=title)
         docs_dir.mkdir(parents=True, exist_ok=True)
 
-        sections_payload = raw_result.get("sections")
+        sections_payload = manuscript_result.get("sections")
         if isinstance(sections_payload, list):
             for row in sections_payload:
                 if not isinstance(row, dict):
@@ -651,7 +671,7 @@ class DeliverablePublisher:
                         }
                     )
 
-        analysis_ref = raw_result.get("effective_analysis_path") or raw_result.get("analysis_path")
+        analysis_ref = manuscript_result.get("effective_analysis_path") or manuscript_result.get("analysis_path")
         if isinstance(analysis_ref, str) and analysis_ref.strip():
             analysis_source = self._resolve_path(analysis_ref, session_dir=latest_root.parent.parent)
             if analysis_source is not None and analysis_source.is_file():
@@ -672,7 +692,7 @@ class DeliverablePublisher:
                     }
                 )
 
-        output_ref = raw_result.get("effective_output_path") or raw_result.get("output_path")
+        output_ref = manuscript_result.get("effective_output_path") or manuscript_result.get("output_path")
         if isinstance(output_ref, str) and output_ref.strip():
             output_source = self._resolve_path(output_ref, session_dir=latest_root.parent.parent)
             if output_source is not None and output_source.is_file():
