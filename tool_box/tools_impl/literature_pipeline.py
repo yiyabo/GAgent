@@ -310,6 +310,15 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _resolve_default_output_dir(*, session_id: Optional[str], timestamp: str) -> Path:
+    if isinstance(session_id, str) and session_id.strip():
+        from app.services.session_paths import get_session_tool_outputs_dir
+
+        root = get_session_tool_outputs_dir(session_id.strip(), create=True)
+        return (root / "literature_pipeline" / f"review_pack_{timestamp}").resolve()
+    return (_RUNTIME_DIR / "literature" / f"review_pack_{timestamp}").resolve()
+
+
 def _build_evidence_md(records: List[PaperRecord], topic: str) -> str:
     # Simple grouping: host-interaction vs omics/database by keyword.
     host_kw = re.compile(r"\b(host|receptor|adsorption|infection|lysogen|temperate|CRISPR|immunity)\b", re.I)
@@ -359,6 +368,7 @@ async def literature_pipeline_handler(
     max_pdfs: int = 30,
     user_agent: Optional[str] = None,
     proxy: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not isinstance(query, str) or not query.strip():
         return {"tool": "literature_pipeline", "success": False, "error": "missing_query"}
@@ -367,7 +377,14 @@ async def literature_pipeline_handler(
     max_pdfs = max(0, min(int(max_pdfs), 200))
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    default_dir = _RUNTIME_DIR / "literature" / f"review_pack_{timestamp}"
+    try:
+        default_dir = _resolve_default_output_dir(session_id=session_id, timestamp=timestamp)
+    except Exception as exc:
+        return {
+            "tool": "literature_pipeline",
+            "success": False,
+            "error": f"session_output_dir_unavailable: {exc}",
+        }
     output_dir = (Path(out_dir) if out_dir else default_dir)
     if not output_dir.is_absolute():
         output_dir = (_PROJECT_ROOT / output_dir).resolve()
@@ -528,6 +545,10 @@ literature_pipeline_tool = {
             "query": {"type": "string", "description": "PubMed query term (supports boolean operators)."},
             "max_results": {"type": "integer", "default": 80, "description": "Max PubMed results to fetch (<=500)."},
             "out_dir": {"type": "string", "description": "Output directory (project-relative preferred)."},
+            "session_id": {
+                "type": "string",
+                "description": "Optional session id. When out_dir is omitted, outputs are written under the session tool_outputs directory.",
+            },
             "download_pdfs": {"type": "boolean", "default": True, "description": "Download OA PDFs from PMC when PMCID exists."},
             "max_pdfs": {"type": "integer", "default": 30, "description": "Max PDFs to download (PMC only)."},
             "user_agent": {"type": "string", "description": "Optional User-Agent override."},
@@ -544,4 +565,3 @@ literature_pipeline_tool = {
         "Build a pack for 'phage host interaction AND database' and save to runtime/literature/review_pack_x",
     ],
 }
-
