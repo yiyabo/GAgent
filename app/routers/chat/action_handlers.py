@@ -470,6 +470,8 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         proxy = params.get("proxy")
         if isinstance(proxy, str) and proxy.strip():
             clean_params["proxy"] = proxy.strip()
+        if isinstance(agent.session_id, str) and agent.session_id.strip():
+            clean_params["session_id"] = agent.session_id.strip()
         params = clean_params
 
     elif tool_name == "review_pack_writer":
@@ -529,6 +531,8 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             val = params.get(key)
             if isinstance(val, str) and val.strip():
                 clean_params[key] = val.strip()
+        if isinstance(agent.session_id, str) and agent.session_id.strip():
+            clean_params["session_id"] = agent.session_id.strip()
         params = clean_params
 
     elif tool_name == "sequence_fetch":

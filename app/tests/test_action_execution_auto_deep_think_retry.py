@@ -82,6 +82,40 @@ def _build_failed_blocking_result() -> AgentResult:
     )
 
 
+def _build_failed_review_pack_result() -> AgentResult:
+    failed_step = AgentStep(
+        action=LLMAction(
+            kind="tool_operation",
+            name="review_pack_writer",
+            parameters={"topic": "Pseudomonas phage"},
+            blocking=True,
+            order=1,
+        ),
+        success=False,
+        message="review_pack_writer finished execution.",
+        details={
+            "result": {
+                "success": False,
+                "error_code": "section_evaluation_failed",
+                "partial": True,
+                "partial_output_path": "data/review.partial.md",
+                "draft": {
+                    "quality_gate_passed": False,
+                    "failed_sections": ["result"],
+                },
+            }
+        },
+    )
+    return AgentResult(
+        reply="initial reply",
+        steps=[failed_step],
+        suggestions=[],
+        primary_intent=None,
+        success=False,
+        errors=["review failed"],
+    )
+
+
 def _build_record(run_id: str) -> Dict[str, Any]:
     structured = LLMStructuredResponse(
         llm_reply=LLMReply(message="run"),
@@ -193,5 +227,26 @@ def test_action_run_auto_deep_think_retry_keeps_failed_status_when_recovery_fail
     assert payload["success"] is False
     assert payload["deep_think_retry"]["success"] is False
     assert payload["errors"] == final_update["errors"]
+    assert not job_store.mark_success_calls
+    assert job_store.mark_failure_calls
+
+
+def test_action_run_skips_auto_deep_think_retry_for_review_pack_quality_gate_failure(monkeypatch) -> None:
+    run_id = "run_review_pack_no_retry"
+    result = _build_failed_review_pack_result()
+    updates, job_store = _patch_common(monkeypatch, run_id=run_id, result=result)
+
+    async def _unexpected_retry(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("deep_think_retry should not run for review pack quality gate failures")
+
+    monkeypatch.setattr(action_execution, "_run_blocking_failure_deep_think_retry_once", _unexpected_retry)
+
+    asyncio.run(action_execution._execute_action_run(run_id))
+
+    final_update = updates[-1]
+    assert final_update["status"] == "failed"
+    payload = final_update["result"]
+    assert payload["success"] is False
+    assert "deep_think_retry" not in payload
     assert not job_store.mark_success_calls
     assert job_store.mark_failure_calls
