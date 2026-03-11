@@ -210,7 +210,15 @@ def _resolve_model_name(model_name: Optional[str]) -> Optional[str]:
     return model_name.strip()
 
 
-def _build_llm_service(provider: Optional[str], model: Optional[str]) -> Tuple[LLMService, Optional[str]]:
+def _build_llm_service(
+    provider: Optional[str],
+    model: Optional[str],
+    *,
+    timeout: Optional[float] = None,
+) -> Tuple[LLMService, Optional[str]]:
+    if timeout is not None:
+        client = LLMClient(provider=provider, model=model, timeout=timeout)
+        return LLMService(client), model
     if provider:
         client = LLMClient(provider=provider, model=model)
         return LLMService(client), model
@@ -822,6 +830,15 @@ async def manuscript_writer_handler(
         if final_polish_step_timeout_sec <= 0:
             final_polish_step_timeout_sec = None
 
+        try:
+            final_polish_llm_timeout_sec = float(
+                os.getenv("MANUSCRIPT_FINAL_POLISH_LLM_TIMEOUT_SEC", "0")
+            )
+        except (TypeError, ValueError):
+            final_polish_llm_timeout_sec = 0.0
+        if final_polish_llm_timeout_sec <= 0:
+            final_polish_llm_timeout_sec = 0.0
+
         context_paths = context_paths or []
         section_list = sections or list(_DEFAULT_SECTIONS)
         section_list = [_normalize_section_key(s) for s in section_list if s and str(s).strip()]
@@ -861,6 +878,16 @@ async def manuscript_writer_handler(
         gen_llm, gen_model = _build_llm_service(generation_provider, gen_model)
         eval_llm, eval_model = _build_llm_service(evaluation_provider, eval_model)
         merge_llm, merge_model_name = _build_llm_service(merge_provider, merge_model_name)
+        final_polish_eval_llm, _ = _build_llm_service(
+            evaluation_provider,
+            eval_model,
+            timeout=final_polish_llm_timeout_sec,
+        )
+        final_polish_merge_llm, _ = _build_llm_service(
+            merge_provider,
+            merge_model_name,
+            timeout=final_polish_llm_timeout_sec,
+        )
 
         analysis_prompt = _build_analysis_prompt(task, context_text, section_list)
         analysis_memo = await _chat(gen_llm, analysis_prompt, gen_model)
@@ -1374,7 +1401,7 @@ async def manuscript_writer_handler(
                         )
                     current_polish_stage = "polish_generation"
                     polished_candidate = await _maybe_wait_with_timeout(
-                        _chat(merge_llm, polish_prompt, merge_model_name),
+                        _chat(final_polish_merge_llm, polish_prompt, merge_model_name),
                         final_polish_step_timeout_sec,
                     )
                     attempt_path = merge_dir / f"polished_draft_attempt_{attempt}.md"
@@ -1388,7 +1415,7 @@ async def manuscript_writer_handler(
                     )
                     current_polish_stage = "release_review"
                     review_raw = await _maybe_wait_with_timeout(
-                        _chat(eval_llm, review_prompt, eval_model),
+                        _chat(final_polish_eval_llm, review_prompt, eval_model),
                         final_polish_step_timeout_sec,
                     )
                     release_review = _parse_json_payload(review_raw)
