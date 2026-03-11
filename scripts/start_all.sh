@@ -36,7 +36,7 @@ start_bg() {
   # Run under nohup so SSH disconnects do not terminate the service.
   # Each command should exec its long-lived process so the recorded PID matches
   # the actual listener process and can be stopped cleanly later.
-  nohup bash -lc "$cmd" > "$log_file" 2>&1 < /dev/null &
+  nohup bash -c "$cmd" > "$log_file" 2>&1 < /dev/null &
   echo $! > "$pid_file.tmp"
   
   # Read PID and clean up
