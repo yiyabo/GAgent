@@ -213,6 +213,10 @@ When a task requires tool execution, request one of these tools:
 - deeppl: DeepPL lifecycle prediction (DNABERT-based)
   Parameters: {"action": "help|predict|job_status", for predict exactly one of "input_file" or "sequence_text", optional "execution_mode", "remote_profile", "model_path", "background", "job_id", "session_id"}
   remote_profile options: gpu | cpu | default
+- literature_pipeline: Build a literature evidence pack from PubMed/PMC
+  Parameters: {"query": "<query>", optional "max_results", "download_pdfs", "max_pdfs", "session_id"}
+- review_pack_writer: Generate a literature-backed review draft
+  Parameters: {"topic": "<topic>", optional "query", "max_results", "download_pdfs", "sections", "max_revisions", "evaluation_threshold", "session_id"}
 - manuscript_writer: Generate research manuscripts
   Parameters: {"task": "<writing task>", "output_path": "<path>"}
 """
@@ -237,13 +241,15 @@ When a task requires tool execution, request one of these tools:
 - For phage knowledge queries → use graph_rag (status: "needs_tool")
 - For PhageScope long-running analyses → submit first, do not wait in the same turn; report taskid and current background status.
 - For lifecycle prediction with DeepPL → use deeppl action=predict and include explicit label/confidence in the response.
+- For literature evidence collection only → use literature_pipeline.
+- For a literature-backed review/survey draft → use review_pack_writer.
 """
 
     OUTPUT_SCHEMA = """{
   "status": "success" | "failed" | "skipped" | "needs_tool",
   "content": "<main result text or reasoning for tool request>",
   "tool_call": {  // REQUIRED when status is "needs_tool", otherwise omit
-    "name": "sequence_fetch" | "bio_tools" | "claude_code" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "deeppl" | "manuscript_writer",
+    "name": "sequence_fetch" | "bio_tools" | "claude_code" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "deeppl" | "literature_pipeline" | "review_pack_writer" | "manuscript_writer",
     "parameters": { <tool-specific parameters> }
   },
   "notes": ["optional notes"],
@@ -1353,6 +1359,8 @@ class PlanExecutor:
                 "document_reader",
                 "vision_reader",
                 "bio_tools",
+                "literature_pipeline",
+                "review_pack_writer",
                 "phagescope",
                 "deeppl",
                 "plan_operation",
