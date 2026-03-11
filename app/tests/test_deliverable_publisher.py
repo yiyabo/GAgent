@@ -386,6 +386,72 @@ def test_publish_manuscript_discussion_creates_docs(tmp_path: Path):
     assert "Interpretation of the findings." in discussion_doc.read_text(encoding="utf-8")
 
 
+def test_publish_review_pack_writer_maps_nested_manuscript_outputs(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    section_file = tmp_path / "workspace" / "sections" / "01_abstract.md"
+    output_file = tmp_path / "workspace" / "review_draft.md"
+    analysis_file = tmp_path / "workspace" / "review_draft.md.analysis.md"
+    refs_file = tmp_path / "workspace" / "references.bib"
+
+    section_file.parent.mkdir(parents=True, exist_ok=True)
+    section_file.write_text("## Abstract\nReview abstract grounded in evidence.\n", encoding="utf-8")
+    output_file.write_text("## Abstract\nReview abstract grounded in evidence.\n", encoding="utf-8")
+    analysis_file.write_text("# Analysis\nReview audit notes.\n", encoding="utf-8")
+    refs_file.write_text(
+        "@article{known2026,\n"
+        "  title={Known Review Reference},\n"
+        "  author={Doe, Jane},\n"
+        "  year={2026}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    report = publisher.publish_from_tool_result(
+        session_id="review_pack001",
+        tool_name="review_pack_writer",
+        raw_result={
+            "tool": "review_pack_writer",
+            "pack": {
+                "outputs": {
+                    "references_bib": str(refs_file),
+                }
+            },
+            "draft": {
+                "tool": "manuscript_writer",
+                "sections": [
+                    {
+                        "section": "abstract",
+                        "path": str(section_file),
+                    }
+                ],
+                "output_path": str(output_file),
+                "analysis_path": str(analysis_file),
+            },
+        },
+        summary="review pack finished",
+        task_name="Write review abstract",
+    )
+
+    assert report is not None
+    latest_root = tmp_path / "runtime" / "session_review_pack001" / "deliverables" / "latest"
+    abstract_tex = latest_root / "paper" / "sections" / "abstract.tex"
+    abstract_doc = latest_root / "docs" / "abstract.md"
+    report_doc = latest_root / "docs" / "report.md"
+    analysis_doc = latest_root / "docs" / "analysis.md"
+    refs_bib = latest_root / "refs" / "references.bib"
+
+    assert abstract_tex.exists()
+    assert "AUTO_PLACEHOLDER" not in abstract_tex.read_text(encoding="utf-8")
+    assert "Review abstract grounded in evidence." in abstract_tex.read_text(encoding="utf-8")
+    assert abstract_doc.exists()
+    assert report_doc.exists()
+    assert analysis_doc.exists()
+    assert refs_bib.exists()
+    assert "known2026" in refs_bib.read_text(encoding="utf-8")
+    assert report.paper_status["completed_count"] >= 1
+    assert "abstract" in report.paper_status["completed_sections"]
+
+
 def test_publish_manuscript_section_stages_markdown_images(tmp_path: Path):
     publisher = _build_publisher(tmp_path)
     image = tmp_path / "workspace" / "assets" / "roc.png"
