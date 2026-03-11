@@ -40,4 +40,4 @@ fi
 
 # （ 8001，）
 echo "🚀 Starting A-mem API on port 8001..."
-python api.py --port 8001
+exec python api.py --port 8001

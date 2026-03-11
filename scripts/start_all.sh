@@ -33,17 +33,11 @@ start_bg() {
   local log_file="$LOG_DIR/${name}.log"
   local pid_file="$LOG_DIR/${name}.pid"
 
-  # Detach the child from the current process group so that an SSH disconnect
-  # (SIGHUP) or parent script exit does not kill the service.
-  # setsid is Linux-only; on macOS we fall back to plain nohup.
-  {
-    if command -v setsid >/dev/null 2>&1; then
-      setsid nohup bash -c "$cmd" > "$log_file" 2>&1 < /dev/null &
-    else
-      nohup bash -c "$cmd" > "$log_file" 2>&1 < /dev/null &
-    fi
-    echo $!
-  } > "$pid_file.tmp"
+  # Run under nohup so SSH disconnects do not terminate the service.
+  # Each command should exec its long-lived process so the recorded PID matches
+  # the actual listener process and can be stopped cleanly later.
+  nohup bash -lc "$cmd" > "$log_file" 2>&1 < /dev/null &
+  echo $! > "$pid_file.tmp"
   
   # Read PID and clean up
   local pid
@@ -58,9 +52,9 @@ start_bg() {
   sleep 1
 }
 
-start_bg "amem" "bash \"$ROOT_DIR/scripts/start_amem.sh\""
-start_bg "backend" "cd \"$ROOT_DIR\" && BACKEND_RELOAD=false bash \"$ROOT_DIR/start_backend.sh\""
-start_bg "frontend" "cd \"$ROOT_DIR/web-ui\" && npm run dev"
+start_bg "amem" "exec bash \"$ROOT_DIR/scripts/start_amem.sh\""
+start_bg "backend" "cd \"$ROOT_DIR\" && export BACKEND_RELOAD=false && exec bash \"$ROOT_DIR/start_backend.sh\""
+start_bg "frontend" "cd \"$ROOT_DIR/web-ui\" && exec npm run dev"
 
 echo "All services started."
 echo "Running health checks..."

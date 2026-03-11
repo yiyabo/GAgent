@@ -48,7 +48,7 @@ esac
 
 cd "$ROOT_DIR"
 
-python -m uvicorn app.main:app \
+exec python -m uvicorn app.main:app \
     --host "$BACKEND_HOST" \
     --port "$BACKEND_PORT" \
     "${RELOAD_ARGS[@]}"

@@ -50,13 +50,23 @@ kill_by_port() {
     return 1
   fi
 
-  if ! command -v lsof >/dev/null 2>&1; then
-    echo "$name: lsof not found; cannot stop by port $port."
+  local pids
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | tr '\n' ' ')"
+  elif command -v ss >/dev/null 2>&1; then
+    pids="$(
+      ss -ltnp "( sport = :$port )" 2>/dev/null \
+        | grep -o 'pid=[0-9]\+' \
+        | cut -d= -f2 \
+        | sort -u \
+        | tr '\n' ' '
+    )"
+  elif command -v fuser >/dev/null 2>&1; then
+    pids="$(fuser -n tcp "$port" 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+$' | tr '\n' ' ')"
+  else
+    echo "$name: no supported port-inspection tool found (need one of lsof, ss, fuser)."
     return 1
   fi
-
-  local pids
-  pids="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | tr '\n' ' ')"
 
   if [ -z "$pids" ]; then
     echo "$name: no process listening on port $port."
