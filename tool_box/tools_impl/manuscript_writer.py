@@ -78,6 +78,13 @@ _SECTION_EVAL_DIMS: Dict[str, List[str]] = {
     "conclusion": ["structure", "clarity", "cohesion", "academic_style"],
 }
 
+_REVIEW_SECTION_EVAL_DIMS: Dict[str, List[str]] = {
+    "method": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion"],
+    "experiment": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion"],
+    "result": ["results_analysis", "clarity", "cohesion", "citation_integrity", "structure"],
+    "discussion": ["scientific_rigor", "results_analysis", "clarity", "cohesion", "citation_integrity"],
+}
+
 _DIMENSION_WEIGHTS: Dict[str, float] = {
     "scientific_rigor": 1.5,
     "citation_integrity": 1.3,
@@ -157,9 +164,30 @@ def _default_analysis_path(output_path: Path) -> Path:
 def _resolve_session_dir(session_id: Optional[str]) -> Optional[Path]:
     if not session_id:
         return None
-    session_dir = _RUNTIME_DIR / f"session_{session_id}"
+    normalized = str(session_id).strip()
+    if not normalized:
+        return None
+    session_name = normalized if normalized.startswith("session_") else f"session_{normalized}"
+    session_dir = _RUNTIME_DIR / session_name
     session_dir.mkdir(parents=True, exist_ok=True)
     return session_dir
+
+
+def _is_review_article_task(task: str) -> bool:
+    text = str(task or "").strip().lower()
+    if not text:
+        return False
+    review_markers = (
+        "review article",
+        "literature review",
+        "systematic review",
+        "narrative review",
+        "survey article",
+        "state-of-the-art review",
+        "write a review",
+        "review on",
+    )
+    return any(marker in text for marker in review_markers)
 
 
 def _resolve_model_name(model_name: Optional[str]) -> Optional[str]:
@@ -316,33 +344,56 @@ def _section_title(section: str) -> str:
     return mapping.get(section.lower(), section.title())
 
 
-def _section_eval_dims(section: str) -> List[str]:
+def _section_eval_dims(section: str, *, review_mode: bool = False) -> List[str]:
     """Return evaluation dimensions relevant to *section*."""
     key = _normalize_section_key(section)
+    if review_mode:
+        review_dims = _REVIEW_SECTION_EVAL_DIMS.get(key)
+        if review_dims:
+            return review_dims
     return _SECTION_EVAL_DIMS.get(key, _ALL_EVAL_DIMENSIONS)
 
 
-def _section_requirements(section: str) -> List[str]:
+def _section_requirements(section: str, *, review_mode: bool = False) -> List[str]:
     section = _normalize_section_key(section)
     if section == "abstract":
         return [
             "Provide background, objective, methods, key results, and conclusion.",
-            "State key numeric findings with units when available.",
+            "State representative numeric findings with units when available; if the source literature is qualitative, say so explicitly.",
             "Keep concise but substantive.",
         ]
     if section == "introduction":
         return [
             "Explain the scientific motivation and gap.",
             "Summarize relevant prior work only from provided context.",
-            "State study objectives and hypotheses.",
+            (
+                "State review objectives and research questions."
+                if review_mode
+                else "State study objectives and hypotheses."
+            ),
         ]
     if section == "method":
+        if review_mode:
+            return [
+                "Describe the literature search and evidence synthesis workflow.",
+                "State databases, search scope, study selection criteria, and evidence extraction approach when available.",
+                "Be explicit about which methodological details were available versus missing in the source studies.",
+                "Do not invent statistical procedures, thresholds, or software versions that were not reported by the source literature.",
+            ]
         return [
             "Provide full data processing steps and parameter settings.",
             "Describe statistical tests and model configurations.",
             "Include QC thresholds, inclusion/exclusion criteria, and software versions if provided.",
         ]
     if section == "experiment":
+        if review_mode:
+            return [
+                "Present a comparative synthesis of representative experimental systems, cohorts, assays, or study designs from the cited literature.",
+                "Summarize controls, endpoints, and measurements reported across studies when available.",
+                "Report representative quantitative findings with units when available, but do not invent p-values, effect sizes, or uncertainty when the source studies do not provide them.",
+                "Clearly distinguish extracted evidence from the review's synthesis or interpretation.",
+                "If original figures/tables are unavailable, describe the proposed figure or table content instead of pretending direct figure assets exist.",
+            ]
         return [
             "Detail experimental setup, datasets, and analysis workflow.",
             "Specify sample groups, inclusion/exclusion criteria, and preprocessing steps.",
@@ -352,6 +403,13 @@ def _section_requirements(section: str) -> List[str]:
             "Report key numeric results with units and uncertainty where available.",
         ]
     if section == "result":
+        if review_mode:
+            return [
+                "Synthesize the major findings across studies and explain points of agreement, disagreement, or heterogeneity.",
+                "Report representative quantitative findings with units when available; if the literature is mainly qualitative, state that clearly.",
+                "Ground claims in cited evidence and describe any proposed tables/figures when direct figure assets are unavailable.",
+                "Do not present this section as newly generated original experimental data.",
+            ]
         return [
             "Interpret quantitative results and link to figures/tables.",
             "Discuss effect sizes, significance, and practical implications.",
@@ -406,14 +464,22 @@ def _build_section_prompt(
     analysis_memo: str,
     context_text: str,
     requirements: List[str],
+    *,
+    review_mode: bool = False,
 ) -> str:
     section_title = _section_title(section)
     requirements_text = "\n".join(f"- {item}" for item in requirements)
+    mode_text = (
+        "- This manuscript is a review/synthesis article, not an original experimental report.\n"
+        if review_mode
+        else ""
+    )
     return (
         f"Write the section: {section_title}\n\n"
         "Requirements:\n"
         f"{requirements_text}\n\n"
         "Writing rules:\n"
+        f"{mode_text}"
         "- Use cohesive expert academic prose (avoid short fragmented sentences).\n"
         "- Ground all claims in the provided analysis memo and context.\n"
         "- Do NOT fabricate citations or results.\n"
@@ -430,12 +496,22 @@ def _build_evaluation_prompt(
     analysis_memo: str,
     section_text: str,
     requirements: List[str],
+    *,
+    review_mode: bool = False,
 ) -> str:
     section_title = _section_title(section)
     requirements_text = "\n".join(f"- {item}" for item in requirements)
-    dims = _section_eval_dims(section)
+    dims = _section_eval_dims(section, review_mode=review_mode)
     dims_text = "\n".join(f"- {d}" for d in dims)
     scores_example = ", ".join(f'"{d}": 0.0' for d in dims)
+    review_rules = (
+        "- This manuscript is a review/synthesis article, not an original experimental report.\n"
+        "- Do not penalize the section merely because primary studies omit p-values, effect sizes, or uncertainty, as long as the section transparently states those limitations.\n"
+        "- For review manuscripts, score `results_analysis` based on cross-study synthesis quality, evidence linkage, and explicit handling of missing quantitative data.\n"
+        "- For review manuscripts, score `scientific_rigor` based on faithful reporting, transparency about evidence limitations, and sound synthesis rather than the presence of newly generated data.\n"
+        if review_mode
+        else ""
+    )
     return (
         "You are a strict scientific writing reviewer. "
         "Evaluate the following section and return JSON ONLY.\n\n"
@@ -452,6 +528,7 @@ def _build_evaluation_prompt(
         '  "pass": true\n'
         "}\n\n"
         "Rules:\n"
+        f"{review_rules}"
         "- If any requirement is missing or weak, include it in defects.\n"
         "- If citations are fabricated or unsupported, set pass=false.\n"
         "- Keep defects and revision instructions concise and specific.\n\n"
@@ -468,14 +545,23 @@ def _build_revision_prompt(
     section_text: str,
     evaluation: Dict[str, Any],
     requirements: List[str],
+    *,
+    review_mode: bool = False,
 ) -> str:
     section_title = _section_title(section)
     requirements_text = "\n".join(f"- {item}" for item in requirements)
     evaluation_json = json.dumps(evaluation, ensure_ascii=True, indent=2)
+    mode_text = (
+        "This manuscript is a review/synthesis article, not an original experimental report. "
+        "Preserve explicit statements about missing quantitative evidence when the source literature does not provide it.\n\n"
+        if review_mode
+        else ""
+    )
     return (
         f"Revise the section: {section_title}\n\n"
         "Section requirements:\n"
         f"{requirements_text}\n\n"
+        f"{mode_text}"
         "Use the evaluation feedback to improve the section. "
         "Address all defects and follow revision instructions. "
         "Do NOT fabricate citations or results.\n\n"
@@ -581,6 +667,7 @@ async def manuscript_writer_handler(
         section_list = [_normalize_section_key(s) for s in section_list if s and str(s).strip()]
         if not section_list:
             section_list = list(_DEFAULT_SECTIONS)
+        review_mode = _is_review_article_task(task)
 
         context_text = _build_context_blocks(context_paths, max_context_bytes)
         bib_keys = _extract_bibtex_keys(context_text)
@@ -723,11 +810,18 @@ async def manuscript_writer_handler(
             """Generate, evaluate, and revise one section. Returns a result dict."""
             section_filename = f"{idx:02d}_{section}.md"
             section_path = sections_dir / section_filename
-            requirements = _section_requirements(section)
+            requirements = _section_requirements(section, review_mode=review_mode)
 
             text = await _chat(
                 gen_llm,
-                _build_section_prompt(task, section, analysis_memo, context_text, requirements),
+                _build_section_prompt(
+                    task,
+                    section,
+                    analysis_memo,
+                    context_text,
+                    requirements,
+                    review_mode=review_mode,
+                ),
                 gen_model,
             )
 
@@ -738,7 +832,13 @@ async def manuscript_writer_handler(
 
             for attempt in range(1, max_revisions + 1):
                 attempts = attempt
-                eval_prompt = _build_evaluation_prompt(section, analysis_memo, text, requirements)
+                eval_prompt = _build_evaluation_prompt(
+                    section,
+                    analysis_memo,
+                    text,
+                    requirements,
+                    review_mode=review_mode,
+                )
                 eval_raw = await _chat(eval_llm, eval_prompt, eval_model)
                 evaluation_data = _parse_json_payload(eval_raw)
 
@@ -754,7 +854,7 @@ async def manuscript_writer_handler(
                     }
 
                 scores = evaluation_data.get("scores") or {}
-                section_dims = _section_eval_dims(section)
+                section_dims = _section_eval_dims(section, review_mode=review_mode)
                 avg_score = _weighted_score(scores, section_dims) if isinstance(scores, dict) else 0.0
                 pass_flag = evaluation_data.get("pass")
                 if pass_flag is None:
@@ -771,8 +871,13 @@ async def manuscript_writer_handler(
                     break
 
                 revision_prompt = _build_revision_prompt(
-                    section, analysis_memo, context_text, text,
-                    evaluation_data, requirements,
+                    section,
+                    analysis_memo,
+                    context_text,
+                    text,
+                    evaluation_data,
+                    requirements,
+                    review_mode=review_mode,
                 )
                 text = await _chat(gen_llm, revision_prompt, gen_model)
 

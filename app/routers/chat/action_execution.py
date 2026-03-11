@@ -292,6 +292,54 @@ def _extract_blocking_failures(steps: List[Any]) -> List[Dict[str, Any]]:
     return failures
 
 
+_AUTO_DEEP_THINK_RETRY_BLOCKED_TOOLS = {
+    "review_pack_writer",
+    "manuscript_writer",
+    "literature_pipeline",
+}
+_AUTO_DEEP_THINK_RETRY_BLOCKED_ERROR_CODES = {
+    "section_evaluation_failed",
+    "citation_validation_failed",
+}
+
+
+def _should_attempt_blocking_failure_retry(steps: List[Any], context: Dict[str, Any]) -> bool:
+    if not _auto_deep_think_retry_enabled(context):
+        return False
+
+    for step in steps or []:
+        action = getattr(step, "action", None)
+        if action is None or not bool(getattr(action, "blocking", False)):
+            continue
+        if bool(getattr(step, "success", False)):
+            continue
+
+        action_name = str(getattr(action, "name", "") or "").strip().lower()
+        if getattr(action, "kind", None) == "tool_operation" and action_name in _AUTO_DEEP_THINK_RETRY_BLOCKED_TOOLS:
+            return False
+
+        details = step.details if isinstance(step.details, dict) else {}
+        result_payload = details.get("result")
+        if not isinstance(result_payload, dict):
+            continue
+
+        error_code = str(result_payload.get("error_code") or result_payload.get("error") or "").strip().lower()
+        if error_code in _AUTO_DEEP_THINK_RETRY_BLOCKED_ERROR_CODES:
+            return False
+        if result_payload.get("partial") or result_payload.get("partial_output_path"):
+            return False
+
+        draft_payload = result_payload.get("draft")
+        if isinstance(draft_payload, dict):
+            if draft_payload.get("quality_gate_passed") is False:
+                return False
+            failed_sections = draft_payload.get("failed_sections")
+            if isinstance(failed_sections, list) and failed_sections:
+                return False
+
+    return True
+
+
 def _auto_deep_think_retry_enabled(context: Dict[str, Any]) -> bool:
     context_value = context.get(_AUTO_DEEP_THINK_RETRY_CONTEXT_KEY)
     if context_value is not None:
@@ -1265,7 +1313,7 @@ async def _execute_action_run(run_id: str) -> None:
         if (
             not effective_success
             and blocking_failures
-            and _auto_deep_think_retry_enabled(context)
+            and _should_attempt_blocking_failure_retry(result.steps, context)
         ):
             plan_decomposition_jobs.append_log(
                 job.job_id,

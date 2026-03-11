@@ -343,3 +343,65 @@ def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
     assert captured["draft"]["output_path"].startswith(
         "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_"
     )
+
+
+def test_manuscript_writer_review_mode_relaxes_experiment_and_result_rubrics() -> None:
+    assert manuscript_writer_module._is_review_article_task(
+        "Write a submission-ready English review article on Pseudomonas phage."
+    )
+
+    experiment_requirements = manuscript_writer_module._section_requirements(
+        "experiment",
+        review_mode=True,
+    )
+    result_requirements = manuscript_writer_module._section_requirements(
+        "result",
+        review_mode=True,
+    )
+    experiment_dims = manuscript_writer_module._section_eval_dims(
+        "experiment",
+        review_mode=True,
+    )
+    result_dims = manuscript_writer_module._section_eval_dims(
+        "result",
+        review_mode=True,
+    )
+
+    assert any("comparative synthesis" in item for item in experiment_requirements)
+    assert any("original experimental data" in item for item in result_requirements)
+    assert "results_analysis" not in experiment_dims
+    assert "scientific_rigor" not in result_dims
+
+
+def test_manuscript_writer_review_mode_prompts_flag_review_synthesis_context() -> None:
+    requirements = manuscript_writer_module._section_requirements("result", review_mode=True)
+
+    section_prompt = manuscript_writer_module._build_section_prompt(
+        "Write a submission-ready English review article.",
+        "result",
+        "# Analysis Memo",
+        "context",
+        requirements,
+        review_mode=True,
+    )
+    evaluation_prompt = manuscript_writer_module._build_evaluation_prompt(
+        "result",
+        "# Analysis Memo",
+        "## Results\nSynthesis",
+        requirements,
+        review_mode=True,
+    )
+    revision_prompt = manuscript_writer_module._build_revision_prompt(
+        "result",
+        "# Analysis Memo",
+        "context",
+        "## Results\nSynthesis",
+        {"scores": {"results_analysis": 0.7}, "defects": [], "revision_instructions": []},
+        requirements,
+        review_mode=True,
+    )
+
+    expected_marker = "review/synthesis article, not an original experimental report"
+    assert expected_marker in section_prompt
+    assert expected_marker in evaluation_prompt
+    assert "Preserve explicit statements about missing quantitative evidence" in revision_prompt
