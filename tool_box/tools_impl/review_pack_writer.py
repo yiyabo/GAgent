@@ -46,6 +46,15 @@ def _bar(done: int, total: int, width: int = 24) -> str:
     return "[" + ("#" * filled) + ("-" * (width - filled)) + f"] {int(frac*100)}%"
 
 
+def _resolve_default_pack_dir(*, session_id: Optional[str], timestamp: str) -> Path:
+    if isinstance(session_id, str) and session_id.strip():
+        from app.services.session_paths import get_session_tool_outputs_dir
+
+        root = get_session_tool_outputs_dir(session_id.strip(), create=True)
+        return (root / "review_pack_writer" / f"review_pack_{timestamp}").resolve()
+    return (_PROJECT_ROOT / "runtime" / "literature" / f"review_pack_{timestamp}").resolve()
+
+
 def _default_pubmed_query(topic: str) -> str:
     # Focused for: phage-host interactions + phage omics/databases.
     # Users can override with query explicitly.
@@ -106,6 +115,7 @@ async def review_pack_writer_handler(
     # misc
     user_agent: Optional[str] = None,
     proxy: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not isinstance(topic, str) or not topic.strip():
         return {"tool": "review_pack_writer", "success": False, "error": "missing_topic"}
@@ -115,7 +125,14 @@ async def review_pack_writer_handler(
 
     # Resolve out_dir
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    default_out = Path("runtime/literature") / f"review_pack_{ts}"
+    try:
+        default_out = _resolve_default_pack_dir(session_id=session_id, timestamp=ts)
+    except Exception as exc:
+        return {
+            "tool": "review_pack_writer",
+            "success": False,
+            "error": f"session_output_dir_unavailable: {exc}",
+        }
     pack_dir = Path(out_dir) if out_dir else default_out
     if not pack_dir.is_absolute():
         pack_dir = (_PROJECT_ROOT / pack_dir).resolve()
@@ -140,6 +157,7 @@ async def review_pack_writer_handler(
         max_pdfs=max_pdfs,
         user_agent=user_agent,
         proxy=proxy,
+        session_id=session_id,
     )
     stage = 1
 
@@ -175,6 +193,7 @@ async def review_pack_writer_handler(
         generation_provider=generation_provider,
         evaluation_provider=evaluation_provider,
         merge_provider=merge_provider,
+        session_id=session_id,
     )
     stage = 2
 
@@ -251,6 +270,10 @@ review_pack_writer_tool = {
             "topic": {"type": "string", "description": "Review topic (e.g., phage–host interaction; phage omics/databases)."},
             "query": {"type": "string", "description": "Optional PubMed query override (boolean operators supported)."},
             "out_dir": {"type": "string", "description": "Output directory (project-relative preferred)."},
+            "session_id": {
+                "type": "string",
+                "description": "Optional session id. When out_dir is omitted, the review pack is created under the session tool_outputs directory.",
+            },
             "max_results": {"type": "integer", "default": 80, "description": "Max PubMed results (<=500)."},
             "download_pdfs": {"type": "boolean", "default": False, "description": "Download OA PDFs from PMC when possible."},
             "max_pdfs": {"type": "integer", "default": 30, "description": "Max PMC PDFs to download."},

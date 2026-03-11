@@ -218,3 +218,128 @@ def test_review_pack_partial_always_failed(monkeypatch: pytest.MonkeyPatch, tmp_
     assert result["partial"] is True
     assert result["error_code"] == "section_evaluation_failed"
     assert result["partial_output_path"] == "runtime/literature/review_draft.partial.md"
+
+
+def test_literature_pipeline_scopes_default_output_by_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tool_box.tools_impl import literature_pipeline as literature_pipeline_module
+
+    monkeypatch.setattr(literature_pipeline_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(literature_pipeline_module, "_RUNTIME_DIR", tmp_path / "runtime")
+
+    session_root = tmp_path / "runtime" / "session_demo" / "tool_outputs"
+
+    def _fake_session_root(session_id: str, *, create: bool = False) -> Path:
+        assert session_id == "demo"
+        if create:
+            session_root.mkdir(parents=True, exist_ok=True)
+        return session_root
+
+    async def _fake_esearch(_client, _query, retmax: int):
+        assert retmax == 2
+        return ["1"]
+
+    async def _fake_efetch(_client, _pmids):
+        return (
+            "<PubmedArticleSet>"
+            "<PubmedArticle>"
+            "<MedlineCitation>"
+            "<PMID>1</PMID>"
+            "<Article>"
+            "<ArticleTitle>Known phage study</ArticleTitle>"
+            "<Abstract><AbstractText>Grounded abstract.</AbstractText></Abstract>"
+            "<Journal><Title>Virology</Title><JournalIssue><PubDate><Year>2025</Year></PubDate></JournalIssue></Journal>"
+            "<AuthorList><Author><LastName>Doe</LastName><Initials>J</Initials></Author></AuthorList>"
+            "</Article>"
+            "</MedlineCitation>"
+            "<PubmedData><ArticleIdList><ArticleId IdType=\"doi\">10.1/example</ArticleId></ArticleIdList></PubmedData>"
+            "</PubmedArticle>"
+            "</PubmedArticleSet>"
+        )
+
+    monkeypatch.setattr(
+        "app.services.session_paths.get_session_tool_outputs_dir",
+        _fake_session_root,
+    )
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_esearch", _fake_esearch)
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_efetch_xml", _fake_efetch)
+
+    result = asyncio.run(
+        literature_pipeline_module.literature_pipeline_handler(
+            query="phage host interaction",
+            max_results=2,
+            download_pdfs=False,
+            session_id="demo",
+        )
+    )
+
+    assert result["success"] is True
+    output_dir = result["output_dir"]
+    assert output_dir.startswith("runtime/session_demo/tool_outputs/literature_pipeline/review_pack_")
+    assert (tmp_path / output_dir / "library.jsonl").exists()
+    assert (tmp_path / output_dir / "references.bib").exists()
+    assert (tmp_path / output_dir / "evidence.md").exists()
+
+
+def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(review_pack_writer_module, "_PROJECT_ROOT", tmp_path)
+
+    session_root = tmp_path / "runtime" / "session_demo" / "tool_outputs"
+
+    def _fake_session_root(session_id: str, *, create: bool = False) -> Path:
+        assert session_id == "demo"
+        if create:
+            session_root.mkdir(parents=True, exist_ok=True)
+        return session_root
+
+    captured: Dict[str, Dict[str, Any]] = {}
+
+    async def _fake_lit(*args, **kwargs):
+        _ = args
+        captured["lit"] = dict(kwargs)
+        return {
+            "success": True,
+            "outputs": {
+                "evidence_md": "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/evidence.md",
+                "references_bib": "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/references.bib",
+            },
+        }
+
+    async def _fake_draft(*args, **kwargs):
+        _ = args
+        captured["draft"] = dict(kwargs)
+        return {
+            "success": True,
+            "quality_gate_passed": True,
+            "output_path": kwargs["output_path"],
+            "temp_workspace": "runtime/session_demo/tool_outputs/review_pack_writer/workspace",
+        }
+
+    monkeypatch.setattr(
+        "app.services.session_paths.get_session_tool_outputs_dir",
+        _fake_session_root,
+    )
+    monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _fake_lit)
+    monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fake_draft)
+
+    result = asyncio.run(
+        review_pack_writer_module.review_pack_writer_handler(
+            topic="Test topic",
+            session_id="demo",
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["lit"]["session_id"] == "demo"
+    assert captured["draft"]["session_id"] == "demo"
+    assert captured["lit"]["out_dir"].startswith(
+        "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_"
+    )
+    assert captured["draft"]["output_path"].startswith(
+        "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_"
+    )
