@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -129,3 +130,58 @@ def test_render_cache_hash_changes_when_staged_figure_changes(tmp_path: Path) ->
     after = artifact_routes._get_render_cache_path(main_tex, "pdf")
 
     assert before != after
+
+
+def test_list_session_deliverables_exposes_paper_drafts_when_sections_exist(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    info_root = tmp_path / "information_sessions"
+    session_dir = runtime_root / "session_abc123"
+    latest_root = session_dir / "deliverables" / "latest"
+    paper_file = latest_root / "paper" / "sections" / "abstract.tex"
+    refs_file = latest_root / "refs" / "references.bib"
+    manifest_path = session_dir / "deliverables" / "manifest_latest.json"
+
+    paper_file.parent.mkdir(parents=True, exist_ok=True)
+    refs_file.parent.mkdir(parents=True, exist_ok=True)
+    paper_file.write_text("\\begin{abstract}draft abstract\\end{abstract}\n", encoding="utf-8")
+    refs_file.write_text("@article{draft,\n  title={Draft}\n}\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "version_id": "v1",
+                "items": [
+                    {"module": "paper", "path": "paper/sections/abstract.tex", "status": "draft"},
+                    {"module": "refs", "path": "refs/references.bib", "status": "draft"},
+                ],
+                "paper_status": {
+                    "completed_sections": ["abstract"],
+                    "missing_sections": ["introduction"],
+                    "total_sections": 2,
+                    "completed_count": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", info_root)
+
+    response = asyncio.run(
+        artifact_routes.list_session_deliverables(
+            "session_abc123",
+            scope="latest",
+            version=None,
+            include_draft=False,
+            module=None,
+            limit=1000,
+        )
+    )
+
+    assert response.count == 2
+    assert sorted(response.modules.keys()) == ["paper", "refs"]
+    assert {item.status for item in response.items} == {"draft"}
+    assert response.paper_status["completed_count"] == 1

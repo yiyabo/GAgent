@@ -613,6 +613,19 @@ async def list_session_deliverables(
         module_filter=module,
         limit=limit,
     )
+    paper_status = _paper_status_from_manifest(manifest)
+    if (
+        not include_draft
+        and not items
+        and int(paper_status.get("completed_count") or 0) > 0
+    ):
+        items, modules = _materialize_deliverable_items(
+            manifest=manifest,
+            files_root=files_root,
+            include_draft=True,
+            module_filter=module,
+            limit=limit,
+        )
     versions = _list_deliverable_versions(history_root=_deliverables_history_dir(session_dir))
 
     return DeliverableListResponse(
@@ -623,7 +636,7 @@ async def list_session_deliverables(
         modules=modules,
         items=items,
         count=len(items),
-        paper_status=_paper_status_from_manifest(manifest),
+        paper_status=paper_status,
         available_versions=versions,
     )
 
