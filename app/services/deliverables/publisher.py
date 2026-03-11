@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -99,6 +99,7 @@ DOC_ALLOWED_STEMS = {
     "references",
     "report",
     "analysis",
+    "release_summary",
     "survey",
     "summary",
 }
@@ -213,6 +214,10 @@ class PublishReport:
     published_modules: List[str]
     manifest_path: str
     paper_status: Dict[str, Any]
+    release_state: str = "final"
+    public_release_ready: bool = True
+    release_summary: Optional[str] = None
+    hidden_artifact_prefixes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -221,6 +226,10 @@ class PublishReport:
             "published_modules": list(self.published_modules),
             "manifest_path": self.manifest_path,
             "paper_status": dict(self.paper_status),
+            "release_state": self.release_state,
+            "public_release_ready": bool(self.public_release_ready),
+            "release_summary": self.release_summary,
+            "hidden_artifact_prefixes": list(self.hidden_artifact_prefixes),
         }
 
 
@@ -278,7 +287,14 @@ class DeliverablePublisher:
         normalized_session = str(session_id or "").strip()
         if not normalized_session:
             return None
-        if self._is_failed_result(raw_result) and not self._has_publishable_partial_result(raw_result):
+        normalized_tool = str(tool_name or "").strip().lower()
+        release_meta = self._extract_release_metadata(raw_result)
+        blocked_manuscript_release = self._is_blocked_manuscript_release(tool_name, raw_result)
+        if (
+            self._is_failed_result(raw_result)
+            and not self._has_publishable_partial_result(raw_result)
+            and not blocked_manuscript_release
+        ):
             return None
 
         session_dir = self.get_session_dir(normalized_session, create=True)
@@ -292,6 +308,8 @@ class DeliverablePublisher:
             (latest_root / module).mkdir(parents=True, exist_ok=True)
         latest_manifest_path = deliverables_root / "manifest_latest.json"
         previous_manifest = self._read_manifest(latest_manifest_path)
+        if normalized_tool in {"manuscript_writer", "review_pack_writer"}:
+            self._purge_manuscript_public_outputs(latest_root)
 
         now = _utc_now()
         source_payload = {
@@ -307,100 +325,113 @@ class DeliverablePublisher:
             run_stats = raw_result.get("run_stats")
             if isinstance(run_stats, dict):
                 source_payload["run_stats"] = run_stats
+        source_payload["release_state"] = release_meta["release_state"]
+        source_payload["public_release_ready"] = release_meta["public_release_ready"]
         items: List[Dict[str, Any]] = []
 
-        explicit_file_candidates = self._extract_explicit_file_candidates(raw_result)
-        if explicit_file_candidates:
-            resolved_files = self._resolve_files(
-                path_candidates=explicit_file_candidates,
-                session_dir=session_dir,
-                allow_directories=False,
-            )
-        else:
-            path_candidates = self._extract_path_candidates(raw_result)
-            resolved_files = self._resolve_files(
-                path_candidates=path_candidates,
-                session_dir=session_dir,
-                allow_directories=True,
-            )
-        for file_path in resolved_files:
-            module = self._classify_module(file_path)
-            if module is None:
-                continue
-            if not self._should_publish_file(module, file_path):
-                continue
-            if module == "refs" and file_path.suffix.lower() == ".bib":
-                refs_dir = latest_root / "refs"
-                refs_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    bib_text = file_path.read_text(encoding="utf-8")
-                except Exception:
-                    bib_text = ""
-                merged = self._paper_builder.merge_bib_entries(refs_dir=refs_dir, bib_text=bib_text)
-                if merged is not None:
-                    merged_rel = str(merged.relative_to(latest_root))
-                    items.append(
-                        {
-                            "module": "refs",
-                            "path": merged_rel,
-                            "status": publish_status,
-                            "size": merged.stat().st_size,
-                            "updated_at": now,
-                            "source_path": self._to_project_relative(file_path),
-                        }
-                    )
-                continue
-            source_identity = (
-                self._source_identity(file_path)
-                if module == "image_tabular" and file_path.suffix.lower() in IMAGE_EXTS
-                else None
-            )
-            target = self._copy_to_module(
-                source_path=file_path,
-                module_dir=(latest_root / module),
-                source_identity=source_identity,
+        if blocked_manuscript_release:
+            release_items = self._publish_release_summary(
                 latest_root=latest_root,
-                previous_manifest=previous_manifest,
+                release_summary=release_meta.get("release_summary") or "",
+                updated_at=now,
+                source_path=f"job:{job_id}" if job_id else f"task:{task_id or 'unknown'}",
             )
-            rel_path = str(target.relative_to(latest_root))
-            items.append(
-                {
-                    "module": module,
-                    "path": rel_path,
-                    "status": publish_status,
-                    "size": target.stat().st_size,
-                    "updated_at": now,
-                    "source_path": self._to_project_relative(file_path),
-                }
-            )
-            if module == "image_tabular" and file_path.suffix.lower() in IMAGE_EXTS:
-                staged_figure = self._stage_figure(
-                    latest_root=latest_root,
+            items.extend(release_items)
+        else:
+            explicit_file_candidates = self._extract_explicit_file_candidates(raw_result)
+            if explicit_file_candidates:
+                resolved_files = self._resolve_files(
+                    path_candidates=explicit_file_candidates,
+                    session_dir=session_dir,
+                    allow_directories=False,
+                )
+            else:
+                path_candidates = self._extract_path_candidates(raw_result)
+                resolved_files = self._resolve_files(
+                    path_candidates=path_candidates,
+                    session_dir=session_dir,
+                    allow_directories=True,
+                )
+            for file_path in resolved_files:
+                module = self._classify_module(file_path)
+                if module is None:
+                    continue
+                if not self._should_publish_file(module, file_path):
+                    continue
+                if module == "refs" and file_path.suffix.lower() == ".bib":
+                    refs_dir = latest_root / "refs"
+                    refs_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        bib_text = file_path.read_text(encoding="utf-8")
+                    except Exception:
+                        bib_text = ""
+                    merged = self._paper_builder.merge_bib_entries(refs_dir=refs_dir, bib_text=bib_text)
+                    if merged is not None:
+                        merged_rel = str(merged.relative_to(latest_root))
+                        items.append(
+                            {
+                                "module": "refs",
+                                "path": merged_rel,
+                                "status": publish_status,
+                                "size": merged.stat().st_size,
+                                "updated_at": now,
+                                "source_path": self._to_project_relative(file_path),
+                            }
+                        )
+                    continue
+                source_identity = (
+                    self._source_identity(file_path)
+                    if module == "image_tabular" and file_path.suffix.lower() in IMAGE_EXTS
+                    else None
+                )
+                target = self._copy_to_module(
                     source_path=file_path,
+                    module_dir=(latest_root / module),
+                    source_identity=source_identity,
+                    latest_root=latest_root,
                     previous_manifest=previous_manifest,
                 )
+                rel_path = str(target.relative_to(latest_root))
                 items.append(
                     {
-                        "module": "paper",
-                        "path": str(staged_figure.relative_to(latest_root)),
+                        "module": module,
+                        "path": rel_path,
                         "status": publish_status,
-                        "size": staged_figure.stat().st_size,
+                        "size": target.stat().st_size,
                         "updated_at": now,
                         "source_path": self._to_project_relative(file_path),
                     }
                 )
+                if module == "image_tabular" and file_path.suffix.lower() in IMAGE_EXTS:
+                    staged_figure = self._stage_figure(
+                        latest_root=latest_root,
+                        source_path=file_path,
+                        previous_manifest=previous_manifest,
+                    )
+                    items.append(
+                        {
+                            "module": "paper",
+                            "path": str(staged_figure.relative_to(latest_root)),
+                            "status": publish_status,
+                            "size": staged_figure.stat().st_size,
+                            "updated_at": now,
+                            "source_path": self._to_project_relative(file_path),
+                        }
+                    )
 
-        manuscript_items = self._publish_manuscript_outputs(
-            latest_root=latest_root,
-            raw_result=raw_result,
-            publish_status=publish_status,
-            updated_at=now,
-            source_task_id=task_id,
-            task_name=task_name,
-            previous_manifest=previous_manifest,
-        )
-        if manuscript_items:
-            items.extend(manuscript_items)
+        manuscript_items: List[Dict[str, Any]] = []
+        if not blocked_manuscript_release:
+            manuscript_items = self._publish_manuscript_outputs(
+                latest_root=latest_root,
+                raw_result=raw_result,
+                publish_status=publish_status,
+                updated_at=now,
+                source_task_id=task_id,
+                task_name=task_name,
+                previous_manifest=previous_manifest,
+            )
+            if manuscript_items:
+                items.extend(manuscript_items)
 
         manuscript_has_section_artifacts = any(
             isinstance(item, dict)
@@ -411,11 +442,10 @@ class DeliverablePublisher:
 
         text_blob = self._extract_text_blob(raw_result=raw_result, summary=summary)
         section: Optional[str] = None
-        normalized_tool = str(tool_name or "").strip().lower()
         # manuscript_writer outputs with explicit section artifacts should be source of truth;
         # skip generic text-based section inference to avoid overwriting section content with
         # summaries (e.g., "manuscript finished").
-        if not manuscript_has_section_artifacts:
+        if not blocked_manuscript_release and not manuscript_has_section_artifacts:
             if normalized_tool == "claude_code":
                 # CC: only publish to paper when task_name implies a section; do not use instruction/text
                 section = self._paper_builder.infer_section(
@@ -487,14 +517,23 @@ class DeliverablePublisher:
         if not items:
             return None
 
-        if paper_dir.exists():
+        if blocked_manuscript_release:
+            paper_status = {
+                "completed_sections": [],
+                "missing_sections": [],
+                "total_sections": 0,
+                "completed_count": 0,
+            }
+        elif paper_dir.exists():
             self._paper_builder.ensure_structure(paper_dir=paper_dir, refs_dir=refs_dir, title=title)
-        paper_status = self._paper_builder.get_status(paper_dir=paper_dir).to_dict() if paper_dir.exists() else {
-            "completed_sections": [],
-            "missing_sections": [],
-            "total_sections": 0,
-            "completed_count": 0,
-        }
+            paper_status = self._paper_builder.get_status(paper_dir=paper_dir).to_dict()
+        else:
+            paper_status = {
+                "completed_sections": [],
+                "missing_sections": [],
+                "total_sections": 0,
+                "completed_count": 0,
+            }
 
         deduped_updates = self._dedupe_items(items)
         merged_items = self._collect_latest_items(
@@ -512,6 +551,10 @@ class DeliverablePublisher:
             source=source_payload,
             items=merged_items,
             paper_status=paper_status,
+            release_state=str(release_meta.get("release_state") or "final"),
+            public_release_ready=bool(release_meta.get("public_release_ready")),
+            release_summary=release_meta.get("release_summary"),
+            hidden_artifact_prefixes=list(release_meta.get("hidden_artifact_prefixes") or []),
         )
         latest_manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -521,6 +564,10 @@ class DeliverablePublisher:
             published_modules=modules,
             manifest_path=str(latest_manifest_path),
             paper_status=paper_status,
+            release_state=str(release_meta.get("release_state") or "final"),
+            public_release_ready=bool(release_meta.get("public_release_ready")),
+            release_summary=release_meta.get("release_summary"),
+            hidden_artifact_prefixes=list(release_meta.get("hidden_artifact_prefixes") or []),
         )
 
     @staticmethod
@@ -564,6 +611,112 @@ class DeliverablePublisher:
                 return draft
 
         return None
+
+    @staticmethod
+    def _extract_release_metadata(payload: Any) -> Dict[str, Any]:
+        manuscript_result = DeliverablePublisher._extract_manuscript_result(payload)
+        source_payload = payload if isinstance(payload, dict) else {}
+        preferred_payload = source_payload
+        if not any(
+            key in source_payload
+            for key in ("public_release_ready", "release_state", "release_summary", "hidden_artifact_prefixes")
+        ) and isinstance(manuscript_result, dict):
+            preferred_payload = manuscript_result
+
+        public_release_ready = (
+            bool(preferred_payload.get("public_release_ready"))
+            if isinstance(preferred_payload, dict) and preferred_payload.get("public_release_ready") is not None
+            else not DeliverablePublisher._is_failed_result(payload)
+        )
+        release_state = str(
+            (preferred_payload.get("release_state") if isinstance(preferred_payload, dict) else None)
+            or ("final" if public_release_ready else "blocked")
+        ).strip().lower()
+        release_summary = (
+            str(preferred_payload.get("release_summary") or "").strip()
+            if isinstance(preferred_payload, dict)
+            else ""
+        ) or None
+
+        hidden_artifact_prefixes: List[str] = []
+        for candidate_payload in (manuscript_result, source_payload):
+            if not isinstance(candidate_payload, dict):
+                continue
+            values = candidate_payload.get("hidden_artifact_prefixes")
+            if not isinstance(values, list):
+                continue
+            for item in values:
+                normalized = str(item or "").strip().lstrip("/").replace("\\", "/")
+                if normalized and normalized not in hidden_artifact_prefixes:
+                    hidden_artifact_prefixes.append(normalized)
+
+        return {
+            "public_release_ready": public_release_ready,
+            "release_state": release_state,
+            "release_summary": release_summary,
+            "hidden_artifact_prefixes": hidden_artifact_prefixes,
+        }
+
+    @staticmethod
+    def _is_blocked_manuscript_release(tool_name: str, raw_result: Any) -> bool:
+        normalized_tool = str(tool_name or "").strip().lower()
+        if normalized_tool not in {"manuscript_writer", "review_pack_writer"}:
+            return False
+        release_meta = DeliverablePublisher._extract_release_metadata(raw_result)
+        return not bool(release_meta.get("public_release_ready"))
+
+    def _purge_manuscript_public_outputs(self, latest_root: Path) -> None:
+        paper_dir = latest_root / "paper"
+        refs_dir = latest_root / "refs"
+        docs_dir = latest_root / "docs"
+
+        if paper_dir.exists():
+            shutil.rmtree(paper_dir, ignore_errors=True)
+        if refs_dir.exists():
+            shutil.rmtree(refs_dir, ignore_errors=True)
+
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        refs_dir.mkdir(parents=True, exist_ok=True)
+
+        if docs_dir.exists() and docs_dir.is_dir():
+            for file_path in docs_dir.iterdir():
+                if not file_path.is_file():
+                    continue
+                if file_path.name == "release_summary.md":
+                    try:
+                        file_path.unlink()
+                    except Exception:
+                        logger.debug("Failed to remove stale release summary: %s", file_path)
+                    continue
+                if file_path.stem.lower() in DOC_ALLOWED_STEMS:
+                    try:
+                        file_path.unlink()
+                    except Exception:
+                        logger.debug("Failed to remove manuscript doc artifact: %s", file_path)
+
+    def _publish_release_summary(
+        self,
+        *,
+        latest_root: Path,
+        release_summary: str,
+        updated_at: str,
+        source_path: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        docs_dir = latest_root / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = docs_dir / "release_summary.md"
+        summary_text = (release_summary or "").strip() or "Publication blocked: the manuscript did not pass the final release gate."
+        summary_path.write_text(summary_text + "\n", encoding="utf-8")
+        return [
+            {
+                "module": "docs",
+                "path": str(summary_path.relative_to(latest_root)),
+                "status": "final",
+                "size": summary_path.stat().st_size,
+                "updated_at": updated_at,
+                "source_path": source_path,
+            }
+        ]
 
     def _publish_manuscript_outputs(
         self,
@@ -1418,6 +1571,10 @@ class DeliverablePublisher:
         source: Dict[str, Any],
         items: List[Dict[str, Any]],
         paper_status: Dict[str, Any],
+        release_state: str,
+        public_release_ready: bool,
+        release_summary: Optional[str],
+        hidden_artifact_prefixes: List[str],
     ) -> Dict[str, Any]:
         modules: Dict[str, List[Dict[str, Any]]] = {}
         for item in items:
@@ -1432,6 +1589,10 @@ class DeliverablePublisher:
             "source": source,
             "modules": modules,
             "paper_status": paper_status,
+            "release_state": str(release_state or "final"),
+            "public_release_ready": bool(public_release_ready),
+            "release_summary": release_summary,
+            "hidden_artifact_prefixes": list(hidden_artifact_prefixes),
             "published_files_count": len(items),
             "published_modules": sorted(modules.keys()),
             "items": items,

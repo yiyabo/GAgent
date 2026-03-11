@@ -300,6 +300,7 @@ _AUTO_DEEP_THINK_RETRY_BLOCKED_TOOLS = {
 _AUTO_DEEP_THINK_RETRY_BLOCKED_ERROR_CODES = {
     "section_evaluation_failed",
     "citation_validation_failed",
+    "polish_quality_gate_failed",
 }
 
 
@@ -326,11 +327,19 @@ def _should_attempt_blocking_failure_retry(steps: List[Any], context: Dict[str, 
         error_code = str(result_payload.get("error_code") or result_payload.get("error") or "").strip().lower()
         if error_code in _AUTO_DEEP_THINK_RETRY_BLOCKED_ERROR_CODES:
             return False
+        if result_payload.get("public_release_ready") is False:
+            return False
+        if str(result_payload.get("release_state") or "").strip().lower() == "blocked":
+            return False
         if result_payload.get("partial") or result_payload.get("partial_output_path"):
             return False
 
         draft_payload = result_payload.get("draft")
         if isinstance(draft_payload, dict):
+            if draft_payload.get("public_release_ready") is False:
+                return False
+            if str(draft_payload.get("release_state") or "").strip().lower() == "blocked":
+                return False
             if draft_payload.get("quality_gate_passed") is False:
                 return False
             failed_sections = draft_payload.get("failed_sections")

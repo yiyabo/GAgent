@@ -98,6 +98,11 @@ def test_publish_maps_manuscript_writer_outputs_to_paper_and_docs(tmp_path: Path
         tool_name="manuscript_writer",
         raw_result={
             "tool": "manuscript_writer",
+            "success": True,
+            "public_release_ready": True,
+            "release_state": "final",
+            "release_summary": "Ready for publication.",
+            "hidden_artifact_prefixes": ["tool_outputs/review_pack_writer/review_pack_20260311_000000"],
             "sections": [
                 {
                     "section": "introduction",
@@ -121,6 +126,10 @@ def test_publish_maps_manuscript_writer_outputs_to_paper_and_docs(tmp_path: Path
     assert (latest_root / "docs" / "introduction.md").exists()
     assert (latest_root / "docs" / "analysis.md").exists()
     assert (latest_root / "docs" / "report.md").exists()
+    manifest = json.loads((tmp_path / "runtime" / "session_paper_map001" / "deliverables" / "manifest_latest.json").read_text(encoding="utf-8"))
+    assert manifest["release_state"] == "final"
+    assert manifest["public_release_ready"] is True
+    assert manifest["hidden_artifact_prefixes"] == ["tool_outputs/review_pack_writer/review_pack_20260311_000000"]
 
 
 def test_publish_keeps_single_latest_snapshot_without_history(tmp_path: Path):
@@ -411,6 +420,11 @@ def test_publish_review_pack_writer_maps_nested_manuscript_outputs(tmp_path: Pat
         tool_name="review_pack_writer",
         raw_result={
             "tool": "review_pack_writer",
+            "success": True,
+            "public_release_ready": True,
+            "release_state": "final",
+            "release_summary": "Ready for publication.",
+            "hidden_artifact_prefixes": ["tool_outputs/review_pack_writer/review_pack_20260311_000000"],
             "pack": {
                 "outputs": {
                     "references_bib": str(refs_file),
@@ -418,6 +432,9 @@ def test_publish_review_pack_writer_maps_nested_manuscript_outputs(tmp_path: Pat
             },
             "draft": {
                 "tool": "manuscript_writer",
+                "success": True,
+                "public_release_ready": True,
+                "release_state": "final",
                 "sections": [
                     {
                         "section": "abstract",
@@ -450,9 +467,11 @@ def test_publish_review_pack_writer_maps_nested_manuscript_outputs(tmp_path: Pat
     assert "known2026" in refs_bib.read_text(encoding="utf-8")
     assert report.paper_status["completed_count"] >= 1
     assert "abstract" in report.paper_status["completed_sections"]
+    assert report.release_state == "final"
+    assert report.public_release_ready is True
 
 
-def test_publish_partial_review_pack_writer_failure_as_draft(tmp_path: Path):
+def test_publish_blocked_review_pack_writer_only_exposes_release_summary(tmp_path: Path):
     publisher = _build_publisher(tmp_path)
     section_file = tmp_path / "workspace" / "sections" / "01_abstract.md"
     partial_output = tmp_path / "workspace" / "review_draft.partial.md"
@@ -478,9 +497,13 @@ def test_publish_partial_review_pack_writer_failure_as_draft(tmp_path: Path):
         raw_result={
             "tool": "review_pack_writer",
             "success": False,
-            "partial": True,
-            "error_code": "section_evaluation_failed",
-            "partial_output_path": str(partial_output),
+            "public_release_ready": False,
+            "release_state": "blocked",
+            "release_summary": "Publication blocked: section quality gate failed for abstract.",
+            "hidden_artifact_prefixes": [
+                "tool_outputs/review_pack_writer/review_pack_20260311_000000",
+                ".manuscript_writer_20260311_000000",
+            ],
             "pack": {
                 "outputs": {
                     "references_bib": str(refs_file),
@@ -490,6 +513,8 @@ def test_publish_partial_review_pack_writer_failure_as_draft(tmp_path: Path):
                 "tool": "manuscript_writer",
                 "success": False,
                 "error_code": "section_evaluation_failed",
+                "public_release_ready": False,
+                "release_state": "blocked",
                 "sections": [
                     {
                         "section": "abstract",
@@ -502,23 +527,80 @@ def test_publish_partial_review_pack_writer_failure_as_draft(tmp_path: Path):
         },
         summary="review pack partial draft",
         task_name="Write review abstract",
-        publish_status="draft",
     )
 
     assert report is not None
     latest_root = tmp_path / "runtime" / "session_review_pack_partial001" / "deliverables" / "latest"
-    abstract_tex = latest_root / "paper" / "sections" / "abstract.tex"
-    analysis_doc = latest_root / "docs" / "analysis.md"
-    refs_bib = latest_root / "refs" / "references.bib"
+    summary_doc = latest_root / "docs" / "release_summary.md"
 
-    assert abstract_tex.exists()
-    assert "Partial review abstract." in abstract_tex.read_text(encoding="utf-8")
-    assert analysis_doc.exists()
-    assert refs_bib.exists()
-    assert "partial2026" in refs_bib.read_text(encoding="utf-8")
+    assert summary_doc.exists()
+    assert "Publication blocked" in summary_doc.read_text(encoding="utf-8")
+    assert not (latest_root / "paper" / "sections" / "abstract.tex").exists()
+    assert not (latest_root / "docs" / "analysis.md").exists()
+    assert not (latest_root / "refs" / "references.bib").exists()
     manifest = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
-    assert all(item["status"] == "draft" for item in manifest["items"])
-    assert report.paper_status["completed_count"] >= 1
+    assert manifest["release_state"] == "blocked"
+    assert manifest["public_release_ready"] is False
+    assert manifest["items"] == [
+        {
+            "module": "docs",
+            "path": "docs/release_summary.md",
+            "status": "final",
+            "size": summary_doc.stat().st_size,
+            "updated_at": manifest["items"][0]["updated_at"],
+            "source_path": "task:unknown",
+        }
+    ]
+    assert report.paper_status["completed_count"] == 0
+    assert report.release_state == "blocked"
+    assert report.public_release_ready is False
+
+
+def test_publish_blocked_manuscript_run_clears_previous_public_paper_outputs(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    section_file = tmp_path / "workspace" / "sections" / "01_abstract.md"
+    output_file = tmp_path / "workspace" / "review_draft.md"
+    analysis_file = tmp_path / "workspace" / "review_draft.md.analysis.md"
+    section_file.parent.mkdir(parents=True, exist_ok=True)
+    section_file.write_text("## Abstract\nVisible abstract.\n", encoding="utf-8")
+    output_file.write_text("## Abstract\nVisible abstract.\n", encoding="utf-8")
+    analysis_file.write_text("# Analysis\nVisible analysis.\n", encoding="utf-8")
+
+    first = publisher.publish_from_tool_result(
+        session_id="session_reset001",
+        tool_name="manuscript_writer",
+        raw_result={
+            "tool": "manuscript_writer",
+            "success": True,
+            "public_release_ready": True,
+            "release_state": "final",
+            "sections": [{"section": "abstract", "path": str(section_file)}],
+            "output_path": str(output_file),
+            "analysis_path": str(analysis_file),
+        },
+        summary="ready",
+    )
+    assert first is not None
+
+    second = publisher.publish_from_tool_result(
+        session_id="session_reset001",
+        tool_name="manuscript_writer",
+        raw_result={
+            "tool": "manuscript_writer",
+            "success": False,
+            "public_release_ready": False,
+            "release_state": "blocked",
+            "release_summary": "Publication blocked: release gate failed.",
+            "hidden_artifact_prefixes": [".manuscript_writer_20260311_000000"],
+        },
+        summary="blocked",
+    )
+    assert second is not None
+
+    latest_root = tmp_path / "runtime" / "session_reset001" / "deliverables" / "latest"
+    assert not (latest_root / "paper" / "sections" / "abstract.tex").exists()
+    assert not (latest_root / "docs" / "report.md").exists()
+    assert (latest_root / "docs" / "release_summary.md").exists()
 
 
 def test_publish_manuscript_section_stages_markdown_images(tmp_path: Path):

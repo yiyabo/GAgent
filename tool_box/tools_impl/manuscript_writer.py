@@ -32,6 +32,8 @@ _RUNTIME_DIR = _PROJECT_ROOT / "runtime"
 _DEFAULT_MAX_CONTEXT_BYTES = 200_000  # 200 KB per file
 _DEFAULT_MAX_REVISIONS = 5
 _DEFAULT_THRESHOLD = 0.8
+_DEFAULT_FINAL_POLISH_MAX_REVISIONS = 2
+_DEFAULT_FINAL_POLISH_THRESHOLD = 0.85
 _ALLOWED_TEXT_EXTENSIONS = {
     ".md",
     ".txt",
@@ -97,6 +99,14 @@ _DIMENSION_WEIGHTS: Dict[str, float] = {
     "academic_style": 0.7,
 }
 _TRUTHY_VALUES = {"1", "true", "yes", "on", "y"}
+_FINAL_POLISH_EVAL_DIMS = [
+    "deduplication",
+    "readability",
+    "section_cohesion",
+    "citation_integrity",
+    "format_integrity",
+    "factual_faithfulness",
+]
 
 
 def _env_enabled(name: str, default: bool) -> bool:
@@ -594,6 +604,116 @@ def _build_merge_prompt(
     )
 
 
+def _build_final_polish_prompt(
+    task: str,
+    analysis_memo: str,
+    manuscript_text: str,
+    *,
+    review_mode: bool = False,
+) -> str:
+    review_rule = (
+        "- This is a review/synthesis article. Preserve explicit statements about missing quantitative evidence.\n"
+        if review_mode
+        else ""
+    )
+    return (
+        "You are the final manuscript editor for a publication-quality scientific paper. "
+        "Perform a conservative final polish.\n\n"
+        "Allowed edits:\n"
+        "- Remove repeated or near-duplicate sentences/paragraphs.\n"
+        "- Tighten wording and improve readability.\n"
+        "- Smooth transitions between sections.\n"
+        "- Standardize terminology and style.\n"
+        "- Fix obvious Markdown/LaTeX-adjacent formatting issues without changing meaning.\n"
+        "- Preserve citations and section order.\n\n"
+        "Forbidden edits:\n"
+        "- Do NOT add new facts, citations, numbers, or claims.\n"
+        "- Do NOT change the scientific conclusion.\n"
+        "- Do NOT remove explicit uncertainty statements unless they are duplicated.\n\n"
+        f"{review_rule}"
+        f"User request:\n{task}\n\n"
+        f"Analysis memo:\n{analysis_memo}\n\n"
+        f"Manuscript draft:\n{manuscript_text}\n\n"
+        "Return ONLY the polished manuscript in Markdown."
+    )
+
+
+def _build_final_polish_revision_prompt(
+    task: str,
+    analysis_memo: str,
+    manuscript_text: str,
+    evaluation: Dict[str, Any],
+    *,
+    review_mode: bool = False,
+) -> str:
+    evaluation_json = json.dumps(evaluation, ensure_ascii=True, indent=2)
+    review_rule = (
+        "This is a review/synthesis article. Preserve explicit statements about missing quantitative evidence.\n\n"
+        if review_mode
+        else ""
+    )
+    return (
+        "You are revising a manuscript after a final publication-readiness review.\n\n"
+        "Goal:\n"
+        "- Improve readability, cohesion, duplication control, citation hygiene, and formatting polish.\n"
+        "- Keep all facts, citations, and conclusions unchanged.\n\n"
+        "Rules:\n"
+        f"{review_rule}"
+        "- Do NOT add new facts, citations, or quantitative claims.\n"
+        "- Do NOT remove section headings or reorder sections.\n"
+        "- Use the review feedback precisely and conservatively.\n\n"
+        f"User request:\n{task}\n\n"
+        f"Analysis memo:\n{analysis_memo}\n\n"
+        f"Release review JSON:\n{evaluation_json}\n\n"
+        f"Current polished draft:\n{manuscript_text}\n\n"
+        "Return ONLY the revised polished manuscript in Markdown."
+    )
+
+
+def _build_release_review_prompt(
+    task: str,
+    analysis_memo: str,
+    manuscript_text: str,
+    *,
+    review_mode: bool = False,
+) -> str:
+    scores_example = ", ".join(f'"{name}": 0.0' for name in _FINAL_POLISH_EVAL_DIMS)
+    review_rule = (
+        "- This is a review/synthesis article. Do not penalize transparent statements that some primary studies did not report quantitative metrics.\n"
+        if review_mode
+        else ""
+    )
+    return (
+        "You are the final release gate reviewer for a scientific manuscript. "
+        "Evaluate whether this manuscript is safe to expose to an end user as a polished final draft. "
+        "Return JSON ONLY.\n\n"
+        "Evaluation dimensions (score each 0.0 to 1.0):\n"
+        "- deduplication\n"
+        "- readability\n"
+        "- section_cohesion\n"
+        "- citation_integrity\n"
+        "- format_integrity\n"
+        "- factual_faithfulness\n\n"
+        "Return JSON with this schema:\n"
+        "{\n"
+        f'  "scores": {{ {scores_example} }},\n'
+        '  "defects": ["..."],\n'
+        '  "revision_instructions": ["..."],\n'
+        '  "release_summary": "one short sentence suitable for users",\n'
+        '  "pass": true\n'
+        "}\n\n"
+        "Rules:\n"
+        f"{review_rule}"
+        "- Fail the manuscript if repeated passages remain, if transitions are still rough, or if formatting/citation problems make the draft look unpublishable.\n"
+        "- Fail the manuscript if the text appears to introduce unsupported facts or altered claims.\n"
+        "- The release_summary must not quote large passages from the manuscript.\n\n"
+        f"User request:\n{task}\n\n"
+        f"Analysis memo:\n{analysis_memo}\n\n"
+        f"Polished manuscript candidate:\n{manuscript_text}\n\n"
+        "Return JSON ONLY."
+    )
+
+
 async def manuscript_writer_handler(
     task: str,
     output_path: str,
@@ -662,6 +782,24 @@ async def manuscript_writer_handler(
             max_context_bytes = _DEFAULT_MAX_CONTEXT_BYTES
         max_context_bytes = max(10_000, max_context_bytes)
 
+        final_polish_enabled = _env_enabled("MANUSCRIPT_FINAL_POLISH_ENABLED", True)
+        try:
+            final_polish_max_revisions = int(
+                os.getenv("MANUSCRIPT_FINAL_POLISH_MAX_REVISIONS", str(_DEFAULT_FINAL_POLISH_MAX_REVISIONS))
+            )
+        except (TypeError, ValueError):
+            final_polish_max_revisions = _DEFAULT_FINAL_POLISH_MAX_REVISIONS
+        final_polish_max_revisions = max(1, final_polish_max_revisions)
+
+        try:
+            final_polish_threshold = float(
+                os.getenv("MANUSCRIPT_FINAL_POLISH_THRESHOLD", str(_DEFAULT_FINAL_POLISH_THRESHOLD))
+            )
+        except (TypeError, ValueError):
+            final_polish_threshold = _DEFAULT_FINAL_POLISH_THRESHOLD
+        if final_polish_threshold <= 0 or final_polish_threshold > 1:
+            final_polish_threshold = _DEFAULT_FINAL_POLISH_THRESHOLD
+
         context_paths = context_paths or []
         section_list = sections or list(_DEFAULT_SECTIONS)
         section_list = [_normalize_section_key(s) for s in section_list if s and str(s).strip()]
@@ -719,11 +857,60 @@ async def manuscript_writer_handler(
         passed_sections: List[Tuple[str, Path]] = []
         drafted_texts: List[str] = []
         section_text_map: Dict[str, str] = {}
+        release_review: Optional[Dict[str, Any]] = None
 
         def _to_rel(path: Optional[Path]) -> Optional[str]:
             if path is None:
                 return None
             return str(path.relative_to(_PROJECT_ROOT))
+
+        def _to_session_rel(path: Optional[Path]) -> Optional[str]:
+            if path is None or session_dir is None:
+                return None
+            try:
+                return str(path.resolve().relative_to(session_dir.resolve()))
+            except Exception:
+                return None
+
+        def _hidden_prefixes(*paths: Optional[Path], extra: Optional[List[str]] = None) -> List[str]:
+            prefixes: List[str] = []
+            for candidate in paths:
+                rel = _to_session_rel(candidate)
+                if rel and rel not in prefixes:
+                    prefixes.append(rel)
+            for candidate in extra or []:
+                value = str(candidate or "").strip().lstrip("/").replace("\\", "/")
+                if value and value not in prefixes:
+                    prefixes.append(value)
+            return prefixes
+
+        def _release_summary_for_error(
+            error_code: str,
+            *,
+            evaluation: Optional[Dict[str, Any]] = None,
+        ) -> str:
+            normalized = str(error_code or "").strip().lower()
+            if normalized == "section_evaluation_failed":
+                section_list_text = ", ".join(sorted({str(item) for item in failed_sections if item}))
+                if section_list_text:
+                    return f"Publication blocked: section quality gate failed for {section_list_text}."
+                return "Publication blocked: one or more manuscript sections did not pass the quality gate."
+            if normalized == "citation_validation_failed":
+                return (
+                    "Publication blocked: citation validation failed because references were incomplete, "
+                    "unsupported, or inconsistent."
+                )
+            if normalized == "polish_quality_gate_failed":
+                summary = ""
+                if isinstance(evaluation, dict):
+                    summary = str(evaluation.get("release_summary") or "").strip()
+                if summary:
+                    return f"Publication blocked: {summary}"
+                return (
+                    "Publication blocked: the final polish gate found remaining duplication, readability, "
+                    "or formatting issues."
+                )
+            return "Publication blocked: the manuscript did not meet the final release gate."
 
         def _build_stats(*, citation_report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             total = len(section_list) or 1
@@ -766,6 +953,8 @@ async def manuscript_writer_handler(
             combined_partial: str,
             citation_validation_path: Optional[Path] = None,
             citation_report: Optional[Dict[str, Any]] = None,
+            release_summary: Optional[str] = None,
+            polish_review_payload: Optional[Dict[str, Any]] = None,
         ) -> Dict[str, Any]:
             partial_path = merge_dir / "combined_partial.md"
             partial_path.write_text(combined_partial, encoding="utf-8")
@@ -775,18 +964,34 @@ async def manuscript_writer_handler(
             except Exception:
                 pass
             stats = _build_stats(citation_report=citation_report)
+            hidden_prefixes = _hidden_prefixes(
+                work_dir,
+                output_file,
+                analysis_file,
+                partial_output,
+                partial_path,
+            )
             return {
                 "tool": "manuscript_writer",
                 "success": False,
                 "error": error_code,
                 "error_code": error_code,
                 "quality_gate_passed": False,
+                "polish_gate_passed": False,
+                "public_release_ready": False,
+                "release_state": "blocked",
+                "release_summary": release_summary or _release_summary_for_error(
+                    error_code,
+                    evaluation=polish_review_payload,
+                ),
                 "failed_sections": list(failed_sections),
                 "section_scores": dict(section_scores),
                 "output_path": _to_rel(output_file),
                 "analysis_path": _to_rel(analysis_file),
                 "effective_output_path": _to_rel(output_file),
                 "effective_analysis_path": _to_rel(analysis_file),
+                "pre_polish_output_path": None,
+                "polished_output_path": None,
                 "sections_dir": _to_rel(sections_dir),
                 "reviews_dir": _to_rel(reviews_dir),
                 "merge_queue": _to_rel(manifest_path),
@@ -795,6 +1000,8 @@ async def manuscript_writer_handler(
                 "citation_validation_path": _to_rel(citation_validation_path),
                 "citation_validation": citation_report,
                 "temp_workspace": _to_rel(work_dir),
+                "hidden_artifact_prefixes": hidden_prefixes,
+                "release_review": polish_review_payload,
                 "sections": section_results,
                 "run_stats": stats,
                 "bib_precheck_warning": bib_precheck_warning,
@@ -1014,14 +1221,13 @@ async def manuscript_writer_handler(
         if not citation_report.get("pass"):
             if "references" not in failed_sections:
                 failed_sections.append("references")
-            if strict_gate:
-                return _build_failure_payload(
-                    error_code="citation_validation_failed",
-                    manifest_path=manifest_path,
-                    combined_partial=combined_text,
-                    citation_validation_path=citation_validation_path,
-                    citation_report=citation_report,
-                )
+            return _build_failure_payload(
+                error_code="citation_validation_failed",
+                manifest_path=manifest_path,
+                combined_partial=combined_text,
+                citation_validation_path=citation_validation_path,
+                citation_report=citation_report,
+            )
 
         # ---------------------------------------------------------------
         # Phase: Segmented merge — transition smoothing + final pass
@@ -1077,14 +1283,118 @@ async def manuscript_writer_handler(
                             smoothed_texts[sec_b] = parts[1].strip() + "\n\n" + orig_b[first_para_end + 2:]
 
         # Step 2: Combine smoothed sections + references
-        final_text = "\n\n".join(
+        pre_polish_text = "\n\n".join(
             smoothed_texts.get(section, "").strip()
             for section in section_list
             if smoothed_texts.get(section, "").strip()
         )
-        output_file.write_text(final_text, encoding="utf-8")
+        pre_polish_path = merge_dir / "pre_polish_draft.md"
+        pre_polish_path.write_text(pre_polish_text, encoding="utf-8")
 
         quality_gate_passed = len(failed_sections) == 0 and bool(citation_report.get("pass"))
+        polished_workspace_path = merge_dir / "polished_draft.md"
+        polished_text = pre_polish_text
+        polish_gate_passed = True
+        public_release_ready = True
+        release_state = "final"
+        release_summary = "Manuscript passed section, citation, and final polish gates."
+
+        if final_polish_enabled:
+            polish_gate_passed = False
+            current_candidate = pre_polish_text
+            for attempt in range(1, final_polish_max_revisions + 1):
+                if attempt == 1:
+                    polish_prompt = _build_final_polish_prompt(
+                        task,
+                        analysis_memo,
+                        current_candidate,
+                        review_mode=review_mode,
+                    )
+                else:
+                    polish_prompt = _build_final_polish_revision_prompt(
+                        task,
+                        analysis_memo,
+                        current_candidate,
+                        release_review or {},
+                        review_mode=review_mode,
+                    )
+                polished_candidate = await _chat(merge_llm, polish_prompt, merge_model_name)
+                attempt_path = merge_dir / f"polished_draft_attempt_{attempt}.md"
+                attempt_path.write_text(polished_candidate, encoding="utf-8")
+
+                review_prompt = _build_release_review_prompt(
+                    task,
+                    analysis_memo,
+                    polished_candidate,
+                    review_mode=review_mode,
+                )
+                review_raw = await _chat(eval_llm, review_prompt, eval_model)
+                release_review = _parse_json_payload(review_raw)
+                if release_review is None:
+                    release_review = {
+                        "scores": {},
+                        "defects": ["release_review_json_parse_failed"],
+                        "revision_instructions": [
+                            "Remove duplication and awkward transitions.",
+                            "Fix citation or formatting issues without changing facts.",
+                        ],
+                        "release_summary": "The final release review could not verify that the manuscript is ready for publication.",
+                        "pass": False,
+                    }
+
+                release_scores = release_review.get("scores") or {}
+                release_score = (
+                    _weighted_score(release_scores, _FINAL_POLISH_EVAL_DIMS)
+                    if isinstance(release_scores, dict)
+                    else 0.0
+                )
+                pass_flag = release_review.get("pass")
+                if pass_flag is None:
+                    pass_flag = release_score >= final_polish_threshold
+                polish_gate_passed = bool(pass_flag) and release_score >= final_polish_threshold
+
+                review_path = reviews_dir / f"final_release_eval_{attempt}.json"
+                review_path.write_text(
+                    json.dumps(release_review, ensure_ascii=True, indent=2),
+                    encoding="utf-8",
+                )
+
+                if polish_gate_passed:
+                    polished_text = polished_candidate
+                    polished_workspace_path.write_text(polished_text, encoding="utf-8")
+                    release_summary = str(
+                        release_review.get("release_summary")
+                        or "Manuscript passed the final polish and release gate."
+                    ).strip() or "Manuscript passed the final polish and release gate."
+                    break
+
+                current_candidate = polished_candidate
+
+            if not polish_gate_passed:
+                public_release_ready = False
+                release_state = "blocked"
+                return _build_failure_payload(
+                    error_code="polish_quality_gate_failed",
+                    manifest_path=manifest_path,
+                    combined_partial=pre_polish_text,
+                    citation_validation_path=citation_validation_path,
+                    citation_report=citation_report,
+                    release_summary=_release_summary_for_error(
+                        "polish_quality_gate_failed",
+                        evaluation=release_review,
+                    ),
+                    polish_review_payload=release_review,
+                )
+        else:
+            polished_workspace_path.write_text(polished_text, encoding="utf-8")
+
+        output_file.write_text(polished_text, encoding="utf-8")
+
+        hidden_artifact_prefixes = _hidden_prefixes(
+            work_dir,
+            output_file,
+            analysis_file,
+        )
         cleanup_errors: List[str] = []
         if not keep_workspace:
             try:
@@ -1093,11 +1403,22 @@ async def manuscript_writer_handler(
                 cleanup_errors.append(str(exc))
 
         stats = _build_stats(citation_report=citation_report)
-        stats["final_chars"] = len(final_text or "")
+        stats["final_chars"] = len(polished_text or "")
+        if release_review is not None:
+            stats["final_polish_score"] = round(
+                _weighted_score(release_review.get("scores") or {}, _FINAL_POLISH_EVAL_DIMS),
+                4,
+            ) if isinstance(release_review.get("scores"), dict) else 0.0
+        stats["final_polish_enabled"] = final_polish_enabled
+        stats["final_polish_passed"] = polish_gate_passed
         return {
             "tool": "manuscript_writer",
             "success": True,
             "quality_gate_passed": quality_gate_passed,
+            "polish_gate_passed": polish_gate_passed,
+            "public_release_ready": public_release_ready,
+            "release_state": release_state,
+            "release_summary": release_summary,
             "failed_sections": list(failed_sections),
             "section_scores": dict(section_scores),
             "analysis_path": _to_rel(analysis_file),
@@ -1110,10 +1431,14 @@ async def manuscript_writer_handler(
             "citation_validation": citation_report if keep_workspace else None,
             "output_path": _to_rel(output_file),
             "effective_output_path": _to_rel(output_file),
+            "pre_polish_output_path": _to_rel(pre_polish_path),
+            "polished_output_path": _to_rel(polished_workspace_path),
+            "release_review": release_review if keep_workspace else None,
             "sections": section_results,
-            "draft_chars": len(final_text or ""),
+            "draft_chars": len(polished_text or ""),
             "intermediate_purged": not keep_workspace,
             "temp_workspace": _to_rel(work_dir),
+            "hidden_artifact_prefixes": hidden_artifact_prefixes,
             "cleanup_errors": cleanup_errors,
             "run_stats": stats,
             "bib_precheck_warning": bib_precheck_warning,

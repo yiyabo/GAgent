@@ -185,3 +185,112 @@ def test_list_session_deliverables_exposes_paper_drafts_when_sections_exist(
     assert sorted(response.modules.keys()) == ["paper", "refs"]
     assert {item.status for item in response.items} == {"draft"}
     assert response.paper_status["completed_count"] == 1
+
+
+def test_list_session_deliverables_blocked_release_does_not_fallback_to_drafts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    info_root = tmp_path / "information_sessions"
+    session_dir = runtime_root / "session_abc124"
+    latest_root = session_dir / "deliverables" / "latest"
+    summary_file = latest_root / "docs" / "release_summary.md"
+    paper_file = latest_root / "paper" / "sections" / "abstract.tex"
+    manifest_path = session_dir / "deliverables" / "manifest_latest.json"
+
+    summary_file.parent.mkdir(parents=True, exist_ok=True)
+    paper_file.parent.mkdir(parents=True, exist_ok=True)
+    summary_file.write_text("Publication blocked.\n", encoding="utf-8")
+    paper_file.write_text("\\begin{abstract}hidden\\end{abstract}\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "version_id": "v1",
+                "release_state": "blocked",
+                "public_release_ready": False,
+                "release_summary": "Publication blocked.",
+                "hidden_artifact_prefixes": ["paper", "tool_outputs/review_pack_writer"],
+                "items": [
+                    {"module": "docs", "path": "docs/release_summary.md", "status": "final"},
+                ],
+                "paper_status": {
+                    "completed_sections": [],
+                    "missing_sections": [],
+                    "total_sections": 0,
+                    "completed_count": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", info_root)
+
+    response = asyncio.run(
+        artifact_routes.list_session_deliverables(
+            "session_abc124",
+            scope="latest",
+            version=None,
+            include_draft=True,
+            module=None,
+            limit=1000,
+        )
+    )
+
+    assert response.release_state == "blocked"
+    assert response.public_release_ready is False
+    assert response.count == 1
+    assert response.items[0].path == "docs/release_summary.md"
+    assert "paper" not in response.modules
+
+
+def test_raw_artifact_routes_hide_paths_listed_in_manifest_prefixes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    info_root = tmp_path / "information_sessions"
+    session_dir = runtime_root / "session_hidden001"
+    raw_file = session_dir / "tool_outputs" / "review_pack_writer" / "review_pack_20260311_000000" / "review_draft.md"
+    raw_file.parent.mkdir(parents=True, exist_ok=True)
+    raw_file.write_text("hidden draft\n", encoding="utf-8")
+    manifest_path = session_dir / "deliverables" / "manifest_latest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "release_state": "blocked",
+                "public_release_ready": False,
+                "hidden_artifact_prefixes": ["tool_outputs/review_pack_writer/review_pack_20260311_000000"],
+                "items": [{"module": "docs", "path": "docs/release_summary.md", "status": "final"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", info_root)
+
+    listing = asyncio.run(
+        artifact_routes.list_session_artifacts(
+            "session_hidden001",
+            max_depth=6,
+            include_dirs=False,
+            limit=100,
+            extensions=None,
+        )
+    )
+    assert listing.count == 1
+    assert listing.items[0].path == "deliverables/manifest_latest.json"
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            artifact_routes.get_session_artifact_text(
+                "session_hidden001",
+                path="tool_outputs/review_pack_writer/review_pack_20260311_000000/review_draft.md",
+                max_bytes=200000,
+            )
+        )
+    assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND

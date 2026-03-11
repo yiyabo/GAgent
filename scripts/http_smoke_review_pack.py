@@ -539,6 +539,11 @@ def _validate_strict_full_run(
     modules = deliverables.get("modules")
     if not isinstance(modules, dict):
         raise SmokeTestError("Strict validation failed: deliverables modules map is missing.")
+    release_state = str(deliverables.get("release_state") or "").strip().lower()
+    if release_state != "final":
+        raise SmokeTestError(f"Strict validation failed: release_state={release_state!r}.")
+    if deliverables.get("public_release_ready") is not True:
+        raise SmokeTestError("Strict validation failed: public_release_ready is not true.")
     missing_modules = [module for module in ("paper", "refs") if module not in modules]
     if missing_modules:
         raise SmokeTestError(
@@ -869,6 +874,8 @@ def run_smoke_test(args: argparse.Namespace) -> int:
                 if isinstance(stored_result, dict) and isinstance(stored_result.get("draft"), dict)
                 else None
             ),
+            "release_state": deliverables.get("release_state"),
+            "public_release_ready": deliverables.get("public_release_ready"),
             "stored_result_path": stored_result_path,
             "completed_sections": paper_status.get("completed_sections"),
             "completed_count": paper_status.get("completed_count"),
