@@ -63,8 +63,22 @@ kill_by_port() {
     )"
   elif command -v fuser >/dev/null 2>&1; then
     pids="$(fuser -n tcp "$port" 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+$' | tr '\n' ' ')"
+  elif command -v netstat >/dev/null 2>&1; then
+    pids="$(
+      netstat -ltnp 2>/dev/null \
+        | awk -v target=":$port" '
+            $6 == "LISTEN" && $4 ~ target "$" {
+              split($7, parts, "/")
+              if (parts[1] ~ /^[0-9]+$/) {
+                print parts[1]
+              }
+            }
+          ' \
+        | sort -u \
+        | tr '\n' ' '
+    )"
   else
-    echo "$name: no supported port-inspection tool found (need one of lsof, ss, fuser)."
+    echo "$name: no supported port-inspection tool found (need one of lsof, ss, fuser, netstat)."
     return 1
   fi
 
