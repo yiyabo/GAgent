@@ -452,6 +452,75 @@ def test_publish_review_pack_writer_maps_nested_manuscript_outputs(tmp_path: Pat
     assert "abstract" in report.paper_status["completed_sections"]
 
 
+def test_publish_partial_review_pack_writer_failure_as_draft(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    section_file = tmp_path / "workspace" / "sections" / "01_abstract.md"
+    partial_output = tmp_path / "workspace" / "review_draft.partial.md"
+    analysis_file = tmp_path / "workspace" / "review_draft.md.analysis.md"
+    refs_file = tmp_path / "workspace" / "references.bib"
+
+    section_file.parent.mkdir(parents=True, exist_ok=True)
+    section_file.write_text("## Abstract\nPartial review abstract.\n", encoding="utf-8")
+    partial_output.write_text("## Abstract\nPartial review abstract.\n", encoding="utf-8")
+    analysis_file.write_text("# Analysis\nPartial draft notes.\n", encoding="utf-8")
+    refs_file.write_text(
+        "@article{partial2026,\n"
+        "  title={Partial Review Reference},\n"
+        "  author={Doe, Jane},\n"
+        "  year={2026}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    report = publisher.publish_from_tool_result(
+        session_id="review_pack_partial001",
+        tool_name="review_pack_writer",
+        raw_result={
+            "tool": "review_pack_writer",
+            "success": False,
+            "partial": True,
+            "error_code": "section_evaluation_failed",
+            "partial_output_path": str(partial_output),
+            "pack": {
+                "outputs": {
+                    "references_bib": str(refs_file),
+                }
+            },
+            "draft": {
+                "tool": "manuscript_writer",
+                "success": False,
+                "error_code": "section_evaluation_failed",
+                "sections": [
+                    {
+                        "section": "abstract",
+                        "path": str(section_file),
+                    }
+                ],
+                "partial_output_path": str(partial_output),
+                "analysis_path": str(analysis_file),
+            },
+        },
+        summary="review pack partial draft",
+        task_name="Write review abstract",
+        publish_status="draft",
+    )
+
+    assert report is not None
+    latest_root = tmp_path / "runtime" / "session_review_pack_partial001" / "deliverables" / "latest"
+    abstract_tex = latest_root / "paper" / "sections" / "abstract.tex"
+    analysis_doc = latest_root / "docs" / "analysis.md"
+    refs_bib = latest_root / "refs" / "references.bib"
+
+    assert abstract_tex.exists()
+    assert "Partial review abstract." in abstract_tex.read_text(encoding="utf-8")
+    assert analysis_doc.exists()
+    assert refs_bib.exists()
+    assert "partial2026" in refs_bib.read_text(encoding="utf-8")
+    manifest = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    assert all(item["status"] == "draft" for item in manifest["items"])
+    assert report.paper_status["completed_count"] >= 1
+
+
 def test_publish_manuscript_section_stages_markdown_images(tmp_path: Path):
     publisher = _build_publisher(tmp_path)
     image = tmp_path / "workspace" / "assets" / "roc.png"
