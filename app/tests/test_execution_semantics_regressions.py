@@ -584,6 +584,70 @@ def test_phagescope_save_all_maps_tracking_alias_to_remote_taskid(
     assert kwargs.get("session_id") == "test-session"
 
 
+def test_review_pack_writer_forwards_session_id_from_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        captured["name"] = name
+        captured["kwargs"] = kwargs
+        return {"success": True}
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="review_pack_writer",
+        parameters={"topic": "Pseudomonas phage"},
+        order=1,
+    )
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is True
+    assert captured["name"] == "review_pack_writer"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("session_id") == "test-session"
+
+
+def test_literature_pipeline_forwards_session_id_from_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        captured["name"] = name
+        captured["kwargs"] = kwargs
+        return {"success": True}
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="literature_pipeline",
+        parameters={"query": "Pseudomonas phage"},
+        order=1,
+    )
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is True
+    assert captured["name"] == "literature_pipeline"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("session_id") == "test-session"
+
+
 def test_extract_taskid_from_result_prefers_numeric_remote_taskid() -> None:
     payload = {
         "job_id": "act_a1c0d8007a554d9a98d688d7394f5ecd",
