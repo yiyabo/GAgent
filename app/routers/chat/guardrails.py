@@ -24,7 +24,125 @@ def explicit_manuscript_request(user_message: str) -> bool:
         if re.search(r"\b(write|draft|revise|edit|polish|prepare)\b", lowered):
             return True
 
+    english_doc_terms = (
+        "manuscript",
+        "paper",
+        "review",
+        "survey",
+        "abstract",
+        "introduction",
+        "discussion",
+        "conclusion",
+    )
+    english_action_terms = (
+        "write",
+        "draft",
+        "revise",
+        "edit",
+        "polish",
+        "prepare",
+        "generate",
+        "create",
+    )
+    chinese_doc_terms = (
+        "论文",
+        "综述",
+        "文章",
+        "稿",
+        "摘要",
+        "引言",
+    )
+    chinese_action_terms = (
+        "写",
+        "生成",
+        "撰写",
+        "起草",
+        "改写",
+        "润色",
+        "准备",
+    )
+    if any(term in lowered for term in english_doc_terms) and any(
+        term in lowered for term in english_action_terms
+    ):
+        return True
+    if any(term in text for term in chinese_doc_terms) and any(
+        term in text for term in chinese_action_terms
+    ):
+        return True
+
     return False
+
+
+def literature_backed_review_request(user_message: str) -> bool:
+    text = str(user_message or "").strip()
+    lowered = text.lower()
+    if not text:
+        return False
+
+    review_terms = (
+        "review",
+        "survey",
+        "literature review",
+        "综述",
+    )
+    evidence_terms = (
+        "reference",
+        "references",
+        "citation",
+        "citations",
+        "literature",
+        "evidence",
+        "参考文献",
+        "文献",
+        "证据",
+    )
+    return any(term in lowered for term in review_terms) and (
+        any(term in lowered for term in evidence_terms)
+        or any(term in text for term in ("参考文献", "文献", "证据"))
+    )
+
+
+def extract_review_topic(user_message: str) -> Optional[str]:
+    text = str(user_message or "").strip()
+    if not text:
+        return None
+
+    patterns = (
+        re.compile(r"topic\s*=\s*['\"]([^'\"]+)['\"]", flags=re.IGNORECASE),
+        re.compile(r"关于\s*([^，。,.\n]+?)(?:\s*的|\s*[，。,.\n]|$)"),
+        re.compile(
+            r"(?:about|on)\s+([^,.:\n]+?)(?:\s+(?:review|survey|paper|manuscript|draft|abstract)\b|[,.:\n]|$)",
+            flags=re.IGNORECASE,
+        ),
+    )
+    for pattern in patterns:
+        match = pattern.search(text)
+        if not match:
+            continue
+        topic = match.group(1).strip().strip("`'\" ")
+        if topic:
+            return topic
+    return None
+
+
+def requests_abstract_only(user_message: str) -> bool:
+    text = str(user_message or "").strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    return any(
+        token in lowered
+        for token in (
+            "abstract only",
+            "only abstract",
+            "just the abstract",
+            "abstract first",
+            "只写 abstract",
+            "只写摘要",
+            "只做摘要",
+            "仅摘要",
+        )
+    ) or any(token in text for token in ("只写 abstract", "只写摘要", "只做摘要", "仅摘要"))
 
 
 def extract_task_id_from_text(text: str) -> Optional[int]:
