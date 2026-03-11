@@ -34,6 +34,7 @@ _DEFAULT_MAX_REVISIONS = 5
 _DEFAULT_THRESHOLD = 0.8
 _DEFAULT_FINAL_POLISH_MAX_REVISIONS = 2
 _DEFAULT_FINAL_POLISH_THRESHOLD = 0.85
+_DEFAULT_FINAL_POLISH_STEP_TIMEOUT_SEC = 75.0
 _ALLOWED_TEXT_EXTENSIONS = {
     ".md",
     ".txt",
@@ -800,6 +801,18 @@ async def manuscript_writer_handler(
         if final_polish_threshold <= 0 or final_polish_threshold > 1:
             final_polish_threshold = _DEFAULT_FINAL_POLISH_THRESHOLD
 
+        try:
+            final_polish_step_timeout_sec = float(
+                os.getenv(
+                    "MANUSCRIPT_FINAL_POLISH_STEP_TIMEOUT_SEC",
+                    str(_DEFAULT_FINAL_POLISH_STEP_TIMEOUT_SEC),
+                )
+            )
+        except (TypeError, ValueError):
+            final_polish_step_timeout_sec = _DEFAULT_FINAL_POLISH_STEP_TIMEOUT_SEC
+        if final_polish_step_timeout_sec <= 0:
+            final_polish_step_timeout_sec = _DEFAULT_FINAL_POLISH_STEP_TIMEOUT_SEC
+
         context_paths = context_paths or []
         section_list = sections or list(_DEFAULT_SECTIONS)
         section_list = [_normalize_section_key(s) for s in section_list if s and str(s).strip()]
@@ -911,6 +924,34 @@ async def manuscript_writer_handler(
                     "or formatting issues."
                 )
             return "Publication blocked: the manuscript did not meet the final release gate."
+
+        def _build_polish_failure_review(
+            *,
+            stage: str,
+            attempt: int,
+            exc: Exception,
+        ) -> Dict[str, Any]:
+            error_text = str(exc).strip() or exc.__class__.__name__
+            is_timeout = isinstance(exc, asyncio.TimeoutError) or "timed out" in error_text.lower()
+            defect = f"{stage}_timeout" if is_timeout else f"{stage}_execution_failed"
+            summary = (
+                "The final polish gate timed out before the manuscript could be verified for publication."
+                if is_timeout
+                else "The final polish gate failed before the manuscript could be verified for publication."
+            )
+            return {
+                "scores": {},
+                "defects": [defect],
+                "revision_instructions": [
+                    "Retry the final polish and release-review stage with a smaller prompt or a more reliable model.",
+                    "Do not publish the manuscript until the release gate can complete successfully.",
+                ],
+                "release_summary": summary,
+                "pass": False,
+                "stage": stage,
+                "attempt": attempt,
+                "error": error_text,
+            }
 
         def _build_stats(*, citation_report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             total = len(section_list) or 1
@@ -1302,73 +1343,109 @@ async def manuscript_writer_handler(
         if final_polish_enabled:
             polish_gate_passed = False
             current_candidate = pre_polish_text
-            for attempt in range(1, final_polish_max_revisions + 1):
-                if attempt == 1:
-                    polish_prompt = _build_final_polish_prompt(
+            current_polish_stage = "polish_generation"
+            current_polish_attempt = 0
+            try:
+                for attempt in range(1, final_polish_max_revisions + 1):
+                    current_polish_attempt = attempt
+                    if attempt == 1:
+                        polish_prompt = _build_final_polish_prompt(
+                            task,
+                            analysis_memo,
+                            current_candidate,
+                            review_mode=review_mode,
+                        )
+                    else:
+                        polish_prompt = _build_final_polish_revision_prompt(
+                            task,
+                            analysis_memo,
+                            current_candidate,
+                            release_review or {},
+                            review_mode=review_mode,
+                        )
+                    current_polish_stage = "polish_generation"
+                    polished_candidate = await asyncio.wait_for(
+                        _chat(merge_llm, polish_prompt, merge_model_name),
+                        timeout=final_polish_step_timeout_sec,
+                    )
+                    attempt_path = merge_dir / f"polished_draft_attempt_{attempt}.md"
+                    attempt_path.write_text(polished_candidate, encoding="utf-8")
+
+                    review_prompt = _build_release_review_prompt(
                         task,
                         analysis_memo,
-                        current_candidate,
+                        polished_candidate,
                         review_mode=review_mode,
                     )
-                else:
-                    polish_prompt = _build_final_polish_revision_prompt(
-                        task,
-                        analysis_memo,
-                        current_candidate,
-                        release_review or {},
-                        review_mode=review_mode,
+                    current_polish_stage = "release_review"
+                    review_raw = await asyncio.wait_for(
+                        _chat(eval_llm, review_prompt, eval_model),
+                        timeout=final_polish_step_timeout_sec,
                     )
-                polished_candidate = await _chat(merge_llm, polish_prompt, merge_model_name)
-                attempt_path = merge_dir / f"polished_draft_attempt_{attempt}.md"
-                attempt_path.write_text(polished_candidate, encoding="utf-8")
+                    release_review = _parse_json_payload(review_raw)
+                    if release_review is None:
+                        release_review = {
+                            "scores": {},
+                            "defects": ["release_review_json_parse_failed"],
+                            "revision_instructions": [
+                                "Remove duplication and awkward transitions.",
+                                "Fix citation or formatting issues without changing facts.",
+                            ],
+                            "release_summary": "The final release review could not verify that the manuscript is ready for publication.",
+                            "pass": False,
+                        }
 
-                review_prompt = _build_release_review_prompt(
-                    task,
-                    analysis_memo,
-                    polished_candidate,
-                    review_mode=review_mode,
+                    release_scores = release_review.get("scores") or {}
+                    release_score = (
+                        _weighted_score(release_scores, _FINAL_POLISH_EVAL_DIMS)
+                        if isinstance(release_scores, dict)
+                        else 0.0
+                    )
+                    pass_flag = release_review.get("pass")
+                    if pass_flag is None:
+                        pass_flag = release_score >= final_polish_threshold
+                    polish_gate_passed = bool(pass_flag) and release_score >= final_polish_threshold
+
+                    review_path = reviews_dir / f"final_release_eval_{attempt}.json"
+                    review_path.write_text(
+                        json.dumps(release_review, ensure_ascii=True, indent=2),
+                        encoding="utf-8",
+                    )
+
+                    if polish_gate_passed:
+                        polished_text = polished_candidate
+                        polished_workspace_path.write_text(polished_text, encoding="utf-8")
+                        release_summary = str(
+                            release_review.get("release_summary")
+                            or "Manuscript passed the final polish and release gate."
+                        ).strip() or "Manuscript passed the final polish and release gate."
+                        break
+
+                    current_candidate = polished_candidate
+            except Exception as exc:
+                logger.warning(
+                    "manuscript_writer final polish failed at stage=%s attempt=%s: %s",
+                    current_polish_stage,
+                    current_polish_attempt,
+                    exc,
                 )
-                review_raw = await _chat(eval_llm, review_prompt, eval_model)
-                release_review = _parse_json_payload(review_raw)
-                if release_review is None:
-                    release_review = {
-                        "scores": {},
-                        "defects": ["release_review_json_parse_failed"],
-                        "revision_instructions": [
-                            "Remove duplication and awkward transitions.",
-                            "Fix citation or formatting issues without changing facts.",
-                        ],
-                        "release_summary": "The final release review could not verify that the manuscript is ready for publication.",
-                        "pass": False,
-                    }
-
-                release_scores = release_review.get("scores") or {}
-                release_score = (
-                    _weighted_score(release_scores, _FINAL_POLISH_EVAL_DIMS)
-                    if isinstance(release_scores, dict)
-                    else 0.0
+                release_review = _build_polish_failure_review(
+                    stage=current_polish_stage,
+                    attempt=current_polish_attempt or 1,
+                    exc=exc,
                 )
-                pass_flag = release_review.get("pass")
-                if pass_flag is None:
-                    pass_flag = release_score >= final_polish_threshold
-                polish_gate_passed = bool(pass_flag) and release_score >= final_polish_threshold
-
-                review_path = reviews_dir / f"final_release_eval_{attempt}.json"
-                review_path.write_text(
-                    json.dumps(release_review, ensure_ascii=True, indent=2),
-                    encoding="utf-8",
+                return _build_failure_payload(
+                    error_code="polish_quality_gate_failed",
+                    manifest_path=manifest_path,
+                    combined_partial=pre_polish_text,
+                    citation_validation_path=citation_validation_path,
+                    citation_report=citation_report,
+                    release_summary=_release_summary_for_error(
+                        "polish_quality_gate_failed",
+                        evaluation=release_review,
+                    ),
+                    polish_review_payload=release_review,
                 )
-
-                if polish_gate_passed:
-                    polished_text = polished_candidate
-                    polished_workspace_path.write_text(polished_text, encoding="utf-8")
-                    release_summary = str(
-                        release_review.get("release_summary")
-                        or "Manuscript passed the final polish and release gate."
-                    ).strip() or "Manuscript passed the final polish and release gate."
-                    break
-
-                current_candidate = polished_candidate
 
             if not polish_gate_passed:
                 public_release_ready = False
