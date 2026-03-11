@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "category": "writer",
+  "scope": "task",
+  "priority": 80,
+  "selection": {
+    "keywords": [
+      "report",
+      "manuscript",
+      "paper",
+      "methods",
+      "results",
+      "discussion",
+      "legend",
+      "caption",
+      "summary"
+    ],
+    "path_suffixes": [],
+    "tool_hints": [
+      "manuscript_writer"
+    ]
+  },
+  "injection": {
+    "mode": "full",
+    "max_chars": 5000
+  },
+  "references": [
+    "references/report_templates.md"
+  ],
+  "scripts": []
+}

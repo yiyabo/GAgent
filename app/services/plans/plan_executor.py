@@ -6,7 +6,7 @@ import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -134,6 +134,9 @@ class ExecutionConfig:
     paper_mode: bool = False
     enable_skills: bool = True
     skill_budget_chars: int = 6000
+    skill_selection_mode: str = "hybrid"
+    skill_max_per_task: int = 3
+    skill_trace_enabled: bool = True
 
     @classmethod
     def from_settings(cls, settings: ExecutorSettings) -> "ExecutionConfig":
@@ -145,10 +148,13 @@ class ExecutionConfig:
             include_plan_outline=settings.include_plan_outline,
             dependency_throttle=settings.dependency_throttle,
             max_tasks=settings.max_tasks,
-            enforce_dependencies=getattr(settings, 'enforce_dependencies', True),
+            enforce_dependencies=getattr(settings, "enforce_dependencies", True),
             paper_mode=bool(getattr(settings, "paper_mode", False)),
-            enable_skills=bool(getattr(settings, "enable_skills", True)),
-            skill_budget_chars=int(getattr(settings, "skill_budget_chars", 6000)),
+            enable_skills=settings.enable_skills,
+            skill_budget_chars=settings.skill_budget_chars,
+            skill_selection_mode=settings.skill_selection_mode,
+            skill_max_per_task=settings.skill_max_per_task,
+            skill_trace_enabled=settings.skill_trace_enabled,
         )
 
 
@@ -953,17 +959,11 @@ class PlanExecutor:
         tree: PlanTree,
         config: ExecutionConfig,
     ) -> None:
-        """Select relevant skills for the entire plan and store in session_context.
-
-        Uses the root node's title and description to semantically select
-        skills via LLM.  Results are cached in ``config.session_context``
-        under the ``"plan_skills"`` key so that every task in the plan can
-        access them without repeating the selection call.
-        """
+        """Select plan-scope skill candidates and cache them in session_context."""
         if config.session_context is None:
             config.session_context = {}
 
-        if "plan_skills" in config.session_context:
+        if "plan_skill_candidates" in config.session_context:
             return
 
         try:
@@ -971,7 +971,7 @@ class PlanExecutor:
             available = loader.list_skills()
             if not available:
                 logger.info("No skills available; skipping plan-level skill selection")
-                config.session_context["plan_skills"] = []
+                config.session_context["plan_skill_candidates"] = []
                 return
 
             root = None
@@ -979,7 +979,7 @@ class PlanExecutor:
             if root_ids:
                 root = tree.nodes.get(root_ids[0])
 
-            plan_title = root.display_name() if root else f"Plan {tree.plan_id}"
+            plan_title = root.display_name() if root else f"Plan {tree.id}"
             plan_description = (root.instruction or "") if root else ""
             if not plan_description:
                 child_names = [
@@ -988,22 +988,136 @@ class PlanExecutor:
                 ][:8]
                 plan_description = "Sub-tasks: " + ", ".join(child_names)
 
-            selected = self._run_coroutine_sync(
-                loader.select_skills_for_task(
-                    task_title=plan_title,
-                    task_description=plan_description,
+            selection = self._run_coroutine_sync(
+                loader.select_plan_skill_candidates(
+                    plan_title=plan_title,
+                    plan_description=plan_description,
                     llm_service=self._llm._llm,
+                    max_skills=max(5, config.skill_max_per_task),
+                    selection_mode=config.skill_selection_mode,
                 )
             )
-            config.session_context["plan_skills"] = selected
+            config.session_context["plan_skill_candidates"] = (
+                selection.selected_skill_ids
+            )
             _log_job(
                 "info",
-                f"Plan-level skill selection completed: {selected}",
-                {"plan_skills": selected},
+                "Plan-level skill candidate selection completed",
+                {
+                    "plan_skill_candidates": selection.selected_skill_ids,
+                    "selection_source": selection.selection_source,
+                    "selection_latency_ms": selection.selection_latency_ms,
+                },
             )
         except Exception as exc:
             logger.warning("Plan-level skill pre-selection failed (non-blocking): %s", exc)
-            config.session_context["plan_skills"] = []
+            config.session_context["plan_skill_candidates"] = []
+
+    def _collect_dependency_paths(
+        self,
+        dependencies: List[PlanNode],
+        paper_context_paths: Sequence[str],
+    ) -> List[str]:
+        seen: set[str] = set()
+        ordered: List[str] = []
+        for path in paper_context_paths:
+            text = str(path).strip()
+            if text and text not in seen:
+                seen.add(text)
+                ordered.append(text)
+        for dep in dependencies:
+            artifact_context = self._dependency_artifact_context(dep)
+            artifact_paths = artifact_context.get("artifact_paths") or []
+            if not isinstance(artifact_paths, list):
+                continue
+            for artifact_path in artifact_paths:
+                text = str(artifact_path).strip()
+                if text and text not in seen:
+                    seen.add(text)
+                    ordered.append(text)
+        return ordered
+
+    def _derive_skill_tool_hints(
+        self,
+        *,
+        task_text: str,
+        dependency_paths: Sequence[str],
+        paper_mode: bool,
+    ) -> List[str]:
+        text = task_text.lower()
+        hints: set[str] = set()
+        bio_suffixes = (
+            ".fasta",
+            ".fa",
+            ".fna",
+            ".faa",
+            ".fastq",
+            ".fq",
+            ".sam",
+            ".bam",
+            ".gff",
+            ".gff3",
+        )
+        if paper_mode or any(term in text for term in ("paper", "manuscript", "report")):
+            hints.add("manuscript_writer")
+        if any(path.lower().endswith(bio_suffixes) for path in dependency_paths) or any(
+            term in text
+            for term in (
+                "fasta",
+                "fastq",
+                "sequence",
+                "genome",
+                "assembly",
+                "alignment",
+                "annotation",
+                "phage",
+            )
+        ):
+            hints.add("bio_tools")
+        return sorted(hints)
+
+    def _build_skill_trace_payload(
+        self,
+        *,
+        selection_result: Any,
+        injection_result: Any,
+    ) -> Dict[str, Any]:
+        return {
+            "candidate_skill_ids": list(selection_result.candidate_skill_ids),
+            "selected_skill_ids": list(selection_result.selected_skill_ids),
+            "selection_source": selection_result.selection_source,
+            "injection_mode_by_skill": dict(injection_result.injection_mode_by_skill),
+            "injected_chars": int(injection_result.injected_chars),
+            "selection_latency_ms": selection_result.selection_latency_ms,
+        }
+
+    def _persist_skill_trace(
+        self,
+        *,
+        plan_id: int,
+        node: PlanNode,
+        skill_trace: Dict[str, Any],
+        enabled: bool,
+    ) -> None:
+        if not enabled:
+            return
+        merged_metadata = dict(node.metadata or {})
+        merged_metadata["skill_trace"] = skill_trace
+        try:
+            self._repo.update_task(plan_id, node.id, metadata=merged_metadata)
+            node.metadata = merged_metadata
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Failed to persist skill trace for plan %s task %s: %s",
+                plan_id,
+                node.id,
+                exc,
+            )
+        _log_job(
+            "info",
+            "Skill trace captured",
+            {"sub_type": "skill_trace", "task_id": node.id, "skill_trace": skill_trace},
+        )
 
     def _should_use_deep_think(self, config: ExecutionConfig) -> bool:
         _ = config
@@ -1067,11 +1181,15 @@ class PlanExecutor:
                     "published_modules": artifact_context.get("published_modules"),
                 }
             )
+        dependency_paths = self._collect_dependency_paths(
+            dependencies,
+            paper_context_paths,
+        )
 
         if paper_mode:
             session_context["paper_mode"] = True
-            if paper_context_paths:
-                session_context["paper_context_paths"] = paper_context_paths[:40]
+            if dependency_paths:
+                session_context["paper_context_paths"] = dependency_paths[:40]
 
         constraints = [
             "Produce actionable output for this task only.",
@@ -1087,22 +1205,59 @@ class PlanExecutor:
             )
         # --- Skill content injection ---
         skill_context = None
+        skill_trace = {
+            "candidate_skill_ids": [],
+            "selected_skill_ids": [],
+            "selection_source": "disabled",
+            "injection_mode_by_skill": {},
+            "injected_chars": 0,
+            "selection_latency_ms": 0.0,
+        }
         if config.enable_skills:
-            plan_skills = session_context.get("plan_skills") or []
-            if plan_skills:
-                try:
-                    loader = get_skills_loader(auto_sync=False)
-                    skill_context = loader.load_skills_within_budget(
-                        plan_skills,
-                        max_chars=config.skill_budget_chars,
+            try:
+                loader = get_skills_loader(auto_sync=False)
+                tool_hints = self._derive_skill_tool_hints(
+                    task_text=user_query,
+                    dependency_paths=dependency_paths,
+                    paper_mode=paper_mode,
+                )
+                selection_result = self._run_coroutine_sync(
+                    loader.select_skills(
+                        task_title=node.display_name(),
+                        task_description=user_query,
+                        llm_service=self._llm._llm,
+                        dependency_paths=dependency_paths,
+                        tool_hints=tool_hints,
+                        preferred_skills=session_context.get("plan_skill_candidates") or [],
+                        selection_mode=config.skill_selection_mode,
+                        max_skills=config.skill_max_per_task,
+                        scope="task",
                     )
-                    if skill_context:
-                        logger.info(
-                            "Injecting %d chars of skill context for task %s",
-                            len(skill_context), node.id,
-                        )
-                except Exception as exc:
-                    logger.warning("Skill content loading failed (non-blocking): %s", exc)
+                )
+                injection_result = loader.build_skill_context(
+                    selection_result.selected_skill_ids,
+                    max_chars=config.skill_budget_chars,
+                )
+                skill_context = injection_result.content or None
+                skill_trace = self._build_skill_trace_payload(
+                    selection_result=selection_result,
+                    injection_result=injection_result,
+                )
+                if skill_context:
+                    logger.info(
+                        "Injecting %d chars of skill context for task %s",
+                        len(skill_context),
+                        node.id,
+                    )
+            except Exception as exc:
+                logger.warning("Skill content loading failed (non-blocking): %s", exc)
+
+        self._persist_skill_trace(
+            plan_id=plan_id,
+            node=node,
+            skill_trace=skill_trace,
+            enabled=config.skill_trace_enabled,
+        )
 
         task_context = TaskExecutionContext(
             task_id=node.id,

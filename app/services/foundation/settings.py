@@ -153,6 +153,11 @@ if _USE_PYDANTIC:
         deep_think_confidence_threshold: float = Field(default=0.5, env="DEEP_THINK_CONFIDENCE_THRESHOLD")
         # Legacy min-length setting; may be used by compatibility paths.
         deep_think_min_message_length: int = Field(default=8, env="DEEP_THINK_MIN_MESSAGE_LENGTH")
+        enable_skills: bool = Field(default=True, env="ENABLE_SKILLS")
+        skill_budget_chars: int = Field(default=6000, env="SKILL_BUDGET_CHARS")
+        skill_selection_mode: str = Field(default="hybrid", env="SKILL_SELECTION_MODE")
+        skill_max_per_task: int = Field(default=3, env="SKILL_MAX_PER_TASK")
+        skill_trace_enabled: bool = Field(default=True, env="SKILL_TRACE_ENABLED")
 
         amem_enabled: bool = Field(
             default=False, env="AMEM_ENABLED"
@@ -322,6 +327,32 @@ else:
                 )
             except Exception:
                 self.deep_think_min_message_length = 8
+            self.enable_skills = os.getenv("ENABLE_SKILLS", "1").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            try:
+                self.skill_budget_chars = int(os.getenv("SKILL_BUDGET_CHARS", "6000"))
+            except Exception:
+                self.skill_budget_chars = 6000
+            skill_selection_mode = os.getenv("SKILL_SELECTION_MODE", "hybrid").strip().lower()
+            if skill_selection_mode not in {"hybrid", "llm_only"}:
+                skill_selection_mode = "hybrid"
+            self.skill_selection_mode = skill_selection_mode
+            try:
+                self.skill_max_per_task = int(os.getenv("SKILL_MAX_PER_TASK", "3"))
+            except Exception:
+                self.skill_max_per_task = 3
+            if self.skill_max_per_task <= 0:
+                self.skill_max_per_task = 3
+            self.skill_trace_enabled = os.getenv("SKILL_TRACE_ENABLED", "1").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
 
 
 @lru_cache(maxsize=1)

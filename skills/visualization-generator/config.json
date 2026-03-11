@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "category": "template",
+  "scope": "task",
+  "priority": 85,
+  "selection": {
+    "keywords": [
+      "plot",
+      "chart",
+      "visualization",
+      "heatmap",
+      "histogram",
+      "scatter",
+      "figure",
+      "volcano",
+      "coverage plot"
+    ],
+    "path_suffixes": [
+      ".csv",
+      ".tsv",
+      ".xlsx"
+    ],
+    "tool_hints": [
+      "claude_code"
+    ]
+  },
+  "injection": {
+    "mode": "full",
+    "max_chars": 5000
+  },
+  "references": [],
+  "scripts": []
+}
