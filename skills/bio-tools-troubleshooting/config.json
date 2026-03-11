@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "category": "policy",
+  "scope": "task",
+  "priority": 90,
+  "selection": {
+    "keywords": [
+      "error",
+      "failed",
+      "failure",
+      "timeout",
+      "permission",
+      "path",
+      "database",
+      "retry",
+      "debug",
+      "troubleshoot"
+    ],
+    "path_suffixes": [],
+    "tool_hints": [
+      "bio_tools"
+    ]
+  },
+  "injection": {
+    "mode": "summary_with_references",
+    "max_chars": 2200
+  },
+  "references": [
+    "references/error_catalog.md"
+  ],
+  "scripts": []
+}

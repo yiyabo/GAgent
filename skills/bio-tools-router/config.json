@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "category": "router",
+  "scope": "both",
+  "priority": 100,
+  "selection": {
+    "keywords": [
+      "fasta",
+      "fastq",
+      "sam",
+      "bam",
+      "contig",
+      "sequence",
+      "alignment",
+      "assembly",
+      "annotation",
+      "taxonomy",
+      "phage",
+      "genome"
+    ],
+    "path_suffixes": [
+      ".fasta",
+      ".fa",
+      ".fna",
+      ".faa",
+      ".fastq",
+      ".fq",
+      ".sam",
+      ".bam",
+      ".gff",
+      ".gff3"
+    ],
+    "tool_hints": [
+      "bio_tools"
+    ]
+  },
+  "injection": {
+    "mode": "summary_with_references",
+    "max_chars": 3200
+  },
+  "references": [
+    "references/verified_ops.md"
+  ],
+  "scripts": []
+}
