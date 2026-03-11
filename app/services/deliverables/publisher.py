@@ -278,7 +278,7 @@ class DeliverablePublisher:
         normalized_session = str(session_id or "").strip()
         if not normalized_session:
             return None
-        if self._is_failed_result(raw_result):
+        if self._is_failed_result(raw_result) and not self._has_publishable_partial_result(raw_result):
             return None
 
         session_dir = self.get_session_dir(normalized_session, create=True)
@@ -1192,6 +1192,34 @@ class DeliverablePublisher:
             return True
         status_value = str(raw_result.get("status") or "").strip().lower()
         return status_value in {"failed", "error"}
+
+    @staticmethod
+    def _has_publishable_partial_result(raw_result: Any) -> bool:
+        if not isinstance(raw_result, dict):
+            return False
+
+        manuscript_result = DeliverablePublisher._extract_manuscript_result(raw_result)
+        if isinstance(manuscript_result, dict):
+            sections = manuscript_result.get("sections")
+            if isinstance(sections, list) and sections:
+                return True
+            for key in (
+                "partial_output_path",
+                "combined_partial",
+                "effective_output_path",
+                "output_path",
+                "effective_analysis_path",
+                "analysis_path",
+            ):
+                value = manuscript_result.get(key)
+                if isinstance(value, str) and value.strip():
+                    return True
+
+        for key in ("partial_output_path", "combined_partial"):
+            value = raw_result.get(key)
+            if isinstance(value, str) and value.strip():
+                return True
+        return bool(raw_result.get("partial"))
 
     @staticmethod
     def _should_publish_text_blob(*, tool_name: str, raw_result: Any) -> bool:
