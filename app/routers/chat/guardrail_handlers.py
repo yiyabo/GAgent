@@ -14,14 +14,17 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from app.services.llm.structured_response import LLMAction, LLMStructuredResponse
 
 from .guardrails import (
+    extract_review_topic,
     explicit_manuscript_request,
     extract_declared_absolute_paths,
     extract_task_id_from_text,
     is_generic_plan_confirmation,
     is_status_query_only,
     is_task_executable_status,
+    literature_backed_review_request,
     looks_like_completion_claim,
     reply_promises_execution,
+    requests_abstract_only,
     should_force_plan_first,
 )
 
@@ -36,25 +39,58 @@ if TYPE_CHECKING:
 async def apply_experiment_fallback(
     agent: Any, structured: LLMStructuredResponse
 ) -> LLMStructuredResponse:
-    """Guardrail: only allow manuscript_writer when the user explicitly asks to write a paper."""
+    """Guardrail: keep writing tools scoped and recover review drafts from retrieval-only actions."""
     user_message = agent._current_user_message or ""
     if not user_message.strip():
         return structured
 
-    manuscript_actions = [
+    writing_actions = [
         action
         for action in structured.actions
-        if action.kind == "tool_operation" and action.name == "manuscript_writer"
+        if action.kind == "tool_operation"
+        and action.name in {"manuscript_writer", "review_pack_writer"}
     ]
-    if not manuscript_actions:
-        return structured
 
     if not explicit_manuscript_request(user_message):
         structured.actions = [
             action
             for action in structured.actions
-            if not (action.kind == "tool_operation" and action.name == "manuscript_writer")
+            if not (
+                action.kind == "tool_operation"
+                and action.name in {"manuscript_writer", "review_pack_writer"}
+            )
         ]
+        return structured
+
+    if writing_actions:
+        return structured
+
+    if not literature_backed_review_request(user_message):
+        return structured
+
+    retrieval_only_tools = {"web_search", "graph_rag", "literature_pipeline"}
+    tool_actions = [
+        action for action in structured.actions if action.kind == "tool_operation"
+    ]
+    if tool_actions and not all(action.name in retrieval_only_tools for action in tool_actions):
+        return structured
+
+    topic = extract_review_topic(user_message) or user_message.strip()
+    parameters: Dict[str, Any] = {"topic": topic}
+    if requests_abstract_only(user_message):
+        parameters["sections"] = ["abstract"]
+    if topic and topic != user_message.strip():
+        parameters["query"] = topic
+
+    structured.actions = [
+        LLMAction(
+            kind="tool_operation",
+            name="review_pack_writer",
+            parameters=parameters,
+            order=1,
+            blocking=True,
+        )
+    ]
     return structured
 
 
