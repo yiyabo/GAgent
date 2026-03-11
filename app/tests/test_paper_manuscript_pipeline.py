@@ -255,6 +255,24 @@ def test_manuscript_writer_blocks_release_when_final_polish_times_out(
     )
 
 
+def test_final_polish_timeout_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = {"wait_for": False}
+
+    async def _sample() -> str:
+        return "ok"
+
+    async def _fail_if_called(*args, **kwargs):
+        called["wait_for"] = True
+        raise AssertionError("asyncio.wait_for should not be used when timeout is disabled")
+
+    monkeypatch.setattr(asyncio, "wait_for", _fail_if_called)
+
+    result = asyncio.run(manuscript_writer_module._maybe_wait_with_timeout(_sample(), None))
+
+    assert result == "ok"
+    assert called["wait_for"] is False
+
+
 def test_manuscript_writer_fails_on_missing_reference_coverage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

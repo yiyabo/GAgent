@@ -20,7 +20,7 @@ import shutil
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Awaitable, Dict, Iterable, List, Optional, Tuple
 
 from app.llm import LLMClient
 from app.services.llm.llm_service import LLMService, get_llm_service
@@ -34,7 +34,7 @@ _DEFAULT_MAX_REVISIONS = 5
 _DEFAULT_THRESHOLD = 0.8
 _DEFAULT_FINAL_POLISH_MAX_REVISIONS = 2
 _DEFAULT_FINAL_POLISH_THRESHOLD = 0.85
-_DEFAULT_FINAL_POLISH_STEP_TIMEOUT_SEC = 75.0
+_DEFAULT_FINAL_POLISH_STEP_TIMEOUT_SEC = 0.0
 _ALLOWED_TEXT_EXTENSIONS = {
     ".md",
     ".txt",
@@ -221,6 +221,15 @@ async def _chat(llm: LLMService, prompt: str, model: Optional[str]) -> str:
     if model:
         return await llm.chat_async(prompt, model=model)
     return await llm.chat_async(prompt)
+
+
+async def _maybe_wait_with_timeout(
+    operation: Awaitable[str],
+    timeout_sec: Optional[float],
+) -> str:
+    if timeout_sec is None or timeout_sec <= 0:
+        return await operation
+    return await asyncio.wait_for(operation, timeout=timeout_sec)
 
 
 def _parse_json_payload(text: str) -> Optional[Dict[str, Any]]:
@@ -811,7 +820,7 @@ async def manuscript_writer_handler(
         except (TypeError, ValueError):
             final_polish_step_timeout_sec = _DEFAULT_FINAL_POLISH_STEP_TIMEOUT_SEC
         if final_polish_step_timeout_sec <= 0:
-            final_polish_step_timeout_sec = _DEFAULT_FINAL_POLISH_STEP_TIMEOUT_SEC
+            final_polish_step_timeout_sec = None
 
         context_paths = context_paths or []
         section_list = sections or list(_DEFAULT_SECTIONS)
@@ -1364,9 +1373,9 @@ async def manuscript_writer_handler(
                             review_mode=review_mode,
                         )
                     current_polish_stage = "polish_generation"
-                    polished_candidate = await asyncio.wait_for(
+                    polished_candidate = await _maybe_wait_with_timeout(
                         _chat(merge_llm, polish_prompt, merge_model_name),
-                        timeout=final_polish_step_timeout_sec,
+                        final_polish_step_timeout_sec,
                     )
                     attempt_path = merge_dir / f"polished_draft_attempt_{attempt}.md"
                     attempt_path.write_text(polished_candidate, encoding="utf-8")
@@ -1378,9 +1387,9 @@ async def manuscript_writer_handler(
                         review_mode=review_mode,
                     )
                     current_polish_stage = "release_review"
-                    review_raw = await asyncio.wait_for(
+                    review_raw = await _maybe_wait_with_timeout(
                         _chat(eval_llm, review_prompt, eval_model),
-                        timeout=final_polish_step_timeout_sec,
+                        final_polish_step_timeout_sec,
                     )
                     release_review = _parse_json_payload(review_raw)
                     if release_review is None:
