@@ -15,6 +15,21 @@ from .services.foundation.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _normalize_timeout(timeout: Optional[float], fallback: Optional[float]) -> Optional[float]:
+    candidate = timeout
+    if candidate is None:
+        candidate = fallback
+    try:
+        if candidate is None:
+            return None
+        value = float(candidate)
+    except (TypeError, ValueError):
+        return None if candidate is None else None
+    if value <= 0:
+        return None
+    return value
+
+
 @dataclass
 class NativeToolCall:
     """A single tool call returned by the model via native function calling."""
@@ -52,7 +67,7 @@ class LLMClient(LLMProvider):
         api_key: Optional[str] = None,
         url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: int = 60,
+        timeout: Optional[float] = None,
         retries: Optional[int] = None,
         backoff_base: Optional[float] = None,
     ) -> None:
@@ -153,7 +168,10 @@ class LLMClient(LLMProvider):
             )
             self.model = model or env_model or settings.qwen_model or "qwen3.5-plus"
 
-        self.timeout = timeout or settings.glm_request_timeout
+        settings_timeout = getattr(settings, "llm_request_timeout", None)
+        if settings_timeout in (None, ""):
+            settings_timeout = getattr(settings, "glm_request_timeout", None)
+        self.timeout = _normalize_timeout(timeout, settings_timeout)
         self.mock = False  # Mock
         # Retry/backoff configuration
         try:
@@ -198,7 +216,11 @@ class LLMClient(LLMProvider):
         last_err: Optional[Exception] = None
         for attempt in range(self.retries + 1):
             try:
-                with request.urlopen(req, timeout=self.timeout) as resp:
+                if self.timeout is None:
+                    resp_ctx = request.urlopen(req)
+                else:
+                    resp_ctx = request.urlopen(req, timeout=self.timeout)
+                with resp_ctx as resp:
                     resp_text = resp.read().decode("utf-8")
                     obj = json.loads(resp_text)
                 try:
@@ -257,7 +279,7 @@ class LLMClient(LLMProvider):
         }
         headers = self._build_headers()
 
-        timeout = httpx.Timeout(self.timeout)
+        timeout = None if self.timeout is None else httpx.Timeout(self.timeout)
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
                 "POST", self.url, headers=headers, json=payload
@@ -313,7 +335,7 @@ class LLMClient(LLMProvider):
         # Accumulator for streamed tool_calls keyed by index
         tc_accum: Dict[int, Dict[str, str]] = {}
 
-        timeout = httpx.Timeout(self.timeout)
+        timeout = None if self.timeout is None else httpx.Timeout(self.timeout)
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", self.url, headers=headers, json=payload) as resp:
                 resp.raise_for_status()

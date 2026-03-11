@@ -116,7 +116,11 @@ def test_paper_builder_uses_staged_figure_paths(tmp_path: Path) -> None:
 def test_manuscript_writer_respects_analysis_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
-    monkeypatch.setattr(manuscript_writer_module, "_build_llm_service", lambda provider, model: (object(), model))
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory())
 
     bib_path = tmp_path / "ctx" / "references.bib"
@@ -162,7 +166,11 @@ def test_manuscript_writer_blocks_release_when_final_polish_fails(
 ) -> None:
     monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
-    monkeypatch.setattr(manuscript_writer_module, "_build_llm_service", lambda provider, model: (object(), model))
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(polish_pass=False))
     monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_ENABLED", "true")
     monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_MAX_REVISIONS", "2")
@@ -208,7 +216,11 @@ def test_manuscript_writer_blocks_release_when_final_polish_times_out(
 ) -> None:
     monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
-    monkeypatch.setattr(manuscript_writer_module, "_build_llm_service", lambda provider, model: (object(), model))
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
     monkeypatch.setattr(
         manuscript_writer_module,
         "_chat",
@@ -279,7 +291,11 @@ def test_manuscript_writer_fails_on_missing_reference_coverage(
 ) -> None:
     monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
-    monkeypatch.setattr(manuscript_writer_module, "_build_llm_service", lambda provider, model: (object(), model))
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(intro_citation="[@known1]"))
     monkeypatch.setenv("MANUSCRIPT_STRICT_GATE", "true")
 
@@ -318,7 +334,11 @@ def test_manuscript_writer_fails_on_unknown_citekey(
 ) -> None:
     monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
-    monkeypatch.setattr(manuscript_writer_module, "_build_llm_service", lambda provider, model: (object(), model))
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(intro_citation="[@unknown_key]"))
     monkeypatch.setenv("MANUSCRIPT_STRICT_GATE", "true")
 
