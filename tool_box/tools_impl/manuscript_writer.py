@@ -41,6 +41,7 @@ _ALLOWED_TEXT_EXTENSIONS = {
     ".csv",
     ".tsv",
     ".json",
+    ".jsonl",
     ".yaml",
     ".yml",
     ".bib",
@@ -69,6 +70,7 @@ _ALL_EVAL_DIMENSIONS = [
     "cohesion",
     "academic_style",
     "citation_integrity",
+    "evidence_linkage",
 ]
 
 _SECTION_EVAL_DIMS: Dict[str, List[str]] = {
@@ -82,10 +84,12 @@ _SECTION_EVAL_DIMS: Dict[str, List[str]] = {
 }
 
 _REVIEW_SECTION_EVAL_DIMS: Dict[str, List[str]] = {
-    "method": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion"],
-    "experiment": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion"],
-    "result": ["results_analysis", "clarity", "cohesion", "citation_integrity", "structure"],
-    "discussion": ["scientific_rigor", "results_analysis", "clarity", "cohesion", "citation_integrity"],
+    "introduction": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion", "evidence_linkage"],
+    "method": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion", "evidence_linkage"],
+    "experiment": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion", "evidence_linkage"],
+    "result": ["results_analysis", "clarity", "cohesion", "citation_integrity", "structure", "evidence_linkage"],
+    "discussion": ["scientific_rigor", "results_analysis", "clarity", "cohesion", "citation_integrity", "evidence_linkage"],
+    "conclusion": ["structure", "clarity", "cohesion", "academic_style", "evidence_linkage"],
 }
 
 _DIMENSION_WEIGHTS: Dict[str, float] = {
@@ -94,6 +98,7 @@ _DIMENSION_WEIGHTS: Dict[str, float] = {
     "results_analysis": 1.2,
     "method_detail": 1.0,
     "experiment_detail": 1.0,
+    "evidence_linkage": 1.2,
     "structure": 1.0,
     "clarity": 1.0,
     "cohesion": 0.8,
@@ -259,6 +264,366 @@ def _parse_json_payload(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _load_jsonl_file(path: Path) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
+    return records
+
+
+def _load_json_file(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _first_context_path(context_paths: Iterable[str], suffix: str) -> Optional[str]:
+    for raw in context_paths:
+        value = str(raw or "").strip()
+        if value.lower().endswith(suffix.lower()):
+            return value
+    return None
+
+
+def _take_unique(items: Iterable[str], *, limit: int) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for item in items:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _review_study_card_excerpt(card: Dict[str, Any]) -> str:
+    findings = "; ".join(card.get("quantitative_findings") or []) or "Not available"
+    limitations = "; ".join(card.get("limitations") or []) or "Not available"
+    snippets = "; ".join(card.get("supporting_snippets") or []) or "Not available"
+    supported = ", ".join(card.get("section_support") or []) or "Not available"
+    return (
+        f"[@{card.get('citekey')}] {card.get('title')} ({card.get('year') or 'n.d.'}, {card.get('journal') or 'Unknown journal'})\n"
+        f"- Evidence tier: {card.get('evidence_tier') or 'unknown'}\n"
+        f"- Study type: {card.get('study_type') or 'unspecified'}\n"
+        f"- Model system: {', '.join(card.get('model_system') or []) or 'Not available'}\n"
+        f"- Intervention/delivery: {', '.join(card.get('intervention_delivery') or []) or 'Not available'}\n"
+        f"- Receptor/mechanism terms: {', '.join(card.get('receptor_mechanism_terms') or []) or 'Not available'}\n"
+        f"- Quantitative findings: {findings}\n"
+        f"- Limitations: {limitations}\n"
+        f"- Supporting sections: {supported}\n"
+        f"- Supporting snippets: {snippets}"
+    )
+
+
+def _render_study_matrix(cards: List[Dict[str, Any]]) -> str:
+    lines = [
+        "# Study Matrix",
+        "",
+        "| Citekey | Evidence | Study type | Model system | Quantitative findings | Supported sections |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for card in cards:
+        lines.append(
+            "| {citekey} | {tier} | {study_type} | {model} | {quant} | {supported} |".format(
+                citekey=f"[@{card.get('citekey')}]",
+                tier=card.get("evidence_tier") or "unknown",
+                study_type=card.get("study_type") or "unspecified",
+                model=", ".join(card.get("model_system") or []) or "Not available",
+                quant="Yes" if card.get("quantitative_findings") else "No",
+                supported=", ".join(card.get("section_support") or []) or "Not available",
+            )
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_coverage_markdown(report: Dict[str, Any]) -> str:
+    counts = report.get("counts") or {}
+    thresholds = report.get("thresholds") or {}
+    lines = [
+        "# Evidence Coverage",
+        "",
+        f"Status: {'PASS' if report.get('pass') else 'BLOCKED'}",
+        "",
+        str(report.get("summary") or ""),
+        "",
+        f"- Total included studies: {counts.get('total_studies', 0)} / {thresholds.get('min_total_studies', 0)}",
+        f"- Full-text studies: {counts.get('full_text_studies', 0)} / {thresholds.get('min_full_text_studies', 0)}",
+        f"- Quantitative studies: {counts.get('quantitative_studies', 0)} / {thresholds.get('min_quantitative_studies', 0)}",
+        "",
+        "## Core-section support",
+        "",
+    ]
+    for section, value in (report.get("section_support_counts") or {}).items():
+        lines.append(
+            f"- {section}: {value} / {thresholds.get('min_support_per_core_section', 0)}"
+        )
+    failures = report.get("failures") or []
+    lines.append("")
+    lines.append("## Failures")
+    lines.append("")
+    if failures:
+        lines.extend(f"- {item}" for item in failures)
+    else:
+        lines.append("- None")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_review_context_bundle(
+    *,
+    study_cards: List[Dict[str, Any]],
+    coverage_report: Dict[str, Any],
+    evidence_md_text: str,
+) -> Dict[str, str]:
+    section_contexts: Dict[str, str] = {}
+    summary_block = "\n".join(
+        [
+            "## Evidence coverage gate",
+            str(coverage_report.get("summary") or "Coverage summary unavailable."),
+            "",
+        ]
+    ).strip()
+    support_key = {
+        "abstract": {"introduction", "result", "discussion", "conclusion"},
+        "introduction": {"introduction"},
+        "method": {"method"},
+        "experiment": {"experiment"},
+        "result": {"result"},
+        "discussion": {"discussion"},
+        "conclusion": {"conclusion", "discussion", "result"},
+        "references": set(),
+    }
+    for section, supported_sections in support_key.items():
+        if section == "references":
+            section_contexts[section] = summary_block
+            continue
+        cards_for_section = [
+            card
+            for card in study_cards
+            if supported_sections.intersection(set(card.get("section_support") or []))
+        ]
+        cards_for_section.sort(
+            key=lambda card: (
+                0 if card.get("evidence_tier") == "full_text" else 1,
+                0 if card.get("quantitative_findings") else 1,
+                str(card.get("year") or ""),
+            )
+        )
+        excerpts = [_review_study_card_excerpt(card) for card in cards_for_section[:10]]
+        extra_notes = evidence_md_text.strip() if section in {"method", "discussion"} else ""
+        section_contexts[section] = "\n\n".join(
+            part for part in (summary_block, "\n\n".join(excerpts), extra_notes) if part
+        ).strip()
+    global_context = "\n\n".join(
+        [
+            summary_block,
+            "\n\n".join(_review_study_card_excerpt(card) for card in study_cards[:12]),
+            evidence_md_text.strip(),
+        ]
+    ).strip()
+    section_contexts["__global__"] = global_context
+    return section_contexts
+
+
+def _load_review_evidence(
+    *,
+    context_paths: List[str],
+    merge_dir: Path,
+    max_context_bytes: int,
+) -> Dict[str, Any]:
+    study_cards_path = _first_context_path(context_paths, "study_cards.jsonl")
+    coverage_report_path = _first_context_path(context_paths, "coverage_report.json")
+    evidence_md_path = _first_context_path(context_paths, "evidence.md")
+    reference_library_path = _first_context_path(context_paths, ".bib")
+
+    study_cards: List[Dict[str, Any]] = []
+    coverage_report: Optional[Dict[str, Any]] = None
+    evidence_md_text = ""
+    if study_cards_path:
+        try:
+            study_cards = _load_jsonl_file(_resolve_project_path(study_cards_path))
+        except Exception:
+            study_cards = []
+    if coverage_report_path:
+        try:
+            coverage_report = _load_json_file(_resolve_project_path(coverage_report_path))
+        except Exception:
+            coverage_report = None
+    if evidence_md_path:
+        try:
+            evidence_md_text = _read_text_file(_resolve_project_path(evidence_md_path), max_context_bytes)
+        except Exception:
+            evidence_md_text = ""
+
+    if coverage_report is None and study_cards:
+        counts = {
+            "total_studies": len(study_cards),
+            "full_text_studies": len([card for card in study_cards if card.get("evidence_tier") == "full_text"]),
+            "quantitative_studies": len([card for card in study_cards if card.get("quantitative_findings")]),
+        }
+        thresholds = {
+            "min_total_studies": 15,
+            "min_full_text_studies": 6,
+            "min_quantitative_studies": 4,
+            "min_support_per_core_section": 2,
+        }
+        section_support_counts = {
+            section: len([card for card in study_cards if section in (card.get("section_support") or [])])
+            for section in ("introduction", "method", "experiment", "result", "discussion", "conclusion")
+        }
+        failures: List[str] = []
+        if counts["total_studies"] < thresholds["min_total_studies"]:
+            failures.append(
+                f"only {counts['total_studies']} included studies; require at least {thresholds['min_total_studies']}"
+            )
+        if counts["full_text_studies"] < thresholds["min_full_text_studies"]:
+            failures.append(
+                f"only {counts['full_text_studies']} full-text studies; require at least {thresholds['min_full_text_studies']}"
+            )
+        if counts["quantitative_studies"] < thresholds["min_quantitative_studies"]:
+            failures.append(
+                f"only {counts['quantitative_studies']} studies with quantitative findings; require at least {thresholds['min_quantitative_studies']}"
+            )
+        for section, support_count in section_support_counts.items():
+            if support_count < thresholds["min_support_per_core_section"]:
+                failures.append(
+                    f"{section} is supported by only {support_count} studies; require at least {thresholds['min_support_per_core_section']}"
+                )
+        coverage_report = {
+            "profile": "pi_ready_review",
+            "pass": not failures,
+            "summary": (
+                "Evidence coverage passed."
+                if not failures
+                else "Evidence coverage blocked: " + "; ".join(failures)
+            ),
+            "thresholds": thresholds,
+            "counts": counts,
+            "section_support_counts": section_support_counts,
+            "failures": failures,
+        }
+
+    evidence_coverage_path = merge_dir / "evidence_coverage.md"
+    study_matrix_path = merge_dir / "study_matrix.md"
+    coverage_report_output_path = merge_dir / "coverage_report.json"
+    if coverage_report is not None:
+        evidence_coverage_path.write_text(_render_coverage_markdown(coverage_report), encoding="utf-8")
+        coverage_report_output_path.write_text(json.dumps(coverage_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if study_cards:
+        study_matrix_path.write_text(_render_study_matrix(study_cards), encoding="utf-8")
+
+    if not study_cards:
+        fallback_report = coverage_report or {
+            "pass": False,
+            "summary": "Evidence coverage blocked: structured study_cards.jsonl was not provided for a review manuscript.",
+            "failures": ["structured study_cards.jsonl missing"],
+            "counts": {"total_studies": 0, "full_text_studies": 0, "quantitative_studies": 0},
+            "section_support_counts": {},
+            "thresholds": {
+                "min_total_studies": 15,
+                "min_full_text_studies": 6,
+                "min_quantitative_studies": 4,
+                "min_support_per_core_section": 2,
+            },
+        }
+        evidence_coverage_path.write_text(_render_coverage_markdown(fallback_report), encoding="utf-8")
+        coverage_report_output_path.write_text(json.dumps(fallback_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {
+            "study_cards": [],
+            "coverage_report": fallback_report,
+            "coverage_report_path": coverage_report_output_path,
+            "evidence_coverage_path": evidence_coverage_path,
+            "study_matrix_path": study_matrix_path if study_matrix_path.exists() else None,
+            "reference_library_path": reference_library_path,
+            "section_contexts": {},
+        }
+
+    if not evidence_md_text:
+        evidence_md_text = "\n\n".join(_review_study_card_excerpt(card) for card in study_cards[:12])
+
+    section_contexts = _build_review_context_bundle(
+        study_cards=study_cards,
+        coverage_report=coverage_report or {},
+        evidence_md_text=evidence_md_text,
+    )
+    return {
+        "study_cards": study_cards,
+        "coverage_report": coverage_report or {},
+        "coverage_report_path": coverage_report_output_path if coverage_report_output_path.exists() else None,
+        "evidence_coverage_path": evidence_coverage_path if evidence_coverage_path.exists() else None,
+        "study_matrix_path": study_matrix_path if study_matrix_path.exists() else None,
+        "reference_library_path": reference_library_path,
+        "section_contexts": section_contexts,
+    }
+
+
+def _validate_review_abstract_contract(text: str) -> Dict[str, Any]:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    slots = {
+        "background": any(token in normalized for token in ("antimicrobial", "infection", "pathogen", "therapy", "pseudomonas")),
+        "scope": any(token in normalized for token in ("this review", "we review", "we synthesize", "scope", "review synthesizes")),
+        "evidence_base_method": any(token in normalized for token in ("literature", "studies", "evidence", "search", "reviewed")),
+        "major_findings": any(token in normalized for token in ("key finding", "collectively", "recent studies", "major", "findings")),
+        "limitations": any(token in normalized for token in ("limitation", "heterogeneity", "not available", "limited", "however")),
+        "conclusion": any(token in normalized for token in ("overall", "together", "support", "suggest", "conclude", "promise")),
+    }
+    missing = [key for key, present in slots.items() if not present]
+    return {"pass": not missing, "missing_slots": missing}
+
+
+def _apply_review_evidence_linkage(
+    *,
+    section: str,
+    text: str,
+    evaluation_data: Dict[str, Any],
+    study_cards: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if section not in {"introduction", "method", "experiment", "result", "discussion", "conclusion"}:
+        return evaluation_data
+    allowed_by_section = {
+        card.get("citekey")
+        for card in study_cards
+        if card.get("citekey") and section in (card.get("section_support") or [])
+    }
+    cited = [key for key in _extract_markdown_citekeys(text) if key in allowed_by_section]
+    linked_count = len(set(cited))
+    scores = evaluation_data.get("scores")
+    if not isinstance(scores, dict):
+        scores = {}
+        evaluation_data["scores"] = scores
+    defects = evaluation_data.get("defects")
+    if not isinstance(defects, list):
+        defects = []
+        evaluation_data["defects"] = defects
+    revision_instructions = evaluation_data.get("revision_instructions")
+    if not isinstance(revision_instructions, list):
+        revision_instructions = []
+        evaluation_data["revision_instructions"] = revision_instructions
+    passes_linkage = linked_count >= 2
+    scores["evidence_linkage"] = 1.0 if passes_linkage else 0.0
+    if not passes_linkage:
+        defects.append("insufficient_evidence_linkage")
+        revision_instructions.append(
+            f"Support the {section} synthesis with at least two cited included studies that are relevant to this section."
+        )
+        evaluation_data["pass"] = False
+    return evaluation_data
+
+
 def _weighted_score(
     scores: Dict[str, Any],
     dimensions: Optional[List[str]] = None,
@@ -289,14 +654,18 @@ def _average_score(scores: Dict[str, Any]) -> float:
 
 
 def _extract_markdown_citekeys(text: str) -> List[str]:
-    """Extract citekeys from Markdown citekey syntax: [@citekey]."""
+    """Extract citekeys from Markdown citekey syntax, including grouped citations."""
     if not text:
         return []
     keys: List[str] = []
-    for m in re.finditer(r"\[@([A-Za-z0-9_:\-]+)\]", text):
-        k = m.group(1).strip()
-        if k and k not in keys:
-            keys.append(k)
+    for m in re.finditer(r"\[((?:\s*@[A-Za-z0-9_:\-]+\s*(?:;\s*@[A-Za-z0-9_:\-]+\s*)*))\]", text):
+        raw_group = m.group(1)
+        for part in raw_group.split(";"):
+            normalized = part.strip()
+            if normalized.startswith("@"):
+                normalized = normalized[1:].strip()
+            if normalized and normalized not in keys:
+                keys.append(normalized)
     return keys
 
 
@@ -385,6 +754,13 @@ def _section_eval_dims(section: str, *, review_mode: bool = False) -> List[str]:
 def _section_requirements(section: str, *, review_mode: bool = False) -> List[str]:
     section = _normalize_section_key(section)
     if section == "abstract":
+        if review_mode:
+            return [
+                "Cover six elements in one coherent abstract: background, review scope/objective, evidence base or search approach, major findings/themes, limitations, and conclusion.",
+                "State whether the evidence base includes full-text studies versus abstract-only studies when that distinction materially affects confidence.",
+                "State representative quantitative findings with units when available; if the source literature is mainly qualitative, say so explicitly.",
+                "Do not collapse the abstract into a generic conclusion-only paragraph.",
+            ]
         return [
             "Provide background, objective, methods, key results, and conclusion.",
             "State representative numeric findings with units when available; if the source literature is qualitative, say so explicitly.",
@@ -407,6 +783,7 @@ def _section_requirements(section: str, *, review_mode: bool = False) -> List[st
                 "State databases, search scope, study selection criteria, and evidence extraction approach when available.",
                 "Be explicit about which methodological details were available versus missing in the source studies.",
                 "Do not invent statistical procedures, thresholds, or software versions that were not reported by the source literature.",
+                "Reference the evidence coverage constraints when they materially limit certainty.",
             ]
         return [
             "Provide full data processing steps and parameter settings.",
@@ -421,6 +798,7 @@ def _section_requirements(section: str, *, review_mode: bool = False) -> List[st
                 "Report representative quantitative findings with units when available, but do not invent p-values, effect sizes, or uncertainty when the source studies do not provide them.",
                 "Clearly distinguish extracted evidence from the review's synthesis or interpretation.",
                 "If original figures/tables are unavailable, describe the proposed figure or table content instead of pretending direct figure assets exist.",
+                "Use citations to anchor comparisons across at least two included studies.",
             ]
         return [
             "Detail experimental setup, datasets, and analysis workflow.",
@@ -437,6 +815,7 @@ def _section_requirements(section: str, *, review_mode: bool = False) -> List[st
                 "Report representative quantitative findings with units when available; if the literature is mainly qualitative, state that clearly.",
                 "Ground claims in cited evidence and describe any proposed tables/figures when direct figure assets are unavailable.",
                 "Do not present this section as newly generated original experimental data.",
+                "Use citations to anchor comparative claims instead of making uncited narrative assertions.",
             ]
         return [
             "Interpret quantitative results and link to figures/tables.",
@@ -444,6 +823,13 @@ def _section_requirements(section: str, *, review_mode: bool = False) -> List[st
             "Avoid vague statements; ground claims in data.",
         ]
     if section == "discussion":
+        if review_mode:
+            return [
+                "Interpret the synthesis rather than repeating the results section.",
+                "Compare with prior studies and highlight translational implications, uncertainties, and alternative interpretations.",
+                "Discuss limitations, evidence gaps, and future work.",
+                "Ground synthesis claims in cited evidence from the included studies.",
+            ]
         return [
             "Contextualize findings within existing literature.",
             "Compare with prior studies and highlight novelty.",
@@ -451,6 +837,12 @@ def _section_requirements(section: str, *, review_mode: bool = False) -> List[st
             "Ground claims in data from the results section.",
         ]
     if section == "conclusion":
+        if review_mode:
+            return [
+                "Summarize the review's main takeaways without introducing new evidence.",
+                "State the main translational implication and the most important unresolved limitation.",
+                "Ground the conclusion in the synthesized evidence base.",
+            ]
         return [
             "Summarize key contributions and findings.",
             "Discuss limitations and future work.",
@@ -479,6 +871,7 @@ def _build_analysis_prompt(task: str, context_text: str, sections: List[str]) ->
         "Rules:\n"
         "- Use only provided context. If data is missing, say 'Not available'.\n"
         "- Do NOT fabricate citations or results.\n"
+        "- Prefer cross-study synthesis over per-paper narration when the task is a review article.\n"
         "- Be concise but information-dense.\n\n"
         f"User request:\n{task}\n\n"
         f"Context:\n{context_text or '[No context provided]'}\n\n"
@@ -511,6 +904,7 @@ def _build_section_prompt(
         "- Use cohesive expert academic prose (avoid short fragmented sentences).\n"
         "- Ground all claims in the provided analysis memo and context.\n"
         "- Do NOT fabricate citations or results.\n"
+        "- Prefer explicit evidence-linked synthesis over generic academic filler.\n"
         "- Include the section heading (Markdown '##').\n\n"
         f"User request:\n{task}\n\n"
         f"Analysis memo:\n{analysis_memo}\n\n"
@@ -537,6 +931,7 @@ def _build_evaluation_prompt(
         "- Do not penalize the section merely because primary studies omit p-values, effect sizes, or uncertainty, as long as the section transparently states those limitations.\n"
         "- For review manuscripts, score `results_analysis` based on cross-study synthesis quality, evidence linkage, and explicit handling of missing quantitative data.\n"
         "- For review manuscripts, score `scientific_rigor` based on faithful reporting, transparency about evidence limitations, and sound synthesis rather than the presence of newly generated data.\n"
+        "- For review manuscripts, score `evidence_linkage` based on whether comparative claims and synthesis statements are backed by cited included studies.\n"
         if review_mode
         else ""
     )
@@ -779,6 +1174,14 @@ async def manuscript_writer_handler(
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         work_dir = (session_dir or output_file.parent) / f".manuscript_writer_{run_id}"
         work_dir.mkdir(parents=True, exist_ok=True)
+        sections_dir = work_dir / "sections"
+        reviews_dir = work_dir / "reviews"
+        merge_dir = work_dir / "merge"
+        sections_dir.mkdir(parents=True, exist_ok=True)
+        reviews_dir.mkdir(parents=True, exist_ok=True)
+        merge_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = merge_dir / "merge_queue.json"
+        manifest_path.write_text("[]", encoding="utf-8")
 
         # Normalize numeric params
         try:
@@ -845,9 +1248,39 @@ async def manuscript_writer_handler(
         if not section_list:
             section_list = list(_DEFAULT_SECTIONS)
         review_mode = _is_review_article_task(task)
-
-        context_text = _build_context_blocks(context_paths, max_context_bytes)
-        bib_keys = _extract_bibtex_keys(context_text)
+        review_evidence = (
+            _load_review_evidence(
+                context_paths=context_paths,
+                merge_dir=merge_dir,
+                max_context_bytes=max_context_bytes,
+            )
+            if review_mode
+            else {}
+        )
+        section_contexts = (
+            review_evidence.get("section_contexts")
+            if isinstance(review_evidence.get("section_contexts"), dict)
+            else {}
+        )
+        context_text = (
+            str(section_contexts.get("__global__") or "").strip()
+            if review_mode
+            else _build_context_blocks(context_paths, max_context_bytes)
+        )
+        reference_library_path = (
+            str(review_evidence.get("reference_library_path") or "").strip()
+            if isinstance(review_evidence, dict)
+            else ""
+        )
+        bib_text = ""
+        if reference_library_path:
+            try:
+                bib_text = _read_text_file(_resolve_project_path(reference_library_path), max_context_bytes)
+            except Exception:
+                bib_text = ""
+        elif context_text:
+            bib_text = context_text
+        bib_keys = _extract_bibtex_keys(bib_text)
 
         # P3-8: Citation coverage precheck — warn early if no .bib keys found
         bib_precheck_warning: Optional[str] = None
@@ -889,16 +1322,7 @@ async def manuscript_writer_handler(
             timeout=final_polish_llm_timeout_sec,
         )
 
-        analysis_prompt = _build_analysis_prompt(task, context_text, section_list)
-        analysis_memo = await _chat(gen_llm, analysis_prompt, gen_model)
-        analysis_file.write_text(analysis_memo, encoding="utf-8")
-
-        sections_dir = work_dir / "sections"
-        reviews_dir = work_dir / "reviews"
-        merge_dir = work_dir / "merge"
-        sections_dir.mkdir(parents=True, exist_ok=True)
-        reviews_dir.mkdir(parents=True, exist_ok=True)
-        merge_dir.mkdir(parents=True, exist_ok=True)
+        analysis_memo = ""
 
         section_results: List[Dict[str, Any]] = []
         section_scores: Dict[str, float] = {}
@@ -949,6 +1373,16 @@ async def manuscript_writer_handler(
                     "Publication blocked: citation validation failed because references were incomplete, "
                     "unsupported, or inconsistent."
                 )
+            if normalized == "low_evidence_coverage":
+                if isinstance(evaluation, dict):
+                    summary = str(evaluation.get("coverage_summary") or "").strip()
+                    if summary:
+                        return f"Publication blocked: {summary}"
+                return "Publication blocked: evidence coverage was too weak for a PI-readable review manuscript."
+            if normalized == "abstract_incomplete":
+                return "Publication blocked: the abstract did not satisfy the required review-manuscript contract."
+            if normalized == "unsupported_claims":
+                return "Publication blocked: one or more review sections lacked sufficient evidence linkage."
             if normalized == "polish_quality_gate_failed":
                 summary = ""
                 if isinstance(evaluation, dict):
@@ -1009,7 +1443,7 @@ async def manuscript_writer_handler(
             )
             cited_count = len(cited) if isinstance(cited, list) else 0
             missing_ref_count = len(missing_ref) if isinstance(missing_ref, list) else 0
-            return {
+            stats = {
                 "section_pass_rate": round(passed_count / total, 4),
                 "rewrite_attempts_total": rewrite_attempts_total,
                 "failure_distribution": failure_distribution,
@@ -1022,6 +1456,15 @@ async def manuscript_writer_handler(
                 "cited_keys_count": cited_count,
                 "missing_reference_keys_count": missing_ref_count,
             }
+            if review_mode and isinstance(review_evidence, dict):
+                coverage_report = review_evidence.get("coverage_report") or {}
+                if isinstance(coverage_report, dict):
+                    counts = coverage_report.get("counts") or {}
+                    stats["evidence_coverage_passed"] = bool(coverage_report.get("pass"))
+                    stats["evidence_total_studies"] = counts.get("total_studies", 0)
+                    stats["evidence_full_text_studies"] = counts.get("full_text_studies", 0)
+                    stats["evidence_quantitative_studies"] = counts.get("quantitative_studies", 0)
+            return stats
 
         def _build_failure_payload(
             *,
@@ -1057,6 +1500,26 @@ async def manuscript_writer_handler(
                 "polish_gate_passed": False,
                 "public_release_ready": False,
                 "release_state": "blocked",
+                "evidence_coverage_passed": bool(
+                    (review_evidence.get("coverage_report") or {}).get("pass")
+                )
+                if review_mode and isinstance(review_evidence, dict)
+                else None,
+                "coverage_summary": str(
+                    (review_evidence.get("coverage_report") or {}).get("summary") or ""
+                ).strip()
+                if review_mode and isinstance(review_evidence, dict)
+                else None,
+                "coverage_report_path": _to_rel(review_evidence.get("coverage_report_path"))
+                if review_mode and isinstance(review_evidence.get("coverage_report_path"), Path)
+                else None,
+                "evidence_coverage_path": _to_rel(review_evidence.get("evidence_coverage_path"))
+                if review_mode and isinstance(review_evidence.get("evidence_coverage_path"), Path)
+                else None,
+                "study_matrix_path": _to_rel(review_evidence.get("study_matrix_path"))
+                if review_mode and isinstance(review_evidence.get("study_matrix_path"), Path)
+                else None,
+                "reference_library_path": reference_library_path or None,
                 "release_summary": release_summary or _release_summary_for_error(
                     error_code,
                     evaluation=polish_review_payload,
@@ -1095,6 +1558,11 @@ async def manuscript_writer_handler(
             section_filename = f"{idx:02d}_{section}.md"
             section_path = sections_dir / section_filename
             requirements = _section_requirements(section, review_mode=review_mode)
+            section_context_text = (
+                str(section_contexts.get(section) or "").strip()
+                if review_mode and isinstance(section_contexts, dict)
+                else context_text
+            )
 
             text = await _chat(
                 gen_llm,
@@ -1102,7 +1570,7 @@ async def manuscript_writer_handler(
                     task,
                     section,
                     analysis_memo,
-                    context_text,
+                    section_context_text,
                     requirements,
                     review_mode=review_mode,
                 ),
@@ -1136,6 +1604,13 @@ async def manuscript_writer_handler(
                         ],
                         "pass": False,
                     }
+                if review_mode and isinstance(review_evidence, dict):
+                    evaluation_data = _apply_review_evidence_linkage(
+                        section=section,
+                        text=text,
+                        evaluation_data=evaluation_data,
+                        study_cards=review_evidence.get("study_cards") or [],
+                    )
 
                 scores = evaluation_data.get("scores") or {}
                 section_dims = _section_eval_dims(section, review_mode=review_mode)
@@ -1157,7 +1632,7 @@ async def manuscript_writer_handler(
                 revision_prompt = _build_revision_prompt(
                     section,
                     analysis_memo,
-                    context_text,
+                    section_context_text,
                     text,
                     evaluation_data,
                     requirements,
@@ -1175,7 +1650,26 @@ async def manuscript_writer_handler(
                 "passed": passed,
                 "score": round(avg_score, 4),
                 "evaluation_path": _to_rel(reviews_dir / f"{section}_eval_{attempts}.json"),
+                "defects": list(evaluation_data.get("defects") or []) if isinstance(evaluation_data, dict) else [],
             }
+
+        if review_mode:
+            coverage_report = review_evidence.get("coverage_report") if isinstance(review_evidence, dict) else {}
+            coverage_payload = coverage_report if isinstance(coverage_report, dict) else {}
+            if not coverage_payload.get("pass"):
+                return _build_failure_payload(
+                    error_code="low_evidence_coverage",
+                    manifest_path=manifest_path,
+                    combined_partial="",
+                    release_summary=_release_summary_for_error(
+                        "low_evidence_coverage",
+                        evaluation={"coverage_summary": coverage_payload.get("summary")},
+                    ),
+                )
+
+        analysis_prompt = _build_analysis_prompt(task, context_text, section_list)
+        analysis_memo = await _chat(gen_llm, analysis_prompt, gen_model)
+        analysis_file.write_text(analysis_memo, encoding="utf-8")
 
         # ---------------------------------------------------------------
         # Phase: Generate sections (parallel for non-reference sections)
@@ -1267,8 +1761,13 @@ async def manuscript_writer_handler(
                     section_path.read_text(encoding="utf-8")
                     for _, section_path in passed_sections
                 )
+            has_linkage_failure = any(
+                "insufficient_evidence_linkage" in (row.get("defects") or [])
+                for row in section_results
+                if isinstance(row, dict)
+            )
             return _build_failure_payload(
-                error_code="section_evaluation_failed",
+                error_code="unsupported_claims" if has_linkage_failure else "section_evaluation_failed",
                 manifest_path=manifest_path,
                 combined_partial=combined_partial,
             )
@@ -1305,6 +1804,24 @@ async def manuscript_writer_handler(
                 citation_validation_path=citation_validation_path,
                 citation_report=citation_report,
             )
+
+        if review_mode and "abstract" in section_text_map:
+            abstract_contract = _validate_review_abstract_contract(section_text_map.get("abstract", ""))
+            abstract_contract_path = reviews_dir / "abstract_contract.json"
+            abstract_contract_path.write_text(
+                json.dumps(abstract_contract, ensure_ascii=True, indent=2),
+                encoding="utf-8",
+            )
+            if not abstract_contract.get("pass"):
+                if "abstract" not in failed_sections:
+                    failed_sections.append("abstract")
+                return _build_failure_payload(
+                    error_code="abstract_incomplete",
+                    manifest_path=manifest_path,
+                    combined_partial=combined_text,
+                    citation_validation_path=citation_validation_path,
+                    citation_report=citation_report,
+                )
 
         # ---------------------------------------------------------------
         # Phase: Segmented merge — transition smoothing + final pass
@@ -1531,6 +2048,26 @@ async def manuscript_writer_handler(
             "polish_gate_passed": polish_gate_passed,
             "public_release_ready": public_release_ready,
             "release_state": release_state,
+            "evidence_coverage_passed": bool(
+                (review_evidence.get("coverage_report") or {}).get("pass")
+            )
+            if review_mode and isinstance(review_evidence, dict)
+            else None,
+            "coverage_summary": str(
+                (review_evidence.get("coverage_report") or {}).get("summary") or ""
+            ).strip()
+            if review_mode and isinstance(review_evidence, dict)
+            else None,
+            "coverage_report_path": _to_rel(review_evidence.get("coverage_report_path"))
+            if review_mode and isinstance(review_evidence.get("coverage_report_path"), Path)
+            else None,
+            "evidence_coverage_path": _to_rel(review_evidence.get("evidence_coverage_path"))
+            if review_mode and isinstance(review_evidence.get("evidence_coverage_path"), Path)
+            else None,
+            "study_matrix_path": _to_rel(review_evidence.get("study_matrix_path"))
+            if review_mode and isinstance(review_evidence.get("study_matrix_path"), Path)
+            else None,
+            "reference_library_path": reference_library_path or None,
             "release_summary": release_summary,
             "failed_sections": list(failed_sections),
             "section_scores": dict(section_scores),

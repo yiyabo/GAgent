@@ -401,19 +401,30 @@ def test_publish_review_pack_writer_maps_nested_manuscript_outputs(tmp_path: Pat
     output_file = tmp_path / "workspace" / "review_draft.md"
     analysis_file = tmp_path / "workspace" / "review_draft.md.analysis.md"
     refs_file = tmp_path / "workspace" / "references.bib"
+    evidence_coverage = tmp_path / "workspace" / "docs" / "evidence_coverage.md"
+    study_matrix = tmp_path / "workspace" / "docs" / "study_matrix.md"
 
     section_file.parent.mkdir(parents=True, exist_ok=True)
     section_file.write_text("## Abstract\nReview abstract grounded in evidence.\n", encoding="utf-8")
-    output_file.write_text("## Abstract\nReview abstract grounded in evidence.\n", encoding="utf-8")
+    output_file.write_text(
+        "## Abstract\nReview abstract grounded in evidence ([@known2026]).\n\n"
+        "## References\n\n[@known2026]\n",
+        encoding="utf-8",
+    )
     analysis_file.write_text("# Analysis\nReview audit notes.\n", encoding="utf-8")
     refs_file.write_text(
         "@article{known2026,\n"
         "  title={Known Review Reference},\n"
-        "  author={Doe, Jane},\n"
-        "  year={2026}\n"
+        "  author={Doe, Jane and Smith, Alex},\n"
+        "  journal={BioAI},\n"
+        "  year={2026},\n"
+        "  doi={10.1/example}\n"
         "}\n",
         encoding="utf-8",
     )
+    evidence_coverage.parent.mkdir(parents=True, exist_ok=True)
+    evidence_coverage.write_text("# Evidence Coverage\n\nStatus: PASS\n", encoding="utf-8")
+    study_matrix.write_text("# Study Matrix\n\n| Citekey |\n| --- |\n| [@known2026] |\n", encoding="utf-8")
 
     report = publisher.publish_from_tool_result(
         session_id="review_pack001",
@@ -428,6 +439,8 @@ def test_publish_review_pack_writer_maps_nested_manuscript_outputs(tmp_path: Pat
             "pack": {
                 "outputs": {
                     "references_bib": str(refs_file),
+                    "evidence_coverage_md": str(evidence_coverage),
+                    "study_matrix_md": str(study_matrix),
                 }
             },
             "draft": {
@@ -456,14 +469,22 @@ def test_publish_review_pack_writer_maps_nested_manuscript_outputs(tmp_path: Pat
     report_doc = latest_root / "docs" / "report.md"
     analysis_doc = latest_root / "docs" / "analysis.md"
     refs_bib = latest_root / "refs" / "references.bib"
+    evidence_doc = latest_root / "docs" / "evidence_coverage.md"
+    study_matrix_doc = latest_root / "docs" / "study_matrix.md"
 
     assert abstract_tex.exists()
     assert "AUTO_PLACEHOLDER" not in abstract_tex.read_text(encoding="utf-8")
     assert "Review abstract grounded in evidence." in abstract_tex.read_text(encoding="utf-8")
     assert abstract_doc.exists()
     assert report_doc.exists()
+    report_text = report_doc.read_text(encoding="utf-8")
+    assert "Doe and Smith, 2026" in report_text
+    assert "Known Review Reference. BioAI. DOI: 10.1/example" in report_text
+    assert "[@known2026]" not in report_text
     assert analysis_doc.exists()
     assert refs_bib.exists()
+    assert evidence_doc.exists()
+    assert study_matrix_doc.exists()
     assert "known2026" in refs_bib.read_text(encoding="utf-8")
     assert report.paper_status["completed_count"] >= 1
     assert "abstract" in report.paper_status["completed_sections"]
