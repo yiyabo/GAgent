@@ -17,6 +17,7 @@ Design principles:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import io
 import logging
@@ -41,6 +42,7 @@ _PMC_OA_PDF_TIMEOUT = 30.0
 _PMC_OA_ARCHIVE_TIMEOUT = 45.0
 _PMC_ARTICLE_PAGE_TIMEOUT = 20.0
 _PMC_LEGACY_PDF_TIMEOUT = 30.0
+_PMC_DOWNLOAD_CONCURRENCY = 6
 _COVERAGE_THRESHOLDS = {
     "min_total_studies": 15,
     "min_full_text_studies": 6,
@@ -1049,23 +1051,30 @@ async def literature_pipeline_handler(
         # 5) Download PDFs (PMC only)
         full_text_map: Dict[str, str] = {}
         if download_pdfs and max_pdfs > 0:
-            candidates = [r for r in records if r.pmcid]
-            for idx, rec in enumerate(candidates[:max_pdfs], start=1):
+            candidates = [r for r in records if r.pmcid][:max_pdfs]
+            semaphore = asyncio.Semaphore(_PMC_DOWNLOAD_CONCURRENCY)
+
+            async def _download_candidate(rec: PaperRecord) -> Dict[str, Any]:
                 out_pdf = pdf_dir / f"{rec.citekey}.pdf"
-                ok, err, downloaded_full_text = await _download_pmc_pdf(client, rec.pmcid or "", out_pdf)
-                if ok and downloaded_full_text:
-                    full_text_map[rec.citekey] = downloaded_full_text
-                downloaded.append(
-                    {
-                        "citekey": rec.citekey,
-                        "pmcid": rec.pmcid,
-                        "ok": ok,
-                        "path": str(out_pdf.relative_to(_PROJECT_ROOT)) if ok else None,
-                        "error": err,
-                    }
-                )
-                if not ok and err:
-                    errors.append(f"pdf:{rec.citekey}:{err}")
+                async with semaphore:
+                    ok, err, downloaded_full_text = await _download_pmc_pdf(client, rec.pmcid or "", out_pdf)
+                return {
+                    "citekey": rec.citekey,
+                    "pmcid": rec.pmcid,
+                    "ok": ok,
+                    "path": str(out_pdf.relative_to(_PROJECT_ROOT)) if ok and out_pdf.exists() else None,
+                    "error": err,
+                    "full_text": downloaded_full_text,
+                }
+
+            download_results = await asyncio.gather(*(_download_candidate(rec) for rec in candidates))
+            for item in download_results:
+                downloaded_full_text = item.pop("full_text", None)
+                if item.get("ok") and downloaded_full_text:
+                    full_text_map[str(item.get("citekey"))] = str(downloaded_full_text)
+                downloaded.append(item)
+                if not item.get("ok") and item.get("error"):
+                    errors.append(f"pdf:{item.get('citekey')}:{item.get('error')}")
 
         downloaded_map = {
             str(item.get("citekey")): item.get("path")
