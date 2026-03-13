@@ -33,6 +33,88 @@ logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 _RUNTIME_DIR = _PROJECT_ROOT / "runtime"
+_MAX_FULLTEXT_CHARS = 80_000
+_COVERAGE_THRESHOLDS = {
+    "min_total_studies": 15,
+    "min_full_text_studies": 6,
+    "min_quantitative_studies": 4,
+    "min_support_per_core_section": 2,
+}
+_CORE_REVIEW_SECTIONS = (
+    "introduction",
+    "method",
+    "experiment",
+    "result",
+    "discussion",
+    "conclusion",
+)
+_STUDY_TYPE_PATTERNS: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\brandomized\b|\bclinical trial\b|\btrial\b", re.I), "clinical_trial"),
+    (re.compile(r"\bcase report\b|\bcase series\b|\bcompassionate use\b", re.I), "clinical_case"),
+    (re.compile(r"\bmurine\b|\bmouse\b|\bmice\b|\bmodel\b|\bin vivo\b", re.I), "animal_model"),
+    (re.compile(r"\bgalleria mellonella\b|\blarvae\b", re.I), "invertebrate_model"),
+    (re.compile(r"\bbiofilm\b|\bin vitro\b|\bplaque assay\b|\bcheckerboard\b|\btime-kill\b", re.I), "in_vitro"),
+    (re.compile(r"\bgenom(?:e|ic)\b|\bsequenc(?:e|ing)\b|\bphylogen(?:y|etic)\b", re.I), "genomic_characterization"),
+    (re.compile(r"\breview\b|\bsystematic review\b|\bnarrative review\b", re.I), "review"),
+]
+_MODEL_SYSTEM_PATTERNS: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bcystic fibrosis\b|\bCF\b", re.I), "cystic_fibrosis"),
+    (re.compile(r"\bburn wound\b|\bburn\b", re.I), "burn_wound"),
+    (re.compile(r"\bkeratitis\b|\bcorneal\b", re.I), "ocular_model"),
+    (re.compile(r"\blung\b|\bpulmonary\b|\bintranasal\b|\bnebul", re.I), "pulmonary_model"),
+    (re.compile(r"\bbacteremia\b|\bsepticemia\b|\bsystemic infection\b", re.I), "systemic_model"),
+    (re.compile(r"\bgalleria mellonella\b|\blarvae\b", re.I), "galleria_model"),
+    (re.compile(r"\bmurine\b|\bmouse\b|\bmice\b", re.I), "murine_model"),
+    (re.compile(r"\bbiofilm\b|\bflow-cell\b|\bmicrotiter\b", re.I), "biofilm_assay"),
+]
+_INTERVENTION_PATTERNS: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bcocktail\b", re.I), "phage_cocktail"),
+    (re.compile(r"\bhydrogel\b|\bbiogel\b", re.I), "hydrogel_delivery"),
+    (re.compile(r"\binhalable\b|\bnebul(?:ized|isation|ization)?\b|\baerosol\b", re.I), "airway_delivery"),
+    (re.compile(r"\bnanoparticle\b|\bliposome\b|\bencapsulat", re.I), "encapsulated_delivery"),
+    (re.compile(r"\bdepolymerase\b", re.I), "depolymerase_engineering"),
+    (re.compile(r"\bquorum[- ]quenching\b|\bquorum sensing\b", re.I), "quorum_quenching"),
+    (re.compile(r"\bantibiotic\b|\bcombination therapy\b|\bsynergy\b", re.I), "phage_antibiotic_combination"),
+]
+_RECEPTOR_PATTERNS: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\blptd\b", re.I), "LptD"),
+    (re.compile(r"\bpsl\b", re.I), "Psl"),
+    (re.compile(r"\blipopolysaccharide\b|\bLPS\b", re.I), "LPS"),
+    (re.compile(r"\btail fiber\b", re.I), "tail_fiber"),
+    (re.compile(r"\bcrisper\b|\bcrispr\b", re.I), "CRISPR"),
+    (re.compile(r"\badsorption\b|\breceptor\b|\bhost range\b", re.I), "host_range_receptor"),
+]
+_QUANTITATIVE_HINTS = (
+    "cfu",
+    "survival",
+    "log",
+    "fold",
+    "%",
+    "percent",
+    "reduction",
+    "increase",
+    "decrease",
+    "moi",
+    "dose",
+    "hours",
+    "days",
+    "pfu",
+    "count",
+    "rate",
+)
+_LIMITATION_HINTS = (
+    "limitation",
+    "limited",
+    "lack",
+    "unclear",
+    "heterogeneity",
+    "not available",
+    "not reported",
+    "however",
+    "small",
+    "preclude",
+    "inconsistent",
+)
 
 
 @dataclass
@@ -310,6 +392,296 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _split_sentences(text: Optional[str]) -> List[str]:
+    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not raw:
+        return []
+    parts = re.split(r"(?<=[.!?])\s+", raw)
+    return [part.strip() for part in parts if part and part.strip()]
+
+
+def _take_unique(items: Iterable[str], *, limit: int) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for item in items:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _extract_tag_values(text: str, patterns: List[Tuple[re.Pattern[str], str]], *, limit: int = 4) -> List[str]:
+    values: List[str] = []
+    for pattern, label in patterns:
+        if pattern.search(text):
+            values.append(label)
+    return _take_unique(values, limit=limit)
+
+
+def _extract_quantitative_findings(text: str, *, limit: int = 4) -> List[str]:
+    findings: List[str] = []
+    for sentence in _split_sentences(text):
+        lowered = sentence.lower()
+        if not re.search(r"\b\d+(?:\.\d+)?\b", sentence):
+            continue
+        if not any(hint in lowered for hint in _QUANTITATIVE_HINTS):
+            continue
+        findings.append(sentence)
+    return _take_unique(findings, limit=limit)
+
+
+def _extract_limitations(text: str, *, limit: int = 4) -> List[str]:
+    findings: List[str] = []
+    for sentence in _split_sentences(text):
+        lowered = sentence.lower()
+        if any(hint in lowered for hint in _LIMITATION_HINTS):
+            findings.append(sentence)
+    return _take_unique(findings, limit=limit)
+
+
+def _supporting_snippets(*parts: Optional[str], limit: int = 4) -> List[str]:
+    candidates: List[str] = []
+    for part in parts:
+        candidates.extend(_split_sentences(part))
+    return _take_unique(candidates, limit=limit)
+
+
+def _pick_study_type(text: str) -> str:
+    for pattern, label in _STUDY_TYPE_PATTERNS:
+        if pattern.search(text):
+            return label
+    return "unspecified"
+
+
+def _infer_section_support(card: Dict[str, Any]) -> List[str]:
+    sections = {"introduction", "method", "conclusion"}
+    quantitative = card.get("quantitative_findings") or []
+    limitations = card.get("limitations") or []
+    models = card.get("model_system") or []
+    mechanisms = card.get("receptor_mechanism_terms") or []
+    interventions = card.get("intervention_delivery") or []
+    study_type = str(card.get("study_type") or "").strip().lower()
+
+    if models or study_type in {"clinical_trial", "clinical_case", "animal_model", "invertebrate_model", "in_vitro"}:
+        sections.add("experiment")
+    if quantitative or mechanisms or interventions:
+        sections.add("result")
+    if limitations or quantitative or mechanisms or interventions:
+        sections.add("discussion")
+    return [section for section in _CORE_REVIEW_SECTIONS if section in sections]
+
+
+def _build_study_card(
+    record: PaperRecord,
+    *,
+    pdf_path: Optional[Path] = None,
+    full_text: Optional[str] = None,
+) -> Dict[str, Any]:
+    body_text = (full_text or "").strip()
+    body_excerpt = body_text[:_MAX_FULLTEXT_CHARS] if body_text else ""
+    source_text = "\n".join(
+        item for item in (record.title, record.abstract or "", body_excerpt) if item
+    ).strip()
+    evidence_tier = "full_text" if body_excerpt else "abstract_only"
+    quantitative_findings = _extract_quantitative_findings(source_text)
+    limitations = _extract_limitations(source_text)
+    card = {
+        "citekey": record.citekey,
+        "title": record.title,
+        "authors": list(record.authors),
+        "year": record.year,
+        "journal": record.journal,
+        "doi": record.doi,
+        "pmid": record.pmid,
+        "pmcid": record.pmcid,
+        "url": record.url,
+        "pdf_path": str(pdf_path.relative_to(_PROJECT_ROOT)) if isinstance(pdf_path, Path) and pdf_path.exists() else None,
+        "evidence_tier": evidence_tier,
+        "study_type": _pick_study_type(source_text),
+        "model_system": _extract_tag_values(source_text, _MODEL_SYSTEM_PATTERNS),
+        "bacterial_context": ["Pseudomonas aeruginosa"] if re.search(r"\bp\.?\s*aeruginosa\b|\bpseudomonas aeruginosa\b", source_text, re.I) else [],
+        "phage_context": _extract_tag_values(source_text, [(re.compile(r"\bjumbo phage\b", re.I), "jumbo_phage"), (re.compile(r"\bcocktail\b", re.I), "cocktail"), (re.compile(r"\blytic\b", re.I), "lytic"), (re.compile(r"\btemperate\b", re.I), "temperate")]),
+        "intervention_delivery": _extract_tag_values(source_text, _INTERVENTION_PATTERNS),
+        "receptor_mechanism_terms": _extract_tag_values(source_text, _RECEPTOR_PATTERNS, limit=6),
+        "quantitative_findings": quantitative_findings,
+        "limitations": limitations,
+        "supporting_snippets": _supporting_snippets(record.abstract, body_excerpt, limit=4),
+    }
+    card["section_support"] = _infer_section_support(card)
+    return card
+
+
+def _build_study_matrix_md(cards: List[Dict[str, Any]]) -> str:
+    lines = [
+        "# Study Matrix",
+        "",
+        "| Citekey | Year | Evidence | Study type | Model system | Quantitative findings | Supported sections |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for card in cards:
+        model = ", ".join(card.get("model_system") or []) or "Not available"
+        quant = "Yes" if card.get("quantitative_findings") else "No"
+        supported = ", ".join(card.get("section_support") or []) or "Not available"
+        lines.append(
+            "| {citekey} | {year} | {tier} | {study_type} | {model} | {quant} | {supported} |".format(
+                citekey=f"[@{card.get('citekey')}]",
+                year=card.get("year") or "n.d.",
+                tier=card.get("evidence_tier") or "unknown",
+                study_type=card.get("study_type") or "unspecified",
+                model=model,
+                quant=quant,
+                supported=supported,
+            )
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_section_oriented_evidence_md(cards: List[Dict[str, Any]], coverage_report: Dict[str, Any], topic: str) -> str:
+    section_titles = {
+        "introduction": "Introduction and Background",
+        "method": "Evidence Base and Review Method",
+        "experiment": "Experimental Approaches and Model Systems",
+        "result": "Key Findings and Comparative Signals",
+        "discussion": "Limitations, Heterogeneity, and Translational Considerations",
+        "conclusion": "Conclusion-Relevant Evidence",
+    }
+    lines = [
+        "# Literature evidence inventory",
+        "",
+        f"Topic: {topic}",
+        f"Generated at: {datetime.now(timezone.utc).isoformat()}",
+        "",
+        "## Coverage summary",
+        "",
+        str(coverage_report.get("summary") or "Coverage report unavailable."),
+        "",
+    ]
+    for section in _CORE_REVIEW_SECTIONS:
+        lines.append(f"## {section_titles[section]}")
+        lines.append("")
+        cards_for_section = [
+            card for card in cards if section in (card.get("section_support") or [])
+        ]
+        if not cards_for_section:
+            lines.append("Not available")
+            lines.append("")
+            continue
+        for card in cards_for_section[:12]:
+            tier = card.get("evidence_tier") or "unknown"
+            study_type = card.get("study_type") or "unspecified"
+            models = ", ".join(card.get("model_system") or []) or "Not available"
+            findings = "; ".join(card.get("quantitative_findings") or []) or "Not available"
+            limits = "; ".join(card.get("limitations") or []) or "Not available"
+            lines.append(
+                f"- [@{card.get('citekey')}] {card.get('title')} ({card.get('year') or 'n.d.'}, {card.get('journal') or 'Unknown journal'})"
+            )
+            lines.append(f"  - Evidence tier: {tier}")
+            lines.append(f"  - Study type: {study_type}")
+            lines.append(f"  - Model system: {models}")
+            lines.append(f"  - Quantitative findings: {findings}")
+            lines.append(f"  - Limitations: {limits}")
+        lines.append("")
+    lines.append("## Notes")
+    lines.append("- Citekeys are of the form `[@CITEKEY]`.")
+    lines.append("- `full_text` records satisfy the strict evidence coverage gate; `abstract_only` records are supplemental.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_coverage_report(cards: List[Dict[str, Any]]) -> Dict[str, Any]:
+    thresholds = dict(_COVERAGE_THRESHOLDS)
+    section_support_counts = {
+        section: len([card for card in cards if section in (card.get("section_support") or [])])
+        for section in _CORE_REVIEW_SECTIONS
+    }
+    counts = {
+        "total_studies": len(cards),
+        "full_text_studies": len([card for card in cards if card.get("evidence_tier") == "full_text"]),
+        "quantitative_studies": len([card for card in cards if card.get("quantitative_findings")]),
+    }
+    failures: List[str] = []
+    if counts["total_studies"] < thresholds["min_total_studies"]:
+        failures.append(
+            f"only {counts['total_studies']} included studies; require at least {thresholds['min_total_studies']}"
+        )
+    if counts["full_text_studies"] < thresholds["min_full_text_studies"]:
+        failures.append(
+            f"only {counts['full_text_studies']} full-text studies; require at least {thresholds['min_full_text_studies']}"
+        )
+    if counts["quantitative_studies"] < thresholds["min_quantitative_studies"]:
+        failures.append(
+            f"only {counts['quantitative_studies']} studies with extractable quantitative findings; require at least {thresholds['min_quantitative_studies']}"
+        )
+    for section, support_count in section_support_counts.items():
+        if support_count < thresholds["min_support_per_core_section"]:
+            failures.append(
+                f"{section} is supported by only {support_count} studies; require at least {thresholds['min_support_per_core_section']}"
+            )
+    passed = not failures
+    if passed:
+        summary = (
+            "Evidence coverage passed: "
+            f"{counts['total_studies']} studies included, "
+            f"{counts['full_text_studies']} full-text studies, "
+            f"{counts['quantitative_studies']} studies with quantitative findings, "
+            "and all core review sections are supported."
+        )
+    else:
+        summary = "Evidence coverage blocked: " + "; ".join(failures)
+    return {
+        "profile": "pi_ready_review",
+        "pass": passed,
+        "summary": summary,
+        "thresholds": thresholds,
+        "counts": counts,
+        "section_support_counts": section_support_counts,
+        "failures": failures,
+        "included_citekeys": [card.get("citekey") for card in cards if card.get("citekey")],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _build_coverage_markdown(report: Dict[str, Any]) -> str:
+    counts = report.get("counts") or {}
+    thresholds = report.get("thresholds") or {}
+    section_support_counts = report.get("section_support_counts") or {}
+    failures = report.get("failures") or []
+    lines = [
+        "# Evidence Coverage",
+        "",
+        f"Status: {'PASS' if report.get('pass') else 'BLOCKED'}",
+        "",
+        str(report.get("summary") or ""),
+        "",
+        "## Counts",
+        "",
+        f"- Total included studies: {counts.get('total_studies', 0)} (threshold: {thresholds.get('min_total_studies', 0)})",
+        f"- Full-text studies: {counts.get('full_text_studies', 0)} (threshold: {thresholds.get('min_full_text_studies', 0)})",
+        f"- Studies with quantitative findings: {counts.get('quantitative_studies', 0)} (threshold: {thresholds.get('min_quantitative_studies', 0)})",
+        "",
+        "## Core-section support",
+        "",
+    ]
+    for section in _CORE_REVIEW_SECTIONS:
+        lines.append(
+            f"- {section}: {section_support_counts.get(section, 0)} supporting studies (threshold: {thresholds.get('min_support_per_core_section', 0)})"
+        )
+    lines.append("")
+    lines.append("## Failures")
+    lines.append("")
+    if failures:
+        lines.extend(f"- {item}" for item in failures)
+    else:
+        lines.append("- None")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _resolve_default_output_dir(*, session_id: Optional[str], timestamp: str) -> Path:
     if isinstance(session_id, str) and session_id.strip():
         from app.services.session_paths import get_session_tool_outputs_dir
@@ -365,7 +737,7 @@ async def literature_pipeline_handler(
     max_results: int = 80,
     out_dir: Optional[str] = None,
     download_pdfs: bool = True,
-    max_pdfs: int = 30,
+    max_pdfs: int = 80,
     user_agent: Optional[str] = None,
     proxy: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -394,9 +766,14 @@ async def literature_pipeline_handler(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     library_path = output_dir / "library.jsonl"
+    study_cards_path = output_dir / "study_cards.jsonl"
+    coverage_report_path = output_dir / "coverage_report.json"
     bib_path = output_dir / "references.bib"
     evidence_path = output_dir / "evidence.md"
     pdf_dir = output_dir / "pdfs"
+    docs_dir = output_dir / "docs"
+    evidence_coverage_path = docs_dir / "evidence_coverage.md"
+    study_matrix_path = docs_dir / "study_matrix.md"
 
     headers = {
         "accept": "application/json,text/xml,text/html,*/*",
@@ -421,6 +798,7 @@ async def literature_pipeline_handler(
     errors: List[str] = []
     records: List[PaperRecord] = []
     downloaded: List[Dict[str, Any]] = []
+    study_cards: List[Dict[str, Any]] = []
 
     # Prefer explicit proxy (tool-level) over environment proxy to avoid impacting other HTTP clients (e.g. LLM).
     async with httpx.AsyncClient(
@@ -503,18 +881,61 @@ async def literature_pipeline_handler(
                 if not ok and err:
                     errors.append(f"pdf:{rec.citekey}:{err}")
 
-        # 6) evidence.md
-        _write_text(evidence_path, _build_evidence_md(records, topic=query))
+        downloaded_map = {
+            str(item.get("citekey")): item.get("path")
+            for item in downloaded
+            if item.get("ok") and item.get("citekey") and item.get("path")
+        }
+
+        for rec in records:
+            pdf_path: Optional[Path] = None
+            full_text: Optional[str] = None
+            pdf_rel = downloaded_map.get(rec.citekey)
+            if isinstance(pdf_rel, str) and pdf_rel.strip():
+                candidate_pdf = (_PROJECT_ROOT / pdf_rel).resolve()
+                if candidate_pdf.exists():
+                    pdf_path = candidate_pdf
+                    try:
+                        from .document_reader import read_pdf
+
+                        pdf_payload = await read_pdf(str(candidate_pdf))
+                        if isinstance(pdf_payload, dict) and pdf_payload.get("success"):
+                            text_value = str(pdf_payload.get("text") or "").strip()
+                            if text_value:
+                                full_text = text_value
+                    except Exception as exc:
+                        errors.append(f"pdf_parse:{rec.citekey}:{exc}")
+            study_cards.append(
+                _build_study_card(
+                    rec,
+                    pdf_path=pdf_path,
+                    full_text=full_text,
+                )
+            )
+
+        coverage_report = _build_coverage_report(study_cards)
+        _write_jsonl(study_cards_path, study_cards)
+        _write_text(coverage_report_path, json.dumps(coverage_report, ensure_ascii=False, indent=2))
+        _write_text(evidence_path, _build_section_oriented_evidence_md(study_cards, coverage_report, topic=query))
+        _write_text(evidence_coverage_path, _build_coverage_markdown(coverage_report))
+        _write_text(study_matrix_path, _build_study_matrix_md(study_cards))
 
     result: Dict[str, Any] = {
         "tool": "literature_pipeline",
         "success": True,
         "query": query,
         "output_dir": str(output_dir.relative_to(_PROJECT_ROOT)),
+        "evidence_coverage_passed": bool(coverage_report.get("pass")),
+        "coverage_summary": str(coverage_report.get("summary") or "").strip(),
+        "coverage_report_path": str(coverage_report_path.relative_to(_PROJECT_ROOT)),
         "outputs": {
             "library_jsonl": str(library_path.relative_to(_PROJECT_ROOT)),
+            "study_cards_jsonl": str(study_cards_path.relative_to(_PROJECT_ROOT)),
+            "coverage_report_json": str(coverage_report_path.relative_to(_PROJECT_ROOT)),
             "references_bib": str(bib_path.relative_to(_PROJECT_ROOT)),
             "evidence_md": str(evidence_path.relative_to(_PROJECT_ROOT)),
+            "evidence_coverage_md": str(evidence_coverage_path.relative_to(_PROJECT_ROOT)),
+            "study_matrix_md": str(study_matrix_path.relative_to(_PROJECT_ROOT)),
             "pdf_dir": str(pdf_dir.relative_to(_PROJECT_ROOT)),
         },
         "counts": {
@@ -523,11 +944,15 @@ async def literature_pipeline_handler(
             "pmcid_records": len([r for r in records if r.pmcid]),
             "pdf_attempted": len(downloaded),
             "pdf_downloaded": len([d for d in downloaded if d.get("ok")]),
+            "study_cards": len(study_cards),
+            "full_text_study_cards": len([card for card in study_cards if card.get("evidence_tier") == "full_text"]),
+            "quantitative_study_cards": len([card for card in study_cards if card.get("quantitative_findings")]),
         },
         "downloaded_pdfs": downloaded[:10],  # preview
         "errors": errors[:50] if errors else None,
         "progress_bar": _bar(done=len(progress_steps), total=len(progress_steps)),
         "progress_steps": progress_steps,
+        "coverage_report": coverage_report,
     }
     return result
 
@@ -550,7 +975,7 @@ literature_pipeline_tool = {
                 "description": "Optional session id. When out_dir is omitted, outputs are written under the session tool_outputs directory.",
             },
             "download_pdfs": {"type": "boolean", "default": True, "description": "Download OA PDFs from PMC when PMCID exists."},
-            "max_pdfs": {"type": "integer", "default": 30, "description": "Max PDFs to download (PMC only)."},
+            "max_pdfs": {"type": "integer", "default": 80, "description": "Max PDFs to download (PMC only)."},
             "user_agent": {"type": "string", "description": "Optional User-Agent override."},
             "proxy": {
                 "type": "string",
