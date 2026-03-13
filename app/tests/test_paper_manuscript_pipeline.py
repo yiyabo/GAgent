@@ -930,6 +930,62 @@ def test_literature_pipeline_counts_oa_fulltext_without_pdf_file(
     assert study_cards[0]["evidence_tier"] == "full_text"
 
 
+def test_literature_pipeline_tolerates_pmc_download_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tool_box.tools_impl import literature_pipeline as literature_pipeline_module
+
+    monkeypatch.setattr(literature_pipeline_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(literature_pipeline_module, "_RUNTIME_DIR", tmp_path / "runtime")
+
+    async def _fake_esearch(_client, _query, retmax: int):
+        assert retmax == 2
+        return ["1"]
+
+    async def _fake_efetch(_client, _pmids):
+        return (
+            "<PubmedArticleSet>"
+            "<PubmedArticle>"
+            "<MedlineCitation>"
+            "<PMID>1</PMID>"
+            "<Article>"
+            "<ArticleTitle>Known phage study</ArticleTitle>"
+            "<Abstract><AbstractText>Grounded abstract.</AbstractText></Abstract>"
+            "<Journal><Title>Virology</Title><JournalIssue><PubDate><Year>2025</Year></PubDate></JournalIssue></Journal>"
+            "<AuthorList><Author><LastName>Doe</LastName><Initials>J</Initials></Author></AuthorList>"
+            "</Article>"
+            "</MedlineCitation>"
+            "<PubmedData><ArticleIdList>"
+            "<ArticleId IdType=\"doi\">10.1/example</ArticleId>"
+            "<ArticleId IdType=\"pmc\">PMC123456</ArticleId>"
+            "</ArticleIdList></PubmedData>"
+            "</PubmedArticle>"
+            "</PubmedArticleSet>"
+        )
+
+    async def _fake_download(_client, _pmcid: str, _out_path: Path):
+        raise RuntimeError("Server disconnected without sending a response.")
+
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_esearch", _fake_esearch)
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_efetch_xml", _fake_efetch)
+    monkeypatch.setattr(literature_pipeline_module, "_download_pmc_pdf", _fake_download)
+
+    result = asyncio.run(
+        literature_pipeline_module.literature_pipeline_handler(
+            query="phage host interaction",
+            max_results=2,
+            download_pdfs=True,
+            max_pdfs=1,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["counts"]["records"] == 1
+    assert result["counts"]["full_text_study_cards"] == 0
+    assert any("Server disconnected without sending a response." in err for err in result["errors"])
+
+
 def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
