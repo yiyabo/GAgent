@@ -1056,8 +1056,13 @@ async def literature_pipeline_handler(
 
             async def _download_candidate(rec: PaperRecord) -> Dict[str, Any]:
                 out_pdf = pdf_dir / f"{rec.citekey}.pdf"
-                async with semaphore:
-                    ok, err, downloaded_full_text = await _download_pmc_pdf(client, rec.pmcid or "", out_pdf)
+                try:
+                    async with semaphore:
+                        ok, err, downloaded_full_text = await _download_pmc_pdf(client, rec.pmcid or "", out_pdf)
+                except Exception as exc:
+                    ok = False
+                    err = f"{type(exc).__name__}: {exc}"
+                    downloaded_full_text = None
                 return {
                     "citekey": rec.citekey,
                     "pmcid": rec.pmcid,
