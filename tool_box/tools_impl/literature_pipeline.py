@@ -18,8 +18,10 @@ Design principles:
 from __future__ import annotations
 
 import json
+import io
 import logging
 import re
+import tarfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -358,6 +360,123 @@ def _find_pmc_pdf_link(html: str, base_url: str) -> Optional[str]:
     return None
 
 
+def _is_pdf_payload(content: bytes, content_type: Optional[str], source_url: Optional[str] = None) -> bool:
+    ctype = str(content_type or "").lower()
+    url = str(source_url or "").lower()
+    if content.startswith(b"%PDF-"):
+        return True
+    if "pdf" in ctype and not content.lstrip().startswith(b"<"):
+        return True
+    return url.endswith(".pdf") and content.startswith(b"%PDF-")
+
+
+def _normalize_oa_href(href: str) -> str:
+    normalized = str(href or "").strip()
+    if normalized.startswith("ftp://ftp.ncbi.nlm.nih.gov/"):
+        return "https://ftp.ncbi.nlm.nih.gov/" + normalized[len("ftp://ftp.ncbi.nlm.nih.gov/") :]
+    return normalized
+
+
+def _extract_text_from_oa_xml(xml_bytes: bytes) -> str:
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return ""
+    texts: List[str] = []
+    for chunk in root.itertext():
+        normalized = re.sub(r"\s+", " ", str(chunk or "")).strip()
+        if normalized:
+            texts.append(normalized)
+    return "\n".join(texts)
+
+
+def _extract_oa_package_payload(package_bytes: bytes, out_path: Path) -> Tuple[Optional[Path], Optional[str], Optional[str]]:
+    try:
+        with tarfile.open(fileobj=io.BytesIO(package_bytes), mode="r:gz") as archive:
+            members = [member for member in archive.getmembers() if member.isfile()]
+
+            pdf_member = next(
+                (
+                    member
+                    for member in members
+                    if member.name.lower().endswith(".pdf")
+                ),
+                None,
+            )
+            if pdf_member is not None:
+                extracted = archive.extractfile(pdf_member)
+                pdf_bytes = extracted.read() if extracted is not None else b""
+                if _is_pdf_payload(pdf_bytes, "application/pdf", pdf_member.name):
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_path.write_bytes(pdf_bytes)
+                    return out_path, None, None
+
+            xml_member = next(
+                (
+                    member
+                    for member in members
+                    if member.name.lower().endswith(".nxml") or member.name.lower().endswith(".xml")
+                ),
+                None,
+            )
+            if xml_member is not None:
+                extracted = archive.extractfile(xml_member)
+                xml_bytes = extracted.read() if extracted is not None else b""
+                full_text = _extract_text_from_oa_xml(xml_bytes)
+                if full_text.strip():
+                    return None, full_text, None
+            return None, None, "OA package did not contain usable PDF or XML full text"
+    except Exception as exc:
+        return None, None, f"Failed to extract OA package: {exc}"
+
+
+async def _download_pmc_oa_fulltext(
+    client: httpx.AsyncClient, pmcid: str, out_path: Path
+) -> Tuple[Optional[Path], Optional[str], Optional[str]]:
+    oa_url = f"https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id={pmcid}"
+    response = await client.get(oa_url, timeout=40.0)
+    if response.status_code >= 400:
+        return None, None, f"OA utility HTTP {response.status_code}"
+
+    try:
+        root = ET.fromstring(response.text)
+    except ET.ParseError as exc:
+        return None, None, f"OA utility XML parse failed: {exc}"
+
+    links: List[Tuple[str, str]] = []
+    for link_node in root.findall(".//record/link"):
+        href = str(link_node.attrib.get("href") or "").strip()
+        if not href:
+            continue
+        links.append((str(link_node.attrib.get("format") or "").strip().lower(), _normalize_oa_href(href)))
+
+    if not links:
+        return None, None, "OA utility returned no downloadable assets"
+
+    pdf_links = [href for fmt, href in links if fmt == "pdf" or href.lower().endswith(".pdf")]
+    for href in pdf_links:
+        asset = await client.get(href, timeout=120.0, follow_redirects=True)
+        if asset.status_code >= 400:
+            continue
+        if _is_pdf_payload(asset.content, asset.headers.get("content-type"), href):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(asset.content)
+            return out_path, None, None
+
+    archive_links = [href for fmt, href in links if fmt == "tgz" or href.lower().endswith((".tar.gz", ".tgz"))]
+    for href in archive_links:
+        asset = await client.get(href, timeout=180.0, follow_redirects=True)
+        if asset.status_code >= 400:
+            continue
+        extracted_path, full_text, error = _extract_oa_package_payload(asset.content, out_path)
+        if extracted_path is not None or (full_text and full_text.strip()):
+            return extracted_path, full_text, None
+        if error:
+            logger.warning("OA package for %s unusable: %s", pmcid, error)
+
+    return None, None, "OA utility assets did not yield usable PDF or XML full text"
+
+
 def _fallback_pubmed_query(raw_query: str) -> Optional[str]:
     text = " ".join(str(raw_query or "").replace(",", " ").replace("，", " ").split()).strip()
     if not text:
@@ -403,24 +522,30 @@ def _fallback_pubmed_query(raw_query: str) -> Optional[str]:
 
 async def _download_pmc_pdf(
     client: httpx.AsyncClient, pmcid: str, out_path: Path
-) -> Tuple[bool, Optional[str]]:
+) -> Tuple[bool, Optional[str], Optional[str]]:
+    oa_pdf_path, oa_full_text, oa_error = await _download_pmc_oa_fulltext(client, pmcid, out_path)
+    if oa_pdf_path is not None:
+        return True, None, None
+    if oa_full_text and oa_full_text.strip():
+        return True, None, oa_full_text
+
     page_url = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"
     r = await client.get(page_url, timeout=40.0)
     if r.status_code >= 400:
-        return False, f"PMC page HTTP {r.status_code}"
+        return False, oa_error or f"PMC page HTTP {r.status_code}", None
     pdf_url = _find_pmc_pdf_link(r.text or "", page_url)
     if not pdf_url:
-        return False, "PDF link not found on PMC page"
+        return False, oa_error or "PDF link not found on PMC page", None
     pr = await client.get(pdf_url, timeout=80.0)
     if pr.status_code >= 400:
-        return False, f"PDF HTTP {pr.status_code}"
-    ctype = (pr.headers.get("content-type") or "").lower()
-    if "pdf" not in ctype and not pdf_url.lower().endswith(".pdf"):
-        # still write it, but flag
+        return False, oa_error or f"PDF HTTP {pr.status_code}", None
+    ctype = pr.headers.get("content-type")
+    if not _is_pdf_payload(pr.content, ctype, pdf_url):
         logger.warning("Downloaded content-type not pdf: %s (%s)", ctype, pdf_url)
+        return False, oa_error or f"Downloaded non-PDF payload from PMC page ({ctype or 'unknown'})", None
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(pr.content)
-    return True, None
+    return True, None, None
 
 
 def _write_jsonl(path: Path, items: Iterable[Dict[str, Any]]) -> None:
@@ -917,11 +1042,14 @@ async def literature_pipeline_handler(
         _write_text(bib_path, bib_entries)
 
         # 5) Download PDFs (PMC only)
+        full_text_map: Dict[str, str] = {}
         if download_pdfs and max_pdfs > 0:
             candidates = [r for r in records if r.pmcid]
             for idx, rec in enumerate(candidates[:max_pdfs], start=1):
                 out_pdf = pdf_dir / f"{rec.citekey}.pdf"
-                ok, err = await _download_pmc_pdf(client, rec.pmcid or "", out_pdf)
+                ok, err, downloaded_full_text = await _download_pmc_pdf(client, rec.pmcid or "", out_pdf)
+                if ok and downloaded_full_text:
+                    full_text_map[rec.citekey] = downloaded_full_text
                 downloaded.append(
                     {
                         "citekey": rec.citekey,
@@ -942,7 +1070,7 @@ async def literature_pipeline_handler(
 
         for rec in records:
             pdf_path: Optional[Path] = None
-            full_text: Optional[str] = None
+            full_text: Optional[str] = full_text_map.get(rec.citekey)
             pdf_rel = downloaded_map.get(rec.citekey)
             if isinstance(pdf_rel, str) and pdf_rel.strip():
                 candidate_pdf = (_PROJECT_ROOT / pdf_rel).resolve()
