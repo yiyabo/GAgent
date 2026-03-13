@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -816,6 +818,116 @@ def test_literature_pipeline_falls_back_from_zero_result_natural_language_query(
     assert result["fallback_query_used"]
     assert result["effective_query"] == result["fallback_query_used"]
     assert result["counts"]["records"] == 1
+
+
+def test_download_pmc_pdf_uses_oa_package_full_text(
+    tmp_path: Path,
+) -> None:
+    from tool_box.tools_impl import literature_pipeline as literature_pipeline_module
+
+    package_buf = io.BytesIO()
+    with tarfile.open(fileobj=package_buf, mode="w:gz") as archive:
+        body = (
+            b"<article><body><sec><title>Results</title>"
+            b"<p>The phage reduced bacterial burden by 2 log CFU in murine infection models.</p>"
+            b"</sec></body></article>"
+        )
+        info = tarfile.TarInfo(name="PMC123456/article.nxml")
+        info.size = len(body)
+        archive.addfile(info, io.BytesIO(body))
+    package_bytes = package_buf.getvalue()
+
+    class _Response:
+        def __init__(self, *, text: str = "", content: bytes = b"", status_code: int = 200, headers: dict[str, str] | None = None):
+            self.text = text
+            self.content = content
+            self.status_code = status_code
+            self.headers = headers or {}
+
+    class _Client:
+        async def get(self, url: str, **kwargs):
+            _ = kwargs
+            if "oa.fcgi" in url:
+                return _Response(
+                    text=(
+                        '<OA><records><record id="PMC123456">'
+                        '<link format="tgz" href="ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_package/aa/bb/PMC123456.tar.gz" />'
+                        "</record></records></OA>"
+                    )
+                )
+            if "PMC123456.tar.gz" in url:
+                return _Response(content=package_bytes, headers={"content-type": "application/gzip"})
+            raise AssertionError(f"Unexpected URL: {url}")
+
+    ok, err, full_text = asyncio.run(
+        literature_pipeline_module._download_pmc_pdf(_Client(), "PMC123456", tmp_path / "article.pdf")
+    )
+
+    assert ok is True
+    assert err is None
+    assert full_text is not None
+    assert "2 log CFU" in full_text
+    assert not (tmp_path / "article.pdf").exists()
+
+
+def test_literature_pipeline_counts_oa_fulltext_without_pdf_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tool_box.tools_impl import literature_pipeline as literature_pipeline_module
+
+    monkeypatch.setattr(literature_pipeline_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(literature_pipeline_module, "_RUNTIME_DIR", tmp_path / "runtime")
+
+    async def _fake_esearch(_client, _query, retmax: int):
+        assert retmax == 2
+        return ["1"]
+
+    async def _fake_efetch(_client, _pmids):
+        return (
+            "<PubmedArticleSet>"
+            "<PubmedArticle>"
+            "<MedlineCitation>"
+            "<PMID>1</PMID>"
+            "<Article>"
+            "<ArticleTitle>Known phage study</ArticleTitle>"
+            "<Abstract><AbstractText>Grounded abstract.</AbstractText></Abstract>"
+            "<Journal><Title>Virology</Title><JournalIssue><PubDate><Year>2025</Year></PubDate></JournalIssue></Journal>"
+            "<AuthorList><Author><LastName>Doe</LastName><Initials>J</Initials></Author></AuthorList>"
+            "</Article>"
+            "</MedlineCitation>"
+            "<PubmedData><ArticleIdList>"
+            "<ArticleId IdType=\"doi\">10.1/example</ArticleId>"
+            "<ArticleId IdType=\"pmc\">PMC123456</ArticleId>"
+            "</ArticleIdList></PubmedData>"
+            "</PubmedArticle>"
+            "</PubmedArticleSet>"
+        )
+
+    async def _fake_download(_client, _pmcid: str, _out_path: Path):
+        return True, None, "Full text reports a 2 log CFU reduction after treatment in a murine model."
+
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_esearch", _fake_esearch)
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_efetch_xml", _fake_efetch)
+    monkeypatch.setattr(literature_pipeline_module, "_download_pmc_pdf", _fake_download)
+
+    result = asyncio.run(
+        literature_pipeline_module.literature_pipeline_handler(
+            query="phage host interaction",
+            max_results=2,
+            download_pdfs=True,
+            max_pdfs=2,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["counts"]["full_text_study_cards"] == 1
+    study_cards = [
+        json.loads(line)
+        for line in (tmp_path / result["output_dir"] / "study_cards.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert study_cards[0]["evidence_tier"] == "full_text"
 
 
 def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
