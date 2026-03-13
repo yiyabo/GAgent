@@ -99,7 +99,9 @@ DOC_ALLOWED_STEMS = {
     "references",
     "report",
     "analysis",
+    "evidence_coverage",
     "release_summary",
+    "study_matrix",
     "survey",
     "summary",
 }
@@ -116,7 +118,15 @@ PATH_HINT_KEYS = {
     "preview_path",
     "pdf_dir",
     "references_bib",
+    "reference_library_path",
     "evidence_md",
+    "evidence_coverage_md",
+    "study_matrix_md",
+    "coverage_report_path",
+    "evidence_coverage_path",
+    "study_matrix_path",
+    "study_cards_jsonl",
+    "coverage_report_json",
     "library_jsonl",
     "manuscript_output",
     "manuscript_partial",
@@ -665,6 +675,99 @@ class DeliverablePublisher:
         release_meta = DeliverablePublisher._extract_release_metadata(raw_result)
         return not bool(release_meta.get("public_release_ready"))
 
+    @staticmethod
+    def _parse_bibtex_entries(bib_text: str) -> Dict[str, Dict[str, str]]:
+        entries: Dict[str, Dict[str, str]] = {}
+        if not bib_text:
+            return entries
+        for match in re.finditer(r"@(\w+)\s*\{\s*([^,\s]+)\s*,(.*?)\n\}", bib_text, flags=re.DOTALL):
+            key = str(match.group(2) or "").strip()
+            body = str(match.group(3) or "")
+            if not key:
+                continue
+            fields: Dict[str, str] = {}
+            for field_match in re.finditer(r"(\w+)\s*=\s*\{((?:[^{}]|\{[^{}]*\})*)\}", body, flags=re.DOTALL):
+                field_name = str(field_match.group(1) or "").strip().lower()
+                field_value = re.sub(r"\s+", " ", str(field_match.group(2) or "")).strip()
+                if field_name and field_value:
+                    fields[field_name] = field_value
+            entries[key] = fields
+        return entries
+
+    @staticmethod
+    def _format_author_year(fields: Dict[str, str]) -> str:
+        authors_raw = str(fields.get("author") or "").strip()
+        year = str(fields.get("year") or "n.d.").strip() or "n.d."
+        if not authors_raw:
+            return f"Unknown, {year}"
+        authors = [part.strip() for part in authors_raw.split(" and ") if part.strip()]
+        surnames: List[str] = []
+        for author in authors:
+            if "," in author:
+                surnames.append(author.split(",", 1)[0].strip())
+            else:
+                surname = author.split()[-1].strip()
+                surnames.append(surname or author.strip())
+        if not surnames:
+            return f"Unknown, {year}"
+        if len(surnames) == 1:
+            return f"{surnames[0]}, {year}"
+        if len(surnames) == 2:
+            return f"{surnames[0]} and {surnames[1]}, {year}"
+        return f"{surnames[0]} et al., {year}"
+
+    @classmethod
+    def _render_pi_readable_report(cls, markdown_text: str, bib_entries: Dict[str, Dict[str, str]]) -> str:
+        text = str(markdown_text or "")
+        if not text or not bib_entries:
+            return text
+        reference_keys: List[str] = []
+        references_match = re.search(r"(?ms)^## References\s*$", text)
+        if references_match:
+            for key_match in re.finditer(r"\[@([A-Za-z0-9_:\-]+)\]", text[references_match.end() :]):
+                key = str(key_match.group(1) or "").strip()
+                if key and key not in reference_keys:
+                    reference_keys.append(key)
+
+        def _replace_citation(match: re.Match[str]) -> str:
+            raw_group = str(match.group(1) or "")
+            rendered: List[str] = []
+            for part in raw_group.split(";"):
+                key = part.strip()
+                if key.startswith("@"):
+                    key = key[1:].strip()
+                if not key:
+                    continue
+                fields = bib_entries.get(key)
+                if not fields:
+                    rendered.append(f"@{key}")
+                    continue
+                rendered.append(cls._format_author_year(fields))
+            return "(" + "; ".join(rendered) + ")" if rendered else match.group(0)
+
+        text = re.sub(
+            r"\[((?:\s*@[A-Za-z0-9_:\-]+\s*(?:;\s*@[A-Za-z0-9_:\-]+\s*)*))\]",
+            _replace_citation,
+            text,
+        )
+
+        if references_match:
+            prefix = text[: references_match.start()].rstrip()
+            reference_lines = ["## References", ""]
+            for key in reference_keys:
+                fields = bib_entries.get(key) or {}
+                title = str(fields.get("title") or key).strip()
+                journal = str(fields.get("journal") or "Unknown journal").strip()
+                doi = str(fields.get("doi") or "").strip()
+                doi_text = f". DOI: {doi}" if doi else ""
+                reference_lines.append(
+                    f"- {cls._format_author_year(fields)}. {title}. {journal}{doi_text}"
+                )
+            if len(reference_lines) == 2:
+                reference_lines.append("- Not available")
+            text = prefix + "\n\n" + "\n".join(reference_lines) + "\n"
+        return text
+
     def _purge_manuscript_public_outputs(self, latest_root: Path) -> None:
         paper_dir = latest_root / "paper"
         refs_dir = latest_root / "refs"
@@ -717,6 +820,40 @@ class DeliverablePublisher:
                 "source_path": source_path,
             }
         ]
+
+    def _resolve_reference_library_path(
+        self,
+        *,
+        latest_root: Path,
+        raw_result: Any,
+        manuscript_result: Dict[str, Any],
+    ) -> Optional[Path]:
+        session_dir = latest_root.parent.parent
+        candidates: List[str] = []
+        for payload in (manuscript_result, raw_result):
+            if not isinstance(payload, dict):
+                continue
+            value = payload.get("reference_library_path")
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+            outputs = payload.get("outputs")
+            if isinstance(outputs, dict):
+                for key in ("references_bib", "reference_library_path"):
+                    value = outputs.get(key)
+                    if isinstance(value, str) and value.strip():
+                        candidates.append(value.strip())
+            pack = payload.get("pack")
+            if isinstance(pack, dict):
+                pack_outputs = pack.get("outputs")
+                if isinstance(pack_outputs, dict):
+                    value = pack_outputs.get("references_bib")
+                    if isinstance(value, str) and value.strip():
+                        candidates.append(value.strip())
+        for candidate in candidates:
+            resolved = self._resolve_path(candidate, session_dir=session_dir)
+            if resolved is not None and resolved.is_file():
+                return resolved
+        return None
 
     def _publish_manuscript_outputs(
         self,
@@ -853,6 +990,19 @@ class DeliverablePublisher:
                     output_text = output_source.read_text(encoding="utf-8").strip()
                 except Exception:
                     output_text = ""
+                reference_library = self._resolve_reference_library_path(
+                    latest_root=latest_root,
+                    raw_result=raw_result,
+                    manuscript_result=manuscript_result,
+                )
+                if reference_library is not None:
+                    try:
+                        bib_entries = self._parse_bibtex_entries(
+                            reference_library.read_text(encoding="utf-8")
+                        )
+                    except Exception:
+                        bib_entries = {}
+                    output_text = self._render_pi_readable_report(output_text, bib_entries)
                 report_doc = docs_dir / "report.md"
                 report_doc.write_text(output_text + ("\n" if output_text else ""), encoding="utf-8")
                 items.append(

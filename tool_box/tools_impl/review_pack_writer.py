@@ -113,8 +113,8 @@ async def review_pack_writer_handler(
     out_dir: Optional[str] = None,
     max_results: int = 80,
     # Default to route-A: do not depend on PDFs (PMC may block with 403 in some networks).
-    download_pdfs: bool = False,
-    max_pdfs: int = 30,
+    download_pdfs: bool = True,
+    max_pdfs: int = 80,
     # manuscript writer options
     output_path: Optional[str] = None,
     sections: Optional[List[str]] = None,
@@ -189,11 +189,66 @@ async def review_pack_writer_handler(
         }
 
     outputs = pack.get("outputs") if isinstance(pack.get("outputs"), dict) else {}
+    evidence_coverage_passed = bool(pack.get("evidence_coverage_passed"))
+    coverage_summary = str(pack.get("coverage_summary") or "").strip()
+    coverage_report_path = (
+        str(pack.get("coverage_report_path") or "").strip()
+        or str(outputs.get("coverage_report_json") or "").strip()
+    )
     context_paths = []
-    for k in ("evidence_md", "references_bib"):
+    for k in ("study_cards_jsonl", "coverage_report_json", "evidence_md", "references_bib"):
         p = outputs.get(k)
         if isinstance(p, str) and p.strip():
             context_paths.append(p.strip())
+
+    session_root = _resolve_session_dir(session_id)
+    hidden_artifact_prefixes: List[str] = []
+    pack_rel = _to_session_relative(pack_dir, session_root)
+    if pack_rel and pack_rel not in hidden_artifact_prefixes:
+        hidden_artifact_prefixes.append(pack_rel)
+
+    if not evidence_coverage_passed:
+        release_summary = (
+            f"Publication blocked: {coverage_summary}"
+            if coverage_summary
+            else "Publication blocked: evidence coverage was too weak for a PI-readable review manuscript."
+        )
+        return {
+            "tool": "review_pack_writer",
+            "success": False,
+            "partial": False,
+            "error_code": "low_evidence_coverage",
+            "warnings": None,
+            "quality_gate_passed": False,
+            "polish_gate_passed": False,
+            "public_release_ready": False,
+            "evidence_coverage_passed": False,
+            "coverage_summary": coverage_summary or release_summary,
+            "coverage_report_path": coverage_report_path or None,
+            "release_state": "blocked",
+            "release_summary": release_summary,
+            "hidden_artifact_prefixes": hidden_artifact_prefixes,
+            "topic": topic,
+            "query": final_query,
+            "out_dir": str(pack_dir.relative_to(_PROJECT_ROOT)),
+            "progress_bar": _bar(stage, len(stage_names)),
+            "progress_steps": stage_names,
+            "pack": pack,
+            "draft": None,
+            "artifacts": {
+                "library_jsonl": outputs.get("library_jsonl"),
+                "study_cards_jsonl": outputs.get("study_cards_jsonl"),
+                "coverage_report_json": outputs.get("coverage_report_json"),
+                "references_bib": outputs.get("references_bib"),
+                "evidence_md": outputs.get("evidence_md"),
+                "evidence_coverage_md": outputs.get("evidence_coverage_md"),
+                "study_matrix_md": outputs.get("study_matrix_md"),
+                "pdf_dir": outputs.get("pdf_dir"),
+                "manuscript_output": None,
+                "manuscript_partial": None,
+                "manuscript_workspace": None,
+            },
+        }
 
     # 2) Draft manuscript
     draft = await manuscript_writer_handler(
@@ -263,16 +318,11 @@ async def review_pack_writer_handler(
             "manuscript_writer did not pass section evaluation; a partial draft was still produced. "
             f"See {partial_path}"
         )
-    session_root = _resolve_session_dir(session_id)
-    hidden_artifact_prefixes: List[str] = []
     if isinstance(draft, dict):
         for item in draft.get("hidden_artifact_prefixes") or []:
             value = str(item or "").strip().lstrip("/").replace("\\", "/")
             if value and value not in hidden_artifact_prefixes:
                 hidden_artifact_prefixes.append(value)
-    pack_rel = _to_session_relative(pack_dir, session_root)
-    if pack_rel and pack_rel not in hidden_artifact_prefixes:
-        hidden_artifact_prefixes.append(pack_rel)
 
     return {
         "tool": "review_pack_writer",
@@ -284,6 +334,13 @@ async def review_pack_writer_handler(
         "quality_gate_passed": quality_gate_passed,
         "polish_gate_passed": polish_gate_passed,
         "public_release_ready": public_release_ready,
+        "evidence_coverage_passed": evidence_coverage_passed,
+        "coverage_summary": coverage_summary or (
+            str((draft or {}).get("coverage_summary") or "").strip() if isinstance(draft, dict) else ""
+        ),
+        "coverage_report_path": coverage_report_path or (
+            str((draft or {}).get("coverage_report_path") or "").strip() if isinstance(draft, dict) else ""
+        ) or None,
         "release_state": release_state,
         "release_summary": release_summary or (
             "Publication blocked: the manuscript did not pass the final release gate."
@@ -300,8 +357,12 @@ async def review_pack_writer_handler(
         "draft": draft,
         "artifacts": {
             "library_jsonl": outputs.get("library_jsonl"),
+            "study_cards_jsonl": outputs.get("study_cards_jsonl"),
+            "coverage_report_json": outputs.get("coverage_report_json"),
             "references_bib": outputs.get("references_bib"),
             "evidence_md": outputs.get("evidence_md"),
+            "evidence_coverage_md": outputs.get("evidence_coverage_md"),
+            "study_matrix_md": outputs.get("study_matrix_md"),
             "pdf_dir": outputs.get("pdf_dir"),
             "manuscript_output": (draft or {}).get("output_path") if isinstance(draft, dict) else None,
             "manuscript_partial": partial_path,
@@ -329,8 +390,8 @@ review_pack_writer_tool = {
                 "description": "Optional session id. When out_dir is omitted, the review pack is created under the session tool_outputs directory.",
             },
             "max_results": {"type": "integer", "default": 80, "description": "Max PubMed results (<=500)."},
-            "download_pdfs": {"type": "boolean", "default": False, "description": "Download OA PDFs from PMC when possible."},
-            "max_pdfs": {"type": "integer", "default": 30, "description": "Max PMC PDFs to download."},
+            "download_pdfs": {"type": "boolean", "default": True, "description": "Download OA PDFs from PMC when possible."},
+            "max_pdfs": {"type": "integer", "default": 80, "description": "Max PMC PDFs to download."},
             "output_path": {"type": "string", "description": "Final manuscript output path (project-relative)."},
             "sections": {"type": "array", "items": {"type": "string"}, "description": "Optional section list for manuscript_writer."},
             "max_revisions": {"type": "integer", "default": 5, "description": "Max revisions per section."},

@@ -11,27 +11,174 @@ from tool_box.tools_impl import manuscript_writer as manuscript_writer_module
 from tool_box.tools_impl import review_pack_writer as review_pack_writer_module
 
 
+def _write_review_evidence_bundle(tmp_path: Path, *, low_coverage: bool = False) -> list[str]:
+    ctx_dir = tmp_path / "ctx"
+    ctx_dir.mkdir(parents=True, exist_ok=True)
+    study_cards_path = ctx_dir / "study_cards.jsonl"
+    coverage_report_path = ctx_dir / "coverage_report.json"
+    evidence_md_path = ctx_dir / "evidence.md"
+    references_bib_path = ctx_dir / "references.bib"
+
+    cards = []
+    total = 6 if low_coverage else 16
+    quantitative_cutoff = 1 if low_coverage else 6
+    for idx in range(1, total + 1):
+        cards.append(
+            {
+                "citekey": f"known{idx}",
+                "title": f"Study {idx}",
+                "authors": ["Doe, Jane"],
+                "year": "2026",
+                "journal": "BioAI",
+                "evidence_tier": "full_text" if idx <= (2 if low_coverage else 8) else "abstract_only",
+                "study_type": "animal_model" if idx % 2 == 0 else "in_vitro",
+                "model_system": ["murine_model"] if idx % 2 == 0 else ["biofilm_assay"],
+                "intervention_delivery": ["phage_cocktail"] if idx % 3 == 0 else ["hydrogel_delivery"],
+                "receptor_mechanism_terms": ["LptD", "Psl"] if idx % 2 == 0 else ["LPS"],
+                "quantitative_findings": [f"{idx} log CFU reduction after therapy."]
+                if idx <= quantitative_cutoff
+                else [],
+                "limitations": ["Heterogeneity across infection models."],
+                "supporting_snippets": [f"Study {idx} reports phage activity in Pseudomonas infection."],
+                "section_support": [
+                    "introduction",
+                    "method",
+                    "experiment",
+                    "result",
+                    "discussion",
+                    "conclusion",
+                ],
+            }
+        )
+
+    study_cards_path.write_text(
+        "\n".join(json.dumps(card, ensure_ascii=False) for card in cards) + "\n",
+        encoding="utf-8",
+    )
+
+    coverage_report = {
+        "profile": "pi_ready_review",
+        "pass": not low_coverage,
+        "summary": (
+            "Evidence coverage blocked: only 6 included studies; only 2 full-text studies; only 1 study with quantitative findings."
+            if low_coverage
+            else "Evidence coverage passed: 16 studies included, 8 full-text studies, 6 studies with quantitative findings, and all core review sections are supported."
+        ),
+        "thresholds": {
+            "min_total_studies": 15,
+            "min_full_text_studies": 6,
+            "min_quantitative_studies": 4,
+            "min_support_per_core_section": 2,
+        },
+        "counts": {
+            "total_studies": total,
+            "full_text_studies": 2 if low_coverage else 8,
+            "quantitative_studies": 1 if low_coverage else 6,
+        },
+        "section_support_counts": {
+            "introduction": total,
+            "method": total,
+            "experiment": total,
+            "result": total,
+            "discussion": total,
+            "conclusion": total,
+        },
+        "failures": (
+            [
+                "only 6 included studies; require at least 15",
+                "only 2 full-text studies; require at least 6",
+                "only 1 study with quantitative findings; require at least 4",
+            ]
+            if low_coverage
+            else []
+        ),
+    }
+    coverage_report_path.write_text(json.dumps(coverage_report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    evidence_md_path.write_text(
+        "# Literature evidence inventory\n\n## Coverage summary\nEvidence coverage summary.\n",
+        encoding="utf-8",
+    )
+    bib_chunks: list[str] = []
+    for idx in range(1, total + 1):
+        bib_chunks.append(
+            "\n".join(
+                [
+                    f"@article{{known{idx},",
+                    f"  title={{Study {idx}}},",
+                    "  author={Doe, Jane and Smith, Alex},",
+                    "  journal={BioAI},",
+                    "  year={2026},",
+                    f"  doi={{10.1/example{idx}}}",
+                    "}",
+                ]
+            )
+        )
+    references_bib_path.write_text(
+        "\n\n".join(bib_chunks) + "\n",
+        encoding="utf-8",
+    )
+
+    return [
+        str(study_cards_path.relative_to(tmp_path)),
+        str(coverage_report_path.relative_to(tmp_path)),
+        str(evidence_md_path.relative_to(tmp_path)),
+        str(references_bib_path.relative_to(tmp_path)),
+    ]
+
+
 def _stub_chat_factory(
     *,
     intro_citation: str = "[@known1]",
+    review_mode: bool = False,
+    review_intro_citations: str = "[@known1; @known2]",
+    review_method_citations: str = "[@known3; @known4]",
+    review_experiment_citations: str = "[@known5; @known6]",
+    review_result_citations: str = "[@known7; @known8]",
+    review_discussion_citations: str = "[@known9; @known10]",
+    review_conclusion_citations: str = "[@known11; @known12]",
     polish_pass: bool = True,
     final_polish_exc: Exception | None = None,
 ):
     async def _stub_chat(_llm, prompt: str, _model):
         if "produce an ANALYSIS MEMO" in prompt:
             return "# Analysis Memo\n- grounded context"
-        if "Write the section:" in prompt:
+        if "Write the section:" in prompt or "Revise the section:" in prompt:
             if "Introduction" in prompt:
+                if review_mode:
+                    return f"## Introduction\nThis review frames the therapeutic challenge and cites {review_intro_citations}."
                 return f"## Introduction\nThis section cites {intro_citation}."
             if "Abstract" in prompt:
+                if review_mode:
+                    return (
+                        "## Abstract\n"
+                        "Pseudomonas aeruginosa remains a major antimicrobial-resistance challenge. "
+                        "This review synthesizes recent literature on therapeutic phages. "
+                        "The evidence base includes full-text and abstract-level studies identified from the literature search. "
+                        "Key findings show recent studies support receptor-aware cocktails and delivery optimization. "
+                        "However, the evidence remains limited by heterogeneity and incomplete quantitative reporting. "
+                        "Overall, the review suggests phage therapy remains promising with careful evidence-linked deployment."
+                    )
                 return "## Abstract\nConcise summary."
             if "Methods" in prompt:
+                if review_mode:
+                    return f"## Methods\nThis review summarizes the evidence workflow and cites {review_method_citations}."
                 return "## Methods\nMethod details."
             if "Experiments" in prompt:
+                if review_mode:
+                    return f"## Experiments\nAcross representative models, cited studies {review_experiment_citations} compare assays, controls, and endpoints."
                 return "## Experiments\nExperiment setup."
             if "Results" in prompt:
+                if review_mode:
+                    return f"## Results\nAcross studies {review_result_citations}, comparative synthesis highlights receptor usage and quantitative reductions in bacterial burden."
                 return "## Results\nResult interpretation."
+            if "Discussion" in prompt:
+                if review_mode:
+                    return f"## Discussion\nThese studies {review_discussion_citations} suggest translational promise, but heterogeneity remains a limitation."
+                return "## Discussion\nDiscussion points."
             if "Conclusion" in prompt:
+                if review_mode:
+                    return f"## Conclusion\nTaken together, the evidence {review_conclusion_citations} supports cautious optimism for phage therapy."
                 return "## Conclusion\nConcluding remarks."
             if "References" in prompt:
                 return "## References\nNot available"
@@ -362,6 +509,109 @@ def test_manuscript_writer_fails_on_unknown_citekey(
     assert citation.get("unknown_citekeys") == ["unknown_key"]
 
 
+def test_manuscript_writer_blocks_review_release_without_structured_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
+    monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(review_mode=True))
+
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Write a submission-ready English review article on Pseudomonas phage.",
+            output_path="out/review.md",
+            context_paths=[],
+            sections=["abstract", "introduction", "method", "experiment", "result", "discussion", "conclusion", "references"],
+            keep_workspace=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "low_evidence_coverage"
+    assert result["public_release_ready"] is False
+    assert result["evidence_coverage_passed"] is False
+    assert "study_cards" in str(result["coverage_summary"]).lower()
+
+
+def test_manuscript_writer_review_mode_passes_with_structured_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
+    monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(review_mode=True))
+
+    context_paths = _write_review_evidence_bundle(tmp_path)
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Write a submission-ready English review article on Pseudomonas phage.",
+            output_path="out/review.md",
+            context_paths=context_paths,
+            keep_workspace=True,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["public_release_ready"] is True
+    assert result["evidence_coverage_passed"] is True
+    assert result["coverage_report_path"]
+    assert result["evidence_coverage_path"]
+    assert result["study_matrix_path"]
+    assert result["reference_library_path"].endswith("references.bib")
+
+
+def test_manuscript_writer_review_mode_blocks_unsupported_claims(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_chat",
+        _stub_chat_factory(
+            review_mode=True,
+            review_intro_citations="[@known1]",
+            review_method_citations="[@known2]",
+            review_experiment_citations="[@known3]",
+            review_result_citations="[@known4]",
+            review_discussion_citations="[@known5]",
+            review_conclusion_citations="[@known6]",
+        ),
+    )
+
+    context_paths = _write_review_evidence_bundle(tmp_path)
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Write a submission-ready English review article on Pseudomonas phage.",
+            output_path="out/review.md",
+            context_paths=context_paths,
+            keep_workspace=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "unsupported_claims"
+    assert result["public_release_ready"] is False
+    assert "insufficient_evidence_linkage" in str(result["sections"])
+
+
 def test_review_pack_partial_always_failed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(review_pack_writer_module, "_PROJECT_ROOT", tmp_path)
 
@@ -369,7 +619,12 @@ def test_review_pack_partial_always_failed(monkeypatch: pytest.MonkeyPatch, tmp_
         _ = (args, kwargs)
         return {
             "success": True,
+            "evidence_coverage_passed": True,
+            "coverage_summary": "Evidence coverage passed.",
+            "coverage_report_path": "runtime/literature/coverage_report.json",
             "outputs": {
+                "study_cards_jsonl": "runtime/literature/study_cards.jsonl",
+                "coverage_report_json": "runtime/literature/coverage_report.json",
                 "evidence_md": "runtime/literature/evidence.md",
                 "references_bib": "runtime/literature/references.bib",
             },
@@ -400,6 +655,46 @@ def test_review_pack_partial_always_failed(monkeypatch: pytest.MonkeyPatch, tmp_
     assert result["partial_output_path"] == "runtime/literature/review_draft.partial.md"
     assert result["release_state"] == "blocked"
     assert result["public_release_ready"] is False
+
+
+def test_review_pack_blocks_when_evidence_coverage_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(review_pack_writer_module, "_PROJECT_ROOT", tmp_path)
+
+    async def _fake_lit(*args, **kwargs):
+        _ = (args, kwargs)
+        return {
+            "success": True,
+            "evidence_coverage_passed": False,
+            "coverage_summary": "Evidence coverage blocked: only 4 included studies.",
+            "coverage_report_path": "runtime/literature/coverage_report.json",
+            "outputs": {
+                "library_jsonl": "runtime/literature/library.jsonl",
+                "study_cards_jsonl": "runtime/literature/study_cards.jsonl",
+                "coverage_report_json": "runtime/literature/coverage_report.json",
+                "references_bib": "runtime/literature/references.bib",
+                "evidence_md": "runtime/literature/evidence.md",
+                "evidence_coverage_md": "runtime/literature/docs/evidence_coverage.md",
+                "study_matrix_md": "runtime/literature/docs/study_matrix.md",
+            },
+        }
+
+    async def _fail_draft(*args, **kwargs):
+        raise AssertionError("manuscript_writer should not run when evidence coverage fails")
+
+    monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _fake_lit)
+    monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fail_draft)
+
+    result = asyncio.run(review_pack_writer_module.review_pack_writer_handler(topic="Sparse topic"))
+
+    assert result["success"] is False
+    assert result["error_code"] == "low_evidence_coverage"
+    assert result["public_release_ready"] is False
+    assert result["evidence_coverage_passed"] is False
+    assert result["draft"] is None
+    assert "only 4 included studies" in result["release_summary"]
 
 
 def test_literature_pipeline_scopes_default_output_by_session(
@@ -461,8 +756,12 @@ def test_literature_pipeline_scopes_default_output_by_session(
     output_dir = result["output_dir"]
     assert output_dir.startswith("runtime/session_demo/tool_outputs/literature_pipeline/review_pack_")
     assert (tmp_path / output_dir / "library.jsonl").exists()
+    assert (tmp_path / output_dir / "study_cards.jsonl").exists()
+    assert (tmp_path / output_dir / "coverage_report.json").exists()
     assert (tmp_path / output_dir / "references.bib").exists()
     assert (tmp_path / output_dir / "evidence.md").exists()
+    assert (tmp_path / output_dir / "docs" / "evidence_coverage.md").exists()
+    assert (tmp_path / output_dir / "docs" / "study_matrix.md").exists()
 
 
 def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
@@ -486,9 +785,16 @@ def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
         captured["lit"] = dict(kwargs)
         return {
             "success": True,
+            "evidence_coverage_passed": True,
+            "coverage_summary": "Evidence coverage passed.",
+            "coverage_report_path": "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/coverage_report.json",
             "outputs": {
+                "study_cards_jsonl": "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/study_cards.jsonl",
+                "coverage_report_json": "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/coverage_report.json",
                 "evidence_md": "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/evidence.md",
                 "references_bib": "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/references.bib",
+                "evidence_coverage_md": "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/docs/evidence_coverage.md",
+                "study_matrix_md": "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/docs/study_matrix.md",
             },
         }
 
@@ -500,6 +806,9 @@ def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
             "quality_gate_passed": True,
             "polish_gate_passed": True,
             "public_release_ready": True,
+            "evidence_coverage_passed": True,
+            "coverage_summary": "Evidence coverage passed.",
+            "coverage_report_path": "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/coverage_report.json",
             "release_state": "final",
             "release_summary": "Ready for publication.",
             "output_path": kwargs["output_path"],
@@ -523,12 +832,18 @@ def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
 
     assert result["success"] is True
     assert result["public_release_ready"] is True
+    assert result["evidence_coverage_passed"] is True
     assert result["release_state"] == "final"
     assert captured["lit"]["session_id"] == "demo"
     assert captured["draft"]["session_id"] == "demo"
+    assert captured["lit"]["download_pdfs"] is True
     assert captured["lit"]["out_dir"].startswith(
         "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_"
     )
+    assert captured["draft"]["context_paths"][:2] == [
+        "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/study_cards.jsonl",
+        "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/coverage_report.json",
+    ]
     assert captured["draft"]["output_path"].startswith(
         "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_"
     )
