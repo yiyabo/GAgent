@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 _RUNTIME_DIR = _PROJECT_ROOT / "runtime"
 _MAX_FULLTEXT_CHARS = 80_000
+_PMC_OA_UTILITY_TIMEOUT = 30.0
+_PMC_OA_PDF_TIMEOUT = 30.0
+_PMC_OA_ARCHIVE_TIMEOUT = 45.0
+_PMC_ARTICLE_PAGE_TIMEOUT = 20.0
+_PMC_LEGACY_PDF_TIMEOUT = 30.0
 _COVERAGE_THRESHOLDS = {
     "min_total_studies": 15,
     "min_full_text_studies": 6,
@@ -434,7 +439,7 @@ async def _download_pmc_oa_fulltext(
     client: httpx.AsyncClient, pmcid: str, out_path: Path
 ) -> Tuple[Optional[Path], Optional[str], Optional[str]]:
     oa_url = f"https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id={pmcid}"
-    response = await client.get(oa_url, timeout=40.0)
+    response = await client.get(oa_url, timeout=_PMC_OA_UTILITY_TIMEOUT)
     if response.status_code >= 400:
         return None, None, f"OA utility HTTP {response.status_code}"
 
@@ -455,7 +460,7 @@ async def _download_pmc_oa_fulltext(
 
     pdf_links = [href for fmt, href in links if fmt == "pdf" or href.lower().endswith(".pdf")]
     for href in pdf_links:
-        asset = await client.get(href, timeout=120.0, follow_redirects=True)
+        asset = await client.get(href, timeout=_PMC_OA_PDF_TIMEOUT, follow_redirects=True)
         if asset.status_code >= 400:
             continue
         if _is_pdf_payload(asset.content, asset.headers.get("content-type"), href):
@@ -465,7 +470,7 @@ async def _download_pmc_oa_fulltext(
 
     archive_links = [href for fmt, href in links if fmt == "tgz" or href.lower().endswith((".tar.gz", ".tgz"))]
     for href in archive_links:
-        asset = await client.get(href, timeout=180.0, follow_redirects=True)
+        asset = await client.get(href, timeout=_PMC_OA_ARCHIVE_TIMEOUT, follow_redirects=True)
         if asset.status_code >= 400:
             continue
         extracted_path, full_text, error = _extract_oa_package_payload(asset.content, out_path)
@@ -530,13 +535,13 @@ async def _download_pmc_pdf(
         return True, None, oa_full_text
 
     page_url = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"
-    r = await client.get(page_url, timeout=40.0)
+    r = await client.get(page_url, timeout=_PMC_ARTICLE_PAGE_TIMEOUT)
     if r.status_code >= 400:
         return False, oa_error or f"PMC page HTTP {r.status_code}", None
     pdf_url = _find_pmc_pdf_link(r.text or "", page_url)
     if not pdf_url:
         return False, oa_error or "PDF link not found on PMC page", None
-    pr = await client.get(pdf_url, timeout=80.0)
+    pr = await client.get(pdf_url, timeout=_PMC_LEGACY_PDF_TIMEOUT)
     if pr.status_code >= 400:
         return False, oa_error or f"PDF HTTP {pr.status_code}", None
     ctype = pr.headers.get("content-type")
