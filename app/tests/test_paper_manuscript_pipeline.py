@@ -764,6 +764,60 @@ def test_literature_pipeline_scopes_default_output_by_session(
     assert (tmp_path / output_dir / "docs" / "study_matrix.md").exists()
 
 
+def test_literature_pipeline_falls_back_from_zero_result_natural_language_query(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tool_box.tools_impl import literature_pipeline as literature_pipeline_module
+
+    monkeypatch.setattr(literature_pipeline_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(literature_pipeline_module, "_RUNTIME_DIR", tmp_path / "runtime")
+
+    captured_terms: list[str] = []
+
+    async def _fake_esearch(_client, query: str, retmax: int):
+        _ = retmax
+        captured_terms.append(query)
+        if query == "Pseudomonas phage biology, genomics, host interaction, therapeutic applications, and experimental models":
+            return []
+        return ["1"]
+
+    async def _fake_efetch(_client, _pmids):
+        return (
+            "<PubmedArticleSet>"
+            "<PubmedArticle>"
+            "<MedlineCitation>"
+            "<PMID>1</PMID>"
+            "<Article>"
+            "<ArticleTitle>Known phage study</ArticleTitle>"
+            "<Abstract><AbstractText>Grounded abstract with 2 log CFU reduction in a murine model.</AbstractText></Abstract>"
+            "<Journal><Title>Virology</Title><JournalIssue><PubDate><Year>2025</Year></PubDate></JournalIssue></Journal>"
+            "<AuthorList><Author><LastName>Doe</LastName><Initials>J</Initials></Author></AuthorList>"
+            "</Article>"
+            "</MedlineCitation>"
+            "<PubmedData><ArticleIdList><ArticleId IdType=\"doi\">10.1/example</ArticleId></ArticleIdList></PubmedData>"
+            "</PubmedArticle>"
+            "</PubmedArticleSet>"
+        )
+
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_esearch", _fake_esearch)
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_efetch_xml", _fake_efetch)
+
+    result = asyncio.run(
+        literature_pipeline_module.literature_pipeline_handler(
+            query="Pseudomonas phage biology, genomics, host interaction, therapeutic applications, and experimental models",
+            max_results=5,
+            download_pdfs=False,
+        )
+    )
+
+    assert result["success"] is True
+    assert len(captured_terms) == 2
+    assert result["fallback_query_used"]
+    assert result["effective_query"] == result["fallback_query_used"]
+    assert result["counts"]["records"] == 1
+
+
 def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -358,6 +358,49 @@ def _find_pmc_pdf_link(html: str, base_url: str) -> Optional[str]:
     return None
 
 
+def _fallback_pubmed_query(raw_query: str) -> Optional[str]:
+    text = " ".join(str(raw_query or "").replace(",", " ").replace("，", " ").split()).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    topic_groups: List[str] = []
+
+    if "pseudomonas" in lowered or "p. aeruginosa" in lowered:
+        topic_groups.append("(Pseudomonas aeruginosa OR Pseudomonas)")
+    if "phage" in lowered or "bacteriophage" in lowered:
+        topic_groups.append("(phage OR bacteriophage)")
+
+    topical_terms: List[str] = []
+    term_mapping = [
+        (("genom", "genomic", "genome"), "genomics"),
+        (("host interaction", "host", "receptor", "adsorption"), "\"host interaction\""),
+        (("therapy", "therapeutic", "application", "applications"), "therapy"),
+        (("experimental models", "experimental", "model", "models"), "\"experimental models\""),
+        (("biofilm",), "biofilm"),
+        (("delivery", "hydrogel", "inhalable", "nanoparticle"), "delivery"),
+    ]
+    for aliases, value in term_mapping:
+        if any(alias in lowered for alias in aliases):
+            topical_terms.append(value)
+
+    fallback_parts = list(topic_groups)
+    if topical_terms:
+        fallback_parts.append("(" + " OR ".join(_take_unique(topical_terms, limit=8)) + ")")
+
+    if not fallback_parts:
+        words = [
+            token
+            for token in re.findall(r"[A-Za-z0-9]+", text)
+            if len(token) > 2
+        ]
+        if not words:
+            return None
+        fallback_parts.append("(" + " AND ".join(_take_unique(words, limit=6)) + ")")
+
+    avoid = 'NOT ("phage display" OR "phage-displayed" OR "phage display library")'
+    return " AND ".join(fallback_parts) + f" {avoid}"
+
+
 async def _download_pmc_pdf(
     client: httpx.AsyncClient, pmcid: str, out_path: Path
 ) -> Tuple[bool, Optional[str]]:
@@ -801,6 +844,8 @@ async def literature_pipeline_handler(
     study_cards: List[Dict[str, Any]] = []
 
     # Prefer explicit proxy (tool-level) over environment proxy to avoid impacting other HTTP clients (e.g. LLM).
+    effective_query = query
+    fallback_query_used: Optional[str] = None
     async with httpx.AsyncClient(
         headers=headers,
         follow_redirects=True,
@@ -810,6 +855,14 @@ async def literature_pipeline_handler(
         # 1) PubMed search
         try:
             pmids = await _pubmed_esearch(client, query, retmax=max_results)
+            if not pmids:
+                fallback_query = _fallback_pubmed_query(query)
+                if fallback_query and fallback_query.strip() and fallback_query.strip() != query.strip():
+                    retry_pmids = await _pubmed_esearch(client, fallback_query, retmax=max_results)
+                    if retry_pmids:
+                        pmids = retry_pmids
+                        effective_query = fallback_query
+                        fallback_query_used = fallback_query
         except Exception as exc:
             return {
                 "tool": "literature_pipeline",
@@ -924,6 +977,8 @@ async def literature_pipeline_handler(
         "tool": "literature_pipeline",
         "success": True,
         "query": query,
+        "effective_query": effective_query,
+        "fallback_query_used": fallback_query_used,
         "output_dir": str(output_dir.relative_to(_PROJECT_ROOT)),
         "evidence_coverage_passed": bool(coverage_report.get("pass")),
         "coverage_summary": str(coverage_report.get("summary") or "").strip(),
