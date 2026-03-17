@@ -1,9 +1,10 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from app.services.plans.dependency_planner import compute_dependency_plan
-from app.services.plans.plan_executor import PlanExecutor
+from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor
 from app.services.plans.plan_models import PlanNode, PlanTree
 
 
@@ -88,3 +89,87 @@ def test_plan_executor_persists_skip_reason_when_blocked():
     assert payload.get("status") == "skipped"
     assert payload.get("metadata", {}).get("blocked_by_dependencies") is True
 
+
+def test_plan_executor_passes_reference_context_into_deep_think(monkeypatch: pytest.MonkeyPatch):
+    captured = {}
+
+    class _RepoWithContext(_FakeRepo):
+        def update_plan_metadata(self, *_args, **_kwargs):
+            return None
+
+    class _DeepThinkProbe:
+        def __init__(self, *args, **kwargs):
+            return
+
+        def pause(self) -> None:
+            return
+
+        def resume(self) -> None:
+            return
+
+        def skip_step(self) -> None:
+            return
+
+        async def think(self, user_query: str, context=None, task_context=None):
+            captured["user_query"] = user_query
+            captured["context"] = context
+            captured["task_context"] = task_context
+            return SimpleNamespace(
+                final_answer="done",
+                thinking_summary="ok",
+                confidence=0.9,
+                tools_used=[],
+                total_iterations=1,
+                thinking_steps=[],
+            )
+
+    monkeypatch.setattr("app.services.plans.plan_executor.DeepThinkAgent", _DeepThinkProbe)
+
+    dep_payload = {
+        "status": "success",
+        "metadata": {
+            "deliverables": {
+                "manifest_path": "/tmp/manifest.json",
+                "published_modules": ["results"],
+            }
+        },
+        "output_path": "/tmp/analysis/output.csv",
+    }
+    tree = PlanTree(id=1, title="Reference Context Plan")
+    tree.nodes = {
+        1: PlanNode(
+            id=1,
+            plan_id=1,
+            name="Write section",
+            status="pending",
+            instruction="Draft the results section",
+            dependencies=[2],
+            context_combined="Use the validated analysis outputs only.",
+            context_sections=[{"title": "Evidence", "content": "Output table saved at /tmp/analysis/output.csv"}],
+            metadata={"paper_mode": True, "paper_context_paths": ["/tmp/paper/evidence.md"]},
+        ),
+        2: PlanNode(
+            id=2,
+            plan_id=1,
+            name="Run analysis",
+            status="completed",
+            execution_result=json.dumps(dep_payload),
+        ),
+    }
+
+    repo = _RepoWithContext(tree)
+    executor = PlanExecutor(repo=repo, llm_service=SimpleNamespace(_llm=object()))
+    result = executor.execute_task(
+        1,
+        1,
+        config=ExecutionConfig(enable_skills=False),
+    )
+
+    assert result.status == "completed"
+    task_context = captured["task_context"]
+    assert task_context.context_summary == "Use the validated analysis outputs only."
+    assert task_context.context_sections == [
+        {"title": "Evidence", "content": "Output table saved at /tmp/analysis/output.csv"}
+    ]
+    assert "/tmp/paper/evidence.md" in task_context.paper_context_paths
+    assert "/tmp/analysis/output.csv" in task_context.paper_context_paths

@@ -207,6 +207,19 @@ class TestTaskExecutionContextSkillField:
         assert ctx.task_id == 1
         assert ctx.task_name == "Test"
         assert ctx.skill_context == "guidance"
+        assert ctx.context_summary is None
+        assert ctx.context_sections == []
+        assert ctx.paper_context_paths == []
+
+    def test_accepts_reference_context_fields(self):
+        ctx = TaskExecutionContext(
+            context_summary="Key summary",
+            context_sections=[{"title": "Methods", "content": "Use dependency output"}],
+            paper_context_paths=["/tmp/evidence.md"],
+        )
+        assert ctx.context_summary == "Key summary"
+        assert ctx.context_sections == [{"title": "Methods", "content": "Use dependency output"}]
+        assert ctx.paper_context_paths == ["/tmp/evidence.md"]
 
     def test_task_execution_result_accepts_skill_trace(self):
         from app.services.interpreter.task_executer import TaskExecutionResult, TaskType
@@ -250,6 +263,37 @@ class TestSystemPromptSkillInjection:
         assert "[Skill: bio-tools-router]" in prompt
         assert "Prefer Tier-1 ops." in prompt
 
+    def test_native_prompt_includes_runtime_reference_context(self):
+        agent = self._make_agent()
+        ctx = TaskExecutionContext(
+            task_id=3,
+            task_instruction="Draft results section",
+            context_summary="Use the completed QC and abundance outputs.",
+            context_sections=[
+                {"title": "Evidence", "content": "Abundance increased 3.2x in treatment A."}
+            ],
+            paper_context_paths=["/tmp/results/evidence.md"],
+        )
+        prompt = agent._build_native_system_prompt(
+            context={
+                "user_message": "Please finish the results subsection based on completed analyses.",
+                "recent_tool_results": [
+                    {"tool": "bio_tools", "summary": "seqkit stats completed successfully."}
+                ],
+            },
+            task_context=ctx,
+        )
+        assert "=== ORIGINAL USER REQUEST ===" in prompt
+        assert "Please finish the results subsection" in prompt
+        assert "=== RECENT TOOL RESULTS ===" in prompt
+        assert "bio_tools: seqkit stats completed successfully." in prompt
+        assert "Task Reference Summary:" in prompt
+        assert "Use the completed QC and abundance outputs." in prompt
+        assert "Task Reference Sections:" in prompt
+        assert "Evidence: Abundance increased 3.2x in treatment A." in prompt
+        assert "Paper Context Paths:" in prompt
+        assert "/tmp/results/evidence.md" in prompt
+
     def test_native_prompt_without_skill_context(self):
         agent = self._make_agent()
         ctx = TaskExecutionContext(
@@ -270,6 +314,37 @@ class TestSystemPromptSkillInjection:
         assert "=== SKILL GUIDANCE ===" in prompt
         assert "[Skill: visualization-generator]" in prompt
         assert "Use COLORS palette." in prompt
+
+    def test_legacy_prompt_includes_runtime_reference_context(self):
+        agent = self._make_agent()
+        ctx = TaskExecutionContext(
+            task_id=4,
+            task_instruction="Assemble manuscript section",
+            context_summary="Integrate the curated references and analysis summary.",
+            context_sections=[
+                {"title": "References", "content": "Cite the 2024 benchmark comparison."}
+            ],
+            paper_context_paths=["/tmp/paper/references.bib"],
+        )
+        prompt = agent._build_system_prompt(
+            context={
+                "user_message": "Write the manuscript section from the validated evidence pack.",
+                "recent_tool_results": [
+                    {"tool": "literature_pipeline", "summary": "Collected 12 papers and generated references.bib."}
+                ],
+            },
+            task_context=ctx,
+        )
+        assert "=== ORIGINAL USER REQUEST ===" in prompt
+        assert "validated evidence pack" in prompt
+        assert "=== RECENT TOOL RESULTS ===" in prompt
+        assert "literature_pipeline: Collected 12 papers and generated references.bib." in prompt
+        assert "Task Reference Summary:" in prompt
+        assert "Integrate the curated references and analysis summary." in prompt
+        assert "Task Reference Sections:" in prompt
+        assert "References: Cite the 2024 benchmark comparison." in prompt
+        assert "Paper Context Paths:" in prompt
+        assert "/tmp/paper/references.bib" in prompt
 
     def test_legacy_prompt_without_skill_context(self):
         agent = self._make_agent()

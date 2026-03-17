@@ -1273,6 +1273,9 @@ class PlanExecutor:
             plan_outline=plan_outline,
             constraints=constraints,
             skill_context=skill_context,
+            context_summary=node.context_combined,
+            context_sections=list(node.context_sections or []),
+            paper_context_paths=dependency_paths[:40],
         )
 
         async def on_thinking(step: ThinkingStep) -> None:

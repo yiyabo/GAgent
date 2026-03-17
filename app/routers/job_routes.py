@@ -127,6 +127,51 @@ def _tail_file_lines(path: Path, max_lines: int) -> tuple[List[str], int]:
     return list(lines), total
 
 
+def _format_job_event_line(event: Dict[str, Any]) -> str:
+    timestamp = str(event.get("timestamp") or "").strip()
+    level = str(event.get("level") or "info").upper()
+    message = str(event.get("message") or "").strip()
+    metadata = event.get("metadata")
+
+    parts: List[str] = []
+    if timestamp:
+        parts.append(f"[{timestamp}]")
+    parts.append(level)
+    if message:
+        parts.append(message)
+
+    line = " ".join(parts).strip()
+    if isinstance(metadata, dict) and metadata:
+        line = f"{line} {json.dumps(metadata, ensure_ascii=False, sort_keys=True)}".strip()
+    return line
+
+
+def _build_job_log_fallback(job_id: str, tail: int) -> Optional[JobLogTailResponse]:
+    payload = plan_decomposition_jobs.get_job_payload(job_id)
+    if payload is None:
+        return None
+
+    event_rows = payload.get("logs")
+    if not isinstance(event_rows, list) or not event_rows:
+        event_rows = payload.get("action_logs")
+    if not isinstance(event_rows, list):
+        event_rows = []
+
+    rendered = [
+        line
+        for line in (_format_job_event_line(row) for row in event_rows if isinstance(row, dict))
+        if line
+    ]
+    total = len(rendered)
+    return JobLogTailResponse(
+        job_id=job_id,
+        log_path=f"job://{job_id}/events",
+        total_lines=total,
+        lines=rendered[-tail:],
+        truncated=total > tail,
+    )
+
+
 def _load_json(raw: Optional[str]) -> Any:
     if not raw:
         return None
@@ -999,7 +1044,7 @@ def get_job_status(job_id: str):
 @job_router.get(
     "/{job_id}/logs",
     response_model=JobLogTailResponse,
-    summary="Read Claude Code log tail",
+    summary="Read job log tail",
 )
 def get_job_logs(job_id: str, tail: int = Query(200, ge=1, le=2000)):
     if not _is_safe_job_id(job_id):
@@ -1007,7 +1052,10 @@ def get_job_logs(job_id: str, tail: int = Query(200, ge=1, le=2000)):
 
     log_path = _CLAUDE_LOG_DIR / f"{job_id}.log"
     if not log_path.exists():
-        raise HTTPException(status_code=404, detail="Log file does not exist or is not generated yet")
+        fallback = _build_job_log_fallback(job_id, tail)
+        if fallback is not None:
+            return fallback
+        raise HTTPException(status_code=404, detail="Job not found")
 
     lines, total = _tail_file_lines(log_path, tail)
     return JobLogTailResponse(

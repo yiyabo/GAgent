@@ -37,3 +37,23 @@ def test_validate_rejects_dangerous_absolute_path(monkeypatch) -> None:
     is_safe, message = file_operations._validate_path_security("/etc/hosts")
     assert is_safe is False
     assert "allowed directories" in message.lower() or "not allowed" in message.lower()
+
+
+def test_file_operations_accepts_session_id(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True, exist_ok=True)
+    target_file = project_root / "session-aware.txt"
+
+    monkeypatch.setattr(file_operations, "ALLOWED_BASE_PATHS", [str(project_root)])
+
+    result = asyncio.run(
+        file_operations.file_operations_handler(
+            "write",
+            str(target_file),
+            content="session-compatible",
+            session_id="session_demo_123",
+        )
+    )
+
+    assert result["success"] is True
+    assert target_file.read_text(encoding="utf-8") == "session-compatible"
