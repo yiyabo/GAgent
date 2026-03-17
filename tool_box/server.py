@@ -11,6 +11,7 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional
 
+from .call_utils import prepare_handler_kwargs
 from .tools import ToolDefinition, get_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ class ToolBoxMCPServer:
             return {"jsonrpc": "2.0", "error": {"code": -32602, "message": f"Tool not found: {tool_name}"}}
 
         try:
-            result = await tool_def.handler(**tool_args)
+            result = await tool_def.handler(**prepare_handler_kwargs(tool_def.handler, tool_args))
 
             return {"jsonrpc": "2.0", "result": result}
 

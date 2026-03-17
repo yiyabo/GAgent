@@ -88,6 +88,9 @@ class TaskExecutionContext:
     plan_outline: Optional[str] = None
     constraints: List[str] = field(default_factory=list)
     skill_context: Optional[str] = None
+    context_summary: Optional[str] = None
+    context_sections: List[Dict[str, Any]] = field(default_factory=list)
+    paper_context_paths: List[str] = field(default_factory=list)
 
 
 class DeepThinkProtocolError(RuntimeError):
@@ -212,6 +215,59 @@ class DeepThinkAgent:
                 content = content[:500] + "..."
             lines.append(f"[{role}]: {content}")
         return prompt + "\n=== RECENT CONVERSATION ===\n" + "\n".join(lines)
+
+    @staticmethod
+    def _clip_reference_text(value: Any, *, limit: int = 800) -> str:
+        text = " ".join(str(value or "").split()).strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)] + "..."
+
+    @classmethod
+    def _append_reference_context(
+        cls,
+        prompt: str,
+        context: Optional[Dict[str, Any]],
+    ) -> str:
+        if not context:
+            return prompt
+
+        blocks: List[str] = []
+
+        user_message = context.get("user_message")
+        if isinstance(user_message, str) and user_message.strip():
+            blocks.append("=== ORIGINAL USER REQUEST ===")
+            blocks.append(cls._clip_reference_text(user_message, limit=1200))
+
+        tool_results = context.get("recent_tool_results", [])
+        if isinstance(tool_results, list) and tool_results:
+            blocks.append("=== RECENT TOOL RESULTS ===")
+            for item in tool_results[-3:]:
+                if not isinstance(item, dict):
+                    continue
+                tool_name = str(item.get("tool") or item.get("name") or "unknown").strip()
+                summary = cls._clip_reference_text(item.get("summary"), limit=240)
+                if summary:
+                    blocks.append(f"- {tool_name}: {summary}")
+                else:
+                    blocks.append(f"- {tool_name}")
+
+        paper_context_paths = context.get("paper_context_paths", [])
+        if isinstance(paper_context_paths, list):
+            normalized_paths = [
+                str(path).strip()
+                for path in paper_context_paths
+                if str(path).strip()
+            ]
+            if normalized_paths:
+                blocks.append("=== PAPER CONTEXT PATHS ===")
+                for path in normalized_paths[:10]:
+                    blocks.append(f"- {path}")
+
+        prompt = cls._append_recent_chat_history(prompt, context)
+        if not blocks:
+            return prompt
+        return prompt + "\n" + "\n".join(blocks)
 
     async def think(
         self,
@@ -503,6 +559,21 @@ class DeepThinkAgent:
                 lines.append("Dependency Outputs:")
                 for dep in task_context.dependency_outputs[:6]:
                     lines.append(f"- {json.dumps(dep, ensure_ascii=False)[:600]}")
+            if task_context.context_summary:
+                lines.append("Task Reference Summary:")
+                lines.append(self._clip_reference_text(task_context.context_summary, limit=1500))
+            if task_context.context_sections:
+                lines.append("Task Reference Sections:")
+                for section in task_context.context_sections[:6]:
+                    if not isinstance(section, dict):
+                        continue
+                    title = self._clip_reference_text(section.get("title") or "Section", limit=120)
+                    content = self._clip_reference_text(section.get("content"), limit=700)
+                    lines.append(f"- {title}: {content}")
+            if task_context.paper_context_paths:
+                lines.append("Paper Context Paths:")
+                for path in task_context.paper_context_paths[:10]:
+                    lines.append(f"- {path}")
             if task_context.skill_context:
                 lines.append("")
                 lines.append("=== SKILL GUIDANCE ===")
@@ -525,7 +596,7 @@ class DeepThinkAgent:
             "- Keep quick checks synchronous; use background workflows only for clearly long-running operations.\n"
             "- Prioritize evidence-backed conclusions over speculation.\n"
         )
-        return self._append_recent_chat_history(prompt, context)
+        return self._append_reference_context(prompt, context)
 
     # ------------------------------------------------------------------ #
     #  Prompt-based (legacy) path                                         #
@@ -1560,6 +1631,21 @@ IMPORTANT: data must end with \\n to execute the command.""",
                 task_lines.append("Dependency Outputs:")
                 for dep in task_context.dependency_outputs[:6]:
                     task_lines.append(f"- {json.dumps(dep, ensure_ascii=False)[:600]}")
+            if task_context.context_summary:
+                task_lines.append("Task Reference Summary:")
+                task_lines.append(self._clip_reference_text(task_context.context_summary, limit=1500))
+            if task_context.context_sections:
+                task_lines.append("Task Reference Sections:")
+                for section in task_context.context_sections[:6]:
+                    if not isinstance(section, dict):
+                        continue
+                    title = self._clip_reference_text(section.get("title") or "Section", limit=120)
+                    content = self._clip_reference_text(section.get("content"), limit=700)
+                    task_lines.append(f"- {title}: {content}")
+            if task_context.paper_context_paths:
+                task_lines.append("Paper Context Paths:")
+                for path in task_context.paper_context_paths[:10]:
+                    task_lines.append(f"- {path}")
             if task_context.skill_context:
                 task_lines.append("")
                 task_lines.append("=== SKILL GUIDANCE ===")
@@ -1624,7 +1710,7 @@ When ready to answer:
 4. Include key tool evidence before concluding.
 5. For PhageScope submit, prioritize non-blocking backend execution over immediate result fetching.
 """
-        return self._append_recent_chat_history(base_prompt, context)
+        return self._append_reference_context(base_prompt, context)
 
     def _get_next_step_prompt(self, iteration: int) -> str:
         """Generate prompt for the next step, encouraging completion if steps are getting long."""

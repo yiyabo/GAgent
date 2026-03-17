@@ -143,6 +143,7 @@ async def file_operations_handler(
     content: Optional[str] = None,
     destination: Optional[str] = None,
     pattern: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     # Normalize file path
     path = _normalize_file_path(path)
@@ -157,6 +158,8 @@ async def file_operations_handler(
         content: Content for write operations
         destination: Destination path for copy/move operations
         pattern: File pattern for list operations
+        session_id: Optional execution session identifier. Accepted for
+            executor compatibility and intentionally ignored by this tool.
 
     Returns:
         Dict containing operation results
