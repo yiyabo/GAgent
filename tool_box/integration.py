@@ -9,6 +9,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
+from .call_utils import prepare_handler_kwargs
 from .client import MCPToolBoxClient
 from .tools import get_tool_registry
 from .tool_registry import register_all_tools
@@ -77,9 +78,8 @@ class ToolBoxIntegration:
         if not tool_def:
             raise ValueError(f"Tool '{registered_tool_name}' not found")
 
-        # For bio_tools, the kwargs from LLM already contain tool_name, operation, etc.
-        # Just pass them through directly
-        return await tool_def.handler(**kwargs)
+        safe_kwargs = prepare_handler_kwargs(tool_def.handler, kwargs)
+        return await tool_def.handler(**safe_kwargs)
 
     async def search_tools(self, query: str) -> List[Dict[str, Any]]:
         """Search for tools by query"""

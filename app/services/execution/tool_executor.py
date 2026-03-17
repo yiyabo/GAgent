@@ -129,7 +129,8 @@ class UnifiedToolExecutor:
                     task_instruction=context.task_instruction,
                     publish_status="final" if tool_success else "draft",
                 )
-                payload["deliverables"] = report.to_dict()
+                if report is not None:
+                    payload["deliverables"] = report.to_dict()
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Deliverable publishing failed: %s", exc)
                 payload["deliverable_error"] = str(exc)
