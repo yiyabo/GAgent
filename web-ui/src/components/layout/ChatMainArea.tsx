@@ -44,6 +44,7 @@ interface ChatMessageListProps {
   onReachTop?: () => void;
   canLoadMore?: boolean;
   isHistoryLoading?: boolean;
+  sessionId?: string | null;
 }
 
 type ChatListItem = ChatMessageType | { id: string; kind: 'memory_notice'; count: number };
@@ -62,6 +63,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
     onReachTop,
     canLoadMore = false,
     isHistoryLoading = false,
+    sessionId = null,
   }) => {
     const listRef = useRef<ListRef>(null);
     const pendingAdjustRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
@@ -96,10 +98,10 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
       }
       return (
         <div style={{ marginBottom: 16 }}>
-          <ChatMessage message={item} />
+          <ChatMessage message={item} sessionId={sessionId} />
         </div>
       );
-    }, []);
+    }, [sessionId]);
 
     useEffect(() => {
       if (!listRef.current || listData.length === 0) {
@@ -569,6 +571,7 @@ const ChatMainArea: React.FC = () => {
             onReachTop={fetchNextPage}
             canLoadMore={!!hasNextPage}
             isHistoryLoading={isFetchingNextPage || isHistoryLoadingData}
+            sessionId={currentSession?.session_id ?? currentSession?.id ?? null}
           />
         )}
       </div>

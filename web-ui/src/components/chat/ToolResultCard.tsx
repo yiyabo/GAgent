@@ -3,15 +3,17 @@ import { Alert, Button, Collapse, List, Space, Tag, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { ToolResultItem, ToolResultPayload } from '@/types';
 import { useChatStore } from '@store/chat';
+import { collectArtifactImagePathsFromResult, resolveArtifactImageSrc } from '@/utils/artifactImageUrl';
 
 const { Paragraph, Text } = Typography;
 
 interface ToolResultCardProps {
   payload: ToolResultPayload;
   defaultOpen?: boolean;
+  sessionId?: string | null;
 }
 
-const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = false }) => {
+const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = false, sessionId }) => {
   const [introVisible, setIntroVisible] = useState(true);
   const [retryLoading, setRetryLoading] = useState(false);
 
@@ -111,6 +113,17 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
       isWebSearch: isWeb,
     };
   }, [payload]);
+
+  const artifactPreviewUrls = useMemo(() => {
+    const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!sid) return [];
+    const paths = collectArtifactImagePathsFromResult(
+      payload.result as Record<string, any> | null | undefined,
+    );
+    return paths
+      .map((p) => resolveArtifactImageSrc(p, sid))
+      .filter((url) => /^https?:\/\//i.test(url));
+  }, [payload.result, sessionId]);
 
   const handleRetry = async () => {
     if (!isWebSearch) {
@@ -230,6 +243,31 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
               showIcon
               message="Knowledge-graph subgraph returned. You can analyze it further in graph view."
             />
+          )}
+          {artifactPreviewUrls.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
+                Artifacts (preview)
+              </Text>
+              <Space wrap size={8}>
+                {artifactPreviewUrls.map((url, idx) => (
+                  <a key={`${url}_${idx}`} href={url} target="_blank" rel="noopener noreferrer">
+                    <img
+                      src={url}
+                      alt=""
+                      loading="lazy"
+                      style={{
+                        maxWidth: 200,
+                        maxHeight: 160,
+                        objectFit: 'contain',
+                        borderRadius: 6,
+                        border: '1px solid var(--border-color, #e8e8e8)',
+                      }}
+                    />
+                  </a>
+                ))}
+              </Space>
+            </div>
           )}
           {!success && (
             <Alert

@@ -23,10 +23,14 @@ const { Text } = Typography;
 
 interface ChatMessageProps {
   message: ChatMessageType;
+  sessionId?: string | null;
 }
 
-const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
+const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sessionIdProp }) => {
   const { type, content, timestamp, metadata } = message;
+  const effectiveSessionId =
+    sessionIdProp ??
+    (typeof (metadata as any)?.session_id === 'string' ? (metadata as any).session_id : null);
   const [toolDrawerOpen, setToolDrawerOpen] = useState(false);
   const [pendingDetailOpen, setPendingDetailOpen] = useState(false);
   const unifiedStream = Boolean(metadata && (metadata as any).unified_stream);
@@ -299,7 +303,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
     }
     return (
       <div style={{ marginTop: 4 }}>
-        <MarkdownRenderer content={displayTextForUi} />
+        <MarkdownRenderer content={displayTextForUi} sessionId={effectiveSessionId} />
       </div>
     );
   };
@@ -322,7 +326,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
       return null;
     }
     const body = type === 'assistant' ? normalizedAssistantContent : content;
-    return <MarkdownRenderer content={body} />;
+    return <MarkdownRenderer content={body} sessionId={effectiveSessionId} />;
   };
 
   // Render metadata.
@@ -461,6 +465,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
           open={toolDrawerOpen}
           onClose={() => setToolDrawerOpen(false)}
           actionsSummary={metadata?.actions_summary as Array<Record<string, any>>}
+          sessionId={effectiveSessionId}
         />
       )}
     </div>

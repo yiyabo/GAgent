@@ -89,3 +89,16 @@
 1. 需要进行一个大图标以及分析的扩充，把所有实验放在一个不仅仅是NC
 2. 分类名字贴近phage
 3. 每个部分先进行目标说明，总分的结构
+4. fig1-fig4, 设计复杂图，不一定要和原文一致（做比对）
+5. 其余实验做比对
+
+1. 执行pipeline（✅）
+2. deep_think pipeline（✅）
+3. NC fig1-fig4 pipeline（✅）
+
+设定一个 diff 值
+组装、注释各类工具出来的评估图
+
+说明自己的能力，然后举出我做了什么实验，证明我的能力确实是可以的
+
+paper/final_figures/rbp_threshold_scan.png,把论文中的结果加进去
