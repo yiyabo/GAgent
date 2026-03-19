@@ -4,6 +4,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { ToolResultItem, ToolResultPayload } from '@/types';
 import { useChatStore } from '@store/chat';
 import { collectArtifactImagePathsFromResult, resolveArtifactImageSrc } from '@/utils/artifactImageUrl';
+import { SessionArtifactImage } from './SessionArtifactImage';
 
 const { Paragraph, Text } = Typography;
 
@@ -252,16 +253,16 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
               <Space wrap size={8}>
                 {artifactPreviewUrls.map((url, idx) => (
                   <a key={`${url}_${idx}`} href={url} target="_blank" rel="noopener noreferrer">
-                    <img
-                      src={url}
+                    <SessionArtifactImage
+                      url={url}
                       alt=""
-                      loading="lazy"
-                      style={{
+                      imageStyle={{
                         maxWidth: 200,
                         maxHeight: 160,
                         objectFit: 'contain',
                         borderRadius: 6,
                         border: '1px solid var(--border-color, #e8e8e8)',
+                        display: 'block',
                       }}
                     />
                   </a>

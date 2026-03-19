@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -7,6 +7,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import 'katex/dist/katex.min.css';
 import { resolveArtifactImageSrc } from '@/utils/artifactImageUrl';
+import { SessionArtifactImage } from './SessionArtifactImage';
 
 interface MarkdownRendererProps {
     content: string;
@@ -24,7 +25,6 @@ function MarkdownArtifactImage({
     alt?: string;
     sessionId?: string | null;
 }) {
-    const [broken, setBroken] = useState(false);
     const resolved =
         typeof src === 'string' && src.trim()
             ? resolveArtifactImageSrc(src, sessionId ?? null)
@@ -32,24 +32,11 @@ function MarkdownArtifactImage({
     if (!resolved) {
         return null;
     }
-    if (broken) {
-        return (
-            <span
-                style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', margin: '8px 0' }}
-                title={resolved}
-            >
-                [Image failed to load] {alt || resolved}
-            </span>
-        );
-    }
     return (
-        <img
-            src={resolved}
+        <SessionArtifactImage
+            url={resolved}
             alt={alt ?? ''}
-            loading="lazy"
-            decoding="async"
-            onError={() => setBroken(true)}
-            style={{
+            imageStyle={{
                 maxWidth: '100%',
                 height: 'auto',
                 borderRadius: 8,
