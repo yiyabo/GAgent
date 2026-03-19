@@ -535,12 +535,27 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
     metadata: assistantMetadata,
   });
   const postFinalMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
-  if (postFinalMessage?.thinking_process) {
+  const thinkingFromMeta = (assistantMetadata as any)?.thinking_process;
+  const streamedTp = postFinalMessage?.thinking_process;
+  const hasSteps = (tp: unknown) =>
+    tp &&
+    typeof tp === 'object' &&
+    Array.isArray((tp as { steps?: unknown }).steps) &&
+    ((tp as { steps: unknown[] }).steps?.length ?? 0) > 0;
+  const nextThinkingStatus = initialStatus === 'failed' ? 'error' : 'completed';
+  if (hasSteps(streamedTp)) {
     ctx.get().updateMessage(ctx.assistantMessageId, {
       thinking_process: {
-        ...postFinalMessage.thinking_process,
-        status: initialStatus === 'failed' ? 'error' : 'completed',
-      },
+        ...(streamedTp as Record<string, unknown>),
+        status: nextThinkingStatus,
+      } as any,
+    });
+  } else if (hasSteps(thinkingFromMeta)) {
+    ctx.get().updateMessage(ctx.assistantMessageId, {
+      thinking_process: {
+        ...(thinkingFromMeta as Record<string, unknown>),
+        status: nextThinkingStatus,
+      } as any,
     });
   }
   ctx.set({ isProcessing: false });
