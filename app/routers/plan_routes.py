@@ -16,6 +16,7 @@ from app.repository.plan_repository import PlanRepository
 from app.services.plans.dependency_planner import DependencyPlan, compute_dependency_plan
 from app.services.plans.plan_decomposer import PlanDecomposer, DecompositionResult
 from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor
+from app.services.plans.task_verification import TaskVerificationService
 from app.services.plans.decomposition_jobs import (
     execute_decomposition_job,
     plan_decomposition_jobs,
@@ -31,6 +32,7 @@ task_router = APIRouter(prefix="/tasks", tags=["tasks"])
 _plan_repo = PlanRepository()
 _plan_decomposer = PlanDecomposer(repo=_plan_repo)
 _plan_executor = PlanExecutor(repo=_plan_repo)
+_task_verifier = TaskVerificationService()
 logger = logging.getLogger(__name__)
 
 # Guard against duplicate concurrent execution of the same plan+task pair.
@@ -139,6 +141,14 @@ class PlanResultsResponse(BaseModel):
     plan_id: int
     total: int
     items: List[TaskResultItem]
+
+
+class VerifyTaskResponse(BaseModel):
+    success: bool
+    message: str
+    plan_id: int
+    task_id: int
+    result: TaskResultItem
 
 
 class PlanExecutionSummary(BaseModel):
@@ -716,6 +726,63 @@ def get_task_result(task_id: int, plan_id: int = Query(..., description="plan ID
         notes=notes,
         metadata=metadata,
         raw=raw_payload,
+    )
+
+
+@task_router.post(
+    "/{task_id}/verify",
+    response_model=VerifyTaskResponse,
+    summary="Re-run deterministic verification for a task result",
+)
+def verify_task_result(task_id: int, plan_id: int = Query(..., description="plan ID")):
+    try:
+        tree = _plan_repo.get_plan_tree(plan_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not tree.has_node(task_id):
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
+    node = tree.get_node(task_id)
+    if not node.execution_result:
+        raise HTTPException(status_code=400, detail=f"Task {task_id} has no execution result to verify")
+
+    try:
+        finalization = _task_verifier.verify_task(
+            _plan_repo,
+            plan_id=plan_id,
+            task_id=task_id,
+            trigger="manual",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    content, notes, metadata, raw_payload = _parse_execution_result(finalization.payload)
+    verification = metadata.get("verification") if isinstance(metadata, dict) else None
+    verification_status = (
+        str(verification.get("status")).strip().lower()
+        if isinstance(verification, dict) and verification.get("status") is not None
+        else "skipped"
+    )
+    if verification_status == "passed":
+        message = f"Task {task_id} verification passed."
+    elif verification_status == "failed":
+        message = f"Task {task_id} verification failed."
+    else:
+        message = f"Task {task_id} verification skipped."
+
+    return VerifyTaskResponse(
+        success=verification_status != "failed",
+        message=message,
+        plan_id=plan_id,
+        task_id=task_id,
+        result=TaskResultItem(
+            task_id=task_id,
+            name=node.name,
+            status=finalization.final_status,
+            content=content,
+            notes=notes,
+            metadata=metadata,
+            raw=raw_payload,
+        ),
     )
 
 

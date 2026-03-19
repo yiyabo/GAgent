@@ -113,6 +113,14 @@ class ArtifactRenderResponse(BaseModel):
     cached: bool = False
 
 
+def _assert_path_within(target: Path, root: Path, detail: str = "Invalid path") -> None:
+    """Raise HTTP 400 if *target* is not inside *root* (resolves symlinks)."""
+    try:
+        target.resolve().relative_to(root.resolve())
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
 def _strip_session_prefixes(value: str) -> str:
     return normalize_session_base(value)
 
@@ -458,7 +466,9 @@ def _materialize_deliverable_items(
 
         normalized_path = raw_path.lstrip("/").replace("\\", "/")
         target = (files_root / normalized_path).resolve()
-        if not str(target).startswith(str(resolved_root)):
+        try:
+            target.relative_to(resolved_root)
+        except ValueError:
             continue
 
         stat = target.stat() if target.exists() and target.is_file() else None
@@ -504,50 +514,85 @@ def _iter_items(
     items: List[ArtifactItem] = []
     base_dir = base_dir.resolve()
 
-    for path in base_dir.rglob("*"):
+    _SKIP_DIR_NAMES = {
+        "deliverables",
+        "__pycache__",
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+    }
+
+    _SKIP_DIR_PREFIXES = ("run_",)
+
+    _SKIP_FILE_NAMES = {".source_owners.json", ".DS_Store", "Thumbs.db"}
+
+    def _should_skip_dir(dir_path: Path) -> bool:
+        name = dir_path.name
+        if name in _SKIP_DIR_NAMES:
+            return True
+        if any(name.startswith(prefix) for prefix in _SKIP_DIR_PREFIXES):
+            return True
+        return False
+
+    def _walk(current: Path, depth: int) -> None:
+        if len(items) >= limit:
+            return
+        if max_depth > 0 and depth > max_depth:
+            return
+
         try:
-            rel_path = path.relative_to(base_dir)
-        except ValueError:
-            continue
-        normalized_rel = str(rel_path).replace("\\", "/")
-        if _path_is_hidden(normalized_rel, hidden_prefixes or []):
-            continue
+            children = sorted(current.iterdir())
+        except PermissionError:
+            return
 
-        if max_depth > 0 and len(rel_path.parts) > max_depth:
-            continue
+        for path in children:
+            if len(items) >= limit:
+                return
 
-        if path.is_dir():
-            if not include_dirs:
+            try:
+                rel_path = path.relative_to(base_dir)
+            except ValueError:
                 continue
+            normalized_rel = str(rel_path).replace("\\", "/")
+            if _path_is_hidden(normalized_rel, hidden_prefixes or []):
+                continue
+
+            if path.is_dir():
+                if _should_skip_dir(path):
+                    continue
+                if include_dirs:
+                    items.append(
+                        ArtifactItem(
+                            name=path.name,
+                            path=normalized_rel,
+                            type="directory",
+                            size=0,
+                            modified_at=datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+                        )
+                    )
+                _walk(path, depth + 1)
+                continue
+
+            ext = path.suffix.lower().lstrip(".") if path.suffix else None
+            if extensions and ext not in extensions:
+                continue
+            if path.name in _SKIP_FILE_NAMES:
+                continue
+
+            stat = path.stat()
             items.append(
                 ArtifactItem(
                     name=path.name,
                     path=normalized_rel,
-                    type="directory",
-                    size=0,
-                    modified_at=datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+                    type="file",
+                    size=stat.st_size,
+                    modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    extension=ext,
                 )
             )
-            continue
 
-        ext = path.suffix.lower().lstrip(".") if path.suffix else None
-        if extensions and ext not in extensions:
-            continue
-
-        stat = path.stat()
-        items.append(
-            ArtifactItem(
-                    name=path.name,
-                    path=normalized_rel,
-                type="file",
-                size=stat.st_size,
-                modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                extension=ext,
-            )
-        )
-
-        if len(items) >= limit:
-            break
+    _walk(base_dir, 0)
 
     items.sort(key=lambda item: item.modified_at or "", reverse=True)
     return items
@@ -592,8 +637,7 @@ async def get_session_artifact_file(
     session_dir = _resolve_session_dir(session_id, purpose="raw")
     target = (session_dir / path).resolve()
 
-    if not str(target).startswith(str(session_dir)):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid artifact path")
+    _assert_path_within(target, session_dir, detail="Invalid artifact path")
     hidden_prefixes = _load_hidden_artifact_prefixes(session_id)
     rel_path = str(target.relative_to(session_dir)).replace("\\", "/")
     if _path_is_hidden(rel_path, hidden_prefixes):
@@ -618,8 +662,7 @@ async def get_session_artifact_text(
     session_dir = _resolve_session_dir(session_id, purpose="raw")
     target = (session_dir / path).resolve()
 
-    if not str(target).startswith(str(session_dir)):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid artifact path")
+    _assert_path_within(target, session_dir, detail="Invalid artifact path")
     hidden_prefixes = _load_hidden_artifact_prefixes(session_id)
     rel_path = str(target.relative_to(session_dir)).replace("\\", "/")
     if _path_is_hidden(rel_path, hidden_prefixes):
@@ -767,8 +810,7 @@ async def get_session_deliverable_file(
     )
     target = (files_root / path).resolve()
 
-    if not str(target).startswith(str(files_root.resolve())):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid deliverable path")
+    _assert_path_within(target, files_root.resolve(), detail="Invalid deliverable path")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable file not found")
 
@@ -795,8 +837,7 @@ async def get_session_deliverable_text(
     )
     target = (files_root / path).resolve()
 
-    if not str(target).startswith(str(files_root.resolve())):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid deliverable path")
+    _assert_path_within(target, files_root.resolve(), detail="Invalid deliverable path")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable not found")
 
@@ -1048,8 +1089,7 @@ async def render_artifact(
         target = (session_dir / path).resolve()
         root_dir = session_dir.resolve()
 
-    if not str(target).startswith(str(root_dir)):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file path")
+    _assert_path_within(target, root_dir, detail="Invalid file path")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
@@ -1120,9 +1160,10 @@ async def get_rendered_file(filename: str) -> FileResponse:
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rendered file not found")
 
+    media_type, _ = mimetypes.guess_type(str(file_path))
     return FileResponse(
         path=file_path,
-        media_type="application/pdf",
+        media_type=media_type or "application/octet-stream",
         filename=safe_filename,
     )
 

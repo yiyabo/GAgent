@@ -282,8 +282,7 @@ def test_raw_artifact_routes_hide_paths_listed_in_manifest_prefixes(
             extensions=None,
         )
     )
-    assert listing.count == 1
-    assert listing.items[0].path == "deliverables/manifest_latest.json"
+    assert listing.count == 0
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(

@@ -222,11 +222,10 @@ def _build_router_agent(llm_stub: object) -> StructuredChatAgent:
     return agent
 
 
-def test_deep_think_router_fails_fast_on_invalid_json() -> None:
+def test_deep_think_router_removed_no_method() -> None:
+    """Verify that _should_use_deep_think no longer exists after unified architecture migration."""
     agent = _build_router_agent(_RouterInvalidJSONLLMStub())
-
-    with pytest.raises(DeepThinkProtocolError, match="valid top-level JSON object"):
-        asyncio.run(agent._should_use_deep_think("Plan a complex multi-step study"))
+    assert not hasattr(agent, "_should_use_deep_think")
 
 
 def test_chat_message_fails_fast_without_fallback_response(

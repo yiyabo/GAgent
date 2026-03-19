@@ -153,6 +153,12 @@ if _USE_PYDANTIC:
         deep_think_confidence_threshold: float = Field(default=0.5, env="DEEP_THINK_CONFIDENCE_THRESHOLD")
         # Legacy min-length setting; may be used by compatibility paths.
         deep_think_min_message_length: int = Field(default=8, env="DEEP_THINK_MIN_MESSAGE_LENGTH")
+
+        # Extended Thinking (enable_thinking) configuration
+        thinking_enabled: bool = Field(default=True, env="THINKING_ENABLED")
+        thinking_budget: int = Field(default=10000, env="THINKING_BUDGET")
+        thinking_budget_simple: int = Field(default=2000, env="THINKING_BUDGET_SIMPLE")
+
         enable_skills: bool = Field(default=True, env="ENABLE_SKILLS")
         skill_budget_chars: int = Field(default=6000, env="SKILL_BUDGET_CHARS")
         skill_selection_mode: str = Field(default="hybrid", env="SKILL_SELECTION_MODE")
@@ -327,6 +333,20 @@ else:
                 )
             except Exception:
                 self.deep_think_min_message_length = 8
+
+            # Extended Thinking settings
+            self.thinking_enabled = os.getenv("THINKING_ENABLED", "1").strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+            try:
+                self.thinking_budget = int(os.getenv("THINKING_BUDGET", "10000"))
+            except Exception:
+                self.thinking_budget = 10000
+            try:
+                self.thinking_budget_simple = int(os.getenv("THINKING_BUDGET_SIMPLE", "2000"))
+            except Exception:
+                self.thinking_budget_simple = 2000
+
             self.enable_skills = os.getenv("ENABLE_SKILLS", "1").strip().lower() in {
                 "1",
                 "true",

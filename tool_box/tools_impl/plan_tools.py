@@ -179,7 +179,10 @@ async def _review_plan(plan_id: Optional[int]) -> Dict[str, Any]:
     
     try:
         from app.repository.plan_repository import PlanRepository
-        from app.services.plans.plan_rubric_evaluator import evaluate_plan_rubric
+        from app.services.plans.plan_rubric_evaluator import (
+            evaluate_plan_rubric,
+            is_rubric_evaluation_unavailable,
+        )
         
         repo = PlanRepository()
         plan_tree = repo.get_plan_tree(plan_id)
@@ -257,26 +260,26 @@ async def _review_plan(plan_id: Optional[int]) -> Dict[str, Any]:
                     "affected_tasks": [node.id],
                 })
         
-        # Calculate overall health score
+        # Calculate structural health score
         high_issues = len([i for i in issues if i.get("severity") == "high"])
         medium_issues = len([i for i in issues if i.get("severity") == "medium"])
         low_issues = len([i for i in issues if i.get("severity") == "low"])
-        
+
         health_score = max(0, 100 - high_issues * 30 - medium_issues * 10 - low_issues * 5)
-        
-        # Generate review summary
+
+        # Generate structural review summary
         if high_issues > 0:
-            status = "critical"
-            summary = f"Plan has {high_issues} critical issues that must be fixed"
+            structural_status = "critical"
+            structural_summary = f"Plan has {high_issues} critical issues that must be fixed"
         elif medium_issues > 0:
-            status = "needs_improvement"
-            summary = f"Plan has {medium_issues} issues that should be addressed"
+            structural_status = "needs_improvement"
+            structural_summary = f"Plan has {medium_issues} issues that should be addressed"
         elif low_issues > 0:
-            status = "acceptable"
-            summary = f"Plan is acceptable but has {low_issues} minor issues"
+            structural_status = "acceptable"
+            structural_summary = f"Plan is acceptable but has {low_issues} minor issues"
         else:
-            status = "good"
-            summary = "Plan looks well-structured with no detected issues"
+            structural_status = "good"
+            structural_summary = "Plan looks well-structured with no detected issues"
 
         # -----------------------------
         # Rubric evaluation (strict, English)
@@ -299,14 +302,34 @@ async def _review_plan(plan_id: Optional[int]) -> Dict[str, Any]:
             repo.update_plan_metadata(plan_id, merged_meta)
         except Exception as meta_exc:  # noqa: BLE001 - best effort persistence
             logger.warning("Failed to persist plan rubric evaluation: %s", meta_exc)
-        
+
+        rubric_unavailable = is_rubric_evaluation_unavailable(rubric_result)
+        status = "evaluation_unavailable" if rubric_unavailable else structural_status
+        summary = (
+            f"{structural_summary} Rubric evaluation is unavailable."
+            if rubric_unavailable
+            else structural_summary
+        )
+        message = (
+            f"Review completed with degraded evaluator. Structural status: {structural_status}. "
+            f"Health score: {health_score}/100. Rubric evaluation unavailable."
+            if rubric_unavailable
+            else (
+                f"Review complete. Status: {structural_status}. "
+                f"Health score: {health_score}/100. "
+                f"Rubric score: {rubric_result.overall_score}/100."
+            )
+        )
+
         return {
             "success": True,
             "operation": "review",
             "plan_id": plan_id,
             "plan_title": plan_tree.title,
             "status": status,
+            "structural_status": structural_status,
             "health_score": health_score,
+            "structural_health_score": health_score,
             "rubric_score": rubric_result.overall_score,
             "rubric_dimension_scores": rubric_result.dimension_scores,
             "rubric_subcriteria_scores": rubric_result.subcriteria_scores,
@@ -317,15 +340,12 @@ async def _review_plan(plan_id: Optional[int]) -> Dict[str, Any]:
                 "rubric_version": rubric_result.rubric_version,
                 "evaluated_at": rubric_result.evaluated_at,
             },
+            "degraded": rubric_unavailable,
             "summary": summary,
             "total_tasks": len(nodes),
             "issues": issues,
             "suggestions": suggestions,
-            "message": (
-                f"Review complete. Status: {status}. "
-                f"Health score: {health_score}/100. "
-                f"Rubric score: {rubric_result.overall_score}/100."
-            ),
+            "message": message,
         }
         
     except Exception as e:

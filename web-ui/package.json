@@ -10,7 +10,8 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "type-check": "tsc --noEmit",
-    "test": "vitest"
+    "test": "vitest",
+    "postinstall": "npx patch-package"
   },
   "dependencies": {
     "@ant-design/icons": "^5.2.6",

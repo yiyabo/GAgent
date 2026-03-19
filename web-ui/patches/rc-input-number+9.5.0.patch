@@ -1,0 +1,26 @@
+diff --git a/node_modules/rc-input-number/es/InputNumber.js b/node_modules/rc-input-number/es/InputNumber.js
+index 4f7f8b8..9de51cd 100644
+--- a/node_modules/rc-input-number/es/InputNumber.js
++++ b/node_modules/rc-input-number/es/InputNumber.js
+@@ -313,7 +313,7 @@ var InternalInputNumber = /*#__PURE__*/React.forwardRef(function (props, ref) {
+     onNextPromise(function () {
+       var nextInputStr = inputStr;
+       if (!parser) {
+-        nextInputStr = inputStr.replace(/。/g, '.');
++        nextInputStr = inputStr.replace(/\u3002/g, '.');
+       }
+       if (nextInputStr !== inputStr) {
+         collectInputValue(nextInputStr);
+diff --git a/node_modules/rc-input-number/lib/InputNumber.js b/node_modules/rc-input-number/lib/InputNumber.js
+index 8b7b335..e2a77da 100644
+--- a/node_modules/rc-input-number/lib/InputNumber.js
++++ b/node_modules/rc-input-number/lib/InputNumber.js
+@@ -323,7 +323,7 @@ var InternalInputNumber = /*#__PURE__*/React.forwardRef(function (props, ref) {
+     onNextPromise(function () {
+       var nextInputStr = inputStr;
+       if (!parser) {
+-        nextInputStr = inputStr.replace(/。/g, '.');
++        nextInputStr = inputStr.replace(/\u3002/g, '.');
+       }
+       if (nextInputStr !== inputStr) {
+         collectInputValue(nextInputStr);

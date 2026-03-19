@@ -120,7 +120,12 @@ export async function handleJobUpdate(ctx: StreamHandlerContext, event: any): Pr
     const planIdValue = finalPlanIdCandidate ?? state.currentPlanId ?? null;
     const planTitleValue = finalPlanTitle ?? state.currentPlanTitle ?? null;
     const updatedSession = state.currentSession ? { ...state.currentSession, plan_id: planIdValue, plan_title: planTitleValue } : null;
-    return { currentPlanId: planIdValue, currentPlanTitle: planTitleValue, currentSession: ctx.currentSession, sessions: updatedSession ? state.sessions.map((s: any) => s.id === updatedSession.id ? updatedSession : s) : state.sessions };
+    return {
+      currentPlanId: planIdValue,
+      currentPlanTitle: planTitleValue,
+      currentSession: updatedSession ?? state.currentSession,
+      sessions: updatedSession ? state.sessions.map((s: any) => s.id === updatedSession.id ? updatedSession : s) : state.sessions,
+    };
   });
 
   const sessionAfter = ctx.get().currentSession;
@@ -337,6 +342,27 @@ export function handleThinkingDelta(ctx: StreamHandlerContext, event: any): void
   }, 80);
 }
 
+/**
+ * Handle reasoning_delta events from extended thinking (enable_thinking).
+ * Maps reasoning tokens into the thinking_process as iteration 0 with a
+ * special "reasoning" status, reusing the existing ThinkingProcess UI.
+ */
+export function handleReasoningDelta(ctx: StreamHandlerContext, event: any): void {
+  const delta = event?.delta;
+  if (typeof delta !== 'string' || delta.length === 0) return;
+
+  const REASONING_ITERATION = 0;
+
+  ctx.state.pendingThinkingDeltas[REASONING_ITERATION] =
+    (ctx.state.pendingThinkingDeltas[REASONING_ITERATION] || '') + delta;
+
+  if (ctx.state.thinkingDeltaFlushHandle !== null) return;
+  ctx.state.thinkingDeltaFlushHandle = window.setTimeout(() => {
+    ctx.state.thinkingDeltaFlushHandle = null;
+    _flushThinkingDeltaBuffer(ctx);
+  }, 80);
+}
+
 export function flushPendingThinkingDeltas(ctx: StreamHandlerContext): void {
   if (ctx.state.thinkingDeltaFlushHandle !== null) {
     window.clearTimeout(ctx.state.thinkingDeltaFlushHandle);
@@ -530,7 +556,15 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
     const taskIdValue = resolvedTaskId ?? state.currentTaskId ?? null;
     const workflowValue = resolvedWorkflowId ?? state.currentWorkflowId ?? null;
     const updatedSession = state.currentSession ? { ...state.currentSession, plan_id: planIdValue, plan_title: planTitleValue, current_task_id: taskIdValue, current_task_name: resolvedTaskName ?? state.currentSession.current_task_name ?? null, workflow_id: workflowValue } : null;
-    return { currentPlanId: planIdValue, currentPlanTitle: planTitleValue, currentTaskId: taskIdValue, currentTaskName: resolvedTaskName ?? state.currentTaskName ?? null, currentWorkflowId: workflowValue, currentSession: ctx.currentSession, sessions: updatedSession ? state.sessions.map((s: any) => s.id === updatedSession.id ? updatedSession : s) : state.sessions };
+    return {
+      currentPlanId: planIdValue,
+      currentPlanTitle: planTitleValue,
+      currentTaskId: taskIdValue,
+      currentTaskName: resolvedTaskName ?? state.currentTaskName ?? null,
+      currentWorkflowId: workflowValue,
+      currentSession: updatedSession ?? state.currentSession,
+      sessions: updatedSession ? state.sessions.map((s: any) => s.id === updatedSession.id ? updatedSession : s) : state.sessions,
+    };
   });
 
   const sessionAfter = ctx.get().currentSession;

@@ -11,6 +11,7 @@ import {
 import ToolResultCard from '@components/chat/ToolResultCard';
 import type { DependencyPlanResponse, PlanResultItem, PlanTaskNode, ToolResultPayload } from '@/types';
 import { statusColorMap, statusLabelMap } from './constants';
+import { getVerificationView } from './verification';
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -153,6 +154,9 @@ interface ExecutionResultProps {
   resultLoading: boolean;
   taskResult: PlanResultItem | undefined;
   cachedResult: PlanResultItem | undefined;
+  onReverify?: (() => void) | null;
+  verifyLoading?: boolean;
+  canVerify?: boolean;
 }
 
 interface TaskDrawerContentProps {
@@ -162,6 +166,9 @@ interface TaskDrawerContentProps {
   resultLoading: boolean;
   taskResult: PlanResultItem | undefined;
   cachedResult: PlanResultItem | undefined;
+  onReverify?: (() => void) | null;
+  verifyLoading?: boolean;
+  canVerify?: boolean;
 }
 
 export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
@@ -171,6 +178,9 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
   resultLoading,
   taskResult,
   cachedResult,
+  onReverify,
+  verifyLoading = false,
+  canVerify = false,
 }) => {
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -298,13 +308,23 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
           resultLoading={resultLoading}
           taskResult={taskResult}
           cachedResult={cachedResult}
+          onReverify={onReverify}
+          verifyLoading={verifyLoading}
+          canVerify={canVerify}
         />
       </section>
     </Space>
   );
 };
 
-export const ExecutionResult: React.FC<ExecutionResultProps> = ({ resultLoading, taskResult, cachedResult }) => {
+export const ExecutionResult: React.FC<ExecutionResultProps> = ({
+  resultLoading,
+  taskResult,
+  cachedResult,
+  onReverify,
+  verifyLoading = false,
+  canVerify = false,
+}) => {
   if (resultLoading && !taskResult && !cachedResult) {
     return (
       <div style={{ padding: '12px 0' }}>
@@ -317,18 +337,89 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({ resultLoading,
   if (!result) {
     return <Text type="secondary">No execution result available</Text>;
   }
+  const verification = getVerificationView(result);
 
   return (
     <Space direction="vertical" size="small" style={{ width: '100%' }}>
-      {result.status && (
-        <Tag color={statusColorMap[result.status] ?? 'default'}>
-          {statusLabelMap[result.status] ?? result.status}
-        </Tag>
+      <Space wrap>
+        {result.status && (
+          <Tag color={statusColorMap[result.status] ?? 'default'}>
+            {statusLabelMap[result.status] ?? result.status}
+          </Tag>
+        )}
+        {verification.status && verification.label && (
+          <Tag color={verification.color}>{verification.label}</Tag>
+        )}
+        {canVerify && onReverify && (
+          <Button size="small" onClick={onReverify} loading={verifyLoading}>
+            Re-verify
+          </Button>
+        )}
+      </Space>
+      {verification.status && (
+        <Descriptions column={1} bordered size="small">
+          <Descriptions.Item label="Verification checks">
+            {verification.checksPassed}/{verification.checksTotal}
+          </Descriptions.Item>
+          <Descriptions.Item label="Blocking">
+            {verification.blocking ? 'yes' : 'no'}
+          </Descriptions.Item>
+          <Descriptions.Item label="Generated checks">
+            {verification.generated ? 'yes' : 'no'}
+          </Descriptions.Item>
+        </Descriptions>
       )}
       {result.content && (
         <Paragraph style={{ whiteSpace: 'pre-wrap' }} copyable>
           {result.content}
         </Paragraph>
+      )}
+      {verification.failures.length > 0 && (
+        <Collapse
+          size="small"
+          items={[
+            {
+              key: 'verification-failures',
+              label: `Verification failures (${verification.failures.length})`,
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {verification.failures.map((failure, idx) => {
+                    const parts = [
+                      typeof failure.type === 'string' ? failure.type : 'check',
+                      typeof failure.path === 'string' ? failure.path : null,
+                      typeof failure.message === 'string' ? failure.message : null,
+                    ].filter(Boolean);
+                    return (
+                      <Paragraph key={idx} style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
+                        {parts.join(' | ')}
+                      </Paragraph>
+                    );
+                  })}
+                </Space>
+              ),
+            },
+          ]}
+        />
+      )}
+      {verification.artifactPaths.length > 0 && (
+        <Collapse
+          size="small"
+          items={[
+            {
+              key: 'verification-evidence',
+              label: `Verification evidence (${verification.artifactPaths.length})`,
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {verification.artifactPaths.map((item) => (
+                    <Paragraph key={item} copyable style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
+                      {item}
+                    </Paragraph>
+                  ))}
+                </Space>
+              ),
+            },
+          ]}
+        />
       )}
       {Array.isArray(result.notes) && result.notes.length > 0 && (
         <Collapse

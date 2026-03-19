@@ -6,8 +6,9 @@ import type {
   PlanSummary,
   PlanTreeResponse,
   DependencyPlanResponse,
-  ExecuteTaskResponse,
-  DecompositionJobStatus,
+    ExecuteTaskResponse,
+    VerifyTaskResponse,
+    DecompositionJobStatus,
   JobLogTailResponse,
   BackgroundTaskBoardResponse,
 } from '@/types';
@@ -150,6 +151,10 @@ class PlanTreeApi extends BaseApi {
   payload: ExecuteTaskWithDepsPayload = {}
   ): Promise<ExecuteTaskResponse> => {
   return this.post<ExecuteTaskResponse>(`/tasks/${taskId}/execute?plan_id=${planId}`, payload);
+  };
+
+  verifyTask = async (planId: number, taskId: number): Promise<VerifyTaskResponse> => {
+  return this.post<VerifyTaskResponse>(`/tasks/${taskId}/verify?plan_id=${planId}`, {});
   };
 }
 

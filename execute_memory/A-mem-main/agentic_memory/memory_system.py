@@ -107,16 +107,15 @@ class AgenticMemorySystem:
         """
         self.memories = {}
         self.model_name = model_name
-        # Initialize ChromaDB retriever with empty collection
+        # Single ChromaRetriever (one model load); reset if exists so we start with empty collection
+        self.retriever = ChromaRetriever(collection_name="memories", model_name=self.model_name)
         try:
-            # First try to reset the collection if it exists
-            temp_retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
-            temp_retriever.client.reset()
+            self.retriever.client.reset()
+            self.retriever.collection = self.retriever.client.get_or_create_collection(
+                name="memories", embedding_function=self.retriever.embedding_function
+            )
         except Exception as e:
-            logger.warning(f"Could not reset ChromaDB collection: {e}")
-            
-        # Create a fresh retriever instance
-        self.retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
+            logger.warning("Could not reset ChromaDB collection: %s", e)
         
         # Initialize LLM controller
         self.llm_controller = LLMController(llm_backend, llm_model, api_key)

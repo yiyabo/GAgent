@@ -315,6 +315,12 @@ def _should_attempt_blocking_failure_retry(steps: List[Any], context: Dict[str, 
         if bool(getattr(step, "success", False)):
             continue
 
+        if (
+            getattr(action, "kind", None) == "plan_operation"
+            and str(getattr(action, "name", "") or "").strip().lower() == "review_plan"
+        ):
+            return False
+
         action_name = str(getattr(action, "name", "") or "").strip().lower()
         if getattr(action, "kind", None) == "tool_operation" and action_name in _AUTO_DEEP_THINK_RETRY_BLOCKED_TOOLS:
             return False
@@ -469,6 +475,8 @@ async def _run_blocking_failure_deep_think_retry_once(
         tool_executor=_fallback_tool_executor,
         max_iterations=max_iterations,
         tool_timeout=tool_timeout,
+        enable_thinking=True,
+        thinking_budget=int(os.getenv("THINKING_BUDGET", "10000")),
     )
     result = await dt_agent.think(retry_prompt, retry_context)
     final_answer = str(getattr(result, "final_answer", "") or "").strip()
@@ -842,6 +850,23 @@ def _build_brief_action_summary(steps: List[Any]) -> Optional[str]:
     preview = ", ".join(unique[:3])
     suffix = " and more" if len(unique) > 3 else ""
     return f"Completed {len(steps)} actions: {preview}{suffix}."
+
+
+def _should_skip_post_action_analysis(steps: List[Any]) -> bool:
+    """Skip extra LLM analysis when the action already returned a usable review body."""
+
+    if not steps:
+        return False
+
+    meaningful_steps = [step for step in steps if getattr(step, "action", None) is not None]
+    if not meaningful_steps:
+        return False
+
+    return all(
+        getattr(step.action, "kind", None) == "plan_operation"
+        and getattr(step.action, "name", None) == "review_plan"
+        for step in meaningful_steps
+    )
 
 
 async def _execute_action_run(run_id: str) -> None:
@@ -1475,6 +1500,10 @@ async def _execute_action_run(run_id: str) -> None:
             if deep_think_answer:
                 analysis_text = deep_think_answer
                 result_dict["analysis_source"] = "deep_think_retry"
+        elif _should_skip_post_action_analysis(result.steps):
+            analysis_text = (result.reply or result.summarize_steps() or "").strip() or None
+            if analysis_text:
+                result_dict["analysis_source"] = "structured_action"
         if effective_success and tool_results_payload and not analysis_text:
             logger.info(
                 "[CHAT][SUMMARY] session=%s tracking=%s Starting analysis generation...",

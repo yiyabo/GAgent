@@ -74,7 +74,7 @@ class PaperBuilder:
             if any(keyword and keyword in haystack for keyword in keywords):
                 return section
         # Backward-compat fallback for emergency rollback.
-        return "introduction"
+        return None
 
     @staticmethod
     def _tokenize(text: str) -> List[str]:

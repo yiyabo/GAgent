@@ -758,4 +758,45 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             },
         },
     },
+    "verify_task": {
+        "type": "function",
+        "function": {
+            "name": "verify_task",
+            "description": (
+                "Verify whether a completed task actually produced correct outputs. "
+                "Runs deterministic file/data checks (file_exists, file_nonempty, "
+                "glob_count_at_least, text_contains, json_field_equals, "
+                "json_field_at_least, pdb_residue_present). "
+                "IMPORTANT: You MUST pass verification_criteria with concrete check "
+                "strings — without them the verifier will skip and return no useful result. "
+                "Example criteria: ['file_exists:/data/output.csv', "
+                "'file_nonempty:/data/output.csv', "
+                "'glob_count_at_least:/results/*.png:3']."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "integer",
+                        "description": "The task ID to verify within the current plan.",
+                    },
+                    "verification_criteria": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "List of shorthand check strings. Formats: "
+                            "'file_exists:<path>', 'file_nonempty:<path>', "
+                            "'glob_count_at_least:<glob>:<min_count>', "
+                            "'text_contains:<path>:<pattern>', "
+                            "'json_field_equals:<path>:<key_path>:<expected>', "
+                            "'json_field_at_least:<path>:<key_path>:<min_value>', "
+                            "'pdb_residue_present:<path>:<residue>'. "
+                            "Without these, verification will be skipped."
+                        ),
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
 }
