@@ -52,7 +52,9 @@ class ChromaRetriever:
         Args:
             collection_name: Name of the ChromaDB collection
         """
-        self.client = chromadb.Client(Settings(allow_reset=True))
+        self.client = chromadb.Client(
+            Settings(allow_reset=True, anonymized_telemetry=False)
+        )
         self.embedding_function = SentenceTransformerEmbeddingFunction(
             model_name=model_name
         )
@@ -186,8 +188,9 @@ class PersistentChromaRetriever(ChromaRetriever):
         except Exception as e:
             raise ValueError(f'Error accessing directory: {e}')        
 
-        # Use PersistentClient instead of regular Client
-        self.client = chromadb.PersistentClient(path=str(directory))
+        # Use PersistentClient instead of regular Client (disable telemetry to avoid slow PostHog retries)
+        settings = Settings(anonymized_telemetry=False)
+        self.client = chromadb.PersistentClient(path=str(directory), settings=settings)
         self.embedding_function = SentenceTransformerEmbeddingFunction(
             model_name=model_name)
         

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -42,6 +43,7 @@ class NativeToolCall:
 class NativeStreamResult:
     """Accumulated result from a streaming response with native tool calls."""
     content: str = ""
+    reasoning_content: str = ""
     tool_calls: List[NativeToolCall] = field(default_factory=list)
     finish_reason: Optional[str] = None
 
@@ -250,14 +252,75 @@ class LLMClient(LLMProvider):
                     continue
                 raise RuntimeError(f"LLM request failed: {e}")
 
-    async def stream_chat_async(
+    async def chat_async(
         self,
         prompt: str,
         force_real: bool = False,
         model: Optional[str] = None,
         messages: Optional[list] = None,
         **_: Any,
+    ) -> str:
+        if self.mock and not force_real:
+            return "This is a mock completion."
+
+        if not self.api_key:
+            raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
+
+        payload_messages = messages if messages else [{"role": "user", "content": prompt}]
+        payload = {
+            "model": model or self.model,
+            "messages": payload_messages,
+            "max_tokens": 16384,
+        }
+        headers = self._build_headers()
+        timeout = None if self.timeout is None else httpx.Timeout(self.timeout)
+
+        for attempt in range(self.retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(self.url, headers=headers, json=payload)
+                    response.raise_for_status()
+                    obj = response.json()
+                try:
+                    return obj["choices"][0]["message"]["content"]
+                except Exception:
+                    raise RuntimeError(f"Unexpected LLM response: {obj}")
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code if e.response is not None else None
+                if isinstance(status_code, int) and 500 <= status_code < 600 and attempt < self.retries:
+                    delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
+                    await asyncio.sleep(delay)
+                    continue
+                body = ""
+                try:
+                    body = e.response.text if e.response is not None else ""
+                except Exception:
+                    body = str(e)
+                raise RuntimeError(f"LLM HTTPError: {status_code} {body}".strip())
+            except Exception as e:
+                if attempt < self.retries:
+                    delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
+                    await asyncio.sleep(delay)
+                    continue
+                raise RuntimeError(f"LLM request failed: {e}")
+
+    async def stream_chat_async(
+        self,
+        prompt: str,
+        force_real: bool = False,
+        model: Optional[str] = None,
+        messages: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        thinking_budget: Optional[int] = None,
+        on_reasoning_delta: Optional[Callable[[str], Any]] = None,
+        **_: Any,
     ) -> AsyncIterator[str]:
+        """Stream a chat completion, optionally with thinking enabled.
+
+        When *enable_thinking* is ``True``, reasoning tokens are accumulated
+        and relayed via *on_reasoning_delta* but **not** yielded as regular
+        content.  Only final assistant content is yielded.
+        """
         if self.mock and not force_real:
             yield "This is a mock completion."
             return
@@ -271,12 +334,17 @@ class LLMClient(LLMProvider):
         else:
             payload_messages = [{"role": "user", "content": prompt}]
 
-        payload = {
+        payload: Dict[str, Any] = {
             "model": model or self.model,
             "messages": payload_messages,
             "stream": True,
             "max_tokens": 16384,
         }
+        if enable_thinking is not None:
+            payload["enable_thinking"] = enable_thinking
+        if thinking_budget is not None:
+            payload["thinking_budget"] = thinking_budget
+
         headers = self._build_headers()
 
         timeout = None if self.timeout is None else httpx.Timeout(self.timeout)
@@ -299,9 +367,25 @@ class LLMClient(LLMProvider):
                         obj = json.loads(data)
                     except json.JSONDecodeError:
                         continue
-                    delta = self._extract_stream_delta(obj)
-                    if delta:
-                        yield delta
+
+                    # Extract reasoning_content delta if present
+                    choices = obj.get("choices")
+                    if isinstance(choices, list) and choices:
+                        delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+                        if isinstance(delta, dict):
+                            reasoning = delta.get("reasoning_content")
+                            if isinstance(reasoning, str) and reasoning and on_reasoning_delta is not None:
+                                try:
+                                    ret = on_reasoning_delta(reasoning)
+                                    if asyncio.iscoroutine(ret):
+                                        await ret
+                                except Exception:
+                                    pass
+
+                    # Yield regular content
+                    content_delta = self._extract_stream_delta(obj)
+                    if content_delta:
+                        yield content_delta
 
     async def stream_chat_with_tools_async(
         self,
@@ -309,14 +393,20 @@ class LLMClient(LLMProvider):
         tools: List[Dict[str, Any]],
         tool_choice: str = "auto",
         on_content_delta: Optional[Callable[[str], Any]] = None,
+        on_reasoning_delta: Optional[Callable[[str], Any]] = None,
+        enable_thinking: Optional[bool] = None,
+        thinking_budget: Optional[int] = None,
     ) -> NativeStreamResult:
         """
         Stream a chat completion with native tool calling support.
 
         Calls *on_content_delta* for each text chunk so the caller can relay
-        thinking tokens in real time.  Returns a ``NativeStreamResult`` with
-        the full accumulated content **and** any tool calls the model decided
-        to make.
+        thinking tokens in real time.  When *enable_thinking* is ``True`` the
+        model may emit ``reasoning_content`` deltas which are accumulated and
+        relayed via *on_reasoning_delta*.
+
+        Returns a ``NativeStreamResult`` with the full accumulated content,
+        reasoning content, **and** any tool calls the model decided to make.
         """
         if not self.api_key:
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set")
@@ -329,6 +419,14 @@ class LLMClient(LLMProvider):
             "stream": True,
             "max_tokens": 16384,
         }
+
+        # Inject thinking parameters (DashScope OpenAI-compatible endpoint
+        # accepts these as top-level fields alongside model/messages).
+        if enable_thinking is not None:
+            payload["enable_thinking"] = enable_thinking
+        if thinking_budget is not None:
+            payload["thinking_budget"] = thinking_budget
+
         headers = self._build_headers()
 
         result = NativeStreamResult()
@@ -365,6 +463,18 @@ class LLMClient(LLMProvider):
                     if not isinstance(delta, dict):
                         continue
 
+                    # Reasoning content delta (thinking tokens from enable_thinking)
+                    reasoning = delta.get("reasoning_content")
+                    if isinstance(reasoning, str) and reasoning:
+                        result.reasoning_content += reasoning
+                        if on_reasoning_delta is not None:
+                            try:
+                                ret = on_reasoning_delta(reasoning)
+                                if asyncio.iscoroutine(ret):
+                                    await ret
+                            except Exception:
+                                pass
+
                     # Content delta
                     content = delta.get("content")
                     if isinstance(content, str) and content:
@@ -372,7 +482,6 @@ class LLMClient(LLMProvider):
                         if on_content_delta is not None:
                             try:
                                 ret = on_content_delta(content)
-                                import asyncio
                                 if asyncio.iscoroutine(ret):
                                     await ret
                             except Exception:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 from app.routers import chat_routes
 from app.routers.chat_routes import StructuredChatAgent
 from app.services.llm.structured_response import LLMAction
 from app.services.plans.plan_models import PlanNode, PlanTree
+from app.services.plans.task_verification import TaskVerificationService
 
 
 class _RepoStub:
@@ -42,6 +44,15 @@ class _RepoTaskSyncStub:
     ) -> int:
         self.cascaded.append((plan_id, task_id, status, execution_result))
         return 1
+
+
+class _RepoTaskSyncWithTreeStub(_RepoTaskSyncStub):
+    def __init__(self, tree: PlanTree) -> None:
+        super().__init__()
+        self._tree = tree
+
+    def get_plan_tree(self, _plan_id: int) -> PlanTree:
+        return self._tree
 
 
 def _build_tree() -> PlanTree:
@@ -164,3 +175,48 @@ def test_sync_task_status_runs_for_scoped_claude_code() -> None:
 
     assert len(repo.updated) == 1
     assert len(repo.cascaded) == 1
+
+
+def test_sync_task_status_marks_failed_when_verification_fails(tmp_path) -> None:
+    missing_path = tmp_path / "missing.txt"
+    tree = PlanTree(
+        id=49,
+        title="Plan 49",
+        nodes={
+            1: PlanNode(
+                id=1,
+                plan_id=49,
+                name="Collect output",
+                status="pending",
+                metadata={
+                    "acceptance_criteria": {
+                        "category": "file_data",
+                        "blocking": True,
+                        "checks": [{"type": "file_exists", "path": str(missing_path)}],
+                    }
+                },
+            )
+        },
+        adjacency={None: [1], 1: []},
+    )
+    repo = _RepoTaskSyncWithTreeStub(tree)
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 1}
+    agent._dirty = False
+    agent._task_verifier = TaskVerificationService()
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="claude_code",
+        success=True,
+        summary="finished",
+        message="finished",
+        params={"require_task_context": True, "output_path": str(missing_path)},
+        result={"output_path": str(missing_path)},
+    )
+
+    assert len(repo.updated) == 1
+    assert repo.updated[0][2] == "failed"
+    payload = json.loads(repo.updated[0][3])
+    assert payload["metadata"]["verification"]["status"] == "failed"
+    assert repo.cascaded == []

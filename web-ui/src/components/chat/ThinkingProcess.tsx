@@ -15,9 +15,7 @@ import {
   DatabaseOutlined,
   EyeOutlined,
   ProjectOutlined,
-  WarningOutlined,
   SyncOutlined,
-  ClockCircleOutlined,
 } from '@ant-design/icons';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from 'antd';
@@ -162,89 +160,41 @@ function stepDurationMs(step: ThinkingStep): number | null {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Error Recovery Flow                                                */
+/*  ErrorInline – compact error + correction hint                      */
 /* ------------------------------------------------------------------ */
 
-const ErrorRecoveryFlow: React.FC<{
+const ErrorInline: React.FC<{
   step: ThinkingStep;
   nextStep?: ThinkingStep;
 }> = ({ step, nextStep }) => {
   const errorDetail = step.action_result?.match(/^Error[: ]\s*(.+)/s)?.[1]
     ?? step.thought?.slice(0, 120)
     ?? 'Unknown error';
-
-  interface Stage {
-    label: string;
-    detail?: string;
-    color: string;
-    icon: React.ReactNode;
-  }
-
-  const stages: Stage[] = [
-    {
-      label: 'Error detected',
-      detail: errorDetail.length > 100 ? errorDetail.slice(0, 100) + '...' : errorDetail,
-      color: '#ff4d4f',
-      icon: <WarningOutlined />,
-    },
-    {
-      label: 'Analyzing cause',
-      color: '#faad14',
-      icon: <SearchOutlined />,
-    },
-  ];
-
-  if (step.self_correction) {
-    stages.push({
-      label: 'Correction strategy',
-      detail: step.self_correction.slice(0, 120),
-      color: 'var(--primary-color)',
-      icon: <SyncOutlined />,
-    });
-  }
-
-  if (nextStep) {
-    stages.push({
-      label: 'Retrying with corrections',
-      color: '#52c41a',
-      icon: <CheckCircleOutlined />,
-    });
-  }
+  const truncated = errorDetail.length > 120 ? errorDetail.slice(0, 120) + '...' : errorDetail;
 
   return (
-    <div className="tp-recovery-flow">
-      {stages.map((stage, i) => (
-        <React.Fragment key={i}>
-          <motion.div
-            className="tp-recovery-stage"
-            initial={{ opacity: 0, x: -8 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: i * 0.15, duration: 0.25 }}
-          >
-            <div className="tp-recovery-dot" style={{ background: stage.color }} />
-            <div style={{ flex: 1 }}>
-              <div className="tp-recovery-label" style={{ color: stage.color }}>
-                {stage.icon}
-                <span style={{ marginLeft: 6 }}>{stage.label}</span>
-              </div>
-              {stage.detail && (
-                <div className="tp-recovery-detail">{stage.detail}</div>
-              )}
-            </div>
-          </motion.div>
-          {i < stages.length - 1 && (
-            <div className="tp-recovery-connector">
-              <div className="tp-recovery-connector-line" />
-            </div>
-          )}
-        </React.Fragment>
-      ))}
+    <div className="tp-error-inline">
+      <span>{truncated}</span>
+      {step.self_correction && (
+        <>
+          {' '}
+          <SyncOutlined style={{ fontSize: 10 }} />{' '}
+          <span className="tp-error-correction">{step.self_correction.slice(0, 100)}</span>
+        </>
+      )}
+      {nextStep && !step.self_correction && (
+        <>
+          {' '}
+          <SyncOutlined style={{ fontSize: 10 }} />{' '}
+          <span className="tp-error-correction">Retrying...</span>
+        </>
+      )}
     </div>
   );
 };
 
 /* ------------------------------------------------------------------ */
-/*  ThinkingStepItem – per-step progressive disclosure                 */
+/*  ThinkingStepItem – inline pill / thought aside                     */
 /* ------------------------------------------------------------------ */
 
 const ThinkingStepItem: React.FC<{
@@ -253,7 +203,7 @@ const ThinkingStepItem: React.FC<{
   isLast: boolean;
   isFinished?: boolean;
   nextStep?: ThinkingStep;
-}> = ({ step, index, isLast, isFinished, nextStep }) => {
+}> = ({ step, isLast, isFinished, nextStep }) => {
   const [detailExpanded, setDetailExpanded] = useState(false);
   const [thoughtExpanded, setThoughtExpanded] = useState(false);
 
@@ -286,81 +236,31 @@ const ThinkingStepItem: React.FC<{
     }
   }, [step.action]);
 
-  // Timeline dot
-  const dotStyle: React.CSSProperties = {
-    position: 'absolute',
-    left: -13,
-    top: 0,
-    width: 24,
-    height: 24,
-    borderRadius: '50%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 12,
-    fontWeight: 600,
-  };
-
-  let dotContent: React.ReactNode;
-  if (isError) {
-    Object.assign(dotStyle, {
-      background: '#ff4d4f',
-      border: 'none',
-      color: '#fff',
-    });
-    dotContent = <CloseCircleOutlined style={{ color: '#fff', fontSize: 12 }} />;
-  } else if (isStepComplete || isFinished) {
-    Object.assign(dotStyle, {
-      background: 'var(--success-color)',
-      border: 'none',
-      color: '#fff',
-    });
-    dotContent = <CheckCircleOutlined style={{ color: '#fff', fontSize: 14 }} />;
-  } else if (step.status === 'calling_tool' || step.status === 'thinking' || step.status === 'analyzing') {
-    Object.assign(dotStyle, {
-      background: 'var(--bg-primary)',
-      border: '2px solid var(--primary-color)',
-      color: 'var(--primary-color)',
-    });
-    dotContent = <LoadingOutlined spin style={{ fontSize: 12 }} />;
-  } else {
-    Object.assign(dotStyle, {
-      background: 'var(--bg-primary)',
-      border: '2px solid var(--border-color)',
-      color: 'var(--text-secondary)',
-    });
-    dotContent = index + 1;
-  }
-
   const THOUGHT_TRUNCATE_LEN = 160;
   const thoughtIsTruncatable = step.thought && step.thought.length > THOUGHT_TRUNCATE_LEN;
   const visibleThought = thoughtIsTruncatable && !thoughtExpanded
     ? step.thought!.slice(0, THOUGHT_TRUNCATE_LEN) + '...'
     : step.thought;
 
-  // Status badge for tool cards
-  const renderToolStatus = () => {
+  const renderStatus = () => {
     if (step.status === 'calling_tool') {
       return (
-        <span className="tp-step-tool-status" style={{ color: 'var(--primary-color)' }}>
+        <span className="tp-tool-pill-status running">
           <LoadingOutlined spin style={{ fontSize: 11 }} />
-          <span>Running</span>
         </span>
       );
     }
     if (isError) {
       return (
-        <span className="tp-step-tool-status" style={{ color: '#ff4d4f' }}>
+        <span className="tp-tool-pill-status error">
           <CloseCircleOutlined style={{ fontSize: 11 }} />
-          <span>Error</span>
         </span>
       );
     }
     if (isStepComplete || isFinished) {
       return (
-        <span className="tp-step-tool-status" style={{ color: 'var(--success-color)' }}>
+        <span className="tp-tool-pill-status success">
           <CheckCircleOutlined style={{ fontSize: 11 }} />
-          <span>Done</span>
         </span>
       );
     }
@@ -369,25 +269,13 @@ const ThinkingStepItem: React.FC<{
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 10, height: 0 }}
-      animate={{ opacity: 1, y: 0, height: 'auto' }}
-      transition={{ duration: 0.3 }}
-      style={{
-        marginBottom: 16,
-        paddingLeft: 16,
-        borderLeft: '2px solid',
-        borderColor: isLast && !isFinished && !isStepComplete
-          ? 'var(--primary-color)'
-          : 'var(--border-color)',
-        position: 'relative',
-      }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.2 }}
     >
-      {/* Timeline dot */}
-      <div style={dotStyle}>{dotContent}</div>
-
-      {/* Thought – truncated with toggle */}
-      {step.thought && (
-        <div className="tp-thought-text" style={{ marginBottom: isTool ? 0 : 8 }}>
+      {/* Thought text as aside */}
+      {step.thought && !isTool && (
+        <div className="tp-thought-inline">
           {visibleThought}
           {thoughtIsTruncatable && (
             <button
@@ -400,35 +288,49 @@ const ThinkingStepItem: React.FC<{
         </div>
       )}
 
-      {/* Tool Action Card – Progressive Disclosure */}
+      {/* Thought before tool (short preview) */}
+      {step.thought && isTool && (
+        <div className="tp-thought-inline" style={{ marginBottom: 1 }}>
+          {step.thought.length > 80 ? step.thought.slice(0, 80) + '...' : step.thought}
+        </div>
+      )}
+
+      {/* Tool Pill row */}
       {isTool && semantic && (
-        <div className="tp-step-tool-card">
-          {/* Header: semantic label + status */}
+        <>
           <div
-            className="tp-step-tool-header"
+            className="tp-tool-pill"
             onClick={() => setDetailExpanded((v) => !v)}
           >
-            <div
-              className="tp-step-tool-icon"
-              style={{
-                background: isError
-                  ? 'rgba(255, 77, 79, 0.1)'
-                  : 'rgba(201, 100, 66, 0.1)',
-                color: isError ? '#ff4d4f' : 'var(--primary-color)',
-              }}
-            >
+            <div className={`tp-tool-pill-icon${isError ? ' error' : ''}`}>
               {semantic.icon}
             </div>
-            <span className="tp-step-tool-label">{semantic.label}</span>
-            {renderToolStatus()}
+            <span className="tp-tool-pill-label">{semantic.label}</span>
+            {renderStatus()}
+            <span className="tp-tool-pill-duration">{formatDurationMs(duration)}</span>
             <CaretRightOutlined
-              className={`tp-step-tool-chevron${detailExpanded ? ' expanded' : ''}`}
+              style={{
+                fontSize: 9,
+                color: 'var(--text-tertiary)',
+                transition: 'transform 0.15s ease',
+                transform: detailExpanded ? 'rotate(90deg)' : 'none',
+                flexShrink: 0,
+              }}
             />
           </div>
 
-          {/* Result summary line (collapsed) */}
+          {/* Collapsed result summary */}
           {!detailExpanded && !isError && resultSummary && (
-            <div className="tp-step-result-summary">{resultSummary}</div>
+            <div style={{
+              fontSize: 12,
+              color: 'var(--text-tertiary)',
+              paddingLeft: 26,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}>
+              {resultSummary}
+            </div>
           )}
 
           {/* Expanded details */}
@@ -436,10 +338,10 @@ const ThinkingStepItem: React.FC<{
             {detailExpanded && (
               <motion.div
                 className="tp-step-detail-box"
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2 }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
               >
                 {actionDetails?.params && Object.keys(actionDetails.params).length > 0 && (
                   <div className="tp-step-detail-section">
@@ -476,17 +378,13 @@ const ThinkingStepItem: React.FC<{
               </motion.div>
             )}
           </AnimatePresence>
-        </div>
+        </>
       )}
 
-      {/* Error Recovery Flow */}
+      {/* Error inline */}
       {isError && (
-        <ErrorRecoveryFlow step={step} nextStep={nextStep} />
+        <ErrorInline step={step} nextStep={nextStep} />
       )}
-      <div className="tp-step-meta-row">
-        <ClockCircleOutlined />
-        <span>{formatDurationMs(duration)}</span>
-      </div>
     </motion.div>
   );
 };
@@ -501,15 +399,6 @@ const getMainSteps = (steps: ThinkingStep[]): ThinkingStep[] =>
     if (step.thought && step.thought.length > 50) return true;
     return false;
   });
-
-type PhaseKey = 'Planning' | 'Tooling' | 'Synthesis' | 'Final';
-
-function classifyPhase(step: ThinkingStep): PhaseKey {
-  if (step.status === 'done' || step.status === 'completed') return 'Final';
-  if (step.action) return 'Tooling';
-  if (step.status === 'analyzing') return 'Synthesis';
-  return 'Planning';
-}
 
 /* ------------------------------------------------------------------ */
 /*  ThinkingProcess (exported)                                         */
@@ -528,21 +417,16 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   controlBusyAction = null,
 }) => {
   const [isExpanded, setIsExpanded] = useState(!isFinished && process.status === 'active');
-  const mainStepsCount = getMainSteps(process.steps).length;
+  const mainSteps = getMainSteps(process.steps);
+  const mainStepsCount = mainSteps.length;
   const isActive = process.status === 'active' && !isFinished;
-  const phaseStats = useMemo(() => {
-    const phases: Record<PhaseKey, { count: number; duration: number }> = {
-      Planning: { count: 0, duration: 0 },
-      Tooling: { count: 0, duration: 0 },
-      Synthesis: { count: 0, duration: 0 },
-      Final: { count: 0, duration: 0 },
-    };
+
+  const totalDuration = useMemo(() => {
+    let total = 0;
     for (const step of process.steps) {
-      const phase = classifyPhase(step);
-      phases[phase].count += 1;
-      phases[phase].duration += stepDurationMs(step) || 0;
+      total += stepDurationMs(step) || 0;
     }
-    return phases;
+    return formatDurationMs(total || null);
   }, [process.steps]);
 
   useEffect(() => {
@@ -565,76 +449,32 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   }, []);
 
   return (
-    <div style={{ margin: '16px 0', maxWidth: '100%' }}>
-      <motion.div
-        style={{
-          borderRadius: 12,
-          overflow: 'hidden',
-          border: '1px solid var(--border-color)',
-          background: 'var(--bg-primary)',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
-        }}
-        initial={false}
+    <div className="tp-inline-container">
+      {/* Summary row */}
+      <div
+        className="tp-summary-row"
+        onClick={() => setIsExpanded(!isExpanded)}
       >
-        {/* Header Toggle */}
-        <div
-          onClick={() => setIsExpanded(!isExpanded)}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '12px 16px',
-            cursor: 'pointer',
-            background: 'var(--bg-primary)',
-            transition: 'background 0.2s ease',
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              {process.status === 'active' ? (
-                <LoadingOutlined spin style={{ color: 'var(--primary-color)', fontSize: 14 }} />
-              ) : (
-                <div
-                  style={{
-                    width: 16,
-                    height: 16,
-                    borderRadius: '50%',
-                    background: 'linear-gradient(135deg, var(--primary-color) 0%, #d4886e 100%)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <BulbOutlined style={{ color: '#fff', fontSize: 10 }} />
-                </div>
-              )}
-              <span style={{ fontWeight: 500, fontSize: 14, color: 'var(--text-primary)' }}>
-                {process.status === 'active' ? 'Thinking...' : 'Thought process'}
-              </span>
-            </div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            {mainStepsCount > 0 && (
-              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                {mainStepsCount} step{mainStepsCount > 1 ? 's' : ''}
-              </span>
-            )}
-            <div
-              style={{
-                transition: 'transform 0.2s ease',
-                transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-              }}
-            >
-              <CaretRightOutlined style={{ fontSize: 12, color: 'var(--text-tertiary)' }} />
-            </div>
-          </div>
-        </div>
+        <span className="tp-summary-icon">
+          {isActive ? (
+            <LoadingOutlined spin style={{ color: 'var(--primary-color)' }} />
+          ) : (
+            <BulbOutlined style={{ color: 'var(--primary-color)' }} />
+          )}
+        </span>
+        <span className="tp-summary-label">
+          {isActive ? 'Thinking...' : 'Thought process'}
+        </span>
+        {mainStepsCount > 0 && (
+          <span className="tp-summary-meta">
+            {mainStepsCount} step{mainStepsCount > 1 ? 's' : ''}
+          </span>
+        )}
+        <span className="tp-summary-meta">{totalDuration}</span>
 
-        {/* Runtime control bar */}
-        {canControl && (
-          <div className="tp-control-bar">
+        {/* Inline control buttons */}
+        {canControl && isActive && (
+          <span className="tp-control-bar" onClick={(e) => e.stopPropagation()}>
             <Button
               size="small"
               onClick={paused ? onResume : onPause}
@@ -653,89 +493,55 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
               disabled={controlDisabled}
               loading={controlBusy && controlBusyAction === 'skip_step'}
             >
-              Skip Step
+              Skip
             </Button>
-          </div>
+          </span>
         )}
 
-        {/* Content Area */}
-        <AnimatePresence initial={false}>
-          {isExpanded && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.3, ease: 'easeInOut' }}
-            >
-              <div
-                className={isActive ? undefined : 'tp-content-scroll'}
-                onWheel={isActive ? undefined : handleContentWheel}
-                style={{
-                  padding: '12px 16px 16px',
-                  background: 'var(--bg-tertiary)',
-                  borderTop: '1px solid var(--border-color)',
-                  ...(isActive
-                    ? {}
-                    : { maxHeight: '70vh', overflowY: 'auto' as const }),
-                }}
-              >
-                <div className="tp-phase-grid">
-                  {(Object.keys(phaseStats) as PhaseKey[]).map((phase) => (
-                    <div
-                      key={phase}
-                      className={`tp-phase-card${
-                        phaseStats[phase].count > 0 ? ' active' : ''
-                      }`}
-                    >
-                      <div className="tp-phase-title">{phase}</div>
-                      <div className="tp-phase-meta">
-                        <span>{phaseStats[phase].count} step{phaseStats[phase].count === 1 ? '' : 's'}</span>
-                        <span>{formatDurationMs(phaseStats[phase].duration || null)}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ paddingLeft: 8, paddingTop: 8 }}>
-                  {process.steps.map((step, idx) => (
-                    <ThinkingStepItem
-                      key={idx}
-                      step={step}
-                      index={idx}
-                      isLast={idx === process.steps.length - 1}
-                      isFinished={isFinished}
-                      nextStep={idx < process.steps.length - 1 ? process.steps[idx + 1] : undefined}
-                    />
-                  ))}
+        <CaretRightOutlined
+          className={`tp-summary-chevron${isExpanded ? ' expanded' : ''}`}
+        />
+      </div>
 
-                  {process.status === 'active' && (
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      style={{
-                        marginLeft: 16,
-                        paddingLeft: 16,
-                        borderLeft: '2px dashed var(--border-color)',
-                        paddingTop: 4,
-                        paddingBottom: 4,
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontSize: 12,
-                          color: 'var(--text-tertiary)',
-                          fontStyle: 'italic',
-                        }}
-                      >
-                        Thinking about next step...
-                      </span>
-                    </motion.div>
-                  )}
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
+      {/* Expanded content */}
+      <AnimatePresence initial={false}>
+        {isExpanded && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <div
+              className={`tp-expanded-content${isActive ? '' : ' tp-content-scroll'}`}
+              onWheel={isActive ? undefined : handleContentWheel}
+            >
+              {process.steps.map((step, idx) => (
+                <ThinkingStepItem
+                  key={idx}
+                  step={step}
+                  index={idx}
+                  isLast={idx === process.steps.length - 1}
+                  isFinished={isFinished}
+                  nextStep={idx < process.steps.length - 1 ? process.steps[idx + 1] : undefined}
+                />
+              ))}
+
+              {isActive && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  style={{ padding: '4px 0' }}
+                >
+                  <span className="tp-thought-inline">
+                    Thinking about next step...
+                  </span>
+                </motion.div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

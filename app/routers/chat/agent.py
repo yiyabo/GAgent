@@ -31,12 +31,13 @@ from app.services.plans.decomposition_jobs import (
 )
 from app.services.plans.plan_decomposer import DecompositionResult, PlanDecomposer
 from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService
+from app.services.plans.plan_models import PlanNode
 from app.services.plans.plan_session import PlanSession
+from app.services.plans.task_verification import TaskVerificationService
 from app.services.session_title_service import SessionNotFoundError
 from app.services.upload_storage import delete_session_storage
 from app.services.deep_think_agent import (
     DeepThinkAgent,
-    DeepThinkProtocolError,
     ThinkingStep,
     DeepThinkResult,
 )
@@ -107,7 +108,6 @@ from .prompt_builder import (
     format_history as _format_history_fn,
     format_memories as _format_memories_fn,
     get_structured_agent_prompts as _get_structured_agent_prompts_fn,
-    should_use_deep_think as _should_use_deep_think_fn,
     strip_code_fence as _strip_code_fence_fn,
 )
 from .background import _sse_message
@@ -224,6 +224,7 @@ class StructuredChatAgent:
         self._include_action_summary = getattr(
             app_settings, "chat_include_action_summary", True
         )
+        self._task_verifier = TaskVerificationService()
 
     async def handle(self, user_message: str) -> AgentResult:
         structured = await self._invoke_llm(user_message)
@@ -528,6 +529,8 @@ class StructuredChatAgent:
         summary: str,
         message: str,
         params: Optional[Dict[str, Any]] = None,
+        result: Optional[Any] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         if (
             tool_name == "claude_code"
@@ -545,26 +548,68 @@ class StructuredChatAgent:
         try:
             new_status = "completed" if success else "failed"
             task_id_int = int(current_task_id)
+            repo = self.plan_session.repo
+            verifier = getattr(self, "_task_verifier", None) or TaskVerificationService()
+            node = PlanNode(
+                id=task_id_int,
+                plan_id=self.plan_session.plan_id,
+                name=f"Task {task_id_int}",
+                status="pending",
+                metadata={},
+            )
+            try:
+                tree = repo.get_plan_tree(self.plan_session.plan_id)
+                if tree.has_node(task_id_int):
+                    node = tree.get_node(task_id_int)
+            except Exception as tree_err:
+                logger.debug(
+                    "[TASK_SYNC] Failed to load plan tree for verification context: %s",
+                    tree_err,
+                )
 
-            self.plan_session.repo.update_task(
+            payload_metadata: Dict[str, Any] = {"tool_name": tool_name}
+            if isinstance(extra_metadata, dict):
+                for key in ("deliverables", "storage"):
+                    value = extra_metadata.get(key)
+                    if value is not None:
+                        payload_metadata[key] = value
+            artifact_paths = verifier.collect_artifact_paths(
+                {"result": result, "params": params or {}, "metadata": payload_metadata}
+            )
+            if artifact_paths:
+                payload_metadata["artifact_paths"] = artifact_paths
+            payload = {
+                "status": new_status,
+                "content": summary or message,
+                "notes": [],
+                "metadata": payload_metadata,
+            }
+            finalization = verifier.finalize_payload(
+                node,
+                payload,
+                execution_status=new_status,
+                trigger="auto",
+            )
+
+            repo.update_task(
                 self.plan_session.plan_id,
                 task_id_int,
-                status=new_status,
-                execution_result=summary or message,
+                status=finalization.final_status,
+                execution_result=json.dumps(finalization.payload, ensure_ascii=False),
             )
             logger.info(
                 "[TASK_SYNC] Updated task %s status to %s after tool %s execution",
                 current_task_id,
-                new_status,
+                finalization.final_status,
                 tool_name,
             )
 
-            if new_status == "completed":
+            if finalization.final_status == "completed":
                 cascade_result = f"Completed as part of parent task #{task_id_int}"
-                descendants_updated = self.plan_session.repo.cascade_update_descendants_status(
+                descendants_updated = repo.cascade_update_descendants_status(
                     self.plan_session.plan_id,
                     task_id_int,
-                    status=new_status,
+                    status=finalization.final_status,
                     execution_result=cascade_result,
                 )
                 if descendants_updated > 0:
@@ -802,133 +847,12 @@ class StructuredChatAgent:
     def _maybe_synthesize_phagescope_saveall_analysis(self, steps):
         return _maybe_synthesize_phagescope_saveall_analysis_fn(self, steps)
 
-    async def _should_use_deep_think(self, message: str) -> bool:
+    async def process_unified_stream(self, user_message: str) -> AsyncIterator[str]:
         """
-        LLM-routed DeepThink trigger.
+        Unified agent loop with streaming support and extended thinking.
 
-        Policy:
-        - explicit command always triggers
-        - explicit mode disables auto-routing
-        - all other routing decisions come from an LLM classifier (no keyword/regex fallback)
-        """
-        mode = str(getattr(get_settings(), "deep_think_mode", "smart")).strip().lower()
-
-        # 1) Context override has highest priority.
-        if self.extra_context.get("deep_think_enabled", False):
-            logger.info("[DEEP_THINK] Triggered by context override flag")
-            return True
-
-        msg = (message or "").strip()
-        if not msg:
-            return False
-
-        # 2) Explicit commands always trigger.
-        explicit_commands = ("/think", "/deep", "/plan", "/analyze", "/decompose")
-        for cmd in explicit_commands:
-            if msg.startswith(cmd):
-                logger.info("[DEEP_THINK] Triggered by explicit command '%s'", cmd)
-                return True
-
-        # 3) Explicit mode: no automatic routing.
-        if mode == "explicit":
-            logger.debug(
-                "[DEEP_THINK] Not triggered (mode=explicit, non-explicit message)"
-            )
-            return False
-
-        history_lines: List[str] = []
-        for item in self.history[-6:]:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "")).strip().lower() or "unknown"
-            content = str(item.get("content", "")).strip()
-            if content:
-                history_lines.append(f"{role}: {content}")
-        history_text = "\n".join(history_lines) if history_lines else "(none)"
-
-        router_prompt = f"""You are a strict router for DeepThink mode.
-
-Decide whether the next user message should be routed to DeepThink (iterative reasoning/tool exploration) or handled by the normal structured response path.
-
-Return JSON only:
-{{
-  "use_deep_think": true or false,
-  "confidence": 0.0-1.0,
-  "reason": "one short sentence"
-}}
-
-Set `use_deep_think=true` only when the request is genuinely complex and benefits from deep multi-step reasoning, e.g. open-ended research planning, ambiguous scientific analysis, or tasks requiring substantial tool orchestration.
-
-Set `use_deep_think=false` for simple chat, direct status checks, lightweight follow-ups, confirmations, or straightforward execution requests.
-
-Conversation history (recent):
-{history_text}
-
-User message:
-{msg}
-"""
-
-        model_override = self.extra_context.get("default_base_model")
-        try:
-            raw = await self.llm_service.chat_async(
-                router_prompt,
-                force_real=True,
-                model=model_override,
-            )
-        except Exception as exc:
-            logger.error("[DEEP_THINK] LLM router failed: %s", exc)
-            raise RuntimeError("DeepThink router LLM call failed in strict mode.") from exc
-
-        cleaned = self._strip_code_fence(str(raw or "").strip())
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise DeepThinkProtocolError(
-                "DeepThink router output is not a valid top-level JSON object."
-            )
-
-        payload_text = cleaned[start : end + 1]
-        try:
-            payload = json.loads(payload_text)
-        except Exception as exc:
-            raise DeepThinkProtocolError(
-                "DeepThink router returned invalid JSON payload."
-            ) from exc
-
-        raw_flag = payload.get("use_deep_think")
-        if not isinstance(raw_flag, bool):
-            raise DeepThinkProtocolError(
-                "DeepThink router JSON field `use_deep_think` must be a boolean."
-            )
-        use_deep_think = raw_flag
-
-        try:
-            confidence = float(payload.get("confidence"))
-        except (TypeError, ValueError) as exc:
-            raise DeepThinkProtocolError(
-                "DeepThink router JSON field `confidence` must be numeric."
-            ) from exc
-        confidence = max(0.0, min(1.0, confidence))
-
-        reason_raw = payload.get("reason")
-        if not isinstance(reason_raw, str) or not reason_raw.strip():
-            raise DeepThinkProtocolError(
-                "DeepThink router JSON field `reason` must be a non-empty string."
-            )
-        reason = reason_raw.strip()
-
-        logger.info(
-            "[DEEP_THINK] Routed by LLM (mode=%s, use_deep_think=%s, confidence=%.2f, reason=%s)",
-            mode,
-            use_deep_think,
-            confidence,
-            reason or "n/a",
-        )
-        return use_deep_think
-
-    async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
-        """
-        Execute deep thinking process and yield SSE events with streaming support.
+        All requests with plan context or tool requirements go through this path.
+        The model decides its own thinking depth via enable_thinking.
         """
         queue: asyncio.Queue[Any] = asyncio.Queue()
         deep_think_job_id: Optional[str] = f"dt_{uuid4().hex}"
@@ -1206,7 +1130,7 @@ User message:
                     nonlocal help_seen_after_failure, retry_seen_after_help
                     safe_params = params if isinstance(params, dict) else {}
 
-                    if name != "plan_operation":
+                    if name not in ("plan_operation", "verify_task"):
                         if name == "claude_code":
                             sequence_block_context = self.extra_context.get(sequence_input_block_key)
                             if isinstance(sequence_block_context, dict):
@@ -1446,6 +1370,29 @@ User message:
 
                         return result
 
+                    # verify_task: route through task_operation handler
+                    if name == "verify_task":
+                        deep_think_tool_order += 1
+                        synthetic_action = LLMAction(
+                            kind="task_operation",
+                            name="verify_task",
+                            parameters=safe_params,
+                            order=max(1, deep_think_tool_order),
+                            blocking=True,
+                            metadata={"origin": "deep_think"},
+                        )
+                        step = self._handle_task_action(synthetic_action)
+                        if inspect.isawaitable(step):
+                            step = await step
+
+                        result, _details = _normalize_deep_think_tool_result(
+                            step=step,
+                            tool_name=name,
+                            tool_params=safe_params,
+                            iteration=deep_think_tool_order,
+                        )
+                        return result
+
                     result = await execute_tool(name, **safe_params)
 
                     # Special handling: bind Plan to session after successful creation
@@ -1566,6 +1513,13 @@ User message:
                 async def on_artifact(meta: Dict[str, Any]) -> None:
                     await queue.put({"type": "artifact", **meta})
 
+                async def on_reasoning_delta(iteration: int, delta: str) -> None:
+                    await queue.put({
+                        "type": "reasoning_delta",
+                        "iteration": iteration,
+                        "delta": delta,
+                    })
+
                 dt_agent = dt_agent_cls(
                     llm_client=self.llm_service,
                     available_tools=[
@@ -1584,14 +1538,18 @@ User message:
                         "deeppl",
                         "plan_operation",
                         "terminal_session",
+                        "verify_task",
                     ],
                     tool_executor=tool_wrapper,
                     max_iterations=24,
-                    tool_timeout=120,  # 2-minute tool timeout.
+                    tool_timeout=120,
                     on_thinking=on_thinking,
                     on_thinking_delta=on_thinking_delta,
                     on_final_delta=on_final_delta,
                     on_artifact=on_artifact,
+                    enable_thinking=self._resolve_thinking_enabled(),
+                    thinking_budget=self._resolve_thinking_budget(),
+                    on_reasoning_delta=on_reasoning_delta,
                 )
 
                 if deep_think_job_created and deep_think_job_id:
@@ -1679,6 +1637,7 @@ User message:
             if event_type in {
                 "thinking_step",
                 "thinking_delta",
+                "reasoning_delta",
                 "delta",
                 "control_ack",
                 "tool_output",
@@ -1707,7 +1666,11 @@ User message:
                 # 💾 Save Deep Think response to database
                 if self.session_id and full_response:
                     try:
+                        plan_tree = getattr(self, "plan_tree", None)
+                        plan_title = plan_tree.title if plan_tree else None
                         metadata_payload: Dict[str, Any] = {
+                            "plan_id": self.plan_session.plan_id,
+                            "plan_title": plan_title,
                             "deep_think": True,
                             "iterations": res.total_iterations,
                             "tools_used": res.tools_used,
@@ -1760,8 +1723,11 @@ User message:
                 # Note: final_answer was already streamed via on_final_delta callback
                 # No need to yield it again here to avoid duplication
                 bg_category = item.get("bg_category")
+                plan_tree = getattr(self, "plan_tree", None)
+                plan_title = plan_tree.title if plan_tree else None
                 final_metadata: Dict[str, Any] = {
                     "plan_id": self.plan_session.plan_id,  # Include plan_id so frontend can update
+                    "plan_title": plan_title,
                     "deep_think": True,
                 }
                 if bg_category:
@@ -1774,6 +1740,107 @@ User message:
                     "metadata": final_metadata,
                 }
                 yield _sse_message({"type": "final", "payload": payload})
+
+    async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
+        """Backward-compatible alias for process_unified_stream."""
+        async for chunk in self.process_unified_stream(user_message):
+            yield chunk
+
+    async def stream_simple_chat(self, user_message: str) -> AsyncIterator[str]:
+        """Lightweight chat path with thinking enabled but no tools.
+
+        Used for conversations without plan context where tool access
+        is not needed. Thinking budget is smaller to keep latency low.
+        """
+
+        prompt = self._build_prompt(user_message)
+        model_override = self.extra_context.get("default_base_model")
+        enable_thinking = self._resolve_thinking_enabled()
+        thinking_budget = self._resolve_thinking_budget_simple()
+
+        queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+        content_parts: list[str] = []
+
+        async def _on_reasoning(chunk: str) -> None:
+            await queue.put(_sse_message({
+                "type": "reasoning_delta",
+                "iteration": 0,
+                "delta": chunk,
+            }))
+
+        async def _run_stream() -> None:
+            try:
+                async for delta in self.llm_service.stream_chat_async(
+                    prompt, force_real=True, model=model_override,
+                    enable_thinking=enable_thinking,
+                    thinking_budget=thinking_budget,
+                    on_reasoning_delta=_on_reasoning,
+                ):
+                    content_parts.append(delta)
+                    await queue.put(
+                        _sse_message({"type": "delta", "content": delta})
+                    )
+            except Exception as exc:
+                logger.error("Simple chat stream failed: %s", exc)
+                await queue.put(
+                    _sse_message({
+                        "type": "error",
+                        "message": f"Stream failed: {exc}",
+                    })
+                )
+            finally:
+                await queue.put(None)
+
+        asyncio.create_task(_run_stream())
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+
+        full_response = "".join(content_parts)
+
+        if self.session_id and full_response:
+            try:
+                from .session_helpers import _save_chat_message
+                _save_chat_message(
+                    self.session_id,
+                    "assistant",
+                    full_response,
+                    metadata={
+                        "plan_id": self.plan_session.plan_id,
+                        "thinking_enabled": enable_thinking,
+                    },
+                )
+            except Exception as save_err:
+                logger.warning("[SIMPLE_CHAT] Failed to save response: %s", save_err)
+
+        plan_tree = getattr(self, "plan_tree", None)
+        plan_title = plan_tree.title if plan_tree else None
+        payload = {
+            "llm_reply": {"message": full_response},
+            "actions": [],
+            "metadata": {
+                "plan_id": self.plan_session.plan_id,
+                "plan_title": plan_title,
+                "status": "completed",
+                "unified_stream": True,
+            },
+        }
+        yield _sse_message({"type": "final", "payload": payload})
+
+    def _resolve_thinking_enabled(self) -> bool:
+        settings = get_settings()
+        return getattr(settings, "thinking_enabled", True)
+
+    def _resolve_thinking_budget(self) -> int:
+        settings = get_settings()
+        return int(getattr(settings, "thinking_budget", 10000))
+
+    def _resolve_thinking_budget_simple(self) -> int:
+        settings = get_settings()
+        return int(getattr(settings, "thinking_budget_simple", 2000))
 
     async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
         self._current_user_message = user_message

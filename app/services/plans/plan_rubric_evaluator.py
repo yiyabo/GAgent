@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,6 +49,14 @@ class PlanRubricResult:
             "feedback": self.feedback,
             "rule_evidence": self.rule_evidence,
         }
+
+
+def is_rubric_evaluation_unavailable(result: PlanRubricResult) -> bool:
+    """Return whether the evaluator produced an explicit unavailable result."""
+
+    feedback = result.feedback if isinstance(result.feedback, dict) else {}
+    status = str(feedback.get("status") or "").strip().lower()
+    return status == "evaluation_unavailable"
 
 
 def rubric_definition_en() -> Dict[str, Any]:
@@ -611,6 +621,43 @@ def _validate_rubric_payload_shape(
     return None
 
 
+def _invoke_evaluator_client(
+    client: LLMClient,
+    *,
+    prompt: str,
+    evaluator_model: Optional[str],
+) -> str:
+    async def _runner() -> str:
+        messages = [{"role": "user", "content": prompt}]
+        stream_chat_async = getattr(client, "stream_chat_async", None)
+        if callable(stream_chat_async):
+            chunks: List[str] = []
+            async for chunk in stream_chat_async("", messages=messages, model=evaluator_model):
+                if chunk:
+                    chunks.append(str(chunk))
+            streamed = "".join(chunks).strip()
+            if streamed:
+                return streamed
+
+        chat_async = getattr(client, "chat_async", None)
+        if callable(chat_async):
+            return await chat_async("", messages=messages, model=evaluator_model)
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: client.chat("", messages=messages, model=evaluator_model),
+        )
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_runner())
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(lambda: asyncio.run(_runner())).result()
+
+
 def evaluate_plan_rubric(
     tree: PlanTree,
     *,
@@ -714,10 +761,10 @@ Your job is to score each subcriterion and provide concrete evidence.
     parsed: Optional[Dict[str, Any]] = None
     eval_error_reason = ""
     try:
-        raw = client.chat(
-            "",
-            messages=[{"role": "user", "content": prompt}],
-            model=evaluator_model,
+        raw = _invoke_evaluator_client(
+            client,
+            prompt=prompt,
+            evaluator_model=evaluator_model,
         )
         parsed = _extract_json_block(raw) or None
         if not isinstance(parsed, dict):

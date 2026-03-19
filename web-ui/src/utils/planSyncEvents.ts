@@ -17,6 +17,7 @@ const TASK_MUTATION_ACTIONS = new Set([
   'delete_task',
   'decompose_task',
   'rerun_task',
+  'verify_task',
   'bulk_update_tasks',
   'bulk_delete_tasks',
 ]);
@@ -341,4 +342,3 @@ export const shouldHandlePlanSyncEvent = (
   }
   return detail.plan_id === planId;
 };
-

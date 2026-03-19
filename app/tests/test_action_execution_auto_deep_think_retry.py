@@ -146,18 +146,40 @@ def _build_failed_polish_gate_result() -> AgentResult:
     )
 
 
-def _build_record(run_id: str) -> Dict[str, Any]:
+def _build_failed_review_plan_result() -> AgentResult:
+    failed_step = AgentStep(
+        action=LLMAction(
+            kind="plan_operation",
+            name="review_plan",
+            parameters={"plan_id": 55},
+            blocking=True,
+            order=1,
+        ),
+        success=False,
+        message="Plan #55 review unavailable. Rubric evaluator could not complete.",
+        details={"result": {"success": False, "status": "evaluation_unavailable"}},
+    )
+    return AgentResult(
+        reply="Plan #55 review unavailable. Rubric evaluator could not complete.",
+        steps=[failed_step],
+        suggestions=[],
+        primary_intent=None,
+        success=False,
+        errors=["review unavailable"],
+    )
+
+
+def _build_record(run_id: str, action: Optional[LLMAction] = None) -> Dict[str, Any]:
+    structured_action = action or LLMAction(
+        kind="tool_operation",
+        name="bio_tools",
+        parameters={"tool_name": "seqkit", "operation": "stats"},
+        blocking=True,
+        order=1,
+    )
     structured = LLMStructuredResponse(
         llm_reply=LLMReply(message="run"),
-        actions=[
-            LLMAction(
-                kind="tool_operation",
-                name="bio_tools",
-                parameters={"tool_name": "seqkit", "operation": "stats"},
-                blocking=True,
-                order=1,
-            )
-        ],
+        actions=[structured_action],
     )
     return {
         "id": run_id,
@@ -171,8 +193,14 @@ def _build_record(run_id: str) -> Dict[str, Any]:
     }
 
 
-def _patch_common(monkeypatch, *, run_id: str, result: AgentResult):  # type: ignore[no-untyped-def]
-    record = _build_record(run_id)
+def _patch_common(
+    monkeypatch,
+    *,
+    run_id: str,
+    result: AgentResult,
+    action: Optional[LLMAction] = None,
+):  # type: ignore[no-untyped-def]
+    record = _build_record(run_id, action=action)
     updates: List[Dict[str, Any]] = []
     job_store = _JobStoreStub()
 
@@ -298,6 +326,40 @@ def test_action_run_skips_auto_deep_think_retry_for_polish_quality_gate_failure(
     assert final_update["status"] == "failed"
     payload = final_update["result"]
     assert payload["success"] is False
+    assert "deep_think_retry" not in payload
+    assert not job_store.mark_success_calls
+    assert job_store.mark_failure_calls
+
+
+def test_action_run_skips_auto_deep_think_retry_for_review_plan_failure(monkeypatch) -> None:
+    run_id = "run_review_plan_no_retry"
+    result = _build_failed_review_plan_result()
+    updates, job_store = _patch_common(
+        monkeypatch,
+        run_id=run_id,
+        result=result,
+        action=LLMAction(
+            kind="plan_operation",
+            name="review_plan",
+            parameters={"plan_id": 55},
+            blocking=True,
+            order=1,
+        ),
+    )
+
+    async def _unexpected_retry(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("deep_think_retry should not run for review_plan failures")
+
+    monkeypatch.setattr(action_execution, "_run_blocking_failure_deep_think_retry_once", _unexpected_retry)
+
+    asyncio.run(action_execution._execute_action_run(run_id))
+
+    final_update = updates[-1]
+    assert final_update["status"] == "failed"
+    payload = final_update["result"]
+    assert payload["success"] is False
+    assert payload["analysis_source"] == "structured_action"
+    assert payload["analysis_text"] == "Plan #55 review unavailable. Rubric evaluator could not complete."
     assert "deep_think_retry" not in payload
     assert not job_store.mark_success_calls
     assert job_store.mark_failure_calls

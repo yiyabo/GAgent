@@ -205,6 +205,19 @@ BLOCKED_SOURCE_SEGMENTS = {
     ".tox",
     ".eggs",
     "dist",
+    ".cursor",
+    ".codex",
+    ".claude",
+}
+
+BLOCKED_PROJECT_DIRS = {
+    "app",
+    "tool_box",
+    "execute_memory",
+    "web-ui",
+    "scripts",
+    "docker",
+    ".github",
 }
 
 BLOCKED_SOURCE_FILENAMES = {
@@ -566,7 +579,7 @@ class DeliverablePublisher:
             release_summary=release_meta.get("release_summary"),
             hidden_artifact_prefixes=list(release_meta.get("hidden_artifact_prefixes") or []),
         )
-        latest_manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_json(latest_manifest_path, manifest)
 
         return PublishReport(
             version_id=version_id,
@@ -1262,6 +1275,24 @@ class DeliverablePublisher:
 
             key = f"{module}::{rel_path}"
             source = update_map.get(key) or previous_map.get(key) or {}
+
+            source_path_str = str(source.get("source_path") or "").strip()
+            if source_path_str and self._source_path_is_blocked(source_path_str):
+                try:
+                    file_path.unlink()
+                except Exception:
+                    pass
+                continue
+
+            if not source and not self._file_belongs_in_deliverables(file_path, module):
+                if file_path.name == SOURCE_OWNERSHIP_MAP:
+                    continue
+                try:
+                    file_path.unlink()
+                except Exception:
+                    pass
+                continue
+
             status_value = str(source.get("status") or fallback_status or "final").strip().lower()
             stat = file_path.stat()
             updated_at = source.get("updated_at")
@@ -1279,6 +1310,40 @@ class DeliverablePublisher:
                 }
             )
         return sorted(merged, key=lambda item: (str(item.get("module")), str(item.get("path"))))
+
+    def _source_path_is_blocked(self, source_path: str) -> bool:
+        """Check if a source_path points to project infrastructure (not research output)."""
+        normalized = source_path.replace("\\", "/").strip("/")
+        for blocked_dir in BLOCKED_PROJECT_DIRS:
+            if normalized.startswith(blocked_dir + "/") or normalized == blocked_dir:
+                return True
+        if normalized.startswith("runtime/") and "/deliverables/" not in normalized:
+            parts = normalized.split("/")
+            if len(parts) >= 2 and not parts[1].startswith("session_"):
+                return True
+        return False
+
+    def _file_belongs_in_deliverables(self, file_path: Path, module: str) -> bool:
+        """Heuristic check for orphan files with no source tracking."""
+        if module in {"paper", "refs", "docs"}:
+            return True
+        if module == "image_tabular":
+            return file_path.suffix.lower() in (IMAGE_EXTS | TABULAR_EXTS | {".pdf"})
+        if module == "code":
+            name_lower = file_path.name.lower()
+            agent_infra_names = {
+                "action_execution.py", "action_handlers.py", "agent.py",
+                "agent_routes.py", "artifact_routes.py", "chat_routes.py",
+                "plan_routes.py", "stream.py", "llm.py", "settings.py",
+                "deep_think_agent.py", "plan_executor.py", "plan_decomposer.py",
+                "tool_schemas.py", "tool_executor.py", "publisher.py",
+                "session_paths.py", "database.py", "database_config.py",
+                "database_pool.py", "middleware.py",
+            }
+            if name_lower in agent_infra_names:
+                return False
+            return True
+        return True
 
     def _resolve_files(
         self,
@@ -1345,6 +1410,11 @@ class DeliverablePublisher:
         if resolved.parent == self._runtime_dir and resolved.name.startswith(("session_", "session-")):
             return False
 
+        for blocked_dir in BLOCKED_PROJECT_DIRS:
+            blocked_path = (self._project_root / blocked_dir).resolve()
+            if self._is_within(resolved, blocked_path):
+                return False
+
         return True
 
     def _resolve_path(self, value: str, *, session_dir: Path) -> Optional[Path]:
@@ -1357,15 +1427,16 @@ class DeliverablePublisher:
             return None
         if raw.startswith("http://") or raw.startswith("https://"):
             return None
+        if raw.startswith("~"):
+            return None
 
-        path = Path(raw).expanduser()
+        path = Path(raw)
         candidates: List[Path] = []
         if path.is_absolute():
             candidates.append(path)
         else:
-            candidates.append(self._project_root / path)
             candidates.append(session_dir / path)
-            candidates.append(self._runtime_dir / path)
+            candidates.append(self._project_root / path)
 
         for item in candidates:
             try:
@@ -1387,14 +1458,29 @@ class DeliverablePublisher:
         path_parts = set(Path(os.path.abspath(str(path))).parts)
         if path_parts & BLOCKED_SOURCE_SEGMENTS:
             return False
+
         lexical_abs = Path(os.path.abspath(str(path)))
         if self._is_within(lexical_abs, self._project_root):
+            if self._is_in_blocked_project_dir(lexical_abs):
+                return False
             return True
         try:
-            resolved_abs = path.resolve()
+            resolved = path.resolve()
         except Exception:
             return False
-        return self._is_within(resolved_abs, self._project_root)
+        if self._is_within(resolved, self._project_root):
+            if self._is_in_blocked_project_dir(resolved):
+                return False
+            return True
+        return False
+
+    def _is_in_blocked_project_dir(self, abs_path: Path) -> bool:
+        """Check if an absolute path falls inside a blocked project directory."""
+        for blocked_dir in BLOCKED_PROJECT_DIRS:
+            blocked_abs = (self._project_root / blocked_dir).resolve()
+            if self._is_within(abs_path, blocked_abs):
+                return True
+        return False
 
     @staticmethod
     def _is_within(path: Path, root: Path) -> bool:
@@ -1795,6 +1881,24 @@ def get_deliverable_publisher() -> DeliverablePublisher:
     if _publisher is None:
         _publisher = DeliverablePublisher()
     return _publisher
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    """Write JSON to *path* atomically via a temporary file + os.replace."""
+    import tempfile as _tempfile
+
+    parent = str(path.parent)
+    tmp_fd, tmp_path = _tempfile.mkstemp(dir=parent, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _utc_now() -> str:

@@ -3,10 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Load only VAR=value lines from .env (avoid executing stray 'fi' or other code when sourced)
 if [ -f "$ROOT_DIR/.env" ]; then
   set -a
   # shellcheck disable=SC1090
-  source "$ROOT_DIR/.env"
+  source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ROOT_DIR/.env" 2>/dev/null || true)
   set +a
 fi
 
@@ -16,9 +17,11 @@ VITE_DEV_SERVER_HOST=${VITE_DEV_SERVER_HOST:-0.0.0.0}
 VITE_DEV_SERVER_PORT=${VITE_DEV_SERVER_PORT:-3000}
 AMEM_HOST=${AMEM_HOST:-0.0.0.0}
 AMEM_PORT=${AMEM_PORT:-8001}
-AMEM_HEALTH_TIMEOUT=${AMEM_HEALTH_TIMEOUT:-120}
+AMEM_HEALTH_TIMEOUT=${AMEM_HEALTH_TIMEOUT:-300}
 BACKEND_HEALTH_TIMEOUT=${BACKEND_HEALTH_TIMEOUT:-120}
 FRONTEND_HEALTH_TIMEOUT=${FRONTEND_HEALTH_TIMEOUT:-60}
+# Give services time to bind before first poll (amem model load is slow)
+HEALTH_CHECK_INITIAL_DELAY=${HEALTH_CHECK_INITIAL_DELAY:-15}
 
 normalize_host() {
   local host="$1"
@@ -43,7 +46,7 @@ wait_for_url() {
   echo "Waiting for $name at $url..."
 
   while true; do
-    if curl -fs --max-time 2 "$url" > /dev/null 2>&1; then
+    if curl -4 -fs --max-time 5 "$url" > /dev/null 2>&1; then
       echo "$name healthy."
       return 0
     fi
@@ -53,7 +56,7 @@ wait_for_url() {
       return 1
     fi
 
-    sleep 2
+    sleep 1
   done
 }
 
@@ -62,21 +65,29 @@ if ! command -v curl > /dev/null 2>&1; then
   exit 1
 fi
 
+echo "Giving services ${HEALTH_CHECK_INITIAL_DELAY}s to bind..."
+sleep "$HEALTH_CHECK_INITIAL_DELAY"
+
+# Health checks hit localhost only; do not use http_proxy (avoids 502 via proxy)
+export no_proxy="127.0.0.1,localhost,::1"
+export NO_PROXY="${no_proxy}"
+
 backend_host="$(normalize_host "$BACKEND_HOST")"
 frontend_host="$(normalize_host "$VITE_DEV_SERVER_HOST")"
 amem_host="$(normalize_host "$AMEM_HOST")"
 
 failures=0
 
-if ! wait_for_url "amem" "http://${amem_host}:${AMEM_PORT}/health" "$AMEM_HEALTH_TIMEOUT"; then
-  failures=$((failures + 1))
-fi
-
+# Check fast starters first (backend/frontend), then amem (slow model load)
 if ! wait_for_url "backend" "http://${backend_host}:${BACKEND_PORT}/health" "$BACKEND_HEALTH_TIMEOUT"; then
   failures=$((failures + 1))
 fi
 
 if ! wait_for_url "frontend" "http://${frontend_host}:${VITE_DEV_SERVER_PORT}/" "$FRONTEND_HEALTH_TIMEOUT"; then
+  failures=$((failures + 1))
+fi
+
+if ! wait_for_url "amem" "http://${amem_host}:${AMEM_PORT}/health" "$AMEM_HEALTH_TIMEOUT"; then
   failures=$((failures + 1))
 fi
 
