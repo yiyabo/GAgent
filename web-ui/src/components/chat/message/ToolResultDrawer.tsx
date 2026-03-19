@@ -120,6 +120,7 @@ interface ToolResultDrawerProps {
   open: boolean;
   onClose: () => void;
   actionsSummary?: Array<Record<string, any>>;
+  sessionId?: string | null;
 }
 
 const ToolResultDrawer: React.FC<ToolResultDrawerProps> = ({
@@ -128,6 +129,7 @@ const ToolResultDrawer: React.FC<ToolResultDrawerProps> = ({
   open,
   onClose,
   actionsSummary,
+  sessionId,
 }) => {
   if (!toolResults.length) return null;
   if (unifiedStream) return null;
@@ -147,6 +149,7 @@ const ToolResultDrawer: React.FC<ToolResultDrawerProps> = ({
             key={`${result.name ?? 'tool'}_${index}`}
             payload={result}
             defaultOpen={false}
+            sessionId={sessionId}
           />
         ))}
       </Space>

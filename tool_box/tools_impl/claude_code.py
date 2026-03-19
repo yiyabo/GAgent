@@ -10,6 +10,7 @@ import subprocess
 import json
 import hashlib
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Awaitable, Sequence
@@ -343,6 +344,83 @@ def _resolve_runtime_session_dir(session_id: Optional[str]) -> Path:
         adhoc_dir.mkdir(parents=True, exist_ok=True)
         return adhoc_dir
     return get_runtime_session_dir(token, create=True)
+
+
+# Skip absurdly large binaries when mirroring into session-level results/ (artifact URLs).
+_MAX_SESSION_PROMOTE_FILE_BYTES = 250 * 1024 * 1024
+_MAX_SESSION_PROMOTE_FILES = 500
+
+
+def _promote_task_results_to_session_root(
+    *,
+    session_dir: Path,
+    task_work_dir: Path,
+    max_files: int = _MAX_SESSION_PROMOTE_FILES,
+) -> List[str]:
+    """
+    Copy everything under ``<run>/results/`` into ``<session>/results/`` so that
+    Markdown like ``![](results/plot.png)`` resolves via GET .../artifacts/.../file?path=results/plot.png.
+
+    Claude Code cwd is an isolated ``run_<id>/`` tree; without this step outputs only exist under nested paths.
+    """
+    session_resolved = session_dir.resolve()
+    task_resolved = task_work_dir.resolve()
+    src_results = (task_resolved / "results").resolve()
+    if not src_results.is_dir() or not _is_path_within(src_results, task_resolved):
+        return []
+
+    dst_root = (session_resolved / "results").resolve()
+    if not _is_path_within(dst_root, session_resolved):
+        return []
+
+    dst_root.mkdir(parents=True, exist_ok=True)
+    promoted: List[str] = []
+    count = 0
+    for path in sorted(src_results.rglob("*")):
+        if not path.is_file():
+            continue
+        if count >= max_files:
+            logger.warning(
+                "Session results promotion stopped after %s files (cap=%s)",
+                count,
+                max_files,
+            )
+            break
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > _MAX_SESSION_PROMOTE_FILE_BYTES:
+            logger.info(
+                "Skipping large file for session results promotion: %s (%s bytes)",
+                path,
+                size,
+            )
+            continue
+        try:
+            rel = path.relative_to(src_results)
+        except ValueError:
+            continue
+        dest = (dst_root / rel).resolve()
+        if not _is_path_within(dest, dst_root):
+            logger.warning("Skipping promotion path outside results/: %s", rel)
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(path, dest)
+        except OSError as exc:
+            logger.warning("Failed to promote %s -> %s: %s", path, dest, exc)
+            continue
+        promoted.append(str(dest.relative_to(session_resolved)).replace("\\", "/"))
+        count += 1
+
+    if promoted:
+        logger.info(
+            "Promoted %s file(s) from %s/results/ to session results/ for artifact URLs",
+            len(promoted),
+            task_resolved.name,
+        )
+    return promoted
 
 
 def _collect_run_artifacts(
@@ -830,7 +908,11 @@ async def claude_code_handler(
             success = False
 
         produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
-        
+        session_artifact_paths = _promote_task_results_to_session_root(
+            session_dir=session_dir,
+            task_work_dir=task_work_dir,
+        )
+
         if log_file:
             try:
                 log_file.write(f"[{datetime.utcnow().isoformat()}Z] Claude Code finished (exit={return_code})\n")
@@ -867,6 +949,7 @@ async def claude_code_handler(
             "claude_auth_mode_effective": effective_auth_mode,
             "produced_files": produced_files,
             "produced_files_count": len(produced_files),
+            "artifact_paths": session_artifact_paths,
         }
         if not success and not blocked_detail:
             result_payload["error"] = _build_cli_failure_error(

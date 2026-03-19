@@ -1,4 +1,5 @@
-import pytest
+import pytest  # pylint: disable=import-error  # type: ignore[import-unresolved]
+from pathlib import Path
 
 from tool_box.tools_impl.claude_code import (
     _DEFAULT_ALLOWED_TOOL_NAMES,
@@ -9,6 +10,7 @@ from tool_box.tools_impl.claude_code import (
     _detect_scope_blocked,
     _is_path_within,
     _normalize_csv_values,
+    _promote_task_results_to_session_root,
     _resolve_auth_mode,
     _resolve_allowed_tools,
     _resolve_setting_sources,
@@ -198,3 +200,29 @@ def test_build_claude_subprocess_env_api_mode_drops_auth_token_when_key_present(
 def test_validate_api_mode_config_requires_credentials() -> None:
     assert _validate_api_mode_config({"ANTHROPIC_BASE_URL": "https://x"}) is not None
     assert _validate_api_mode_config({"ANTHROPIC_API_KEY": "k"}) is None
+
+
+def test_promote_task_results_to_session_root_copies_into_session_results(tmp_path: Path) -> None:
+    session_dir = tmp_path / "session_x"
+    run_dir = tmp_path / "session_x" / "task_a" / "run_1"
+    (run_dir / "results" / "nested").mkdir(parents=True)
+    (run_dir / "results" / "line.png").write_bytes(b"png1")
+    (run_dir / "results" / "nested" / "other.png").write_bytes(b"png2")
+
+    rels = _promote_task_results_to_session_root(session_dir=session_dir, task_work_dir=run_dir)
+    assert set(rels) == {"results/line.png", "results/nested/other.png"}
+    assert (session_dir / "results" / "line.png").read_bytes() == b"png1"
+    assert (session_dir / "results" / "nested" / "other.png").read_bytes() == b"png2"
+
+
+def test_promote_task_results_to_session_root_overwrites_stable_paths(tmp_path: Path) -> None:
+    session_dir = tmp_path / "s"
+    run_a = tmp_path / "s" / "t" / "run_a"
+    run_b = tmp_path / "s" / "t" / "run_b"
+    (run_a / "results").mkdir(parents=True)
+    (run_b / "results").mkdir(parents=True)
+    (run_a / "results" / "plot.png").write_bytes(b"v1")
+    _promote_task_results_to_session_root(session_dir=session_dir, task_work_dir=run_a)
+    (run_b / "results" / "plot.png").write_bytes(b"v2")
+    _promote_task_results_to_session_root(session_dir=session_dir, task_work_dir=run_b)
+    assert (session_dir / "results" / "plot.png").read_bytes() == b"v2"

@@ -157,6 +157,15 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
         if isinstance(tool_calls, list) and tool_calls:
             sanitized["tool_calls"] = tool_calls
 
+        artifact_paths = raw_result.get("artifact_paths")
+        if isinstance(artifact_paths, list) and artifact_paths:
+            trimmed_paths: List[str] = []
+            for item in artifact_paths[:80]:
+                if isinstance(item, str) and item.strip():
+                    trimmed_paths.append(item.strip().replace("\\", "/"))
+            if trimmed_paths:
+                sanitized["artifact_paths"] = trimmed_paths
+
         return sanitized
 
     if isinstance(raw_result, dict):
