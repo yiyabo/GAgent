@@ -102,6 +102,14 @@ export interface PlanResultItem {
   raw?: Record<string, any> | null;
 }
 
+export interface VerifyTaskResponse {
+  success: boolean;
+  message: string;
+  plan_id: number;
+  task_id: number;
+  result: PlanResultItem;
+}
+
 export interface PlanResultsResponse {
   plan_id: number;
   total: number;

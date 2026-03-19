@@ -11,10 +11,12 @@ import {
   resolveHistoryCursor,
 } from '../../chatUtils';
 import { memoryApi } from '@api/memory';
+import { chatApi } from '@api/chat';
 import { ENV } from '@/config/env';
 import {
   collectToolResultsFromMetadata,
 } from '@utils/toolResults';
+import { recoverPlanBindingFromMessages } from './planRecovery';
 import { startActionStatusPolling, flushAnalysisText, scheduleFlush, retryActionRun as retryActionRunHelper } from './helpers';
 import {
   handleDelta,
@@ -22,6 +24,7 @@ import {
   handleFinal,
   handleThinkingStep,
   handleThinkingDelta,
+  handleReasoningDelta,
   flushPendingThinkingDeltas,
   handleControlAck,
   handleToolOutput,
@@ -243,6 +246,11 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   seen.add(msg.id);
   return true;
   });
+  const targetSessionBeforeUpdate = get().sessions.find((s) => s.id === sessionId) ?? null;
+  const recoveredPlanBinding =
+  targetSessionBeforeUpdate && targetSessionBeforeUpdate.plan_id == null
+  ? recoverPlanBindingFromMessages(messages)
+  : null;
 
   set({ messages });
 
@@ -256,13 +264,25 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   updated_at: new Date(),
   last_message_at: lastMessage ? lastMessage.timestamp : targetSession.last_message_at ?? null,
   };
+  if (targetSession.plan_id == null && recoveredPlanBinding?.planId != null) {
+  updatedSession.plan_id = recoveredPlanBinding.planId;
+  updatedSession.plan_title = recoveredPlanBinding.planTitle ?? targetSession.plan_title ?? null;
+  }
   const sessions = state.sessions.map((s) => (s.id === sessionId ? updatedSession : s));
   const isCurrent = state.currentSession?.id === sessionId;
   return {
   sessions,
   currentSession: isCurrent ? updatedSession : state.currentSession,
+  currentPlanId: isCurrent ? (updatedSession.plan_id ?? state.currentPlanId) : state.currentPlanId,
+  currentPlanTitle: isCurrent ? (updatedSession.plan_title ?? state.currentPlanTitle) : state.currentPlanTitle,
   };
   });
+  if (recoveredPlanBinding?.planId != null) {
+  void chatApi.updateSession(sessionId, {
+  plan_id: recoveredPlanBinding.planId,
+  plan_title: recoveredPlanBinding.planTitle ?? null,
+  }).catch((error) => console.warn('Failed to persist recovered plan binding:', error));
+  }
 
   const nextBeforeId =
   typeof data.next_before_id === 'number'
@@ -417,6 +437,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   if (event.type === 'final') { flushPendingThinkingDeltas(ctx); if (handleFinal(ctx, event)) break; continue; }
   if (event.type === 'thinking_step') { handleThinkingStep(ctx, event); continue; }
   if (event.type === 'thinking_delta') { handleThinkingDelta(ctx, event); continue; }
+  if (event.type === 'reasoning_delta') { handleReasoningDelta(ctx, event); continue; }
   if (event.type === 'control_ack') { handleControlAck(ctx, event); continue; }
   if (event.type === 'tool_output') { handleToolOutput(ctx, event); continue; }
   if (event.type === 'artifact') { window.dispatchEvent(new CustomEvent('artifactProduced', { detail: event })); continue; }

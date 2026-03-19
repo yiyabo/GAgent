@@ -42,6 +42,7 @@ from app.services.plans.plan_executor import (
     PlanExecutorLLMService,
     ExecutionConfig,
 )
+from app.services.plans.task_verification import TaskVerificationService
 from app.config import get_graph_rag_settings, get_search_settings
 from app.config.tool_policy import get_tool_policy, is_tool_allowed
 from app.config.decomposer_config import get_decomposer_settings
@@ -87,6 +88,7 @@ _normalize_dependencies_fn = normalize_dependencies
 _append_recent_tool_result_fn = append_recent_tool_result
 _BIO_TOOLS_NO_CLAUDE_FALLBACK_KEY = "bio_tools_no_claude_fallback"
 _SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY = "sequence_fetch_no_claude_fallback"
+_task_verifier = TaskVerificationService()
 
 
 # ---------------------------------------------------------------------------
@@ -1701,12 +1703,17 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             # Do not affect main flow.
 
     agent._sync_task_status_after_tool_execution(
-    tool_name=tool_name,
-    success=success,
+        tool_name=tool_name,
+        success=success,
         summary=summary,
-            message=message,
-            params=params,
-            )
+        message=message,
+        params=params,
+        result=sanitized,
+        extra_metadata={
+            "storage": storage_info.__dict__ if storage_info else None,
+            "deliverables": deliverable_report.to_dict() if deliverable_report else None,
+        },
+    )
 
     return AgentStep(
         action=action,
@@ -1957,7 +1964,10 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
     if action.name == "review_plan":
         tree = agent._require_plan_bound()
         plan_id = tree.id
-        from app.services.plans.plan_rubric_evaluator import evaluate_plan_rubric
+        from app.services.plans.plan_rubric_evaluator import (
+            evaluate_plan_rubric,
+            is_rubric_evaluation_unavailable,
+        )
         try:
             rubric_result = await asyncio.to_thread(
                 evaluate_plan_rubric,
@@ -1980,13 +1990,19 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         except Exception as meta_exc:
             logger.warning("Failed to persist plan rubric evaluation: %s", meta_exc)
         agent._refresh_plan_tree(force_reload=True)
+        rubric_unavailable = is_rubric_evaluation_unavailable(rubric_result)
         message = (
-            f"Plan #{plan_id} review complete. "
-            f"Rubric score: {rubric_result.overall_score}/100."
+            f"Plan #{plan_id} review unavailable. Rubric evaluator could not complete."
+            if rubric_unavailable
+            else (
+                f"Plan #{plan_id} review complete. "
+                f"Rubric score: {rubric_result.overall_score}/100."
+            )
         )
         details = {
             "plan_id": plan_id,
             "plan_title": tree.title,
+            "status": "evaluation_unavailable" if rubric_unavailable else "completed",
             "rubric_score": rubric_result.overall_score,
             "rubric_dimension_scores": rubric_result.dimension_scores,
             "rubric_subcriteria_scores": rubric_result.subcriteria_scores,
@@ -1997,9 +2013,10 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
                 "rubric_version": rubric_result.rubric_version,
                 "evaluated_at": rubric_result.evaluated_at,
             },
+            "degraded": rubric_unavailable,
         }
         return AgentStep(
-            action=action, success=True, message=message, details=details
+            action=action, success=not rubric_unavailable, message=message, details=details
         )
 
     if action.name == "optimize_plan":
@@ -2346,6 +2363,141 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
         agent._refresh_plan_tree(force_reload=True)
         return AgentStep(
             action=action, success=success, message=message, details=details
+        )
+
+    if action.name == "verify_task":
+        task_id = agent._coerce_int(params.get("task_id"), "task_id")
+        if not tree.has_node(task_id):
+            raise ValueError(f"Task {task_id} not found in plan {tree.id}")
+        node = tree.get_node(task_id)
+        if not node.execution_result:
+            return AgentStep(
+                action=action,
+                success=False,
+                message=f"Task [{task_id}] has no execution result to verify.",
+                details={"task_id": task_id, "plan_id": tree.id},
+            )
+
+        # Collect override criteria from multiple sources the LLM might use:
+        #   1. params.verification_criteria  – shorthand strings (preferred)
+        #   2. params.acceptance_criteria     – full dict
+        #   3. action.metadata.acceptance_criteria – LLM sometimes puts hints there
+        #   4. action.metadata.verification_criteria – shorthand in metadata
+        override_criteria = None
+        raw_vc = params.get("verification_criteria")
+        action_meta = action.metadata if isinstance(action.metadata, dict) else {}
+
+        if not isinstance(raw_vc, list) or not raw_vc:
+            raw_vc = action_meta.get("verification_criteria")
+        if not isinstance(raw_vc, list) or not raw_vc:
+            raw_vc = params.get("acceptance_criteria")
+        if not isinstance(raw_vc, list) or not raw_vc:
+            raw_vc = action_meta.get("acceptance_criteria")
+
+        if isinstance(raw_vc, list) and raw_vc:
+            # Check if items are shorthand strings or full dict checks
+            if all(isinstance(item, str) for item in raw_vc):
+                override_criteria = _task_verifier.parse_shorthand_criteria(raw_vc)
+            elif all(isinstance(item, dict) for item in raw_vc):
+                override_criteria = {
+                    "category": "file_data",
+                    "blocking": True,
+                    "checks": list(raw_vc),
+                }
+
+        # Also accept a pre-formed dict in params.acceptance_criteria
+        if not override_criteria:
+            raw_ac = params.get("acceptance_criteria")
+            if not isinstance(raw_ac, dict):
+                raw_ac = action_meta.get("acceptance_criteria")
+            if isinstance(raw_ac, dict) and raw_ac.get("checks"):
+                override_criteria = raw_ac
+
+        # Last resort: if the node has no acceptance_criteria and we have no
+        # override, try to build basic checks from the task's execution_result
+        # artifact paths so we don't always skip.
+        if not override_criteria:
+            existing_criteria = (
+                node.metadata.get("acceptance_criteria")
+                if isinstance(node.metadata, dict) else None
+            )
+            if not _task_verifier._has_checks(existing_criteria):
+                try:
+                    raw_payload = json.loads(node.execution_result) if isinstance(node.execution_result, str) else {}
+                    artifact_paths = _task_verifier.collect_artifact_paths(raw_payload)
+                    local_paths = [p for p in artifact_paths if _task_verifier._is_local_path(p)]
+                    if local_paths:
+                        override_criteria = _task_verifier._build_generated_criteria(local_paths)
+                        logger.info(
+                            "verify_task: auto-generated %d checks from artifact paths for task %s",
+                            len(override_criteria.get("checks", [])),
+                            task_id,
+                        )
+                except Exception:
+                    pass
+
+        if override_criteria and _task_verifier._has_checks(override_criteria):
+            logger.info(
+                "verify_task: using %d override checks for task %s",
+                len(override_criteria.get("checks", [])),
+                task_id,
+            )
+
+        try:
+            finalization = _task_verifier.verify_task(
+                agent.plan_session.repo,
+                plan_id=tree.id,
+                task_id=task_id,
+                trigger="manual",
+                override_criteria=override_criteria,
+            )
+        except Exception as verify_err:
+            logger.warning("verify_task failed for task %s: %s", task_id, verify_err)
+            return AgentStep(
+                action=action,
+                success=False,
+                message=f"Task [{task_id}] verification error: {verify_err}",
+                details={"task_id": task_id, "plan_id": tree.id},
+            )
+        verification = finalization.verification or {}
+        verification_status = str(verification.get("status") or "skipped")
+        checks_total = int(verification.get("checks_total", 0) or 0)
+        checks_passed = int(verification.get("checks_passed", 0) or 0)
+        needs_criteria = bool(verification.get("needs_criteria"))
+        if verification_status == "passed":
+            message = (
+                f"Task [{task_id}] verification passed "
+                f"({checks_passed}/{checks_total} checks)."
+            )
+        elif verification_status == "failed":
+            message = (
+                f"Task [{task_id}] verification failed "
+                f"({checks_passed}/{checks_total} checks passed)."
+            )
+        elif needs_criteria:
+            message = (
+                f"Task [{task_id}] verification skipped: no acceptance_criteria or "
+                f"verification_criteria provided. You MUST pass verification_criteria "
+                f"with concrete check strings (e.g. 'file_exists:/path/to/output.csv') "
+                f"for the verifier to run actual checks."
+            )
+        else:
+            message = f"Task [{task_id}] verification skipped."
+        verification_success = verification_status == "passed"
+        if verification_status == "skipped" and not needs_criteria:
+            verification_success = True
+        agent._refresh_plan_tree(force_reload=True)
+        return AgentStep(
+            action=action,
+            success=verification_success,
+            message=message,
+            details={
+                "task_id": task_id,
+                "plan_id": tree.id,
+                "status": finalization.final_status,
+                "verification": verification,
+                "payload": finalization.payload,
+            },
         )
 
     if action.name == "decompose_task":

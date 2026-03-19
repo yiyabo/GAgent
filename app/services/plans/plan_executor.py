@@ -18,6 +18,7 @@ from ..execution.tool_executor import ToolExecutionContext, UnifiedToolExecutor
 from ..llm.llm_service import LLMService
 from ..skills import get_skills_loader
 from .plan_models import PlanNode, PlanTree
+from .task_verification import TaskVerificationService, VerificationFinalization
 
 logger = logging.getLogger(__name__)
 
@@ -539,6 +540,7 @@ class PlanExecutor:
         self._prompt_builder = prompt_builder or ExecutorPromptBuilder()
         self._deliverable_publisher = get_deliverable_publisher()
         self._tool_executor = UnifiedToolExecutor()
+        self._task_verifier = TaskVerificationService()
 
     def execute_plan(
         self,
@@ -746,15 +748,20 @@ class PlanExecutor:
                 "notes": notes,
                 "metadata": metadata,
             }
-            raw_response = json.dumps(payload, ensure_ascii=False)
+            finalization = self._task_verifier.finalize_payload(
+                node,
+                payload,
+                execution_status="skipped",
+            )
+            raw_response = json.dumps(finalization.payload, ensure_ascii=False)
 
             # Persist skip reason so the UI can render why it was skipped.
             try:
                 self._persist_execution(
                     plan_id,
                     node.id,
-                    payload,
-                    status="skipped",
+                    finalization.payload,
+                    status=finalization.final_status,
                 )
             except Exception as exc:
                 logger.warning(
@@ -772,17 +779,17 @@ class PlanExecutor:
                     )
 
             # Update in-memory tree so subsequent tasks see latest status/result.
-            node.status = "skipped"
+            node.status = finalization.final_status
             node.execution_result = raw_response
             tree.nodes[node.id] = node
 
             return ExecutionResult(
                 plan_id=plan_id,
                 task_id=node.id,
-                status="skipped",
+                status=finalization.final_status,
                 content=skip_reason,
                 notes=notes,
-                metadata=metadata,
+                metadata=finalization.payload.get("metadata") or {},
                 raw_response=raw_response,
             )
         elif incomplete_deps:
@@ -881,25 +888,25 @@ class PlanExecutor:
                 result_payload = response.model_dump()
                 raw_response = json.dumps(result_payload, ensure_ascii=False)
                 task_status = self._normalize_status(response.status)
-                self._persist_execution(
+                finalization, raw_response = self._finalize_task_execution(
                     plan_id,
-                    node.id,
+                    node,
                     result_payload,
-                    status=task_status,
+                    execution_status=task_status,
                 )
                 # Update in-memory tree so subsequent tasks see latest outputs.
                 node.execution_result = raw_response
-                node.status = task_status
+                node.status = finalization.final_status
                 tree.nodes[node.id] = node
                 if parent:
                     tree.nodes[parent.id] = parent
                 return ExecutionResult(
                     plan_id=plan_id,
                     task_id=node.id,
-                    status=task_status,
-                    content=response.content,
+                    status=finalization.final_status,
+                    content=str(finalization.payload.get("content") or response.content),
                     notes=response.notes,
-                    metadata=response.metadata,
+                    metadata=finalization.payload.get("metadata") or {},
                     raw_response=raw_response,
                     attempts=attempt,
                 )
@@ -925,26 +932,27 @@ class PlanExecutor:
                 continue
 
         error_message = str(last_error) if last_error else "Unknown execution failure"
-        self._persist_execution(
+        finalization, raw_response = self._finalize_task_execution(
             plan_id,
-            node.id,
+            node,
             {
                 "status": "failed",
                 "content": error_message,
                 "notes": ["all attempts failed"],
                 "metadata": {},
             },
-            status="failed",
+            execution_status="failed",
         )
-        node.status = "failed"
+        node.execution_result = raw_response
+        node.status = finalization.final_status
         tree.nodes[node.id] = node
         result = ExecutionResult(
             plan_id=plan_id,
             task_id=node.id,
-            status="failed",
+            status=finalization.final_status,
             content=error_message,
             notes=["all attempts failed"],
-            metadata={},
+            metadata=finalization.payload.get("metadata") or {},
             raw_response=raw_response,
             attempts=attempts,
         )
@@ -1431,20 +1439,24 @@ class PlanExecutor:
                     },
                 },
             }
-            raw_response = json.dumps(payload, ensure_ascii=False)
-            self._persist_execution(plan_id, node.id, payload, status="completed")
+            finalization, raw_response = self._finalize_task_execution(
+                plan_id,
+                node,
+                payload,
+                execution_status="completed",
+            )
             node.execution_result = raw_response
-            node.status = "completed"
+            node.status = finalization.final_status
             tree.nodes[node.id] = node
             if parent:
                 tree.nodes[parent.id] = parent
             return ExecutionResult(
                 plan_id=plan_id,
                 task_id=node.id,
-                status="completed",
-                content=result.final_answer,
+                status=finalization.final_status,
+                content=str(finalization.payload.get("content") or result.final_answer),
                 notes=[result.thinking_summary] if result.thinking_summary else [],
-                metadata=payload["metadata"],
+                metadata=finalization.payload.get("metadata") or {},
                 raw_response=raw_response,
                 attempts=1,
             )
@@ -1456,17 +1468,23 @@ class PlanExecutor:
                 "notes": ["deep think execution failed"],
                 "metadata": {"deep_think": True},
             }
-            self._persist_execution(plan_id, node.id, failure_payload, status="failed")
-            node.status = "failed"
+            finalization, raw_response = self._finalize_task_execution(
+                plan_id,
+                node,
+                failure_payload,
+                execution_status="failed",
+            )
+            node.execution_result = raw_response
+            node.status = finalization.final_status
             tree.nodes[node.id] = node
             return ExecutionResult(
                 plan_id=plan_id,
                 task_id=node.id,
-                status="failed",
+                status=finalization.final_status,
                 content=str(exc),
                 notes=["deep think execution failed"],
-                metadata={"deep_think": True},
-                raw_response=json.dumps(failure_payload, ensure_ascii=False),
+                metadata=finalization.payload.get("metadata") or {"deep_think": True},
+                raw_response=raw_response,
                 attempts=1,
             )
         finally:
@@ -1512,6 +1530,30 @@ class PlanExecutor:
                 task_id,
             )
             raise
+
+    def _finalize_task_execution(
+        self,
+        plan_id: int,
+        node: PlanNode,
+        payload: Dict[str, Any],
+        *,
+        execution_status: Optional[str],
+        trigger: str = "auto",
+    ) -> Tuple[VerificationFinalization, str]:
+        finalization = self._task_verifier.finalize_payload(
+            node,
+            payload,
+            execution_status=execution_status,
+            trigger=trigger,
+        )
+        serialized = json.dumps(finalization.payload, ensure_ascii=False)
+        self._persist_execution(
+            plan_id,
+            node.id,
+            finalization.payload,
+            status=finalization.final_status,
+        )
+        return finalization, serialized
 
     def _execution_order(self, tree: PlanTree) -> Iterable[PlanNode]:
         ordered: List[PlanNode] = []

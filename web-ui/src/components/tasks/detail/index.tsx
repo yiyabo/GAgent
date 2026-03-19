@@ -18,9 +18,10 @@ import type {
   PlanResultItem,
   PlanTaskNode,
   PlanSyncEventDetail,
+  VerifyTaskResponse,
   ToolResultPayload,
 } from '@/types';
-import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
+import { dispatchPlanSyncEvent, shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 import JobLogPanel from '@components/chat/JobLogPanel';
 import { TaskDrawerContent, copyJsonToClipboard } from './TaskDetailSections';
 import TaskExecuteModal from './TaskExecuteModal';
@@ -125,6 +126,7 @@ const TaskDetailDrawer: React.FC = () => {
 
   const [executeModalOpen, setExecuteModalOpen] = useState(false);
   const [executeButtonLoading, setExecuteButtonLoading] = useState(false);
+  const [verifyLoading, setVerifyLoading] = useState(false);
   const [latestExecution, setLatestExecution] = useState<{
     jobId: string;
     taskId: number;
@@ -237,6 +239,44 @@ const TaskDetailDrawer: React.FC = () => {
     setExecuteModalOpen(true);
   }, [currentPlanId, message, selectedTaskId]);
 
+  const handleReverify = useCallback(async () => {
+    if (!currentPlanId || !selectedTaskId) {
+      message.error('Missing plan or task information; cannot verify task');
+      return;
+    }
+    setVerifyLoading(true);
+    try {
+      const response: VerifyTaskResponse = await planTreeApi.verifyTask(currentPlanId, selectedTaskId);
+      setTaskResult(selectedTaskId, response.result);
+      message.success(response.message || 'Task verification completed');
+      dispatchPlanSyncEvent({
+        type: 'task_changed',
+        plan_id: currentPlanId,
+        plan_title: null,
+        session_id: currentSessionId ?? null,
+        raw: response,
+      }, {
+        source: 'task.detail.verify',
+        status: response.result?.status ?? null,
+        sessionId: currentSessionId ?? null,
+      });
+      void refetchPlanTasks();
+      void refetchTaskResult();
+    } catch (error: any) {
+      message.error(error?.message || 'Task verification failed');
+    } finally {
+      setVerifyLoading(false);
+    }
+  }, [
+    currentPlanId,
+    currentSessionId,
+    message,
+    refetchPlanTasks,
+    refetchTaskResult,
+    selectedTaskId,
+    setTaskResult,
+  ]);
+
   return (
     <Drawer
       width={480}
@@ -304,6 +344,9 @@ const TaskDetailDrawer: React.FC = () => {
             resultLoading={resultLoading}
             taskResult={taskResult}
             cachedResult={cachedResult}
+            onReverify={handleReverify}
+            verifyLoading={verifyLoading}
+            canVerify={Boolean(taskResult ?? cachedResult)}
           />
           {activeExecutionJobId && (
             <section>

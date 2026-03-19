@@ -6,67 +6,66 @@ import { useChatStore } from '@store/chat';
 
 describe('ToolResultCard', () => {
   beforeEach(() => {
-  useChatStore.setState({
-  sendMessage: vi.fn().mockResolvedValue(undefined),
-  } as any);
+    useChatStore.setState({
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+    } as any);
   });
 
   afterEach(() => {
-  vi.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it('renders search results when successful', () => {
-  render(
-  <ToolResultCard
-  defaultOpen
-  payload={{
-  name: 'web_search',
-  summary: '',
-  result: {
-  query: 'AI ',
-  success: true,
-  response: ' AI . ',
-  results: [
-  {
-  title: 'AI Weekly',
-  url: 'https://example.com',
-  source: 'Example News',
-  snippet: 'Summary snippet',
-  },
-  ],
-  },
-  }}
-  />
-  );
+    render(
+      <ToolResultCard
+        defaultOpen
+        payload={{
+          name: 'web_search',
+          summary: 'Web search completed',
+          result: {
+            query: 'AI research',
+            success: true,
+            response: 'AI is advancing rapidly.',
+            results: [
+              {
+                title: 'AI Weekly',
+                url: 'https://example.com',
+                source: 'Example News',
+                snippet: 'Summary snippet',
+              },
+            ],
+          },
+        }}
+      />
+    );
 
-  expect(screen.getByText('')).toBeInTheDocument();
-  expect(screen.getByText(': ')).toBeInTheDocument();
-  expect(screen.getByText('AI Weekly')).toBeInTheDocument();
+    expect(screen.getByText('Web search completed')).toBeInTheDocument();
+    expect(screen.getByText('AI Weekly')).toBeInTheDocument();
   });
 
   it('shows retry button when search fails', async () => {
-  const sendMessage = useChatStore.getState().sendMessage as unknown as ReturnType<typeof vi.fn>;
-  render(
-  <ToolResultCard
-  defaultOpen
-  payload={{
-  name: 'web_search',
-  summary: '',
-  result: {
-  query: 'AI ',
-  success: false,
-  error: '',
-  },
-  }}
-  />
-  );
+    const sendMessage = useChatStore.getState().sendMessage as unknown as ReturnType<typeof vi.fn>;
+    render(
+      <ToolResultCard
+        defaultOpen
+        payload={{
+          name: 'web_search',
+          summary: 'Web search failed. Please try again later.',
+          result: {
+            query: 'AI research',
+            success: false,
+            error: 'Network timeout',
+          },
+        }}
+      />
+    );
 
-  expect(screen.getByText('')).toBeInTheDocument();
-  const retryButton = screen.getByRole('button', { name: // });
-  fireEvent.click(retryButton);
+    expect(screen.getByText('Web search failed. Please try again later.')).toBeInTheDocument();
+    const retryButton = screen.getByRole('button', { name: /Retry search/i });
+    fireEvent.click(retryButton);
 
-  await waitFor(() => {
-  expect(sendMessage).toHaveBeenCalledTimes(1);
-  });
+    await waitFor(() => {
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+    });
   });
 });

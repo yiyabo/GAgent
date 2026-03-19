@@ -133,6 +133,9 @@ class DeepThinkAgent:
         on_tool_start: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
         on_tool_result: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
         on_artifact: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        enable_thinking: bool = True,
+        thinking_budget: int = 10000,
+        on_reasoning_delta: Optional[Callable[[int, str], Any]] = None,
     ):
         self.llm_client = llm_client
         self.available_tools = available_tools
@@ -146,6 +149,9 @@ class DeepThinkAgent:
         self.on_tool_start = on_tool_start
         self.on_tool_result = on_tool_result
         self.on_artifact = on_artifact
+        self.enable_thinking = enable_thinking
+        self.thinking_budget = thinking_budget
+        self.on_reasoning_delta = on_reasoning_delta
         self._pause_event = asyncio.Event()
         self._pause_event.set()
         self._skip_current_step = False
@@ -345,11 +351,23 @@ class DeepThinkAgent:
                     if self.on_thinking_delta:
                         await self._safe_delta_callback(iteration, chunk)
 
+                async def _on_reasoning_delta(chunk: str) -> None:
+                    if self.on_reasoning_delta:
+                        try:
+                            ret = self.on_reasoning_delta(iteration, chunk)
+                            if asyncio.iscoroutine(ret):
+                                await ret
+                        except Exception:
+                            pass
+
                 result = await self.llm_client.stream_chat_with_tools_async(
                     messages=messages,
                     tools=tool_schemas,
                     tool_choice="auto",
                     on_content_delta=_on_delta,
+                    on_reasoning_delta=_on_reasoning_delta,
+                    enable_thinking=self.enable_thinking,
+                    thinking_budget=self.thinking_budget,
                 )
             except Exception as exc:
                 logger.exception("[DEEP_THINK_NATIVE] LLM call failed at iteration %d", iteration)
@@ -498,13 +516,56 @@ class DeepThinkAgent:
                         await self._stream_final_answer(final_answer)
                     break
             else:
-                # No tool calls – pure thinking text
-                current_step.finished_at = datetime.now()
-                thinking_steps.append(current_step)
-                if self.on_thinking:
-                    await self._safe_callback(current_step)
-                messages.append({"role": "assistant", "content": result.content or ""})
-                messages.append({"role": "user", "content": self._get_next_step_prompt(iteration)})
+                # No tool calls – pure thinking text.
+                # Try to parse structured JSON actions from content as compatibility fallback.
+                parsed_actions = self._try_parse_structured_actions(result.content or "")
+                if parsed_actions:
+                    logger.info(
+                        "[DEEP_THINK_NATIVE] Parsed %d structured actions from text fallback",
+                        len(parsed_actions),
+                    )
+                    for pa in parsed_actions:
+                        pa_name = pa.get("name", "")
+                        pa_params = pa.get("parameters") or {}
+                        if pa_name and pa_name in self.available_tools:
+                            if pa_name not in tools_used:
+                                tools_used.append(pa_name)
+                            current_step.action = json.dumps(
+                                {"tool": pa_name, "params": pa_params}, ensure_ascii=False
+                            )
+                            current_step.status = "calling_tool"
+                            if self.on_thinking:
+                                await self._safe_callback(current_step)
+                            try:
+                                from app.services.execution.tool_executor import UnifiedToolExecutor
+                                timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(pa_name, self.tool_timeout)
+                                tool_result = await asyncio.wait_for(
+                                    self.tool_executor(pa_name, pa_params),
+                                    timeout=timeout,
+                                )
+                                try:
+                                    action_result_text = json.dumps(tool_result, ensure_ascii=False, default=str)
+                                except Exception:
+                                    action_result_text = str(tool_result)
+                                current_step.action_result = action_result_text
+                                messages.append({"role": "assistant", "content": result.content or ""})
+                                messages.append({"role": "user", "content": f"Tool Output: {action_result_text}"})
+                            except Exception as exc:
+                                current_step.action_result = f"Error: {exc}"
+                                messages.append({"role": "assistant", "content": result.content or ""})
+                                messages.append({"role": "user", "content": f"Tool Error: {exc}"})
+                    current_step.status = "analyzing"
+                    current_step.finished_at = datetime.now()
+                    thinking_steps.append(current_step)
+                    if self.on_thinking:
+                        await self._safe_callback(current_step)
+                else:
+                    current_step.finished_at = datetime.now()
+                    thinking_steps.append(current_step)
+                    if self.on_thinking:
+                        await self._safe_callback(current_step)
+                    messages.append({"role": "assistant", "content": result.content or ""})
+                    messages.append({"role": "user", "content": self._get_next_step_prompt(iteration)})
 
             if self._skip_current_step:
                 self._skip_current_step = False
@@ -657,7 +718,15 @@ class DeepThinkAgent:
                     )
 
                 logger.info("[DEEP_THINK] Using streaming LLM call")
-                async for delta in self.llm_client.stream_chat_async(prompt="", messages=messages):
+                async for delta in self.llm_client.stream_chat_async(
+                    prompt="", messages=messages,
+                    enable_thinking=self.enable_thinking,
+                    thinking_budget=self.thinking_budget,
+                    on_reasoning_delta=lambda chunk: (
+                        self.on_reasoning_delta(iteration, chunk)
+                        if self.on_reasoning_delta else None
+                    ),
+                ):
                     response_text += delta
                     if self.on_thinking_delta:
                         await self._safe_delta_callback(iteration, delta)
@@ -877,7 +946,15 @@ Respond with ONLY a JSON object:
                     )
 
                 response_text = ""
-                async for delta in self.llm_client.stream_chat_async(prompt="", messages=messages):
+                async for delta in self.llm_client.stream_chat_async(
+                    prompt="", messages=messages,
+                    enable_thinking=self.enable_thinking,
+                    thinking_budget=self.thinking_budget,
+                    on_reasoning_delta=lambda chunk: (
+                        self.on_reasoning_delta(iteration + 1, chunk)
+                        if self.on_reasoning_delta else None
+                    ),
+                ):
                     response_text += delta
                     if self.on_thinking_delta:
                         await self._safe_delta_callback(iteration + 1, delta)
@@ -1839,6 +1916,48 @@ When ready to answer:
         if tool_match:
             payload["action"] = {"tool": tool_match.group(1), "params": {}}
         return payload or None
+
+    @staticmethod
+    def _try_parse_structured_actions(content: str) -> List[Dict[str, Any]]:
+        """Try to parse LLMStructuredResponse-style JSON actions from text.
+
+        Returns a list of action dicts [{name, parameters}] or empty list
+        if the content is not a valid structured response.
+        """
+        text = (content or "").strip()
+        if not text or not text.startswith("{"):
+            return []
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start == -1 or end <= start:
+                return []
+            try:
+                payload = json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                return []
+
+        if not isinstance(payload, dict):
+            return []
+        actions_raw = payload.get("actions")
+        if not isinstance(actions_raw, list) or not actions_raw:
+            return []
+
+        result: List[Dict[str, Any]] = []
+        for action in actions_raw:
+            if not isinstance(action, dict):
+                continue
+            name = action.get("name") or ""
+            if not name:
+                continue
+            result.append({
+                "name": str(name),
+                "parameters": action.get("parameters") or {},
+                "kind": action.get("kind", "tool_operation"),
+            })
+        return result
 
     def _extract_json(self, text: str) -> str:
         """Extract the first complete top-level JSON object."""
