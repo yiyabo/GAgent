@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import re
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -42,6 +43,37 @@ from app.services.deep_think_agent import (
     DeepThinkResult,
 )
 from tool_box import execute_tool
+
+_DEEP_THINK_MAX_ITER_DEFAULT = 64
+_DEEP_THINK_MAX_ITER_CAP = 128
+
+
+def _resolve_deep_think_max_iterations() -> int:
+    """
+    Each iteration is roughly one LLM turn (optionally plus tool execution).
+    Override with env DEEP_THINK_MAX_ITERATIONS (1..128).
+    """
+    raw = (os.getenv("DEEP_THINK_MAX_ITERATIONS") or "").strip()
+    if not raw:
+        return _DEEP_THINK_MAX_ITER_DEFAULT
+    try:
+        parsed = int(raw, 10)
+    except ValueError:
+        return _DEEP_THINK_MAX_ITER_DEFAULT
+    return max(1, min(parsed, _DEEP_THINK_MAX_ITER_CAP))
+
+
+def _claude_code_job_stream_loggers(job_id: str) -> Tuple[Any, Any]:
+    """Stdout/stderr hooks for claude_code when a plan decomposition job log stream is active."""
+
+    async def on_stdout(line: str) -> None:
+        plan_decomposition_jobs.append_log(job_id, "stdout", line, {})
+
+    async def on_stderr(line: str) -> None:
+        plan_decomposition_jobs.append_log(job_id, "stderr", line, {})
+
+    return on_stdout, on_stderr
+
 
 from .action_execution import (
     append_summary_to_reply as _append_summary_to_reply_fn,
@@ -427,24 +459,9 @@ class StructuredChatAgent:
                 if not current_job_id:
                     current_job_id, _ = self._resolve_job_meta()
                 if current_job_id:
-                    async def log_stdout(line: str):
-                        plan_decomposition_jobs.append_log(
-                            current_job_id,
-                            "stdout",
-                            line,
-                            {},
-                        )
-
-                    async def log_stderr(line: str):
-                        plan_decomposition_jobs.append_log(
-                            current_job_id,
-                            "stderr",
-                            line,
-                            {},
-                        )
-
-                    prepared_params["on_stdout"] = log_stdout
-                    prepared_params["on_stderr"] = log_stderr
+                    out_cb, err_cb = _claude_code_job_stream_loggers(current_job_id)
+                    prepared_params["on_stdout"] = out_cb
+                    prepared_params["on_stderr"] = err_cb
 
                 return prepared_params, original_task
 
@@ -529,24 +546,9 @@ class StructuredChatAgent:
         if not current_job_id:
             current_job_id, _ = self._resolve_job_meta()
         if current_job_id:
-            async def log_stdout(line: str):
-                plan_decomposition_jobs.append_log(
-                    current_job_id,
-                    "stdout",
-                    line,
-                    {},
-                )
-
-            async def log_stderr(line: str):
-                plan_decomposition_jobs.append_log(
-                    current_job_id,
-                    "stderr",
-                    line,
-                    {},
-                )
-
-            prepared_params["on_stdout"] = log_stdout
-            prepared_params["on_stderr"] = log_stderr
+            out_cb, err_cb = _claude_code_job_stream_loggers(current_job_id)
+            prepared_params["on_stdout"] = out_cb
+            prepared_params["on_stderr"] = err_cb
 
         return prepared_params, original_task
 
@@ -1569,7 +1571,7 @@ class StructuredChatAgent:
                         "verify_task",
                     ],
                     tool_executor=tool_wrapper,
-                    max_iterations=24,
+                    max_iterations=_resolve_deep_think_max_iterations(),
                     tool_timeout=120,
                     on_thinking=on_thinking,
                     on_thinking_delta=on_thinking_delta,

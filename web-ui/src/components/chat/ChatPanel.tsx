@@ -295,7 +295,11 @@ const ChatPanel: React.FC = () => {
         ) : (
           <>
             {messages.map((message) => (
-              <ChatMessage key={message.id} message={message} />
+              <ChatMessage
+                key={message.id}
+                message={message}
+                sessionId={currentSession?.session_id ?? currentSession?.id ?? null}
+              />
             ))}
             
            

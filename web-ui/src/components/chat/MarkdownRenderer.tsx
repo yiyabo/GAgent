@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -6,10 +6,58 @@ import rehypeKatex from 'rehype-katex';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import 'katex/dist/katex.min.css';
+import { resolveArtifactImageSrc } from '@/utils/artifactImageUrl';
 
 interface MarkdownRendererProps {
     content: string;
     className?: string;
+    /** When set, relative markdown image paths resolve to `/artifacts/sessions/.../file`. */
+    sessionId?: string | null;
+}
+
+function MarkdownArtifactImage({
+    src,
+    alt,
+    sessionId,
+}: {
+    src?: string;
+    alt?: string;
+    sessionId?: string | null;
+}) {
+    const [broken, setBroken] = useState(false);
+    const resolved =
+        typeof src === 'string' && src.trim()
+            ? resolveArtifactImageSrc(src, sessionId ?? null)
+            : '';
+    if (!resolved) {
+        return null;
+    }
+    if (broken) {
+        return (
+            <span
+                style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', margin: '8px 0' }}
+                title={resolved}
+            >
+                [Image failed to load] {alt || resolved}
+            </span>
+        );
+    }
+    return (
+        <img
+            src={resolved}
+            alt={alt ?? ''}
+            loading="lazy"
+            decoding="async"
+            onError={() => setBroken(true)}
+            style={{
+                maxWidth: '100%',
+                height: 'auto',
+                borderRadius: 8,
+                display: 'block',
+                margin: '8px 0',
+            }}
+        />
+    );
 }
 
 /**
@@ -60,7 +108,7 @@ const preprocessLaTeX = (content: string): string => {
     return processed;
 };
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className }) => {
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className, sessionId }) => {
     // Preprocess content to normalize LaTeX delimiters
     const processedContent = preprocessLaTeX(content);
 
@@ -70,6 +118,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[rehypeKatex]}
                 components={{
+                    img({ src, alt }) {
+                        return (
+                            <MarkdownArtifactImage
+                                src={typeof src === 'string' ? src : undefined}
+                                alt={typeof alt === 'string' ? alt : undefined}
+                                sessionId={sessionId}
+                            />
+                        );
+                    },
                     // Code block with syntax highlighting
                     code(props) {
                         const { children, className: codeClassName, ...rest } = props;
