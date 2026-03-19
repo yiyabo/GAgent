@@ -164,17 +164,12 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
 
             agent._current_user_message = message_to_send
 
-            # Routing: plan-bound sessions use the full agent loop with
-            # tool access; sessions without a plan use the lightweight path.
-            if agent.plan_session.plan_id is not None:
-                logger.info("[CHAT] Unified agent stream (plan-bound)")
-                async for chunk in agent.process_unified_stream(message_to_send):
-                    yield chunk
-                return
-
-            # No plan context: lightweight chat with thinking enabled
-            logger.info("[CHAT] Simple chat stream (no plan context)")
-            async for chunk in agent.stream_simple_chat(message_to_send):
+            # Unified stream runs DeepThink + real tool execution (web_search, etc.).
+            # Plan binding adds plan_operation / task context; without a plan, tools still run.
+            # The lightweight `stream_simple_chat` path does not execute tools and is not used here.
+            log_ctx = "plan-bound" if agent.plan_session.plan_id is not None else "no-plan"
+            logger.info("[CHAT] Unified agent stream (%s)", log_ctx)
+            async for chunk in agent.process_unified_stream(message_to_send):
                 yield chunk
             return
         except Exception as exc:  # pragma: no cover - defensive

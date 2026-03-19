@@ -106,6 +106,107 @@ def build_prompt(agent: Any, user_message: str) -> str:
     return prompt
 
 
+def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
+    """
+    Prompt for plan-unbound *stream_simple_chat*: plain-language replies only.
+
+    Must not ask for structured JSON; the stream path does not parse tool actions.
+    """
+    plan_bound = agent.plan_session.plan_id is not None
+    history_text = format_history(agent)
+
+    memories = agent.extra_context.pop("memories", None)
+    memory_section = format_memories(memories) if memories else ""
+
+    ctx_copy = dict(agent.extra_context)
+    context_text = json.dumps(ctx_copy, ensure_ascii=False, indent=2)
+
+    plan_outline = agent.plan_session.outline(max_depth=4, max_nodes=100)
+    plan_status = compose_plan_status(agent, plan_bound)
+    plan_catalog = compose_plan_catalog(agent, plan_bound)
+
+    prompt_parts = [
+        "You are a helpful AI assistant for research planning and bioinformatics workflows.",
+        f"Current mode: {agent.mode}",
+        f"Conversation ID: {agent.conversation_id or 'N/A'}",
+        f"Session binding: {plan_status}",
+        "",
+        "=== OUTPUT FORMAT (STRICT) ===",
+        "This channel does NOT execute tools (no web_search, no file access, no APIs).",
+        "Reply in plain natural language only. Markdown is allowed.",
+        "Do NOT output JSON, YAML, or XML. Do NOT wrap the reply in code fences unless showing a short code sample.",
+        "Do NOT emit tool call payloads or {\"llm_reply\": ...} schemas — they will be shown raw to the user and will break the UI.",
+        "If the user needs live web data or tool runs, say clearly that they should open or bind a research plan in the app for full agent mode.",
+        "",
+        f"Extra context:\n{context_text}",
+    ]
+    if memory_section:
+        prompt_parts.append(memory_section)
+
+    prompt_parts.extend(
+        [
+            f"History (latest {agent.MAX_HISTORY} messages):\n{history_text}",
+            "\n=== Plan Overview ===",
+            plan_outline,
+        ]
+    )
+    if plan_catalog:
+        prompt_parts.append(plan_catalog)
+
+    prompt_parts.extend(
+        [
+            f"\nUser message: {user_message}",
+            "\nRespond in plain language now.",
+        ]
+    )
+    prompt = "\n".join(prompt_parts)
+    if len(prompt) > _MAX_PROMPT_CHARS:
+        logger.warning(
+            "Simple stream chat prompt too long (%d chars), truncating plan outline.",
+            len(prompt),
+        )
+        outline_marker = "\n=== Plan Overview ==="
+        idx = prompt.find(outline_marker)
+        if idx != -1:
+            end_idx = prompt.find("\n\nUser message:", idx)
+            if end_idx != -1:
+                prompt = (
+                    prompt[:idx]
+                    + "\n=== Plan Overview ===\n[Omitted due to prompt size limit]\n"
+                    + prompt[end_idx:]
+                )
+        if len(prompt) > _MAX_PROMPT_CHARS:
+            prompt = prompt[:_MAX_PROMPT_CHARS] + "\n... [TRUNCATED]\nRespond in plain language now."
+    return prompt
+
+
+def coerce_plain_text_chat_response(raw: str) -> str:
+    """
+    If the model ignored instructions and returned structured-agent JSON, extract
+    llm_reply.message so we do not persist or display raw JSON to users.
+    """
+    if not raw:
+        return raw
+    stripped = raw.strip()
+    if not stripped:
+        return stripped
+    cleaned = strip_code_fence(stripped)
+    if not cleaned.startswith("{"):
+        return stripped
+    try:
+        obj = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return stripped
+    if not isinstance(obj, dict):
+        return stripped
+    lr = obj.get("llm_reply")
+    if isinstance(lr, dict):
+        msg = lr.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
+    return stripped
+
+
 def format_memories(memories: List[Dict[str, Any]]) -> str:
     """Format memory list into prompt text."""
     if not memories:
