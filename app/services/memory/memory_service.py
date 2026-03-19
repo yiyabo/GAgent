@@ -33,6 +33,28 @@ from ..embeddings import get_embeddings_service
 logger = logging.getLogger(__name__)
 
 
+def _coerce_memory_embedding_for_query(
+    query_embedding: List[float],
+    raw_vector: Any,
+) -> Optional[List[float]]:
+    """
+    Return stored embedding as list only if its length matches the query vector.
+    Avoids silent truncation in semantic search (incompatible with SimilarityCalculator).
+    """
+    if not query_embedding:
+        return None
+    expected = len(query_embedding)
+    if isinstance(raw_vector, str):
+        try:
+            parsed = json.loads(raw_vector)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        raw_vector = parsed
+    if not isinstance(raw_vector, list) or len(raw_vector) != expected:
+        return None
+    return raw_vector
+
+
 class IntegratedMemoryService:
     """memoryservice - , support session """
 
@@ -414,6 +436,108 @@ Return the analysis result in JSON format:
 
         return " | ".join(parts)
 
+    def _embedding_text_from_memory_row(self, row: sqlite3.Row) -> str:
+        """Build the same embedding text used for a MemoryNote from a SQL row."""
+        content = str(row["content"] or "")
+        try:
+            keywords = json.loads(row["keywords"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            keywords = []
+        if not isinstance(keywords, list):
+            keywords = []
+        context = str(row["context"] or "General")
+        try:
+            tags = json.loads(row["tags"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            tags = []
+        if not isinstance(tags, list):
+            tags = []
+
+        parts: List[str] = [content]
+        if keywords:
+            parts.append(f": {', '.join(str(k) for k in keywords)}")
+        if context and context != "General":
+            parts.append(f": {context}")
+        if tags:
+            parts.append(f": {', '.join(str(t) for t in tags)}")
+        return " | ".join(parts)
+
+    async def reembed_memory_embeddings(
+        self,
+        session_id: Optional[str] = None,
+        *,
+        limit: Optional[int] = None,
+    ) -> Dict[str, int]:
+        """
+        Recompute and store embeddings for all memories that already have a row in
+        memory_embeddings, using the current embedding client configuration.
+
+        Use after changing QWEN_EMBEDDING_MODEL / QWEN_EMBEDDING_DIM or switching away
+        from a mixed local/API embedding history.
+        """
+        updated = 0
+        skipped = 0
+        errors = 0
+        model_label = getattr(
+            getattr(self.embeddings_service, "api_client", None),
+            "model",
+            None,
+        )
+        if not isinstance(model_label, str) or not model_label.strip():
+            model_label = "reembedded"
+
+        with self._get_conn(session_id) as conn:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.content, m.keywords, m.context, m.tags
+                FROM memories m
+                INNER JOIN memory_embeddings me ON m.id = me.memory_id
+                WHERE m.embedding_generated = 1
+                ORDER BY m.created_at ASC
+                """
+            ).fetchall()
+
+        for idx, row in enumerate(rows):
+            if limit is not None and idx >= limit:
+                break
+            memory_id = row["id"]
+            try:
+                text = self._embedding_text_from_memory_row(row)
+                embedding = self.embeddings_service.get_single_embedding(text)
+                if not embedding:
+                    skipped += 1
+                    continue
+                embedding_json = json.dumps(embedding)
+                with self._get_conn(session_id) as conn:
+                    conn.execute(
+                        """
+                        UPDATE memory_embeddings
+                        SET embedding_vector = ?, embedding_model = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE memory_id = ?
+                        """,
+                        (embedding_json, model_label, memory_id),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE memories SET embedding_model = ? WHERE id = ?
+                        """,
+                        (model_label, memory_id),
+                    )
+                    conn.commit()
+                updated += 1
+            except Exception as exc:
+                logger.warning("reembed failed for memory %s: %s", memory_id, exc)
+                errors += 1
+
+        logger.info(
+            "reembed_memory_embeddings finished: updated=%s skipped=%s errors=%s session_id=%s",
+            updated,
+            skipped,
+            errors,
+            session_id,
+        )
+        return {"updated": updated, "skipped": skipped, "errors": errors}
+
     async def _semantic_search(
         self, query: str, where_conditions: List[str], params: List[Any], limit: int, min_similarity: float,
         session_id: Optional[str] = None
@@ -441,10 +565,20 @@ Return the analysis result in JSON format:
                 rows = conn.execute(query_sql, params).fetchall()
 
             results = []
+            skipped_mismatch = 0
             for row in rows:
                 try:
-                    embedding_vector = json.loads(row["embedding_vector"])
-                    similarity = self.embeddings_service.compute_similarity(query_embedding, embedding_vector)
+                    embedding_vector = _coerce_memory_embedding_for_query(
+                        query_embedding,
+                        row["embedding_vector"],
+                    )
+                    if embedding_vector is None:
+                        skipped_mismatch += 1
+                        continue
+
+                    similarity = self.embeddings_service.compute_similarity(
+                        query_embedding, embedding_vector
+                    )
 
                     if similarity >= min_similarity:
                         memory_data = {
@@ -464,6 +598,15 @@ Return the analysis result in JSON format:
                 except Exception as e:
                     logger.warning(f"Error processing memory row: {e}")
                     continue
+
+            if skipped_mismatch:
+                logger.debug(
+                    "Semantic search skipped %d memory row(s) with missing or incompatible "
+                    "embedding dimension (query_dim=%d). Re-run scripts/reembed_memory_embeddings.py "
+                    "to align stored vectors with the current embedding client.",
+                    skipped_mismatch,
+                    len(query_embedding),
+                )
 
             results.sort(key=lambda x: x["similarity"], reverse=True)
             return results[:limit]
