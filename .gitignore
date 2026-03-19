@@ -54,3 +54,6 @@ tmp
 .claude/worktrees/
 reference/result-interpreter/
 .codex/environments/environment.toml
+PhageAgent_大图归一化方案.md
+tmp_extract_fig2_examples.R
+todo.md

@@ -17,6 +17,7 @@ import MessageAvatar from './MessageAvatar';
 import ToolProgressCard, { BackgroundDispatchCard } from './ToolProgressCard';
 import MessageActions from './MessageActions';
 import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
+import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
 
 const { Text } = Typography;
 
@@ -112,6 +113,10 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
         : [],
     [metadata?.tool_results],
   );
+  const normalizedAssistantContent = useMemo(
+    () => (type === 'assistant' ? extractLlmReplyMessage(content) : content),
+    [type, content],
+  );
   const analysisText =
     typeof (metadata as any)?.analysis_text === 'string'
       ? ((metadata as any)?.analysis_text as string)
@@ -119,9 +124,16 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
   const finalSummary =
     typeof (metadata as any)?.final_summary === 'string'
       ? ((metadata as any)?.final_summary as string)
-      : (content && content.trim().length > 0 ? content : null);
+      : (normalizedAssistantContent && normalizedAssistantContent.trim().length > 0
+          ? normalizedAssistantContent
+          : null);
   const displayText =
     analysisText && analysisText.trim().length > 0 ? analysisText : finalSummary;
+  /** Coerce legacy simple-chat JSON blobs during stream or in metadata. */
+  const displayTextForUi =
+    type === 'assistant' && typeof displayText === 'string'
+      ? extractLlmReplyMessage(displayText)
+      : displayText;
   const processSummary =
     finalSummary &&
       displayText &&
@@ -270,7 +282,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
   const isBackgroundDispatch = Boolean(bgCategory && (bgCategory === 'phagescope' || bgCategory === 'claude_code' || bgCategory === 'task_creation'));
 
   const renderSummary = () => {
-    if (!displayText) return null;
+    if (!displayTextForUi) return null;
     if (isStreaming) {
       return (
         <div
@@ -280,14 +292,14 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
             wordBreak: 'break-word',
           }}
         >
-          {displayText}
+          {displayTextForUi}
           <span className="stream-cursor">▍</span>
         </div>
       );
     }
     return (
       <div style={{ marginTop: 4 }}>
-        <MarkdownRenderer content={displayText} />
+        <MarkdownRenderer content={displayTextForUi} />
       </div>
     );
   };
@@ -309,7 +321,8 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message }) => {
     if (unifiedStream) {
       return null;
     }
-    return <MarkdownRenderer content={content} />;
+    const body = type === 'assistant' ? normalizedAssistantContent : content;
+    return <MarkdownRenderer content={body} />;
   };
 
   // Render metadata.

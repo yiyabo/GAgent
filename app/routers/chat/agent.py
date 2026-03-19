@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
@@ -101,6 +101,8 @@ from .plan_helpers import (
 )
 from .prompt_builder import (
     build_prompt as _build_prompt_fn,
+    build_simple_stream_chat_prompt as _build_simple_stream_chat_prompt_fn,
+    coerce_plain_text_chat_response as _coerce_plain_text_chat_response_fn,
     compose_action_catalog as _compose_action_catalog_fn,
     compose_guidelines as _compose_guidelines_fn,
     compose_plan_catalog as _compose_plan_catalog_fn,
@@ -129,6 +131,32 @@ from .session_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _build_simple_chat_thinking_process(reasoning_text: str) -> Optional[Dict[str, Any]]:
+    """Shape matches frontend `_hydrateThinkingProcess` / Extended Thinking (iteration 0)."""
+    text = (reasoning_text or "").strip()
+    if not text:
+        return None
+    iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return {
+        "status": "completed",
+        "total_iterations": 1,
+        "steps": [
+            {
+                "iteration": 0,
+                "thought": text,
+                "action": None,
+                "action_result": None,
+                "status": "done",
+                "timestamp": iso,
+                "started_at": iso,
+                "finished_at": iso,
+                "self_correction": None,
+            }
+        ],
+    }
+
 
 class StructuredChatAgent:
     """Plan conversation agent using a structured schema."""
@@ -1753,15 +1781,18 @@ class StructuredChatAgent:
         is not needed. Thinking budget is smaller to keep latency low.
         """
 
-        prompt = self._build_prompt(user_message)
+        prompt = _build_simple_stream_chat_prompt_fn(self, user_message)
         model_override = self.extra_context.get("default_base_model")
         enable_thinking = self._resolve_thinking_enabled()
         thinking_budget = self._resolve_thinking_budget_simple()
 
         queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
 
         async def _on_reasoning(chunk: str) -> None:
+            if chunk:
+                reasoning_parts.append(chunk)
             await queue.put(_sse_message({
                 "type": "reasoning_delta",
                 "iteration": 0,
@@ -1800,33 +1831,49 @@ class StructuredChatAgent:
             yield item
 
         full_response = "".join(content_parts)
+        display_text = _coerce_plain_text_chat_response_fn(full_response)
+        reasoning_text = "".join(reasoning_parts)
+        thinking_process = _build_simple_chat_thinking_process(reasoning_text)
 
-        if self.session_id and full_response:
+        if self.session_id and display_text:
             try:
                 from .session_helpers import _save_chat_message
+                save_meta: Dict[str, Any] = {
+                    "plan_id": self.plan_session.plan_id,
+                    "thinking_enabled": enable_thinking,
+                    "unified_stream": True,
+                    "status": "completed",
+                    "analysis_text": display_text,
+                    "final_summary": display_text,
+                }
+                if thinking_process is not None:
+                    save_meta["thinking_process"] = thinking_process
                 _save_chat_message(
                     self.session_id,
                     "assistant",
-                    full_response,
-                    metadata={
-                        "plan_id": self.plan_session.plan_id,
-                        "thinking_enabled": enable_thinking,
-                    },
+                    display_text,
+                    metadata=save_meta,
                 )
             except Exception as save_err:
                 logger.warning("[SIMPLE_CHAT] Failed to save response: %s", save_err)
 
         plan_tree = getattr(self, "plan_tree", None)
         plan_title = plan_tree.title if plan_tree else None
+        meta: Dict[str, Any] = {
+            "plan_id": self.plan_session.plan_id,
+            "plan_title": plan_title,
+            "status": "completed",
+            "unified_stream": True,
+            "analysis_text": display_text,
+            "final_summary": display_text,
+        }
+        if thinking_process is not None:
+            meta["thinking_process"] = thinking_process
         payload = {
-            "llm_reply": {"message": full_response},
+            "llm_reply": {"message": display_text},
+            "response": display_text,
             "actions": [],
-            "metadata": {
-                "plan_id": self.plan_session.plan_id,
-                "plan_title": plan_title,
-                "status": "completed",
-                "unified_stream": True,
-            },
+            "metadata": meta,
         }
         yield _sse_message({"type": "final", "payload": payload})
 
