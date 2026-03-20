@@ -7,6 +7,8 @@ import {
 } from '@/types';
 import {
   streamChatEvents,
+  streamRunEvents,
+  postChatRun,
   buildToolResultsCache,
   resolveHistoryCursor,
 } from '../../chatUtils';
@@ -32,6 +34,95 @@ import {
   processFinalPayload,
 } from './streamHandlers';
 import type { StreamMutableState, StreamHandlerContext } from './types';
+import type { ChatStreamEvent } from '../../chatUtils';
+
+const _consumeUnifiedStream = async (
+  ctx: StreamHandlerContext,
+  source: AsyncIterable<{ seq: number | null; event: ChatStreamEvent }>
+): Promise<void> => {
+  for await (const { event } of source) {
+    if (event.type === 'start') {
+      continue;
+    }
+    if (event.type === 'delta') {
+      handleDelta(ctx, event);
+      continue;
+    }
+    if (event.type === 'job_update') {
+      await handleJobUpdate(ctx, event);
+      continue;
+    }
+    if (event.type === 'final') {
+      flushPendingThinkingDeltas(ctx);
+      if (handleFinal(ctx, event)) {
+        break;
+      }
+      continue;
+    }
+    if (event.type === 'thinking_step') {
+      handleThinkingStep(ctx, event);
+      continue;
+    }
+    if (event.type === 'thinking_delta') {
+      handleThinkingDelta(ctx, event);
+      continue;
+    }
+    if (event.type === 'reasoning_delta') {
+      handleReasoningDelta(ctx, event);
+      continue;
+    }
+    if (event.type === 'control_ack') {
+      handleControlAck(ctx, event);
+      continue;
+    }
+    if (event.type === 'tool_output') {
+      handleToolOutput(ctx, event);
+      continue;
+    }
+    if (event.type === 'artifact') {
+      window.dispatchEvent(new CustomEvent('artifactProduced', { detail: event }));
+      continue;
+    }
+    if (event.type === 'error') {
+      throw new Error((event as { message?: string }).message || 'Stream error');
+    }
+  }
+};
+
+const _finalizeAfterUnifiedStream = async (
+  ctx: StreamHandlerContext,
+  state: StreamMutableState,
+  boundFlush: (force?: boolean) => void
+): Promise<void> => {
+  if (state.flushHandle !== null) {
+    window.cancelAnimationFrame(state.flushHandle);
+    state.flushHandle = null;
+  }
+  if (state.thinkingDeltaFlushHandle !== null) {
+    window.clearTimeout(state.thinkingDeltaFlushHandle);
+    state.thinkingDeltaFlushHandle = null;
+  }
+  flushPendingThinkingDeltas(ctx);
+  boundFlush(true);
+
+  if (state.isBackgroundDispatch) {
+    processBackgroundDispatch(ctx);
+    return;
+  }
+
+  if (!state.finalPayload && !state.jobFinalized) {
+    throw new Error('No final response received');
+  }
+  if (state.jobFinalized) {
+    ctx.set({ isProcessing: false });
+    return;
+  }
+  if (!state.finalPayload) {
+    throw new Error('No final response received');
+  }
+
+  await processFinalPayload(ctx);
+};
 
 const _normalizeThinkingProcessStatus = (status: any): 'active' | 'completed' | 'error' => {
   if (status === 'completed' || status === 'done') return 'completed';
@@ -292,9 +383,15 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   historyBeforeId: nextBeforeId ?? null,
   historyHasMore: hasMore,
   });
+  if (!append) {
+  void get().resumeActiveChatRunIfAny(sessionId);
+  }
   } else {
   set({ historyHasMore: false, historyBeforeId: null });
-  if (!append) set({ messages: [] });
+  if (!append) {
+  set({ messages: [] });
+  void get().resumeActiveChatRunIfAny(sessionId);
+  }
   }
   } catch (error) {
   console.error('loadfailed:', error);
@@ -431,34 +528,31 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   scheduleFlush: boundScheduleFlush,
   };
 
+  const apiSessionId = currentSession?.session_id ?? currentSession?.id ?? undefined;
+  let eventSource: AsyncIterable<{ seq: number | null; event: ChatStreamEvent }>;
+  if (apiSessionId) {
+  const { run_id } = await postChatRun(chatRequest);
+  const prevMeta =
+  (get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;
+  get().updateMessage(assistantMessageId, {
+  metadata: {
+  ...prevMeta,
+  chat_run_id: run_id,
+  unified_stream: true,
+  status: 'pending',
+  },
+  });
+  eventSource = streamRunEvents(apiSessionId, run_id, -1);
+  } else {
+  eventSource = (async function* () {
   for await (const event of streamChatEvents(chatRequest)) {
-  if (event.type === 'delta') { handleDelta(ctx, event); continue; }
-  if (event.type === 'job_update') { await handleJobUpdate(ctx, event); continue; }
-  if (event.type === 'final') { flushPendingThinkingDeltas(ctx); if (handleFinal(ctx, event)) break; continue; }
-  if (event.type === 'thinking_step') { handleThinkingStep(ctx, event); continue; }
-  if (event.type === 'thinking_delta') { handleThinkingDelta(ctx, event); continue; }
-  if (event.type === 'reasoning_delta') { handleReasoningDelta(ctx, event); continue; }
-  if (event.type === 'control_ack') { handleControlAck(ctx, event); continue; }
-  if (event.type === 'tool_output') { handleToolOutput(ctx, event); continue; }
-  if (event.type === 'artifact') { window.dispatchEvent(new CustomEvent('artifactProduced', { detail: event })); continue; }
-  if (event.type === 'error') throw new Error(event.message || 'Stream error');
+  yield { seq: null, event };
+  }
+  })();
   }
 
-  if (state.flushHandle !== null) { window.cancelAnimationFrame(state.flushHandle); state.flushHandle = null; }
-  if (state.thinkingDeltaFlushHandle !== null) { window.clearTimeout(state.thinkingDeltaFlushHandle); state.thinkingDeltaFlushHandle = null; }
-  flushPendingThinkingDeltas(ctx);
-  boundFlush(true);
-
-  if (state.isBackgroundDispatch) {
-  processBackgroundDispatch(ctx);
-  return;
-  }
-
-  if (!state.finalPayload && !state.jobFinalized) throw new Error('No final response received');
-  if (state.jobFinalized) { set({ isProcessing: false }); return; }
-  if (!state.finalPayload) throw new Error('No final response received');
-
-  await processFinalPayload(ctx);
+  await _consumeUnifiedStream(ctx, eventSource);
+  await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
   } catch (error) {
   console.error('Failed to send message:', error);
   set({ isProcessing: false });
@@ -469,6 +563,114 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   } else {
   get().addMessage({ id: `msg_${Date.now()}_assistant`, type: 'assistant', content: errorContent, timestamp: new Date() });
   }
+  }
+  },
+
+  resumeActiveChatRunIfAny: async (sessionId: string) => {
+  const { isProcessing, currentSession, messages } = get();
+  if (isProcessing) {
+  return;
+  }
+  if (currentSession?.id !== sessionId) {
+  return;
+  }
+  const apiSid = currentSession?.session_id ?? currentSession?.id;
+  if (!apiSid) {
+  return;
+  }
+  let res: Response;
+  try {
+  res = await fetch(
+  `${ENV.API_BASE_URL}/chat/sessions/${encodeURIComponent(apiSid)}/runs?status=running&limit=1`
+  );
+  } catch {
+  return;
+  }
+  if (!res.ok) {
+  return;
+  }
+  const data = await res.json();
+  const run = data?.runs?.[0];
+  if (!run?.run_id) {
+  return;
+  }
+  const runId = run.run_id as string;
+  const last = messages[messages.length - 1];
+  let assistantMessageId: string;
+  if (
+  last?.type === 'assistant' &&
+  (last.metadata as any)?.chat_run_id === runId &&
+  (last.metadata as any)?.status === 'pending'
+  ) {
+  assistantMessageId = last.id;
+  } else {
+  assistantMessageId = `msg_${Date.now()}_assistant_resume`;
+  get().addMessage({
+  id: assistantMessageId,
+  type: 'assistant',
+  content: '',
+  timestamp: new Date(),
+  metadata: {
+  status: 'pending',
+  unified_stream: true,
+  chat_run_id: runId,
+  plan_message: null,
+  },
+  });
+  }
+
+  set({ isProcessing: true });
+
+  const state: StreamMutableState = {
+  streamedContent: '',
+  lastFlushedContent: '',
+  flushHandle: null,
+  thinkingDeltaFlushHandle: null,
+  pendingThinkingDeltas: {},
+  finalPayload: null,
+  jobFinalized: false,
+  isBackgroundDispatch: false,
+  };
+
+  const targetMsg = get().messages.find((m) => m.id === assistantMessageId);
+  const mergedMetadata = { ...((targetMsg?.metadata as Record<string, unknown> | undefined) ?? {}) };
+
+  const boundFlush = (force: boolean = false) => flushAnalysisText(get, assistantMessageId, state, force);
+  const boundScheduleFlush = () => scheduleFlush(state, boundFlush);
+  const boundStartPolling = (
+  trackingId: string | null | undefined,
+  messageId: string,
+  initialStatus?: ChatActionStatus,
+  initialContent?: string | null
+  ) => startActionStatusPolling(get, trackingId, messageId, initialStatus, initialContent);
+
+  const ctx: StreamHandlerContext = {
+  get,
+  set,
+  assistantMessageId,
+  mergedMetadata,
+  currentSession,
+  state,
+  startActionStatusPolling: boundStartPolling,
+  flushAnalysisText: boundFlush,
+  scheduleFlush: boundScheduleFlush,
+  };
+
+  try {
+  await _consumeUnifiedStream(ctx, streamRunEvents(apiSid, runId, -1));
+  await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
+  } catch (error) {
+  console.error('Resume chat run failed:', error);
+  set({ isProcessing: false });
+  get().updateMessage(assistantMessageId, {
+  content:
+  'Reconnect failed. Refresh the page or send a new message.\n\n' +
+  (error instanceof Error ? error.message : String(error)),
+  metadata: {
+  status: 'failed',
+  errors: [error instanceof Error ? error.message : String(error)],
+  },
+  });
   }
   },
 

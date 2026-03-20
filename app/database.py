@@ -160,6 +160,47 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_phagescope_tracking_session ON phagescope_tracking(session_id)"
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_runs (
+                run_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                user_message_id INTEGER,
+                assistant_message_id INTEGER,
+                idempotency_key TEXT,
+                error TEXT,
+                request_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP,
+                last_event_seq INTEGER NOT NULL DEFAULT -1,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_runs_session_status "
+            "ON chat_runs(session_id, status, created_at DESC)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_run_events (
+                run_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (run_id, seq),
+                FOREIGN KEY (run_id) REFERENCES chat_runs (run_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_run_events_run_seq "
+            "ON chat_run_events(run_id, seq)"
+        )
+
     try:
         cleaned = config.cleanup_old_sessions(max_age_days=30)
         if cleaned > 0:

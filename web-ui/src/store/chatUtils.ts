@@ -96,6 +96,160 @@ export const parseChatStreamEvent = (raw: string): ChatStreamEvent | null => {
     }
 };
 
+/** Parse one SSE block including optional ``id:`` (persisted seq for replay / reconnect). */
+export const parseChatStreamEventWithSeq = (raw: string): { seq: number | null; event: ChatStreamEvent | null } => {
+    const lines = raw.split('\n');
+    let seq: number | null = null;
+    const dataLines: string[] = [];
+    for (const line of lines) {
+        const t = line.trimEnd();
+        if (t.startsWith('id:')) {
+            const n = parseInt(t.slice(3).trim(), 10);
+            if (!Number.isNaN(n)) {
+                seq = n;
+            }
+        }
+        if (t.startsWith('data:')) {
+            dataLines.push(t.slice(5).trim());
+        }
+    }
+    if (dataLines.length === 0) {
+        return { seq, event: null };
+    }
+    const payload = dataLines.join('\n');
+    try {
+        return { seq, event: JSON.parse(payload) as ChatStreamEvent };
+    } catch (error) {
+        console.warn('Failed to parse SSE payload:', error);
+        return { seq, event: { type: 'error', message: 'SSE payload parse failed' } };
+    }
+};
+
+export type ChatRunStreamItem = { seq: number | null; event: ChatStreamEvent };
+
+export async function postChatRun(request: Record<string, any>): Promise<{ run_id: string; session_id?: string }> {
+    const response = await fetch(`${ENV.API_BASE_URL}/chat/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+    });
+    if (!response.ok) {
+        throw new Error(`POST /chat/runs failed: HTTP ${response.status}`);
+    }
+    return response.json();
+}
+
+/**
+ * Replay and tail a chat run via GET SSE, reconnecting with ``after_seq`` after disconnects.
+ */
+export async function* streamRunEvents(
+    sessionId: string,
+    runId: string,
+    initialAfterSeq: number = -1,
+    maxRetriesPerFetch: number = 8
+): AsyncGenerator<ChatRunStreamItem> {
+    let afterSeq = initialAfterSeq;
+    let terminal = false;
+
+    while (!terminal) {
+        let attempt = 0;
+        let receivedAnyInFetch = false;
+        while (attempt < maxRetriesPerFetch) {
+            try {
+                const qs = new URLSearchParams({
+                    session_id: sessionId,
+                    after_seq: String(afterSeq),
+                });
+                const response = await fetch(
+                    `${ENV.API_BASE_URL}/chat/runs/${encodeURIComponent(runId)}/events?${qs.toString()}`,
+                    {
+                        method: 'GET',
+                        headers: { Accept: 'text/event-stream' },
+                    }
+                );
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                if (!response.body) {
+                    throw new Error('Empty stream body');
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                try {
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) {
+                            break;
+                        }
+                        buffer += decoder.decode(value, { stream: true });
+                        let boundary = buffer.indexOf('\n\n');
+                        while (boundary !== -1) {
+                            const rawEvent = buffer.slice(0, boundary);
+                            buffer = buffer.slice(boundary + 2);
+                            const { seq, event } = parseChatStreamEventWithSeq(rawEvent);
+                            if (event) {
+                                receivedAnyInFetch = true;
+                                if (typeof seq === 'number') {
+                                    afterSeq = seq;
+                                }
+                                yield { seq, event };
+                                if (event.type === 'final' || event.type === 'error') {
+                                    terminal = true;
+                                    return;
+                                }
+                            }
+                            boundary = buffer.indexOf('\n\n');
+                        }
+                    }
+                    if (buffer.trim().length > 0) {
+                        const { seq, event } = parseChatStreamEventWithSeq(buffer);
+                        if (event) {
+                            receivedAnyInFetch = true;
+                            if (typeof seq === 'number') {
+                                afterSeq = seq;
+                            }
+                            yield { seq, event };
+                            if (event.type === 'final' || event.type === 'error') {
+                                terminal = true;
+                                return;
+                            }
+                        }
+                    }
+                } finally {
+                    reader.cancel().catch(() => {});
+                }
+
+                // Normal close without terminal: run may still be executing — reconnect.
+                if (terminal) {
+                    return;
+                }
+                break;
+            } catch (error) {
+                attempt += 1;
+                if (attempt >= maxRetriesPerFetch) {
+                    throw error;
+                }
+                const delay = Math.pow(2, attempt) * 1000;
+                console.warn(
+                    `Run stream disconnected, retrying in ${delay}ms (attempt ${attempt}):`,
+                    error
+                );
+                await new Promise((r) => setTimeout(r, delay));
+            }
+        }
+
+        if (terminal) {
+            return;
+        }
+        if (!receivedAnyInFetch) {
+            await new Promise((r) => setTimeout(r, 500));
+        }
+    }
+}
+
 export const streamChatEvents = async function* (
     request: Record<string, any>,
     maxRetries: number = 3

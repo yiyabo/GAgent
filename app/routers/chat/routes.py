@@ -71,6 +71,7 @@ from .session_helpers import (
     _save_chat_message,
     _set_session_plan_id,
 )
+from .run_routes import mount_run_routes
 from .stream import chat_stream
 
 logger = logging.getLogger(__name__)
@@ -1078,6 +1079,8 @@ router.add_api_route(
     chat_stream,
     methods=["POST"],
 )
+
+mount_run_routes(router)
 
 # Action routes
 router.add_api_route(

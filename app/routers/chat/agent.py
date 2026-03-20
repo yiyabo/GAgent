@@ -10,7 +10,7 @@ import os
 import re
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
 from app.config.executor_config import get_executor_settings
@@ -877,15 +877,25 @@ class StructuredChatAgent:
     def _maybe_synthesize_phagescope_saveall_analysis(self, steps):
         return _maybe_synthesize_phagescope_saveall_analysis_fn(self, steps)
 
-    async def process_unified_stream(self, user_message: str) -> AsyncIterator[str]:
+    async def process_unified_stream(
+        self,
+        user_message: str,
+        *,
+        run_id: Optional[str] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+        event_sink: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    ) -> AsyncIterator[str]:
         """
         Unified agent loop with streaming support and extended thinking.
 
         All requests with plan context or tool requirements go through this path.
         The model decides its own thinking depth via enable_thinking.
+
+        Optional ``run_id`` aligns the Deep Think job id with a chat run id.
+        ``event_sink`` receives the same JSON payloads as SSE ``data:`` lines (dict form).
         """
         queue: asyncio.Queue[Any] = asyncio.Queue()
-        deep_think_job_id: Optional[str] = f"dt_{uuid4().hex}"
+        deep_think_job_id: Optional[str] = run_id or f"dt_{uuid4().hex}"
         deep_think_job_created = False
         deep_think_job_queue: Optional[asyncio.Queue[Any]] = None
         active_tool_iteration: Optional[int] = None
@@ -1552,6 +1562,7 @@ class StructuredChatAgent:
 
                 dt_agent = dt_agent_cls(
                     llm_client=self.llm_service,
+                    cancel_event=cancel_event,
                     available_tools=[
                         "web_search",
                         "graph_rag",
@@ -1609,28 +1620,37 @@ class StructuredChatAgent:
 
                 # Run think
                 result = await dt_agent.think(user_message, think_context)
-                if deep_think_job_created and deep_think_job_id:
-                    plan_decomposition_jobs.mark_success(
-                        deep_think_job_id,
-                        result={
-                            "final_answer": str(result.final_answer or "")[:2000],
-                            "total_iterations": result.total_iterations,
-                            "tools_used": result.tools_used,
-                            "confidence": result.confidence,
-                        },
-                        stats={
-                            "iterations": result.total_iterations,
-                            "tool_count": len(result.tools_used),
-                        },
+                if cancel_event is not None and cancel_event.is_set():
+                    if deep_think_job_created and deep_think_job_id:
+                        plan_decomposition_jobs.mark_failure(
+                            deep_think_job_id,
+                            "cancelled",
+                            result={"cancelled": True},
+                        )
+                    await queue.put({"type": "error", "error": "Run cancelled."})
+                else:
+                    if deep_think_job_created and deep_think_job_id:
+                        plan_decomposition_jobs.mark_success(
+                            deep_think_job_id,
+                            result={
+                                "final_answer": str(result.final_answer or "")[:2000],
+                                "total_iterations": result.total_iterations,
+                                "tools_used": result.tools_used,
+                                "confidence": result.confidence,
+                            },
+                            stats={
+                                "iterations": result.total_iterations,
+                                "tool_count": len(result.tools_used),
+                            },
+                        )
+                    await queue.put(
+                        {
+                            "type": "result",
+                            "result": result,
+                            "bg_category": deep_think_bg_category,
+                            "job_id": deep_think_job_id if deep_think_job_created else None,
+                        }
                     )
-                await queue.put(
-                    {
-                        "type": "result",
-                        "result": result,
-                        "bg_category": deep_think_bg_category,
-                        "job_id": deep_think_job_id if deep_think_job_created else None,
-                    }
-                )
             except Exception as e:
                 logger.exception("Deep think execution failed")
                 if deep_think_job_created and deep_think_job_id:
@@ -1657,6 +1677,11 @@ class StructuredChatAgent:
         # Start agent in background
         asyncio.create_task(run_agent())
 
+        async def _through_sink(payload: Dict[str, Any]) -> str:
+            if event_sink is not None:
+                await event_sink(payload)
+            return _sse_message(payload)
+
         # Consume queue
         while True:
             item = await queue.get()
@@ -1673,9 +1698,12 @@ class StructuredChatAgent:
                 "tool_output",
                 "artifact",
             }:
-                yield _sse_message(item)
+                out = await _through_sink(item)
+                yield out
             elif event_type == "error":
-                yield _sse_message({"type": "error", "message": item["error"]})
+                err_payload = {"type": "error", "message": item["error"]}
+                out = await _through_sink(err_payload)
+                yield out
             elif event_type == "result":
                 # Final result, yield as standard chat message
                 res: DeepThinkResult = item["result"]
@@ -1769,7 +1797,9 @@ class StructuredChatAgent:
                     "actions": [],
                     "metadata": final_metadata,
                 }
-                yield _sse_message({"type": "final", "payload": payload})
+                final_payload = {"type": "final", "payload": payload}
+                out = await _through_sink(final_payload)
+                yield out
 
     async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
         """Backward-compatible alias for process_unified_stream."""

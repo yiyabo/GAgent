@@ -10,7 +10,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import BackgroundTasks, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.config.tool_policy import get_tool_policy, is_tool_allowed
@@ -108,7 +108,11 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
     return await _routes_module.chat_message(request, background_tasks)
 
 
-async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
+async def chat_stream(
+    request: ChatRequest,
+    background_tasks: BackgroundTasks,
+    raw_request: Request,
+):
     context = dict(getattr(request, "context", None) or {})
     incoming_plan_id = _coerce_plan_id(context.get("plan_id"))
     try:
@@ -126,7 +130,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
         return StreamingResponse(_error_generator(), media_type="text/event-stream")
 
     _sync_binding_hook()
-    return await _stream_module.chat_stream(request, background_tasks)
+    return await _stream_module.chat_stream(request, background_tasks, raw_request)
 
 
 def _extract_source_action_run_id(

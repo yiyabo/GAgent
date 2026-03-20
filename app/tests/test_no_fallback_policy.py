@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
+from starlette.requests import Request
 
 from app.routers import chat_routes
 from app.execution.assemblers import CompositeAssembler
@@ -253,7 +254,23 @@ def test_chat_stream_emits_strict_error_event_without_generic_fallback(
     monkeypatch.setattr(chat_routes, "_resolve_plan_binding", _raise_binding_error)
 
     request = ChatRequest(message="hello")
-    stream_response = asyncio.run(chat_stream(request, BackgroundTasks()))
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/",
+        "raw_path": b"/",
+        "root_path": "",
+        "query_string": b"",
+        "headers": [],
+        "client": ("testclient", 50000),
+        "server": ("test", 80),
+        "state": {},
+    }
+    raw_request = Request(scope)
+    stream_response = asyncio.run(chat_stream(request, BackgroundTasks(), raw_request))
 
     async def _consume_first_chunk() -> str:
         chunk = await stream_response.body_iterator.__anext__()
