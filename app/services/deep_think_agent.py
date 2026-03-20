@@ -187,6 +187,9 @@ class DeepThinkAgent:
             "- Never use claude_code as fallback for bio_tools input-conversion/parsing failures.\n"
             "- For status polling tools, if state is unchanged across several checks, stop active polling and summarize current status.\n"
             "- For plan creation, research first (web_search), then use plan_operation.\n"
+            "- For web_search: cite verifiable sources. When stating time-sensitive or factual claims, include URLs from the tool JSON "
+            "`results` list (title/url) in your final answer. If `results` is empty and the tool response has no URLs, say sources were "
+            "not returned and avoid presenting specific claims as independently verified.\n"
         )
 
     def _build_protocol_boundary_block(self, mode: str) -> str:

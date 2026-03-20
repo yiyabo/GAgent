@@ -619,6 +619,12 @@ async def _generate_tool_analysis(
                         tool_desc += f"\n   {field}: {value}"
                 if tool_name == "web_search":
                     results = result_data.get("results")
+                    response_text = result_data.get("response") or result_data.get("answer")
+                    if isinstance(response_text, str) and response_text.strip():
+                        clip = response_text.strip()
+                        if len(clip) > 2000:
+                            clip = clip[:1997] + "..."
+                        tool_desc += f"\n   response (may lack structured citations): {clip}"
                     if isinstance(results, list) and results:
                         tool_desc += "\n   results:"
                         for item in results:
@@ -637,6 +643,11 @@ async def _generate_tool_analysis(
                                     "url": url,
                                 }
                             )
+                    else:
+                        tool_desc += (
+                            "\n   results: (empty — no structured URL list from the search tool; "
+                            "do not treat the summary as independently verifiable without links.)"
+                        )
                 else:
                     details_payload = {}
                     for field in (
@@ -661,7 +672,8 @@ async def _generate_tool_analysis(
         analysis_requirements = [
             "1. Provide a complete, in-depth analysis; do not repeat the user question.",
             "2. Clearly separate conclusions, evidence, and caveats/risks.",
-            "3. If web_search is involved, list each result and explain its value.",
+            "3. If web_search is involved, list each result (title + url) and explain its value; "
+            "if results are empty, state that no verifiable links were returned and avoid presenting claims as confirmed.",
             "4. If errors or uncertainty exist, explain why and propose next steps.",
             "5. Output at least 6 bullet points or 3 natural paragraphs.",
             "6. Use only fields present in the tool outputs; do not invent paths, modules, or metrics.",

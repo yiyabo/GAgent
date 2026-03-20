@@ -18,10 +18,15 @@ VITE_DEV_SERVER_PORT=${VITE_DEV_SERVER_PORT:-3000}
 AMEM_HOST=${AMEM_HOST:-0.0.0.0}
 AMEM_PORT=${AMEM_PORT:-8001}
 AMEM_HEALTH_TIMEOUT=${AMEM_HEALTH_TIMEOUT:-300}
+START_AMEM=${START_AMEM:-false}
 BACKEND_HEALTH_TIMEOUT=${BACKEND_HEALTH_TIMEOUT:-120}
 FRONTEND_HEALTH_TIMEOUT=${FRONTEND_HEALTH_TIMEOUT:-60}
-# Give services time to bind before first poll (amem model load is slow)
-HEALTH_CHECK_INITIAL_DELAY=${HEALTH_CHECK_INITIAL_DELAY:-15}
+# Initial delay before polling (larger when amem is enabled — model load is slow)
+if case "${START_AMEM}" in 1|true|TRUE|yes|YES|on|ON) true ;; *) false ;; esac; then
+  HEALTH_CHECK_INITIAL_DELAY=${HEALTH_CHECK_INITIAL_DELAY:-15}
+else
+  HEALTH_CHECK_INITIAL_DELAY=${HEALTH_CHECK_INITIAL_DELAY:-8}
+fi
 
 normalize_host() {
   local host="$1"
@@ -78,7 +83,7 @@ amem_host="$(normalize_host "$AMEM_HOST")"
 
 failures=0
 
-# Check fast starters first (backend/frontend), then amem (slow model load)
+# Backend / frontend first; amem only when START_AMEM is enabled
 if ! wait_for_url "backend" "http://${backend_host}:${BACKEND_PORT}/health" "$BACKEND_HEALTH_TIMEOUT"; then
   failures=$((failures + 1))
 fi
@@ -87,8 +92,12 @@ if ! wait_for_url "frontend" "http://${frontend_host}:${VITE_DEV_SERVER_PORT}/" 
   failures=$((failures + 1))
 fi
 
-if ! wait_for_url "amem" "http://${amem_host}:${AMEM_PORT}/health" "$AMEM_HEALTH_TIMEOUT"; then
-  failures=$((failures + 1))
+if case "${START_AMEM}" in 1|true|TRUE|yes|YES|on|ON) true ;; *) false ;; esac; then
+  if ! wait_for_url "amem" "http://${amem_host}:${AMEM_PORT}/health" "$AMEM_HEALTH_TIMEOUT"; then
+    failures=$((failures + 1))
+  fi
+else
+  echo "Skipping amem health check (set START_AMEM=true to require it)."
 fi
 
 if [ "$failures" -ne 0 ]; then

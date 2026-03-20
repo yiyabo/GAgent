@@ -54,7 +54,7 @@ def propose_plan_service(payload: Dict[str, Any], client: Optional[LLMProvider] 
         "- If you mention datasets or resources, name sources (e.g., NCBI/GenBank/RefSeq/ENA) and, when feasible, versions or dates.\n"
         "Rules:\n"
         "- Do not include markdown code fences.\n"
-        "- The user's goal may be in any language; write task names and prompts in the same language as the goal, but keep proper nouns and tool names as standard (often English).\n"
+        "- Write every task `name` and `prompt` in English (tooling, logs, and downstream execution), even if the user's goal is in another language; keep non-English proper nouns from the goal verbatim when needed; keep tool and database names in standard English forms.\n"
     )
 
     plan: Dict[str, Any]

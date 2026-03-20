@@ -20,32 +20,109 @@ from ..result import WebSearchResult
 logger = logging.getLogger(__name__)
 
 _EXTRACT_URL_RE = re.compile(r"(https?://[^\s\]\)]+)")
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
 
 
-def _extract_links(text: str) -> List[Dict[str, str]]:
+def _normalize_http_url(raw: str) -> str:
+    u = raw.strip().rstrip(".,;)]}\"'")
+    return u
+
+
+def _extract_links_from_text(text: str) -> List[Dict[str, str]]:
+    """Plain URLs and markdown [label](url) from assistant text."""
     links: List[Dict[str, str]] = []
+    seen: set[str] = set()
     for match in _EXTRACT_URL_RE.findall(text):
-        url = match.strip().rstrip(".,)")
+        url = _normalize_http_url(match)
+        if not url.startswith("http") or url in seen:
+            continue
+        seen.add(url)
         source = urlparse(url).netloc or "web"
-        links.append(
-            {
-                "title": source,
-                "url": url,
-                "snippet": "",
-                "source": source,
-            }
-        )
+        links.append({"title": source, "url": url, "snippet": "", "source": source})
+    for m in _MD_LINK_RE.finditer(text):
+        label = (m.group(1) or "").strip()
+        url = _normalize_http_url(m.group(2))
+        if not url.startswith("http") or url in seen:
+            continue
+        seen.add(url)
+        source = urlparse(url).netloc or "web"
+        title = label or source
+        links.append({"title": title, "url": url, "snippet": "", "source": source})
     return links
 
 
-def extract_answer_from_responses_payload(data: Dict[str, Any], max_results: int) -> Tuple[str, List[Dict[str, Any]]]:
+def _append_ref(
+    refs: List[Dict[str, Any]],
+    seen_urls: set[str],
+    url: str,
+    *,
+    title: str,
+    snippet: str,
+    max_results: int,
+) -> bool:
+    if len(refs) >= max_results:
+        return False
+    u = _normalize_http_url(url)
+    if not u.startswith("http") or u in seen_urls:
+        return False
+    seen_urls.add(u)
+    t = (title or "").strip() or urlparse(u).netloc or "web"
+    sn = (snippet or "").strip()
+    if len(sn) > 1200:
+        sn = sn[:1200] + "..."
+    refs.append(
+        {
+            "title": t,
+            "url": u,
+            "snippet": sn,
+            "source": urlparse(u).netloc or "web",
+        }
+    )
+    return True
+
+
+def _collect_urls_from_object(obj: Any, refs: List[Dict[str, Any]], seen_urls: set[str], max_results: int) -> None:
+    """Depth-first scan for dicts carrying url / source_url / link / href (API-specific nesting)."""
+    if len(refs) >= max_results:
+        return
+    if isinstance(obj, dict):
+        url = obj.get("url") or obj.get("source_url") or obj.get("link") or obj.get("href")
+        if isinstance(url, str):
+            title = str(
+                obj.get("title")
+                or obj.get("name")
+                or obj.get("headline")
+                or obj.get("site_name")
+                or ""
+            )
+            snippet = str(
+                obj.get("snippet")
+                or obj.get("summary")
+                or obj.get("content")
+                or obj.get("description")
+                or obj.get("text")
+                or ""
+            )
+            _append_ref(refs, seen_urls, url, title=title, snippet=snippet, max_results=max_results)
+        for v in obj.values():
+            _collect_urls_from_object(v, refs, seen_urls, max_results)
+    elif isinstance(obj, list):
+        for v in obj:
+            _collect_urls_from_object(v, refs, seen_urls, max_results)
+
+
+def extract_answer_from_responses_payload(
+    data: Dict[str, Any], max_results: int
+) -> Tuple[str, List[Dict[str, Any]], Dict[str, int]]:
     """
-    Parse DashScope / OpenAI-compatible Responses JSON: output[].content[] (output_text + annotations).
-    Exported for unit tests.
+    Parse DashScope / OpenAI-compatible Responses JSON: output[].content[] (output_text + annotations),
+    plus recursive url-like nodes anywhere in the payload (tool blocks, citations, etc.).
+    Exported for unit tests. Third tuple item is extraction counts for observability.
     """
     texts: List[str] = []
     refs: List[Dict[str, Any]] = []
     seen_urls: set[str] = set()
+    stats = {"from_annotations": 0, "from_tree": 0, "from_text": 0}
 
     for item in data.get("output") or []:
         if not isinstance(item, dict):
@@ -70,44 +147,39 @@ def extract_answer_from_responses_payload(data: Dict[str, Any], max_results: int
                         or ann.get("link")
                         or ""
                     ).strip()
-                    if not url or url in seen_urls:
+                    if not url:
                         continue
-                    seen_urls.add(url)
                     title = str(ann.get("title") or ann.get("name") or "").strip() or urlparse(url).netloc or "web"
                     snippet = str(
                         ann.get("snippet") or ann.get("summary") or ann.get("content") or ""
                     ).strip()
-                    refs.append(
-                        {
-                            "title": title,
-                            "url": url,
-                            "snippet": snippet,
-                            "source": urlparse(url).netloc or "web",
-                        }
-                    )
+                    if _append_ref(refs, seen_urls, url, title=title, snippet=snippet, max_results=max_results):
+                        stats["from_annotations"] += 1
             elif isinstance(block.get("text"), str) and block.get("text", "").strip():
                 # Some payloads omit type but include text
                 texts.append(str(block["text"]).strip())
 
     answer = "\n\n".join(texts) if texts else ""
+    n_before_tree = len(refs)
+    _collect_urls_from_object(data, refs, seen_urls, max_results)
+    stats["from_tree"] = len(refs) - n_before_tree
+
     if len(refs) < max_results and answer:
-        for link in _extract_links(answer):
-            u = link["url"]
-            if u in seen_urls:
-                continue
-            seen_urls.add(u)
-            refs.append(
-                {
-                    "title": link["title"],
-                    "url": u,
-                    "snippet": link.get("snippet", ""),
-                    "source": link["source"],
-                }
+        n_before_text = len(refs)
+        for link in _extract_links_from_text(answer):
+            _append_ref(
+                refs,
+                seen_urls,
+                link["url"],
+                title=link["title"],
+                snippet=link.get("snippet", "") or "",
+                max_results=max_results,
             )
             if len(refs) >= max_results:
                 break
+        stats["from_text"] = len(refs) - n_before_text
 
-    return answer, refs[:max_results]
+    return answer, refs[:max_results], stats
 
 
 async def search(
@@ -189,7 +261,7 @@ async def search(
             provider="builtin",
         )
 
-    answer, references = extract_answer_from_responses_payload(data, max_results)
+    answer, references, citation_stats = extract_answer_from_responses_payload(data, max_results)
     if not answer.strip() and not references:
         raise WebSearchError(
             code="empty_answer",
@@ -212,5 +284,7 @@ async def search(
             "tool": "web_search",
             "endpoint": api_url,
             "model": model,
+            "citation_extraction": citation_stats,
+            "verifiable_sources": len(references) > 0,
         },
     )
