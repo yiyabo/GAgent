@@ -48,18 +48,37 @@ esac
 
 cd "$ROOT_DIR"
 
-# Prefer explicit interpreter, then conda env LLM (avoids system Python 3.7 on shared servers).
-UVICORN_PYTHON="python"
+# Optional: pin interpreter without conda (e.g. BACKEND_PYTHON_BIN=/path/to/python3.11)
 if [ -n "${BACKEND_PYTHON_BIN:-}" ] && [ -x "${BACKEND_PYTHON_BIN}" ]; then
-  UVICORN_PYTHON="${BACKEND_PYTHON_BIN}"
-elif command -v conda >/dev/null 2>&1; then
-  _llm_py="$(conda run -n LLM python -c 'import sys; print(sys.executable)' 2>/dev/null | tail -1)"
-  if [ -n "$_llm_py" ] && [ -x "$_llm_py" ]; then
-    UVICORN_PYTHON="$_llm_py"
-  fi
+  exec "${BACKEND_PYTHON_BIN}" -m uvicorn app.main:app \
+    --host "$BACKEND_HOST" \
+    --port "$BACKEND_PORT" \
+    "${RELOAD_ARGS[@]}"
 fi
 
-exec "$UVICORN_PYTHON" -m uvicorn app.main:app \
+# Non-interactive bash must load conda before `conda activate`.
+if [ -f "${HOME}/anaconda3/etc/profile.d/conda.sh" ]; then
+  # shellcheck source=/dev/null
+  . "${HOME}/anaconda3/etc/profile.d/conda.sh"
+elif [ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]; then
+  # shellcheck source=/dev/null
+  . "${HOME}/miniconda3/etc/profile.d/conda.sh"
+elif command -v conda >/dev/null 2>&1; then
+  eval "$(conda shell.bash hook)"
+fi
+
+if ! conda activate LLM; then
+  echo "ERROR: conda activate LLM failed (is env LLM created?)" >&2
+  exit 1
+fi
+
+_py_ok="$(python -c 'import sys; print(1 if sys.version_info >= (3, 9) else 0)' 2>/dev/null || echo 0)"
+if [ "$_py_ok" != "1" ]; then
+  echo "ERROR: after conda activate LLM, need Python >= 3.9; got $(command -v python) $(python --version 2>&1)" >&2
+  exit 1
+fi
+
+exec python -m uvicorn app.main:app \
     --host "$BACKEND_HOST" \
     --port "$BACKEND_PORT" \
     "${RELOAD_ARGS[@]}"
