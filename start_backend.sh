@@ -48,7 +48,18 @@ esac
 
 cd "$ROOT_DIR"
 
-exec python -m uvicorn app.main:app \
+# Prefer explicit interpreter, then conda env LLM (avoids system Python 3.7 on shared servers).
+UVICORN_PYTHON="python"
+if [ -n "${BACKEND_PYTHON_BIN:-}" ] && [ -x "${BACKEND_PYTHON_BIN}" ]; then
+  UVICORN_PYTHON="${BACKEND_PYTHON_BIN}"
+elif command -v conda >/dev/null 2>&1; then
+  _llm_py="$(conda run -n LLM python -c 'import sys; print(sys.executable)' 2>/dev/null | tail -1)"
+  if [ -n "$_llm_py" ] && [ -x "$_llm_py" ]; then
+    UVICORN_PYTHON="$_llm_py"
+  fi
+fi
+
+exec "$UVICORN_PYTHON" -m uvicorn app.main:app \
     --host "$BACKEND_HOST" \
     --port "$BACKEND_PORT" \
     "${RELOAD_ARGS[@]}"
