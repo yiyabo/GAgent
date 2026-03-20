@@ -8,7 +8,10 @@ from .handler import web_search_handler
 
 web_search_tool = {
     "name": "web_search",
-    "description": "Intelligent web search tool supporting built-in model search and external search services.",
+    "description": (
+        "Broad web search via Alibaba DashScope Responses API using the built-in "
+        "`web_search` tool (see Model Studio web-search docs). Default provider is `builtin` only."
+    ),
     "category": "information_retrieval",
     "parameters_schema": {
         "type": "object",
@@ -19,8 +22,8 @@ web_search_tool = {
             },
             "provider": {
                 "type": "string",
-                "description": "Search provider (uses system default if empty)",
-                "enum": ["builtin", "perplexity"],
+                "description": "Optional override: `builtin` (DashScope web_search), `perplexity`, or `tavily`",
+                "enum": ["builtin", "perplexity", "tavily"],
             },
             "max_results": {
                 "type": "integer",
@@ -38,14 +41,14 @@ web_search_tool = {
         "web",
         "information",
         "retrieval",
-        "perplexity",
+        "dashscope",
         "builtin",
     ],
     "examples": [
         "Search for the latest AI news",
-        "Weather forecast for this week",
         "Query paper citation information",
         "Get industry market data",
+        "Literature background for a metagenomics method",
     ],
 }
 
