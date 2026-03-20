@@ -63,36 +63,6 @@ async def web_search_handler(
             exc.message,
             extra={"provider": exc.provider, "code": exc.code},
         )
-
-        # Auto fallback: try switching to perplexity when builtin fails
-        if exc.provider == "builtin" and (
-            requested_provider is None or requested_provider == "builtin"
-        ):
-            try:
-                fallback_result = await dispatch(
-                    query=query,
-                    provider="perplexity",
-                    max_results=max_results,
-                    settings=settings,
-                    **kwargs,
-                )
-                payload = _format_success(fallback_result, include_raw=include_raw)
-                payload["fallback_from"] = "builtin"
-                return payload
-            except WebSearchError as fallback_exc:
-                logger.error(
-                    "Fallback web search failed: %s",
-                    fallback_exc.message,
-                    extra={"provider": fallback_exc.provider, "code": fallback_exc.code},
-                )
-                return _failure_payload(
-                    query,
-                    fallback_exc.provider,
-                    fallback_exc.code,
-                    fallback_exc.message,
-                    meta=fallback_exc.meta,
-                )
-
         return _failure_payload(query, exc.provider, exc.code, exc.message, meta=exc.meta)
     except Exception as exc:  # pragma: no cover - defensive path
         logger.exception("Unexpected web search failure")

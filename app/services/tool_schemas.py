@@ -96,7 +96,10 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the internet for real-time information. Use for web-based queries only, NOT for local files.",
+            "description": (
+                "Broad web search via Alibaba DashScope Responses API (built-in web_search tool). "
+                "Use for web-based queries only, NOT for local files."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

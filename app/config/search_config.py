@@ -11,6 +11,15 @@ import os
 from typing import Optional
 
 
+def _derive_responses_url_from_chat_url(chat_url: str) -> str:
+    """Map .../chat/completions -> .../responses for DashScope compatible-mode."""
+    u = (chat_url or "").rstrip("/")
+    suffix = "chat/completions"
+    if u.endswith(suffix):
+        return u[: -len(suffix)] + "responses"
+    return "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+
+
 @dataclass(slots=True)
 class SearchSettings:
     """Web Search configuration"""
@@ -21,6 +30,10 @@ class SearchSettings:
     qwen_api_key: Optional[str] = None
     qwen_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     qwen_model: str = "qwen3.5-plus"
+    # OpenAI-compatible Responses API (百炼 web_search 工具), see:
+    # https://help.aliyun.com/zh/model-studio/web-search
+    qwen_responses_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+    qwen_responses_model: Optional[str] = None  # None -> use qwen_model
 
     glm_api_key: Optional[str] = None
     glm_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -64,6 +77,12 @@ def get_search_settings() -> SearchSettings:
     qwen_api_key = _env("QWEN_API_KEY")
     qwen_api_url = _env("QWEN_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
     qwen_model = _env("QWEN_MODEL", "qwen3.5-plus")
+    qwen_responses_api_url = _env("QWEN_RESPONSES_API_URL")
+    if not qwen_responses_api_url:
+        qwen_responses_api_url = _derive_responses_url_from_chat_url(
+            qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        )
+    qwen_responses_model = _env("QWEN_RESPONSES_MODEL")
 
     glm_api_key = _env("GLM_API_KEY")
     glm_api_url = _env("GLM_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
@@ -105,6 +124,9 @@ def get_search_settings() -> SearchSettings:
         qwen_api_key=qwen_api_key,
         qwen_api_url=qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         qwen_model=qwen_model or "qwen3.5-plus",
+        qwen_responses_api_url=qwen_responses_api_url
+        or "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
+        qwen_responses_model=qwen_responses_model or None,
         glm_api_key=glm_api_key,
         glm_api_url=glm_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         glm_model=glm_model or "qwen3-max-2026-01-23",
