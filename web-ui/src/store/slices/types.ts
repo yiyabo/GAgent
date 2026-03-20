@@ -76,6 +76,7 @@ export interface ChatState {
         options?: { beforeId?: number | null; append?: boolean; pageSize?: number }
     ) => Promise<void>;
     sendMessage: (content: string, metadata?: ChatMessage['metadata']) => Promise<void>;
+    resumeActiveChatRunIfAny: (sessionId: string) => Promise<void>;
     retryLastMessage: () => Promise<void>;
     retryActionRun: (trackingId: string, rawActions?: any[]) => Promise<void>;
 
