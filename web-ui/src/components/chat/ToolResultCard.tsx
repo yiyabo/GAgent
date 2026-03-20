@@ -178,6 +178,14 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
               {responseText}
             </Paragraph>
           )}
+          {isWebSearch && success && responseText && searchItems.length === 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message="No parseable source links returned"
+              description="The tool payload has no structured results list (URLs), so the text cannot be checked against independent sources item by item. For time-sensitive or factual claims, treat with caution or run another search."
+            />
+          )}
           {promptText && (
             <Paragraph style={{ marginBottom: 8, whiteSpace: 'pre-wrap' }}>
               {promptText}

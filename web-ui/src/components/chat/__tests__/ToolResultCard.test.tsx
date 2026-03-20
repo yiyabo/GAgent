@@ -43,6 +43,26 @@ describe('ToolResultCard', () => {
     expect(screen.getByText('AI Weekly')).toBeInTheDocument();
   });
 
+  it('shows warning when web search succeeded but no verifiable result URLs', () => {
+    render(
+      <ToolResultCard
+        defaultOpen
+        payload={{
+          name: 'web_search',
+          summary: 'Web search completed',
+          result: {
+            query: 'breaking news',
+            success: true,
+            response: 'Some summary without structured citations.',
+            results: [],
+          },
+        }}
+      />
+    );
+
+    expect(screen.getByText('No parseable source links returned')).toBeInTheDocument();
+  });
+
   it('shows retry button when search fails', async () => {
     const sendMessage = useChatStore.getState().sendMessage as unknown as ReturnType<typeof vi.fn>;
     render(
