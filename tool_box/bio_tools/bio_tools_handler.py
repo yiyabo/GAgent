@@ -1648,7 +1648,7 @@ async def bio_tools_handler(
         operations_detail = {}
         for op, info in tool_config.get("operations", {}).items():
             raw_params = info.get("extra_params", [])
-            # 兼容旧格式（列表）和新格式（字典）
+            # Support legacy list-shaped extra_params and newer dict-shaped schemas.
             if isinstance(raw_params, list):
                 params_detail = {
                     k: {"type": "string", "required": True, "description": ""}

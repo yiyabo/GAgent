@@ -114,6 +114,19 @@ const normalizeToolResultPayload = (raw: any): ToolResultPayload | null => {
     };
   }
 
+  const providerName = isNonEmptyString((result as any).provider)
+    ? String((result as any).provider).trim()
+    : undefined;
+  if (providerName) {
+    normalized.result = { ...(normalized.result ?? {}), provider: providerName };
+  }
+  const fallbackFrom = isNonEmptyString((result as any).fallback_from)
+    ? String((result as any).fallback_from).trim()
+    : undefined;
+  if (fallbackFrom) {
+    normalized.result = { ...(normalized.result ?? {}), fallback_from: fallbackFrom };
+  }
+
   if (normalized.result && Object.keys(normalized.result).length === 0) {
     normalized.result = null;
   }

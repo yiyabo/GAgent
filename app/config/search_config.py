@@ -30,7 +30,7 @@ class SearchSettings:
     qwen_api_key: Optional[str] = None
     qwen_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     qwen_model: str = "qwen3.5-plus"
-    # OpenAI-compatible Responses API (百炼 web_search 工具), see:
+    # OpenAI-compatible Responses API (DashScope / Model Studio web_search tool), see:
     # https://help.aliyun.com/zh/model-studio/web-search
     qwen_responses_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
     qwen_responses_model: Optional[str] = None  # None -> use qwen_model
