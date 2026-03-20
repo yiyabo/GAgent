@@ -53,7 +53,8 @@ start_bg() {
 }
 
 start_bg "amem" "exec bash \"$ROOT_DIR/scripts/start_amem.sh\""
-start_bg "backend" "cd \"$ROOT_DIR\" && export BACKEND_RELOAD=false && exec bash \"$ROOT_DIR/start_backend.sh\""
+# Login shell helps conda when only initialized in ~/.bash_profile; start_backend.sh also sources conda.sh + conda activate LLM.
+start_bg "backend" "bash -lc 'cd \"${ROOT_DIR}\" && export BACKEND_RELOAD=false && exec bash \"${ROOT_DIR}/start_backend.sh\"'"
 start_bg "frontend" "cd \"$ROOT_DIR/web-ui\" && exec npm run dev"
 
 echo "All services started."
