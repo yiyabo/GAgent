@@ -23,6 +23,14 @@ _BIO_TOOLS_FALLBACK_CATALOG: Dict[str, List[str]] = {
 }
 
 
+def _describe_exception(exc: Exception) -> str:
+    exc_type = type(exc).__name__
+    message = str(exc).strip()
+    if message:
+        return f"{exc_type}: {message}"
+    return exc_type
+
+
 def _load_bio_tools_catalog() -> Dict[str, List[str]]:
     config_path = Path(__file__).resolve().parents[2] / "tool_box" / "bio_tools" / "tools_config.json"
     try:
@@ -373,9 +381,14 @@ class DeepThinkAgent:
                     thinking_budget=self.thinking_budget,
                 )
             except Exception as exc:
-                logger.exception("[DEEP_THINK_NATIVE] LLM call failed at iteration %d", iteration)
+                error_detail = _describe_exception(exc)
+                logger.exception(
+                    "[DEEP_THINK_NATIVE] LLM call failed at iteration %d: %s",
+                    iteration,
+                    error_detail,
+                )
                 current_step.status = "error"
-                current_step.thought = f"Error: {exc}"
+                current_step.thought = f"Error: {error_detail}"
                 current_step.finished_at = datetime.now()
                 thinking_steps.append(current_step)
                 if self.on_thinking:

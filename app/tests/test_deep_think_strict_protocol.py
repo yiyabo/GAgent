@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import httpx
 import pytest
 
 from app.llm import NativeStreamResult, NativeToolCall
@@ -48,6 +49,19 @@ class _NativeDummyLLM:
         value = self._responses[self._index]
         self._index += 1
         return value
+
+    async def chat_async(self, **kwargs):  # type: ignore[override]
+        _ = kwargs
+        return "DeepThink native summary"
+
+
+class _FailingNativeLLM:
+    async def stream_chat_with_tools_async(self, **kwargs):  # type: ignore[override]
+        _ = kwargs
+        raise httpx.ReadTimeout(
+            "",
+            request=httpx.Request("POST", "https://example.com/v1/chat/completions"),
+        )
 
     async def chat_async(self, **kwargs):  # type: ignore[override]
         _ = kwargs
@@ -284,3 +298,18 @@ def test_prompt_based_stops_repeated_identical_polling_cycles() -> None:
     result = asyncio.run(agent.think("poll phagescope with alias"))
     assert result.total_iterations < 20
     assert "stopped active polling" in result.final_answer.lower()
+
+
+def test_native_llm_failure_records_exception_type_in_step() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_FailingNativeLLM(),
+        available_tools=["web_search"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+
+    result = asyncio.run(agent.think("run native tools"))
+
+    assert result.thinking_steps
+    assert result.thinking_steps[0].status == "error"
+    assert result.thinking_steps[0].thought == "Error: ReadTimeout"
