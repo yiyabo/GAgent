@@ -70,6 +70,7 @@ class LLMClient(LLMProvider):
         url: Optional[str] = None,
         model: Optional[str] = None,
         timeout: Optional[float] = None,
+        stream_timeout: Optional[float] = None,
         retries: Optional[int] = None,
         backoff_base: Optional[float] = None,
     ) -> None:
@@ -174,6 +175,13 @@ class LLMClient(LLMProvider):
         if settings_timeout in (None, ""):
             settings_timeout = getattr(settings, "glm_request_timeout", None)
         self.timeout = _normalize_timeout(timeout, settings_timeout)
+        settings_stream_timeout = getattr(settings, "llm_stream_timeout", None)
+        self.stream_timeout = _normalize_timeout(stream_timeout, settings_stream_timeout)
+        if stream_timeout is None:
+            if self.stream_timeout is None:
+                self.stream_timeout = self.timeout
+            elif self.timeout is not None:
+                self.stream_timeout = max(self.stream_timeout, self.timeout)
         self.mock = False  # Mock
         # Retry/backoff configuration
         try:
@@ -347,7 +355,7 @@ class LLMClient(LLMProvider):
 
         headers = self._build_headers()
 
-        timeout = None if self.timeout is None else httpx.Timeout(self.timeout)
+        timeout = None if self.stream_timeout is None else httpx.Timeout(self.stream_timeout)
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
                 "POST", self.url, headers=headers, json=payload

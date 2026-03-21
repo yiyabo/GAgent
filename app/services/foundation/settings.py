@@ -67,6 +67,7 @@ if _USE_PYDANTIC:
         glm_model: str = Field(default="qwen3-max-2026-01-23", env="GLM_MODEL")
         glm_request_timeout: int = Field(default=60, env="GLM_REQUEST_TIMEOUT")
         llm_request_timeout: int = Field(default=60, env="LLM_REQUEST_TIMEOUT")
+        llm_stream_timeout: int = Field(default=300, env="LLM_STREAM_TIMEOUT")
         llm_mock: bool = Field(default=False, env="LLM_MOCK")
         llm_retries: int = Field(default=2, env="LLM_RETRIES")
         llm_backoff_base: float = Field(default=0.5, env="LLM_BACKOFF_BASE")
@@ -207,6 +208,10 @@ else:
                 self.llm_request_timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", "60"))
             except Exception:
                 self.llm_request_timeout = 60
+            try:
+                self.llm_stream_timeout = int(os.getenv("LLM_STREAM_TIMEOUT", "300"))
+            except Exception:
+                self.llm_stream_timeout = 300
             self.llm_mock = os.getenv("LLM_MOCK", "").strip().lower() in {"1", "true", "yes", "on"}
 
             self.perplexity_api_key = os.getenv("PERPLEXITY_API_KEY")
