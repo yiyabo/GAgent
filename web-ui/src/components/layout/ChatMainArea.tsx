@@ -24,14 +24,15 @@ import {
   BulbOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
+import { chatApi } from '@api/chat';
 import { useTasksStore } from '@store/tasks';
+import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { useMessages } from '@/hooks/useMessages';
 import ChatMessage from '@components/chat/ChatMessage';
 import FileUploadButton from '@components/chat/FileUploadButton';
 import UploadedFilesList from '@components/chat/UploadedFilesList';
 import { shallow } from 'zustand/shallow';
 import type { ChatMessage as ChatMessageType, Memory } from '@/types';
-import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import VirtualList, { ListRef } from 'rc-virtual-list';
 
 const { TextArea } = Input;
@@ -238,6 +239,12 @@ const ChatMainArea: React.FC = () => {
   const { selectedTask, currentPlan } = useTasksStore();
   const [inputText, setInputText] = useState('');
   const [deepThinkEnabled, setDeepThinkEnabled] = useState(false);
+  const [steerSending, setSteerSending] = useState(false);
+
+  const activeRunId = useChatStore((s) => {
+    const key = resolveChatSessionProcessingKey(currentSession);
+    return s.activeRunIds.get(key) ?? null;
+  });
 
   const {
     data: historyData,
@@ -297,7 +304,25 @@ const ChatMainArea: React.FC = () => {
 
   // Send message handler.
   const handleSendMessage = async () => {
-    if (!inputText.trim() || isProcessing) return;
+    if (!inputText.trim()) return;
+
+    if (isProcessing && activeRunId) {
+      setSteerSending(true);
+      try {
+        await chatApi.steerRun(activeRunId, inputText.trim(), currentSession?.session_id ?? currentSession?.id);
+        message.success('引导已发送，将在下一步采纳');
+      } catch (err) {
+        console.error('[ChatMainArea] Failed to send steer:', err);
+        message.error('发送引导失败，请重试');
+      } finally {
+        setSteerSending(false);
+      }
+      setInputText('');
+      inputRef.current?.focus();
+      return;
+    }
+
+    if (isProcessing) return;
 
     const metadata = {
       task_id: selectedTask?.id ?? undefined,
@@ -641,9 +666,11 @@ const ChatMainArea: React.FC = () => {
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyPress={handleKeyPress}
-                placeholder="Describe what you need, and I'll help you complete it..."
+                placeholder={isProcessing && activeRunId
+                  ? "输入引导内容，Agent 将在下一步参考..."
+                  : "Describe what you need, and I'll help you complete it..."}
                 autoSize={{ minRows: 1, maxRows: 5 }}
-                disabled={isProcessing}
+                disabled={false}
                 style={{
                   resize: 'none',
                   border: 'none',
@@ -659,17 +686,19 @@ const ChatMainArea: React.FC = () => {
                 type="primary"
                 icon={<SendOutlined />}
                 onClick={handleSendMessage}
-                disabled={!inputText.trim() || isProcessing}
-                loading={isProcessing}
+                disabled={!inputText.trim() || steerSending || (isProcessing && !activeRunId)}
+                loading={isProcessing && !activeRunId ? true : steerSending}
                 style={{
                   height: 36,
                   borderRadius: 'var(--radius-md)',
                   minWidth: 80,
-                  background: 'var(--primary-color)',
+                  background: isProcessing && activeRunId
+                    ? 'var(--accent-color, #e8854a)'
+                    : 'var(--primary-color)',
                   border: 'none',
                 }}
               >
-                Send
+                {isProcessing && activeRunId ? '发送引导' : 'Send'}
               </Button>
             </div>
           </div>

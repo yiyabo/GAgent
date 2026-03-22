@@ -884,6 +884,7 @@ class StructuredChatAgent:
         run_id: Optional[str] = None,
         cancel_event: Optional[asyncio.Event] = None,
         event_sink: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        steer_drain: Optional[Callable[[], List[str]]] = None,
     ) -> AsyncIterator[str]:
         """
         Unified agent loop with streaming support and extended thinking.
@@ -1440,98 +1441,102 @@ class StructuredChatAgent:
                         if result.get("success") and result.get("operation") == "create":
                             plan_id = result.get("plan_id")
                             if plan_id:
-                                try:
-                                    # Bind the newly created plan to the current session
-                                    self.plan_session.bind(plan_id)
-                                    self._refresh_plan_tree(force_reload=True)
-                                    self.extra_context["plan_id"] = plan_id
-                                    self._dirty = True
+                                existing_plan_id = self.plan_session.plan_id
+                                if existing_plan_id is not None:
+                                    logger.warning(
+                                        "[DeepThink] plan_operation create returned plan %s "
+                                        "but session already bound to plan %s; "
+                                        "keeping original binding",
+                                        plan_id,
+                                        existing_plan_id,
+                                    )
+                                    result["binding_skipped"] = True
+                                    result["existing_plan_id"] = existing_plan_id
+                                else:
+                                    try:
+                                        self.plan_session.bind(plan_id)
+                                        self._refresh_plan_tree(force_reload=True)
+                                        self.extra_context["plan_id"] = plan_id
+                                        self._dirty = True
 
-                                    if (
-                                        deep_think_job_created
-                                        and deep_think_job_id
-                                    ):
-                                        try:
-                                            plan_id_int = int(plan_id)
-                                        except (TypeError, ValueError):
-                                            plan_id_int = None
-                                        if plan_id_int is not None:
-                                            plan_decomposition_jobs.attach_plan(
-                                                deep_think_job_id, plan_id_int
+                                        if (
+                                            deep_think_job_created
+                                            and deep_think_job_id
+                                        ):
+                                            try:
+                                                plan_id_int = int(plan_id)
+                                            except (TypeError, ValueError):
+                                                plan_id_int = None
+                                            if plan_id_int is not None:
+                                                plan_decomposition_jobs.attach_plan(
+                                                    deep_think_job_id, plan_id_int
+                                                )
+
+                                        # CRITICAL: Also update the database session record
+                                        # so that frontend can fetch the new plan_id
+                                        if self.session_id:
+                                            _set_session_plan_id(self.session_id, plan_id)
+                                            logger.info(
+                                                "[DeepThink] Updated database session %s with plan_id=%s",
+                                                self.session_id,
+                                                plan_id,
                                             )
 
-                                    # CRITICAL: Also update the database session record
-                                    # so that frontend can fetch the new plan_id
-                                    if self.session_id:
-                                        _set_session_plan_id(self.session_id, plan_id)
+                                        # CRITICAL: Trigger automatic task decomposition
+                                        # This ensures DeepThink-created plans get the same
+                                        # multi-level decomposition as regular plans
+                                        session_ctx = {
+                                            "user_message": user_message,
+                                            "chat_history": self.history,
+                                            "recent_tool_results": self.extra_context.get(
+                                                "recent_tool_results", []
+                                            ),
+                                        }
+                                        decompose_result = await asyncio.to_thread(
+                                            self._auto_decompose_plan,
+                                            plan_id,
+                                            wait_for_completion=False,
+                                            session_context=session_ctx,
+                                        )
+                                        if decompose_result:
+                                            if decompose_result.get("result") is not None:
+                                                summary = decompose_result["result"]
+                                                logger.info(
+                                                    "[DeepThink] Auto-decomposition completed for plan %s",
+                                                    plan_id,
+                                                )
+                                                result["decomposition_completed"] = True
+                                                result["decomposition_created"] = len(
+                                                    summary.created_tasks
+                                                )
+                                                result["decomposition_stats"] = summary.stats
+                                                result["decomposition_note"] = (
+                                                    "Automatic task decomposition completed before review."
+                                                )
+                                            elif decompose_result.get("job") is not None:
+                                                logger.info(
+                                                    "[DeepThink] Auto-decomposition submitted for plan %s",
+                                                    plan_id,
+                                                )
+                                                result["decomposition_triggered"] = True
+                                                result["decomposition_note"] = (
+                                                    "Automatic task decomposition has been submitted for background execution."
+                                                )
+
+                                        deep_think_bg_category = "task_creation"
+
                                         logger.info(
-                                            "[DeepThink] Updated database session %s with plan_id=%s",
-                                            self.session_id,
+                                            "[DeepThink] Auto-bound plan %s to session "
+                                            "(decomposition dispatched to background, "
+                                            "auto-optimize skipped)",
                                             plan_id,
                                         )
-
-                                    # CRITICAL: Trigger automatic task decomposition
-                                    # This ensures DeepThink-created plans get the same
-                                    # multi-level decomposition as regular plans
-                                    session_ctx = {
-                                        "user_message": user_message,
-                                        "chat_history": self.history,
-                                        "recent_tool_results": self.extra_context.get(
-                                            "recent_tool_results", []
-                                        ),
-                                    }
-                                    decompose_result = await asyncio.to_thread(
-                                        self._auto_decompose_plan,
-                                        plan_id,
-                                        wait_for_completion=False,
-                                        session_context=session_ctx,
-                                    )
-                                    if decompose_result:
-                                        if decompose_result.get("result") is not None:
-                                            summary = decompose_result["result"]
-                                            logger.info(
-                                                "[DeepThink] Auto-decomposition completed for plan %s",
-                                                plan_id,
-                                            )
-                                            result["decomposition_completed"] = True
-                                            result["decomposition_created"] = len(
-                                                summary.created_tasks
-                                            )
-                                            result["decomposition_stats"] = summary.stats
-                                            result["decomposition_note"] = (
-                                                "Automatic task decomposition completed before review."
-                                            )
-                                        elif decompose_result.get("job") is not None:
-                                            logger.info(
-                                                "[DeepThink] Auto-decomposition submitted for plan %s",
-                                                plan_id,
-                                            )
-                                            result["decomposition_triggered"] = True
-                                            result["decomposition_note"] = (
-                                                "Automatic task decomposition has been submitted for background execution."
-                                            )
-
-                                    # Mark that a background decomposition was started
-                                    # so the final SSE event can include background_category.
-                                    deep_think_bg_category = "task_creation"
-
-                                    # NOTE: Auto optimization loop is skipped when
-                                    # decomposition runs in the background because it
-                                    # depends on the completed task tree.  The user can
-                                    # trigger plan review/optimize manually after
-                                    # decomposition finishes.
-                                    logger.info(
-                                        "[DeepThink] Auto-bound plan %s to session "
-                                        "(decomposition dispatched to background, "
-                                        "auto-optimize skipped)",
-                                        plan_id,
-                                    )
-                                except Exception as bind_err:
-                                    logger.warning(
-                                        "[DeepThink] Failed to bind plan %s: %s",
-                                        plan_id,
-                                        bind_err,
-                                    )
+                                    except Exception as bind_err:
+                                        logger.warning(
+                                            "[DeepThink] Failed to bind plan %s: %s",
+                                            plan_id,
+                                            bind_err,
+                                        )
 
                     return result
 
@@ -1558,6 +1563,13 @@ class StructuredChatAgent:
                         "type": "reasoning_delta",
                         "iteration": iteration,
                         "delta": delta,
+                    })
+
+                async def on_steer_ack(text: str, iteration: int) -> None:
+                    await queue.put({
+                        "type": "steer_ack",
+                        "message": text[:500],
+                        "iteration": iteration,
                     })
 
                 dt_agent = dt_agent_cls(
@@ -1591,6 +1603,8 @@ class StructuredChatAgent:
                     enable_thinking=self._resolve_thinking_enabled(),
                     thinking_budget=self._resolve_thinking_budget(),
                     on_reasoning_delta=on_reasoning_delta,
+                    steer_drain=steer_drain,
+                    on_steer_ack=on_steer_ack,
                 )
 
                 if deep_think_job_created and deep_think_job_id:
@@ -1697,6 +1711,7 @@ class StructuredChatAgent:
                 "control_ack",
                 "tool_output",
                 "artifact",
+                "steer_ack",
             }:
                 out = await _through_sink(item)
                 yield out

@@ -485,6 +485,7 @@ export function handleToolOutput(ctx: StreamHandlerContext, event: any): void {
 }
 
 export function processBackgroundDispatch(ctx: StreamHandlerContext): void {
+  ctx.get().setActiveRunId(resolveChatSessionProcessingKey(ctx.currentSession), null);
   ctx.get().setSessionProcessing(
     resolveChatSessionProcessingKey(ctx.currentSession),
     false
@@ -562,6 +563,7 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
       } as any,
     });
   }
+  ctx.get().setActiveRunId(resolveChatSessionProcessingKey(ctx.currentSession), null);
   ctx.get().setSessionProcessing(
     resolveChatSessionProcessingKey(ctx.currentSession),
     false

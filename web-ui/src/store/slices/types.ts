@@ -38,6 +38,8 @@ export interface ChatState {
     isTyping: boolean;
     /** Session ids (frontend session_id or id) with an in-flight chat run / stream. */
     processingSessionIds: Set<string>;
+    /** Per-session run id of the currently active chat run (keyed by session processing key). */
+    activeRunIds: Map<string, string>;
     isUpdatingProvider: boolean;
     isUpdatingBaseModel: boolean;
     isUpdatingLLMProvider: boolean;
@@ -93,6 +95,7 @@ export interface ChatState {
     setInputText: (text: string) => void;
     setIsTyping: (typing: boolean) => void;
     setSessionProcessing: (sessionId: string, processing: boolean) => void;
+    setActiveRunId: (sessionKey: string, runId: string | null) => void;
     toggleChatPanel: () => void;
     setChatPanelVisible: (visible: boolean) => void;
     setChatPanelWidth: (width: number) => void;
