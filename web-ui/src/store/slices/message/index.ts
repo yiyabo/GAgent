@@ -84,6 +84,9 @@ const _consumeUnifiedStream = async (
       window.dispatchEvent(new CustomEvent('artifactProduced', { detail: event }));
       continue;
     }
+    if (event.type === 'steer_ack') {
+      continue;
+    }
     if (event.type === 'error') {
       throw new Error((event as { message?: string }).message || 'Stream error');
     }
@@ -115,6 +118,7 @@ const _finalizeAfterUnifiedStream = async (
     throw new Error('No final response received');
   }
   if (state.jobFinalized) {
+    ctx.get().setActiveRunId(resolveChatSessionProcessingKey(ctx.currentSession), null);
     ctx.get().setSessionProcessing(
       resolveChatSessionProcessingKey(ctx.currentSession),
       false
@@ -543,6 +547,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   let eventSource: AsyncIterable<{ seq: number | null; event: ChatStreamEvent }>;
   if (apiSessionId) {
   const { run_id } = await postChatRun(chatRequest);
+  get().setActiveRunId(processingKey, run_id);
   const prevMeta =
   (get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;
   get().updateMessage(assistantMessageId, {
@@ -566,6 +571,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
   } catch (error) {
   console.error('Failed to send message:', error);
+  get().setActiveRunId(processingKey, null);
   get().setSessionProcessing(processingKey, false);
   const errorContent =
   'Request failed. Please check:\n\n1. Backend service availability\n2. LLM API configuration\n3. Network connectivity\n\nThen retry the request.';
@@ -631,6 +637,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   });
   }
 
+  get().setActiveRunId(resumeKey, runId);
   get().setSessionProcessing(resumeKey, true);
 
   const state: StreamMutableState = {
@@ -673,6 +680,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
   } catch (error) {
   console.error('Resume chat run failed:', error);
+  get().setActiveRunId(resumeKey, null);
   get().setSessionProcessing(resumeKey, false);
   get().updateMessage(assistantMessageId, {
   content:

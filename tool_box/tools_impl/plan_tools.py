@@ -388,6 +388,73 @@ def _detect_circular_dependencies(nodes: Dict[int, Any]) -> List[List[int]]:
     return cycles
 
 
+_OPTIMIZE_ACTION_ALIASES: Dict[str, str] = {
+    "rename": "update_task",
+    "update": "update_task",
+    "edit": "update_task",
+    "change": "update_task",
+    "modify": "update_task",
+    "modify_task": "update_task",
+    "rename_task": "update_task",
+    "update_task_name": "update_task",
+    "update_fields": "update_task",
+    "change_type": "update_task",
+    "add": "add_task",
+    "create": "add_task",
+    "create_task": "add_task",
+    "delete": "delete_task",
+    "remove": "delete_task",
+    "remove_task": "delete_task",
+    "reorder": "reorder_task",
+    "move": "reorder_task",
+    "move_task": "reorder_task",
+}
+
+_OPTIMIZE_VALID_ACTIONS = frozenset({"add_task", "update_task", "delete_task", "reorder_task"})
+
+
+def _normalize_optimize_change(change: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize an optimize change dict so that common LLM format variations are accepted."""
+    change = dict(change)
+
+    # Flatten nested "updates" / "fields" dicts into top-level keys.
+    for nested_key in ("updates", "fields"):
+        nested = change.pop(nested_key, None)
+        if isinstance(nested, dict):
+            for k, v in nested.items():
+                change.setdefault(k, v)
+
+    # Accept "new_name" / "value" as aliases for "name".
+    for alias in ("new_name", "value"):
+        if alias in change and "name" not in change:
+            change["name"] = change.pop(alias)
+
+    # Resolve action from "action", "type", or "change_type" fields.
+    raw_action = change.get("action") or change.get("type") or change.get("change_type")
+    if isinstance(raw_action, str):
+        raw_action = raw_action.strip().lower()
+    else:
+        raw_action = None
+
+    action = _OPTIMIZE_ACTION_ALIASES.get(raw_action, raw_action) if raw_action else None
+
+    # Auto-infer action when still unknown.
+    if action not in _OPTIMIZE_VALID_ACTIONS:
+        has_task_id = change.get("task_id") is not None
+        has_update_fields = any(k in change for k in ("name", "instruction", "dependencies"))
+        has_new_position = change.get("new_position") is not None
+
+        if has_task_id and has_new_position:
+            action = "reorder_task"
+        elif has_task_id and has_update_fields:
+            action = "update_task"
+        elif not has_task_id and "name" in change:
+            action = "add_task"
+
+    change["action"] = action
+    return change
+
+
 async def _optimize_plan(
     plan_id: Optional[int],
     changes: Optional[List[Dict[str, Any]]],
@@ -426,6 +493,7 @@ async def _optimize_plan(
         failed_changes: List[Dict[str, Any]] = []
         
         for change in changes:
+            change = _normalize_optimize_change(change)
             action = change.get("action")
             
             try:
@@ -504,7 +572,11 @@ async def _optimize_plan(
                 else:
                     failed_changes.append({
                         "change": change,
-                        "error": f"Unknown action: {action}",
+                        "error": (
+                            f"Unknown action: {action}. "
+                            f"Valid actions: add_task, update_task, delete_task, reorder_task. "
+                            f'Example: {{"action": "update_task", "task_id": 4, "name": "New Name"}}'
+                        ),
                     })
                     
             except Exception as e:
@@ -620,7 +692,13 @@ WORKFLOW for Plan Creation:
 2. Create initial plan with 'create' operation
 3. Use 'review' to check dependencies and granularity
 4. If issues found, use 'optimize' to fix them
-5. Repeat review-optimize until plan is satisfactory""",
+5. Repeat review-optimize until plan is satisfactory
+
+OPTIMIZE CHANGE FORMAT (each change MUST have an "action" field):
+- update_task: {"action": "update_task", "task_id": 4, "name": "New Name", "instruction": "New details"}
+- add_task: {"action": "add_task", "name": "Task Name", "instruction": "Details", "parent_id": 1}
+- delete_task: {"action": "delete_task", "task_id": 5}
+- reorder_task: {"action": "reorder_task", "task_id": 3, "new_position": 1}""",
     "category": "planning",
     "parameters_schema": {
         "type": "object",

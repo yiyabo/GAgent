@@ -74,7 +74,8 @@ export type ChatStreamEvent =
     | { type: 'reasoning_delta'; iteration: number; delta: string }
     | { type: 'control_ack'; job_id?: string; available?: boolean; paused?: boolean; action?: string | null }
     | { type: 'tool_output'; tool?: string; stream?: string; content?: string; iteration?: number | null }
-    | { type: 'artifact'; path?: string; extension?: string; source_tool?: string; iteration?: number };
+    | { type: 'artifact'; path?: string; extension?: string; source_tool?: string; iteration?: number }
+    | { type: 'steer_ack'; message?: string; iteration?: number };
 
 export const parseChatStreamEvent = (raw: string): ChatStreamEvent | null => {
     const lines = raw.split('\n');

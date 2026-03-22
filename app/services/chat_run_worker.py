@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def execute_chat_run(run_id: str) -> None:
     cancel_ev = hub.ensure_cancel_event(run_id)
+    hub.ensure_steer_queue(run_id)
     emitter = ChatRunEmitter(run_id)
     try:
         row = get_chat_run(run_id)
@@ -43,6 +44,7 @@ async def execute_chat_run(run_id: str) -> None:
             run_id=run_id,
             cancel_event=cancel_ev,
             event_sink=emitter.emit,
+            steer_drain=lambda: hub.drain_steer_messages(run_id),
         ):
             pass
 

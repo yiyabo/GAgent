@@ -145,6 +145,8 @@ class DeepThinkAgent:
         enable_thinking: bool = True,
         thinking_budget: int = 10000,
         on_reasoning_delta: Optional[Callable[[int, str], Any]] = None,
+        steer_drain: Optional[Callable[[], List[str]]] = None,
+        on_steer_ack: Optional[Callable[[str, int], Any]] = None,
     ):
         self.llm_client = llm_client
         self.available_tools = available_tools
@@ -161,6 +163,8 @@ class DeepThinkAgent:
         self.enable_thinking = enable_thinking
         self.thinking_budget = thinking_budget
         self.on_reasoning_delta = on_reasoning_delta
+        self.steer_drain = steer_drain
+        self.on_steer_ack = on_steer_ack
         self._pause_event = asyncio.Event()
         self._pause_event.set()
         self._skip_current_step = False
@@ -344,6 +348,23 @@ class DeepThinkAgent:
             if self.cancel_event and self.cancel_event.is_set():
                 logger.info("[DEEP_THINK_NATIVE] Cancelled by user")
                 break
+
+            if self.steer_drain:
+                steers = self.steer_drain()
+                for steer_text in steers:
+                    messages.append({
+                        "role": "user",
+                        "content": f"[User mid-run guidance]: {steer_text}",
+                    })
+                    logger.info(
+                        "[DEEP_THINK_NATIVE] Injected user steer at iteration %d: %s",
+                        iteration + 1,
+                        steer_text[:120],
+                    )
+                    if self.on_steer_ack:
+                        await self._safe_generic_callback(
+                            self.on_steer_ack, steer_text, iteration + 1
+                        )
 
             iteration += 1
             current_step = ThinkingStep(
