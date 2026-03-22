@@ -1,0 +1,36 @@
+name: PR Tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest-cov
+
+      - name: Run default and integration suites
+        run: |
+          pytest -q app/tests -m "not prod_smoke and not external" \
+            --cov=app \
+            --cov-report=term \
+            --cov-report=xml:coverage-pr.xml
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-pr
+          path: coverage-pr.xml

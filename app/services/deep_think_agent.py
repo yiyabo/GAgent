@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -588,7 +589,7 @@ class DeepThinkAgent:
                 messages.append({"role": "user", "content": "Skip current branch and continue with the next reasoning step."})
 
         if not final_answer:
-            final_answer = self._fallback_answer_from_steps(thinking_steps)
+            final_answer = await self._fallback_answer_from_steps(thinking_steps, user_query)
             confidence = max(confidence, 0.3)
             if self.on_final_delta and final_answer:
                 await self._stream_final_answer(final_answer)
@@ -987,17 +988,17 @@ Respond with ONLY a JSON object:
                     if self.on_final_delta and final_answer:
                         await self._stream_final_answer(final_answer)
                 else:
-                    final_answer = self._fallback_answer_from_steps(thinking_steps)
+                    final_answer = await self._fallback_answer_from_steps(thinking_steps, user_query)
                     confidence = 0.5
                     if self.on_final_delta and final_answer:
                         await self._stream_final_answer(final_answer)
             except Exception as e:
                 logger.exception("Failed to generate strict forced conclusion")
-                final_answer = self._fallback_answer_from_steps(thinking_steps)
+                final_answer = await self._fallback_answer_from_steps(thinking_steps, user_query)
                 confidence = 0.4
 
         if not final_answer:
-            final_answer = self._fallback_answer_from_steps(thinking_steps)
+            final_answer = await self._fallback_answer_from_steps(thinking_steps, user_query)
             confidence = max(confidence, 0.3)
 
         try:
@@ -2005,13 +2006,152 @@ When ready to answer:
 
         raise DeepThinkProtocolError("No complete JSON object found in LLM output.")
 
-    def _fallback_answer_from_steps(self, steps: List[ThinkingStep]) -> str:
+    @staticmethod
+    def _tool_names_from_payload(payload: Any) -> List[str]:
+        names: List[str] = []
+        if not isinstance(payload, dict):
+            return names
+        single = payload.get("tool")
+        if isinstance(single, str) and single.strip():
+            names.append(single.strip())
+        tools = payload.get("tools")
+        if isinstance(tools, list):
+            for item in tools:
+                if isinstance(item, dict):
+                    t = item.get("tool")
+                    if isinstance(t, str) and t.strip():
+                        names.append(t.strip())
+        return names
+
+    @classmethod
+    def _collect_tool_usage_counts(cls, steps: List[ThinkingStep]) -> Dict[str, int]:
+        c: Counter[str] = Counter()
+        for step in steps:
+            if not step.action:
+                continue
+            try:
+                payload = json.loads(step.action)
+            except Exception:
+                continue
+            for name in cls._tool_names_from_payload(payload):
+                if name and name != "submit_final_answer":
+                    c[name] += 1
+        return dict(c)
+
+    @staticmethod
+    def _format_tool_usage_counts(counts: Dict[str, int]) -> str:
+        if not counts:
+            return ""
+        items = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+        return ", ".join(f"{k}×{v}" for k, v in items)
+
+    @staticmethod
+    def _select_steps_for_summary(steps: List[ThinkingStep]) -> List[ThinkingStep]:
+        n = len(steps)
+        if n <= 5:
+            return list(steps)
+        idx = sorted({0, 1, n - 3, n - 2, n - 1})
+        idx = [i for i in idx if 0 <= i < n]
+        return [steps[i] for i in idx]
+
+    def _collect_evidence_snippets(
+        self,
+        steps: List[ThinkingStep],
+        *,
+        max_steps: int = 8,
+        max_chars: int = 3000,
+        per_snippet_max: int = 900,
+    ) -> str:
+        parts: List[str] = []
+        total = 0
+        count = 0
+        for step in reversed(steps):
+            if count >= max_steps:
+                break
+            ar = step.action_result
+            if not isinstance(ar, str) or not ar.strip():
+                continue
+            text = " ".join(ar.split()).strip()
+            if len(text) > per_snippet_max:
+                text = text[: per_snippet_max - 3] + "..."
+            block = f"[Step {step.iteration}]\n{text}"
+            if total + len(block) + 2 > max_chars:
+                remaining = max(0, max_chars - total - 20)
+                if remaining > 80:
+                    parts.append(f"[Step {step.iteration}]\n{text[:remaining]}...")
+                break
+            parts.append(block)
+            total += len(block) + 2
+            count += 1
+        parts.reverse()
+        return "\n\n".join(parts)
+
+    def _build_structured_fallback(self, steps: List[ThinkingStep], user_query: str = "") -> str:
+        n = len(steps)
+        counts = self._collect_tool_usage_counts(steps)
+        stats = self._format_tool_usage_counts(counts)
+        tools_part = f"（{stats}）" if stats else "（未从步骤中解析到工具名）"
+        _ = user_query
+        return (
+            f"经过 {n} 步深度思考{tools_part}，未能形成可提交的确定结论。"
+            "该问题可能不适合仅通过检索给出单一答案，或在步数上限内未完成收尾。"
+            "建议改为更小、可验证的事实性问题后重试。\n\n"
+            "DeepThink reached its step limit without a final structured answer. "
+            f"{n} reasoning step(s){(' — ' + stats) if stats else ''}. "
+            "Try a narrower or fact-checkable question."
+        )
+
+    async def _generate_fallback_from_evidence(
+        self,
+        user_query: str,
+        evidence_snippets: str,
+        steps: List[ThinkingStep],
+    ) -> str:
+        if not hasattr(self.llm_client, "chat_async"):
+            raise DeepThinkProtocolError("LLM client does not support chat_async")
+        n = len(steps)
+        uq = (user_query or "").strip()
+        prompt = (
+            f"User question:\n{uq[:2000]}\n\n"
+            f"Below are excerpts from tool outputs (may be truncated). "
+            f"DeepThink ran about {n} step(s) without submitting a final answer.\n\n"
+            f"{evidence_snippets}\n\n"
+            "Respond in the same language as the user question. Write a concise reply (about 3–8 short paragraphs or bullet groups):\n"
+            "1) Summarize the main facts or background reflected in the excerpts.\n"
+            "2) Explain why a single definite answer may not be possible, if applicable.\n"
+            "3) Suggest 1–2 practical next steps (e.g., narrow the question, ask verifiable facts).\n"
+            "Do not invent dates or claims absent from the excerpts; say so if excerpts are insufficient."
+        )
+        raw = await asyncio.wait_for(
+            self.llm_client.chat_async(prompt=prompt, max_tokens=500),
+            timeout=15,
+        )
+        cleaned = str(raw or "").strip()
+        if len(cleaned) < 20:
+            raise ValueError("fallback synthesis too short")
+        return cleaned
+
+    async def _fallback_answer_from_steps(
+        self,
+        steps: List[ThinkingStep],
+        user_query: str = "",
+    ) -> str:
         if not steps:
             return "DeepThink completed without structured final answer."
         useful = [s.thought for s in steps if isinstance(s.thought, str) and s.thought.strip()]
-        if not useful:
-            return "DeepThink completed but no reliable answer was produced."
-        return useful[-1].strip()
+        if useful:
+            return useful[-1].strip()
+        evidence = self._collect_evidence_snippets(steps)
+        uq = (user_query or "").strip()
+        if evidence.strip() and uq:
+            try:
+                return await self._generate_fallback_from_evidence(uq, evidence, steps)
+            except Exception:
+                logger.warning(
+                    "DeepThink fallback synthesis from tool evidence failed; using structured fallback.",
+                    exc_info=True,
+                )
+        return self._build_structured_fallback(steps, user_query)
 
     async def _generate_summary(self, steps: List[ThinkingStep], user_query: str) -> str:
         """Generate a concise DeepThink summary via LLM in strict mode."""
@@ -2025,32 +2165,25 @@ When ready to answer:
                 "LLM client does not support chat_async required for summary generation."
             )
 
-        tool_calls = [s for s in steps if s.action]
-        tools_used = []
-        for step in tool_calls:
-            action_raw = step.action or ""
-            try:
-                payload = json.loads(action_raw)
-            except Exception:
-                continue
-            tool_name = payload.get("tool")
-            if isinstance(tool_name, str) and tool_name.strip():
-                tools_used.append(tool_name.strip())
-        tools_used = list(dict.fromkeys(tools_used))
+        usage_counts = self._collect_tool_usage_counts(steps)
+        tool_stats_line = self._format_tool_usage_counts(usage_counts)
+        tools_used_unique = list(usage_counts.keys())
 
         steps_lines: List[str] = []
-        for step in steps[:5]:
+        for step in self._select_steps_for_summary(steps):
+            thought_raw = step.thought if isinstance(step.thought, str) else ""
             thought_preview = (
-                f"{step.thought[:150]}..." if len(step.thought) > 150 else step.thought
+                f"{thought_raw[:150]}..." if len(thought_raw) > 150 else thought_raw
             )
             steps_lines.append(f"- Step {step.iteration}: {thought_preview}")
         steps_text = "\n".join(steps_lines)
 
         prompt = f"""Summarize this thinking process in 1-2 concise English sentences:
 User Question: {user_query[:200]}
-Thinking Steps:
+Thinking Steps (sampled: first and last iterations when long runs):
 {steps_text}
-Tools Used: {", ".join(tools_used) if tools_used else "None"}
+Tools Used (unique): {", ".join(sorted(tools_used_unique)) if tools_used_unique else "None"}
+Tool call counts: {tool_stats_line if tool_stats_line else "None"}
 
 Summary:"""
 
