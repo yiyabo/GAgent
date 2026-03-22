@@ -76,7 +76,7 @@ async def lifespan(_fastapi_app: FastAPI):
         logging.getLogger("app.main").info(
             "Tool Box integrated successfully - Enhanced AI capabilities enabled"
         )
-    except (ValueError, TypeError) as e:
+    except Exception as e:
         logging.getLogger("app.main").warning("Tool Box initialization failed: %s", e)
 
     # Fix any stale jobs from previous server runs
@@ -131,33 +131,6 @@ async def lifespan(_fastapi_app: FastAPI):
     yield
 
 
-# Create FastAPI application
-app = FastAPI(
-    title="AI-Driven Task Orchestration System",
-    description="Intelligent Task Orchestration System - Translate natural language goals into executable plans and produce high-quality results",
-    version="2.0.0",
-    lifespan=lifespan,
-)
-
-# Add CORS middleware to allow web UI access
-cors_origins_str = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
-)
-cors_origins = [
-    origin.strip() for origin in cors_origins_str.split(",") if origin.strip()
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.exception_handler(BaseError)
 async def base_error_handler(_request: Request, exc: BaseError):
     """exception."""
     error_response = handle_api_error(exc, include_debug=False)
@@ -166,7 +139,6 @@ async def base_error_handler(_request: Request, exc: BaseError):
     )
 
 
-@app.exception_handler(RequestValidationError)
 async def validation_exception_handler(_request: Request, exc: RequestValidationError):
     """Handle FastAPI request validation errors."""
     validation_error = ValidationError(
@@ -179,7 +151,6 @@ async def validation_exception_handler(_request: Request, exc: RequestValidation
     return JSONResponse(status_code=422, content=error_response)
 
 
-@app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """Handle Starlette HTTP exceptions."""
     if exc.status_code == 404:
@@ -205,7 +176,6 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     return JSONResponse(status_code=exc.status_code, content=error_response)
 
 
-@app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle uncaught application exceptions."""
     system_error = CustomSystemError(
@@ -252,18 +222,11 @@ def _map_error_to_http_status(error: BaseError) -> int:
         return 400  # defaulterror
 
 
-for router in get_all_routers():
-    app.include_router(router)
-
-
-# Health check endpoint
-@app.get("/health")
 def health_check():
     """System health check"""
     return {"status": "healthy", "service": "AI-Driven Task Orchestration System"}
 
 
-@app.get("/health/llm")
 def llm_health(ping: bool = False):
     """Check LLM service health and configuration.
 
@@ -280,6 +243,50 @@ def llm_health(ping: bool = False):
     else:
         info["ping_ok"] = None
     return info
+
+
+def _build_cors_origins() -> list[str]:
+    cors_origins_str = os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
+    )
+    return [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()]
+
+
+def _register_exception_handlers(app: FastAPI) -> None:
+    app.add_exception_handler(BaseError, base_error_handler)
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+    app.add_exception_handler(Exception, general_exception_handler)
+
+
+def _register_routes(app: FastAPI) -> None:
+    for router in get_all_routers():
+        app.include_router(router)
+    app.add_api_route("/health", health_check, methods=["GET"])
+    app.add_api_route("/health/llm", llm_health, methods=["GET"])
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="AI-Driven Task Orchestration System",
+        description="Intelligent Task Orchestration System - Translate natural language goals into executable plans and produce high-quality results",
+        version="2.0.0",
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_build_cors_origins(),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    _register_exception_handlers(app)
+    _register_routes(app)
+    return app
+
+
+app = create_app()
 
 
 if __name__ == "__main__":

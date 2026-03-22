@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -14,9 +15,10 @@ from typing import Any, Dict, List, Optional
 class AuditLogger:
     """Per-terminal SQLite audit logger."""
 
-    def __init__(self, terminal_id: str, *, audit_root: str | Path = "runtime/terminal_audit") -> None:
+    def __init__(self, terminal_id: str, *, audit_root: str | Path | None = None) -> None:
         self.terminal_id = str(terminal_id)
-        self.audit_root = Path(audit_root).resolve()
+        resolved_root = audit_root or os.getenv("TERMINAL_AUDIT_ROOT", "runtime/terminal_audit")
+        self.audit_root = Path(resolved_root).expanduser().resolve()
         self.audit_root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.audit_root / f"{self.terminal_id}.sqlite"
         self._lock = threading.Lock()

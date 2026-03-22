@@ -6,6 +6,7 @@ legacy `data/information_sessions` compatibility for cleanup and migration.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import List
@@ -36,10 +37,16 @@ def normalize_session_base(session_id: str) -> str:
 
 
 def get_runtime_root() -> Path:
+    override = os.getenv("APP_RUNTIME_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
     return _RUNTIME_ROOT
 
 
 def get_legacy_info_sessions_root() -> Path:
+    override = os.getenv("APP_INFO_SESSIONS_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
     return _LEGACY_INFO_SESSIONS_ROOT
 
 

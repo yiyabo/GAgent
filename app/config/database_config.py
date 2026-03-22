@@ -229,6 +229,12 @@ def get_database_config() -> DatabaseConfig:
     return _db_config
 
 
+def reset_database_config() -> None:
+    """Reset the cached database configuration instance."""
+    global _db_config
+    _db_config = None
+
+
 def get_main_database_path() -> str:
     """Convenience helper for main database path."""
     return get_database_config().get_main_db_path()
