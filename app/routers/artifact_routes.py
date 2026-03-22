@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import os
 import re
 import shutil
 import subprocess
@@ -125,6 +126,20 @@ def _strip_session_prefixes(value: str) -> str:
     return normalize_session_base(value)
 
 
+def _runtime_root_dir() -> Path:
+    override = os.getenv("APP_RUNTIME_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(RUNTIME_DIR).resolve()
+
+
+def _info_sessions_root_dir() -> Path:
+    override = os.getenv("APP_INFO_SESSIONS_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(INFO_SESSIONS_DIR).resolve()
+
+
 def _find_session_candidates(root: Path, *, session_base: str) -> List[Path]:
     resolved_root = root.resolve()
     if not resolved_root.exists() or not resolved_root.is_dir():
@@ -198,8 +213,8 @@ def _resolve_session_dir(
     if not session_base:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id is invalid")
 
-    runtime_root = RUNTIME_DIR.resolve()
-    info_root = INFO_SESSIONS_DIR.resolve()
+    runtime_root = _runtime_root_dir()
+    info_root = _info_sessions_root_dir()
     runtime_candidates = _find_session_candidates(runtime_root, session_base=session_base)
     info_candidates = _find_session_candidates(info_root, session_base=session_base)
 
@@ -852,7 +867,8 @@ async def get_session_deliverable_text(
 # ----- Document Rendering (LaTeX -> PDF, Markdown -> HTML) -----
 
 # Cache directory for rendered files
-RENDER_CACHE_DIR = Path(__file__).parent.parent.parent.resolve() / "runtime" / ".render_cache"
+def _render_cache_dir() -> Path:
+    return _runtime_root_dir() / ".render_cache"
 
 
 def _iter_render_dependency_files(source_path: Path) -> List[Tuple[str, Path, Path]]:
@@ -890,7 +906,7 @@ def _get_render_cache_path(file_path: Path, extension: str) -> Path:
                 continue
     file_hash = hashlib.md5(":".join(hash_parts).encode()).hexdigest()[:16]
     cache_name = f"{file_path.stem}_{file_hash}.{extension}"
-    return RENDER_CACHE_DIR / cache_name
+    return _render_cache_dir() / cache_name
 
 
 def _render_markdown_to_html(content: str) -> str:
@@ -1096,7 +1112,8 @@ async def render_artifact(
     extension = target.suffix.lower().lstrip(".")
 
     # Initialize render cache directory
-    RENDER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    render_cache_dir = _render_cache_dir()
+    render_cache_dir.mkdir(parents=True, exist_ok=True)
 
     if extension == "tex":
         # LaTeX -> PDF
@@ -1155,7 +1172,7 @@ async def get_rendered_file(filename: str) -> FileResponse:
     """Serve a cached rendered file (PDF from LaTeX compilation)."""
     # Sanitize filename to prevent directory traversal
     safe_filename = Path(filename).name
-    file_path = RENDER_CACHE_DIR / safe_filename
+    file_path = _render_cache_dir() / safe_filename
 
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rendered file not found")

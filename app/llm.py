@@ -589,3 +589,8 @@ def get_default_client() -> LLMClient:
     if _default_client is None:
         _default_client = LLMClient()
     return _default_client
+
+
+def reset_default_client() -> None:
+    global _default_client
+    _default_client = None
