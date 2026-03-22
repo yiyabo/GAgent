@@ -31,6 +31,7 @@ import FileUploadButton from '@components/chat/FileUploadButton';
 import UploadedFilesList from '@components/chat/UploadedFilesList';
 import { shallow } from 'zustand/shallow';
 import type { ChatMessage as ChatMessageType, Memory } from '@/types';
+import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import VirtualList, { ListRef } from 'rc-virtual-list';
 
 const { TextArea } = Input;
@@ -205,7 +206,9 @@ const ChatMainArea: React.FC = () => {
   } = useChatStore(
     (state) => ({
       messages: state.messages,
-      isProcessing: state.isProcessing,
+      isProcessing: state.processingSessionIds.has(
+        resolveChatSessionProcessingKey(state.currentSession)
+      ),
       currentSession: state.currentSession,
       currentPlanTitle: state.currentPlanTitle,
       currentTaskName: state.currentTaskName,

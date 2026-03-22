@@ -3,7 +3,7 @@ import { ChatSliceCreator } from './types';
 export const createUISlice: ChatSliceCreator = (set) => ({
     inputText: '',
     isTyping: false,
-    isProcessing: false,
+    processingSessionIds: new Set<string>(),
     isUpdatingProvider: false,
     isUpdatingBaseModel: false,
     isUpdatingLLMProvider: false,
@@ -12,7 +12,14 @@ export const createUISlice: ChatSliceCreator = (set) => ({
 
     setInputText: (text) => set({ inputText: text }),
     setIsTyping: (typing) => set({ isTyping: typing }),
-    setIsProcessing: (processing) => set({ isProcessing: processing }),
+    setSessionProcessing: (sessionId, processing) =>
+        set((state) => {
+            if (!sessionId) return state;
+            const next = new Set(state.processingSessionIds);
+            if (processing) next.add(sessionId);
+            else next.delete(sessionId);
+            return { processingSessionIds: next };
+        }),
     toggleChatPanel: () => set((state) => ({ chatPanelVisible: !state.chatPanelVisible })),
     setChatPanelVisible: (visible) => set({ chatPanelVisible: visible }),
     setChatPanelWidth: (width) => set({ chatPanelWidth: width }),
