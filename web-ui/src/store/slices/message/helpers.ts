@@ -1,4 +1,5 @@
 import type { ChatResponseMetadata, ChatActionStatus, ActionStatusResponse } from '@/types';
+import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { ENV } from '@/config/env';
 import { chatApi } from '@api/chat';
 import { waitForActionCompletionViaStream } from '../../chatUtils';
@@ -86,10 +87,10 @@ export async function retryActionRun(
   oldTrackingId: string,
   rawActionsOverride: any[] = [],
 ) {
-  const { isProcessing } = get();
-  if (!oldTrackingId || isProcessing) return;
+  const retrySessionKey = resolveChatSessionProcessingKey(get().currentSession);
+  if (!oldTrackingId || get().processingSessionIds.has(retrySessionKey)) return;
   try {
-  set({ isProcessing: true });
+  get().setSessionProcessing(retrySessionKey, true);
   const retryStatus = await chatApi.retryActionRun(oldTrackingId);
   const newTrackingId = retryStatus.tracking_id;
   const rawActions = Array.isArray(retryStatus.actions) ? retryStatus.actions.map((a: any, idx: number) => ({ kind: a.kind, name: a.name, parameters: a.parameters, order: a.order ?? idx + 1, blocking: a.blocking ?? true })) : rawActionsOverride;
@@ -120,5 +121,7 @@ export async function retryActionRun(
   console.error('Retry failed:', error);
   const lastUser = [...get().messages].reverse().find((msg: any) => msg.type === 'user');
   if (lastUser) await get().sendMessage(lastUser.content, lastUser.metadata);
-  } finally { set({ isProcessing: false }); }
+  } finally {
+  get().setSessionProcessing(retrySessionKey, false);
+  }
 }

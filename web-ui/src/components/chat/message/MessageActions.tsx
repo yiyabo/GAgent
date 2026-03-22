@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import type { ChatMessage as ChatMessageType } from '@/types';
 import { useChatStore } from '@store/chat';
+import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { formatTime, fallbackCopyToClipboard } from './utils';
 
 const { Text } = Typography;
@@ -23,7 +24,10 @@ interface MessageActionsProps {
 
 const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
   const { type, content, timestamp, metadata } = message;
-  const { saveMessageAsMemory, retryActionRun, retryLastMessage, isProcessing } = useChatStore();
+  const { saveMessageAsMemory, retryActionRun, retryLastMessage } = useChatStore();
+  const isProcessing = useChatStore((state) =>
+    state.processingSessionIds.has(resolveChatSessionProcessingKey(state.currentSession))
+  );
   const [isSaving, setIsSaving] = useState(false);
 
   // Copy message content (with HTTP fallback path).

@@ -10,6 +10,8 @@ import {
   MessageOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
+import { shallow } from 'zustand/shallow';
+import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { useTasksStore } from '@store/tasks';
 import ChatMessage from './ChatMessage';
 import FileUploadButton from './FileUploadButton';
@@ -45,7 +47,32 @@ const ChatPanel: React.FC = () => {
     defaultLLMProvider,
     setDefaultLLMProvider,
     isUpdatingLLMProvider,
-  } = useChatStore();
+  } = useChatStore(
+    (state) => ({
+      messages: state.messages,
+      inputText: state.inputText,
+      isProcessing: state.processingSessionIds.has(
+        resolveChatSessionProcessingKey(state.currentSession)
+      ),
+      isTyping: state.isTyping,
+      chatPanelVisible: state.chatPanelVisible,
+      setInputText: state.setInputText,
+      sendMessage: state.sendMessage,
+      clearMessages: state.clearMessages,
+      retryLastMessage: state.retryLastMessage,
+      currentSession: state.currentSession,
+      defaultSearchProvider: state.defaultSearchProvider,
+      setDefaultSearchProvider: state.setDefaultSearchProvider,
+      isUpdatingProvider: state.isUpdatingProvider,
+      defaultBaseModel: state.defaultBaseModel,
+      setDefaultBaseModel: state.setDefaultBaseModel,
+      isUpdatingBaseModel: state.isUpdatingBaseModel,
+      defaultLLMProvider: state.defaultLLMProvider,
+      setDefaultLLMProvider: state.setDefaultLLMProvider,
+      isUpdatingLLMProvider: state.isUpdatingLLMProvider,
+    }),
+    shallow
+  );
 
   const { selectedTask, currentPlan } = useTasksStore();
 

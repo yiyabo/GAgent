@@ -13,6 +13,7 @@ import type {
   BackgroundTaskGroup,
   BackgroundTaskItem,
 } from '@/types';
+import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import './ExecutorPanel.css';
 
 dayjs.extend(relativeTime);
@@ -362,7 +363,11 @@ const ExecutorPanel: React.FC = () => {
   );
   const currentPlanId = useChatStore((state) => state.currentPlanId ?? null);
   const sendMessage = useChatStore((state) => state.sendMessage);
-  const isProcessing = useChatStore((state) => state.isProcessing);
+  const isProcessing = useChatStore((state) =>
+    state.processingSessionIds.has(
+      resolveChatSessionProcessingKey(state.currentSession)
+    )
+  );
   const [board, setBoard] = useState<BackgroundTaskBoardResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
