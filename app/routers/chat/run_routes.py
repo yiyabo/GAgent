@@ -7,7 +7,7 @@ import logging
 from typing import Any, AsyncIterator, Dict, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.repository.chat_runs import (
@@ -16,9 +16,10 @@ from app.repository.chat_runs import (
     get_chat_run,
     list_session_runs,
 )
+from app.database import get_db
 from app.routers.chat.background import _sse_message
 from app.routers.chat.models import ChatRequest
-from app.routers.chat.session_helpers import _save_chat_message
+from app.routers.chat.session_helpers import _ensure_session_exists, _save_chat_message
 from app.services.chat_run_worker import execute_chat_run
 from app.services import chat_run_hub as hub
 
@@ -29,12 +30,29 @@ def new_chat_run_id() -> str:
     return f"dt_{uuid4().hex}"
 
 
+def _plan_id_from_request(request: ChatRequest) -> Optional[int]:
+    ctx = request.context or {}
+    raw = ctx.get("plan_id")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def start_background_chat_run(request: ChatRequest, *, session_id: str) -> str:
     """Create DB row, save user message, spawn worker."""
+    # chat_runs.session_id FK references chat_sessions; frontend-only sessions must be materialized first.
+    plan_id = _plan_id_from_request(request)
+    with get_db() as conn:
+        _ensure_session_exists(session_id, conn, plan_id)
+
     run_id = new_chat_run_id()
     request_json = request.model_dump_json()
     create_chat_run(run_id, session_id, request_json)
     hub.ensure_cancel_event(run_id)
+    hub.ensure_steer_queue(run_id)
     _save_chat_message(session_id, "user", request.message)
     loop = asyncio.get_running_loop()
     task = loop.create_task(execute_chat_run(run_id))
@@ -171,3 +189,31 @@ def mount_run_routes(router: APIRouter) -> None:
         stream_run_events,
         methods=["GET"],
     )
+    router.add_api_route(
+        "/runs/{run_id}/steer",
+        steer_run,
+        methods=["POST"],
+    )
+
+
+async def steer_run(run_id: str, body: Dict[str, Any] = Body(...)) -> Dict[str, str]:
+    """Push a mid-run user guidance message into a running chat run."""
+    row = get_chat_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+    if row["status"] not in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="run is not active")
+
+    caller_session = (body.get("session_id") or "").strip()
+    if not caller_session:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    if caller_session != row.get("session_id"):
+        raise HTTPException(status_code=403, detail="session mismatch")
+
+    message = (body.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    accepted = hub.push_steer_message(run_id, message)
+    if not accepted:
+        raise HTTPException(status_code=409, detail="run has no steer queue (may have ended)")
+    return {"run_id": run_id, "status": "accepted"}

@@ -128,6 +128,14 @@ export class ChatApi extends BaseApi {
   ): Promise<ChatSessionAutoTitleBulkResponse> => {
   return this.post('/chat/sessions/autotitle/bulk', payload ?? {});
   };
+
+  steerRun = async (
+  runId: string,
+  message: string,
+  sessionId?: string,
+  ): Promise<{ run_id: string; status: string }> => {
+  return this.post<{ run_id: string; status: string }>(`/chat/runs/${runId}/steer`, { message, session_id: sessionId });
+  };
 }
 
 export const chatApi = new ChatApi();
