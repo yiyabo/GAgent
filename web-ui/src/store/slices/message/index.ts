@@ -18,6 +18,7 @@ import { ENV } from '@/config/env';
 import {
   collectToolResultsFromMetadata,
 } from '@utils/toolResults';
+import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { recoverPlanBindingFromMessages } from './planRecovery';
 import { startActionStatusPolling, flushAnalysisText, scheduleFlush, retryActionRun as retryActionRunHelper } from './helpers';
 import {
@@ -114,7 +115,10 @@ const _finalizeAfterUnifiedStream = async (
     throw new Error('No final response received');
   }
   if (state.jobFinalized) {
-    ctx.set({ isProcessing: false });
+    ctx.get().setSessionProcessing(
+      resolveChatSessionProcessingKey(ctx.currentSession),
+      false
+    );
     return;
   }
   if (!state.finalPayload) {
@@ -414,7 +418,13 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   defaultBaseModel,
   defaultLLMProvider,
   uploadedFiles,
+  processingSessionIds,
   } = get();
+
+  const processingKey = resolveChatSessionProcessingKey(currentSession);
+  if (processingSessionIds.has(processingKey)) {
+  return;
+  }
 
   const attachments = uploadedFiles.length > 0
   ? uploadedFiles.map((f) => ({
@@ -456,7 +466,8 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   get().addMessage(assistantMessage);
   let assistantMessageAdded = true;
 
-  set({ isProcessing: true, inputText: '' });
+  set({ inputText: '' });
+  get().setSessionProcessing(processingKey, true);
 
   try {
   let memories: Memory[] = [];
@@ -555,7 +566,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
   } catch (error) {
   console.error('Failed to send message:', error);
-  set({ isProcessing: false });
+  get().setSessionProcessing(processingKey, false);
   const errorContent =
   'Request failed. Please check:\n\n1. Backend service availability\n2. LLM API configuration\n3. Network connectivity\n\nThen retry the request.';
   if (assistantMessageAdded) {
@@ -567,11 +578,12 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   },
 
   resumeActiveChatRunIfAny: async (sessionId: string) => {
-  const { isProcessing, currentSession, messages } = get();
-  if (isProcessing) {
+  const { processingSessionIds, currentSession, messages } = get();
+  if (currentSession?.id !== sessionId) {
   return;
   }
-  if (currentSession?.id !== sessionId) {
+  const resumeKey = resolveChatSessionProcessingKey(currentSession);
+  if (processingSessionIds.has(resumeKey)) {
   return;
   }
   const apiSid = currentSession?.session_id ?? currentSession?.id;
@@ -619,7 +631,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   });
   }
 
-  set({ isProcessing: true });
+  get().setSessionProcessing(resumeKey, true);
 
   const state: StreamMutableState = {
   streamedContent: '',
@@ -661,7 +673,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
   } catch (error) {
   console.error('Resume chat run failed:', error);
-  set({ isProcessing: false });
+  get().setSessionProcessing(resumeKey, false);
   get().updateMessage(assistantMessageId, {
   content:
   'Reconnect failed. Refresh the page or send a new message.\n\n' +
@@ -675,8 +687,9 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   },
 
   retryLastMessage: async () => {
-  const { messages, isProcessing } = get();
-  if (isProcessing) return;
+  const { messages, currentSession, processingSessionIds } = get();
+  const retryKey = resolveChatSessionProcessingKey(currentSession);
+  if (processingSessionIds.has(retryKey)) return;
   const lastFailed = [...messages].reverse().find(msg => msg.type === 'assistant' && (msg.metadata as any)?.status === 'failed' && typeof (msg.metadata as any)?.tracking_id === 'string');
   if (lastFailed) {
   const meta = lastFailed.metadata as any;

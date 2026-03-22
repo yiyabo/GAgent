@@ -33,6 +33,7 @@ import {
   coercePlanId,
   coercePlanTitle,
 } from '@utils/planSyncEvents';
+import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { SessionStorage } from '@/utils/sessionStorage';
 import type { StreamHandlerContext } from './types';
 
@@ -484,7 +485,10 @@ export function handleToolOutput(ctx: StreamHandlerContext, event: any): void {
 }
 
 export function processBackgroundDispatch(ctx: StreamHandlerContext): void {
-  ctx.set({ isProcessing: false });
+  ctx.get().setSessionProcessing(
+    resolveChatSessionProcessingKey(ctx.currentSession),
+    false
+  );
   // Persist session metadata so reload picks up context.
   const sessionForBg = ctx.get().currentSession;
   if (sessionForBg) {
@@ -558,7 +562,10 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
       } as any,
     });
   }
-  ctx.set({ isProcessing: false });
+  ctx.get().setSessionProcessing(
+    resolveChatSessionProcessingKey(ctx.currentSession),
+    false
+  );
 
   const trackingIdForPoll = typeof assistantMetadata.tracking_id === 'string' ? assistantMetadata.tracking_id : null;
   if ((assistantMetadata as any).unified_stream === true && trackingIdForPoll) {

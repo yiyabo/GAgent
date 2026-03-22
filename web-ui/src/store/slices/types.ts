@@ -36,7 +36,8 @@ export interface ChatState {
     // UI Slice State
     inputText: string;
     isTyping: boolean;
-    isProcessing: boolean;
+    /** Session ids (frontend session_id or id) with an in-flight chat run / stream. */
+    processingSessionIds: Set<string>;
     isUpdatingProvider: boolean;
     isUpdatingBaseModel: boolean;
     isUpdatingLLMProvider: boolean;
@@ -91,7 +92,7 @@ export interface ChatState {
     // UI Actions
     setInputText: (text: string) => void;
     setIsTyping: (typing: boolean) => void;
-    setIsProcessing: (processing: boolean) => void;
+    setSessionProcessing: (sessionId: string, processing: boolean) => void;
     toggleChatPanel: () => void;
     setChatPanelVisible: (visible: boolean) => void;
     setChatPanelWidth: (width: number) => void;
