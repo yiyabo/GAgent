@@ -34,6 +34,7 @@ async def chat_stream(
         headers = {
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
         }
         return StreamingResponse(
             event_generator(), media_type="text/event-stream", headers=headers
@@ -63,6 +64,7 @@ async def chat_stream(
     headers = {
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
     }
     return StreamingResponse(
         event_generator_legacy(), media_type="text/event-stream", headers=headers
