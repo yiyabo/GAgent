@@ -103,9 +103,13 @@ class ChatRunEmitter:
 
         try:
             seqs = batch_append_chat_run_events(self.run_id, batch)
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
+            # Restore the batch to the front of the buffer so events are not
+            # permanently lost.  The next flush cycle (or an immediate event
+            # via emit()) will retry them.
+            self._buffer = batch + self._buffer
             logger.warning(
-                "chat_run batch_append failed run=%s count=%d: %s",
+                "chat_run batch_append failed run=%s count=%d (events restored to buffer): %s",
                 self.run_id, len(batch), exc,
             )
             return
