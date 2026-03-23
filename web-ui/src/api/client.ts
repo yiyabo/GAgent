@@ -20,14 +20,23 @@ const createApiClient = (): AxiosInstance => {
     // Chat message (synchronous LLM round-trip): 2 minutes
     { pattern: /\/chat\/message$/, ms: 120_000 },
     // Chat runs (create run + background execution): 2 minutes
-    { pattern: /\/chat\/runs$/, ms: 120_000 },
+    { pattern: /\/chat\/runs/, ms: 120_000 },
     // Action status polling & retry: 5 minutes
     { pattern: /\/chat\/actions\//, ms: 300_000 },
     // Session autotitle (LLM call): 60 seconds
     { pattern: /\/autotitle/, ms: 60_000 },
-    // Plan decomposition / evaluation: 3 minutes
+    // Task execution endpoints (LLM + tool execution): 5 minutes
+    { pattern: /\/run$/, ms: 300_000 },
+    { pattern: /\/execute/, ms: 300_000 },
+    { pattern: /\/rerun$/, ms: 300_000 },
+    // Task verification (LLM call): 2 minutes
+    { pattern: /\/verify/, ms: 120_000 },
+    // Plan decomposition / evaluation (multi-step LLM): 3 minutes
     { pattern: /\/decompos/, ms: 180_000 },
     { pattern: /\/evaluat/, ms: 180_000 },
+    // Plan proposal / approval (LLM): 2 minutes
+    { pattern: /\/plans\/propose/, ms: 120_000 },
+    { pattern: /\/plans\/approve/, ms: 120_000 },
   ];
 
   client.interceptors.request.use(
