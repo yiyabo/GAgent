@@ -6,7 +6,6 @@ import random
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
-from urllib import error, request
 
 import httpx
 
@@ -14,6 +13,91 @@ from .interfaces import LLMProvider
 from .services.foundation.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Shared HTTP connection pools — eliminates per-request TCP/TLS handshake
+# overhead (typically 60-150 ms saved per LLM call).
+#
+# * ``_shared_async_client`` is used by all ``async`` LLM methods.
+# * ``_shared_sync_client`` is used by the synchronous ``chat()`` method,
+#   replacing the legacy ``urllib.request.urlopen`` calls which created a
+#   brand-new connection each time *and* blocked the event loop.
+#
+# Both clients are initialised lazily on first access and must be shut down
+# explicitly via ``close_shared_clients()`` during application teardown
+# (called from ``app/main.py`` lifespan).
+# ---------------------------------------------------------------------------
+
+_shared_async_client: Optional[httpx.AsyncClient] = None
+_shared_sync_client: Optional[httpx.Client] = None
+
+# Default pool limits — generous enough for multi-provider concurrent usage
+# while keeping resource consumption bounded.
+_POOL_LIMITS = httpx.Limits(
+    max_connections=20,
+    max_keepalive_connections=10,
+    keepalive_expiry=30.0,
+)
+_SYNC_POOL_LIMITS = httpx.Limits(
+    max_connections=10,
+    max_keepalive_connections=5,
+    keepalive_expiry=30.0,
+)
+# Default connect timeout (TCP + TLS); per-request read timeout is overridden
+# at call sites to match the configured ``self.timeout`` / ``self.stream_timeout``.
+_DEFAULT_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+
+
+def _get_shared_async_client() -> httpx.AsyncClient:
+    """Return (and lazily create) the shared async HTTP client."""
+    global _shared_async_client
+    if _shared_async_client is None:
+        logger.info("[LLM] Creating shared async httpx client (connection pool)")
+        _shared_async_client = httpx.AsyncClient(
+            limits=_POOL_LIMITS,
+            timeout=_DEFAULT_TIMEOUT,
+            follow_redirects=True,
+        )
+    return _shared_async_client
+
+
+def _get_shared_sync_client() -> httpx.Client:
+    """Return (and lazily create) the shared synchronous HTTP client."""
+    global _shared_sync_client
+    if _shared_sync_client is None:
+        logger.info("[LLM] Creating shared sync httpx client (connection pool)")
+        _shared_sync_client = httpx.Client(
+            limits=_SYNC_POOL_LIMITS,
+            timeout=_DEFAULT_TIMEOUT,
+            follow_redirects=True,
+        )
+    return _shared_sync_client
+
+
+async def init_shared_clients() -> None:
+    """Pre-warm the shared HTTP clients.  Called from application startup."""
+    _get_shared_async_client()
+    _get_shared_sync_client()
+    logger.info("[LLM] Shared HTTP connection pools initialised")
+
+
+async def close_shared_clients() -> None:
+    """Gracefully close shared HTTP clients.  Called from application shutdown."""
+    global _shared_async_client, _shared_sync_client
+    if _shared_async_client is not None:
+        try:
+            await _shared_async_client.aclose()
+            logger.info("[LLM] Shared async httpx client closed")
+        except Exception as exc:
+            logger.warning("[LLM] Error closing async client: %s", exc)
+        _shared_async_client = None
+    if _shared_sync_client is not None:
+        try:
+            _shared_sync_client.close()
+            logger.info("[LLM] Shared sync httpx client closed")
+        except Exception as exc:
+            logger.warning("[LLM] Error closing sync client: %s", exc)
+        _shared_sync_client = None
 
 
 def _normalize_timeout(timeout: Optional[float], fallback: Optional[float]) -> Optional[float]:
@@ -220,37 +304,35 @@ class LLMClient(LLMProvider):
             "max_tokens": 16384,
         }
         headers = self._build_headers()
-        data = json.dumps(payload).encode("utf-8")
-        req = request.Request(self.url, data=data, headers=headers, method="POST")
+        timeout = None if self.timeout is None else httpx.Timeout(self.timeout, connect=10.0)
 
+        client = _get_shared_sync_client()
         last_err: Optional[Exception] = None
         for attempt in range(self.retries + 1):
             try:
-                if self.timeout is None:
-                    resp_ctx = request.urlopen(req)
-                else:
-                    resp_ctx = request.urlopen(req, timeout=self.timeout)
-                with resp_ctx as resp:
-                    resp_text = resp.read().decode("utf-8")
-                    obj = json.loads(resp_text)
+                response = client.post(
+                    self.url, headers=headers, json=payload,
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                obj = response.json()
                 try:
                     return obj["choices"][0]["message"]["content"]
                 except Exception:
                     raise RuntimeError(f"Unexpected LLM response: {obj}")
-            except error.HTTPError as e:
-                # Retry only for 5xx; surface 4xx immediately
-                code = getattr(e, "code", None)
-                if isinstance(code, int) and 500 <= code < 600 and attempt < self.retries:
-                    # backoff retry
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code if e.response is not None else None
+                if isinstance(status_code, int) and 500 <= status_code < 600 and attempt < self.retries:
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
                     time.sleep(delay)
                     last_err = e
                     continue
+                body = ""
                 try:
-                    msg = e.read().decode("utf-8")
+                    body = e.response.text if e.response is not None else ""
                 except Exception:
-                    msg = str(e)
-                raise RuntimeError(f"LLM HTTPError: {e.code} {msg}")
+                    body = str(e)
+                raise RuntimeError(f"LLM HTTPError: {status_code} {body}".strip())
             except Exception as e:
                 # Treat as transient (network) and retry
                 if attempt < self.retries:
@@ -281,14 +363,17 @@ class LLMClient(LLMProvider):
             "max_tokens": 16384,
         }
         headers = self._build_headers()
-        timeout = None if self.timeout is None else httpx.Timeout(self.timeout)
+        timeout = None if self.timeout is None else httpx.Timeout(self.timeout, connect=10.0)
+        client = _get_shared_async_client()
 
         for attempt in range(self.retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(self.url, headers=headers, json=payload)
-                    response.raise_for_status()
-                    obj = response.json()
+                response = await client.post(
+                    self.url, headers=headers, json=payload,
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                obj = response.json()
                 try:
                     return obj["choices"][0]["message"]["content"]
                 except Exception:
@@ -355,45 +440,46 @@ class LLMClient(LLMProvider):
 
         headers = self._build_headers()
 
-        timeout = None if self.stream_timeout is None else httpx.Timeout(self.stream_timeout)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream(
-                "POST", self.url, headers=headers, json=payload
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if not data:
-                        continue
-                    if data == "[DONE]":
-                        break
-                    try:
-                        obj = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
+        timeout = None if self.stream_timeout is None else httpx.Timeout(self.stream_timeout, connect=10.0)
+        client = _get_shared_async_client()
+        async with client.stream(
+            "POST", self.url, headers=headers, json=payload,
+            timeout=timeout,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if not data:
+                    continue
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
 
-                    # Extract reasoning_content delta if present
-                    choices = obj.get("choices")
-                    if isinstance(choices, list) and choices:
-                        delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
-                        if isinstance(delta, dict):
-                            reasoning = delta.get("reasoning_content")
-                            if isinstance(reasoning, str) and reasoning and on_reasoning_delta is not None:
-                                try:
-                                    ret = on_reasoning_delta(reasoning)
-                                    if asyncio.iscoroutine(ret):
-                                        await ret
-                                except Exception:
-                                    pass
+                # Extract reasoning_content delta if present
+                choices = obj.get("choices")
+                if isinstance(choices, list) and choices:
+                    delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+                    if isinstance(delta, dict):
+                        reasoning = delta.get("reasoning_content")
+                        if isinstance(reasoning, str) and reasoning and on_reasoning_delta is not None:
+                            try:
+                                ret = on_reasoning_delta(reasoning)
+                                if asyncio.iscoroutine(ret):
+                                    await ret
+                            except Exception:
+                                pass
 
-                    # Yield regular content
-                    content_delta = self._extract_stream_delta(obj)
-                    if content_delta:
-                        yield content_delta
+                # Yield regular content
+                content_delta = self._extract_stream_delta(obj)
+                if content_delta:
+                    yield content_delta
 
     async def stream_chat_with_tools_async(
         self,
@@ -441,80 +527,81 @@ class LLMClient(LLMProvider):
         # Accumulator for streamed tool_calls keyed by index
         tc_accum: Dict[int, Dict[str, str]] = {}
 
-        timeout = None if self.timeout is None else httpx.Timeout(self.timeout)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream("POST", self.url, headers=headers, json=payload) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if not data or data == "[DONE]":
-                        continue
-                    try:
-                        obj = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
+        timeout = None if self.timeout is None else httpx.Timeout(self.timeout, connect=10.0)
+        client = _get_shared_async_client()
+        async with client.stream("POST", self.url, headers=headers, json=payload,
+                                 timeout=timeout) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
 
-                    choices = obj.get("choices")
-                    if not isinstance(choices, list) or not choices:
-                        continue
-                    choice = choices[0]
-                    if not isinstance(choice, dict):
-                        continue
+                choices = obj.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    continue
+                choice = choices[0]
+                if not isinstance(choice, dict):
+                    continue
 
-                    fr = choice.get("finish_reason")
-                    if isinstance(fr, str):
-                        result.finish_reason = fr
+                fr = choice.get("finish_reason")
+                if isinstance(fr, str):
+                    result.finish_reason = fr
 
-                    delta = choice.get("delta")
-                    if not isinstance(delta, dict):
-                        continue
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    continue
 
-                    # Reasoning content delta (thinking tokens from enable_thinking)
-                    reasoning = delta.get("reasoning_content")
-                    if isinstance(reasoning, str) and reasoning:
-                        result.reasoning_content += reasoning
-                        if on_reasoning_delta is not None:
-                            try:
-                                ret = on_reasoning_delta(reasoning)
-                                if asyncio.iscoroutine(ret):
-                                    await ret
-                            except Exception:
-                                pass
+                # Reasoning content delta (thinking tokens from enable_thinking)
+                reasoning = delta.get("reasoning_content")
+                if isinstance(reasoning, str) and reasoning:
+                    result.reasoning_content += reasoning
+                    if on_reasoning_delta is not None:
+                        try:
+                            ret = on_reasoning_delta(reasoning)
+                            if asyncio.iscoroutine(ret):
+                                await ret
+                        except Exception:
+                            pass
 
-                    # Content delta
-                    content = delta.get("content")
-                    if isinstance(content, str) and content:
-                        result.content += content
-                        if on_content_delta is not None:
-                            try:
-                                ret = on_content_delta(content)
-                                if asyncio.iscoroutine(ret):
-                                    await ret
-                            except Exception:
-                                pass
+                # Content delta
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    result.content += content
+                    if on_content_delta is not None:
+                        try:
+                            ret = on_content_delta(content)
+                            if asyncio.iscoroutine(ret):
+                                await ret
+                        except Exception:
+                            pass
 
-                    # Tool call deltas
-                    tcs = delta.get("tool_calls")
-                    if isinstance(tcs, list):
-                        for tc_delta in tcs:
-                            if not isinstance(tc_delta, dict):
-                                continue
-                            idx = tc_delta.get("index", 0)
-                            if idx not in tc_accum:
-                                tc_accum[idx] = {"id": "", "name": "", "arguments": ""}
-                            tc_id = tc_delta.get("id")
-                            if isinstance(tc_id, str) and tc_id:
-                                tc_accum[idx]["id"] = tc_id
-                            fn = tc_delta.get("function")
-                            if isinstance(fn, dict):
-                                fn_name = fn.get("name")
-                                if isinstance(fn_name, str) and fn_name:
-                                    tc_accum[idx]["name"] = fn_name
-                                fn_args = fn.get("arguments")
-                                if isinstance(fn_args, str):
-                                    tc_accum[idx]["arguments"] += fn_args
+                # Tool call deltas
+                tcs = delta.get("tool_calls")
+                if isinstance(tcs, list):
+                    for tc_delta in tcs:
+                        if not isinstance(tc_delta, dict):
+                            continue
+                        idx = tc_delta.get("index", 0)
+                        if idx not in tc_accum:
+                            tc_accum[idx] = {"id": "", "name": "", "arguments": ""}
+                        tc_id = tc_delta.get("id")
+                        if isinstance(tc_id, str) and tc_id:
+                            tc_accum[idx]["id"] = tc_id
+                        fn = tc_delta.get("function")
+                        if isinstance(fn, dict):
+                            fn_name = fn.get("name")
+                            if isinstance(fn_name, str) and fn_name:
+                                tc_accum[idx]["name"] = fn_name
+                            fn_args = fn.get("arguments")
+                            if isinstance(fn_args, str):
+                                tc_accum[idx]["arguments"] += fn_args
 
         # Parse accumulated tool calls
         for idx in sorted(tc_accum.keys()):
