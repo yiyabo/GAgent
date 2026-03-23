@@ -145,6 +145,50 @@ def append_chat_run_event(
     return seq
 
 
+def batch_append_chat_run_events(
+    run_id: str,
+    payloads: List[Dict[str, Any]],
+) -> List[int]:
+    """Append multiple events in a single transaction; returns list of seq values.
+
+    This is significantly faster than calling ``append_chat_run_event`` in a loop
+    because it amortises the transaction overhead (commit + WAL sync) across all
+    events in the batch.
+    """
+    if not payloads:
+        return []
+
+    seqs: List[int] = []
+    with get_db() as conn:
+        # Determine starting seq for the batch
+        row = conn.execute(
+            "SELECT COALESCE(MAX(seq), -1) AS s FROM chat_run_events WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        next_seq = (int(row["s"]) if row and row["s"] is not None else -1) + 1
+
+        for payload in payloads:
+            event_type = str(payload.get("type") or "unknown")
+            payload_json = json.dumps(payload, ensure_ascii=False)
+            conn.execute(
+                """
+                INSERT INTO chat_run_events (run_id, seq, event_type, payload_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (run_id, next_seq, event_type, payload_json),
+            )
+            seqs.append(next_seq)
+            next_seq += 1
+
+        last_seq = seqs[-1] if seqs else -1
+        conn.execute(
+            "UPDATE chat_runs SET last_event_seq = ? WHERE run_id = ?",
+            (last_seq, run_id),
+        )
+        conn.commit()
+    return seqs
+
+
 def fetch_events_after(run_id: str, after_seq: int) -> List[Tuple[int, Dict[str, Any]]]:
     """Return (seq, payload) rows with seq > after_seq, ordered by seq."""
     with get_db() as conn:
