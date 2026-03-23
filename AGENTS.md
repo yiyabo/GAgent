@@ -12,19 +12,21 @@ This is the **PhageAgent** AI-Driven Task Orchestration System — a monorepo wi
 | Frontend UI | React 18 / TypeScript / Vite / Ant Design | 3000 | `cd web-ui && npm run dev` |
 | A-mem (optional) | FastAPI + ChromaDB + sentence-transformers | 8001 | `bash scripts/start_amem.sh` |
 
-### Running the backend without conda
+### Starting services
 
-The `start_backend.sh` script tries `conda activate LLM`. In environments without conda, bypass it by setting:
-
-```bash
-export BACKEND_PYTHON_BIN=$(which python3)
-```
-
-Or run uvicorn directly:
+The `start_backend.sh` script tries `conda activate LLM`. In Cloud Agent environments without conda, run uvicorn directly:
 
 ```bash
+# Backend (from /workspace)
 python3 -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
+
+# Frontend (separate terminal)
+cd web-ui && npm run dev
 ```
+
+Verify health: `curl http://localhost:9000/health` should return `{"status":"healthy",...}`.
+
+The frontend at port 3000 proxies `/api` and `/ws` to the backend at port 9000 (configured in `web-ui/vite.config.ts`).
 
 ### LLM API keys
 
