@@ -4,15 +4,43 @@ import { ENV } from '@/config/env';
 
 const createApiClient = (): AxiosInstance => {
   const client = axios.create({
-  baseURL: ENV.API_BASE_URL,  // readbackendAPI
-  timeout: 1200000,
+  baseURL: ENV.API_BASE_URL,
+  // Default timeout for general API requests (session CRUD, health checks, etc.).
+  // LLM-heavy endpoints (chat/message, chat/actions) override this per-request.
+  timeout: 30000,
   headers: {
   'Content-Type': 'application/json',
   },
   });
 
+  // ---- Timeout tier interceptor ----
+  // Automatically escalate timeouts for known slow paths so callers don't
+  // need to remember to set them manually.
+  const TIMEOUT_TIERS: Array<{ pattern: RegExp; ms: number }> = [
+    // Chat message (synchronous LLM round-trip): 2 minutes
+    { pattern: /\/chat\/message$/, ms: 120_000 },
+    // Chat runs (create run + background execution): 2 minutes
+    { pattern: /\/chat\/runs$/, ms: 120_000 },
+    // Action status polling & retry: 5 minutes
+    { pattern: /\/chat\/actions\//, ms: 300_000 },
+    // Session autotitle (LLM call): 60 seconds
+    { pattern: /\/autotitle/, ms: 60_000 },
+    // Plan decomposition / evaluation: 3 minutes
+    { pattern: /\/decompos/, ms: 180_000 },
+    { pattern: /\/evaluat/, ms: 180_000 },
+  ];
+
   client.interceptors.request.use(
   (config) => {
+  // Apply timeout tier unless the caller already set a custom timeout.
+  if (config.timeout === 30000 && config.url) {
+    for (const tier of TIMEOUT_TIERS) {
+      if (tier.pattern.test(config.url)) {
+        config.timeout = tier.ms;
+        break;
+      }
+    }
+  }
   console.log(`🚀 API Request: ${config.method?.toUpperCase()} ${config.url}`);
   return config;
   },
@@ -59,7 +87,8 @@ export class BaseApi {
   method: 'get' | 'post' | 'put' | 'patch' | 'delete',
   url: string,
   data?: any,
-  params?: Record<string, any>
+  params?: Record<string, any>,
+  options?: { signal?: AbortSignal },
   ): Promise<T> {
   try {
   const response = await this.client.request({
@@ -67,6 +96,7 @@ export class BaseApi {
   url,
   data,
   params,
+  signal: options?.signal,
   });
   
   console.log(`📡 API ${method.toUpperCase()} ${url}:`, response.status, response.data);
