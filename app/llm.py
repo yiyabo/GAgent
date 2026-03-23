@@ -45,7 +45,22 @@ _SYNC_POOL_LIMITS = httpx.Limits(
 )
 # Default connect timeout (TCP + TLS); per-request read timeout is overridden
 # at call sites to match the configured ``self.timeout`` / ``self.stream_timeout``.
-_DEFAULT_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+_DEFAULT_CONNECT_TIMEOUT = 10.0
+_DEFAULT_TIMEOUT = httpx.Timeout(60.0, connect=_DEFAULT_CONNECT_TIMEOUT)
+
+
+def _make_request_timeout(overall: Optional[float]) -> Optional[httpx.Timeout]:
+    """Build a per-request ``httpx.Timeout`` that respects the caller's budget.
+
+    The connect phase timeout is capped at ``_DEFAULT_CONNECT_TIMEOUT`` (10 s) but
+    will never *exceed* the caller-supplied ``overall`` timeout.  This way a
+    deployment that sets ``llm_request_timeout=2`` will still fail-fast on connect
+    rather than spending 10 s in DNS/TCP/TLS before each retry.
+    """
+    if overall is None:
+        return None
+    connect = min(_DEFAULT_CONNECT_TIMEOUT, overall)
+    return httpx.Timeout(overall, connect=connect)
 
 
 def _get_shared_async_client() -> httpx.AsyncClient:
@@ -304,7 +319,7 @@ class LLMClient(LLMProvider):
             "max_tokens": 16384,
         }
         headers = self._build_headers()
-        timeout = None if self.timeout is None else httpx.Timeout(self.timeout, connect=10.0)
+        timeout = _make_request_timeout(self.timeout)
 
         client = _get_shared_sync_client()
         last_err: Optional[Exception] = None
@@ -363,7 +378,7 @@ class LLMClient(LLMProvider):
             "max_tokens": 16384,
         }
         headers = self._build_headers()
-        timeout = None if self.timeout is None else httpx.Timeout(self.timeout, connect=10.0)
+        timeout = _make_request_timeout(self.timeout)
         client = _get_shared_async_client()
 
         for attempt in range(self.retries + 1):
@@ -440,7 +455,7 @@ class LLMClient(LLMProvider):
 
         headers = self._build_headers()
 
-        timeout = None if self.stream_timeout is None else httpx.Timeout(self.stream_timeout, connect=10.0)
+        timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
         async with client.stream(
             "POST", self.url, headers=headers, json=payload,
@@ -527,7 +542,7 @@ class LLMClient(LLMProvider):
         # Accumulator for streamed tool_calls keyed by index
         tc_accum: Dict[int, Dict[str, str]] = {}
 
-        timeout = None if self.timeout is None else httpx.Timeout(self.timeout, connect=10.0)
+        timeout = _make_request_timeout(self.timeout)
         client = _get_shared_async_client()
         async with client.stream("POST", self.url, headers=headers, json=payload,
                                  timeout=timeout) as resp:
