@@ -233,9 +233,11 @@ export async function* streamRunEvents(
                 if (attempt >= maxRetriesPerFetch) {
                     throw error;
                 }
-                const delay = Math.pow(2, attempt) * 1000;
+                const baseDelay = Math.min(Math.pow(2, attempt) * 1000, 16000);
+                const jitter = Math.random() * baseDelay * 0.25;
+                const delay = baseDelay + jitter;
                 console.warn(
-                    `Run stream disconnected, retrying in ${delay}ms (attempt ${attempt}):`,
+                    `Run stream disconnected, retrying in ${Math.round(delay)}ms (attempt ${attempt}):`,
                     error
                 );
                 await new Promise((r) => setTimeout(r, delay));
@@ -316,8 +318,10 @@ export const streamChatEvents = async function* (
             if (attempts >= maxRetries) {
                 throw error;
             }
-            const delay = Math.pow(2, attempts) * 1000;
-            console.warn(`Stream failed, retrying in ${delay}ms (attempt ${attempts}):`, error);
+            const baseDelay = Math.min(Math.pow(2, attempts) * 1000, 16000);
+            const jitter = Math.random() * baseDelay * 0.25;
+            const delay = baseDelay + jitter;
+            console.warn(`Stream failed, retrying in ${Math.round(delay)}ms (attempt ${attempts}):`, error);
             await new Promise(r => setTimeout(r, delay));
         }
     }
