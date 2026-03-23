@@ -29,7 +29,7 @@ from .errors import (
 )
 from .errors.exceptions import ErrorCategory
 from .errors.exceptions import SystemError as CustomSystemError
-from .llm import get_default_client
+from .llm import get_default_client, init_shared_clients, close_shared_clients
 
 # Import router function
 from .routers import get_all_routers
@@ -57,6 +57,10 @@ async def lifespan(_fastapi_app: FastAPI):
     setup_logging()
     _ = get_settings()  # Trigger loading to make it easy to see in the logs if the configuration took effect or not
     init_db()
+
+    # Pre-warm shared HTTP connection pools for LLM API communication.
+    # This eliminates per-request TCP/TLS handshake overhead (~60-150 ms each).
+    await init_shared_clients()
     # DB Lightweight integrity check (logging only, no service interruption)
     try:
         with get_db() as _conn:
@@ -129,6 +133,9 @@ async def lifespan(_fastapi_app: FastAPI):
         logging.getLogger("app.main").warning("Failed to resume PhageScope tracking: %s", e)
 
     yield
+
+    # Gracefully close shared HTTP connection pools on shutdown.
+    await close_shared_clients()
 
 
 async def base_error_handler(_request: Request, exc: BaseError):
