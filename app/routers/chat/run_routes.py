@@ -167,6 +167,7 @@ async def stream_run_events(
     headers = {
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
     }
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
