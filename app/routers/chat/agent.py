@@ -38,9 +38,12 @@ from app.services.plans.task_verification import TaskVerificationService
 from app.services.session_title_service import SessionNotFoundError
 from app.services.upload_storage import delete_session_storage
 from app.services.deep_think_agent import (
+    build_user_visible_step,
+    detect_reasoning_language,
     DeepThinkAgent,
     ThinkingStep,
     DeepThinkResult,
+    summarize_simple_chat_reasoning,
 )
 from tool_box import execute_tool
 
@@ -166,7 +169,6 @@ logger = logging.getLogger(__name__)
 
 
 def _build_simple_chat_thinking_process(reasoning_text: str) -> Optional[Dict[str, Any]]:
-    """Shape matches frontend `_hydrateThinkingProcess` / Extended Thinking (iteration 0)."""
     text = (reasoning_text or "").strip()
     if not text:
         return None
@@ -174,10 +176,13 @@ def _build_simple_chat_thinking_process(reasoning_text: str) -> Optional[Dict[st
     return {
         "status": "completed",
         "total_iterations": 1,
+        "summary": text,
         "steps": [
             {
-                "iteration": 0,
-                "thought": text,
+                "iteration": 1,
+                "thought": "",
+                "display_text": text,
+                "kind": "summary",
                 "action": None,
                 "action_result": None,
                 "status": "done",
@@ -237,7 +242,7 @@ class StructuredChatAgent:
 
         override_llm_service: Optional[LLMService] = None
         if llm_provider:
-            override_llm_service = LLMService(LLMClient(provider=llm_provider))
+            override_llm_service = LLMService(LLMClient(provider=llm_provider, model=base_model))
 
         self.plan_session = plan_session or PlanSession(repo=plan_repository)
         self.plan_tree = self.plan_session.current_tree()
@@ -932,23 +937,19 @@ class StructuredChatAgent:
                 deep_think_job_created = False
                 deep_think_job_queue = None
 
+        reasoning_language = detect_reasoning_language(user_message)
+
         async def on_thinking(step: ThinkingStep):
             nonlocal active_tool_iteration
             active_tool_iteration = step.iteration
             await queue.put(
                 {
                     "type": "thinking_step",
-                    "step": {
-                        "iteration": step.iteration,
-                        "thought": step.thought,
-                        "action": step.action,
-                        "status": step.status,
-                        "action_result": step.action_result,
-                        "evidence": step.evidence,
-                        "started_at": step.started_at.isoformat() if step.started_at else None,
-                        "finished_at": step.finished_at.isoformat() if step.finished_at else None,
-                        "timestamp": step.timestamp.isoformat() if step.timestamp else None,
-                    },
+                    "step": build_user_visible_step(
+                        step,
+                        language=reasoning_language,
+                        preserve_thought=True,
+                    ),
                 }
             )
 
@@ -1751,25 +1752,17 @@ class StructuredChatAgent:
                             "thinking_process": {
                                 "status": "completed",
                                 "total_iterations": res.total_iterations,
+                                "summary": res.thinking_summary,
                                 "steps": [
                                     {
-                                        "iteration": s.iteration,
-                                        "thought": s.thought,
-                                        "action": s.action,
-                                        "action_result": s.action_result,
-                                        "evidence": s.evidence,
+                                        **build_user_visible_step(
+                                            s,
+                                            language=reasoning_language,
+                                            preserve_thought=True,
+                                        ),
                                         "status": "done"
                                         if s.status == "done"
-                                        else "completed",  # Normalize status for history
-                                        "started_at": s.started_at.isoformat()
-                                        if getattr(s, "started_at", None)
-                                        else None,
-                                        "finished_at": s.finished_at.isoformat()
-                                        if getattr(s, "finished_at", None)
-                                        else None,
-                                        "timestamp": s.timestamp.isoformat()
-                                        if s.timestamp
-                                        else None,
+                                        else "completed",
                                     }
                                     for s in res.thinking_steps
                                 ],
@@ -1832,19 +1825,31 @@ class StructuredChatAgent:
         model_override = self.extra_context.get("default_base_model")
         enable_thinking = self._resolve_thinking_enabled()
         thinking_budget = self._resolve_thinking_budget_simple()
+        reasoning_language = detect_reasoning_language(user_message)
+        visible_reasoning = summarize_simple_chat_reasoning(user_message)
 
         queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
         content_parts: list[str] = []
-        reasoning_parts: list[str] = []
+        step_started_at = datetime.now(timezone.utc).replace(microsecond=0)
 
-        async def _on_reasoning(chunk: str) -> None:
-            if chunk:
-                reasoning_parts.append(chunk)
-            await queue.put(_sse_message({
-                "type": "reasoning_delta",
-                "iteration": 0,
-                "delta": chunk,
-            }))
+        yield _sse_message(
+            {
+                "type": "thinking_step",
+                "step": {
+                    "iteration": 1,
+                    "thought": "",
+                    "display_text": visible_reasoning,
+                    "kind": "summary",
+                    "action": None,
+                    "action_result": None,
+                    "status": "thinking",
+                    "timestamp": step_started_at.isoformat().replace("+00:00", "Z"),
+                    "started_at": step_started_at.isoformat().replace("+00:00", "Z"),
+                    "finished_at": None,
+                    "self_correction": None,
+                },
+            }
+        )
 
         async def _run_stream() -> None:
             try:
@@ -1852,7 +1857,6 @@ class StructuredChatAgent:
                     prompt, force_real=True, model=model_override,
                     enable_thinking=enable_thinking,
                     thinking_budget=thinking_budget,
-                    on_reasoning_delta=_on_reasoning,
                 ):
                     content_parts.append(delta)
                     await queue.put(
@@ -1879,8 +1883,26 @@ class StructuredChatAgent:
 
         full_response = "".join(content_parts)
         display_text = _coerce_plain_text_chat_response_fn(full_response)
-        reasoning_text = "".join(reasoning_parts)
-        thinking_process = _build_simple_chat_thinking_process(reasoning_text)
+        thinking_process = {
+            "status": "completed",
+            "total_iterations": 1,
+            "summary": visible_reasoning,
+            "steps": [
+                {
+                    "iteration": 1,
+                    "thought": "",
+                    "display_text": visible_reasoning,
+                    "kind": "summary",
+                    "action": None,
+                    "action_result": None,
+                    "status": "done",
+                    "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                    "started_at": step_started_at.isoformat().replace("+00:00", "Z"),
+                    "finished_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                    "self_correction": None,
+                }
+            ],
+        }
 
         if self.session_id and display_text:
             try:
@@ -1934,7 +1956,7 @@ class StructuredChatAgent:
 
     def _resolve_thinking_budget_simple(self) -> int:
         settings = get_settings()
-        return int(getattr(settings, "thinking_budget_simple", 2000))
+        return min(int(getattr(settings, "thinking_budget_simple", 2000)), 800)
 
     async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
         self._current_user_message = user_message

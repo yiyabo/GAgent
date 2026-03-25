@@ -12,6 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query, Requ
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.database import get_db
 from app.repository.plan_repository import PlanRepository
 from app.services.realtime_bus import EventSubscription, get_realtime_bus
 from app.services.request_principal import ensure_owner_access, get_request_owner_id
@@ -47,6 +48,25 @@ def _default_plan_paper_mode() -> bool:
     if raw is None:
         return False
     return str(raw).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def _ensure_plan_access(plan_id: int, request: Request) -> None:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT owner FROM plans WHERE id=?",
+            (plan_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Plan {plan_id} not found")
+    ensure_owner_access(request, row["owner"], detail="plan owner mismatch")
+
+
+def _load_authorized_plan_tree(plan_id: int, request: Request):
+    _ensure_plan_access(plan_id, request)
+    try:
+        return _plan_repo.get_plan_tree(plan_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 def _sse_message(payload: Dict[str, Any]) -> str:
@@ -86,9 +106,9 @@ def _run_decomposition_job(
 
 
 @plan_router.get("", summary="List plans")
-def list_plans():
+def list_plans(request: Request):
     """Return plan summaries."""
-    summaries = _plan_repo.list_plans()
+    summaries = _plan_repo.list_plans(owner=get_request_owner_id(request))
     return [summary.model_dump() for summary in summaries]
 
 
@@ -672,12 +692,9 @@ def _run_task_chain_job(
 
 
 @plan_router.get("/{plan_id}/tree", summary="Get plan tree")
-def get_plan_tree(plan_id: int):
+def get_plan_tree(plan_id: int, request: Request):
     """Return serialized PlanTree for the specified plan."""
-    try:
-        tree = _plan_repo.get_plan_tree(plan_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    tree = _load_authorized_plan_tree(plan_id, request)
     return tree.model_dump()
 
 
@@ -688,12 +705,10 @@ def get_plan_tree(plan_id: int):
 )
 def get_plan_results(
     plan_id: int,
+    request: Request,
     only_with_output: bool = Query(True, description="Only include tasks with execution output"),
 ):
-    try:
-        tree = _plan_repo.get_plan_tree(plan_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    tree = _load_authorized_plan_tree(plan_id, request)
 
     items: List[TaskResultItem] = []
     for node in tree.ordered_nodes():
@@ -720,11 +735,12 @@ def get_plan_results(
     response_model=TaskResultItem,
     summary="Get task execution result",
 )
-def get_task_result(task_id: int, plan_id: int = Query(..., description="plan ID")):
-    try:
-        tree = _plan_repo.get_plan_tree(plan_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+def get_task_result(
+    task_id: int,
+    request: Request,
+    plan_id: int = Query(..., description="plan ID"),
+):
+    tree = _load_authorized_plan_tree(plan_id, request)
     if not tree.has_node(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
     node = tree.get_node(task_id)
@@ -747,11 +763,12 @@ def get_task_result(task_id: int, plan_id: int = Query(..., description="plan ID
     response_model=VerifyTaskResponse,
     summary="Re-run deterministic verification for a task result",
 )
-def verify_task_result(task_id: int, plan_id: int = Query(..., description="plan ID")):
-    try:
-        tree = _plan_repo.get_plan_tree(plan_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+def verify_task_result(
+    task_id: int,
+    request: Request,
+    plan_id: int = Query(..., description="plan ID"),
+):
+    tree = _load_authorized_plan_tree(plan_id, request)
     if not tree.has_node(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
     node = tree.get_node(task_id)
@@ -806,6 +823,7 @@ def verify_task_result(task_id: int, plan_id: int = Query(..., description="plan
 )
 def get_task_dependency_plan(
     task_id: int,
+    request: Request,
     plan_id: int = Query(..., description="plan ID"),
     include_dependencies: bool = Query(
         True,
@@ -816,10 +834,7 @@ def get_task_dependency_plan(
         description="Whether to include subtree tasks rooted at target task in execution planning",
     ),
 ):
-    try:
-        tree = _plan_repo.get_plan_tree(plan_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    tree = _load_authorized_plan_tree(plan_id, request)
     if not tree.has_node(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
 
@@ -844,10 +859,7 @@ def execute_task_with_dependencies(
     request: Optional[ExecuteTaskRequest] = Body(default=None),
 ):
     request = request or ExecuteTaskRequest()
-    try:
-        tree = _plan_repo.get_plan_tree(plan_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    tree = _load_authorized_plan_tree(plan_id, raw_request)
     if not tree.has_node(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
 
@@ -1020,11 +1032,8 @@ def execute_task_with_dependencies(
     response_model=PlanExecutionSummary,
     summary="Get plan execution status summary",
 )
-def get_plan_execution_summary(plan_id: int):
-    try:
-        tree = _plan_repo.get_plan_tree(plan_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+def get_plan_execution_summary(plan_id: int, request: Request):
+    tree = _load_authorized_plan_tree(plan_id, request)
 
     total = tree.node_count()
     status_counts = {"completed": 0, "failed": 0, "skipped": 0, "running": 0, "pending": 0}
@@ -1052,13 +1061,11 @@ def get_plan_execution_summary(plan_id: int):
 )
 def get_plan_subgraph(
     plan_id: int,
+    request: Request,
     node_id: int = Query(..., description="Root node ID"),
     max_depth: int = Query(2, ge=1, le=6, description="Traversal depth limit"),
 ):
-    try:
-        tree = _plan_repo.get_plan_tree(plan_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    tree = _load_authorized_plan_tree(plan_id, request)
 
     if not tree.has_node(node_id):
         raise HTTPException(
@@ -1088,10 +1095,7 @@ def decompose_task(
     request: DecomposeTaskRequest = Body(...),
 ):
     plan_id = request.plan_id
-    try:
-        tree = _plan_repo.get_plan_tree(plan_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    tree = _load_authorized_plan_tree(plan_id, raw_request)
 
     if not tree.has_node(task_id):
         raise HTTPException(

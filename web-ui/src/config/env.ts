@@ -7,10 +7,26 @@
  * - : web-ui/.env.production
  */
 
-export const ENV = {
-  API_BASE_URL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000',
+const browserHostname =
+  typeof window !== 'undefined' && window.location.hostname
+    ? window.location.hostname
+    : 'localhost';
 
-  WS_BASE_URL: import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:9000',
+const browserProtocol =
+  typeof window !== 'undefined' && window.location.protocol
+    ? window.location.protocol
+    : 'http:';
+
+const defaultApiProtocol = browserProtocol === 'https:' ? 'https:' : 'http:';
+const defaultWsProtocol = browserProtocol === 'https:' ? 'wss:' : 'ws:';
+
+const defaultApiBaseUrl = `${defaultApiProtocol}//${browserHostname}:9000`;
+const defaultWsBaseUrl = `${defaultWsProtocol}//${browserHostname}:9000`;
+
+export const ENV = {
+  API_BASE_URL: import.meta.env.VITE_API_BASE_URL || defaultApiBaseUrl,
+
+  WS_BASE_URL: import.meta.env.VITE_WS_BASE_URL || defaultWsBaseUrl,
 
   TERMINAL_ENABLED: String(import.meta.env.VITE_TERMINAL_ENABLED || 'true').toLowerCase() === 'true',
 

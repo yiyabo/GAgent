@@ -163,9 +163,10 @@ class SessionTitleService:
         limit: Optional[int] = None,
     ) -> List[SessionTitleResult]:
         """Generate titles for a batch of sessions."""
-        target_ids = list(session_ids or [])
-        if not target_ids:
+        if session_ids is None:
             target_ids = self._pick_candidate_sessions(limit=limit)
+        else:
+            target_ids = list(session_ids)
 
         results: List[SessionTitleResult] = []
         for session_id in target_ids:

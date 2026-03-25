@@ -48,6 +48,9 @@ def isolated_app_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[st
     monkeypatch.setenv("QWEN_API_KEY", "test-key")
     monkeypatch.setenv("QWEN_API_URL", "https://example.com/v1/chat/completions")
     monkeypatch.setenv("QWEN_MODEL", "qwen-test")
+    # Keep existing integration tests stable unless they explicitly opt in
+    # to local account auth.
+    monkeypatch.setenv("AUTH_MODE", "proxy")
 
     _reset_test_singletons()
     yield paths

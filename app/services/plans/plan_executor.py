@@ -12,7 +12,13 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ...config.executor_config import ExecutorSettings, get_executor_settings
 from ...llm import LLMClient
-from ..deep_think_agent import DeepThinkAgent, TaskExecutionContext, ThinkingStep
+from ..deep_think_agent import (
+    DeepThinkAgent,
+    TaskExecutionContext,
+    ThinkingStep,
+    build_user_visible_step,
+    detect_reasoning_language,
+)
 from ..deliverables import get_deliverable_publisher
 from ..execution.tool_executor import ToolExecutionContext, UnifiedToolExecutor
 from ..llm.llm_service import LLMService
@@ -1285,6 +1291,7 @@ class PlanExecutor:
             context_sections=list(node.context_sections or []),
             paper_context_paths=dependency_paths[:40],
         )
+        reasoning_language = detect_reasoning_language(user_query)
 
         async def on_thinking(step: ThinkingStep) -> None:
             _log_job(
@@ -1293,17 +1300,11 @@ class PlanExecutor:
                 {
                     "sub_type": "thinking_step",
                     "task_id": node.id,
-                    "step": {
-                        "iteration": step.iteration,
-                        "thought": step.thought,
-                        "action": step.action,
-                        "action_result": step.action_result,
-                        "evidence": step.evidence,
-                        "status": step.status,
-                        "started_at": step.started_at.isoformat() if step.started_at else None,
-                        "finished_at": step.finished_at.isoformat() if step.finished_at else None,
-                        "timestamp": step.timestamp.isoformat() if step.timestamp else None,
-                    },
+                    "step": build_user_visible_step(
+                        step,
+                        language=reasoning_language,
+                        preserve_thought=True,
+                    ),
                 },
             )
 
@@ -1423,17 +1424,11 @@ class PlanExecutor:
                         "total_iterations": result.total_iterations,
                         "summary": result.thinking_summary,
                         "steps": [
-                            {
-                                "iteration": step.iteration,
-                                "thought": step.thought,
-                                "action": step.action,
-                                "action_result": step.action_result,
-                                "evidence": step.evidence,
-                                "status": step.status,
-                                "started_at": step.started_at.isoformat() if step.started_at else None,
-                                "finished_at": step.finished_at.isoformat() if step.finished_at else None,
-                                "timestamp": step.timestamp.isoformat() if step.timestamp else None,
-                            }
+                            build_user_visible_step(
+                                step,
+                                language=reasoning_language,
+                                preserve_thought=True,
+                            )
                             for step in result.thinking_steps
                         ],
                     },

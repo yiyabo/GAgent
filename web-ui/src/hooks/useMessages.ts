@@ -3,6 +3,7 @@ import { ENV } from '@/config/env';
 import { ChatMessage } from '@/types';
 import { buildToolResultsCache, resolveHistoryCursor } from '@store/chatUtils';
 import { collectToolResultsFromMetadata } from '@utils/toolResults';
+import { parseChatTimestamp } from '@/utils/chatMessageUtils';
 
 export const MESSAGES_QUERY_KEY = (sessionId: string) => ['messages', sessionId];
 
@@ -52,7 +53,7 @@ export function useMessages(sessionId: string | null | undefined) {
                     id: messageId,
                     type: (msg.role || 'assistant') as 'user' | 'assistant' | 'system',
                     content: msg.content,
-                    timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+                    timestamp: parseChatTimestamp(msg.timestamp),
                     metadata,
                     thinking_process: thinkingProcess,
                 };

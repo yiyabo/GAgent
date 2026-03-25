@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .models import ChatMessage, ChatResponse
 from app.services.llm.structured_response import LLMAction
-from app.services.llm.llm_service import LLMService, get_llm_service
+from app.services.llm.llm_service import LLMService, get_llm_service, get_llm_service_for_provider
 from app.llm import LLMClient
 
 # ---------------------------------------------------------------------------
@@ -1276,8 +1276,11 @@ def _merge_async_metadata(
     return metadata
 
 
-def _get_llm_service_for_provider(provider: Optional[str]) -> LLMService:
+def _get_llm_service_for_provider(
+    provider: Optional[str],
+    model: Optional[str] = None,
+) -> LLMService:
     normalized = _normalize_llm_provider(provider)
     if normalized:
-        return LLMService(LLMClient(provider=normalized))
+        return get_llm_service_for_provider(normalized, model)
     return get_llm_service()

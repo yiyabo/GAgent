@@ -328,6 +328,7 @@ async def chat_message(
             session_llm_provider = session_settings.get("default_llm_provider")
             if session_llm_provider:
                 context["default_llm_provider"] = session_llm_provider
+        context.setdefault("owner_id", owner_id)
 
         agent_cls = get_structured_chat_agent_cls()
         agent = agent_cls(

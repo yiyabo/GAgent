@@ -158,6 +158,8 @@ export interface ChatMessage {
 export interface ThinkingStep {
   iteration: number;
   thought: string;
+  display_text?: string;
+  kind?: 'reasoning' | 'tool' | 'summary';
   action?: string | null;
   action_result?: string | null;
   evidence?: ThinkingEvidenceItem[];

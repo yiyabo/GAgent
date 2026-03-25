@@ -474,7 +474,7 @@ const ExecutorPanel: React.FC = () => {
   stopPolling();
 
   try {
-  const source = new EventSource(sseUrl);
+  const source = new EventSource(sseUrl, { withCredentials: true });
   sseSourceRef.current = source;
 
   source.onopen = () => {

@@ -14,10 +14,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from . import register_router
+from ..database import get_db
+from ..services.request_principal import ensure_owner_access
 from ..services.upload_storage import ensure_session_dir
 
 logger = logging.getLogger(__name__)
@@ -242,6 +244,17 @@ def _get_session_upload_dir(session_id: str) -> Path:
     return upload_dir
 
 
+def _ensure_session_access(session_id: str, request: Request) -> None:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT owner_id FROM chat_sessions WHERE id=?",
+            (session_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    ensure_owner_access(request, row["owner_id"], detail="session owner mismatch")
+
+
 def _resolve_extract_dir(session_id: str, file_id: str, safe_name: str) -> Path:
     session_dir = ensure_session_dir(session_id)
     extract_root = session_dir / EXTRACT_SUBDIR
@@ -383,6 +396,7 @@ async def _save_upload_file(
 
 @router.post("/file", response_model=UploadResponse)
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     session_id: str = Form(...),
 ) -> UploadResponse:
@@ -398,6 +412,7 @@ async def upload_file(
     """
     if not session_id or not session_id.strip():
         raise HTTPException(status_code=400, detail="session_id ")
+    _ensure_session_access(session_id, request)
 
     is_valid, error_msg, category = _validate_file(file)
     if not is_valid:
@@ -431,6 +446,7 @@ async def upload_file(
 
 @router.post("/image", response_model=UploadResponse)
 async def upload_image(
+    request: Request,
     file: UploadFile = File(...),
     session_id: str = Form(...),
 ) -> UploadResponse:
@@ -446,6 +462,7 @@ async def upload_image(
     """
     if not session_id or not session_id.strip():
         raise HTTPException(status_code=400, detail="session_id ")
+    _ensure_session_access(session_id, request)
 
     is_valid, error_msg, category = _validate_file(file, category="image")
     if not is_valid:
@@ -478,7 +495,7 @@ async def upload_image(
 
 
 @router.delete("/{file_id}")
-async def delete_file(file_id: str, session_id: str) -> Dict[str, Any]:
+async def delete_file(file_id: str, session_id: str, request: Request) -> Dict[str, Any]:
     """
     Delete an uploaded file by file ID.
 
@@ -491,6 +508,7 @@ async def delete_file(file_id: str, session_id: str) -> Dict[str, Any]:
     """
     if not session_id or not session_id.strip():
         raise HTTPException(status_code=400, detail="session_id is required")
+    _ensure_session_access(session_id, request)
 
     session_dir = _get_session_upload_dir(session_id)
 
@@ -512,7 +530,7 @@ async def delete_file(file_id: str, session_id: str) -> Dict[str, Any]:
 
 
 @router.get("/list")
-async def list_files(session_id: str) -> Dict[str, Any]:
+async def list_files(session_id: str, request: Request) -> Dict[str, Any]:
     """
     List uploaded files for a session.
 
@@ -524,6 +542,7 @@ async def list_files(session_id: str) -> Dict[str, Any]:
     """
     if not session_id or not session_id.strip():
         raise HTTPException(status_code=400, detail="session_id is required")
+    _ensure_session_access(session_id, request)
 
     session_dir = _get_session_upload_dir(session_id)
 

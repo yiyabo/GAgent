@@ -11,7 +11,10 @@ def test_build_simple_chat_thinking_process_shape() -> None:
     assert blob is not None
     assert blob["status"] == "completed"
     assert blob["total_iterations"] == 1
+    assert blob["summary"] == "step one"
     assert len(blob["steps"]) == 1
-    assert blob["steps"][0]["thought"] == "step one"
-    assert blob["steps"][0]["iteration"] == 0
+    assert blob["steps"][0]["thought"] == ""
+    assert blob["steps"][0]["display_text"] == "step one"
+    assert blob["steps"][0]["kind"] == "summary"
+    assert blob["steps"][0]["iteration"] == 1
     assert blob["steps"][0]["status"] == "done"
