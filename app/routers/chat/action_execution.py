@@ -13,7 +13,7 @@ import os
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi import BackgroundTasks
 from app.repository.chat_action_runs import (
     create_action_run,
@@ -31,6 +31,7 @@ from app.services.plans.decomposition_jobs import (
     start_phagescope_track_job_thread,
 )
 from app.services.plans.plan_session import PlanSession
+from app.services.request_principal import get_request_owner_id
 from tool_box import execute_tool
 
 from .models import ActionStatusResponse
@@ -1661,9 +1662,10 @@ async def _execute_action_run(run_id: str) -> None:
         reset_current_job(job_token)
 
 
-async def get_action_status(tracking_id: str):
+async def get_action_status(tracking_id: str, request: Request):
     """Query background action execution status."""
-    record = fetch_action_run(tracking_id)
+    owner_id = get_request_owner_id(request)
+    record = fetch_action_run(tracking_id, owner_id=owner_id)
     if not record:
         raise HTTPException(status_code=404, detail="Action run not found")
 
@@ -1768,9 +1770,14 @@ async def get_action_status(tracking_id: str):
     )
 
 
-async def retry_action_run(tracking_id: str, background_tasks: BackgroundTasks):
+async def retry_action_run(
+    tracking_id: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
     """Retry a previous action run by cloning its structured actions."""
-    original = fetch_action_run(tracking_id)
+    owner_id = get_request_owner_id(request)
+    original = fetch_action_run(tracking_id, owner_id=owner_id)
     if not original:
         raise HTTPException(status_code=404, detail="Action run not found")
 
@@ -1793,6 +1800,7 @@ async def retry_action_run(tracking_id: str, background_tasks: BackgroundTasks):
     create_action_run(
         run_id=new_tracking,
         session_id=original.get("session_id"),
+        owner_id=owner_id,
         user_message=original.get("user_message", ""),
         mode=original.get("mode"),
         plan_id=plan_session.plan_id,
@@ -1822,6 +1830,8 @@ async def retry_action_run(tracking_id: str, background_tasks: BackgroundTasks):
             task_id=None,
             mode=original.get("mode") or "assistant",
             job_type="chat_action",
+            owner_id=owner_id,
+            session_id=original.get("session_id"),
             params=job_params,
             metadata=job_metadata,
             job_id=new_tracking,

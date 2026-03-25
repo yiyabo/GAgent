@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 
 from app.config.executor_config import get_executor_settings
 from app.repository.chat_action_runs import create_action_run
@@ -19,6 +19,7 @@ from app.routers import register_router
 from app.services.llm.llm_service import get_llm_service
 from app.services.plans.decomposition_jobs import plan_decomposition_jobs
 from app.services.plans.plan_session import PlanSession
+from app.services.request_principal import get_request_owner_id
 from app.services.session_title_service import SessionNotFoundError
 from app.services.upload_storage import delete_session_storage
 
@@ -90,8 +91,53 @@ register_router(
 # Route mounting is declared at the bottom of this file after handler definitions.
 
 
-async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
+def _select_owned_session_ids(
+    conn,
+    owner_id: str,
+    *,
+    session_ids: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+) -> List[str]:
+    if session_ids:
+        normalized_ids = [str(session_id).strip() for session_id in session_ids if str(session_id or "").strip()]
+        if not normalized_ids:
+            return []
+        placeholders = ",".join("?" for _ in normalized_ids)
+        rows = conn.execute(
+            f"""
+            SELECT id
+            FROM chat_sessions
+            WHERE owner_id = ? AND id IN ({placeholders})
+            """,
+            (owner_id, *normalized_ids),
+        ).fetchall()
+        allowed_ids = {str(row["id"]) for row in rows}
+        return [session_id for session_id in normalized_ids if session_id in allowed_ids]
+
+    max_items = limit if limit and limit > 0 else session_title_service.DEFAULT_LIMIT
+    rows = conn.execute(
+        """
+        SELECT id
+        FROM chat_sessions
+        WHERE
+            owner_id = ?
+            AND (name IS NULL OR name = '' OR name_source IS NULL OR name_source = 'default')
+            AND (is_user_named IS NULL OR is_user_named = 0)
+        ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC, id ASC
+        LIMIT ?
+        """,
+        (owner_id, max_items),
+    ).fetchall()
+    return [str(row["id"]) for row in rows]
+
+
+async def chat_message(
+    request: ChatRequest,
+    background_tasks: BackgroundTasks,
+    raw_request: Request,
+):
     """Main chat entry: respond with LLM actions first, then execute in the background."""
+    owner_id = get_request_owner_id(raw_request)
     try:
         context = dict(request.context or {})
         incoming_plan_id = context.get("plan_id")
@@ -101,7 +147,11 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             except (TypeError, ValueError):
                 incoming_plan_id = None
 
-        plan_id = _resolve_plan_binding(request.session_id, incoming_plan_id)
+        plan_id = _resolve_plan_binding(
+            request.session_id,
+            incoming_plan_id,
+            owner_id=owner_id,
+        )
         plan_session = PlanSession(repo=plan_repository, plan_id=plan_id)
         try:
             plan_session.refresh()
@@ -226,11 +276,22 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             )
 
         if request.session_id:
-            _save_chat_message(request.session_id, "user", request.message)
-            session_settings = _get_session_settings(request.session_id)
+            _save_chat_message(
+                request.session_id,
+                "user",
+                request.message,
+                owner_id=owner_id,
+            )
+            session_settings = _get_session_settings(
+                request.session_id,
+                owner_id=owner_id,
+            )
             # If current_task_id is missing in context, try loading from session.
             if "current_task_id" not in context:
-                current_task_id = _get_session_current_task(request.session_id)
+                current_task_id = _get_session_current_task(
+                    request.session_id,
+                    owner_id=owner_id,
+                )
                 if current_task_id is not None:
                     context["current_task_id"] = current_task_id
                     logger.info(
@@ -285,7 +346,11 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
         if not structured.actions:
             agent_result = await agent.execute_structured(structured)
             if request.session_id:
-                _set_session_plan_id(request.session_id, agent_result.bound_plan_id)
+                _set_session_plan_id(
+                    request.session_id,
+                    agent_result.bound_plan_id,
+                    owner_id=owner_id,
+                )
             if agent_result.steps:
                 for step in agent_result.steps:
                     logger.info(
@@ -345,7 +410,11 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                 actions=[step.action_payload for step in agent_result.steps],
                 metadata=metadata_payload,
             )
-            return _save_assistant_response(request.session_id, chat_response)
+            return _save_assistant_response(
+                request.session_id,
+                chat_response,
+                owner_id=owner_id,
+            )
 
         tracking_id = f"act_{uuid4().hex}"
         job_metadata = {
@@ -368,6 +437,8 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
                 task_id=None,
                 mode=request.mode or "assistant",
                 job_type="chat_action",
+                owner_id=owner_id,
+                session_id=request.session_id,
                 params=job_params,
                 metadata=job_metadata,
                 job_id=tracking_id,
@@ -380,6 +451,7 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             create_action_run(
                 run_id=tracking_id,
                 session_id=request.session_id,
+                owner_id=owner_id,
                 user_message=request.message,
                 mode=request.mode,
                 plan_id=plan_session.plan_id,
@@ -470,8 +542,16 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
 
         background_tasks.add_task(_execute_action_run, tracking_id)
 
-        return _save_assistant_response(request.session_id, chat_response)
+        return _save_assistant_response(
+            request.session_id,
+            chat_response,
+            owner_id=owner_id,
+        )
 
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Chat processing failed: %s", exc)
         error_message = "⚠️ Something went wrong while processing the request. Try again later or rephrase."
@@ -481,12 +561,17 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
             actions=[],
             metadata={"error": True, "error_type": type(exc).__name__},
         )
-        return _save_assistant_response(request.session_id, fallback)
+        return _save_assistant_response(
+            request.session_id,
+            fallback,
+            owner_id=owner_id,
+        )
 
 
 
 
 async def list_chat_sessions(
+    raw_request: Request,
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
     active: Optional[bool] = None,
@@ -494,10 +579,11 @@ async def list_chat_sessions(
     """List existing chat sessions."""
     from ...database import get_db  # lazy import
 
+    owner_id = get_request_owner_id(raw_request)
     try:
         with get_db() as conn:
-            where_clauses: List[str] = []
-            params: List[Any] = []
+            where_clauses: List[str] = ["s.owner_id = ?"]
+            params: List[Any] = [owner_id]
             if active is not None:
                 where_clauses.append("s.is_active = ?")
                 params.append(1 if active else 0)
@@ -557,13 +643,16 @@ async def list_chat_sessions(
         raise HTTPException(status_code=500, detail="Failed to load sessions") from exc
 
 async def update_chat_session(
-    session_id: str, payload: ChatSessionUpdateRequest
+    session_id: str,
+    payload: ChatSessionUpdateRequest,
+    raw_request: Request,
 ) -> ChatSessionSummary:
     """Update the core attributes of a chat session."""
     from ...database import get_db  # lazy import
 
     updates = payload.model_dump(exclude_unset=True)
     settings_update = updates.pop("settings", None)
+    owner_id = get_request_owner_id(raw_request)
 
     if not updates and settings_update is None:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -571,10 +660,11 @@ async def update_chat_session(
     try:
         with get_db() as conn:
             # Ensure session exists; auto-create if missing.
-            _ensure_session_exists(session_id, conn)
+            _ensure_session_exists(session_id, conn, owner_id=owner_id)
 
             row = conn.execute(
-                "SELECT id FROM chat_sessions WHERE id=?", (session_id,)
+                "SELECT id FROM chat_sessions WHERE id=? AND owner_id=?",
+                (session_id, owner_id),
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -582,7 +672,11 @@ async def update_chat_session(
             set_clauses: List[str] = []
             params: List[Any] = []
             if settings_update is not None:
-                metadata_dict = _load_session_metadata_dict(conn, session_id)
+                metadata_dict = _load_session_metadata_dict(
+                    conn,
+                    session_id,
+                    owner_id=owner_id,
+                )
                 if "default_search_provider" in settings_update:
                     provider = settings_update.get("default_search_provider")
                     if provider is not None:
@@ -660,15 +754,24 @@ async def update_chat_session(
                 raise HTTPException(status_code=400, detail="No valid fields to update")
 
             set_clauses.append("updated_at=CURRENT_TIMESTAMP")
-            sql = f"UPDATE chat_sessions SET {', '.join(set_clauses)} WHERE id=?"
-            params.append(session_id)
+            sql = (
+                f"UPDATE chat_sessions SET {', '.join(set_clauses)} "
+                "WHERE id=? AND owner_id=?"
+            )
+            params.extend([session_id, owner_id])
             conn.execute(sql, params)
             conn.commit()
 
-            session_info = _fetch_session_info(conn, session_id)
+            session_info = _fetch_session_info(
+                conn,
+                session_id,
+                owner_id=owner_id,
+            )
             if not session_info:
                 raise HTTPException(status_code=404, detail="Session not found")
             return ChatSessionSummary(**session_info)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - defensive
@@ -678,8 +781,17 @@ async def update_chat_session(
 async def autotitle_chat_session(
     session_id: str,
     payload: ChatSessionAutoTitleRequest,
+    raw_request: Request,
 ) -> ChatSessionAutoTitleResult:
     """Auto-generate a session title from context."""
+    from ...database import get_db  # lazy import
+
+    owner_id = get_request_owner_id(raw_request)
+    with get_db() as conn:
+        session_info = _fetch_session_info(conn, session_id, owner_id=owner_id)
+    if not session_info:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     try:
         result = session_title_service.generate_for_session(
             session_id,
@@ -703,11 +815,22 @@ async def autotitle_chat_session(
 
 async def bulk_autotitle_chat_sessions(
     payload: ChatSessionAutoTitleBulkRequest,
+    raw_request: Request,
 ) -> ChatSessionAutoTitleBulkResponse:
     """Bulk-generate session titles."""
+    from ...database import get_db  # lazy import
+
+    owner_id = get_request_owner_id(raw_request)
     try:
+        with get_db() as conn:
+            target_ids = _select_owned_session_ids(
+                conn,
+                owner_id,
+                session_ids=payload.session_ids,
+                limit=payload.limit,
+            )
         results = session_title_service.bulk_generate(
-            session_ids=payload.session_ids,
+            session_ids=target_ids,
             force=payload.force,
             strategy=payload.strategy,
             limit=payload.limit,
@@ -732,14 +855,17 @@ async def bulk_autotitle_chat_sessions(
         processed=len(response_items),
     )
 
-async def head_chat_session(session_id: str) -> Response:
+async def head_chat_session(session_id: str, raw_request: Request) -> Response:
     """Check if a chat session exists (returns only headers, no body)."""
     from ...database import get_db  # lazy import
+
+    owner_id = get_request_owner_id(raw_request)
 
     try:
         with get_db() as conn:
             row = conn.execute(
-                "SELECT id FROM chat_sessions WHERE id=?", (session_id,)
+                "SELECT id FROM chat_sessions WHERE id=? AND owner_id=?",
+                (session_id, owner_id),
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -751,15 +877,19 @@ async def head_chat_session(session_id: str) -> Response:
         raise HTTPException(status_code=500, detail="Failed to check session") from exc
 
 async def delete_chat_session(
-    session_id: str, archive: bool = Query(False)
+    session_id: str,
+    raw_request: Request,
+    archive: bool = Query(False),
 ) -> Response:
     """Delete or archive a chat session."""
     from ...database import get_db  # lazy import
 
+    owner_id = get_request_owner_id(raw_request)
     try:
         with get_db() as conn:
             row = conn.execute(
-                "SELECT id, is_active FROM chat_sessions WHERE id=?", (session_id,)
+                "SELECT id, is_active FROM chat_sessions WHERE id=? AND owner_id=?",
+                (session_id, owner_id),
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -770,13 +900,16 @@ async def delete_chat_session(
                     UPDATE chat_sessions
                     SET is_active=0,
                         updated_at=CURRENT_TIMESTAMP
-                    WHERE id=?
+                    WHERE id=? AND owner_id=?
                     """,
-                    (session_id,),
+                    (session_id, owner_id),
                 )
                 logger.info("Archived chat session %s", session_id)
             else:
-                conn.execute("DELETE FROM chat_sessions WHERE id=?", (session_id,))
+                conn.execute(
+                    "DELETE FROM chat_sessions WHERE id=? AND owner_id=?",
+                    (session_id, owner_id),
+                )
                 logger.info("Deleted chat session %s", session_id)
                 try:
                     if delete_session_storage(session_id):
@@ -980,12 +1113,25 @@ async def chat_status() -> ChatStatusResponse:
 
 async def get_chat_history(
     session_id: str,
+    raw_request: Request,
     limit: int = 50,
     before_id: Optional[int] = Query(default=None, ge=1),
 ):
     """Fetch history for a specific session."""
+    from ...database import get_db  # lazy import
+
+    owner_id = get_request_owner_id(raw_request)
     try:
-        messages, has_more = _load_chat_history(session_id, limit, before_id)
+        with get_db() as conn:
+            session_info = _fetch_session_info(conn, session_id, owner_id=owner_id)
+        if not session_info:
+            raise HTTPException(status_code=404, detail="Session not found")
+        messages, has_more = _load_chat_history(
+            session_id,
+            limit,
+            before_id,
+            owner_id=owner_id,
+        )
         next_before_id = messages[0].id if messages else None
         return {
             "success": True,
@@ -1004,6 +1150,8 @@ async def get_chat_history(
             "has_more": has_more,
             "next_before_id": next_before_id,
         }
+    except HTTPException:
+        raise
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Failed to get chat history: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

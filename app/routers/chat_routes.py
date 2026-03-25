@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.tool_policy import get_tool_policy, is_tool_allowed
 from app.repository.chat_action_runs import fetch_action_run
+from app.services.request_principal import LEGACY_LOCAL_OWNER_ID, RequestPrincipal
 from app.services.deep_think_agent import DeepThinkAgent
 from app.services.plans.decomposition_jobs import get_current_job
 from app.services.session_title_service import SessionNotFoundError
@@ -93,6 +94,31 @@ def _sync_binding_hook() -> None:
     _stream_module._resolve_plan_binding = _resolve_plan_binding
 
 
+def _build_compat_request() -> Request:
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/chat/message",
+        "raw_path": b"/chat/message",
+        "root_path": "",
+        "query_string": b"",
+        "headers": [],
+        "client": ("compat", 0),
+        "server": ("compat", 80),
+        "state": {},
+    }
+    raw_request = Request(scope)
+    raw_request.state.principal = RequestPrincipal(
+        owner_id=LEGACY_LOCAL_OWNER_ID,
+        email=None,
+        auth_source="compat",
+    )
+    return raw_request
+
+
 async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
     context = dict(getattr(request, "context", None) or {})
     incoming_plan_id = _coerce_plan_id(context.get("plan_id"))
@@ -105,7 +131,11 @@ async def chat_message(request: ChatRequest, background_tasks: BackgroundTasks):
         ) from exc
 
     _sync_binding_hook()
-    return await _routes_module.chat_message(request, background_tasks)
+    return await _routes_module.chat_message(
+        request,
+        background_tasks,
+        _build_compat_request(),
+    )
 
 
 async def chat_stream(
@@ -211,6 +241,7 @@ async def _build_analysis_only_chat_response(
     user_message: str,
     context: Dict[str, Any],
     session_id: Optional[str],
+    owner_id: Optional[str] = None,
     llm_provider: Optional[str] = None,
 ) -> Optional[ChatResponse]:
     if not context.get("analysis_only"):
@@ -231,7 +262,10 @@ async def _build_analysis_only_chat_response(
             },
         )
 
-    record = fetch_action_run(source_job_id)
+    if owner_id is None:
+        record = fetch_action_run(source_job_id)
+    else:
+        record = fetch_action_run(source_job_id, owner_id=owner_id)
     if not record:
         return ChatResponse(
             response=f"Background job `{source_job_id}` was not found.",

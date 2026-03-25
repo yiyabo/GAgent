@@ -13,13 +13,14 @@ from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Tu
 
 from ...repository.plan_storage import (
     append_decomposition_job_log,
+    list_action_logs,
     load_decomposition_job,
     lookup_decomposition_job_entry,
     record_decomposition_job,
     register_decomposition_job_index,
     update_decomposition_job_status,
-    list_action_logs,
 )
+from ...services.realtime_bus import get_realtime_bus, start_owner_lease, stop_owner_lease, submit_async
 from .plan_decomposer import DecompositionResult
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -88,6 +89,35 @@ def _coerce_stats_payload(stats: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return dict(stats)
     except Exception:  # pragma: no cover - defensive
         return {}
+
+
+def _resolve_owner_id(owner_id: Optional[str], session_id: Optional[str]) -> str:
+    normalized = str(owner_id or "").strip()
+    if normalized:
+        return normalized
+    if session_id:
+        try:
+            from app.routers.chat.session_helpers import lookup_session_owner
+
+            resolved = lookup_session_owner(session_id)
+            if resolved:
+                return str(resolved).strip() or "legacy-local"
+        except Exception:
+            pass
+    return "legacy-local"
+
+
+async def _publish_job_event(job_id: str, payload: Dict[str, Any]) -> None:
+    bus = await get_realtime_bus()
+    await bus.publish_job_event(job_id, payload)
+
+
+def _fanout_job_event(job_id: str, payload: Dict[str, Any]) -> None:
+    coro = _publish_job_event(job_id, payload)
+    try:
+        submit_async(coro)
+    except Exception:
+        coro.close()
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +562,8 @@ class PlanDecompositionJob:
     plan_id: Optional[int]
     task_id: Optional[int]
     mode: str
+    owner_id: str = "legacy-local"
+    session_id: Optional[str] = None
     job_type: str = "plan_decompose"
     status: str = "queued"
     created_at: datetime = field(default_factory=_utc_now)
@@ -566,6 +598,8 @@ class PlanDecompositionJob:
             "plan_id": self.plan_id,
             "task_id": self.task_id,
             "mode": self.mode,
+            "owner_id": self.owner_id,
+            "session_id": self.session_id,
             "status": self.status,
             "error": self.error,
             "result": result_payload,
@@ -615,16 +649,28 @@ class PlanDecompositionJobManager:
         job_type: str = "plan_decompose",
         params: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        owner_id: Optional[str] = None,
+        session_id: Optional[str] = None,
         job_id: Optional[str] = None,
     ) -> PlanDecompositionJob:
         job_id = job_id or uuid.uuid4().hex
         sanitized_metadata = _normalize_metadata(metadata or {})
+        resolved_session_id = session_id
+        if not resolved_session_id:
+            raw_session_id = sanitized_metadata.get("session_id")
+            if raw_session_id is None and params:
+                raw_session_id = params.get("session_id")
+            if isinstance(raw_session_id, str) and raw_session_id.strip():
+                resolved_session_id = raw_session_id.strip()
+        resolved_owner_id = _resolve_owner_id(owner_id, resolved_session_id)
         job = PlanDecompositionJob(
             job_id=job_id,
             job_type=job_type,
             plan_id=plan_id,
             task_id=task_id,
             mode=mode,
+            owner_id=resolved_owner_id,
+            session_id=resolved_session_id,
             params=params or {},
             metadata=sanitized_metadata,
         )
@@ -634,17 +680,26 @@ class PlanDecompositionJobManager:
                 raise ValueError(f"Job {job_id} already exists.")
             self._jobs[job_id] = job
         if plan_id is not None:
-            register_decomposition_job_index(job_id, plan_id, job_type=job_type)
+            register_decomposition_job_index(
+                job_id,
+                plan_id,
+                job_type=job_type,
+                owner_id=job.owner_id,
+                session_id=job.session_id,
+            )
         record_decomposition_job(
             plan_id,
             job_id=job_id,
             job_type=job_type,
             mode=mode,
             target_task_id=task_id,
+            owner_id=job.owner_id,
+            session_id=job.session_id,
             status=job.status,
             params=params or {},
             metadata=sanitized_metadata,
         )
+        start_owner_lease("job", job_id)
         return job
 
     def get_job(self, job_id: str) -> Optional[PlanDecompositionJob]:
@@ -717,17 +772,16 @@ class PlanDecompositionJobManager:
             status="running",
             started_at=job.started_at,
         )
-        self._notify_subscribers(
-            subscribers,
-            {
-                "job_id": job_id,
-                "job_type": job.job_type,
-                "status": "running",
-                "event": None,
-                "stats": {},
-                "metadata": dict(job.metadata),
-            },
-        )
+        payload = {
+            "job_id": job_id,
+            "job_type": job.job_type,
+            "status": "running",
+            "event": None,
+            "stats": {},
+            "metadata": dict(job.metadata),
+        }
+        self._notify_subscribers(subscribers, payload)
+        _fanout_job_event(job_id, payload)
 
     def mark_success(
         self,
@@ -768,6 +822,8 @@ class PlanDecompositionJobManager:
             "metadata": dict(job.metadata),
         }
         self._notify_subscribers(subscribers, payload)
+        _fanout_job_event(job_id, payload)
+        stop_owner_lease("job", job_id)
 
     def mark_failure(
         self,
@@ -813,6 +869,8 @@ class PlanDecompositionJobManager:
             "metadata": dict(job.metadata),
         }
         self._notify_subscribers(subscribers, payload)
+        _fanout_job_event(job_id, payload)
+        stop_owner_lease("job", job_id)
 
     def append_log(
         self,
@@ -847,6 +905,7 @@ class PlanDecompositionJobManager:
             )
             job.persisted_log_count += 1
         self._notify_subscribers(subscribers, payload)
+        _fanout_job_event(job_id, payload)
 
     def update_stats(self, job_id: str, stats: Dict[str, Any]) -> None:
         """Merge stats into the job and notify subscribers."""
@@ -884,6 +943,7 @@ class PlanDecompositionJobManager:
             result=_coerce_result_payload(job.result),
         )
         self._notify_subscribers(subscribers, payload)
+        _fanout_job_event(job_id, payload)
 
     def log_from_context(
         self,
@@ -956,7 +1016,11 @@ class PlanDecompositionJobManager:
                 return
             job.plan_id = plan_id
             register_decomposition_job_index(
-                job_id, plan_id, job_type=job.job_type
+                job_id,
+                plan_id,
+                job_type=job.job_type,
+                owner_id=job.owner_id,
+                session_id=job.session_id,
             )
             record_decomposition_job(
                 plan_id,
@@ -964,6 +1028,8 @@ class PlanDecompositionJobManager:
                 job_type=job.job_type,
                 mode=job.mode,
                 target_task_id=job.task_id,
+                owner_id=job.owner_id,
+                session_id=job.session_id,
                 status=job.status,
                 params=job.params,
                 metadata=job.metadata,
@@ -1022,6 +1088,7 @@ class PlanDecompositionJobManager:
         for job_id in expired:
             self._jobs.pop(job_id, None)
             self._controllers.pop(job_id, None)
+            stop_owner_lease("job", job_id)
 
     def _load_persisted_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         entry = lookup_decomposition_job_entry(job_id)
@@ -1038,6 +1105,8 @@ class PlanDecompositionJobManager:
             "plan_id": record.get("plan_id"),
             "task_id": record.get("target_task_id"),
             "mode": record.get("mode"),
+            "owner_id": record.get("owner_id") or "legacy-local",
+            "session_id": record.get("session_id"),
             "status": record.get("status"),
             "error": record.get("error"),
             "result": record.get("result"),

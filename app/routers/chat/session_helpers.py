@@ -128,6 +128,44 @@ def _lookup_plan_title(conn, plan_id: Optional[int]) -> Optional[str]:
     return row["title"]
 
 
+def _normalize_owner_id(owner_id: Optional[str]) -> str:
+    text = str(owner_id or "").strip()
+    return text or "legacy-local"
+
+
+def _lookup_session_owner(conn, session_id: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT owner_id FROM chat_sessions WHERE id=?",
+        (session_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return _normalize_owner_id(row["owner_id"])
+
+
+def lookup_session_owner(session_id: Optional[str]) -> Optional[str]:
+    if not session_id:
+        return None
+    from ...database import get_db  # lazy import
+
+    with get_db() as conn:
+        return _lookup_session_owner(conn, session_id)
+
+
+def _resolve_session_owner_id(
+    conn,
+    session_id: str,
+    owner_id: Optional[str],
+) -> str:
+    normalized = str(owner_id or "").strip()
+    if normalized:
+        return normalized
+    existing_owner_id = _lookup_session_owner(conn, session_id)
+    if existing_owner_id:
+        return existing_owner_id
+    return _normalize_owner_id(None)
+
+
 def _row_to_session_info(row) -> Dict[str, Any]:
     """Convert a SQLite row into a session info dictionary."""
     metadata = None
@@ -162,8 +200,19 @@ def _row_to_session_info(row) -> Dict[str, Any]:
     return info
 
 
-def _fetch_session_info(conn, session_id: str) -> Optional[Dict[str, Any]]:
+def _fetch_session_info(
+    conn,
+    session_id: str,
+    *,
+    owner_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Retrieve information for a specific session."""
+    params: List[Any] = [session_id]
+    where_sql = "WHERE s.id = ?"
+    if owner_id is not None:
+        where_sql += " AND s.owner_id = ?"
+        params.append(_normalize_owner_id(owner_id))
+
     row = conn.execute(
         """
         SELECT
@@ -188,18 +237,29 @@ def _fetch_session_info(conn, session_id: str) -> Optional[Dict[str, Any]]:
                 )
             ) AS last_message_at
         FROM chat_sessions s
-        WHERE s.id = ?
-        """,
-        (session_id,),
+        """
+        + where_sql,
+        tuple(params),
     ).fetchone()
     if not row:
         return None
     return _row_to_session_info(row)
 
 
-def _load_session_metadata_dict(conn, session_id: str) -> Dict[str, Any]:
+def _load_session_metadata_dict(
+    conn,
+    session_id: str,
+    *,
+    owner_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    params: List[Any] = [session_id]
+    where_sql = "WHERE id=?"
+    if owner_id is not None:
+        where_sql += " AND owner_id=?"
+        params.append(_normalize_owner_id(owner_id))
     row = conn.execute(
-        "SELECT metadata FROM chat_sessions WHERE id=?", (session_id,)
+        f"SELECT metadata FROM chat_sessions {where_sql}",
+        tuple(params),
     ).fetchone()
     if not row:
         return {}
@@ -208,22 +268,30 @@ def _load_session_metadata_dict(conn, session_id: str) -> Dict[str, Any]:
 
 
 def _update_session_metadata(
-    session_id: str, updater: Callable[[Dict[str, Any]], Dict[str, Any]]
+    session_id: str,
+    updater: Callable[[Dict[str, Any]], Dict[str, Any]],
+    *,
+    owner_id: Optional[str] = None,
 ) -> None:
     from ...database import get_db  # lazy import to avoid cycles
 
     with get_db() as conn:
-        _ensure_session_exists(session_id, conn)
-        metadata = _load_session_metadata_dict(conn, session_id)
+        _ensure_session_exists(session_id, conn, owner_id=owner_id)
+        metadata = _load_session_metadata_dict(conn, session_id, owner_id=owner_id)
         updated = updater(dict(metadata))
+        params: List[Any] = [json.dumps(updated, ensure_ascii=False), session_id]
+        where_sql = "WHERE id=?"
+        if owner_id is not None:
+            where_sql += " AND owner_id=?"
+            params.append(_normalize_owner_id(owner_id))
         conn.execute(
             """
             UPDATE chat_sessions
             SET metadata=?,
                 updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
-            """,
-            (json.dumps(updated, ensure_ascii=False), session_id),
+            """
+            + where_sql,
+            tuple(params),
         )
         conn.commit()
 
@@ -724,22 +792,36 @@ def _lookup_phagescope_task_memory(
 # Session and plan management
 # ---------------------------------------------------------------------------
 
-def _get_session_settings(session_id: str) -> Dict[str, Any]:
+def _get_session_settings(
+    session_id: str,
+    *,
+    owner_id: Optional[str] = None,
+) -> Dict[str, Any]:
     from ...database import get_db  # lazy import to avoid cycles
 
     with get_db() as conn:
-        metadata = _load_session_metadata_dict(conn, session_id)
+        metadata = _load_session_metadata_dict(conn, session_id, owner_id=owner_id)
     settings = _extract_session_settings(metadata)
     return settings or {}
 
 
-def _get_session_current_task(session_id: str) -> Optional[int]:
+def _get_session_current_task(
+    session_id: str,
+    *,
+    owner_id: Optional[str] = None,
+) -> Optional[int]:
     """Get the current_task_id from session if set."""
     from ...database import get_db  # lazy import to avoid cycles
 
     with get_db() as conn:
+        params: List[Any] = [session_id]
+        where_sql = "WHERE id=?"
+        if owner_id is not None:
+            where_sql += " AND owner_id=?"
+            params.append(_normalize_owner_id(owner_id))
         row = conn.execute(
-            "SELECT current_task_id FROM chat_sessions WHERE id=?", (session_id,)
+            f"SELECT current_task_id FROM chat_sessions {where_sql}",
+            tuple(params),
         ).fetchone()
     if not row:
         return None
@@ -753,11 +835,18 @@ def _get_session_current_task(session_id: str) -> Optional[int]:
 
 
 def _ensure_session_exists(
-    session_id: str, conn, plan_id: Optional[int] = None
+    session_id: str,
+    conn,
+    plan_id: Optional[int] = None,
+    owner_id: Optional[str] = None,
 ) -> Optional[int]:
     """Ensure the chat_sessions table contains this session."""
+    normalized_owner_id = _resolve_session_owner_id(conn, session_id, owner_id)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, plan_id FROM chat_sessions WHERE id = ?", (session_id,))
+    cursor.execute(
+        "SELECT id, plan_id, owner_id FROM chat_sessions WHERE id = ?",
+        (session_id,),
+    )
     row = cursor.fetchone()
     if not row:
         plan_title = _lookup_plan_title(conn, plan_id)
@@ -765,6 +854,7 @@ def _ensure_session_exists(
             """
             INSERT INTO chat_sessions (
                 id,
+                owner_id,
                 name,
                 name_source,
                 is_user_named,
@@ -777,11 +867,12 @@ def _ensure_session_exists(
                 is_active
             )
             VALUES (
-                ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
+                ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
             )
             """,
             (
                 session_id,
+                normalized_owner_id,
                 f"Session {session_id[:8]}",
                 "default",
                 0,
@@ -792,6 +883,10 @@ def _ensure_session_exists(
         )
         logger.info("Created new chat session: %s (plan_id=%s)", session_id, plan_id)
         return plan_id
+
+    existing_owner_id = _normalize_owner_id(row["owner_id"])
+    if existing_owner_id != normalized_owner_id:
+        raise PermissionError(f"Session {session_id} belongs to another owner")
 
     current_plan_id = row["plan_id"]
     if plan_id is not None and current_plan_id != plan_id:
@@ -817,7 +912,10 @@ def _ensure_session_exists(
 
 
 def _resolve_plan_binding(
-    session_id: Optional[str], requested_plan_id: Optional[int]
+    session_id: Optional[str],
+    requested_plan_id: Optional[int],
+    *,
+    owner_id: Optional[str] = None,
 ) -> Optional[int]:
     """Determine the final bound plan ID based on session state and request parameters."""
     if not session_id:
@@ -826,28 +924,43 @@ def _resolve_plan_binding(
     from ...database import get_db  # lazy import
 
     with get_db() as conn:
-        current_plan_id = _ensure_session_exists(session_id, conn, requested_plan_id)
+        current_plan_id = _ensure_session_exists(
+            session_id,
+            conn,
+            requested_plan_id,
+            owner_id=owner_id,
+        )
         if current_plan_id is not None:
             return current_plan_id
     return requested_plan_id
 
 
-def _set_session_plan_id(session_id: str, plan_id: Optional[int]) -> None:
+def _set_session_plan_id(
+    session_id: str,
+    plan_id: Optional[int],
+    *,
+    owner_id: Optional[str] = None,
+) -> None:
     """Update the plan binding for the session."""
     from ...database import get_db  # lazy import
 
     with get_db() as conn:
-        _ensure_session_exists(session_id, conn)
+        _ensure_session_exists(session_id, conn, owner_id=owner_id)
         plan_title = _lookup_plan_title(conn, plan_id)
+        params: List[Any] = [plan_id, plan_title, session_id]
+        where_sql = "WHERE id=?"
+        if owner_id is not None:
+            where_sql += " AND owner_id=?"
+            params.append(_normalize_owner_id(owner_id))
         conn.execute(
             """
             UPDATE chat_sessions
             SET plan_id=?,
                 plan_title=?,
                 updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
-            """,
-            (plan_id, plan_title, session_id),
+            """
+            + where_sql,
+            tuple(params),
         )
         conn.commit()
 
@@ -857,14 +970,19 @@ def _set_session_plan_id(session_id: str, plan_id: Optional[int]) -> None:
 # ---------------------------------------------------------------------------
 
 def _save_chat_message(
-    session_id: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None
+    session_id: str,
+    role: str,
+    content: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    *,
+    owner_id: Optional[str] = None,
 ) -> None:
     """Persist chat message."""
     try:
         from ...database import get_db  # lazy import to avoid circular deps
 
         with get_db() as conn:
-            _ensure_session_exists(session_id, conn)
+            _ensure_session_exists(session_id, conn, owner_id=owner_id)
             cursor = conn.cursor()
             metadata_json = (
                 json.dumps(metadata, ensure_ascii=False) if metadata else None
@@ -909,12 +1027,18 @@ def _save_chat_message(
                 (session_id,),
             )
             conn.commit()
+    except PermissionError:
+        raise
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to save chat message: %s", exc)
 
 
 def _load_chat_history(
-    session_id: str, limit: int = 50, before_id: Optional[int] = None
+    session_id: str,
+    limit: int = 50,
+    before_id: Optional[int] = None,
+    *,
+    owner_id: Optional[str] = None,
 ) -> Tuple[List[ChatMessage], bool]:
     """Load session history."""
     try:
@@ -923,6 +1047,15 @@ def _load_chat_history(
         with get_db() as conn:
             cursor = conn.cursor()
             params: List[Any] = [session_id]
+            owner_clause = ""
+            if owner_id is not None:
+                owner_clause = (
+                    "AND EXISTS ("
+                    "SELECT 1 FROM chat_sessions s "
+                    "WHERE s.id = chat_messages.session_id AND s.owner_id = ?"
+                    ")"
+                )
+                params.append(_normalize_owner_id(owner_id))
             before_clause = ""
             if before_id is not None:
                 before_clause = "AND id < ?"
@@ -933,6 +1066,7 @@ def _load_chat_history(
                 SELECT id, role, content, metadata, created_at
                 FROM chat_messages
                 WHERE session_id = ?
+                {owner_clause}
                 {before_clause}
                 ORDER BY id DESC
                 LIMIT ?
@@ -962,7 +1096,10 @@ def _load_chat_history(
 
 
 def _save_assistant_response(
-    session_id: Optional[str], response: ChatResponse
+    session_id: Optional[str],
+    response: ChatResponse,
+    *,
+    owner_id: Optional[str] = None,
 ) -> ChatResponse:
     """Persist assistant response."""
     if session_id and response.response:
@@ -971,6 +1108,7 @@ def _save_assistant_response(
             "assistant",
             response.response,
             metadata=response.metadata,
+            owner_id=owner_id,
         )
     return response
 

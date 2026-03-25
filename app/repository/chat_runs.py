@@ -13,19 +13,35 @@ def create_chat_run(
     session_id: str,
     request_json: str,
     *,
+    owner_id: Optional[str] = None,
     idempotency_key: Optional[str] = None,
     user_message_id: Optional[int] = None,
 ) -> None:
+    resolved_owner_id = str(owner_id or "").strip()
+    if not resolved_owner_id:
+        from app.routers.chat.session_helpers import lookup_session_owner
+
+        try:
+            resolved_owner_id = lookup_session_owner(session_id) or "legacy-local"
+        except Exception:
+            resolved_owner_id = "legacy-local"
     with get_db() as conn:
         conn.execute(
             """
             INSERT INTO chat_runs (
-                run_id, session_id, status, request_json,
+                run_id, session_id, owner_id, status, request_json,
                 idempotency_key, user_message_id
             )
-            VALUES (?, ?, 'queued', ?, ?, ?)
+            VALUES (?, ?, ?, 'queued', ?, ?, ?)
             """,
-            (run_id, session_id, request_json, idempotency_key, user_message_id),
+            (
+                run_id,
+                session_id,
+                resolved_owner_id,
+                request_json,
+                idempotency_key,
+                user_message_id,
+            ),
         )
         conn.commit()
 
@@ -70,7 +86,7 @@ def get_chat_run(run_id: str) -> Optional[Dict[str, Any]]:
     with get_db() as conn:
         row = conn.execute(
             """
-            SELECT run_id, session_id, status, user_message_id, assistant_message_id,
+            SELECT run_id, session_id, owner_id, status, user_message_id, assistant_message_id,
                    idempotency_key, error, request_json, created_at, started_at,
                    finished_at, last_event_seq
             FROM chat_runs
@@ -86,12 +102,16 @@ def get_chat_run(run_id: str) -> Optional[Dict[str, Any]]:
 def list_session_runs(
     session_id: str,
     *,
+    owner_id: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
     limit = max(1, min(limit, 50))
     clauses = ["session_id = ?"]
     params: List[Any] = [session_id]
+    if owner_id:
+        clauses.append("owner_id = ?")
+        params.append(owner_id)
     if status:
         clauses.append("status = ?")
         params.append(status)
@@ -100,7 +120,7 @@ def list_session_runs(
     with get_db() as conn:
         rows = conn.execute(
             f"""
-            SELECT run_id, session_id, status, created_at, started_at, finished_at,
+            SELECT run_id, session_id, owner_id, status, created_at, started_at, finished_at,
                    last_event_seq, error
             FROM chat_runs
             WHERE {where_sql}
