@@ -14,6 +14,7 @@ from app.database import get_db, plan_db_connection
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "2"
+LEGACY_LOCAL_OWNER_ID = "legacy-local"
 
 SENSITIVE_KEYS = {
     "api_key",
@@ -193,19 +194,36 @@ def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
 
-def register_decomposition_job_index(job_id: str, plan_id: Optional[int], *, job_type: str = "plan_decompose") -> None:
+def register_decomposition_job_index(
+    job_id: str,
+    plan_id: Optional[int],
+    *,
+    job_type: str = "plan_decompose",
+    owner_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> None:
     if plan_id is None:
         return
     with get_db() as conn:
         conn.execute(
             """
-            INSERT INTO plan_decomposition_job_index (job_id, plan_id, job_type, created_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO plan_decomposition_job_index (
+                job_id, plan_id, job_type, owner_id, session_id, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(job_id) DO UPDATE SET
                 plan_id=excluded.plan_id,
-                job_type=excluded.job_type
+                job_type=excluded.job_type,
+                owner_id=excluded.owner_id,
+                session_id=COALESCE(excluded.session_id, plan_decomposition_job_index.session_id)
             """,
-            (job_id, plan_id, job_type),
+            (
+                job_id,
+                plan_id,
+                job_type,
+                owner_id or LEGACY_LOCAL_OWNER_ID,
+                session_id,
+            ),
         )
 
 
@@ -223,12 +241,21 @@ def lookup_decomposition_job_plan(job_id: str) -> Optional[int]:
 def lookup_decomposition_job_entry(job_id: str) -> Optional[Dict[str, Any]]:
     with get_db() as conn:
         row = conn.execute(
-            "SELECT plan_id, job_type FROM plan_decomposition_job_index WHERE job_id=?",
+            """
+            SELECT plan_id, job_type, owner_id, session_id
+            FROM plan_decomposition_job_index
+            WHERE job_id=?
+            """,
             (job_id,),
         ).fetchone()
     if not row:
         return None
-    return {"plan_id": row["plan_id"], "job_type": row["job_type"]}
+    return {
+        "plan_id": row["plan_id"],
+        "job_type": row["job_type"],
+        "owner_id": row["owner_id"],
+        "session_id": row["session_id"],
+    }
 
 
 def remove_decomposition_job_index(job_id: str) -> None:
@@ -243,6 +270,8 @@ def record_decomposition_job(
     job_type: str,
     mode: str,
     target_task_id: Optional[int],
+    owner_id: Optional[str],
+    session_id: Optional[str],
     status: str,
     params: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -255,17 +284,30 @@ def record_decomposition_job(
         conn.execute(
             """
             INSERT INTO decomposition_jobs (
-                job_id, job_type, mode, target_task_id, status, params_json, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                job_id, job_type, mode, target_task_id, owner_id, session_id,
+                status, params_json, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 job_type=excluded.job_type,
                 mode=excluded.mode,
                 target_task_id=excluded.target_task_id,
+                owner_id=excluded.owner_id,
+                session_id=COALESCE(excluded.session_id, decomposition_jobs.session_id),
                 status=excluded.status,
                 params_json=excluded.params_json,
                 metadata_json=excluded.metadata_json
             """,
-            (job_id, job_type, mode, target_task_id, status, params_json, metadata_json),
+            (
+                job_id,
+                job_type,
+                mode,
+                target_task_id,
+                owner_id or LEGACY_LOCAL_OWNER_ID,
+                session_id,
+                status,
+                params_json,
+                metadata_json,
+            ),
         )
 
 
@@ -346,7 +388,8 @@ def load_decomposition_job(plan_id: Optional[int], job_id: str) -> Optional[Dict
         row = conn.execute(
             """
             SELECT job_id, job_type, mode, target_task_id, status, error, params_json,
-                   stats_json, result_json, metadata_json, created_at, started_at, finished_at
+                   stats_json, result_json, metadata_json, owner_id, session_id,
+                   created_at, started_at, finished_at
             FROM decomposition_jobs
             WHERE job_id=?
             """,
@@ -375,6 +418,8 @@ def load_decomposition_job(plan_id: Optional[int], job_id: str) -> Optional[Dict
         "job_type": row["job_type"] or "plan_decompose",
         "mode": row["mode"],
         "target_task_id": row["target_task_id"],
+        "owner_id": row["owner_id"],
+        "session_id": row["session_id"],
         "status": row["status"],
         "error": row["error"],
         "params": _json_load(row["params_json"]) or {},
@@ -396,6 +441,8 @@ def _ensure_decomposition_tables(conn) -> None:
             job_type TEXT NOT NULL DEFAULT 'plan_decompose',
             mode TEXT NOT NULL,
             target_task_id INTEGER,
+            owner_id TEXT NOT NULL DEFAULT 'legacy-local',
+            session_id TEXT,
             status TEXT NOT NULL,
             error TEXT,
             params_json TEXT,
@@ -419,6 +466,26 @@ def _ensure_decomposition_tables(conn) -> None:
         "decomposition_jobs",
         "metadata_json",
         "metadata_json TEXT",
+    )
+    _ensure_column(
+        conn,
+        "decomposition_jobs",
+        "owner_id",
+        "owner_id TEXT NOT NULL DEFAULT 'legacy-local'",
+    )
+    _ensure_column(
+        conn,
+        "decomposition_jobs",
+        "session_id",
+        "session_id TEXT",
+    )
+    conn.execute(
+        """
+        UPDATE decomposition_jobs
+        SET owner_id = ?
+        WHERE owner_id IS NULL OR TRIM(owner_id) = ''
+        """,
+        (LEGACY_LOCAL_OWNER_ID,),
     )
     conn.execute(
         """

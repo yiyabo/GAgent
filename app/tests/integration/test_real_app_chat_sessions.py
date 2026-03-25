@@ -80,3 +80,70 @@ def test_real_app_chat_session_crud_persists_state(app_client_factory) -> None:
                 (session_id,),
             ).fetchone()
         assert deleted_row is None
+
+
+@pytest.mark.integration
+def test_real_app_chat_session_routes_are_owner_scoped(app_client_factory) -> None:
+    session_id = "integration-session-owner-001"
+    alice_headers = {"X-Forwarded-User": "alice"}
+    bob_headers = {"X-Forwarded-User": "bob"}
+
+    with app_client_factory() as client:
+        create_response = client.patch(
+            f"/chat/sessions/{session_id}",
+            json={"name": "Alice Only Session"},
+            headers=alice_headers,
+        )
+        assert create_response.status_code == 200
+
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT owner_id FROM chat_sessions WHERE id=?",
+                (session_id,),
+            ).fetchone()
+            conn.execute(
+                "INSERT INTO chat_messages (session_id, role, content) VALUES (?, ?, ?)",
+                (session_id, "user", "owner-scoped message"),
+            )
+            conn.commit()
+        assert row is not None
+        assert row["owner_id"] == "alice"
+
+        alice_list = client.get("/chat/sessions", headers=alice_headers)
+        assert alice_list.status_code == 200
+        alice_ids = {item["id"] for item in alice_list.json()["sessions"]}
+        assert session_id in alice_ids
+
+        bob_list = client.get("/chat/sessions", headers=bob_headers)
+        assert bob_list.status_code == 200
+        bob_ids = {item["id"] for item in bob_list.json()["sessions"]}
+        assert session_id not in bob_ids
+
+        alice_history = client.get(f"/chat/history/{session_id}", headers=alice_headers)
+        assert alice_history.status_code == 200
+        assert alice_history.json()["total"] == 1
+
+        bob_history = client.get(f"/chat/history/{session_id}", headers=bob_headers)
+        assert bob_history.status_code == 404
+
+        bob_head = client.head(f"/chat/sessions/{session_id}", headers=bob_headers)
+        assert bob_head.status_code == 404
+
+        bob_update = client.patch(
+            f"/chat/sessions/{session_id}",
+            json={"name": "Bob Cannot Rename"},
+            headers=bob_headers,
+        )
+        assert bob_update.status_code == 403
+
+        bob_delete = client.delete(
+            f"/chat/sessions/{session_id}",
+            headers=bob_headers,
+        )
+        assert bob_delete.status_code == 404
+
+        alice_delete = client.delete(
+            f"/chat/sessions/{session_id}",
+            headers=alice_headers,
+        )
+        assert alice_delete.status_code == 204

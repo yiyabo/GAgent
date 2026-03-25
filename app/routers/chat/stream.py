@@ -8,6 +8,8 @@ from typing import AsyncIterator
 from fastapi import BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
 
+from app.services.request_principal import get_request_owner_id
+
 from .background import _sse_message
 from .models import ChatRequest
 from .run_routes import iterate_chat_run_sse, start_background_chat_run
@@ -24,7 +26,12 @@ async def chat_stream(
     _ = background_tasks
 
     if request.session_id:
-        run_id = start_background_chat_run(request, session_id=request.session_id)
+        owner_id = get_request_owner_id(raw_request)
+        run_id = start_background_chat_run(
+            request,
+            session_id=request.session_id,
+            owner_id=owner_id,
+        )
         http = raw_request
 
         async def event_generator() -> AsyncIterator[str]:

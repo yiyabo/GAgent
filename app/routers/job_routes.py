@@ -7,12 +7,14 @@ from collections import deque
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.database import get_db
+from app.services.realtime_bus import EventSubscription, get_realtime_bus, route_control_message
 from app.services.plans.decomposition_jobs import plan_decomposition_jobs
+from app.services.request_principal import ensure_owner_access, get_request_owner_id
 from . import register_router
 
 job_router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -525,15 +527,25 @@ def _list_task_creation_job_ids(
     return [str(row["job_id"]) for row in rows if row and row["job_id"]]
 
 
-def _lookup_session_plan_id(session_id: Optional[str]) -> Optional[int]:
+def _lookup_session_plan_id(
+    session_id: Optional[str],
+    *,
+    owner_id: Optional[str] = None,
+) -> Optional[int]:
     if not session_id:
         return None
     try:
         with get_db() as conn:
-            row = conn.execute(
-                "SELECT plan_id FROM chat_sessions WHERE id=?",
-                (session_id,),
-            ).fetchone()
+            if owner_id:
+                row = conn.execute(
+                    "SELECT plan_id FROM chat_sessions WHERE id=? AND owner_id=?",
+                    (session_id, owner_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT plan_id FROM chat_sessions WHERE id=?",
+                    (session_id,),
+                ).fetchone()
     except Exception as exc:  # pragma: no cover - defensive
         _logger.warning("jobs.board: failed to lookup plan_id for session %s: %s", session_id, exc)
         return None
@@ -549,23 +561,58 @@ def _lookup_session_plan_id(session_id: Optional[str]) -> Optional[int]:
 def _list_task_creation_job_ids_filtered(
     limit: int,
     *,
+    owner_id: Optional[str] = None,
     plan_id: Optional[int] = None,
     job_type: str = "plan_decompose",
 ) -> List[str]:
     if plan_id is None:
-        return _list_task_creation_job_ids(limit, job_type=job_type)
+        if not owner_id:
+            return _list_task_creation_job_ids(limit, job_type=job_type)
+        try:
+            with get_db() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT job_id
+                    FROM plan_decomposition_job_index
+                    WHERE job_type=? AND owner_id=?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (job_type, owner_id, limit),
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover - defensive
+            _logger.warning(
+                "jobs.board: failed to query job_type=%s owner_id=%s: %s",
+                job_type,
+                owner_id,
+                exc,
+            )
+            return []
+        return [str(row["job_id"]) for row in rows if row and row["job_id"]]
     try:
         with get_db() as conn:
-            rows = conn.execute(
-                """
-                SELECT job_id
-                FROM plan_decomposition_job_index
-                WHERE job_type=? AND plan_id=?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (job_type, plan_id, limit),
-            ).fetchall()
+            if owner_id:
+                rows = conn.execute(
+                    """
+                    SELECT job_id
+                    FROM plan_decomposition_job_index
+                    WHERE job_type=? AND plan_id=? AND owner_id=?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (job_type, plan_id, owner_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT job_id
+                    FROM plan_decomposition_job_index
+                    WHERE job_type=? AND plan_id=?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (job_type, plan_id, limit),
+                ).fetchall()
     except Exception as exc:  # pragma: no cover - defensive
         _logger.warning(
             "jobs.board: failed to query plan_decomposition_job_index for job_type=%s plan_id=%s: %s",
@@ -581,6 +628,7 @@ def _list_task_creation_job_ids_by_plan_ids(
     limit: int,
     plan_ids: List[int],
     *,
+    owner_id: Optional[str] = None,
     job_type: str = "plan_decompose",
 ) -> List[str]:
     normalized_ids: List[int] = []
@@ -595,18 +643,23 @@ def _list_task_creation_job_ids_by_plan_ids(
         return []
 
     placeholders = ",".join("?" for _ in normalized_ids)
+    owner_sql = " AND owner_id = ?" if owner_id else ""
     sql = (
         f"""
         SELECT job_id
         FROM plan_decomposition_job_index
-        WHERE job_type=? AND plan_id IN ({placeholders})
+        WHERE job_type=? AND plan_id IN ({placeholders}){owner_sql}
         ORDER BY created_at DESC
         LIMIT ?
         """
     )
     try:
         with get_db() as conn:
-            rows = conn.execute(sql, (job_type, *normalized_ids, limit)).fetchall()
+            params: List[Any] = [job_type, *normalized_ids]
+            if owner_id:
+                params.append(owner_id)
+            params.append(limit)
+            rows = conn.execute(sql, tuple(params)).fetchall()
     except Exception as exc:  # pragma: no cover - defensive
         _logger.warning(
             "jobs.board: failed to query plan_decomposition_job_index for job_type=%s plan_ids=%s: %s",
@@ -624,11 +677,13 @@ def _list_task_creation_job_ids_by_plan_ids(
     summary="Background job board (Task Creation / PhageScope / Claude Code)",
 )
 def get_background_task_board(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     session_id: Optional[str] = Query(None),
     plan_id: Optional[int] = Query(None, ge=1),
     include_finished: bool = Query(True),
 ):
+    owner_id = get_request_owner_id(request)
     groups: Dict[str, BackgroundTaskGroup] = {
         "task_creation": _build_group("task_creation", "Task Creation"),
         "phagescope": _build_group("phagescope", "PhageScope"),
@@ -638,7 +693,8 @@ def get_background_task_board(
 
     # 1) Chat action runs -> classify into phagescope / claude_code
     params: List[Any] = []
-    where_parts: List[str] = []
+    where_parts: List[str] = ["owner_id=?"]
+    params.append(owner_id)
     if session_id:
         where_parts.append("session_id=?")
         params.append(session_id)
@@ -648,7 +704,9 @@ def get_background_task_board(
         where_parts.append("(plan_id=? OR plan_id IS NULL)")
         params.append(plan_id)
     where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
-    effective_plan_id = plan_id if isinstance(plan_id, int) else _lookup_session_plan_id(session_id)
+    effective_plan_id = (
+        plan_id if isinstance(plan_id, int) else _lookup_session_plan_id(session_id, owner_id=owner_id)
+    )
     params.append(limit * 4)
     try:
         with get_db() as conn:
@@ -728,11 +786,13 @@ def get_background_task_board(
         task_creation_ids = _list_task_creation_job_ids_by_plan_ids(
             limit * 4,
             candidate_plan_ids,
+            owner_id=owner_id,
             job_type="plan_decompose",
         )
     else:
         task_creation_ids = _list_task_creation_job_ids_filtered(
             limit * 4,
+            owner_id=owner_id,
             plan_id=effective_plan_id if (session_id or plan_id is not None) else None,
             job_type="plan_decompose",
         )
@@ -741,6 +801,8 @@ def get_background_task_board(
             continue
         job_payload = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False)
         if not job_payload:
+            continue
+        if str(job_payload.get("owner_id") or "legacy-local") != owner_id:
             continue
 
         status = str(job_payload.get("status") or "queued")
@@ -779,11 +841,13 @@ def get_background_task_board(
         plan_execute_ids = _list_task_creation_job_ids_by_plan_ids(
             limit * 4,
             candidate_plan_ids,
+            owner_id=owner_id,
             job_type="plan_execute",
         )
     else:
         plan_execute_ids = _list_task_creation_job_ids_filtered(
             limit * 4,
+            owner_id=owner_id,
             plan_id=effective_plan_id if (session_id or plan_id is not None) else None,
             job_type="plan_execute",
         )
@@ -792,6 +856,8 @@ def get_background_task_board(
             continue
         job_payload = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False)
         if not job_payload:
+            continue
+        if str(job_payload.get("owner_id") or "legacy-local") != owner_id:
             continue
 
         status = str(job_payload.get("status") or "queued")
@@ -863,6 +929,7 @@ def get_background_task_board(
     summary="Stream background task board updates via SSE",
 )
 async def stream_background_task_board(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     session_id: Optional[str] = Query(None),
     plan_id: Optional[int] = Query(None, ge=1),
@@ -885,6 +952,7 @@ async def stream_background_task_board(
         # Re-use the same sync logic by calling the board function directly.
         # We build the response dict to avoid Pydantic serialization overhead.
         snapshot = get_background_task_board(
+            request=request,
             limit=limit,
             session_id=session_id,
             plan_id=plan_id,
@@ -936,20 +1004,28 @@ async def stream_background_task_board(
     response_model=JobControlResponse,
     summary="Control running deep-think execution (pause/resume/skip)",
 )
-def control_job_runtime(
+async def control_job_runtime(
     job_id: str,
-    request: JobControlRequest = Body(...),
+    request: Request,
+    control: JobControlRequest = Body(...),
 ):
     payload = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False)
     if payload is None:
         raise HTTPException(status_code=404, detail="Job not found.")
+    ensure_owner_access(request, payload.get("owner_id"), detail="job owner mismatch")
 
-    accepted = plan_decomposition_jobs.control_runtime(job_id, request.action)
+    accepted = await route_control_message(
+        "job",
+        job_id,
+        {"type": "job.control", "job_id": job_id, "action": control.action},
+    )
+    if not accepted:
+        accepted = plan_decomposition_jobs.control_runtime(job_id, control.action)
     if not accepted:
         return JobControlResponse(
             success=False,
             job_id=job_id,
-            action=request.action,
+            action=control.action,
             status=payload.get("status"),
             message="Runtime control is unavailable for this job at current state.",
         )
@@ -957,9 +1033,9 @@ def control_job_runtime(
     return JobControlResponse(
         success=True,
         job_id=job_id,
-        action=request.action,
+        action=control.action,
         status=refreshed.get("status"),
-        message=f"Action '{request.action}' accepted.",
+        message=f"Action '{control.action}' accepted.",
     )
 
 
@@ -967,44 +1043,47 @@ def control_job_runtime(
     "/{job_id}/stream",
     summary="Stream async job logs in real time",
 )
-async def stream_job(job_id: str):
+async def stream_job(job_id: str, request: Request):
     snapshot = plan_decomposition_jobs.get_job_payload(job_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Job not found.")
+    ensure_owner_access(request, snapshot.get("owner_id"), detail="job owner mismatch")
 
-    loop = asyncio.get_running_loop()
-    queue = plan_decomposition_jobs.register_subscriber(job_id, loop)
+    bus = await get_realtime_bus()
+    subscription: Optional[EventSubscription] = await bus.subscribe_job_events(job_id)
     headers = {
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
     }
 
-    if queue is None:
-        async def snapshot_only() -> AsyncIterator[str]:
-            yield _sse_message({"type": "snapshot", "job": snapshot})
-
-        return StreamingResponse(snapshot_only(), media_type="text/event-stream", headers=headers)
-
     async def event_generator() -> AsyncIterator[str]:
         try:
             yield _sse_message({"type": "snapshot", "job": snapshot})
+            if _normalize_status(snapshot.get("status")) in {"succeeded", "failed"}:
+                return
             while True:
+                if await request.is_disconnected():
+                    break
                 try:
-                    message = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    message = await subscription.get(timeout=15.0)
                 except asyncio.TimeoutError:
                     heartbeat = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False)
                     if heartbeat is None:
                         break
+                    if str(heartbeat.get("owner_id") or "legacy-local") != get_request_owner_id(request):
+                        break
                     yield _sse_message({"type": "heartbeat", "job": heartbeat})
+                    if _normalize_status(heartbeat.get("status")) in {"succeeded", "failed"}:
+                        break
                     continue
                 message.setdefault("type", "event")
                 yield _sse_message(message)
-                if message.get("status") in {"succeeded", "failed"}:
+                if _normalize_status(message.get("status")) in {"succeeded", "failed"}:
                     break
         except asyncio.CancelledError:  # pragma: no cover - defensive
             raise
         finally:
-            plan_decomposition_jobs.unregister_subscriber(job_id, queue)
+            await subscription.close()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
 
@@ -1014,10 +1093,11 @@ async def stream_job(job_id: str):
     response_model=AsyncJobStatusResponse,
     summary="Get async job status",
 )
-def get_job_status(job_id: str):
+def get_job_status(job_id: str, request: Request):
     payload = plan_decomposition_jobs.get_job_payload(job_id)
     if payload is None:
         raise HTTPException(status_code=404, detail="Job not found.")
+    ensure_owner_access(request, payload.get("owner_id"), detail="job owner mismatch")
     action_logs = payload.get("action_logs") or []
     action_cursor = payload.get("action_cursor")
     return AsyncJobStatusResponse(

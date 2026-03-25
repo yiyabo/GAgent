@@ -14,10 +14,14 @@ from app.services import chat_run_hub as hub
 
 
 _SCHEMA = """
-CREATE TABLE chat_sessions (id TEXT PRIMARY KEY);
+CREATE TABLE chat_sessions (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL DEFAULT 'legacy-local'
+);
 CREATE TABLE chat_runs (
     run_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL DEFAULT 'legacy-local',
     status TEXT NOT NULL DEFAULT 'queued',
     user_message_id INTEGER,
     assistant_message_id INTEGER,
@@ -39,7 +43,7 @@ CREATE TABLE chat_run_events (
     PRIMARY KEY (run_id, seq),
     FOREIGN KEY (run_id) REFERENCES chat_runs (run_id) ON DELETE CASCADE
 );
-INSERT INTO chat_sessions (id) VALUES ('sess_unit');
+INSERT INTO chat_sessions (id, owner_id) VALUES ('sess_unit', 'legacy-local');
 """
 
 

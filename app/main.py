@@ -30,6 +30,8 @@ from .errors import (
 from .errors.exceptions import ErrorCategory
 from .errors.exceptions import SystemError as CustomSystemError
 from .llm import get_default_client, init_shared_clients, close_shared_clients
+from .middleware.proxy_auth import ProxyAuthMiddleware
+from .services.realtime_bus import close_realtime_bus, init_realtime_bus
 
 # Import router function
 from .routers import get_all_routers
@@ -61,6 +63,7 @@ async def lifespan(_fastapi_app: FastAPI):
     # Pre-warm shared HTTP connection pools for LLM API communication.
     # This eliminates per-request TCP/TLS handshake overhead (~60-150 ms each).
     await init_shared_clients()
+    await init_realtime_bus()
     # DB Lightweight integrity check (logging only, no service interruption)
     try:
         with get_db() as _conn:
@@ -135,6 +138,7 @@ async def lifespan(_fastapi_app: FastAPI):
     yield
 
     # Gracefully close shared HTTP connection pools on shutdown.
+    await close_realtime_bus()
     await close_shared_clients()
 
 
@@ -288,6 +292,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(ProxyAuthMiddleware)
     _register_exception_handlers(app)
     _register_routes(app)
     return app
