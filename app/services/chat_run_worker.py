@@ -11,6 +11,7 @@ from app.routers.chat.models import ChatRequest
 from app.routers.chat.stream_context import build_agent_for_chat_request
 from app.services.chat_run_emitter import ChatRunEmitter
 from app.services import chat_run_hub as hub
+from app.services.realtime_bus import start_owner_lease, stop_owner_lease
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ async def execute_chat_run(run_id: str) -> None:
     cancel_ev = hub.ensure_cancel_event(run_id)
     hub.ensure_steer_queue(run_id)
     emitter = ChatRunEmitter(run_id)
+    start_owner_lease("run", run_id)
     try:
         row = get_chat_run(run_id)
         if not row:
@@ -66,9 +68,6 @@ async def execute_chat_run(run_id: str) -> None:
             pass
         mark_chat_run_finished(run_id, "failed", error=str(exc))
     finally:
-        try:
-            await hub.close_live_subscribers(run_id)
-        except Exception:
-            pass
+        stop_owner_lease("run", run_id)
         hub.forget_worker_task(run_id)
         hub.cleanup_run_signals(run_id)

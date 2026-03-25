@@ -22,6 +22,8 @@ from app.routers.chat.models import ChatRequest
 from app.routers.chat.session_helpers import _ensure_session_exists, _save_chat_message
 from app.services.chat_run_worker import execute_chat_run
 from app.services import chat_run_hub as hub
+from app.services.realtime_bus import EventSubscription, get_realtime_bus, route_control_message
+from app.services.request_principal import ensure_owner_access, get_request_owner_id
 
 logger = logging.getLogger(__name__)
 
@@ -41,19 +43,24 @@ def _plan_id_from_request(request: ChatRequest) -> Optional[int]:
         return None
 
 
-def start_background_chat_run(request: ChatRequest, *, session_id: str) -> str:
+def start_background_chat_run(
+    request: ChatRequest,
+    *,
+    session_id: str,
+    owner_id: str,
+) -> str:
     """Create DB row, save user message, spawn worker."""
     # chat_runs.session_id FK references chat_sessions; frontend-only sessions must be materialized first.
     plan_id = _plan_id_from_request(request)
     with get_db() as conn:
-        _ensure_session_exists(session_id, conn, plan_id)
+        _ensure_session_exists(session_id, conn, plan_id, owner_id=owner_id)
 
     run_id = new_chat_run_id()
     request_json = request.model_dump_json()
-    create_chat_run(run_id, session_id, request_json)
+    create_chat_run(run_id, session_id, request_json, owner_id=owner_id)
     hub.ensure_cancel_event(run_id)
     hub.ensure_steer_queue(run_id)
-    _save_chat_message(session_id, "user", request.message)
+    _save_chat_message(session_id, "user", request.message, owner_id=owner_id)
     loop = asyncio.get_running_loop()
     task = loop.create_task(execute_chat_run(run_id))
     hub.register_worker_task(run_id, task)
@@ -74,7 +81,7 @@ async def iterate_chat_run_sse(
     rows**, and **deduplicate** queue items with ``seq <= last_yielded_seq``.
     """
     last_yielded_seq = after_seq
-    q: Optional[asyncio.Queue] = None
+    q: Optional[EventSubscription] = None
     try:
         while True:
             progressed = False
@@ -88,15 +95,17 @@ async def iterate_chat_run_sse(
                     return
 
             if q is None:
-                q = await hub.register_subscriber(run_id)
+                bus = await get_realtime_bus()
+                q = await bus.subscribe_run_events(run_id)
             if progressed:
                 continue
 
             if await request.is_disconnected():
                 return
-            item = await q.get()
-            if item is None:
-                return
+            try:
+                item = await q.get(timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
             seq, payload = item
             if seq <= last_yielded_seq:
                 continue
@@ -113,13 +122,13 @@ async def iterate_chat_run_sse(
         yield _sse_message({"type": "error", "message": str(exc)})
     finally:
         if q is not None:
-            await hub.unregister_subscriber(run_id, q)
+            await q.close()
 
-
-async def create_run(request: ChatRequest) -> Dict[str, str]:
+async def create_run(request: ChatRequest, raw_request: Request) -> Dict[str, str]:
     if not request.session_id:
         raise HTTPException(status_code=400, detail="session_id is required for chat runs")
-    run_id = start_background_chat_run(request, session_id=request.session_id)
+    owner_id = get_request_owner_id(raw_request)
+    run_id = start_background_chat_run(request, session_id=request.session_id, owner_id=owner_id)
     return {
         "run_id": run_id,
         "events_stream_url": f"/chat/runs/{run_id}/events",
@@ -129,18 +138,26 @@ async def create_run(request: ChatRequest) -> Dict[str, str]:
 
 async def list_runs_for_session(
     session_id: str,
+    request: Request,
     status: Optional[str] = Query(None, description="Filter by run status"),
     limit: int = Query(10, ge=1, le=50),
 ) -> Dict[str, Any]:
-    rows = list_session_runs(session_id, status=status, limit=limit)
+    owner_id = get_request_owner_id(request)
+    rows = list_session_runs(session_id, owner_id=owner_id, status=status, limit=limit)
     return {"runs": rows}
 
-
-async def cancel_run(run_id: str) -> Dict[str, str]:
+async def cancel_run(run_id: str, request: Request) -> Dict[str, str]:
     row = get_chat_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
-    hub.request_cancel(run_id)
+    ensure_owner_access(request, row.get("owner_id"), detail="run owner mismatch")
+    accepted = await route_control_message(
+        "run",
+        run_id,
+        {"type": "chat_run.cancel", "run_id": run_id},
+    )
+    if not accepted:
+        hub.request_cancel(run_id)
     return {"run_id": run_id, "status": "cancel_requested"}
 
 
@@ -153,6 +170,7 @@ async def stream_run_events(
     row = get_chat_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
+    ensure_owner_access(request, row.get("owner_id"), detail="run owner mismatch")
     if row["session_id"] != session_id:
         raise HTTPException(status_code=403, detail="session mismatch")
 
@@ -197,11 +215,12 @@ def mount_run_routes(router: APIRouter) -> None:
     )
 
 
-async def steer_run(run_id: str, body: Dict[str, Any] = Body(...)) -> Dict[str, str]:
+async def steer_run(run_id: str, request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, str]:
     """Push a mid-run user guidance message into a running chat run."""
     row = get_chat_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
+    ensure_owner_access(request, row.get("owner_id"), detail="run owner mismatch")
     if row["status"] not in ("queued", "running"):
         raise HTTPException(status_code=409, detail="run is not active")
 
@@ -214,7 +233,13 @@ async def steer_run(run_id: str, body: Dict[str, Any] = Body(...)) -> Dict[str, 
     message = (body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
-    accepted = hub.push_steer_message(run_id, message)
+    accepted = await route_control_message(
+        "run",
+        run_id,
+        {"type": "chat_run.steer", "run_id": run_id, "message": message},
+    )
+    if not accepted:
+        accepted = hub.push_steer_message(run_id, message)
     if not accepted:
         raise HTTPException(status_code=409, detail="run has no steer queue (may have ended)")
     return {"run_id": run_id, "status": "accepted"}

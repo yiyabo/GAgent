@@ -8,11 +8,13 @@ import heapq
 import os
 from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Set, Tuple
 
-from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.repository.plan_repository import PlanRepository
+from app.services.realtime_bus import EventSubscription, get_realtime_bus
+from app.services.request_principal import ensure_owner_access, get_request_owner_id
 from app.services.plans.dependency_planner import DependencyPlan, compute_dependency_plan
 from app.services.plans.plan_decomposer import PlanDecomposer, DecompositionResult
 from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor
@@ -49,6 +51,17 @@ def _default_plan_paper_mode() -> bool:
 
 def _sse_message(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _is_terminal_job_status(raw_status: Any) -> bool:
+    return str(raw_status or "").strip().lower() in {
+        "succeeded",
+        "failed",
+        "completed",
+        "success",
+        "done",
+        "error",
+    }
 
 
 def _run_decomposition_job(
@@ -827,6 +840,7 @@ def get_task_dependency_plan(
 def execute_task_with_dependencies(
     task_id: int,
     plan_id: int = Query(..., description="plan ID"),
+    raw_request: Request = None,
     request: Optional[ExecuteTaskRequest] = Body(default=None),
 ):
     request = request or ExecuteTaskRequest()
@@ -912,11 +926,14 @@ def execute_task_with_dependencies(
             },
         )
 
+    owner_id = get_request_owner_id(raw_request)
     job = plan_decomposition_jobs.create_job(
         plan_id=plan_id,
         task_id=task_id,
         mode="task_chain",
         job_type="plan_execute",
+        owner_id=owner_id,
+        session_id=request.session_id,
         params={
             "include_dependencies": request.include_dependencies,
             "include_subtasks": request.include_subtasks,
@@ -1067,6 +1084,7 @@ def get_plan_subgraph(
 def decompose_task(
     task_id: int,
     background_tasks: BackgroundTasks,
+    raw_request: Request,
     request: DecomposeTaskRequest = Body(...),
 ):
     plan_id = request.plan_id
@@ -1086,10 +1104,12 @@ def decompose_task(
     allow_existing_children = request.allow_existing_children
 
     if request.async_mode:
+        owner_id = get_request_owner_id(raw_request)
         job = plan_decomposition_jobs.create_job(
             plan_id=plan_id,
             task_id=task_id,
             mode="single_node",
+            owner_id=owner_id,
             params={
                 "expand_depth": expand_depth,
                 "node_budget": node_budget,
@@ -1163,43 +1183,42 @@ def decompose_task(
     "/decompose/jobs/{job_id}/stream",
     summary="Stream decomposition job logs",
 )
-async def stream_decomposition_job(job_id: str):
+async def stream_decomposition_job(job_id: str, request: Request):
     snapshot = plan_decomposition_jobs.get_job_payload(job_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Decomposition job not found.")
-
-    loop = asyncio.get_running_loop()
-    queue = plan_decomposition_jobs.register_subscriber(job_id, loop)
-    if queue is None:
-        async def snapshot_only() -> AsyncIterator[str]:
-            yield _sse_message({"type": "snapshot", "job": snapshot})
-
-        headers = {
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        }
-        return StreamingResponse(snapshot_only(), media_type="text/event-stream", headers=headers)
+    ensure_owner_access(request, snapshot.get("owner_id"), detail="job owner mismatch")
+    bus = await get_realtime_bus()
+    subscription: EventSubscription = await bus.subscribe_job_events(job_id)
 
     async def event_generator() -> AsyncIterator[str]:
         try:
             yield _sse_message({"type": "snapshot", "job": snapshot})
+            if _is_terminal_job_status(snapshot.get("status")):
+                return
             while True:
+                if await request.is_disconnected():
+                    break
                 try:
-                    message = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    message = await subscription.get(timeout=15.0)
                 except asyncio.TimeoutError:
                     heartbeat = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False)
                     if heartbeat is None:
                         break
+                    if str(heartbeat.get("owner_id") or "legacy-local") != get_request_owner_id(request):
+                        break
                     yield _sse_message({"type": "heartbeat", "job": heartbeat})
+                    if _is_terminal_job_status(heartbeat.get("status")):
+                        break
                     continue
                 message.setdefault("type", "event")
                 yield _sse_message(message)
-                if message.get("status") in {"succeeded", "failed"}:
+                if _is_terminal_job_status(message.get("status")):
                     break
         except asyncio.CancelledError:  # pragma: no cover - defensive
             raise
         finally:
-            plan_decomposition_jobs.unregister_subscriber(job_id, queue)
+            await subscription.close()
 
     headers = {
         "Cache-Control": "no-cache",
@@ -1213,10 +1232,11 @@ async def stream_decomposition_job(job_id: str):
     response_model=DecompositionJobStatusResponse,
     summary="Get decomposition job status",
 )
-def get_decomposition_job_status(job_id: str):
+def get_decomposition_job_status(job_id: str, request: Request):
     payload = plan_decomposition_jobs.get_job_payload(job_id)
     if payload is None:
         raise HTTPException(status_code=404, detail="Decomposition job not found.")
+    ensure_owner_access(request, payload.get("owner_id"), detail="job owner mismatch")
     return DecompositionJobStatusResponse(
         job_id=payload.get("job_id"),
         job_type=payload.get("job_type") or "plan_decompose",

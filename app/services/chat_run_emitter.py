@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.repository.chat_runs import append_chat_run_event, batch_append_chat_run_events
 from app.services import chat_run_hub as hub
+from app.services.realtime_bus import get_realtime_bus
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,11 @@ class ChatRunEmitter:
             except Exception as exc:  # pragma: no cover
                 logger.warning("chat_run append_event failed run=%s: %s", self.run_id, exc)
                 return
-            await hub.publish_live_event(self.run_id, seq, payload)
+            try:
+                bus = await get_realtime_bus()
+                await bus.publish_run_event(self.run_id, seq, payload)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("chat_run publish_run_event failed run=%s seq=%s: %s", self.run_id, seq, exc)
             return
 
         # Buffer high-frequency events.
@@ -116,4 +121,8 @@ class ChatRunEmitter:
 
         # Fan out each event to live SSE subscribers with correct seq.
         for seq, payload in zip(seqs, batch):
-            await hub.publish_live_event(self.run_id, seq, payload)
+            try:
+                bus = await get_realtime_bus()
+                await bus.publish_run_event(self.run_id, seq, payload)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("chat_run publish_run_event failed run=%s seq=%s: %s", self.run_id, seq, exc)
