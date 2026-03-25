@@ -14,11 +14,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.database import get_db
 from app.config.deliverable_config import get_deliverable_settings
+from app.services.request_principal import ensure_owner_access
 from app.services.session_paths import normalize_session_base
 
 from . import register_router
@@ -230,6 +232,17 @@ def _resolve_session_dir(
         reverse=True,
     )
     return ranked[0][0]
+
+
+def _ensure_session_access(session_id: str, request: Request) -> None:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT owner_id FROM chat_sessions WHERE id=?",
+            (session_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    ensure_owner_access(request, row["owner_id"], detail="session owner mismatch")
 
 
 def _deliverables_root(session_dir: Path) -> Path:
@@ -616,11 +629,13 @@ def _iter_items(
 @router.get("/sessions/{session_id}", response_model=ArtifactListResponse)
 async def list_session_artifacts(
     session_id: str,
+    request: Request,
     max_depth: int = Query(4, ge=1, le=10),
     include_dirs: bool = Query(False),
     limit: int = Query(500, ge=1, le=5000),
     extensions: Optional[str] = Query(None),
 ) -> ArtifactListResponse:
+    _ensure_session_access(session_id, request)
     session_dir = _resolve_session_dir(session_id, purpose="raw")
     hidden_prefixes = _load_hidden_artifact_prefixes(session_id)
     ext_list = None
@@ -647,8 +662,10 @@ async def list_session_artifacts(
 @router.get("/sessions/{session_id}/file")
 async def get_session_artifact_file(
     session_id: str,
+    request: Request,
     path: str = Query(..., min_length=1),
 ) -> FileResponse:
+    _ensure_session_access(session_id, request)
     session_dir = _resolve_session_dir(session_id, purpose="raw")
     target = (session_dir / path).resolve()
 
@@ -671,9 +688,11 @@ async def get_session_artifact_file(
 @router.get("/sessions/{session_id}/text", response_model=ArtifactTextResponse)
 async def get_session_artifact_text(
     session_id: str,
+    request: Request,
     path: str = Query(..., min_length=1),
     max_bytes: int = Query(200000, ge=1024, le=2_000_000),
 ) -> ArtifactTextResponse:
+    _ensure_session_access(session_id, request)
     session_dir = _resolve_session_dir(session_id, purpose="raw")
     target = (session_dir / path).resolve()
 
@@ -696,12 +715,14 @@ async def get_session_artifact_text(
 @router.get("/sessions/{session_id}/deliverables", response_model=DeliverableListResponse)
 async def list_session_deliverables(
     session_id: str,
+    request: Request,
     scope: Literal["latest", "history"] = Query("latest"),
     version: Optional[str] = Query(None),
     include_draft: bool = Query(False),
     module: Optional[str] = Query(None),
     limit: int = Query(1000, ge=1, le=5000),
 ) -> DeliverableListResponse:
+    _ensure_session_access(session_id, request)
     try:
         session_dir = _resolve_session_dir(session_id, purpose="deliverables")
     except HTTPException as exc:
@@ -773,9 +794,11 @@ async def list_session_deliverables(
 @router.get("/sessions/{session_id}/deliverables/manifest", response_model=DeliverableManifestResponse)
 async def get_session_deliverables_manifest(
     session_id: str,
+    request: Request,
     scope: Literal["latest", "history"] = Query("latest"),
     version: Optional[str] = Query(None),
 ) -> DeliverableManifestResponse:
+    _ensure_session_access(session_id, request)
     try:
         session_dir = _resolve_session_dir(session_id, purpose="deliverables")
     except HTTPException as exc:
@@ -814,9 +837,11 @@ async def get_session_deliverables_manifest(
 @router.get("/sessions/{session_id}/deliverables/file")
 async def get_session_deliverable_file(
     session_id: str,
+    request: Request,
     path: str = Query(..., min_length=1),
     version: Optional[str] = Query(None),
 ) -> FileResponse:
+    _ensure_session_access(session_id, request)
     session_dir = _resolve_session_dir(session_id, purpose="deliverables")
     _, _, files_root, _, _ = _resolve_deliverable_view(
         session_dir=session_dir,
@@ -840,10 +865,12 @@ async def get_session_deliverable_file(
 @router.get("/sessions/{session_id}/deliverables/text", response_model=ArtifactTextResponse)
 async def get_session_deliverable_text(
     session_id: str,
+    request: Request,
     path: str = Query(..., min_length=1),
     version: Optional[str] = Query(None),
     max_bytes: int = Query(200000, ge=1024, le=2_000_000),
 ) -> ArtifactTextResponse:
+    _ensure_session_access(session_id, request)
     session_dir = _resolve_session_dir(session_id, purpose="deliverables")
     _, _, files_root, _, _ = _resolve_deliverable_view(
         session_dir=session_dir,
@@ -1079,6 +1106,7 @@ def _render_latex_to_pdf(source_path: Path, output_path: Path) -> bool:
 @router.get("/sessions/{session_id}/render", response_model=ArtifactRenderResponse)
 async def render_artifact(
     session_id: str,
+    request: Request,
     path: str = Query(..., min_length=1, description="Path to the file to render"),
     source_type: Literal["raw", "deliverables"] = Query("raw", description="Source type"),
     version: Optional[str] = Query(None, description="Version for deliverables"),
@@ -1090,6 +1118,7 @@ async def render_artifact(
     
     Rendered files are cached for performance.
     """
+    _ensure_session_access(session_id, request)
     # Resolve file path
     if source_type == "deliverables":
         session_dir = _resolve_session_dir(session_id, purpose="deliverables")

@@ -27,7 +27,7 @@ def _build_request(owner_id: str) -> Request:
     }
     request = Request(scope)
     request.state.principal = RequestPrincipal(
-        owner_id=owner_id,
+        user_id=owner_id,
         email=f"{owner_id}@example.com",
         auth_source="test",
     )
@@ -77,6 +77,7 @@ def test_async_decompose_job_records_request_owner(monkeypatch) -> None:
     tree = _Tree(plan_id=7, task_id=3)
 
     monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda plan_id: tree)
+    monkeypatch.setattr(plan_routes, "_ensure_plan_access", lambda *args, **kwargs: None)
 
     def _create_job(**kwargs):
         seen["job"] = kwargs
@@ -121,6 +122,7 @@ def test_async_execute_job_records_request_owner_without_session(monkeypatch) ->
             return None
 
     monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda plan_id: tree)
+    monkeypatch.setattr(plan_routes, "_ensure_plan_access", lambda *args, **kwargs: None)
     monkeypatch.setattr(plan_routes, "_build_execution_dependency_plan", lambda *args, **kwargs: dep_plan)
     monkeypatch.setattr(plan_routes.threading, "Thread", _DummyThread)
     monkeypatch.setattr(plan_routes.plan_decomposition_jobs, "append_log", lambda *args, **kwargs: None)

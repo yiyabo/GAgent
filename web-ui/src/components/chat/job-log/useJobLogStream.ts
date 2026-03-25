@@ -5,6 +5,8 @@ import type { ActionLogEntry, DecompositionJobStatus, JobLogEvent, ThinkingProce
 import { dispatchPlanSyncEvent } from '@utils/planSyncEvents';
 import { FINAL_STATUSES, MAX_RENDER_LOGS, parseStreamData } from './constants';
 
+const CJK_CHAR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+
 interface UseJobLogStreamOptions {
   jobId: string;
   initialJob?: DecompositionJobStatus | null;
@@ -57,6 +59,20 @@ const _stringifyToolPayload = (payload: any): string => {
   }
 };
 
+const _normalizeThinkingLanguage = (value: unknown): 'zh' | 'en' =>
+  CJK_CHAR_RE.test(String(value ?? '')) ? 'zh' : 'en';
+
+const _localizedThinkingText = (language: 'zh' | 'en', zh: string, en: string): string =>
+  language === 'zh' ? zh : en;
+
+const _defaultThinkingDisplayText = (
+  iteration: number,
+  language: 'zh' | 'en'
+): string =>
+  iteration <= 0
+    ? _localizedThinkingText(language, '准备整理回复', 'Preparing the response')
+    : _localizedThinkingText(language, '分析当前步骤', 'Working through the current step');
+
 const _mergeToolResultIntoSteps = (
   steps: ThinkingStep[],
   tool: string,
@@ -104,7 +120,8 @@ const _mergeToolResultIntoSteps = (
 
 const _rebuildThinkingFromLogs = (
   logs: JobLogEvent[],
-  jobStatus?: string | null
+  jobStatus?: string | null,
+  fallbackLanguage: 'zh' | 'en' = 'en'
 ): {
   process: ThinkingProcess;
   streamPaused: boolean;
@@ -141,16 +158,13 @@ const _rebuildThinkingFromLogs = (
       steps[index] = {
         ...steps[index],
         thought: `${steps[index].thought || ''}${delta}`,
+        display_text:
+          steps[index].display_text ||
+          _defaultThinkingDisplayText(iteration, fallbackLanguage),
+        kind: steps[index].kind || 'reasoning',
         status: steps[index].status || 'thinking',
       };
-      return;
     }
-    steps.push({
-      iteration,
-      thought: delta,
-      status: 'thinking',
-    });
-    steps.sort((a, b) => a.iteration - b.iteration);
   };
 
   for (const event of logs || []) {
@@ -169,6 +183,14 @@ const _rebuildThinkingFromLogs = (
       upsertStep({
         iteration,
         thought: String(rawStep?.thought ?? ''),
+        display_text:
+          typeof rawStep?.display_text === 'string' ? rawStep.display_text : undefined,
+        kind:
+          rawStep?.kind === 'reasoning' ||
+          rawStep?.kind === 'tool' ||
+          rawStep?.kind === 'summary'
+            ? rawStep.kind
+            : undefined,
         action: rawStep?.action ?? null,
         action_result: rawStep?.action_result ?? null,
         evidence: Array.isArray(rawStep?.evidence) ? rawStep.evidence : undefined,
@@ -295,8 +317,23 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
     if (Array.isArray(snapshot.logs)) {
       const replayLogs = snapshot.logs.slice(-MAX_RENDER_LOGS);
       setLogs(replayLogs);
-      const rebuilt = _rebuildThinkingFromLogs(replayLogs, snapshot.status);
+      const summaryFromMetadata =
+        (snapshot.result?.metadata &&
+        typeof snapshot.result.metadata === 'object' &&
+        typeof (snapshot.result.metadata as any)?.thinking_process?.summary === 'string')
+          ? (snapshot.result.metadata as any).thinking_process.summary
+          : undefined;
+      const fallbackLanguage = _normalizeThinkingLanguage(
+        summaryFromMetadata ??
+          snapshot.result?.content ??
+          snapshot.metadata?.message_preview ??
+          ''
+      );
+      const rebuilt = _rebuildThinkingFromLogs(replayLogs, snapshot.status, fallbackLanguage);
       setThinkingProcess(rebuilt.process);
+      if (summaryFromMetadata) {
+        setThinkingProcess((prev) => ({ ...prev, summary: summaryFromMetadata }));
+      }
       setStreamPaused(rebuilt.streamPaused);
       setLastRuntimeControlAction(rebuilt.lastRuntimeControlAction);
       setLastRuntimeControlAt(rebuilt.lastRuntimeControlAt);
@@ -347,18 +384,19 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
     setThinkingProcess((prev) => {
       const nextSteps = [...(prev.steps || [])];
       const idx = nextSteps.findIndex((item) => item.iteration === iteration);
+      const fallbackLanguage = _normalizeThinkingLanguage(
+        prev.summary ?? result?.content ?? jobMetadata?.message_preview ?? ''
+      );
       if (idx >= 0) {
         nextSteps[idx] = {
           ...nextSteps[idx],
           thought: `${nextSteps[idx].thought || ''}${delta}`,
+          display_text:
+            nextSteps[idx].display_text ||
+            _defaultThinkingDisplayText(iteration, fallbackLanguage),
+          kind: nextSteps[idx].kind || 'reasoning',
           status: nextSteps[idx].status || 'thinking',
         };
-      } else {
-        nextSteps.push({
-          iteration,
-          thought: delta,
-          status: 'thinking',
-        });
       }
       nextSteps.sort((a, b) => a.iteration - b.iteration);
       return {
@@ -670,7 +708,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
 
       const streamUrl = `${ENV.API_BASE_URL}/jobs/${jobId}/stream`;
       try {
-        const source = new EventSource(streamUrl);
+        const source = new EventSource(streamUrl, { withCredentials: true });
         sourceRef.current = source;
         setIsStreaming(true);
 
@@ -753,6 +791,14 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
             mergeThinkingStep({
               iteration: Number(rawStep.iteration ?? 0),
               thought: String(rawStep.thought ?? ''),
+              display_text:
+                typeof rawStep.display_text === 'string' ? rawStep.display_text : undefined,
+              kind:
+                rawStep.kind === 'reasoning' ||
+                rawStep.kind === 'tool' ||
+                rawStep.kind === 'summary'
+                  ? rawStep.kind
+                  : undefined,
               action: rawStep.action ?? null,
               action_result: rawStep.action_result ?? null,
               evidence: Array.isArray(rawStep?.evidence) ? rawStep.evidence : undefined,

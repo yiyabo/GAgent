@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple, Set
 
 from ..database import get_db, plan_db_connection
+from ..services.request_principal import get_current_principal
 from ..services.plans.plan_models import PlanNode, PlanSummary, PlanTree
 from .plan_storage import (
     get_plan_db_path,
@@ -24,14 +25,19 @@ class PlanRepository:
         self._execution_column_checked: set[int] = set()
         self._status_column_checked: set[int] = set()
 
-    def list_plans(self) -> List[PlanSummary]:
+    def list_plans(self, *, owner: Optional[str] = None) -> List[PlanSummary]:
+        resolved_owner = _resolve_owner(owner)
         sql = """
         SELECT id, title, description, metadata, plan_db_path, updated_at
         FROM plans
-        ORDER BY updated_at DESC, id DESC
         """
+        params: List[Any] = []
+        if resolved_owner:
+            sql += " WHERE owner=?"
+            params.append(resolved_owner)
+        sql += " ORDER BY updated_at DESC, id DESC"
         with get_db() as conn:
-            rows = conn.execute(sql).fetchall()
+            rows = conn.execute(sql, tuple(params)).fetchall()
 
         summaries: List[PlanSummary] = []
         for row in rows:
@@ -72,6 +78,7 @@ class PlanRepository:
         description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> PlanTree:
+        resolved_owner = _resolve_owner(owner)
         metadata_json = _dump_json(metadata or {})
         with get_db() as conn:
             cursor = conn.execute(
@@ -79,7 +86,7 @@ class PlanRepository:
                 INSERT INTO plans (title, owner, description, metadata, plan_db_path)
                 VALUES (?, ?, ?, ?, NULL)
                 """,
-                (title, owner, description, metadata_json),
+                (title, resolved_owner, description, metadata_json),
             )
             plan_id = cursor.lastrowid
             plan_rel_path = f"plan_{plan_id}.sqlite"
@@ -1360,6 +1367,16 @@ def _sanitize_dependencies(dependencies: Optional[List[int]]) -> Optional[List[i
             unique.append(value)
             seen.add(value)
     return unique or None
+
+
+def _resolve_owner(owner: Optional[str]) -> Optional[str]:
+    normalized = str(owner or "").strip()
+    if normalized:
+        return normalized
+    current = get_current_principal()
+    if current is None or not current.is_authenticated:
+        return None
+    return current.owner_id
 
 
 def _loads_json(raw: Optional[str]) -> Dict[str, Any]:

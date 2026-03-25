@@ -120,14 +120,21 @@ const ChatPanel: React.FC = () => {
 
   // Send message handler.
   const handleSendMessage = async () => {
-    if (!inputText.trim() || isProcessing) return;
+    const draft = inputText.trim();
+    if (!draft || isProcessing) return;
 
     const metadata = {
       task_id: selectedTask?.id,
       plan_title: currentPlan || undefined,
     };
 
-    await sendMessage(inputText.trim(), metadata);
+    setInputText('');
+    try {
+      await sendMessage(draft, metadata);
+    } catch (error) {
+      setInputText(draft);
+      message.error('Failed to send message. Please try again.');
+    }
   };
 
   // Keyboard handler.

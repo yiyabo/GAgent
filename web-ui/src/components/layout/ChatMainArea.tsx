@@ -34,6 +34,7 @@ import UploadedFilesList from '@components/chat/UploadedFilesList';
 import { shallow } from 'zustand/shallow';
 import type { ChatMessage as ChatMessageType, Memory } from '@/types';
 import VirtualList, { ListRef } from 'rc-virtual-list';
+import { isLikelyPersistedDuplicateMessage } from '@/utils/chatMessageUtils';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
@@ -246,13 +247,22 @@ const ChatMainArea: React.FC = () => {
     return s.activeRunIds.get(key) ?? null;
   });
 
+  const canQuerySessionHistory = Boolean(
+    currentSession &&
+    !(currentSession.titleSource === 'local' && currentSession.messages.length === 0)
+  );
+
   const {
     data: historyData,
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
     isLoading: isHistoryLoadingData,
-  } = useMessages(currentSession?.id);
+  } = useMessages(
+    canQuerySessionHistory
+      ? (currentSession?.session_id ?? currentSession?.id)
+      : null
+  );
 
   const allHistoryMessages = useMemo(() => {
     if (!historyData) return [];
@@ -261,7 +271,14 @@ const ChatMainArea: React.FC = () => {
 
   const combinedMessages = useMemo(() => {
     const historyIds = new Set(allHistoryMessages.map((m) => m.id));
-    const activeOnly = messages.filter((m) => !historyIds.has(m.id));
+    const activeOnly = messages.filter((message) => {
+      if (historyIds.has(message.id)) {
+        return false;
+      }
+      return !allHistoryMessages.some((historyMessage) =>
+        isLikelyPersistedDuplicateMessage(message, historyMessage)
+      );
+    });
     return [...allHistoryMessages, ...activeOnly];
   }, [allHistoryMessages, messages]);
 
@@ -279,6 +296,10 @@ const ChatMainArea: React.FC = () => {
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    setInputText('');
+  }, [currentSession?.id]);
+
   // Initialize session: prefer loading list from backend first.
   useEffect(() => {
     (async () => {
@@ -292,32 +313,32 @@ const ChatMainArea: React.FC = () => {
           await loadChatHistory(selected.id);
           return;
         }
-        const session = startNewSession('AI Task Orchestration Assistant');
-        await loadChatHistory(session.id);
+        startNewSession('AI Task Orchestration Assistant');
       } catch (err) {
         console.warn('[ChatMainArea] Session initialization failed; creating a new session:', err);
-        const session = startNewSession('AI Task Orchestration Assistant');
-        await loadChatHistory(session.id);
+        startNewSession('AI Task Orchestration Assistant');
       }
     })();
   }, [currentSession, loadSessions, loadChatHistory, startNewSession]);
 
   // Send message handler.
   const handleSendMessage = async () => {
-    if (!inputText.trim()) return;
+    const draft = inputText.trim();
+    if (!draft) return;
 
     if (isProcessing && activeRunId) {
+      setInputText('');
       setSteerSending(true);
       try {
-        await chatApi.steerRun(activeRunId, inputText.trim(), currentSession?.session_id ?? currentSession?.id);
+        await chatApi.steerRun(activeRunId, draft, currentSession?.session_id ?? currentSession?.id);
         message.success('引导已发送，将在下一步采纳');
       } catch (err) {
         console.error('[ChatMainArea] Failed to send steer:', err);
+        setInputText(draft);
         message.error('发送引导失败，请重试');
       } finally {
         setSteerSending(false);
       }
-      setInputText('');
       inputRef.current?.focus();
       return;
     }
@@ -331,14 +352,20 @@ const ChatMainArea: React.FC = () => {
     };
 
     // If Deep Think mode is enabled, auto-prefix with /think.
-    let messageToSend = inputText.trim();
+    let messageToSend = draft;
     if (deepThinkEnabled && !messageToSend.startsWith('/think')) {
       messageToSend = `/think ${messageToSend}`;
     }
 
-    await sendMessage(messageToSend, metadata);
     setInputText('');
     inputRef.current?.focus();
+    try {
+      await sendMessage(messageToSend, metadata);
+    } catch (err) {
+      console.error('[ChatMainArea] Failed to send message:', err);
+      setInputText(draft);
+      message.error('发送失败，请重试');
+    }
   };
 
   const handleProviderChange = async (value: string | undefined) => {

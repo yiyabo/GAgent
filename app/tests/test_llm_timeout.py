@@ -5,8 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from app.llm import LLMClient, _get_shared_sync_client, _make_request_timeout
+from app.llm import LLMClient, reset_default_client, _get_shared_sync_client, _make_request_timeout
 from app.services.foundation.settings import get_settings
+from app.services.llm.llm_service import get_llm_service_for_provider
 
 
 def test_llm_client_timeout_none_when_zero(monkeypatch) -> None:
@@ -135,3 +136,22 @@ def test_chat_passes_capped_connect_timeout(monkeypatch) -> None:
     assert timeout_arg is not None
     assert timeout_arg.connect == 5.0
     assert timeout_arg.read == 5.0
+
+
+def test_reset_default_client_clears_provider_service_cache(monkeypatch) -> None:
+    monkeypatch.setenv("QWEN_API_KEY", "test-key-a")
+    monkeypatch.setenv("QWEN_API_URL", "https://example-a.com/v1/chat/completions")
+    get_settings.cache_clear()
+    reset_default_client()
+    first = get_llm_service_for_provider("qwen", "qwen-test")
+    first_url = getattr(first.client, "url", None)
+
+    monkeypatch.setenv("QWEN_API_KEY", "test-key-b")
+    monkeypatch.setenv("QWEN_API_URL", "https://example-b.com/v1/chat/completions")
+    get_settings.cache_clear()
+    reset_default_client()
+    second = get_llm_service_for_provider("qwen", "qwen-test")
+
+    assert first is not second
+    assert first_url == "https://example-a.com/v1/chat/completions"
+    assert getattr(second.client, "url", None) == "https://example-b.com/v1/chat/completions"

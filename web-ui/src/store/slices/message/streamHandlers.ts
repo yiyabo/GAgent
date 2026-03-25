@@ -37,6 +37,30 @@ import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { SessionStorage } from '@/utils/sessionStorage';
 import type { StreamHandlerContext } from './types';
 
+const CJK_CHAR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+
+function inferThinkingLanguage(ctx: StreamHandlerContext): 'zh' | 'en' {
+  const messages = ctx.get().messages;
+  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+    const content = typeof messages[idx]?.content === 'string' ? messages[idx].content : '';
+    if (!content.trim()) continue;
+    return CJK_CHAR_RE.test(content) ? 'zh' : 'en';
+  }
+  return 'en';
+}
+
+function localizedThinkingText(language: 'zh' | 'en', zh: string, en: string): string {
+  return language === 'zh' ? zh : en;
+}
+
+function defaultThinkingStepText(ctx: StreamHandlerContext, iteration: number): string {
+  const language = inferThinkingLanguage(ctx);
+  if (iteration <= 0) {
+    return localizedThinkingText(language, '准备整理回复', 'Preparing the response');
+  }
+  return localizedThinkingText(language, '分析当前步骤', 'Working through the current step');
+}
+
 export function handleDelta(ctx: StreamHandlerContext, event: any): void {
   ctx.state.streamedContent += event.content ?? '';
   ctx.scheduleFlush();
@@ -235,6 +259,12 @@ export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void 
   const rawStep = event.step ?? {};
   const step = {
     ...rawStep,
+    thought: typeof rawStep.thought === 'string' ? rawStep.thought : '',
+    display_text: typeof rawStep.display_text === 'string' ? rawStep.display_text : undefined,
+    kind:
+      rawStep.kind === 'reasoning' || rawStep.kind === 'tool' || rawStep.kind === 'summary'
+        ? rawStep.kind
+        : undefined,
     evidence: Array.isArray(rawStep.evidence) ? rawStep.evidence : undefined,
     started_at: typeof rawStep.started_at === 'string' ? rawStep.started_at : undefined,
     finished_at: typeof rawStep.finished_at === 'string' ? rawStep.finished_at : undefined,
@@ -295,20 +325,15 @@ function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext): void {
     if (!Number.isFinite(iteration)) continue;
     const idx = updatedSteps.findIndex((s: any) => s.iteration === iteration);
     if (idx < 0) {
-      updatedSteps.push({
-        iteration,
-        thought: delta,
-        action: null,
-        action_result: null,
-        status: 'thinking' as const,
-        timestamp: new Date().toISOString(),
-        self_correction: null,
-      });
       continue;
     }
     updatedSteps[idx] = {
       ...updatedSteps[idx],
-      thought: (updatedSteps[idx].thought || '') + delta,
+      thought: `${typeof updatedSteps[idx].thought === 'string' ? updatedSteps[idx].thought : ''}${delta}`,
+      display_text:
+        updatedSteps[idx].display_text ||
+        defaultThinkingStepText(ctx, iteration),
+      kind: updatedSteps[idx].kind || (iteration <= 0 ? 'summary' : 'reasoning'),
     };
   }
 
@@ -343,11 +368,6 @@ export function handleThinkingDelta(ctx: StreamHandlerContext, event: any): void
   }, 80);
 }
 
-/**
- * Handle reasoning_delta events from extended thinking (enable_thinking).
- * Maps reasoning tokens into the thinking_process as iteration 0 with a
- * special "reasoning" status, reusing the existing ThinkingProcess UI.
- */
 export function handleReasoningDelta(ctx: StreamHandlerContext, event: any): void {
   const delta = event?.delta;
   if (typeof delta !== 'string' || delta.length === 0) return;
@@ -549,10 +569,17 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
     ((tp as { steps: unknown[] }).steps?.length ?? 0) > 0;
   const nextThinkingStatus = initialStatus === 'failed' ? 'error' : 'completed';
   if (hasSteps(streamedTp)) {
+    const metaSummary =
+      thinkingFromMeta && typeof thinkingFromMeta === 'object'
+        ? (thinkingFromMeta as Record<string, unknown>).summary
+        : undefined;
     ctx.get().updateMessage(ctx.assistantMessageId, {
       thinking_process: {
         ...(streamedTp as Record<string, unknown>),
         status: nextThinkingStatus,
+        summary:
+          (streamedTp as Record<string, unknown>).summary ??
+          (typeof metaSummary === 'string' ? metaSummary : undefined),
       } as any,
     });
   } else if (hasSteps(thinkingFromMeta)) {

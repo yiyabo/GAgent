@@ -1,6 +1,11 @@
 import axios, { AxiosInstance, AxiosError, AxiosResponse } from 'axios';
 import { ApiResponse } from '../types/index';
 import { ENV } from '@/config/env';
+import { emitAuthUnauthorized } from '@/auth/events';
+
+export interface AuthAwareRequestConfig {
+  skipAuthHandling?: boolean;
+}
 
 const createApiClient = (): AxiosInstance => {
   const client = axios.create({
@@ -11,6 +16,7 @@ const createApiClient = (): AxiosInstance => {
   headers: {
   'Content-Type': 'application/json',
   },
+  withCredentials: true,
   });
 
   // ---- Timeout tier interceptor ----
@@ -68,8 +74,10 @@ const createApiClient = (): AxiosInstance => {
   console.error('❌ Response Error:', error.response?.status, error.response?.data);
   
   const status = error.response?.status;
-  if (status === 401) {
+  const skipAuthHandling = Boolean((error.config as AxiosError<ApiResponse>['config'] & AuthAwareRequestConfig | undefined)?.skipAuthHandling);
+  if (status === 401 && !skipAuthHandling) {
   console.error('Authentication required');
+  emitAuthUnauthorized();
   } else if (status === 403) {
   console.error('Permission denied');
   } else if (status && status >= 500) {

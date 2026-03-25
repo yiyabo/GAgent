@@ -1746,6 +1746,8 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
                 title = f"Plan-{agent.conversation_id or 'new'}"
         description = params.get("description")
         owner = params.get("owner")
+        if not owner:
+            owner = agent.extra_context.get("owner_id")
         metadata = params.get("metadata")
         if metadata is None:
             metadata = {}
