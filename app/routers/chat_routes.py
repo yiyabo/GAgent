@@ -112,9 +112,11 @@ def _build_compat_request() -> Request:
     }
     raw_request = Request(scope)
     raw_request.state.principal = RequestPrincipal(
-        owner_id=LEGACY_LOCAL_OWNER_ID,
+        user_id=LEGACY_LOCAL_OWNER_ID,
         email=None,
+        role="legacy",
         auth_source="compat",
+        is_authenticated=True,
     )
     return raw_request
 

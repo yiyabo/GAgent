@@ -501,6 +501,7 @@ class LLMClient(LLMProvider):
         messages: list,
         tools: List[Dict[str, Any]],
         tool_choice: str = "auto",
+        model: Optional[str] = None,
         on_content_delta: Optional[Callable[[str], Any]] = None,
         on_reasoning_delta: Optional[Callable[[str], Any]] = None,
         enable_thinking: Optional[bool] = None,
@@ -521,7 +522,7 @@ class LLMClient(LLMProvider):
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set")
 
         payload: Dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "tools": tools,
             "tool_choice": tool_choice,
@@ -696,3 +697,11 @@ def get_default_client() -> LLMClient:
 def reset_default_client() -> None:
     global _default_client
     _default_client = None
+    try:
+        from app.services.llm.llm_service import reset_llm_services
+
+        reset_llm_services()
+    except Exception:
+        # Avoid turning cache reset into a hard dependency during import-time
+        # teardown paths.
+        pass

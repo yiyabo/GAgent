@@ -126,10 +126,15 @@ if _USE_PYDANTIC:
 
         backend_host: str = Field(default="0.0.0.0", env="BACKEND_HOST")
         backend_port: int = Field(default=9000, env="BACKEND_PORT")
+        app_env: str = Field(default="development", env="APP_ENV")
         cors_origins: str = Field(
             default="http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
             env="CORS_ORIGINS"
         )
+        auth_mode: str = Field(default="local", env="AUTH_MODE")
+        auth_cookie_name: str = Field(default="ga_session", env="AUTH_COOKIE_NAME")
+        auth_session_ttl_hours: int = Field(default=168, env="AUTH_SESSION_TTL_HOURS")
+        auth_open_signup: bool = Field(default=True, env="AUTH_OPEN_SIGNUP")
         chat_include_action_summary: bool = Field(
             default=True, env="CHAT_INCLUDE_ACTION_SUMMARY"
         )
@@ -296,10 +301,23 @@ else:
                 self.backend_port = int(os.getenv("BACKEND_PORT", "9000"))
             except Exception:
                 self.backend_port = 9000
+            self.app_env = os.getenv("APP_ENV", "development")
             self.cors_origins = os.getenv(
                 "CORS_ORIGINS",
                 "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
             )
+            self.auth_mode = os.getenv("AUTH_MODE", "local")
+            self.auth_cookie_name = os.getenv("AUTH_COOKIE_NAME", "ga_session")
+            try:
+                self.auth_session_ttl_hours = int(os.getenv("AUTH_SESSION_TTL_HOURS", "168"))
+            except Exception:
+                self.auth_session_ttl_hours = 168
+            self.auth_open_signup = os.getenv("AUTH_OPEN_SIGNUP", "1").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
             self.chat_include_action_summary = os.getenv("CHAT_INCLUDE_ACTION_SUMMARY", "1").strip().lower() in {
                 "1",
                 "true",

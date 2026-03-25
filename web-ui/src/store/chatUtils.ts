@@ -577,7 +577,7 @@ export const waitForActionCompletionViaStream = async (
         // Always use generic jobs SSE (GET) so final states are still available
         // even if chat/stream (POST) is interrupted.
         const streamUrl = `${ENV.API_BASE_URL}/jobs/${trackingId}/stream`;
-        const source = new EventSource(streamUrl);
+        const source = new EventSource(streamUrl, { withCredentials: true });
 
         const finalize = async () => {
             if (finished) return;

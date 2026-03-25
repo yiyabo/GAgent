@@ -232,6 +232,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
 
   restoreSession: async (sessionId, title) => {
   let session = get().sessions.find((s) => s.id === sessionId) || null;
+  let createdLocalSession = false;
 
   if (!session) {
   await get().loadSessions();
@@ -264,10 +265,15 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   isUserNamed: false,
   };
   get().addSession(session);
+  createdLocalSession = true;
   }
 
   get().setCurrentSession(session);
   SessionStorage.setCurrentSessionId(sessionId);
+
+  if (createdLocalSession) {
+  return session;
+  }
 
   await get().loadChatHistory(sessionId);
 

@@ -10,9 +10,9 @@ import functools
 import json
 import logging
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 
-from ...llm import get_default_client
+from ...llm import get_default_client, LLMClient
 from ...interfaces import LLMProvider
 from app.services.foundation.settings import get_settings
 
@@ -393,20 +393,46 @@ class TaskPromptBuilder:
 _llm_service: Optional[LLMService] = None
 
 
-def get_llm_service(client: Optional[LLMProvider] = None) -> LLMService:
-    """
-    Get or create the global LLM service instance
-    
-    Args:
-        client: Optional LLM client to use
-        
-    Returns:
-        LLMService instance
+def get_llm_service() -> LLMService:
+    """Get or create the global LLM service instance (default provider/model)."""
+    global _llm_service
+    if _llm_service is None:
+        _llm_service = LLMService()
+    return _llm_service
+
+
+# Provider/model-specific service cache
+_provider_service_cache: Dict[Tuple[str, str], LLMService] = {}
+
+
+def reset_llm_services() -> None:
+    """Clear all cached LLMService instances.
+
+    This should be called whenever process-local LLM configuration is reset so
+    provider/model scoped services cannot retain stale client settings.
     """
     global _llm_service
-    if _llm_service is None or client is not None:
-        _llm_service = LLMService(client)
-    return _llm_service
+    _llm_service = None
+    _provider_service_cache.clear()
+
+
+def get_llm_service_for_provider(
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> LLMService:
+    """Get a cached LLMService for a specific (provider, model) combination.
+
+    Falls back to the global default service when *provider* is not specified.
+    """
+    if not provider:
+        return get_llm_service()
+    key = (provider, model or "")
+    cached = _provider_service_cache.get(key)
+    if cached is not None:
+        return cached
+    service = LLMService(LLMClient(provider=provider, model=model))
+    _provider_service_cache[key] = service
+    return service
 
 
 # Async context manager for batch operations

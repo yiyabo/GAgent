@@ -12,6 +12,7 @@ import {
   buildToolResultsCache,
   resolveHistoryCursor,
 } from '../../chatUtils';
+import { parseChatTimestamp } from '@/utils/chatMessageUtils';
 import { memoryApi } from '@api/memory';
 import { chatApi } from '@api/chat';
 import { ENV } from '@/config/env';
@@ -171,6 +172,11 @@ const _hydrateThinkingProcess = (raw: any): ThinkingProcess | undefined => {
       return {
         iteration,
         thought: typeof step.thought === 'string' ? step.thought : '',
+        display_text: typeof step.display_text === 'string' ? step.display_text : undefined,
+        kind:
+          step.kind === 'reasoning' || step.kind === 'tool' || step.kind === 'summary'
+            ? step.kind
+            : undefined,
         action: step.action ?? null,
         action_result: step.action_result ?? null,
         evidence: Array.isArray(step.evidence)
@@ -287,6 +293,22 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   );
 
   if (!response.ok) {
+  const targetSession = get().sessions.find(
+  (session) => (session.session_id ?? session.id) === sessionId || session.id === sessionId
+  );
+  const isUnsyncedLocalSession = Boolean(
+  targetSession &&
+  targetSession.titleSource === 'local' &&
+  (targetSession.messages?.length ?? 0) === 0
+  );
+  if (response.status === 404 && isUnsyncedLocalSession) {
+  set({
+  messages: [],
+  historyBeforeId: null,
+  historyHasMore: false,
+  });
+  return;
+  }
   throw new Error(`HTTP error! status: ${response.status}`);
   }
 
@@ -332,7 +354,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   id: messageId,
   type: (msg.role || 'assistant') as 'user' | 'assistant' | 'system',
   content: msg.content,
-  timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+  timestamp: parseChatTimestamp(msg.timestamp),
   metadata,
   thinking_process: thinkingProcess,
   };

@@ -134,6 +134,7 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
         "=== OUTPUT FORMAT (STRICT) ===",
         "This channel does NOT execute tools (no web_search, no file access, no APIs).",
         "Reply in plain natural language only. Markdown is allowed.",
+        "Match the user's language by default, unless they explicitly ask you to switch languages.",
         "Do NOT output JSON, YAML, or XML. Do NOT wrap the reply in code fences unless showing a short code sample.",
         "Do NOT emit tool call payloads or {\"llm_reply\": ...} schemas — they will be shown raw to the user and will break the UI.",
         "If the user needs live web data or tool runs, say clearly that they should open or bind a research plan in the app for full agent mode.",

@@ -30,7 +30,7 @@ def _build_raw_request(owner_id: str) -> Request:
     }
     raw_request = Request(scope)
     raw_request.state.principal = RequestPrincipal(
-        owner_id=owner_id,
+        user_id=owner_id,
         email=f"{owner_id}@example.com",
         auth_source="test",
     )

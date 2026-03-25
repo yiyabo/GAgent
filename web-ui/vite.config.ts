@@ -116,13 +116,65 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: 'dist',
       sourcemap: true,
+      chunkSizeWarningLimit: 700,
       rollupOptions: {
         output: {
-          manualChunks: {
-            vendor: ['react', 'react-dom', 'react-router-dom'],
-            antd: ['antd', '@ant-design/icons'],
-            visualization: ['vis-network', 'vis-data'],
-            editor: ['monaco-editor', '@monaco-editor/react'],
+          manualChunks(id) {
+            if (!id.includes('node_modules')) {
+              return undefined;
+            }
+            if (
+              id.includes('/react/') ||
+              id.includes('/react-dom/') ||
+              id.includes('/react-router-dom/')
+            ) {
+              return 'vendor';
+            }
+            if (
+              id.includes('/monaco-editor/') ||
+              id.includes('/@monaco-editor/')
+            ) {
+              return 'editor';
+            }
+            if (
+              id.includes('/vis-network/') ||
+              id.includes('/vis-data/')
+            ) {
+              return 'visualization-2d';
+            }
+            if (
+              id.includes('/react-force-graph-2d/') ||
+              id.includes('/react-force-graph-3d/') ||
+              id.includes('/three/') ||
+              id.includes('/three-spritetext/')
+            ) {
+              return 'visualization-3d';
+            }
+            if (
+              id.includes('/react-markdown/') ||
+              id.includes('/remark-gfm/') ||
+              id.includes('/remark-math/') ||
+              id.includes('/rehype-katex/')
+            ) {
+              return 'markdown-core';
+            }
+            if (
+              id.includes('/react-syntax-highlighter/') ||
+              id.includes('/prismjs/')
+            ) {
+              return 'markdown-code';
+            }
+            if (id.includes('/katex/')) {
+              return 'markdown-math';
+            }
+            if (
+              id.includes('/xterm/') ||
+              id.includes('/xterm-addon-fit/') ||
+              id.includes('/xterm-addon-web-links/')
+            ) {
+              return 'terminal';
+            }
+            return undefined;
           },
         },
       },

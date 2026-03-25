@@ -14,6 +14,12 @@ from app.services.tool_schemas import build_tool_schemas
 
 logger = logging.getLogger(__name__)
 
+_CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_INTERNAL_REASONING_RE = re.compile(
+    r"(?:^|\b)(?:the user is asking me|i notice this is just|i should\b|i need to\b|i'm ready to help|continue thinking|thinking about next step)",
+    re.IGNORECASE,
+)
+
 
 _BIO_TOOLS_FALLBACK_CATALOG: Dict[str, List[str]] = {
     "seqkit": ["stats", "grep", "seq", "head"],
@@ -70,6 +76,8 @@ class ThinkingStep:
     action: Optional[str]
     action_result: Optional[str]
     self_correction: Optional[str]
+    display_text: Optional[str] = None
+    kind: str = "reasoning"
     timestamp: datetime = field(default_factory=datetime.now)
     status: str = "thinking"  # thinking, calling_tool, analyzing, done, error
     evidence: List[Dict[str, str]] = field(default_factory=list)
@@ -100,6 +108,170 @@ class TaskExecutionContext:
     context_summary: Optional[str] = None
     context_sections: List[Dict[str, Any]] = field(default_factory=list)
     paper_context_paths: List[str] = field(default_factory=list)
+
+
+def detect_reasoning_language(text: str) -> str:
+    return "zh" if _CJK_CHAR_RE.search(str(text or "")) else "en"
+
+
+def _localized_text(language: str, zh: str, en: str) -> str:
+    return zh if language == "zh" else en
+
+
+def _default_deepthink_summary(user_query: str) -> str:
+    return _localized_text(
+        detect_reasoning_language(user_query),
+        "已完成思考整理，准备给出结论。",
+        "Finished organizing the reasoning and preparing the answer.",
+    )
+
+
+def sanitize_reasoning_text(
+    text: str,
+    *,
+    language: Optional[str] = None,
+    max_chars: Optional[int] = None,
+) -> str:
+    raw = " ".join(str(text or "").split()).strip()
+    if not raw:
+        return ""
+    raw = _INTERNAL_REASONING_RE.sub("", raw).strip(" ,.;:-")
+    if not raw:
+        return ""
+    if max_chars and max_chars > 0 and len(raw) > max_chars:
+        raw = raw[: max_chars - 3].rstrip() + "..."
+    if language == "zh":
+        raw = raw.replace("  ", " ").strip()
+    return raw
+
+
+def summarize_simple_chat_reasoning(user_message: str) -> str:
+    text = str(user_message or "").strip()
+    language = detect_reasoning_language(text)
+    lowered = text.lower()
+    stripped = re.sub(r"[\s!！?？,，。…~～]+", "", text)
+
+    greeting_tokens = {"你好", "您好", "hello", "hi", "hey", "嗨", "哈喽"}
+    thanks_tokens = {"谢谢", "感谢", "thanks", "thankyou", "thx"}
+    confirm_tokens = {"好的", "ok", "okay", "收到", "明白", "可以"}
+
+    if stripped in greeting_tokens or lowered in greeting_tokens:
+        return _localized_text(
+            language,
+            "识别为问候，准备友好回复",
+            "Recognized a greeting, preparing a friendly reply",
+        )
+    if stripped in thanks_tokens or lowered in thanks_tokens:
+        return _localized_text(
+            language,
+            "识别为致谢，准备简短回应",
+            "Recognized gratitude, preparing a brief reply",
+        )
+    if stripped in confirm_tokens or lowered in confirm_tokens:
+        return _localized_text(
+            language,
+            "识别为简短确认，准备继续协助",
+            "Recognized a brief confirmation, preparing to continue helping",
+        )
+    if any(token in text for token in ["请", "帮我", "怎么", "如何"]) or any(
+        token in lowered for token in ["please", "help", "how", "what", "why", "can you"]
+    ):
+        return _localized_text(
+            language,
+            "识别为具体请求，准备给出方案",
+            "Recognized a concrete request, preparing an answer",
+        )
+    return _localized_text(
+        language,
+        "识别为直接问题，准备简洁回答",
+        "Recognized a direct question, preparing a concise answer",
+    )
+
+
+def summarize_tool_step_display(step: ThinkingStep, *, language: str) -> str:
+    action_raw = step.action or ""
+    tool_name = ""
+    params: Dict[str, Any] = {}
+    try:
+        parsed = json.loads(action_raw) if action_raw else {}
+        if isinstance(parsed, dict):
+            tool_name = str(parsed.get("tool") or "").strip().lower()
+            params = (
+                parsed.get("params") if isinstance(parsed.get("params"), dict) else {}
+            )
+    except Exception:
+        tool_name = ""
+        params = {}
+
+    if tool_name == "web_search":
+        query = str(params.get("query") or "").strip()
+        if query:
+            clipped = query[:40] + ("..." if len(query) > 40 else "")
+            return _localized_text(
+                language, f"检索资料：{clipped}", f"Searching for: {clipped}"
+            )
+        return _localized_text(language, "检索资料", "Searching for information")
+    if tool_name == "document_reader":
+        return _localized_text(language, "阅读文档", "Reading documents")
+    if tool_name == "file_operations":
+        operation = str(params.get("operation") or "").strip().lower()
+        if operation == "read":
+            return _localized_text(language, "读取文件", "Reading files")
+        if operation == "list":
+            return _localized_text(language, "查看目录内容", "Inspecting directory contents")
+        return _localized_text(language, "处理文件内容", "Working with files")
+    if tool_name == "claude_code":
+        return _localized_text(language, "执行代码与分析", "Executing code and analysis")
+    if tool_name in {"bio_tools", "phagescope", "deeppl", "sequence_fetch"}:
+        return _localized_text(language, "运行分析工具", "Running analysis tools")
+    if tool_name == "vision_reader":
+        return _localized_text(language, "分析图像内容", "Analyzing visual content")
+    if tool_name == "graph_rag":
+        return _localized_text(language, "查询知识图谱", "Querying knowledge graph")
+    if tool_name == "result_interpreter":
+        return _localized_text(language, "汇总分析结果", "Interpreting results")
+    if tool_name == "plan_operation":
+        return _localized_text(language, "更新计划信息", "Updating the plan")
+    if tool_name:
+        return _localized_text(language, f"调用工具：{tool_name}", f"Using tool: {tool_name}")
+    return _localized_text(language, "处理当前步骤", "Processing the current step")
+
+
+def build_user_visible_step(
+    step: ThinkingStep,
+    *,
+    language: str,
+    preserve_thought: bool = False,
+) -> Dict[str, Any]:
+    display_text = str(step.display_text or "").strip()
+    kind = str(step.kind or "reasoning").strip() or "reasoning"
+
+    if step.action:
+        kind = "tool"
+        if not display_text:
+            display_text = summarize_tool_step_display(step, language=language)
+    elif not display_text:
+        cleaned = sanitize_reasoning_text(step.thought, language=language, max_chars=None)
+        display_text = cleaned or _localized_text(
+            language,
+            "分析当前问题，准备下一步",
+            "Analyzing the request and preparing the next step",
+        )
+
+    return {
+        "iteration": step.iteration,
+        "thought": str(step.thought or "") if preserve_thought else "",
+        "display_text": display_text,
+        "kind": kind,
+        "action": step.action,
+        "action_result": step.action_result,
+        "evidence": step.evidence,
+        "status": step.status,
+        "started_at": step.started_at.isoformat() if step.started_at else None,
+        "finished_at": step.finished_at.isoformat() if step.finished_at else None,
+        "timestamp": step.timestamp.isoformat() if step.timestamp else None,
+        "self_correction": step.self_correction,
+    }
 
 
 class DeepThinkProtocolError(RuntimeError):
@@ -618,7 +790,7 @@ class DeepThinkAgent:
         try:
             summary = await self._generate_summary(thinking_steps, user_query)
         except Exception:
-            summary = "DeepThink completed via native tool calling."
+            summary = _default_deepthink_summary(user_query)
 
         return DeepThinkResult(
             final_answer=final_answer,
@@ -1025,7 +1197,7 @@ Respond with ONLY a JSON object:
         try:
             summary = await self._generate_summary(thinking_steps, user_query)
         except Exception:
-            summary = "DeepThink completed with protocol-tolerant fallback summarization."
+            summary = _default_deepthink_summary(user_query)
 
         return DeepThinkResult(
             final_answer=final_answer,
@@ -2111,15 +2283,19 @@ When ready to answer:
         n = len(steps)
         counts = self._collect_tool_usage_counts(steps)
         stats = self._format_tool_usage_counts(counts)
-        tools_part = f"（{stats}）" if stats else "（未从步骤中解析到工具名）"
-        _ = user_query
+        language = detect_reasoning_language(user_query)
+        if language == "zh":
+            tools_part = f"（{stats}）" if stats else "（未解析到明确工具名）"
+            return (
+                f"经过 {n} 步深度思考{tools_part}，暂未形成可直接提交的确定结论。"
+                "这个问题可能需要更聚焦的范围，或需要进一步验证关键信息后再收敛。"
+                "建议缩小问题范围，改成更具体、可核验的问题后重试。"
+            )
+        tools_part = f" ({stats})" if stats else ""
         return (
-            f"经过 {n} 步深度思考{tools_part}，未能形成可提交的确定结论。"
-            "该问题可能不适合仅通过检索给出单一答案，或在步数上限内未完成收尾。"
-            "建议改为更小、可验证的事实性问题后重试。\n\n"
-            "DeepThink reached its step limit without a final structured answer. "
-            f"{n} reasoning step(s){(' — ' + stats) if stats else ''}. "
-            "Try a narrower or fact-checkable question."
+            f"DeepThink completed {n} reasoning step(s){tools_part} but did not reach a final answer. "
+            "This request likely needs a narrower scope or an additional verification pass before it can be concluded. "
+            "Try a more specific, fact-checkable follow-up."
         )
 
     async def _generate_fallback_from_evidence(
@@ -2158,10 +2334,18 @@ When ready to answer:
         user_query: str = "",
     ) -> str:
         if not steps:
-            return "DeepThink completed without structured final answer."
+            return _localized_text(
+                detect_reasoning_language(user_query),
+                "已完成思考，但暂未形成结构化结论。",
+                "DeepThink finished without a structured final answer.",
+            )
         useful = [s.thought for s in steps if isinstance(s.thought, str) and s.thought.strip()]
         if useful:
-            return useful[-1].strip()
+            return sanitize_reasoning_text(
+                useful[-1].strip(),
+                language=detect_reasoning_language(user_query),
+                max_chars=180,
+            ) or useful[-1].strip()
         evidence = self._collect_evidence_snippets(steps)
         uq = (user_query or "").strip()
         if evidence.strip() and uq:
@@ -2189,24 +2373,35 @@ When ready to answer:
         usage_counts = self._collect_tool_usage_counts(steps)
         tool_stats_line = self._format_tool_usage_counts(usage_counts)
         tools_used_unique = list(usage_counts.keys())
+        language = detect_reasoning_language(user_query)
 
         steps_lines: List[str] = []
         for step in self._select_steps_for_summary(steps):
-            thought_raw = step.thought if isinstance(step.thought, str) else ""
-            thought_preview = (
-                f"{thought_raw[:150]}..." if len(thought_raw) > 150 else thought_raw
-            )
-            steps_lines.append(f"- Step {step.iteration}: {thought_preview}")
+            visible = build_user_visible_step(step, language=language)
+            display_text = str(visible.get("display_text") or "").strip()
+            if not display_text:
+                display_text = _localized_text(
+                    language,
+                    "处理当前步骤",
+                    "Processing the current step",
+                )
+            steps_lines.append(f"- Step {step.iteration}: {display_text}")
         steps_text = "\n".join(steps_lines)
 
-        prompt = f"""Summarize this thinking process in 1-2 concise English sentences:
-User Question: {user_query[:200]}
-Thinking Steps (sampled: first and last iterations when long runs):
-{steps_text}
-Tools Used (unique): {", ".join(sorted(tools_used_unique)) if tools_used_unique else "None"}
-Tool call counts: {tool_stats_line if tool_stats_line else "None"}
-
-Summary:"""
+        prompt = (
+            f"User question:\n{user_query[:200]}\n\n"
+            "Write a concise thinking summary for the user in the same language as the user question.\n"
+            "Requirements:\n"
+            "- Use 1 short sentence for very simple flows, or at most 2 short sentences for tool-heavy flows.\n"
+            "- Describe the visible progression, not hidden internal deliberation.\n"
+            "- Do not use phrases like 'I should', 'the user is asking', or other internal self-talk.\n"
+            "- Keep the tone product-like and easy to scan.\n\n"
+            "Visible steps:\n"
+            f"{steps_text}\n"
+            f"Tools used: {', '.join(sorted(tools_used_unique)) if tools_used_unique else 'None'}\n"
+            f"Tool call counts: {tool_stats_line if tool_stats_line else 'None'}\n\n"
+            "Summary:"
+        )
 
         try:
             summary = await asyncio.wait_for(
@@ -2223,4 +2418,4 @@ Summary:"""
             raise DeepThinkProtocolError(
                 "LLM summary output is empty or too short in strict mode."
             )
-        return cleaned
+        return sanitize_reasoning_text(cleaned, language=language, max_chars=None) or cleaned
