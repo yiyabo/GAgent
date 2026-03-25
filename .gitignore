@@ -7,7 +7,7 @@ example/
 *.env
 web-ui/.env
 web-ui/.env.development
-web-ui/node_modules
+web-ui/node_modules/
 runtime/*
 .spec-workflow
 examples
@@ -35,9 +35,7 @@ tool_box/bio_tools/scripts/download_all_databases.sh
 tool_box/bio_tools/scripts/download_iphop_db.sh
 
 # Web UI Build Artifacts
-web-ui/dist/assets/index-*.js
-web-ui/dist/assets/index-*.js.map
-web-ui/dist/index.html
+web-ui/dist/
 .roo/mcp.json
 
 # docs
