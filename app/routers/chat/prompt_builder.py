@@ -7,37 +7,25 @@ from typing import Any, Dict, List
 
 from app.config.tool_policy import get_tool_policy, is_tool_allowed
 from app.prompts import prompt_manager
+from app.services.response_style import (
+    PROFESSIONAL_STYLE_INSTRUCTION,
+    sanitize_professional_response_text,
+)
+from .request_routing import resolve_request_routing
 
 logger = logging.getLogger(__name__)
 
 
 def should_use_deep_think(agent: Any, message: str) -> bool:
-    """Check if deep think mode should be activated."""
-    # Check explicit trigger
-    if message.startswith("/think ") or message.startswith("/deep"):
-        return True
-    # Check context flag
-    if agent.extra_context.get("deep_think_enabled", False):
-        return True
-    # Default: force DeepThink for plan creation / research planning.
-    # This prevents shallow plans and enables rubric-based self-optimization.
-    msg = (message or "").strip().lower()
-    if not msg:
-        return False
-    plan_keywords = (
-        "create plan",
-        "make a plan",
-        "plan for",
-        "research plan",
-        "project plan",
-        "roadmap",
-        "decompose",
-        "break down",
-        "task tree",
+    """Check if the router would select a DeepThink engine path."""
+    decision = resolve_request_routing(
+        message=message,
+        history=getattr(agent, "history", None),
+        context=getattr(agent, "extra_context", None),
+        plan_id=getattr(getattr(agent, "plan_session", None), "plan_id", None),
+        current_task_id=(getattr(agent, "extra_context", {}) or {}).get("current_task_id"),
     )
-    if any(k in msg for k in plan_keywords):
-        return True
-    return False
+    return decision.use_deep_think
 
 
 # Rough char-to-token ratio ~3.5; cap at ~28k tokens.
@@ -135,6 +123,7 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
         "This channel does NOT execute tools (no web_search, no file access, no APIs).",
         "Reply in plain natural language only. Markdown is allowed.",
         "Match the user's language by default, unless they explicitly ask you to switch languages.",
+        PROFESSIONAL_STYLE_INSTRUCTION,
         "Do NOT output JSON, YAML, or XML. Do NOT wrap the reply in code fences unless showing a short code sample.",
         "Do NOT emit tool call payloads or {\"llm_reply\": ...} schemas — they will be shown raw to the user and will break the UI.",
         "If the user needs live web data or tool runs, say clearly that they should open or bind a research plan in the app for full agent mode.",
@@ -204,8 +193,8 @@ def coerce_plain_text_chat_response(raw: str) -> str:
     if isinstance(lr, dict):
         msg = lr.get("message")
         if isinstance(msg, str) and msg.strip():
-            return msg.strip()
-    return stripped
+            return sanitize_professional_response_text(msg.strip())
+    return sanitize_professional_response_text(stripped)
 
 
 def format_memories(memories: List[Dict[str, Any]]) -> str:

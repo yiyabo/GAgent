@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { ThinkingProcess as ThinkingProcessType, ThinkingStep } from '@/types';
 import {
   CaretRightOutlined,
@@ -40,7 +40,6 @@ interface ToolSemantic {
 }
 
 const CJK_CHAR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
-const INTERNAL_REASONING_RE = /\b(?:the user is asking me|i notice this is just|i should\b|i need to\b|i'm ready to help|continue thinking|thinking about next step)\b/gi;
 
 const TOOL_META: Record<string, { icon: React.ReactNode; zh: string; en: string }> = {
   web_search: { icon: <GlobalOutlined />, zh: '检索资料', en: 'Searching the web' },
@@ -55,6 +54,10 @@ const TOOL_META: Record<string, { icon: React.ReactNode; zh: string; en: string 
   plan_operation: { icon: <ProjectOutlined />, zh: '更新计划信息', en: 'Managing the plan' },
 };
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 function localize(language: 'zh' | 'en', zh: string, en: string): string {
   return language === 'zh' ? zh : en;
 }
@@ -62,11 +65,7 @@ function localize(language: 'zh' | 'en', zh: string, en: string): string {
 function detectLanguage(process: ThinkingProcessType): 'zh' | 'en' {
   const samples = [
     process.summary,
-    ...process.steps.flatMap((step) => [
-      step.display_text,
-      step.thought,
-      step.action_result,
-    ]),
+    ...process.steps.flatMap((step) => [step.display_text, step.thought, step.action_result]),
   ];
   for (const sample of samples) {
     if (typeof sample !== 'string' || !sample.trim()) continue;
@@ -75,32 +74,22 @@ function detectLanguage(process: ThinkingProcessType): 'zh' | 'en' {
   return 'en';
 }
 
-function sanitizeLegacyThought(text: string | null | undefined): string {
-  const raw = String(text || '').replace(INTERNAL_REASONING_RE, '').replace(/\s+/g, ' ').trim();
-  if (!raw) return '';
-  if (raw.length <= 72) return raw;
-  return `${raw.slice(0, 69).trim()}...`;
-}
-
-function normalizeComparableText(text: string | null | undefined): string {
-  return String(text || '').replace(/\s+/g, ' ').trim();
-}
-
-function isGenericThinkingText(text: string | null | undefined, language: 'zh' | 'en'): boolean {
-  const normalized = normalizeComparableText(text);
-  if (!normalized) return false;
-  if (language === 'zh') {
-    return (
-      normalized === '分析当前问题，准备下一步' ||
-      normalized === '准备下一步' ||
-      normalized === '准备整理回复'
-    );
+/** One-line display label for a step header row. */
+function getDisplayLabel(step: ThinkingStep, language: 'zh' | 'en'): string {
+  if (typeof step.display_text === 'string' && step.display_text.trim()) {
+    return step.display_text.trim();
   }
-  return (
-    normalized === 'Analyzing the request and preparing the next step' ||
-    normalized === 'Preparing the next step' ||
-    normalized === 'Preparing the response'
-  );
+  if (step.action) {
+    return extractSemanticLabel(step.action, language)?.label || localize(language, '调用工具', 'Using a tool');
+  }
+  // Fallback: first sentence of thought, sanitized
+  const raw = String(step.thought || '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!raw) return localize(language, '分析中', 'Analyzing');
+  const first = raw.split(/(?<=[。！？!?;；.])\s+/)[0]?.trim() || raw;
+  return first.length <= 80 ? first : `${first.slice(0, 77).trim()}...`;
 }
 
 function extractSemanticLabel(
@@ -112,11 +101,7 @@ function extractSemanticLabel(
   try {
     parsed = JSON.parse(actionStr);
   } catch {
-    return {
-      icon: <ToolOutlined />,
-      label: localize(language, '调用工具', 'Using a tool'),
-      toolName: 'unknown',
-    };
+    return { icon: <ToolOutlined />, label: localize(language, '调用工具', 'Using a tool'), toolName: 'unknown' };
   }
   if (Array.isArray(parsed?.tools) && parsed.tools.length > 0) {
     const toolNames = parsed.tools
@@ -137,11 +122,7 @@ function extractSemanticLabel(
 
   const toolName: string = parsed?.tool || 'unknown';
   const params: Record<string, any> = parsed?.params || {};
-  const meta = TOOL_META[toolName] || {
-    icon: <ToolOutlined />,
-    zh: `调用工具：${toolName}`,
-    en: `Using tool: ${toolName}`,
-  };
+  const meta = TOOL_META[toolName] || { icon: <ToolOutlined />, zh: `调用工具：${toolName}`, en: `Using tool: ${toolName}` };
   let label = localize(language, meta.zh, meta.en);
 
   switch (toolName) {
@@ -153,60 +134,36 @@ function extractSemanticLabel(
       break;
     case 'file_operations': {
       const fileName = (params.path || '').split('/').pop() || params.path || '';
-      if (params.operation === 'list') {
-        label = localize(language, `查看目录：${params.path || '/'}`, `Listing directory: ${params.path || '/'}`);
-      } else if (params.operation === 'read') {
-        label = localize(language, `读取文件：${fileName}`, `Reading: ${fileName}`);
-      } else if (params.operation) {
-        label = localize(language, `处理文件：${fileName}`, `${params.operation}: ${fileName}`);
-      }
+      if (params.operation === 'list') label = localize(language, `查看目录：${params.path || '/'}`, `Listing directory: ${params.path || '/'}`);
+      else if (params.operation === 'read') label = localize(language, `读取文件：${fileName}`, `Reading: ${fileName}`);
+      else if (params.operation) label = localize(language, `处理文件：${fileName}`, `${params.operation}: ${fileName}`);
       break;
     }
     case 'claude_code':
-      if (params.task) {
-        label = localize(
-          language,
-          `执行代码任务：${String(params.task).slice(0, 48)}`,
-          `Code task: ${String(params.task).slice(0, 60)}`,
-        );
-      }
+      if (params.task) label = localize(language, `执行代码任务：${String(params.task).slice(0, 48)}`, `Code task: ${String(params.task).slice(0, 60)}`);
       break;
     case 'document_reader':
-      if (params.file_path) {
-        label = localize(
-          language,
-          `阅读文档：${String(params.file_path).split('/').pop()}`,
-          `Reading: ${String(params.file_path).split('/').pop()}`,
-        );
-      }
+      if (params.file_path) label = localize(language, `阅读文档：${String(params.file_path).split('/').pop()}`, `Reading: ${String(params.file_path).split('/').pop()}`);
       break;
     case 'vision_reader':
-      if (params.file_path) {
-        label = localize(
-          language,
-          `分析图像：${String(params.file_path).split('/').pop()}`,
-          `Analyzing: ${String(params.file_path).split('/').pop()}`,
-        );
-      }
+      if (params.file_path) label = localize(language, `分析图像：${String(params.file_path).split('/').pop()}`, `Analyzing: ${String(params.file_path).split('/').pop()}`);
       break;
   }
-
   return { icon: meta.icon, label, toolName };
 }
 
-function extractResultSummary(result: string | null | undefined): string | null {
+function extractResultSummary(result: string | null | undefined, maxLen = 120): string | null {
   if (!result) return null;
   const trimmed = result.trim();
-  if (trimmed.length <= 100) return trimmed;
+  if (trimmed.length <= maxLen) return trimmed;
   const firstLine = trimmed.split('\n')[0].trim();
   if (firstLine.length >= 12 && firstLine.length <= 200) return firstLine;
-  return `${trimmed.slice(0, 100)}...`;
+  return `${trimmed.slice(0, maxLen)}...`;
 }
 
 function stepHasToolError(step: ThinkingStep): boolean {
   if (step.status === 'error') return true;
-  const result = step.action_result;
-  return typeof result === 'string' && /^Error[ :]/.test(result);
+  return typeof step.action_result === 'string' && /^Error[ :]/.test(step.action_result);
 }
 
 function _toMs(value?: string): number | null {
@@ -229,165 +186,135 @@ function stepDurationMs(step: ThinkingStep): number | null {
   return Math.max(0, end - start);
 }
 
-function getVisibleStepText(step: ThinkingStep, language: 'zh' | 'en'): string {
-  if (typeof step.display_text === 'string' && step.display_text.trim()) {
-    return step.display_text.trim();
-  }
-  if (step.action) {
-    return (
-      extractSemanticLabel(step.action, language)?.label ||
-      localize(language, '调用工具', 'Using a tool')
-    );
-  }
-  return sanitizeLegacyThought(step.thought) || localize(language, '分析当前问题', 'Analyzing the request');
-}
-
-function getExpandedStepText(step: ThinkingStep, language: 'zh' | 'en'): string {
-  const rawThought = String(step.thought || '').trim();
-  if (rawThought) {
-    return rawThought;
-  }
-  return getVisibleStepText(step, language);
+function isGenericText(text: string | null | undefined, language: 'zh' | 'en'): boolean {
+  const n = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!n) return false;
+  const generics = language === 'zh'
+    ? ['分析当前问题，准备下一步', '准备下一步', '准备整理回复', '分析中', '分析当前步骤', '处理当前步骤']
+    : ['Analyzing the request and preparing the next step', 'Preparing the next step', 'Preparing the response', 'Analyzing', 'Working through the current step'];
+  return generics.includes(n);
 }
 
 function getMainSteps(steps: ThinkingStep[], language: 'zh' | 'en'): ThinkingStep[] {
-  const visibleTexts = steps.map((step) => getVisibleStepText(step, language));
-  const hasSpecificReasoning = visibleTexts.some((text) => text && !isGenericThinkingText(text, language));
-  return steps.filter((step, index) => {
-    const text = visibleTexts[index];
-    if (!step.action && hasSpecificReasoning && isGenericThinkingText(text, language)) {
-      return false;
-    }
+  const labels = steps.map((s) => getDisplayLabel(s, language));
+  const hasSpecific = labels.some((t) => t && !isGenericText(t, language));
+  return steps.filter((step, idx) => {
+    const text = labels[idx];
+    // During active state, keep generic steps too (so user sees something is happening)
+    if (step.status === 'thinking' || step.status === 'calling_tool') return true;
+    if (!step.action && hasSpecific && isGenericText(text, language)) return false;
     return !!step.action || !!text;
   });
 }
 
 function getProcessSummary(process: ThinkingProcessType, language: 'zh' | 'en'): string {
-  if (typeof process.summary === 'string' && process.summary.trim()) {
-    return process.summary.trim();
-  }
-  const visibleTexts = getMainSteps(process.steps, language)
-    .map((step) => getVisibleStepText(step, language))
+  if (typeof process.summary === 'string' && process.summary.trim()) return process.summary.trim();
+  const texts = getMainSteps(process.steps, language)
+    .map((s) => getDisplayLabel(s, language))
     .filter(Boolean)
     .slice(0, 3);
-  if (visibleTexts.length > 1) {
-    return visibleTexts.join(' -> ');
-  }
-  if (visibleTexts.length === 1) {
-    return visibleTexts[0];
-  }
+  if (texts.length > 1) return texts.join(' → ');
+  if (texts.length === 1) return texts[0];
   return localize(language, '整理思考过程', 'Organizing the reasoning process');
 }
 
-function hasExplicitSummary(process: ThinkingProcessType): boolean {
-  return typeof process.summary === 'string' && process.summary.trim().length > 0;
+/** Truncate thought for live display — show last N lines for long content */
+function truncateForLiveDisplay(text: string, maxLines = 12): { text: string; truncated: boolean } {
+  const lines = text.split('\n');
+  if (lines.length <= maxLines) return { text, truncated: false };
+  return {
+    text: lines.slice(-maxLines).join('\n'),
+    truncated: true,
+  };
 }
 
-function isLegacyThoughtOnlyStep(step: ThinkingStep): boolean {
-  return !step.action && !step.display_text && typeof step.thought === 'string' && step.thought.trim().length > 0;
-}
-
-const ErrorInline: React.FC<{
-  step: ThinkingStep;
-  nextStep?: ThinkingStep;
-  language: 'zh' | 'en';
-}> = ({ step, nextStep, language }) => {
-  const errorDetail =
-    step.action_result?.match(/^Error[: ]\s*(.+)/s)?.[1] ??
-    getVisibleStepText(step, language) ??
-    localize(language, '未知错误', 'Unknown error');
-  const truncated = errorDetail.length > 120 ? `${errorDetail.slice(0, 120)}...` : errorDetail;
-
-  return (
-    <div className="tp-error-inline">
-      <span>{truncated}</span>
-      {step.self_correction && (
-        <>
-          {' '}
-          <SyncOutlined style={{ fontSize: 10 }} />{' '}
-          <span className="tp-error-correction">{step.self_correction.slice(0, 100)}</span>
-        </>
-      )}
-      {nextStep && !step.self_correction && (
-        <>
-          {' '}
-          <SyncOutlined style={{ fontSize: 10 }} />{' '}
-          <span className="tp-error-correction">
-            {localize(language, '正在尝试下一步', 'Trying the next step')}
-          </span>
-        </>
-      )}
-    </div>
-  );
-};
+// ---------------------------------------------------------------------------
+// Step item — shows live thinking content
+// ---------------------------------------------------------------------------
 
 const ThinkingStepItem: React.FC<{
   step: ThinkingStep;
   isLast: boolean;
   isFinished?: boolean;
+  isProcessActive?: boolean;
   nextStep?: ThinkingStep;
   language: 'zh' | 'en';
-}> = ({ step, isLast, isFinished, nextStep, language }) => {
+}> = ({ step, isLast, isFinished, isProcessActive, nextStep, language }) => {
   const [detailExpanded, setDetailExpanded] = useState(false);
+  const streamRef = useRef<HTMLDivElement>(null);
 
   const isTool = !!step.action;
   const isError = stepHasToolError(step);
   const hasResult = !!step.action_result;
   const duration = stepDurationMs(step);
+  const isStepActive = step.status === 'thinking' || step.status === 'calling_tool';
   const isStepComplete =
     step.status === 'done' ||
     step.status === 'completed' ||
     hasResult ||
-    (!isLast && step.status !== 'thinking' && step.status !== 'calling_tool');
+    (!isLast && !isStepActive);
 
-  const semantic = useMemo(
-    () => extractSemanticLabel(step.action, language),
-    [step.action, language],
-  );
-  const displayText = useMemo(
-    () => getVisibleStepText(step, language),
-    [step, language],
-  );
-  const expandedThought = useMemo(
-    () => getExpandedStepText(step, language),
-    [step, language],
-  );
-  const showThoughtBlock = !isTool && !!expandedThought;
-  const showToolThoughtBlock =
-    isTool &&
-    !!expandedThought &&
-    normalizeComparableText(expandedThought) !== normalizeComparableText(displayText);
-  const resultSummary = useMemo(
-    () => extractResultSummary(step.action_result),
-    [step.action_result],
-  );
+  const semantic = useMemo(() => extractSemanticLabel(step.action, language), [step.action, language]);
+  const label = useMemo(() => getDisplayLabel(step, language), [step, language]);
+  const resultSummary = useMemo(() => extractResultSummary(step.action_result), [step.action_result]);
+
   const actionDetails = useMemo(() => {
     if (!step.action) return null;
-    try {
-      return JSON.parse(step.action);
-    } catch {
-      return { tool: 'unknown', params: step.action };
-    }
+    try { return JSON.parse(step.action); }
+    catch { return { tool: 'unknown', params: step.action }; }
   }, [step.action]);
 
+  // Raw thought content
+  const rawThought = useMemo(() => {
+    const t = String(step.thought || '').trim();
+    if (!t) return null;
+    return t;
+  }, [step.thought]);
+
+  // For live display: show streaming thought with truncation
+  const liveThought = useMemo(() => {
+    if (!rawThought) return null;
+    return truncateForLiveDisplay(rawThought);
+  }, [rawThought]);
+
+  // Icon for the row
+  const icon = useMemo(() => {
+    if (isTool) return semantic?.icon || <ToolOutlined />;
+    return <BulbOutlined />;
+  }, [isTool, semantic]);
+
+  // Auto-scroll the streaming area to bottom
+  useEffect(() => {
+    if (isStepActive && streamRef.current) {
+      streamRef.current.scrollTop = streamRef.current.scrollHeight;
+    }
+  }, [rawThought, isStepActive]);
+
+  // Whether the step is a reasoning step with thought content worth showing in detail
+  const hasFullThought = !!rawThought && rawThought.length > 100;
+  // Whether to show live stream: active reasoning steps with thought content
+  const showLiveStream = !isTool && rawThought && (isStepActive || (isLast && isProcessActive));
+  // Whether to show the thought content inline (completed reasoning steps)
+  const showCompletedThought = !isTool && rawThought && !showLiveStream && isStepComplete;
+
   const renderStatus = () => {
-    if (step.status === 'calling_tool') {
+    if (isStepActive) {
       return (
-        <span className="tp-tool-pill-status running">
+        <span className="tp-step-status running">
           <LoadingOutlined spin style={{ fontSize: 11 }} />
         </span>
       );
     }
     if (isError) {
       return (
-        <span className="tp-tool-pill-status error">
+        <span className="tp-step-status error">
           <CloseCircleOutlined style={{ fontSize: 11 }} />
         </span>
       );
     }
     if (isStepComplete || isFinished) {
       return (
-        <span className="tp-tool-pill-status success">
+        <span className="tp-step-status success">
           <CheckCircleOutlined style={{ fontSize: 11 }} />
         </span>
       );
@@ -397,112 +324,145 @@ const ThinkingStepItem: React.FC<{
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.2 }}
+      className="tp-step-item"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: 'easeOut' }}
     >
-      {showThoughtBlock && (
-        <div className="tp-thought-inline">{expandedThought}</div>
+      {/* Header row */}
+      <div
+        className={`tp-step-row${isStepActive ? ' active' : ''}${isError ? ' has-error' : ''}`}
+      >
+        <div className={`tp-step-icon${isTool ? '' : ' reasoning'}${isError ? ' error' : ''}`}>
+          {icon}
+        </div>
+        <span className="tp-step-label">{label}</span>
+        {renderStatus()}
+        {(isStepComplete || isFinished) && (
+          <span className="tp-step-duration">{formatDurationMs(duration)}</span>
+        )}
+      </div>
+
+      {/* ===== LIVE STREAMING: Active reasoning step — show thought as it streams ===== */}
+      {showLiveStream && liveThought && (
+        <div className="tp-step-stream" ref={streamRef}>
+          {liveThought.truncated && (
+            <div className="tp-stream-truncated">···</div>
+          )}
+          <span className="tp-stream-text">{liveThought.text}</span>
+          <span className="tp-stream-cursor" />
+        </div>
       )}
 
-      {isTool && (
-        <>
-          {showToolThoughtBlock && (
-            <div className="tp-thought-inline">{expandedThought}</div>
-          )}
+      {/* ===== COMPLETED REASONING: Show thought preview, expandable for full ===== */}
+      {showCompletedThought && (
+        <div className="tp-step-thought-block">
           <div
-            className="tp-tool-pill"
-            onClick={() => setDetailExpanded((value) => !value)}
+            className={`tp-step-thought-preview${hasFullThought ? ' clickable' : ''}`}
+            onClick={hasFullThought ? () => setDetailExpanded((v) => !v) : undefined}
           >
-            <div className={`tp-tool-pill-icon${isError ? ' error' : ''}`}>
-              {semantic?.icon || <ToolOutlined />}
-            </div>
-            <span className="tp-tool-pill-label">{displayText || semantic?.label}</span>
-            {renderStatus()}
-            <span className="tp-tool-pill-duration">{formatDurationMs(duration)}</span>
+            <span className="tp-thought-text">
+              {detailExpanded
+                ? rawThought
+                : (rawThought!.length > 200 ? `${rawThought!.slice(0, 200).trim()}...` : rawThought)}
+            </span>
+            {hasFullThought && (
+              <CaretRightOutlined
+                style={{
+                  fontSize: 9,
+                  color: 'var(--text-quaternary)',
+                  transition: 'transform 0.15s ease',
+                  transform: detailExpanded ? 'rotate(90deg)' : 'none',
+                  flexShrink: 0,
+                  marginLeft: 4,
+                }}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ===== TOOL: Show params inline when calling ===== */}
+      {isTool && isStepActive && actionDetails?.params && Object.keys(actionDetails.params).length > 0 && (
+        <div className="tp-tool-params">
+          <pre className="tp-tool-params-pre">
+            {typeof actionDetails.params === 'object'
+              ? JSON.stringify(actionDetails.params, null, 2)
+              : String(actionDetails.params)}
+          </pre>
+        </div>
+      )}
+
+      {/* ===== TOOL RESULT: Show result when complete ===== */}
+      {isTool && hasResult && !isError && (
+        <div
+          className={`tp-tool-result${step.action_result && step.action_result.length > 150 ? ' clickable' : ''}`}
+          onClick={step.action_result && step.action_result.length > 150 ? () => setDetailExpanded((v) => !v) : undefined}
+        >
+          <span className="tp-tool-result-text">
+            {detailExpanded ? step.action_result : resultSummary}
+          </span>
+          {step.action_result && step.action_result.length > 150 && (
             <CaretRightOutlined
               style={{
                 fontSize: 9,
-                color: 'var(--text-tertiary)',
+                color: 'var(--text-quaternary)',
                 transition: 'transform 0.15s ease',
                 transform: detailExpanded ? 'rotate(90deg)' : 'none',
                 flexShrink: 0,
+                marginLeft: 4,
               }}
             />
-          </div>
-
-          {!detailExpanded && !isError && resultSummary && (
-            <div
-              style={{
-                fontSize: 12,
-                color: 'var(--text-tertiary)',
-                paddingLeft: 26,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {resultSummary}
-            </div>
           )}
-
-          <AnimatePresence initial={false}>
-            {detailExpanded && (
-              <motion.div
-                className="tp-step-detail-box"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.15 }}
-              >
-                {actionDetails?.params && Object.keys(actionDetails.params).length > 0 && (
-                  <div className="tp-step-detail-section">
-                    <div className="tp-step-detail-label">
-                      {localize(language, '参数', 'Parameters')}
-                    </div>
-                    <pre className="tp-step-detail-pre">
-                      {typeof actionDetails.params === 'object'
-                        ? JSON.stringify(actionDetails.params, null, 2)
-                        : String(actionDetails.params)}
-                    </pre>
-                  </div>
-                )}
-                {step.action_result && (
-                  <div className="tp-step-detail-section">
-                    <div className="tp-step-detail-label">
-                      {localize(language, '结果', 'Result')}
-                    </div>
-                    <pre className="tp-step-detail-pre">{step.action_result}</pre>
-                  </div>
-                )}
-                {Array.isArray(step.evidence) && step.evidence.length > 0 && (
-                  <div className="tp-step-detail-section">
-                    <div className="tp-step-detail-label">
-                      {localize(language, '证据', 'Evidence')}
-                    </div>
-                    <div className="tp-evidence-list">
-                      {step.evidence.map((ev, evIdx) => (
-                        <div className="tp-evidence-item" key={`${ev.ref || 'ev'}_${evIdx}`}>
-                          <div className="tp-evidence-item-title">
-                            {ev.title || ev.type || localize(language, '证据', 'Evidence')}
-                          </div>
-                          {ev.ref && <div className="tp-evidence-item-ref">{ev.ref}</div>}
-                          {ev.snippet && <div className="tp-evidence-item-snippet">{ev.snippet}</div>}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </>
+        </div>
       )}
 
-      {isError && <ErrorInline step={step} nextStep={nextStep} language={language} />}
+      {/* ===== ERROR INLINE ===== */}
+      {isError && (
+        <div className="tp-error-inline">
+          <span>
+            {(step.action_result?.match(/^Error[: ]\s*(.+)/s)?.[1] || label || localize(language, '未知错误', 'Unknown error')).slice(0, 200)}
+          </span>
+          {step.self_correction && (
+            <>
+              {' '}
+              <SyncOutlined style={{ fontSize: 10 }} />{' '}
+              <span className="tp-error-correction">{step.self_correction.slice(0, 100)}</span>
+            </>
+          )}
+          {nextStep && !step.self_correction && (
+            <>
+              {' '}
+              <SyncOutlined style={{ fontSize: 10 }} />{' '}
+              <span className="tp-error-correction">
+                {localize(language, '正在尝试下一步', 'Trying the next step')}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ===== EVIDENCE ===== */}
+      {Array.isArray(step.evidence) && step.evidence.length > 0 && (
+        <div className="tp-evidence-block">
+          {step.evidence.map((ev, evIdx) => (
+            <div className="tp-evidence-item" key={`${ev.ref || 'ev'}_${evIdx}`}>
+              <span className="tp-evidence-item-title">
+                {ev.title || ev.type || localize(language, '证据', 'Evidence')}
+              </span>
+              {ev.ref && <span className="tp-evidence-item-ref"> {ev.ref}</span>}
+              {ev.snippet && <div className="tp-evidence-item-snippet">{ev.snippet}</div>}
+            </div>
+          ))}
+        </div>
+      )}
     </motion.div>
   );
 };
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
 
 export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   process,
@@ -522,36 +482,30 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   const mainStepsCount = mainSteps.length;
   const isActive = process.status === 'active' && !isFinished;
   const summaryText = useMemo(() => getProcessSummary(process, language), [process, language]);
-  const firstMainStepText = useMemo(
-    () => (mainSteps.length > 0 ? getExpandedStepText(mainSteps[0], language) : ''),
-    [mainSteps, language],
-  );
-  const explicitSummary = useMemo(() => hasExplicitSummary(process), [process]);
-  const showSummaryBlock =
-    !!summaryText &&
-    normalizeComparableText(summaryText) !== normalizeComparableText(firstMainStepText) &&
-    !(
-      !explicitSummary &&
-      mainSteps.length === 1 &&
-      isLegacyThoughtOnlyStep(mainSteps[0])
-    );
+  const stepsEndRef = useRef<HTMLDivElement>(null);
 
   const totalDuration = useMemo(() => {
     let total = 0;
-    for (const step of process.steps) {
-      total += stepDurationMs(step) || 0;
-    }
+    for (const step of process.steps) total += stepDurationMs(step) || 0;
     return formatDurationMs(total || null);
   }, [process.steps]);
 
+  // Auto-expand when active, auto-collapse when done
   useEffect(() => {
-    if (!isFinished && process.status === 'active') {
-      setIsExpanded(true);
-    }
+    if (!isFinished && process.status === 'active') setIsExpanded(true);
     if (isFinished && process.status !== 'active') {
-      setIsExpanded(false);
+      // Small delay before collapsing so user can see the final state
+      const timer = setTimeout(() => setIsExpanded(false), 800);
+      return () => clearTimeout(timer);
     }
   }, [process.steps.length, isFinished, process.status]);
+
+  // Auto-scroll to latest step during active thinking
+  useEffect(() => {
+    if (isActive && stepsEndRef.current) {
+      stepsEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [mainSteps.length, isActive]);
 
   const handleContentWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -559,32 +513,35 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1 && e.deltaY > 0;
     if (atTop || atBottom) {
       el.style.overflowY = 'hidden';
-      requestAnimationFrame(() => {
-        el.style.overflowY = 'auto';
-      });
+      requestAnimationFrame(() => { el.style.overflowY = 'auto'; });
     }
   }, []);
 
   return (
-    <div className="tp-inline-container">
-      <div className="tp-summary-row" onClick={() => setIsExpanded(!isExpanded)}>
-        <span className="tp-summary-icon">
+    <div className={`tp-container${isActive ? ' tp-active' : ''}`}>
+      {/* Header row */}
+      <div className="tp-header" onClick={() => setIsExpanded(!isExpanded)}>
+        <span className="tp-header-icon">
           {isActive ? (
             <LoadingOutlined spin style={{ color: 'var(--primary-color)' }} />
           ) : (
             <BulbOutlined style={{ color: 'var(--primary-color)' }} />
           )}
         </span>
-        <span className="tp-summary-label">
-          {isActive ? localize(language, '思考中...', 'Thinking...') : localize(language, '思考过程', 'Thought process')}
+        <span className="tp-header-label">
+          {isActive
+            ? localize(language, '思考中...', 'Thinking...')
+            : localize(language, '思考过程', 'Thought process')}
         </span>
-        <span className="tp-summary-preview">{summaryText}</span>
+        {!isExpanded && (
+          <span className="tp-header-preview">{summaryText}</span>
+        )}
         {mainStepsCount > 0 && (
-          <span className="tp-summary-meta">
+          <span className="tp-header-meta">
             {localize(language, `${mainStepsCount} 步`, `${mainStepsCount} step${mainStepsCount > 1 ? 's' : ''}`)}
           </span>
         )}
-        <span className="tp-summary-meta">{totalDuration}</span>
+        <span className="tp-header-meta">{totalDuration}</span>
 
         {canControl && isActive && (
           <span className="tp-control-bar" onClick={(e) => e.stopPropagation()}>
@@ -592,11 +549,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
               size="small"
               onClick={paused ? onResume : onPause}
               disabled={controlDisabled}
-              loading={
-                controlBusy &&
-                ((paused && controlBusyAction === 'resume') ||
-                  (!paused && controlBusyAction === 'pause'))
-              }
+              loading={controlBusy && ((paused && controlBusyAction === 'resume') || (!paused && controlBusyAction === 'pause'))}
             >
               {paused ? 'Resume' : 'Pause'}
             </Button>
@@ -606,14 +559,15 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
               disabled={controlDisabled}
               loading={controlBusy && controlBusyAction === 'skip_step'}
             >
-              {'Skip'}
+              Skip
             </Button>
           </span>
         )}
 
-        <CaretRightOutlined className={`tp-summary-chevron${isExpanded ? ' expanded' : ''}`} />
+        <CaretRightOutlined className={`tp-header-chevron${isExpanded ? ' expanded' : ''}`} />
       </div>
 
+      {/* Expanded step list */}
       <AnimatePresence initial={false}>
         {isExpanded && (
           <motion.div
@@ -623,34 +577,60 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
             transition={{ duration: 0.2 }}
           >
             <div
-              className={`tp-expanded-content${isActive ? '' : ' tp-content-scroll'}`}
+              className={`tp-steps${isActive ? '' : ' tp-steps-scroll'}`}
               onWheel={isActive ? undefined : handleContentWheel}
             >
-              {showSummaryBlock && (
-                <div className="tp-summary-full">{summaryText}</div>
-              )}
               {mainSteps.map((step, idx) => (
                 <ThinkingStepItem
                   key={`${step.iteration}_${idx}`}
                   step={step}
                   isLast={idx === mainSteps.length - 1}
                   isFinished={isFinished}
+                  isProcessActive={isActive}
                   nextStep={idx < mainSteps.length - 1 ? mainSteps[idx + 1] : undefined}
                   language={language}
                 />
               ))}
 
-              {isActive && (
+              {/* "Preparing next step" indicator — only when active and last step is complete */}
+              {isActive && mainSteps.length > 0 && !['thinking', 'calling_tool'].includes(mainSteps[mainSteps.length - 1]?.status || '') && (
                 <motion.div
+                  className="tp-step-item"
                   initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  style={{ padding: '4px 0' }}
+                  animate={{ opacity: [0.4, 0.8, 0.4] }}
+                  transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
                 >
-                  <span className="tp-thought-inline">
-                    {localize(language, '准备下一步', 'Preparing the next step')}
-                  </span>
+                  <div className="tp-step-row">
+                    <div className="tp-step-icon reasoning">
+                      <LoadingOutlined spin style={{ fontSize: 10 }} />
+                    </div>
+                    <span className="tp-step-label" style={{ color: 'var(--text-quaternary)' }}>
+                      {localize(language, '准备下一步...', 'Preparing next step...')}
+                    </span>
+                  </div>
                 </motion.div>
               )}
+
+              {/* Empty state when no steps yet */}
+              {isActive && mainSteps.length === 0 && (
+                <motion.div
+                  className="tp-step-item"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: [0.4, 0.8, 0.4] }}
+                  transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+                >
+                  <div className="tp-step-row">
+                    <div className="tp-step-icon reasoning">
+                      <LoadingOutlined spin style={{ fontSize: 10 }} />
+                    </div>
+                    <span className="tp-step-label" style={{ color: 'var(--text-quaternary)' }}>
+                      {localize(language, '正在分析问题...', 'Analyzing the question...')}
+                    </span>
+                  </div>
+                </motion.div>
+              )}
+
+              <div ref={stepsEndRef} />
             </div>
           </motion.div>
         )}

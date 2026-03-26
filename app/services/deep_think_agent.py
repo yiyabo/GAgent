@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from app.services.execution.tool_executor import UnifiedToolExecutor
+from app.services.response_style import (
+    PROFESSIONAL_STYLE_INSTRUCTION,
+    sanitize_professional_response_text,
+)
 from app.services.tool_schemas import build_tool_schemas
 
 logger = logging.getLogger(__name__)
@@ -94,6 +98,9 @@ class DeepThinkResult:
     tools_used: List[str]
     confidence: float  # 0.0 to 1.0
     thinking_summary: str  # A concise summary for the user
+    tool_failures: List[Dict[str, Any]] = field(default_factory=list)
+    search_verified: bool = True
+    fallback_used: bool = False
 
 
 @dataclass
@@ -145,6 +152,28 @@ def sanitize_reasoning_text(
     return raw
 
 
+def summarize_reasoning_step_display(text: str, *, language: str) -> str:
+    raw = sanitize_reasoning_text(text, language=language, max_chars=None)
+    if not raw:
+        return _localized_text(
+            language,
+            "分析当前问题，准备下一步",
+            "Analyzing the request and preparing the next step",
+        )
+    lines = [line.strip(" -*\t") for line in raw.splitlines() if line.strip()]
+    candidate = lines[0] if lines else raw
+    candidate = re.sub(r"^#{1,6}\s*", "", candidate).strip()
+    sentence_parts = re.split(r"(?<=[。！？!?;；\.])\s+", candidate)
+    candidate = sentence_parts[0].strip() if sentence_parts else candidate
+    if len(candidate) > 96:
+        candidate = candidate[:93].rstrip() + "..."
+    return candidate or _localized_text(
+        language,
+        "分析当前问题，准备下一步",
+        "Analyzing the request and preparing the next step",
+    )
+
+
 def summarize_simple_chat_reasoning(user_message: str) -> str:
     text = str(user_message or "").strip()
     language = detect_reasoning_language(text)
@@ -158,8 +187,8 @@ def summarize_simple_chat_reasoning(user_message: str) -> str:
     if stripped in greeting_tokens or lowered in greeting_tokens:
         return _localized_text(
             language,
-            "识别为问候，准备友好回复",
-            "Recognized a greeting, preparing a friendly reply",
+            "识别为问候，准备简洁回应",
+            "Recognized a greeting, preparing a concise reply",
         )
     if stripped in thanks_tokens or lowered in thanks_tokens:
         return _localized_text(
@@ -237,6 +266,58 @@ def summarize_tool_step_display(step: ThinkingStep, *, language: str) -> str:
     return _localized_text(language, "处理当前步骤", "Processing the current step")
 
 
+_PROCESS_ONLY_PATTERNS = (
+    "让我先",
+    "我先",
+    "先收集",
+    "先整理",
+    "先看一下",
+    "先检索",
+    "先分析",
+    "先确认",
+    "先梳理",
+    "let me first",
+    "i'll first",
+    "first i will",
+    "first, i'll",
+    "let me gather",
+    "let me collect",
+    "let me review",
+)
+
+_MULTI_TOOL_RESULT_LINE_RE = re.compile(
+    r"^\[(?P<tool>[^\]]+)\]\s+(?P<payload>\{.*\})$",
+    re.DOTALL,
+)
+
+
+def is_process_only_answer(text: str, *, user_query: str = "") -> bool:
+    raw = " ".join(str(text or "").split()).strip()
+    if not raw:
+        return True
+    lowered = raw.lower()
+    if any(pattern in lowered for pattern in _PROCESS_ONLY_PATTERNS):
+        return True
+    if len(raw) <= 80 and any(
+        token in lowered
+        for token in (
+            "collect latest evidence",
+            "gather latest evidence",
+            "collect the latest",
+            "review the latest",
+            "收集最新",
+            "收集文献",
+            "整理资料",
+            "继续收集",
+        )
+    ):
+        return True
+    question = str(user_query or "").strip()
+    if question and raw == question:
+        return True
+    return False
+
+
 def build_user_visible_step(
     step: ThinkingStep,
     *,
@@ -251,16 +332,16 @@ def build_user_visible_step(
         if not display_text:
             display_text = summarize_tool_step_display(step, language=language)
     elif not display_text:
-        cleaned = sanitize_reasoning_text(step.thought, language=language, max_chars=None)
-        display_text = cleaned or _localized_text(
-            language,
-            "分析当前问题，准备下一步",
-            "Analyzing the request and preparing the next step",
+        display_text = summarize_reasoning_step_display(
+            step.thought, language=language
         )
 
     return {
         "iteration": step.iteration,
-        "thought": str(step.thought or "") if preserve_thought else "",
+        # None signals the frontend to clear any delta-accumulated thought for this step.
+        # An empty string "" would be treated as "no update" by the merge logic, so
+        # we use null/None to explicitly communicate "discard the accumulated content".
+        "thought": str(step.thought or "") if preserve_thought else None,
         "display_text": display_text,
         "kind": kind,
         "action": step.action,
@@ -285,9 +366,11 @@ class DeepThinkAgent:
     """
 
     DEFAULT_TOOL_TIMEOUT = 60
-    FINAL_STREAM_CHUNK_CHARS = 24
-    FINAL_STREAM_DELAY_SEC = 0.01
+    FINAL_STREAM_CHUNK_CHARS = 30
+    FINAL_STREAM_DELAY_SEC = 0.05  # 50 ms — lets the network flush each chunk separately
     MAX_IDENTICAL_TOOL_CALL_CYCLES = 4
+    EXTERNAL_RETRIABLE_TOOLS = frozenset({"web_search", "literature_pipeline"})
+    MAX_EXTERNAL_TOOL_RETRIES = 1
 
     ARTIFACT_PATH_RE = re.compile(
         r'(?:saved?|writ(?:ten|e)|created?|generated?|output|produced?|exported?)\s+'
@@ -319,6 +402,7 @@ class DeepThinkAgent:
         on_reasoning_delta: Optional[Callable[[int, str], Any]] = None,
         steer_drain: Optional[Callable[[], List[str]]] = None,
         on_steer_ack: Optional[Callable[[str, int], Any]] = None,
+        request_profile: Optional[Dict[str, Any]] = None,
     ):
         self.llm_client = llm_client
         self.available_tools = available_tools
@@ -337,6 +421,7 @@ class DeepThinkAgent:
         self.on_reasoning_delta = on_reasoning_delta
         self.steer_drain = steer_drain
         self.on_steer_ack = on_steer_ack
+        self.request_profile = dict(request_profile or {})
         self._pause_event = asyncio.Event()
         self._pause_event.set()
         self._skip_current_step = False
@@ -355,13 +440,206 @@ class DeepThinkAgent:
             getattr(self.llm_client, "stream_chat_with_tools_async")
         )
 
+    def _request_tier(self) -> str:
+        return str(self.request_profile.get("request_tier") or "").strip().lower()
+
+    def _is_research_or_execute(self) -> bool:
+        return self._request_tier() in {"research", "execute"}
+
+    def _is_valid_final_answer(self, text: str, *, user_query: str) -> bool:
+        cleaned = sanitize_professional_response_text(str(text or "").strip())
+        if len(cleaned) < 4:
+            return False
+        return not is_process_only_answer(cleaned, user_query=user_query)
+
+    def _should_retry_external_tool(self, tool_name: str, *, success: bool) -> bool:
+        return (tool_name or "").strip().lower() in self.EXTERNAL_RETRIABLE_TOOLS and not success
+
+    @staticmethod
+    def _try_parse_json_object(raw: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(raw, dict):
+            return raw
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @classmethod
+    def _extract_outcomes_from_step(cls, step: ThinkingStep) -> List[Dict[str, Any]]:
+        outcomes: List[Dict[str, Any]] = []
+        action_payload = cls._try_parse_json_object(step.action)
+        tool_names = cls._tool_names_from_payload(action_payload)
+        action_result_text = str(step.action_result or "").strip()
+        if not tool_names or not action_result_text:
+            return outcomes
+
+        matched_any = False
+        for block in [part.strip() for part in action_result_text.split("\n\n") if part.strip()]:
+            match = _MULTI_TOOL_RESULT_LINE_RE.match(block)
+            if not match:
+                continue
+            payload = cls._try_parse_json_object(match.group("payload"))
+            if not payload:
+                continue
+            success, error = cls._normalize_tool_callback_outcome(payload)
+            outcomes.append(
+                {
+                    "tool": match.group("tool").strip(),
+                    "success": success,
+                    "error": error or payload.get("error"),
+                    "summary": payload.get("summary"),
+                }
+            )
+            matched_any = True
+
+        if matched_any:
+            return outcomes
+
+        payload = cls._try_parse_json_object(action_result_text)
+        if not payload:
+            if len(tool_names) == 1 and action_result_text.lower().startswith("error"):
+                outcomes.append(
+                    {
+                        "tool": tool_names[0],
+                        "success": False,
+                        "error": action_result_text,
+                        "summary": action_result_text,
+                    }
+                )
+            return outcomes
+        success, error = cls._normalize_tool_callback_outcome(payload)
+        outcomes.append(
+            {
+                "tool": tool_names[0],
+                "success": success,
+                "error": error or payload.get("error"),
+                "summary": payload.get("summary"),
+            }
+        )
+        return outcomes
+
+    @classmethod
+    def _collect_tool_failures_from_steps(cls, steps: List[ThinkingStep]) -> List[Dict[str, Any]]:
+        failures: List[Dict[str, Any]] = []
+        for step in steps:
+            for outcome in cls._extract_outcomes_from_step(step):
+                if outcome.get("success") is False:
+                    failures.append(
+                        {
+                            "tool": str(outcome.get("tool") or "").strip(),
+                            "error": str(outcome.get("error") or "").strip(),
+                            "summary": str(outcome.get("summary") or "").strip(),
+                            "iteration": step.iteration,
+                        }
+                    )
+        return failures
+
+    def _search_verified_from_steps(self, steps: List[ThinkingStep]) -> bool:
+        seen_external = False
+        successful_external = False
+        for step in steps:
+            for outcome in self._extract_outcomes_from_step(step):
+                tool_name = str(outcome.get("tool") or "").strip().lower()
+                if tool_name not in self.EXTERNAL_RETRIABLE_TOOLS:
+                    continue
+                seen_external = True
+                if outcome.get("success") is True:
+                    successful_external = True
+        return True if not seen_external else successful_external
+
+    def _apply_external_search_notice(
+        self,
+        answer: str,
+        *,
+        user_query: str,
+        tool_failures: List[Dict[str, Any]],
+        search_verified: bool,
+    ) -> str:
+        text = str(answer or "").strip()
+        if not text or search_verified or not self._is_research_or_execute():
+            return text
+
+        failed_external = [
+            item for item in tool_failures
+            if str(item.get("tool") or "").strip().lower() in self.EXTERNAL_RETRIABLE_TOOLS
+        ]
+        if not failed_external:
+            return text
+
+        language = detect_reasoning_language(user_query or text)
+        tool_names = ", ".join(
+            sorted(
+                {
+                    str(item.get("tool") or "").strip()
+                    for item in failed_external
+                    if str(item.get("tool") or "").strip()
+                }
+            )
+        ) or "external search"
+        notice = _localized_text(
+            language,
+            f"说明：本轮外部检索未成功完成（{tool_names} 失败或超时），以下内容基于当前会话上下文和已有稳定知识整理，未经过本轮在线检索验证。建议稍后重试检索，或手动补充 PubMed / 网页来源后再核对。",
+            f"Note: External retrieval did not complete successfully in this run ({tool_names} failed or timed out). The response below is based on the current session context and stable prior knowledge, and was not verified by live search during this run. Consider retrying later or checking PubMed / web sources manually.",
+        )
+        normalized_notice = sanitize_professional_response_text(notice)
+        if text.startswith(normalized_notice):
+            return text
+        return f"{normalized_notice}\n\n{text}"
+
+    def _build_request_tier_block(self) -> str:
+        tier = self._request_tier()
+        if tier == "light":
+            return (
+                "=== REQUEST TIER: LIGHT ===\n"
+                "- Answer directly and briefly.\n"
+                "- Do not use research framing or background exposition.\n"
+                "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
+                "- Do not call tools unless the user explicitly changes scope.\n"
+                "- Prefer finishing in one short reasoning pass.\n"
+            )
+        if tier == "standard":
+            return (
+                "=== REQUEST TIER: STANDARD ===\n"
+                "- Give a concise but complete direct answer.\n"
+                "- Avoid research style output unless the user explicitly asks for sources or latest information.\n"
+                "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
+                "- Prefer zero-tool completion.\n"
+            )
+        if tier == "research":
+            return (
+                "=== REQUEST TIER: RESEARCH ===\n"
+                "- Use targeted evidence gathering when it improves correctness.\n"
+                "- Cite verifiable sources for time-sensitive or factual claims.\n"
+                "- Keep the writing professional and restrained; avoid decorative emojis in headings or labels.\n"
+                "- Keep research focused on the exact user question; avoid unrelated survey padding.\n"
+            )
+        if tier == "execute":
+            return (
+                "=== REQUEST TIER: EXECUTE ===\n"
+                "- Prioritize finishing the requested task over broad background research.\n"
+                "- Use file/code/task tools as needed.\n"
+                "- Keep the tone professional and execution-focused; avoid decorative emojis or cheerleading.\n"
+                "- Use web_search only to fill a concrete factual gap that blocks execution quality.\n"
+            )
+        return ""
+
     def _build_shared_strategy_block(self) -> str:
         return (
-            "=== CORE PRINCIPLES ===\n"
-            "1. You have UNLIMITED tokens and API calls.\n"
-            "2. Use MULTIPLE tools to gather complementary evidence.\n"
-            "3. Be THOROUGH - it is better to call 5 tools than to provide an incomplete answer.\n"
-            "4. Do not finish early; only conclude when evidence is sufficient.\n\n"
+            "=== EFFORT AND TOOLING POLICY ===\n"
+            "1. First classify the request: casual chat, direct answer, evidence-backed research, or execution task.\n"
+            "2. Match effort to the request. Default to the lightest path that fully satisfies the user.\n"
+            "3. Do NOT start broad web/literature research for greetings, casual follow-ups, simple explanations, or opinion-style questions.\n"
+            "4. Use tools only when they materially improve correctness or usefulness: latest information, explicit citations, factual verification, file/workspace actions, or complex analysis.\n"
+            "5. One precise tool call is better than several redundant calls.\n"
+            "6. Conclude as soon as the user's need is satisfied; do not pad the reply with extra background, market analysis, or references unless they help answer the request.\n"
+            "7. If the user asks for depth, latest research, or sources, then increase rigor and evidence gathering.\n\n"
+            "=== WRITING STYLE ===\n"
+            f"- {PROFESSIONAL_STYLE_INSTRUCTION}\n"
+            "- Prefer clear headings and plain wording over expressive decoration.\n\n"
             "=== TOOL PRIORITY ===\n"
             "- For accession-based FASTA downloads, call sequence_fetch first.\n"
             "- For FASTA/FASTQ/sequence work, ALWAYS try bio_tools first before claude_code.\n"
@@ -371,7 +649,7 @@ class DeepThinkAgent:
             "- Never use claude_code as fallback for sequence_fetch failures.\n"
             "- Never use claude_code as fallback for bio_tools input-conversion/parsing failures.\n"
             "- For status polling tools, if state is unchanged across several checks, stop active polling and summarize current status.\n"
-            "- For plan creation, research first (web_search), then use plan_operation.\n"
+            "- For plan creation, research first only when current external best practices or factual verification are important; otherwise draft from existing context and fill gaps with targeted research.\n"
             "- For web_search: cite verifiable sources. When stating time-sensitive or factual claims, include URLs from the tool JSON "
             "`results` list (title/url) in your final answer. If `results` is empty and the tool response has no URLs, say sources were "
             "not returned and avoid presenting specific claims as independently verified.\n"
@@ -509,6 +787,7 @@ class DeepThinkAgent:
 
         iteration = 0
         final_answer = ""
+        fallback_used = False
         confidence = 0.0
         last_tool_cycle_signature: Optional[str] = None
         identical_tool_cycle_count = 0
@@ -711,7 +990,7 @@ class DeepThinkAgent:
                     continue
 
                 if final_call:
-                    final_answer = final_call.arguments.get("answer", "")
+                    candidate_answer = str(final_call.arguments.get("answer", "") or "")
                     raw_conf = final_call.arguments.get("confidence", 0.8)
                     try:
                         confidence = max(0.0, min(1.0, float(raw_conf)))
@@ -719,6 +998,13 @@ class DeepThinkAgent:
                         confidence = 0.8
                     current_step.status = "done"
                     current_step.finished_at = datetime.now()
+                    if not self._is_valid_final_answer(candidate_answer, user_query=user_query):
+                        current_step.self_correction = (
+                            "Discarded a process-only conclusion and switching to fallback synthesis."
+                        )
+                        final_answer = ""
+                    else:
+                        final_answer = candidate_answer
                     thinking_steps.append(current_step)
                     if self.on_thinking:
                         await self._safe_callback(current_step)
@@ -781,11 +1067,26 @@ class DeepThinkAgent:
                 self._skip_current_step = False
                 messages.append({"role": "user", "content": "Skip current branch and continue with the next reasoning step."})
 
+        if final_answer and not self._is_valid_final_answer(final_answer, user_query=user_query):
+            logger.info("[DEEP_THINK_NATIVE] Rejected process-only final answer; switching to fallback synthesis")
+            final_answer = ""
+
         if not final_answer:
+            fallback_used = True
             final_answer = await self._fallback_answer_from_steps(thinking_steps, user_query)
             confidence = max(confidence, 0.3)
             if self.on_final_delta and final_answer:
                 await self._stream_final_answer(final_answer)
+
+        tool_failures = self._collect_tool_failures_from_steps(thinking_steps)
+        search_verified = self._search_verified_from_steps(thinking_steps)
+        final_answer = self._apply_external_search_notice(
+            final_answer,
+            user_query=user_query,
+            tool_failures=tool_failures,
+            search_verified=search_verified,
+        )
+        final_answer = sanitize_professional_response_text(final_answer)
 
         try:
             summary = await self._generate_summary(thinking_steps, user_query)
@@ -799,6 +1100,9 @@ class DeepThinkAgent:
             tools_used=tools_used,
             confidence=confidence,
             thinking_summary=summary,
+            tool_failures=tool_failures,
+            search_verified=search_verified,
+            fallback_used=fallback_used,
         )
 
     def _build_native_system_prompt(
@@ -853,19 +1157,25 @@ class DeepThinkAgent:
             task_preamble = "\n".join(lines) + "\n"
 
         prompt = task_preamble + (
-            "You are a Deep Thinking AI Assistant with UNLIMITED resources.\n"
-            "Your goal is to provide the MOST COMPREHENSIVE answer by using available tools aggressively.\n\n"
+            "You are a Deep Thinking AI Assistant.\n"
+            "Your goal is to choose the right depth for the user's request: be thorough when needed, but do not over-research simple questions.\n\n"
             + self._build_shared_strategy_block()
+            + self._build_request_tier_block()
+            + "\n"
             + "\n=== WORKFLOW ===\n"
-            "1. Think step by step and provide concise reasoning text.\n"
-            "2. Call tools whenever needed; multiple tool calls across iterations are expected.\n"
-            "3. Call submit_final_answer only when evidence is sufficient.\n"
-            "4. Keep iterative reasoning visible to the user.\n\n"
+            "1. First decide whether the request needs tools at all.\n"
+            "2. For simple conversational or high-level requests, reason briefly and answer directly.\n"
+            "3. For evidence-heavy or time-sensitive requests, gather targeted evidence with the minimum necessary tool usage.\n"
+            "4. Call submit_final_answer once the user's request is adequately answered.\n"
+            "5. Keep iterative reasoning visible to the user, but concise and relevant.\n\n"
             + self._build_protocol_boundary_block("native")
             + "\n=== RULES ===\n"
             "- Do NOT call submit_final_answer prematurely.\n"
+            "- Do NOT launch broad web/literature research unless the user asks for sources, latest information, deep analysis, or the task is clearly evidence-sensitive.\n"
+            "- Prefer zero-tool or one-tool answers for simple requests.\n"
             "- Keep quick checks synchronous; use background workflows only for clearly long-running operations.\n"
-            "- Prioritize evidence-backed conclusions over speculation.\n"
+            "- Prioritize directness, relevance, and user intent over maximum comprehensiveness.\n"
+            "- Prioritize evidence-backed conclusions over speculation when evidence is actually needed.\n"
         )
         return self._append_reference_context(prompt, context)
 
@@ -892,6 +1202,7 @@ class DeepThinkAgent:
 
         iteration = 0
         final_answer = ""
+        fallback_used = False
         confidence = 0.0
         last_tool_cycle_signature: Optional[str] = None
         identical_tool_cycle_count = 0
@@ -970,8 +1281,13 @@ class DeepThinkAgent:
                 current_step.action = parsed.get("action_str", None)
 
                 if parsed.get("is_final"):
-                    final_answer = parsed.get("final_answer", "")
+                    candidate_answer = parsed.get("final_answer", "")
                     confidence = parsed.get("confidence", 0.8)
+                    final_answer = (
+                        candidate_answer
+                        if self._is_valid_final_answer(candidate_answer, user_query=user_query)
+                        else ""
+                    )
                     current_step.status = "done"
                     thinking_steps.append(current_step)
                     if self.on_thinking:
@@ -998,69 +1314,107 @@ class DeepThinkAgent:
                     else:
                         if tool_name not in tools_used:
                             tools_used.append(tool_name)
-                        try:
-                            timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(
-                                str(tool_name),
-                                self.tool_timeout,
-                            )
-                            if self.on_tool_start:
-                                await self._safe_generic_callback(
-                                    self.on_tool_start,
-                                    str(tool_name),
-                                    dict(tool_params or {}),
-                                )
-                            result = await asyncio.wait_for(
-                                self.tool_executor(tool_name, tool_params or {}),
-                                timeout=timeout
-                            )
+                        timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(
+                            str(tool_name),
+                            self.tool_timeout,
+                        )
+                        attempt = 0
+                        while True:
+                            attempt += 1
                             try:
-                                current_step.action_result = json.dumps(
-                                    result, ensure_ascii=False, default=str
+                                if self.on_tool_start:
+                                    await self._safe_generic_callback(
+                                        self.on_tool_start,
+                                        str(tool_name),
+                                        dict(tool_params or {}),
+                                    )
+                                result = await asyncio.wait_for(
+                                    self.tool_executor(tool_name, tool_params or {}),
+                                    timeout=timeout
                                 )
-                            except Exception:
-                                current_step.action_result = str(result)
-                            await self._emit_artifacts(str(tool_name), result, iteration)
-                            if self.on_tool_result:
+                                try:
+                                    current_step.action_result = json.dumps(
+                                        result, ensure_ascii=False, default=str
+                                    )
+                                except Exception:
+                                    current_step.action_result = str(result)
+                                await self._emit_artifacts(str(tool_name), result, iteration)
                                 callback_success, callback_error = self._normalize_tool_callback_outcome(result)
-                                await self._safe_generic_callback(
-                                    self.on_tool_result,
-                                    str(tool_name),
-                                    {
-                                        "success": callback_success,
-                                        "error": callback_error,
-                                        "result": result,
-                                        "summary": self._build_tool_callback_summary(result),
-                                        "iteration": iteration,
-                                    },
-                                )
-                        except asyncio.TimeoutError:
-                            current_step.action_result = f"Error: Tool '{tool_name}' execution timed out after {timeout}s"
-                            logger.warning(f"Tool {tool_name} timed out after {timeout}s")
-                            if self.on_tool_result:
-                                await self._safe_generic_callback(
-                                    self.on_tool_result,
-                                    str(tool_name),
-                                    {
-                                        "success": False,
-                                        "error": "timeout",
-                                        "summary": current_step.action_result,
-                                        "iteration": iteration,
-                                    },
-                                )
-                        except Exception as e:
-                            current_step.action_result = f"Error executing tool: {str(e)}"
-                            logger.exception(f"Tool {tool_name} execution failed")
-                            if self.on_tool_result:
-                                await self._safe_generic_callback(
-                                    self.on_tool_result,
-                                    str(tool_name),
-                                    {
-                                        "success": False,
-                                        "error": str(e),
-                                        "summary": current_step.action_result,
-                                        "iteration": iteration,
-                                    },
-                                )
+                                if self.on_tool_result:
+                                    await self._safe_generic_callback(
+                                        self.on_tool_result,
+                                        str(tool_name),
+                                        {
+                                            "success": callback_success,
+                                            "error": callback_error,
+                                            "result": result,
+                                            "summary": self._build_tool_callback_summary(result),
+                                            "iteration": iteration,
+                                            "attempt": attempt,
+                                        },
+                                    )
+                                if self._should_retry_external_tool(str(tool_name), success=callback_success) and attempt <= self.MAX_EXTERNAL_TOOL_RETRIES:
+                                    if self.on_tool_result:
+                                        await self._safe_generic_callback(
+                                            self.on_tool_result,
+                                            str(tool_name),
+                                            {
+                                                "success": False,
+                                                "error": callback_error,
+                                                "summary": self._build_tool_callback_summary(result),
+                                                "iteration": iteration,
+                                                "attempt": attempt,
+                                                "retrying": True,
+                                                "retry_attempt": attempt,
+                                                "max_attempts": self.MAX_EXTERNAL_TOOL_RETRIES + 1,
+                                            },
+                                        )
+                                    continue
+                                break
+                            except asyncio.TimeoutError:
+                                current_step.action_result = f"Error: Tool '{tool_name}' execution timed out after {timeout}s"
+                                logger.warning(f"Tool {tool_name} timed out after {timeout}s")
+                                should_retry = self._should_retry_external_tool(str(tool_name), success=False) and attempt <= self.MAX_EXTERNAL_TOOL_RETRIES
+                                if self.on_tool_result:
+                                    await self._safe_generic_callback(
+                                        self.on_tool_result,
+                                        str(tool_name),
+                                        {
+                                            "success": False,
+                                            "error": "timeout",
+                                            "summary": current_step.action_result,
+                                            "iteration": iteration,
+                                            "attempt": attempt,
+                                            "retrying": should_retry,
+                                            "retry_attempt": attempt if should_retry else None,
+                                            "max_attempts": self.MAX_EXTERNAL_TOOL_RETRIES + 1 if should_retry else None,
+                                        },
+                                    )
+                                if should_retry:
+                                    continue
+                                break
+                            except Exception as e:
+                                current_step.action_result = f"Error executing tool: {str(e)}"
+                                logger.exception(f"Tool {tool_name} execution failed")
+                                should_retry = self._should_retry_external_tool(str(tool_name), success=False) and attempt <= self.MAX_EXTERNAL_TOOL_RETRIES
+                                if self.on_tool_result:
+                                    await self._safe_generic_callback(
+                                        self.on_tool_result,
+                                        str(tool_name),
+                                        {
+                                            "success": False,
+                                            "error": str(e),
+                                            "summary": current_step.action_result,
+                                            "iteration": iteration,
+                                            "attempt": attempt,
+                                            "retrying": should_retry,
+                                            "retry_attempt": attempt if should_retry else None,
+                                            "max_attempts": self.MAX_EXTERNAL_TOOL_RETRIES + 1 if should_retry else None,
+                                        },
+                                    )
+                                if should_retry:
+                                    continue
+                                break
 
                     messages.append({"role": "assistant", "content": response_text})
                     messages.append({"role": "user", "content": f"Tool Output: {current_step.action_result}"})
@@ -1137,14 +1491,14 @@ class DeepThinkAgent:
         if not final_answer and thinking_steps:
             logger.info("[DEEP_THINK] Iterations exhausted, requesting strict final conclusion")
 
-            conclusion_prompt = """You have reached the thinking limit. Based on all the information you've gathered, 
-you MUST now provide a final answer. Synthesize everything you've learned into a comprehensive response.
+            conclusion_prompt = """You have reached the thinking limit. Based on the information you already have,
+you MUST now provide a final answer. Synthesize what is most relevant into a direct, appropriately scoped response.
 
 Respond with ONLY a JSON object:
 {
   "thinking": "I've gathered the following key information: [summarize key findings]",
   "action": null,
-  "final_answer": {"answer": "Your comprehensive answer based on all gathered information", "confidence": 0.7}
+  "final_answer": {"answer": "Your final answer based on the gathered information", "confidence": 0.7}
 }"""
 
             messages.append({"role": "user", "content": conclusion_prompt})
@@ -1174,25 +1528,46 @@ Respond with ONLY a JSON object:
                     logger.warning("Forced conclusion parse fallback triggered: %s", parse_error)
                     parsed = {}
                 if parsed.get("is_final"):
-                    final_answer = parsed.get("final_answer", "")
+                    candidate_answer = parsed.get("final_answer", "")
                     confidence = parsed.get("confidence", 0.7)
+                    final_answer = (
+                        candidate_answer
+                        if self._is_valid_final_answer(candidate_answer, user_query=user_query)
+                        else ""
+                    )
 
                     # Stream final answer
                     if self.on_final_delta and final_answer:
                         await self._stream_final_answer(final_answer)
                 else:
+                    fallback_used = True
                     final_answer = await self._fallback_answer_from_steps(thinking_steps, user_query)
                     confidence = 0.5
                     if self.on_final_delta and final_answer:
                         await self._stream_final_answer(final_answer)
             except Exception as e:
                 logger.exception("Failed to generate strict forced conclusion")
+                fallback_used = True
                 final_answer = await self._fallback_answer_from_steps(thinking_steps, user_query)
                 confidence = 0.4
 
+        if final_answer and not self._is_valid_final_answer(final_answer, user_query=user_query):
+            final_answer = ""
+
         if not final_answer:
+            fallback_used = True
             final_answer = await self._fallback_answer_from_steps(thinking_steps, user_query)
             confidence = max(confidence, 0.3)
+
+        tool_failures = self._collect_tool_failures_from_steps(thinking_steps)
+        search_verified = self._search_verified_from_steps(thinking_steps)
+        final_answer = self._apply_external_search_notice(
+            final_answer,
+            user_query=user_query,
+            tool_failures=tool_failures,
+            search_verified=search_verified,
+        )
+        final_answer = sanitize_professional_response_text(final_answer)
 
         try:
             summary = await self._generate_summary(thinking_steps, user_query)
@@ -1205,7 +1580,10 @@ Respond with ONLY a JSON object:
             total_iterations=iteration,
             tools_used=tools_used,
             confidence=confidence,
-            thinking_summary=summary
+            thinking_summary=summary,
+            tool_failures=tool_failures,
+            search_verified=search_verified,
+            fallback_used=fallback_used,
         )
 
     async def _safe_callback(self, step: ThinkingStep):
@@ -1263,7 +1641,8 @@ Respond with ONLY a JSON object:
             except Exception as e:
                 logger.error(f"Error in on_final_delta callback: {e}")
 
-    def _normalize_tool_callback_outcome(self, result: Any) -> tuple[bool, Optional[str]]:
+    @staticmethod
+    def _normalize_tool_callback_outcome(result: Any) -> tuple[bool, Optional[str]]:
         if isinstance(result, dict):
             if "success" in result:
                 success = bool(result.get("success"))
@@ -1341,104 +1720,141 @@ Respond with ONLY a JSON object:
                 "evidence": [],
             }
 
-        try:
-            tool_result = await asyncio.wait_for(
-                self.tool_executor(tool_name, tool_params),
-                timeout=timeout,
-            )
-            callback_success, callback_error = self._normalize_tool_callback_outcome(tool_result)
-            callback_payload = {
-                "success": callback_success,
-                "error": callback_error,
-                "result": tool_result,
-                "summary": self._build_tool_callback_summary(tool_result),
-                "iteration": iteration,
-            }
-            if not callback_success:
-                logger.warning(
-                    "[DEEP_THINK_NATIVE] Tool returned success=false: tool=%s tool_call_id=%s summary=%s error=%s",
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                tool_result = await asyncio.wait_for(
+                    self.tool_executor(tool_name, tool_params),
+                    timeout=timeout,
+                )
+                callback_success, callback_error = self._normalize_tool_callback_outcome(tool_result)
+                callback_payload = {
+                    "success": callback_success,
+                    "error": callback_error,
+                    "result": tool_result,
+                    "summary": self._build_tool_callback_summary(tool_result),
+                    "iteration": iteration,
+                    "attempt": attempt,
+                }
+                if not callback_success:
+                    logger.warning(
+                        "[DEEP_THINK_NATIVE] Tool returned success=false: tool=%s tool_call_id=%s summary=%s error=%s",
+                        tool_name,
+                        tool_call_id,
+                        self._clip_log_text(callback_payload.get("summary"), limit=360),
+                        self._clip_log_text(callback_error, limit=240),
+                    )
+                    if self._should_retry_external_tool(tool_name, success=False) and attempt <= self.MAX_EXTERNAL_TOOL_RETRIES:
+                        if self.on_tool_result:
+                            await self._safe_generic_callback(
+                                self.on_tool_result,
+                                tool_name,
+                                {
+                                    **callback_payload,
+                                    "retrying": True,
+                                    "retry_attempt": attempt,
+                                    "max_attempts": self.MAX_EXTERNAL_TOOL_RETRIES + 1,
+                                },
+                            )
+                        if self.on_tool_start:
+                            await self._safe_generic_callback(self.on_tool_start, tool_name, tool_params)
+                        continue
+                if self.on_tool_result:
+                    await self._safe_generic_callback(self.on_tool_result, tool_name, callback_payload)
+                await self._emit_artifacts(tool_name, tool_result, iteration)
+                normalized_payload = {
+                    "success": callback_success,
+                    "tool": tool_name,
+                    "result": tool_result,
+                    "error": callback_error,
+                }
+                tool_result_text = json.dumps(normalized_payload, ensure_ascii=False, default=str)
+                evidence = self._extract_evidence(tool_name, tool_params, tool_result)
+                return {
+                    "index": index,
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "tool_params": tool_params,
+                    "tool_result_text": tool_result_text,
+                    "evidence": evidence,
+                }
+            except asyncio.TimeoutError:
+                timeout_payload = {
+                    "success": False,
+                    "tool": tool_name,
+                    "error": "timeout",
+                    "summary": f"Tool '{tool_name}' timed out after {timeout}s",
+                }
+                should_retry = self._should_retry_external_tool(tool_name, success=False) and attempt <= self.MAX_EXTERNAL_TOOL_RETRIES
+                if self.on_tool_result:
+                    await self._safe_generic_callback(
+                        self.on_tool_result,
+                        tool_name,
+                        {
+                            "success": False,
+                            "error": "timeout",
+                            "summary": timeout_payload["summary"],
+                            "iteration": iteration,
+                            "attempt": attempt,
+                            "retrying": should_retry,
+                            "retry_attempt": attempt if should_retry else None,
+                            "max_attempts": self.MAX_EXTERNAL_TOOL_RETRIES + 1 if should_retry else None,
+                        },
+                    )
+                if should_retry:
+                    if self.on_tool_start:
+                        await self._safe_generic_callback(self.on_tool_start, tool_name, tool_params)
+                    continue
+                return {
+                    "index": index,
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "tool_params": tool_params,
+                    "tool_result_text": json.dumps(timeout_payload, ensure_ascii=False),
+                    "evidence": [],
+                }
+            except Exception as exc:
+                logger.exception(
+                    "Tool %s failed (tool_call_id=%s, params=%s)",
                     tool_name,
                     tool_call_id,
-                    self._clip_log_text(callback_payload.get("summary"), limit=360),
-                    self._clip_log_text(callback_error, limit=240),
+                    self._sanitize_tool_params_for_log(tool_params),
                 )
-            if self.on_tool_result:
-                await self._safe_generic_callback(self.on_tool_result, tool_name, callback_payload)
-            await self._emit_artifacts(tool_name, tool_result, iteration)
-            normalized_payload = {
-                "success": callback_success,
-                "tool": tool_name,
-                "result": tool_result,
-                "error": callback_error,
-            }
-            tool_result_text = json.dumps(normalized_payload, ensure_ascii=False, default=str)
-            evidence = self._extract_evidence(tool_name, tool_params, tool_result)
-            return {
-                "index": index,
-                "tool_call_id": tool_call_id,
-                "tool_name": tool_name,
-                "tool_params": tool_params,
-                "tool_result_text": tool_result_text,
-                "evidence": evidence,
-            }
-        except asyncio.TimeoutError:
-            timeout_payload = {
-                "success": False,
-                "tool": tool_name,
-                "error": "timeout",
-                "summary": f"Tool '{tool_name}' timed out after {timeout}s",
-            }
-            if self.on_tool_result:
-                await self._safe_generic_callback(
-                    self.on_tool_result,
-                    tool_name,
-                    {
-                        "success": False,
-                        "error": "timeout",
-                        "summary": timeout_payload["summary"],
-                        "iteration": iteration,
-                    },
-                )
-            return {
-                "index": index,
-                "tool_call_id": tool_call_id,
-                "tool_name": tool_name,
-                "tool_params": tool_params,
-                "tool_result_text": json.dumps(timeout_payload, ensure_ascii=False),
-                "evidence": [],
-            }
-        except Exception as exc:
-            logger.exception(
-                "Tool %s failed (tool_call_id=%s, params=%s)",
-                tool_name,
-                tool_call_id,
-                self._sanitize_tool_params_for_log(tool_params),
-            )
-            failure_payload = {
-                "success": False,
-                "tool": tool_name,
-                "error": str(exc),
-                "summary": f"Error executing tool: {exc}",
-            }
-            if self.on_tool_result:
-                await self._safe_generic_callback(
-                    self.on_tool_result,
-                    tool_name,
-                    {
-                        "success": False,
-                        "error": str(exc),
-                        "summary": failure_payload["summary"],
-                        "iteration": iteration,
-                    },
-                )
-            return {
-                "index": index,
-                "tool_call_id": tool_call_id,
-                "tool_name": tool_name,
-                "tool_params": tool_params,
-                "tool_result_text": json.dumps(failure_payload, ensure_ascii=False),
-                "evidence": [],
-            }
+                failure_payload = {
+                    "success": False,
+                    "tool": tool_name,
+                    "error": str(exc),
+                    "summary": f"Error executing tool: {exc}",
+                }
+                should_retry = self._should_retry_external_tool(tool_name, success=False) and attempt <= self.MAX_EXTERNAL_TOOL_RETRIES
+                if self.on_tool_result:
+                    await self._safe_generic_callback(
+                        self.on_tool_result,
+                        tool_name,
+                        {
+                            "success": False,
+                            "error": str(exc),
+                            "summary": failure_payload["summary"],
+                            "iteration": iteration,
+                            "attempt": attempt,
+                            "retrying": should_retry,
+                            "retry_attempt": attempt if should_retry else None,
+                            "max_attempts": self.MAX_EXTERNAL_TOOL_RETRIES + 1 if should_retry else None,
+                        },
+                    )
+                if should_retry:
+                    if self.on_tool_start:
+                        await self._safe_generic_callback(self.on_tool_start, tool_name, tool_params)
+                    continue
+                return {
+                    "index": index,
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "tool_params": tool_params,
+                    "tool_result_text": json.dumps(failure_payload, ensure_ascii=False),
+                    "evidence": [],
+                }
 
     def _extract_evidence(
         self,
@@ -1738,7 +2154,8 @@ Respond with ONLY a JSON object:
     async def _stream_final_answer(self, final_answer: str) -> None:
         if not self.on_final_delta or not final_answer:
             return
-        for chunk in self._chunk_final_answer(final_answer):
+        cleaned_answer = sanitize_professional_response_text(final_answer)
+        for chunk in self._chunk_final_answer(cleaned_answer):
             await self._safe_final_delta_callback(chunk)
             if self.FINAL_STREAM_DELAY_SEC > 0:
                 await asyncio.sleep(self.FINAL_STREAM_DELAY_SEC)
@@ -1760,7 +2177,7 @@ Respond with ONLY a JSON object:
                 "Do not use claude_code as fallback when sequence_fetch fails."
             ),
             "claude_code": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. Params: {\"task\": \"description\"}",
-            "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. Params: {\"query\": \"search query\"}",
+            "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. For broad comparisons, prefer focused parallel subqueries with Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\"]}.",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
             "document_reader": "Read local documents with format-aware parsing. Use this first for .docx/.pdf/.txt content extraction. Params: {\"operation\": \"read_any|read_pdf|read_text\", \"file_path\": \"/abs/path\"}",
@@ -1942,15 +2359,16 @@ IMPORTANT: data must end with \\n to execute the command.""",
         else:
             base_prompt = ""
 
-        base_prompt += f"""You are a Deep Thinking AI Assistant with UNLIMITED resources.
-Your goal is to provide the MOST COMPREHENSIVE answer by using available tools aggressively.
+        base_prompt += f"""You are a Deep Thinking AI Assistant.
+Your goal is to choose the right depth for the user's request: be thorough when needed, but do not over-research simple questions.
 
 {self._build_shared_strategy_block()}
+{self._build_request_tier_block()}
 === THINKING WORKFLOW ===
-1. Break the query into sub-problems.
-2. Choose tools for each sub-problem.
-3. Execute tools iteratively and synthesize evidence.
-4. Provide final_answer only when evidence is sufficient.
+1. First classify whether the request needs tools, targeted evidence, or just a direct answer.
+2. Break the query into sub-problems only when that materially helps.
+3. Use tools selectively and synthesize only the evidence needed for the user's request.
+4. Provide final_answer once the request is adequately answered.
 
 === AVAILABLE TOOLS ===
 {tools_text}
@@ -1971,7 +2389,7 @@ Your goal is to provide the MOST COMPREHENSIVE answer by using available tools a
 Try at least 3 different recovery attempts before reporting failure.
 
 === PLAN CREATION RULE ===
-When creating a plan, research first with web_search, then use plan_operation create/review/optimize/get.
+When creating a plan, research first with web_search only when current external best practices or factual verification are important. Otherwise draft from existing context first, then use targeted research to fill gaps.
 
 {self._build_protocol_boundary_block("legacy")}
 === OUTPUT FORMAT ===
@@ -1993,20 +2411,26 @@ When ready to answer:
 === RULES ===
 1. Output valid JSON only.
 2. Use action to call one tool per response.
-3. Call MULTIPLE tools before providing final_answer when evidence gathering is required.
-4. Include key tool evidence before concluding.
-5. For PhageScope submit, prioritize non-blocking backend execution over immediate result fetching.
+3. Do NOT call tools for greetings, casual follow-ups, simple explanations, or opinion-style questions unless the user explicitly asks for research or sources.
+4. Call MULTIPLE tools only when evidence gathering is genuinely required.
+5. Include key tool evidence before concluding when evidence was used.
+6. For PhageScope submit, prioritize non-blocking backend execution over immediate result fetching.
 """
         return self._append_reference_context(base_prompt, context)
 
     def _get_next_step_prompt(self, iteration: int) -> str:
         """Generate prompt for the next step, encouraging completion if steps are getting long."""
+        tier = self._request_tier()
+        if tier == "light":
+            return 'This is a light request. Finish now unless another short step is strictly necessary.'
+        if tier == "standard":
+            return 'Prefer answering now. Continue only if one more brief step materially improves the response.'
         if iteration > 8:
-            return 'You have taken many steps. Please consolidate your thinking and provide the final answer using "final_answer" in your JSON response.'
+            return 'You have taken many steps. Consolidate what you already know and provide "final_answer" now unless one more targeted tool call is truly necessary.'
         elif iteration > 5:
-            return 'Scan your previous thoughts. If you have sufficient information, please output "final_answer" now. Otherwise, continue thinking.'
+            return 'Check whether the user is already adequately answered. If yes, output "final_answer" now. Continue only if another step materially improves accuracy.'
         else:
-            return 'Please continue thinking. If you are ready to answer, include "final_answer" in your JSON response.'
+            return 'Before continuing, ask whether another step or tool call is truly needed. If the current information is enough, include "final_answer" now.'
 
     def _parse_llm_response_safe(self, response: str) -> tuple[Dict[str, Any], Optional[str]]:
         try:
@@ -2317,13 +2741,14 @@ When ready to answer:
             "1) Summarize the main facts or background reflected in the excerpts.\n"
             "2) Explain why a single definite answer may not be possible, if applicable.\n"
             "3) Suggest 1–2 practical next steps (e.g., narrow the question, ask verifiable facts).\n"
-            "Do not invent dates or claims absent from the excerpts; say so if excerpts are insufficient."
+            "Do not invent dates or claims absent from the excerpts; say so if excerpts are insufficient.\n"
+            f"{PROFESSIONAL_STYLE_INSTRUCTION}"
         )
         raw = await asyncio.wait_for(
             self.llm_client.chat_async(prompt=prompt, max_tokens=500),
             timeout=15,
         )
-        cleaned = str(raw or "").strip()
+        cleaned = sanitize_professional_response_text(str(raw or "").strip())
         if len(cleaned) < 20:
             raise ValueError("fallback synthesis too short")
         return cleaned
@@ -2333,21 +2758,39 @@ When ready to answer:
         steps: List[ThinkingStep],
         user_query: str = "",
     ) -> str:
+        language = detect_reasoning_language(user_query)
         if not steps:
             return _localized_text(
-                detect_reasoning_language(user_query),
+                language,
                 "已完成思考，但暂未形成结构化结论。",
                 "DeepThink finished without a structured final answer.",
             )
-        useful = [s.thought for s in steps if isinstance(s.thought, str) and s.thought.strip()]
-        if useful:
-            return sanitize_reasoning_text(
-                useful[-1].strip(),
-                language=detect_reasoning_language(user_query),
-                max_chars=180,
-            ) or useful[-1].strip()
         evidence = self._collect_evidence_snippets(steps)
         uq = (user_query or "").strip()
+        if self._is_research_or_execute() and evidence.strip() and uq:
+            try:
+                return await self._generate_fallback_from_evidence(uq, evidence, steps)
+            except Exception:
+                logger.warning(
+                    "DeepThink fallback synthesis from tool evidence failed; using structured fallback.",
+                    exc_info=True,
+                )
+        useful = [
+            s.thought
+            for s in steps
+            if isinstance(s.thought, str)
+            and s.thought.strip()
+            and not is_process_only_answer(s.thought, user_query=user_query)
+        ]
+        if useful and not self._is_research_or_execute():
+            return sanitize_professional_response_text(
+                sanitize_reasoning_text(
+                    useful[-1].strip(),
+                    language=language,
+                    max_chars=180,
+                )
+                or useful[-1].strip()
+            )
         if evidence.strip() and uq:
             try:
                 return await self._generate_fallback_from_evidence(uq, evidence, steps)
@@ -2395,7 +2838,8 @@ When ready to answer:
             "- Use 1 short sentence for very simple flows, or at most 2 short sentences for tool-heavy flows.\n"
             "- Describe the visible progression, not hidden internal deliberation.\n"
             "- Do not use phrases like 'I should', 'the user is asking', or other internal self-talk.\n"
-            "- Keep the tone product-like and easy to scan.\n\n"
+            "- Keep the tone product-like and easy to scan.\n"
+            f"- {PROFESSIONAL_STYLE_INSTRUCTION}\n\n"
             "Visible steps:\n"
             f"{steps_text}\n"
             f"Tools used: {', '.join(sorted(tools_used_unique)) if tools_used_unique else 'None'}\n"
@@ -2413,9 +2857,10 @@ When ready to answer:
                 "LLM summary generation failed in strict mode."
             ) from exc
 
-        cleaned = str(summary or "").strip()
+        cleaned = sanitize_professional_response_text(str(summary or "").strip())
         if len(cleaned) <= 10:
             raise DeepThinkProtocolError(
                 "LLM summary output is empty or too short in strict mode."
             )
-        return sanitize_reasoning_text(cleaned, language=language, max_chars=None) or cleaned
+        normalized = sanitize_reasoning_text(cleaned, language=language, max_chars=None) or cleaned
+        return sanitize_professional_response_text(normalized)

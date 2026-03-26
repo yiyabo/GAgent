@@ -33,32 +33,87 @@ import {
   coercePlanId,
   coercePlanTitle,
 } from '@utils/planSyncEvents';
+import {
+  inferThinkingLanguage as inferThinkingLanguageFromText,
+  defaultThinkingDisplayText,
+  extractThinkingFlushChunk,
+  THINKING_DELTA_FLUSH_INTERVAL_MS,
+} from '@utils/thinkingStream';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { SessionStorage } from '@/utils/sessionStorage';
 import type { StreamHandlerContext } from './types';
-
-const CJK_CHAR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
 
 function inferThinkingLanguage(ctx: StreamHandlerContext): 'zh' | 'en' {
   const messages = ctx.get().messages;
   for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
     const content = typeof messages[idx]?.content === 'string' ? messages[idx].content : '';
     if (!content.trim()) continue;
-    return CJK_CHAR_RE.test(content) ? 'zh' : 'en';
+    return inferThinkingLanguageFromText(content);
   }
   return 'en';
 }
 
-function localizedThinkingText(language: 'zh' | 'en', zh: string, en: string): string {
-  return language === 'zh' ? zh : en;
-}
-
 function defaultThinkingStepText(ctx: StreamHandlerContext, iteration: number): string {
   const language = inferThinkingLanguage(ctx);
-  if (iteration <= 0) {
-    return localizedThinkingText(language, '准备整理回复', 'Preparing the response');
+  return defaultThinkingDisplayText(iteration, language);
+}
+
+const GENERIC_PROGRESS_LABELS = new Set([
+  '',
+  '处理当前步骤',
+  '分析当前问题，准备下一步',
+  'processing the current step',
+  'analyzing the current problem, preparing the next step',
+  'working on the request',
+]);
+
+function normalizeProgressText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .trim();
+}
+
+function truncateProgressText(value: string, maxChars: number): string {
+  const normalized = normalizeProgressText(value);
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function isGenericProgressLabel(value: unknown): boolean {
+  const normalized = normalizeProgressText(value).toLowerCase();
+  return GENERIC_PROGRESS_LABELS.has(normalized);
+}
+
+function normalizeCompactProgressStatus(status: unknown, label: unknown): 'running' | 'retrying' | 'failed' | 'completed' {
+  const normalizedStatus = String(status ?? '').trim().toLowerCase();
+  const normalizedLabel = normalizeProgressText(label).toLowerCase();
+  if (normalizedLabel.includes('retry') || normalizedLabel.includes('重试')) return 'retrying';
+  if (normalizedStatus === 'error' || normalizedStatus === 'failed') return 'failed';
+  if (normalizedStatus === 'completed' || normalizedStatus === 'success' || normalizedStatus === 'done') return 'completed';
+  return 'running';
+}
+
+function normalizeProgressDetails(rawLabel: unknown, rawDetails: unknown): string | null {
+  const details = normalizeProgressText(rawDetails);
+  if (details) return details;
+  const label = normalizeProgressText(rawLabel);
+  if (!label) return null;
+  if (label.length > 88 || label.includes('|') || label.includes('##') || label.includes('---')) {
+    return label;
   }
-  return localizedThinkingText(language, '分析当前步骤', 'Working through the current step');
+  return null;
+}
+
+function normalizeProgressLabel(rawLabel: unknown, tool: string | null): string {
+  const label = normalizeProgressText(rawLabel);
+  if (!label || isGenericProgressLabel(label)) {
+    if (tool) {
+      return truncateProgressText(tool, 48);
+    }
+    return 'Working on the request';
+  }
+  return truncateProgressText(label, tool ? 88 : 72);
 }
 
 export function handleDelta(ctx: StreamHandlerContext, event: any): void {
@@ -259,7 +314,10 @@ export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void 
   const rawStep = event.step ?? {};
   const step = {
     ...rawStep,
-    thought: typeof rawStep.thought === 'string' ? rawStep.thought : '',
+    // null means "explicitly clear the delta-accumulated thought" (preserve_thought=False).
+    // undefined / absent means "no update from this event" — fall back to accumulated.
+    // A non-empty string is the authoritative thought content.
+    thought: typeof rawStep.thought === 'string' ? rawStep.thought : (rawStep.thought === null ? null : ''),
     display_text: typeof rawStep.display_text === 'string' ? rawStep.display_text : undefined,
     kind:
       rawStep.kind === 'reasoning' || rawStep.kind === 'tool' || rawStep.kind === 'summary'
@@ -284,7 +342,26 @@ export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void 
   // Check if we updating existing step or adding new one
   const stepIndex = updatedSteps.findIndex((s: any) => s.iteration === step.iteration);
   if (stepIndex >= 0) {
-    updatedSteps[stepIndex] = step;
+    const existingStep = updatedSteps[stepIndex];
+
+    // `step.thought === null`  → backend signalled "clear" (preserve_thought=False).
+    //                            Discard delta-accumulated content to prevent duplication
+    //                            with the final answer shown in the response area.
+    // `step.thought === ''`   → event carried no thought; keep whatever was accumulated.
+    // `step.thought` (string) → use the provided value directly.
+    const resolvedThought =
+      step.thought === null
+        ? ''                              // explicit clear: discard delta-accumulated
+        : step.thought || existingStep?.thought || '';
+
+    updatedSteps[stepIndex] = {
+      ...existingStep,
+      ...step,
+      thought: resolvedThought,
+      display_text: step.display_text || existingStep?.display_text,
+      kind: step.kind || existingStep?.kind,
+      action_result: step.action_result ?? existingStep?.action_result ?? null,
+    };
   } else {
     updatedSteps.push(step);
   }
@@ -297,6 +374,13 @@ export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void 
     status: step.status === 'done' ? 'completed' : (step.status === 'error' ? 'error' : 'active') as 'active' | 'completed' | 'error'
   };
 
+  // Ensure thinking_visibility is 'visible' so the ThinkingProcess component renders.
+  // The backend routing decides this, but it's never sent to the frontend metadata.
+  // If we're receiving thinking_step events, the process should be visible.
+  if ((existingMetadata as any).thinking_visibility !== 'visible') {
+    (existingMetadata as any).thinking_visibility = 'visible';
+  }
+
   ctx.get().updateMessage(ctx.assistantMessageId, {
     metadata: existingMetadata,
     thinking_process: updatedProcess
@@ -306,7 +390,17 @@ export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void 
   ctx.scheduleFlush();
 }
 
-function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext): void {
+function _scheduleThinkingDeltaFlush(ctx: StreamHandlerContext): void {
+  if (ctx.state.thinkingDeltaFlushHandle !== null) {
+    return;
+  }
+  ctx.state.thinkingDeltaFlushHandle = window.setTimeout(() => {
+    ctx.state.thinkingDeltaFlushHandle = null;
+    _flushThinkingDeltaBuffer(ctx);
+  }, THINKING_DELTA_FLUSH_INTERVAL_MS);
+}
+
+function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext, force: boolean = false): void {
   const pendingEntries = Object.entries(ctx.state.pendingThinkingDeltas);
   if (pendingEntries.length === 0) return;
   const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
@@ -319,38 +413,70 @@ function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext): void {
     total_iterations: 0,
   };
   const updatedSteps = [...currentProcess.steps];
+  const nextPendingThinkingDeltas: Record<number, string> = {};
+  const nextPendingStartedAt: Record<number, number> = {};
+  const now = Date.now();
+  let didFlush = false;
 
   for (const [iterationKey, delta] of pendingEntries) {
     const iteration = Number(iterationKey);
     if (!Number.isFinite(iteration)) continue;
-    const idx = updatedSteps.findIndex((s: any) => s.iteration === iteration);
+    const bufferedAt = ctx.state.pendingThinkingDeltaStartedAt[iteration] ?? now;
+    const { flushable, remaining } = extractThinkingFlushChunk(delta, force);
+    let idx = updatedSteps.findIndex((s: any) => s.iteration === iteration);
     if (idx < 0) {
-      continue;
+      updatedSteps.push({
+        iteration,
+        thought: '',
+        display_text: defaultThinkingStepText(ctx, iteration),
+        kind: iteration <= 0 ? 'summary' : 'reasoning',
+        status: 'thinking',
+      });
+      idx = updatedSteps.length - 1;
     }
-    updatedSteps[idx] = {
-      ...updatedSteps[idx],
-      thought: `${typeof updatedSteps[idx].thought === 'string' ? updatedSteps[idx].thought : ''}${delta}`,
-      display_text:
-        updatedSteps[idx].display_text ||
-        defaultThinkingStepText(ctx, iteration),
-      kind: updatedSteps[idx].kind || (iteration <= 0 ? 'summary' : 'reasoning'),
-    };
+    if (flushable) {
+      didFlush = true;
+      updatedSteps[idx] = {
+        ...updatedSteps[idx],
+        thought: `${typeof updatedSteps[idx].thought === 'string' ? updatedSteps[idx].thought : ''}${flushable}`,
+        display_text:
+          updatedSteps[idx].display_text ||
+          defaultThinkingStepText(ctx, iteration),
+        kind: updatedSteps[idx].kind || (iteration <= 0 ? 'summary' : 'reasoning'),
+      };
+    }
+    if (remaining) {
+      nextPendingThinkingDeltas[iteration] = remaining;
+      nextPendingStartedAt[iteration] = bufferedAt;
+    }
   }
 
-  ctx.state.pendingThinkingDeltas = {};
-  ctx.get().updateMessage(ctx.assistantMessageId, {
-    metadata: existingMetadata,
-    thinking_process: {
-      ...currentProcess,
-      steps: updatedSteps,
-      status: 'active' as const,
-      total_iterations: Math.max(
-        currentProcess.total_iterations ?? 0,
-        ...updatedSteps.map((s: any) => Number(s?.iteration) || 0),
-      ),
-    },
-  });
-  ctx.scheduleFlush();
+  ctx.state.pendingThinkingDeltas = nextPendingThinkingDeltas;
+  ctx.state.pendingThinkingDeltaStartedAt = nextPendingStartedAt;
+
+  if (didFlush) {
+    // Ensure thinking_visibility is 'visible' when we flush thinking deltas.
+    if ((existingMetadata as any).thinking_visibility !== 'visible') {
+      (existingMetadata as any).thinking_visibility = 'visible';
+    }
+    ctx.get().updateMessage(ctx.assistantMessageId, {
+      metadata: existingMetadata,
+      thinking_process: {
+        ...currentProcess,
+        steps: updatedSteps,
+        status: 'active' as const,
+        total_iterations: Math.max(
+          currentProcess.total_iterations ?? 0,
+          ...updatedSteps.map((s: any) => Number(s?.iteration) || 0),
+        ),
+      },
+    });
+    ctx.scheduleFlush();
+  }
+
+  if (Object.keys(ctx.state.pendingThinkingDeltas).length > 0) {
+    _scheduleThinkingDeltaFlush(ctx);
+  }
 }
 
 export function handleThinkingDelta(ctx: StreamHandlerContext, event: any): void {
@@ -358,14 +484,13 @@ export function handleThinkingDelta(ctx: StreamHandlerContext, event: any): void
   if (typeof iteration !== 'number' || !Number.isFinite(iteration)) return;
   if (typeof delta !== 'string' || delta.length === 0) return;
 
+  if (!ctx.state.pendingThinkingDeltas[iteration]) {
+    ctx.state.pendingThinkingDeltaStartedAt[iteration] = Date.now();
+  }
   ctx.state.pendingThinkingDeltas[iteration] =
     (ctx.state.pendingThinkingDeltas[iteration] || '') + delta;
 
-  if (ctx.state.thinkingDeltaFlushHandle !== null) return;
-  ctx.state.thinkingDeltaFlushHandle = window.setTimeout(() => {
-    ctx.state.thinkingDeltaFlushHandle = null;
-    _flushThinkingDeltaBuffer(ctx);
-  }, 80);
+  _scheduleThinkingDeltaFlush(ctx);
 }
 
 export function handleReasoningDelta(ctx: StreamHandlerContext, event: any): void {
@@ -374,14 +499,13 @@ export function handleReasoningDelta(ctx: StreamHandlerContext, event: any): voi
 
   const REASONING_ITERATION = 0;
 
+  if (!ctx.state.pendingThinkingDeltas[REASONING_ITERATION]) {
+    ctx.state.pendingThinkingDeltaStartedAt[REASONING_ITERATION] = Date.now();
+  }
   ctx.state.pendingThinkingDeltas[REASONING_ITERATION] =
     (ctx.state.pendingThinkingDeltas[REASONING_ITERATION] || '') + delta;
 
-  if (ctx.state.thinkingDeltaFlushHandle !== null) return;
-  ctx.state.thinkingDeltaFlushHandle = window.setTimeout(() => {
-    ctx.state.thinkingDeltaFlushHandle = null;
-    _flushThinkingDeltaBuffer(ctx);
-  }, 80);
+  _scheduleThinkingDeltaFlush(ctx);
 }
 
 export function flushPendingThinkingDeltas(ctx: StreamHandlerContext): void {
@@ -389,7 +513,7 @@ export function flushPendingThinkingDeltas(ctx: StreamHandlerContext): void {
     window.clearTimeout(ctx.state.thinkingDeltaFlushHandle);
     ctx.state.thinkingDeltaFlushHandle = null;
   }
-  _flushThinkingDeltaBuffer(ctx);
+  _flushThinkingDeltaBuffer(ctx, true);
 }
 
 function _extractToolNameFromAction(action: unknown): string | null {
@@ -462,6 +586,100 @@ export function handleControlAck(ctx: StreamHandlerContext, event: any): void {
 
   ctx.get().updateMessage(ctx.assistantMessageId, {
     metadata: nextMetadata,
+  });
+  ctx.scheduleFlush();
+}
+
+export function handleProgressStatus(ctx: StreamHandlerContext, event: any): void {
+  const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
+  if (!targetMessage) return;
+  const existingMetadata: ChatResponseMetadata = {
+    ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}),
+  };
+  const current =
+    (existingMetadata as any).deep_think_progress &&
+    typeof (existingMetadata as any).deep_think_progress === 'object'
+      ? { ...((existingMetadata as any).deep_think_progress as Record<string, any>) }
+      : {};
+  const toolName =
+    typeof event?.tool === 'string' && event.tool.trim().length > 0 ? event.tool.trim() : null;
+  const compactStatus = normalizeCompactProgressStatus(event?.status, event?.label);
+  const normalizedLabel = normalizeProgressLabel(event?.label, toolName);
+  const normalizedDetails = normalizeProgressDetails(event?.label, event?.details);
+  const history = Array.isArray(current.history) ? [...current.history] : [];
+  const nextEntry = {
+    phase: typeof event?.phase === 'string' ? event.phase : current.phase ?? 'analyzing',
+    label: normalizedLabel,
+    tool: toolName,
+    status: compactStatus,
+  };
+  const lastEntry = history.length > 0 ? history[history.length - 1] : null;
+  if (!lastEntry) {
+    history.push(nextEntry);
+  } else if (lastEntry.tool === nextEntry.tool && lastEntry.status === nextEntry.status) {
+    history[history.length - 1] = nextEntry;
+  } else if (
+    lastEntry.phase !== nextEntry.phase ||
+    lastEntry.label !== nextEntry.label ||
+    lastEntry.tool !== nextEntry.tool ||
+    lastEntry.status !== nextEntry.status
+  ) {
+    history.push(nextEntry);
+  }
+  const trimmedHistory = history.slice(-8);
+
+  const currentToolItems = Array.isArray(current.tool_items) ? [...current.tool_items] : [];
+  if (toolName) {
+    const existingIndex = currentToolItems.findIndex((item: any) => item?.tool === toolName);
+    const existingItem = existingIndex >= 0 ? currentToolItems[existingIndex] : null;
+    const nextToolItem = {
+      tool: toolName,
+      label: normalizedDetails ? normalizedLabel : (existingItem?.label ?? normalizedLabel),
+      status: compactStatus,
+      details: normalizedDetails ?? existingItem?.details ?? null,
+    };
+    if (existingIndex >= 0) {
+      currentToolItems[existingIndex] = {
+        ...currentToolItems[existingIndex],
+        ...nextToolItem,
+      };
+    } else {
+      currentToolItems.push(nextToolItem);
+    }
+  }
+
+  const expandedNotes = Array.isArray(current.expanded_notes) ? [...current.expanded_notes] : [];
+  if (!toolName && normalizedDetails && !expandedNotes.includes(normalizedDetails)) {
+    expandedNotes.push(normalizedDetails);
+  }
+
+  (existingMetadata as any).deep_think_progress = {
+    ...current,
+    phase: nextEntry.phase,
+    label: normalizedLabel,
+    iteration:
+      typeof event?.iteration === 'number' && Number.isFinite(event.iteration)
+        ? event.iteration
+        : current.iteration ?? null,
+    tool: toolName,
+    status: compactStatus,
+    current_tool: toolName,
+    current_label: normalizedLabel,
+    current_status: compactStatus,
+    current_details: normalizedDetails,
+    tool_items: currentToolItems,
+    expanded_notes: expandedNotes.slice(-6),
+    history: trimmedHistory,
+    updated_at: new Date().toISOString(),
+  };
+  (existingMetadata as any).thinking_visibility = 'progress';
+  (existingMetadata as any).unified_stream = true;
+  if (!(existingMetadata as any).status || (existingMetadata as any).status === 'pending') {
+    (existingMetadata as any).status = 'running';
+  }
+
+  ctx.get().updateMessage(ctx.assistantMessageId, {
+    metadata: existingMetadata,
   });
   ctx.scheduleFlush();
 }
@@ -548,6 +766,30 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
     analysis_text: result.metadata?.analysis_text !== undefined ? (result.metadata?.analysis_text as string | null) : ctx.state.streamedContent || '',
     final_summary: (result.metadata?.final_summary as string | undefined) ?? (result.response ?? ctx.state.streamedContent ?? ''),
   };
+  const existingProgress = (
+    (ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId)?.metadata as any)?.deep_think_progress ??
+    (result.metadata as any)?.deep_think_progress
+  ) as Record<string, any> | undefined;
+  if (existingProgress && typeof existingProgress === 'object') {
+    const existingToolItems = Array.isArray((existingProgress as any).tool_items)
+      ? ([...(existingProgress as any).tool_items] as Array<Record<string, any>>)
+      : [];
+    (assistantMetadata as any).deep_think_progress = {
+      ...existingProgress,
+      phase: 'finalizing',
+      label:
+        typeof existingProgress.label === 'string' && existingProgress.label.trim()
+          ? existingProgress.label
+          : 'Generating final answer',
+      status: initialStatus === 'failed' ? 'error' : 'completed',
+      current_status: null,
+      current_tool: null,
+      current_label: null,
+      current_details: null,
+      tool_items: existingToolItems,
+      updated_at: new Date().toISOString(),
+    };
+  }
   if (initialStatus === 'pending' || initialStatus === 'running') {
     (assistantMetadata as any).unified_stream = true;
     (assistantMetadata as any).plan_message = formatToolPlanPreface(actions);

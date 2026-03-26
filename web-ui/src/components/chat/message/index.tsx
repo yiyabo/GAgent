@@ -152,7 +152,13 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     typeof (metadata as any)?.deep_think_job_id === 'string'
       ? ((metadata as any).deep_think_job_id as string)
       : null;
+  const hasCompactProgress =
+    (metadata as any)?.thinking_visibility === 'progress' &&
+    Boolean((metadata as any)?.deep_think_progress);
   const deepThinkPausedFromMetadata = Boolean((metadata as any)?.deep_think_paused);
+  const showThinkingProcess =
+    Boolean(message.thinking_process) &&
+    (metadata as any)?.thinking_visibility === 'visible';
   const [deepThinkPaused, setDeepThinkPaused] = useState<boolean>(deepThinkPausedFromMetadata);
   const [deepThinkControlBusyAction, setDeepThinkControlBusyAction] = useState<
     'pause' | 'resume' | 'skip_step' | null
@@ -204,6 +210,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     !(metadata as any)?.actions?.length &&
     (content?.trim?.() ?? '') === '' &&
     !analysisText &&
+    !hasCompactProgress &&
     !hasThinkingSteps  // If thinking steps exist, render ThinkingProcess instead.
   ) {
     return <TypingIndicator message="Thinking..." showAvatar={true} />;
@@ -286,6 +293,33 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
   const isBackgroundDispatch = Boolean(bgCategory && (bgCategory === 'phagescope' || bgCategory === 'claude_code' || bgCategory === 'task_creation'));
 
   const renderSummary = () => {
+    const responsePlaceholderVisible =
+      unifiedStream &&
+      isStreaming &&
+      !hasCompactProgress &&
+      !displayTextForUi;
+    if (responsePlaceholderVisible) {
+      // When ThinkingProcess is active and visible, don't show redundant placeholder —
+      // the ThinkingProcess component itself already shows live status.
+      if (showThinkingProcess && message.thinking_process?.status === 'active') {
+        return null;
+      }
+      const placeholderText = showThinkingProcess ? '正在生成回答…' : '正在准备回复…';
+      return (
+        <div
+          style={{
+            marginTop: 8,
+            color: 'var(--text-secondary)',
+            fontSize: 14,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {placeholderText}
+          <span className="stream-cursor">▍</span>
+        </div>
+      );
+    }
     if (!displayTextForUi) return null;
     if (isStreaming) {
       return (
@@ -390,7 +424,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                     />
                   )}
                   {/* Thinking Process */}
-                  {message.thinking_process && (
+                  {showThinkingProcess && message.thinking_process && (
                     <ThinkingProcess
                       process={message.thinking_process}
                       isFinished={thinkingIsFinished}
@@ -416,8 +450,18 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
             }
             return (
               <>
+                {hasCompactProgress && (
+                  <ToolProgressCard
+                    metadata={metadata}
+                    isDecomposeActive={isDecomposeActive}
+                    isDecomposeFailed={isDecomposeFailed}
+                    decomposeProgress={decomposeProgress}
+                    effectiveDecomposeJob={effectiveDecomposeJob}
+                    processSummary={processSummary}
+                  />
+                )}
                 {/* Thinking Process - always render if present */}
-                {message.thinking_process && (
+                {showThinkingProcess && message.thinking_process && (
                   <ThinkingProcess
                     process={message.thinking_process}
                     isFinished={thinkingIsFinished}

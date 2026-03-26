@@ -43,6 +43,7 @@ from app.services.deep_think_agent import (
     DeepThinkAgent,
     ThinkingStep,
     DeepThinkResult,
+    summarize_tool_step_display,
     summarize_simple_chat_reasoning,
 )
 from tool_box import execute_tool
@@ -146,6 +147,12 @@ from .prompt_builder import (
     format_memories as _format_memories_fn,
     get_structured_agent_prompts as _get_structured_agent_prompts_fn,
     strip_code_fence as _strip_code_fence_fn,
+)
+from .request_routing import (
+    RequestRoutingDecision,
+    RequestTierProfile,
+    build_request_tier_profile,
+    resolve_request_routing,
 )
 from .background import _sse_message
 from .services import app_settings, decomposer_settings, plan_repository
@@ -900,11 +907,25 @@ class StructuredChatAgent:
         Optional ``run_id`` aligns the Deep Think job id with a chat run id.
         ``event_sink`` receives the same JSON payloads as SSE ``data:`` lines (dict form).
         """
+        routing_decision, route_profile = self._resolve_request_routing(user_message)
+        effective_user_message = routing_decision.effective_user_message
+        if routing_decision.request_route_mode == "auto_simple":
+            async for chunk in self.stream_simple_chat(
+                effective_user_message,
+                routing_decision=routing_decision,
+                route_profile=route_profile,
+                event_sink=event_sink,
+            ):
+                yield chunk
+            return
+
         queue: asyncio.Queue[Any] = asyncio.Queue()
         deep_think_job_id: Optional[str] = run_id or f"dt_{uuid4().hex}"
         deep_think_job_created = False
         deep_think_job_queue: Optional[asyncio.Queue[Any]] = None
         active_tool_iteration: Optional[int] = None
+        thinking_visible = routing_decision.thinking_visibility == "visible"
+        progress_visible = routing_decision.thinking_visibility == "progress"
 
         if deep_think_job_id:
             try:
@@ -919,7 +940,7 @@ class StructuredChatAgent:
                     metadata={
                         "session_id": self.session_id,
                         "origin": "chat_deep_think",
-                        "message_preview": str(user_message or "")[:200],
+                        "message_preview": str(effective_user_message or "")[:200],
                     },
                     job_id=deep_think_job_id,
                 )
@@ -937,24 +958,157 @@ class StructuredChatAgent:
                 deep_think_job_created = False
                 deep_think_job_queue = None
 
-        reasoning_language = detect_reasoning_language(user_message)
+        reasoning_language = detect_reasoning_language(effective_user_message)
+
+        def _progress_label_from_phase(phase: str) -> str:
+            if reasoning_language == "zh":
+                mapping = {
+                    "planning": "分析请求中",
+                    "gathering": "检索资料中",
+                    "analyzing": "整理候选方向中",
+                    "synthesizing": "汇总结论中",
+                    "finalizing": "生成最终答复中",
+                }
+            else:
+                mapping = {
+                    "planning": "Planning the response",
+                    "gathering": "Gathering evidence",
+                    "analyzing": "Analyzing findings",
+                    "synthesizing": "Synthesizing conclusions",
+                    "finalizing": "Preparing the final answer",
+                }
+            return mapping.get(phase, mapping["analyzing"])
+
+        def _normalize_progress_text(text: Optional[str]) -> str:
+            return re.sub(r"\s+", " ", str(text or "")).strip()
+
+        def _truncate_progress_text(text: Optional[str], max_chars: int = 72) -> str:
+            normalized = _normalize_progress_text(text)
+            if len(normalized) <= max_chars:
+                return normalized
+            return f"{normalized[: max_chars - 1].rstrip()}…"
+
+        def _tool_progress_details(
+            tool_name: str, params: Optional[Dict[str, Any]]
+        ) -> Optional[str]:
+            params = params if isinstance(params, dict) else {}
+            lowered = (tool_name or "").strip().lower()
+            if lowered == "web_search":
+                query = _normalize_progress_text(params.get("query"))
+                return query or None
+            if lowered == "literature_pipeline":
+                topic = _normalize_progress_text(
+                    params.get("topic") or params.get("query") or params.get("question")
+                )
+                return topic or None
+            if lowered == "document_reader":
+                path = _normalize_progress_text(
+                    params.get("path") or params.get("file_path")
+                )
+                return path or None
+            if lowered == "file_operations":
+                target = _normalize_progress_text(
+                    params.get("path")
+                    or params.get("target")
+                    or params.get("file_path")
+                )
+                return target or None
+            return None
+
+        def _extract_tool_context(action_raw: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+            if not action_raw:
+                return None, None
+            try:
+                parsed = json.loads(action_raw)
+            except Exception:
+                return None, None
+            if not isinstance(parsed, dict):
+                return None, None
+            tool_name = str(parsed.get("tool") or "").strip() or None
+            params = parsed.get("params") if isinstance(parsed.get("params"), dict) else {}
+            return tool_name, _tool_progress_details(tool_name or "", params)
+
+        def _progress_phase_from_step(step: ThinkingStep) -> str:
+            if step.status == "calling_tool" or step.action:
+                return "gathering"
+            if step.status == "done":
+                return "finalizing"
+            if step.status == "analyzing":
+                return "synthesizing"
+            if step.iteration <= 1:
+                return "planning"
+            return "analyzing"
+
+        async def _emit_progress_status(
+            *,
+            phase: str,
+            label: Optional[str] = None,
+            details: Optional[str] = None,
+            iteration: Optional[int] = None,
+            tool: Optional[str] = None,
+            status: str = "active",
+        ) -> None:
+            if not progress_visible:
+                return
+            await queue.put(
+                {
+                    "type": "progress_status",
+                    "phase": phase,
+                    "label": _truncate_progress_text(label or _progress_label_from_phase(phase), 72),
+                    "details": _normalize_progress_text(details) or None,
+                    "iteration": iteration,
+                    "tool": tool,
+                    "status": status,
+                }
+            )
 
         async def on_thinking(step: ThinkingStep):
             nonlocal active_tool_iteration
             active_tool_iteration = step.iteration
+            if progress_visible:
+                phase = _progress_phase_from_step(step)
+                progress_tool, progress_details = _extract_tool_context(step.action)
+                progress_label = _progress_label_from_phase(phase)
+                if progress_tool:
+                    progress_label = summarize_tool_step_display(
+                        step, language=reasoning_language
+                    )
+                await _emit_progress_status(
+                    phase=phase,
+                    label=progress_label,
+                    details=progress_details,
+                    iteration=step.iteration,
+                    tool=progress_tool,
+                    status=(
+                        "error"
+                        if step.status == "error"
+                        else ("completed" if step.status == "done" else "active")
+                    ),
+                )
+            if not thinking_visible:
+                return
+            # For the final concluded step (done, no tool action) the `thought` content
+            # is typically the same text as the final answer streamed separately via
+            # `on_final_delta`.  Preserving it here would cause it to appear inside the
+            # thinking timeline AND again as the main response — a visible duplication.
+            # We rely on the `thinking_delta` events already accumulated in the frontend
+            # to supply a partial thought summary if needed.
+            is_final_concluded = step.status == "done" and not step.action
             await queue.put(
                 {
                     "type": "thinking_step",
                     "step": build_user_visible_step(
                         step,
                         language=reasoning_language,
-                        preserve_thought=True,
+                        preserve_thought=not is_final_concluded,
                     ),
                 }
             )
 
         async def on_thinking_delta(iteration: int, delta: str):
             """Send token-level updates for thinking process."""
+            if not thinking_visible:
+                return
             logger.debug(
                 "[DEEP_THINK_DELTA] iteration=%s delta_len=%s",
                 iteration,
@@ -971,6 +1125,74 @@ class StructuredChatAgent:
         async def on_final_delta(delta: str):
             """Send token-level updates for final answer."""
             await queue.put({"type": "delta", "content": delta})
+
+        async def on_tool_start(tool_name: str, params: Dict[str, Any]) -> None:
+            tool_step = ThinkingStep(
+                iteration=active_tool_iteration or 0,
+                thought="",
+                action=json.dumps(
+                    {"tool": tool_name, "params": params}, ensure_ascii=False
+                ),
+                action_result=None,
+                self_correction=None,
+                display_text=None,
+                kind="tool",
+            )
+            await _emit_progress_status(
+                phase="gathering",
+                label=summarize_tool_step_display(
+                    tool_step, language=reasoning_language
+                ),
+                details=_tool_progress_details(tool_name, params),
+                iteration=active_tool_iteration,
+                tool=tool_name,
+                status="active",
+            )
+
+        async def on_tool_result(tool_name: str, payload: Dict[str, Any]) -> None:
+            ok = bool((payload or {}).get("success", True))
+            retrying = bool((payload or {}).get("retrying"))
+            if retrying:
+                await _emit_progress_status(
+                    phase="gathering",
+                    label=(
+                        "检索失败，正在重试"
+                        if reasoning_language == "zh"
+                        else "Search failed, retrying"
+                    ),
+                    details=_tool_progress_details(tool_name, payload),
+                    iteration=active_tool_iteration,
+                    tool=tool_name,
+                    status="retrying",
+                )
+                return
+            if not ok:
+                await _emit_progress_status(
+                    phase="synthesizing",
+                    label=(
+                        "切换为保守总结"
+                        if reasoning_language == "zh"
+                        else "Switching to a conservative summary"
+                    ),
+                    details=_normalize_progress_text(
+                        str((payload or {}).get("error") or "")
+                    ) or None,
+                    iteration=active_tool_iteration,
+                    tool=tool_name,
+                    status="failed",
+                )
+                return
+            await _emit_progress_status(
+                phase="synthesizing",
+                label=(
+                    "整理搜索结果"
+                    if reasoning_language == "zh"
+                    else "Reviewing search results"
+                ),
+                iteration=active_tool_iteration,
+                tool=tool_name,
+                status="completed",
+            )
 
         async def relay_job_events() -> None:
             if deep_think_job_queue is None:
@@ -1487,7 +1709,8 @@ class StructuredChatAgent:
                                         # This ensures DeepThink-created plans get the same
                                         # multi-level decomposition as regular plans
                                         session_ctx = {
-                                            "user_message": user_message,
+                                            "user_message": effective_user_message,
+                                            "request_tier": routing_decision.request_tier,
                                             "chat_history": self.history,
                                             "recent_tool_results": self.extra_context.get(
                                                 "recent_tool_results", []
@@ -1560,6 +1783,8 @@ class StructuredChatAgent:
                     await queue.put({"type": "artifact", **meta})
 
                 async def on_reasoning_delta(iteration: int, delta: str) -> None:
+                    if not thinking_visible:
+                        return
                     await queue.put({
                         "type": "reasoning_delta",
                         "iteration": iteration,
@@ -1573,39 +1798,41 @@ class StructuredChatAgent:
                         "iteration": iteration,
                     })
 
-                dt_agent = dt_agent_cls(
-                    llm_client=self.llm_service,
-                    cancel_event=cancel_event,
-                    available_tools=[
-                        "web_search",
-                        "graph_rag",
-                        "sequence_fetch",
-                        "claude_code",
-                        "file_operations",
-                        "document_reader",
-                        "vision_reader",
-                        "bio_tools",
-                        "literature_pipeline",
-                        "review_pack_writer",
-                        "manuscript_writer",
-                        "phagescope",
-                        "deeppl",
-                        "plan_operation",
-                        "terminal_session",
-                        "verify_task",
-                    ],
-                    tool_executor=tool_wrapper,
-                    max_iterations=_resolve_deep_think_max_iterations(),
-                    tool_timeout=120,
-                    on_thinking=on_thinking,
-                    on_thinking_delta=on_thinking_delta,
-                    on_final_delta=on_final_delta,
-                    on_artifact=on_artifact,
-                    enable_thinking=self._resolve_thinking_enabled(),
-                    thinking_budget=self._resolve_thinking_budget(),
-                    on_reasoning_delta=on_reasoning_delta,
-                    steer_drain=steer_drain,
-                    on_steer_ack=on_steer_ack,
+                dt_agent_kwargs: Dict[str, Any] = {
+                    "llm_client": self.llm_service,
+                    "cancel_event": cancel_event,
+                    "available_tools": route_profile.available_tools,
+                    "tool_executor": tool_wrapper,
+                    "max_iterations": route_profile.max_iterations,
+                    "tool_timeout": 120,
+                    "on_thinking": on_thinking,
+                    "on_thinking_delta": on_thinking_delta,
+                    "on_final_delta": on_final_delta,
+                    "on_tool_start": on_tool_start,
+                    "on_tool_result": on_tool_result,
+                    "on_artifact": on_artifact,
+                    "enable_thinking": self._resolve_thinking_enabled(),
+                    "thinking_budget": route_profile.thinking_budget,
+                    "on_reasoning_delta": on_reasoning_delta,
+                    "steer_drain": steer_drain,
+                    "on_steer_ack": on_steer_ack,
+                }
+                try:
+                    ctor_params = inspect.signature(dt_agent_cls.__init__).parameters
+                except Exception:  # pragma: no cover - defensive
+                    ctor_params = {}
+                if "request_profile" in ctor_params:
+                    dt_agent_kwargs["request_profile"] = {
+                        **route_profile.prompt_metadata(),
+                        **routing_decision.metadata(),
+                    }
+                dt_agent = dt_agent_cls(**dt_agent_kwargs)
+
+                await _emit_progress_status(
+                    phase="planning",
+                    label=_progress_label_from_phase("planning"),
+                    iteration=0,
+                    status="active",
                 )
 
                 if deep_think_job_created and deep_think_job_id:
@@ -1631,10 +1858,12 @@ class StructuredChatAgent:
                     **self.extra_context,
                     "chat_history": self.history,
                     "session_id": self.session_id,
+                    **routing_decision.metadata(),
+                    **route_profile.prompt_metadata(),
                 }
 
                 # Run think
-                result = await dt_agent.think(user_message, think_context)
+                result = await dt_agent.think(effective_user_message, think_context)
                 if cancel_event is not None and cancel_event.is_set():
                     if deep_think_job_created and deep_think_job_id:
                         plan_decomposition_jobs.mark_failure(
@@ -1708,6 +1937,7 @@ class StructuredChatAgent:
                 "thinking_step",
                 "thinking_delta",
                 "reasoning_delta",
+                "progress_status",
                 "delta",
                 "control_ack",
                 "tool_output",
@@ -1749,7 +1979,13 @@ class StructuredChatAgent:
                             "iterations": res.total_iterations,
                             "tools_used": res.tools_used,
                             "confidence": res.confidence,
-                            "thinking_process": {
+                            "tool_failures": res.tool_failures,
+                            "search_verified": res.search_verified,
+                            "fallback_used": res.fallback_used,
+                            **routing_decision.metadata(),
+                        }
+                        if thinking_visible:
+                            metadata_payload["thinking_process"] = {
                                 "status": "completed",
                                 "total_iterations": res.total_iterations,
                                 "summary": res.thinking_summary,
@@ -1766,8 +2002,7 @@ class StructuredChatAgent:
                                     }
                                     for s in res.thinking_steps
                                 ],
-                            },
-                        }
+                            }
                         if result_job_id:
                             metadata_payload["deep_think_job_id"] = result_job_id
                         _save_chat_message(
@@ -1795,6 +2030,10 @@ class StructuredChatAgent:
                     "plan_id": self.plan_session.plan_id,  # Include plan_id so frontend can update
                     "plan_title": plan_title,
                     "deep_think": True,
+                    "tool_failures": res.tool_failures,
+                    "search_verified": res.search_verified,
+                    "fallback_used": res.fallback_used,
+                    **routing_decision.metadata(),
                 }
                 if bg_category:
                     final_metadata["background_category"] = bg_category
@@ -1810,29 +2049,53 @@ class StructuredChatAgent:
                 yield out
 
     async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
-        """Backward-compatible alias for process_unified_stream."""
-        async for chunk in self.process_unified_stream(user_message):
-            yield chunk
+        """Backward-compatible helper that force-enables the DeepThink path."""
+        if not isinstance(getattr(self, "extra_context", None), dict):
+            self.extra_context = {}
+        previous = self.extra_context.get("deep_think_enabled")
+        self.extra_context["deep_think_enabled"] = True
+        try:
+            async for chunk in self.process_unified_stream(user_message):
+                yield chunk
+        finally:
+            if previous is None:
+                self.extra_context.pop("deep_think_enabled", None)
+            else:
+                self.extra_context["deep_think_enabled"] = previous
 
-    async def stream_simple_chat(self, user_message: str) -> AsyncIterator[str]:
+    async def stream_simple_chat(
+        self,
+        user_message: str,
+        *,
+        routing_decision: Optional[RequestRoutingDecision] = None,
+        route_profile: Optional[RequestTierProfile] = None,
+        event_sink: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    ) -> AsyncIterator[str]:
         """Lightweight chat path with thinking enabled but no tools.
 
         Used for conversations without plan context where tool access
         is not needed. Thinking budget is smaller to keep latency low.
         """
 
+        if routing_decision is None or route_profile is None:
+            routing_decision, route_profile = self._resolve_request_routing(user_message)
+
         prompt = _build_simple_stream_chat_prompt_fn(self, user_message)
         model_override = self.extra_context.get("default_base_model")
         enable_thinking = self._resolve_thinking_enabled()
-        thinking_budget = self._resolve_thinking_budget_simple()
-        reasoning_language = detect_reasoning_language(user_message)
+        thinking_budget = route_profile.thinking_budget
         visible_reasoning = summarize_simple_chat_reasoning(user_message)
+
+        async def _through_sink(payload: Dict[str, Any]) -> str:
+            if event_sink is not None:
+                await event_sink(payload)
+            return _sse_message(payload)
 
         queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
         content_parts: list[str] = []
         step_started_at = datetime.now(timezone.utc).replace(microsecond=0)
 
-        yield _sse_message(
+        yield await _through_sink(
             {
                 "type": "thinking_step",
                 "step": {
@@ -1860,12 +2123,12 @@ class StructuredChatAgent:
                 ):
                     content_parts.append(delta)
                     await queue.put(
-                        _sse_message({"type": "delta", "content": delta})
+                        await _through_sink({"type": "delta", "content": delta})
                     )
             except Exception as exc:
                 logger.error("Simple chat stream failed: %s", exc)
                 await queue.put(
-                    _sse_message({
+                    await _through_sink({
                         "type": "error",
                         "message": f"Stream failed: {exc}",
                     })
@@ -1914,6 +2177,7 @@ class StructuredChatAgent:
                     "status": "completed",
                     "analysis_text": display_text,
                     "final_summary": display_text,
+                    **routing_decision.metadata(),
                 }
                 if thinking_process is not None:
                     save_meta["thinking_process"] = thinking_process
@@ -1935,6 +2199,7 @@ class StructuredChatAgent:
             "unified_stream": True,
             "analysis_text": display_text,
             "final_summary": display_text,
+            **routing_decision.metadata(),
         }
         if thinking_process is not None:
             meta["thinking_process"] = thinking_process
@@ -1944,7 +2209,7 @@ class StructuredChatAgent:
             "actions": [],
             "metadata": meta,
         }
-        yield _sse_message({"type": "final", "payload": payload})
+        yield await _through_sink({"type": "final", "payload": payload})
 
     def _resolve_thinking_enabled(self) -> bool:
         settings = get_settings()
@@ -1957,6 +2222,28 @@ class StructuredChatAgent:
     def _resolve_thinking_budget_simple(self) -> int:
         settings = get_settings()
         return min(int(getattr(settings, "thinking_budget_simple", 2000)), 800)
+
+    def _resolve_request_routing(
+        self,
+        user_message: str,
+    ) -> tuple[RequestRoutingDecision, RequestTierProfile]:
+        settings = get_settings()
+        decision = resolve_request_routing(
+            message=user_message,
+            history=self.history,
+            context=self.extra_context,
+            plan_id=self.plan_session.plan_id,
+            current_task_id=self.extra_context.get("current_task_id"),
+        )
+        profile = build_request_tier_profile(
+            decision,
+            default_thinking_budget=int(getattr(settings, "thinking_budget", 10000)),
+            simple_thinking_budget=int(
+                getattr(settings, "thinking_budget_simple", 2000)
+            ),
+            default_max_iterations=_resolve_deep_think_max_iterations(),
+        )
+        return decision, profile
 
     async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
         self._current_user_message = user_message

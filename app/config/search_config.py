@@ -39,7 +39,7 @@ class SearchSettings:
     glm_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     glm_model: str = "qwen3-max-2026-01-23"
 
-    builtin_request_timeout: float = 40.0
+    builtin_request_timeout: float = 90.0
 
     perplexity_api_key: Optional[str] = None
     perplexity_api_url: str = "https://api.perplexity.ai/chat/completions"
@@ -104,9 +104,9 @@ def get_search_settings() -> SearchSettings:
     tavily_auto_parameters = _env("TAVILY_AUTO_PARAMETERS", "false")
 
     try:
-        builtin_timeout = float(_env("WEB_SEARCH_BUILTIN_TIMEOUT", "40.0"))
+        builtin_timeout = float(_env("WEB_SEARCH_BUILTIN_TIMEOUT", "90.0"))
     except Exception:
-        builtin_timeout = 40.0
+        builtin_timeout = 90.0
 
     try:
         perplexity_timeout = float(_env("WEB_SEARCH_PERPLEXITY_TIMEOUT", "30.0"))

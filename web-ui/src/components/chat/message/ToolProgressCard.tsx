@@ -7,7 +7,7 @@ import {
   Progress,
 } from 'antd';
 import { CloudSyncOutlined } from '@ant-design/icons';
-import type { ChatMessage as ChatMessageType, DecompositionJobStatus } from '@/types';
+import type { ChatMessage as ChatMessageType, CompactProgressState, DecompositionJobStatus } from '@/types';
 
 const { Text } = Typography;
 
@@ -61,6 +61,60 @@ export const deriveToolActionStatusIcon = (action: any, messageStatus?: string) 
   return '⏳';
 };
 
+const TOOL_LABELS: Record<string, string> = {
+  web_search: 'web_search',
+  literature_pipeline: 'literature_pipeline',
+  document_reader: 'document_reader',
+  file_operations: 'file_operations',
+  graph_rag: 'graph_rag',
+  result_interpreter: 'result_interpreter',
+  claude_code: 'claude_code',
+};
+
+const PHASE_LABELS: Record<string, string> = {
+  planning: 'Analyzing request',
+  gathering: 'Searching sources',
+  analyzing: 'Reviewing findings',
+  synthesizing: 'Preparing answer',
+  finalizing: 'Preparing answer',
+};
+
+const normalizeProgressText = (value: unknown) =>
+  String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .trim();
+
+const truncateProgressText = (value: unknown, maxChars: number) => {
+  const normalized = normalizeProgressText(value);
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+};
+
+const formatToolName = (tool: unknown) => {
+  const normalized = String(tool ?? '').trim();
+  if (!normalized) return 'Tool';
+  return TOOL_LABELS[normalized] ?? normalized;
+};
+
+const formatPhaseTitle = (phase: unknown) => {
+  const normalized = String(phase ?? '').trim();
+  if (!normalized) return 'Working on the request';
+  return PHASE_LABELS[normalized] ?? 'Working on the request';
+};
+
+const formatCompactStatus = (status: unknown) => {
+  const normalized = String(status ?? '').trim().toLowerCase();
+  if (normalized === 'retrying') return 'Retrying';
+  if (normalized === 'failed' || normalized === 'error') return 'Failed';
+  if (normalized === 'running' || normalized === 'active') return 'Running';
+  if (normalized === 'completed' || normalized === 'success' || normalized === 'done') return 'Completed';
+  return null;
+};
+
+const isSameText = (left: unknown, right: unknown) =>
+  normalizeProgressText(left).toLowerCase() === normalizeProgressText(right).toLowerCase();
+
 interface ToolProgressCardProps {
   metadata: ChatMessageType['metadata'];
   isDecomposeActive: boolean;
@@ -87,16 +141,64 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
   processSummary,
 }) => {
   const [toolOpen, setToolOpen] = useState(false);
+  const [expandedTextKeys, setExpandedTextKeys] = useState<Record<string, boolean>>({});
   const unifiedStream = Boolean(metadata && (metadata as any).unified_stream);
-  if (!unifiedStream) return null;
+  const deepThinkProgress =
+    (metadata as any)?.deep_think_progress &&
+    typeof (metadata as any)?.deep_think_progress === 'object'
+      ? ((metadata as any).deep_think_progress as CompactProgressState)
+      : null;
+  const progressVisibility = (metadata as any)?.thinking_visibility;
+  if (!unifiedStream && !(progressVisibility === 'progress' && deepThinkProgress)) return null;
   const status = metadata?.status;
   const actions =
     (Array.isArray(metadata?.actions) ? metadata?.actions : null) ??
     (Array.isArray(metadata?.raw_actions) ? metadata?.raw_actions : []);
-  if (!actions || actions.length === 0) return null;
+  if ((!actions || actions.length === 0) && !(progressVisibility === 'progress' && deepThinkProgress)) return null;
   const visibleActions = actions;
-  if (visibleActions.length === 0) return null;
+  if (visibleActions.length === 0 && !(progressVisibility === 'progress' && deepThinkProgress)) return null;
   const toolActions = visibleActions.filter((act: any) => act?.kind === 'tool_operation');
+
+  const toggleExpandedText = (key: string) => {
+    setExpandedTextKeys((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const renderExpandableText = (
+    rawValue: unknown,
+    key: string,
+    maxChars: number,
+    opts?: { muted?: boolean; singleLine?: boolean },
+  ) => {
+    const value = normalizeProgressText(rawValue);
+    if (!value) return null;
+    const expanded = Boolean(expandedTextKeys[key]);
+    const shouldClamp = value.length > maxChars;
+    const displayValue = expanded || !shouldClamp ? value : truncateProgressText(value, maxChars);
+    return (
+      <div style={{ display: 'flex', alignItems: opts?.singleLine ? 'center' : 'flex-start', gap: 6, flexWrap: 'wrap' }}>
+        <Text
+          style={{
+            color: opts?.muted ? 'var(--text-secondary)' : 'var(--text-primary)',
+            fontSize: 12,
+            lineHeight: 1.6,
+            whiteSpace: opts?.singleLine ? 'nowrap' : 'normal',
+          }}
+        >
+          {displayValue}
+        </Text>
+        {shouldClamp && (
+          <Button
+            type="link"
+            size="small"
+            onClick={() => toggleExpandedText(key)}
+            style={{ padding: 0, height: 'auto', fontSize: 12 }}
+          >
+            {expanded ? 'Less' : 'More'}
+          </Button>
+        )}
+      </div>
+    );
+  };
 
   const effectiveStatus = isDecomposeFailed ? 'failed' : isDecomposeActive ? 'running' : status;
   const statusLabel =
@@ -119,13 +221,37 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
         : 'blue';
 
   const summary =
-    toolActions.length > 0
+    progressVisibility === 'progress' && deepThinkProgress
+      ? (typeof deepThinkProgress.label === 'string' && deepThinkProgress.label.trim()
+          ? deepThinkProgress.label
+          : 'Working on the request')
+      : toolActions.length > 0
       ? `Tools: ${toolActions
         .map((act: any) => (typeof act?.name === 'string' ? act.name : null))
         .filter(Boolean)
         .slice(0, 3)
         .join(', ')}${toolActions.length > 3 ? ` and ${toolActions.length - 3} more` : ''}`
       : `Actions: ${visibleActions.length}`;
+  const compactProgressLabel =
+    progressVisibility === 'progress' && deepThinkProgress
+      ? (typeof deepThinkProgress.label === 'string' ? deepThinkProgress.label : 'Working on the request')
+      : null;
+  const compactProgressPhase =
+    progressVisibility === 'progress' && deepThinkProgress && typeof deepThinkProgress.phase === 'string'
+      ? deepThinkProgress.phase
+      : null;
+  const compactProgressStatus =
+    progressVisibility === 'progress' && deepThinkProgress && typeof deepThinkProgress.status === 'string'
+      ? deepThinkProgress.status
+      : null;
+  const compactProgressIteration =
+    progressVisibility === 'progress' && deepThinkProgress && typeof deepThinkProgress.iteration === 'number'
+      ? deepThinkProgress.iteration
+      : null;
+  const compactProgressHistory =
+    progressVisibility === 'progress' && deepThinkProgress && Array.isArray(deepThinkProgress.history)
+      ? deepThinkProgress.history
+      : [];
 
   const toolProgress = (metadata as any)?.tool_progress as any;
   const toolProgressPercent =
@@ -154,6 +280,191 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
           : 0;
   const progressStatus =
     effectiveStatus === 'failed' ? 'exception' : effectiveStatus === 'completed' ? 'success' : 'active';
+
+  if (progressVisibility === 'progress' && deepThinkProgress) {
+    const progressFinished = String(deepThinkProgress.status ?? status ?? '')
+      .trim()
+      .toLowerCase() === 'completed';
+    const compactStatus = progressFinished
+      ? null
+      : formatCompactStatus(
+          deepThinkProgress.current_status ?? deepThinkProgress.status ?? status
+        );
+    const currentTool = normalizeProgressText(deepThinkProgress.current_tool || deepThinkProgress.tool);
+    const compactToolItems = Array.isArray(deepThinkProgress.tool_items)
+      ? deepThinkProgress.tool_items
+      : [];
+    const compactHistory = Array.isArray(deepThinkProgress.history) ? deepThinkProgress.history : [];
+    const derivedToolItems =
+      compactToolItems.length > 0
+        ? compactToolItems
+        : compactHistory.reduce<Array<{ tool: string; label?: string | null; status: string; details?: string | null }>>(
+            (acc, entry) => {
+              const tool = normalizeProgressText((entry as any)?.tool);
+              if (!tool) return acc;
+              const nextItem = {
+                tool,
+                label: normalizeProgressText((entry as any)?.label) || null,
+                status: normalizeProgressText((entry as any)?.status) || 'running',
+                details: null,
+              };
+              const existingIndex = acc.findIndex((item) => item.tool === tool);
+              if (existingIndex >= 0) {
+                acc[existingIndex] = {
+                  ...acc[existingIndex],
+                  ...nextItem,
+                };
+              } else {
+                acc.push(nextItem);
+              }
+              return acc;
+            },
+            [],
+          );
+    const latestToolItem =
+      derivedToolItems.length > 0 ? derivedToolItems[derivedToolItems.length - 1] : null;
+    const currentTitle = progressFinished
+      ? latestToolItem
+        ? formatToolName(latestToolItem.tool)
+        : 'Answer ready'
+      : currentTool
+        ? formatToolName(currentTool)
+        : formatPhaseTitle(deepThinkProgress.phase);
+    const currentSubtitle = progressFinished
+      ? normalizeProgressText(latestToolItem?.details || latestToolItem?.label) || null
+      : normalizeProgressText(deepThinkProgress.current_label || deepThinkProgress.label) || null;
+    const currentDetails = progressFinished
+      ? null
+      : normalizeProgressText((deepThinkProgress as any).current_details) || null;
+    const compactNotes = Array.isArray(deepThinkProgress.expanded_notes)
+      ? deepThinkProgress.expanded_notes
+      : [];
+    const visibleNotes = compactNotes.filter(
+      (note) => !isSameText(note, currentSubtitle) && !isSameText(note, currentDetails)
+    );
+
+    return (
+      <div
+        style={{
+          marginBottom: 10,
+          padding: '12px 14px',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--border-color)',
+          background: 'var(--bg-tertiary)',
+          fontSize: 12,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, minWidth: 0, flex: 1 }}>
+            <div
+              style={{
+                width: 10,
+                height: 10,
+                marginTop: 5,
+                borderRadius: 999,
+                background:
+                  compactStatus === 'Failed'
+                    ? '#ff7875'
+                    : compactStatus === 'Retrying'
+                      ? '#faad14'
+                      : 'var(--primary-color)',
+                boxShadow:
+                  compactStatus === 'Failed'
+                    ? '0 0 0 4px rgba(255, 120, 117, 0.12)'
+                    : compactStatus === 'Retrying'
+                      ? '0 0 0 4px rgba(250, 173, 20, 0.12)'
+                      : '0 0 0 4px color-mix(in srgb, var(--primary-color) 16%, transparent)',
+                flexShrink: 0,
+              }}
+            />
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <Space size={8} align="center" wrap>
+                <Text strong style={{ fontSize: 14, color: 'var(--text-primary)' }}>
+                  {currentTitle}
+                </Text>
+                {compactStatus && compactStatus !== 'Completed' && (
+                  <Tag color={compactStatus === 'Failed' ? 'red' : compactStatus === 'Retrying' ? 'gold' : 'blue'} style={{ margin: 0 }}>
+                    {compactStatus}
+                  </Tag>
+                )}
+              </Space>
+              {(currentSubtitle || currentDetails) && (
+                <div style={{ marginTop: 6, minWidth: 0 }}>
+                  {renderExpandableText(currentDetails || currentSubtitle, 'progress_current', 96, { muted: true, singleLine: true })}
+                </div>
+              )}
+            </div>
+          </div>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => setToolOpen((v) => !v)}
+            style={{ padding: 0, fontSize: 12, flexShrink: 0 }}
+          >
+            {toolOpen ? 'Collapse' : 'Expand'}
+          </Button>
+        </div>
+
+        {toolOpen && (
+          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {derivedToolItems.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {derivedToolItems.map((item, idx) => {
+                  const toolStatus = formatCompactStatus(item.status);
+                  const details = normalizeProgressText(item.details || item.label);
+                  return (
+                    <div
+                      key={`${item.tool}_${idx}`}
+                      style={{
+                        borderRadius: 10,
+                        padding: '10px 12px',
+                        border: '1px solid color-mix(in srgb, var(--border-color) 88%, transparent)',
+                        background: 'var(--bg-secondary)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                        <Text strong style={{ fontSize: 13, color: 'var(--text-primary)' }}>
+                          {formatToolName(item.tool)}
+                        </Text>
+                        {toolStatus && toolStatus !== 'Completed' && (
+                          <Tag color={toolStatus === 'Failed' ? 'red' : toolStatus === 'Retrying' ? 'gold' : 'blue'} style={{ margin: 0 }}>
+                            {toolStatus}
+                          </Tag>
+                        )}
+                      </div>
+                      {details && (
+                        <div style={{ marginTop: 6 }}>
+                          {renderExpandableText(details, `tool_item_${idx}`, 120, { muted: true })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {visibleNotes.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Notes</Text>
+                {visibleNotes.map((note, idx) => (
+                  <div key={`note_${idx}`}>
+                    {renderExpandableText(note, `note_${idx}`, 120, { muted: true })}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {processSummary && !isSameText(processSummary, currentSubtitle) && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Current summary</Text>
+                {renderExpandableText(processSummary, 'progress_summary', 160, { muted: true })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -227,6 +538,16 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
             </Text>
           </div>
         )}
+        {compactProgressLabel && (
+          <div style={{ marginTop: 6 }}>
+            <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+              {compactProgressPhase ? `${compactProgressPhase}: ` : ''}
+              {compactProgressLabel}
+              {compactProgressIteration !== null ? ` · step ${compactProgressIteration}` : ''}
+              {compactProgressStatus && compactProgressStatus !== 'active' ? ` · ${compactProgressStatus}` : ''}
+            </Text>
+          </div>
+        )}
       </div>
       {toolOpen && (
         <div style={{ marginTop: 8 }}>
@@ -235,6 +556,21 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
               <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
                 Summary: {processSummary}
               </Text>
+            </div>
+          )}
+          {compactProgressHistory.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                Progress:
+              </Text>
+              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {compactProgressHistory.map((entry: any, idx: number) => (
+                  <Text key={`${entry?.phase ?? 'phase'}_${idx}`} style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                    {(typeof entry?.label === 'string' ? entry.label : 'Working on the request')}
+                    {typeof entry?.tool === 'string' && entry.tool ? ` · ${entry.tool}` : ''}
+                  </Text>
+                ))}
+              </div>
             </div>
           )}
           {toolProgressModules && toolProgressModules.length > 0 && (
