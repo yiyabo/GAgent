@@ -22,6 +22,8 @@ import {
   MessageOutlined,
   DatabaseOutlined,
   BulbOutlined,
+  InboxOutlined,
+  FileImageOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { chatApi } from '@api/chat';
@@ -38,6 +40,61 @@ import { isLikelyPersistedDuplicateMessage } from '@/utils/chatMessageUtils';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
+
+// ---------------------------------------------------------------------------
+// Helpers for paste / drag-drop
+// ---------------------------------------------------------------------------
+
+const DROP_ALLOWED_EXTENSIONS = [
+  '.pdf', '.doc', '.docx', '.txt', '.md', '.rtf', '.csv',
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff',
+  '.zip', '.tar', '.tar.gz', '.tgz', '.gz',
+  '.h5', '.hdf5', '.hdf', '.hd5', '.pdb', '.dcm', '.nii', '.npz', '.npy',
+  '.fasta', '.fa', '.fna', '.faa', '.ffn', '.frn',
+  '.fastq', '.fq', '.gff', '.gff3', '.gtf',
+  '.vcf', '.sam', '.bam', '.bed',
+  '.genbank', '.gb', '.gbk', '.embl',
+  '.phy', '.phylip', '.nwk', '.newick', '.aln', '.clustal',
+];
+
+const DROP_ALLOWED_MIMES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain', 'text/markdown', 'text/csv',
+  'application/rtf',
+  'application/zip', 'application/x-zip-compressed',
+  'application/x-tar', 'application/gzip', 'application/x-gzip',
+  'application/octet-stream',
+]);
+
+function isFileAllowed(file: File): boolean {
+  if (file.type.startsWith('image/')) return true;
+  if (DROP_ALLOWED_MIMES.has(file.type)) return true;
+  const name = file.name.toLowerCase();
+  return DROP_ALLOWED_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
+function extractPasteImages(clipboardData: DataTransfer): File[] {
+  const files: File[] = [];
+  for (let i = 0; i < clipboardData.items.length; i++) {
+    const item = clipboardData.items[i];
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) {
+        const ext = file.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const named = new File([file], `pasted-image-${timestamp}.${ext}`, { type: file.type });
+        files.push(named);
+      }
+    }
+  }
+  return files;
+}
+
+// ---------------------------------------------------------------------------
+// ChatMessageList (unchanged)
+// ---------------------------------------------------------------------------
 
 interface ChatMessageListProps {
   messages: ChatMessageType[];
@@ -94,7 +151,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
               color: 'var(--text-secondary)',
             }}
           >
-            <span style={{ color: 'var(--primary-color)' }}>🧠</span>
+            <span style={{ color: 'var(--primary-color)' }}>&#x1F9E0;</span>
             {item.count} related memories
           </div>
         );
@@ -174,11 +231,18 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
   }
 );
 
+// ---------------------------------------------------------------------------
+// ChatMainArea
+// ---------------------------------------------------------------------------
+
 const ChatMainArea: React.FC = () => {
   const { message } = AntdApp.useApp();
   const inputRef = useRef<any>(null);
   const messageContainerRef = useRef<HTMLDivElement>(null);
+  const dragCounterRef = useRef(0);
   const [messageAreaHeight, setMessageAreaHeight] = useState(0);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [pasteUploading, setPasteUploading] = useState(false);
 
   const {
     messages,
@@ -205,6 +269,7 @@ const ChatMainArea: React.FC = () => {
     historyHasMore,
     historyBeforeId,
     historyLoading,
+    uploadFile,
   } = useChatStore(
     (state) => ({
       messages: state.messages,
@@ -233,6 +298,7 @@ const ChatMainArea: React.FC = () => {
       historyHasMore: state.historyHasMore,
       historyBeforeId: state.historyBeforeId,
       historyLoading: state.historyLoading,
+      uploadFile: state.uploadFile,
     }),
     shallow
   );
@@ -282,6 +348,19 @@ const ChatMainArea: React.FC = () => {
     return [...allHistoryMessages, ...activeOnly];
   }, [allHistoryMessages, messages]);
 
+  // ---- Prevent browser from opening dropped files globally ----
+  useEffect(() => {
+    const prevent = (e: DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('dragover', prevent);
+    window.addEventListener('drop', prevent);
+    return () => {
+      window.removeEventListener('dragover', prevent);
+      window.removeEventListener('drop', prevent);
+    };
+  }, []);
+
   useEffect(() => {
     if (!messageContainerRef.current) {
       return;
@@ -300,7 +379,7 @@ const ChatMainArea: React.FC = () => {
     setInputText('');
   }, [currentSession?.id]);
 
-  // Initialize session: prefer loading list from backend first.
+  // Initialize session
   useEffect(() => {
     (async () => {
       if (currentSession) {
@@ -321,7 +400,88 @@ const ChatMainArea: React.FC = () => {
     })();
   }, [currentSession, loadSessions, loadChatHistory, startNewSession]);
 
-  // Send message handler.
+  // ---- Upload helper ----
+  const doUploadFile = useCallback(async (file: File) => {
+    if (!currentSession) {
+      message.error('请先创建或选择一个会话');
+      return;
+    }
+    try {
+      await uploadFile(file);
+      message.success(`${file.name} 上传成功`);
+    } catch (error: any) {
+      message.error(`上传失败: ${error.message || '未知错误'}`);
+    }
+  }, [currentSession, uploadFile, message]);
+
+  // ---- Paste handler (images) ----
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    if (!e.clipboardData) return;
+    const images = extractPasteImages(e.clipboardData);
+    if (images.length === 0) return;
+
+    e.preventDefault();
+    setPasteUploading(true);
+    Promise.all(images.map((img) => doUploadFile(img)))
+      .finally(() => setPasteUploading(false));
+  }, [doUploadFile]);
+
+  // ---- Drag & Drop handlers ----
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer?.types?.includes('Files')) {
+      setIsDragOver(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length === 0) return;
+
+    const allowed: File[] = [];
+    const rejected: string[] = [];
+
+    for (const file of files) {
+      if (isFileAllowed(file)) {
+        allowed.push(file);
+      } else {
+        rejected.push(file.name);
+      }
+    }
+
+    if (rejected.length > 0) {
+      message.warning(`不支持的文件类型: ${rejected.join(', ')}`);
+    }
+
+    if (allowed.length > 0) {
+      Promise.all(allowed.map((f) => doUploadFile(f)));
+    }
+  }, [doUploadFile, message]);
+
+  // ---- Message handlers ----
+
   const handleSendMessage = async () => {
     const draft = inputText.trim();
     if (!draft) return;
@@ -351,7 +511,6 @@ const ChatMainArea: React.FC = () => {
       task_name: selectedTask?.name ?? currentTaskName ?? undefined,
     };
 
-    // If Deep Think mode is enabled, auto-prefix with /think.
     let messageToSend = draft;
     if (deepThinkEnabled && !messageToSend.startsWith('/think')) {
       messageToSend = `/think ${messageToSend}`;
@@ -369,9 +528,7 @@ const ChatMainArea: React.FC = () => {
   };
 
   const handleProviderChange = async (value: string | undefined) => {
-    if (!currentSession) {
-      return;
-    }
+    if (!currentSession) return;
     try {
       await setDefaultSearchProvider(
         (value as 'builtin' | 'perplexity' | 'tavily') ?? null
@@ -383,9 +540,7 @@ const ChatMainArea: React.FC = () => {
   };
 
   const handleBaseModelChange = async (value: string | undefined) => {
-    if (!currentSession) {
-      return;
-    }
+    if (!currentSession) return;
     try {
       await setDefaultBaseModel(
         (value as 'qwen3.5-plus' | 'qwen3-max-2026-01-23' | 'qwen-turbo') ?? null
@@ -397,9 +552,7 @@ const ChatMainArea: React.FC = () => {
   };
 
   const handleLLMProviderChange = async (value: string | undefined) => {
-    if (!currentSession) {
-      return;
-    }
+    if (!currentSession) return;
     try {
       await setDefaultLLMProvider(
         (value as 'qwen') ?? null
@@ -430,7 +583,6 @@ const ChatMainArea: React.FC = () => {
     { label: 'Qwen-Turbo', value: 'qwen-turbo' },
   ];
 
-  // Keyboard handler.
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -515,19 +667,41 @@ const ChatMainArea: React.FC = () => {
       <Divider style={{ margin: '24px 0', width: '100%' }} />
 
       <Text type="secondary" style={{ fontSize: 13 }}>
-        💡 You can describe your needs in natural language and I will understand and help execute.
+        You can describe your needs in natural language and I will understand and help execute.
       </Text>
     </div>
   );
 
   return (
-    <div style={{
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      background: 'var(--bg-primary)',
-    }}>
-      {/* Header - minimal design */}
+    <div
+      style={{
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        background: 'var(--bg-primary)',
+        position: 'relative',
+      }}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {/* Drag overlay */}
+      {isDragOver && (
+        <div className="chat-drop-overlay">
+          <div className="chat-drop-overlay-content">
+            <InboxOutlined style={{ fontSize: 48, color: 'var(--primary-color)' }} />
+            <div className="chat-drop-overlay-title">
+              松开以上传文件
+            </div>
+            <div className="chat-drop-overlay-hint">
+              支持图片、PDF、文档等文件
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
       <div style={{
         padding: '12px 20px',
         borderBottom: '1px solid var(--border-color)',
@@ -558,9 +732,8 @@ const ChatMainArea: React.FC = () => {
           </div>
         </div>
 
-        {/* Simplified controls */}
+        {/* Controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {/* Search provider selector */}
           <Select
             size="small"
             value={providerValue}
@@ -570,7 +743,6 @@ const ChatMainArea: React.FC = () => {
             placeholder="Search provider"
             disabled={isUpdatingProvider}
           />
-
           <Select
             size="small"
             value={llmProviderValue}
@@ -580,7 +752,6 @@ const ChatMainArea: React.FC = () => {
             placeholder="LLM provider"
             disabled={isUpdatingLLMProvider}
           />
-
           <Select
             size="small"
             value={baseModelValue}
@@ -590,8 +761,6 @@ const ChatMainArea: React.FC = () => {
             placeholder="Base model"
             disabled={isUpdatingBaseModel}
           />
-
-          {/* Memory toggle */}
           <Tooltip title={memoryEnabled ? "Memory enabled" : "Memory disabled"}>
             <Switch
               checked={memoryEnabled}
@@ -631,7 +800,7 @@ const ChatMainArea: React.FC = () => {
         )}
       </div>
 
-      {/* Input area - Claude style */}
+      {/* Input area */}
       <div style={{
         padding: '16px 24px 20px',
         background: 'var(--bg-primary)',
@@ -641,6 +810,14 @@ const ChatMainArea: React.FC = () => {
         <div style={{ maxWidth: 920, margin: '0 auto' }}>
           {/* Uploaded files list */}
           <UploadedFilesList />
+
+          {/* Paste uploading indicator */}
+          {pasteUploading && (
+            <div style={{ padding: '4px 0', fontSize: 12, color: 'var(--primary-color)' }}>
+              <FileImageOutlined style={{ marginRight: 4 }} />
+              正在上传粘贴的图片...
+            </div>
+          )}
 
           <div
             style={{
@@ -676,7 +853,7 @@ const ChatMainArea: React.FC = () => {
               </Tooltip>
             </div>
 
-            {/* Input box - Claude style */}
+            {/* Input box */}
             <div style={{
               flex: 1,
               background: '#FFFFFF',
@@ -693,9 +870,10 @@ const ChatMainArea: React.FC = () => {
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyPress={handleKeyPress}
+                onPaste={handlePaste}
                 placeholder={isProcessing && activeRunId
                   ? "输入引导内容，Agent 将在下一步参考..."
-                  : "Describe what you need, and I'll help you complete it..."}
+                  : "输入消息... (可粘贴图片 / 拖放文件上传)"}
                 autoSize={{ minRows: 1, maxRows: 5 }}
                 disabled={false}
                 style={{
