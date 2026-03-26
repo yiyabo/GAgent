@@ -145,6 +145,24 @@ const ChatPanel: React.FC = () => {
 
   const { selectedTask, currentPlan } = useTasksStore();
 
+  // ---- Prevent browser from opening dropped files globally ----
+  // Without this, dropping a file anywhere on the page causes the browser
+  // to navigate to the file (e.g. open PDF in a new tab).
+
+  useEffect(() => {
+    const preventBrowserDrop = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    // Must prevent both dragover AND drop at window level
+    window.addEventListener('dragover', preventBrowserDrop);
+    window.addEventListener('drop', preventBrowserDrop);
+    return () => {
+      window.removeEventListener('dragover', preventBrowserDrop);
+      window.removeEventListener('drop', preventBrowserDrop);
+    };
+  }, []);
+
   // ---- Scroll management ----
 
   useEffect(() => {
