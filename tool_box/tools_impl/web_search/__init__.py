@@ -10,7 +10,8 @@ web_search_tool = {
     "name": "web_search",
     "description": (
         "Broad web search via Alibaba DashScope Responses API using the built-in "
-        "`web_search` tool (see Model Studio web-search docs). Default provider is `builtin` only."
+        "`web_search` tool (see Model Studio web-search docs). Default provider is `builtin` only. "
+        "For broad comparison tasks, you can pass `queries` with 2-4 focused subqueries; they will run in parallel."
     ),
     "category": "information_retrieval",
     "parameters_schema": {
@@ -19,6 +20,13 @@ web_search_tool = {
             "query": {
                 "type": "string",
                 "description": "Query string to search for",
+            },
+            "queries": {
+                "type": "array",
+                "description": "Optional focused subqueries for parallel search on broad comparison tasks",
+                "items": {"type": "string"},
+                "minItems": 2,
+                "maxItems": 6,
             },
             "provider": {
                 "type": "string",

@@ -1,91 +1,92 @@
-/* ThinkingProcess – Claude Code inline style */
+/* ThinkingProcess – Live thinking display with Claude-inspired style */
 
-/* ---- Inline container ---- */
+/* ================================================================
+   Container
+   ================================================================ */
 
-.tp-inline-container {
-  margin: 8px 0;
-  padding-left: 12px;
-  border-left: 2px solid var(--border-color);
+.tp-container {
+  margin: 6px 0;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.015));
+  overflow: hidden;
 }
 
-/* ---- Summary row (collapsed header) ---- */
+.tp-container.tp-active {
+  border-color: var(--primary-color, #c96442);
+  border-color: color-mix(in srgb, var(--primary-color, #c96442) 30%, var(--border-color));
+}
 
-.tp-summary-row {
+/* ================================================================
+   Header row (always visible, toggles expand)
+   ================================================================ */
+
+.tp-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 0;
+  padding: 8px 12px;
   cursor: pointer;
   font-size: 13px;
   color: var(--text-tertiary);
   user-select: none;
-  transition: color 0.15s ease;
+  transition: background 0.12s ease;
 }
 
-.tp-summary-row:hover {
-  color: var(--text-secondary);
+.tp-header:hover {
+  background: rgba(0, 0, 0, 0.02);
 }
 
-.tp-summary-icon {
+.tp-header-icon {
   display: flex;
   align-items: center;
-  font-size: 13px;
+  font-size: 14px;
   flex-shrink: 0;
 }
 
-.tp-summary-label {
+.tp-header-label {
   font-weight: 500;
   color: var(--text-secondary);
+  flex-shrink: 0;
 }
 
-.tp-summary-preview {
+.tp-header-preview {
   min-width: 0;
   flex: 1;
   color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.tp-summary-meta {
   font-size: 12px;
-  color: var(--text-tertiary);
-  flex-shrink: 0;
 }
 
-.tp-summary-chevron {
+.tp-header-meta {
+  font-size: 11px;
+  color: var(--text-quaternary, var(--text-tertiary));
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.tp-header-chevron {
   font-size: 10px;
-  color: var(--text-tertiary);
+  color: var(--text-quaternary, var(--text-tertiary));
   transition: transform 0.2s ease;
-  margin-left: auto;
+  margin-left: 2px;
   flex-shrink: 0;
 }
 
-.tp-summary-chevron.expanded {
+.tp-header-chevron.expanded {
   transform: rotate(90deg);
 }
 
-/* ---- Expanded content area ---- */
-
-.tp-expanded-content {
-  padding: 4px 0 4px 4px;
-}
-
-.tp-summary-full {
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--text-secondary);
-  padding: 2px 0 8px 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* ---- Control bar (inline) ---- */
+/* ================================================================
+   Control bar (Pause / Skip)
+   ================================================================ */
 
 .tp-control-bar {
   display: inline-flex;
-  gap: 6px;
-  margin-left: 12px;
+  gap: 4px;
+  margin-left: 4px;
 }
 
 .tp-control-bar .ant-btn {
@@ -95,114 +96,284 @@
   border-radius: 4px;
 }
 
-/* ---- Tool Pill row ---- */
+/* ================================================================
+   Step list (expanded)
+   ================================================================ */
 
-.tp-tool-pill {
+.tp-steps {
+  padding: 2px 12px 8px;
+}
+
+.tp-steps-scroll {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.tp-steps-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.tp-steps-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tp-steps-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 2px;
+}
+
+/* ================================================================
+   Step item — unified row for reasoning + tool
+   ================================================================ */
+
+.tp-step-item {
+  margin: 0;
+}
+
+.tp-step-item + .tp-step-item {
+  margin-top: 2px;
+}
+
+.tp-step-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 6px;
-  margin: 1px -6px;
+  padding: 5px 6px;
+  margin: 0 -6px;
   font-size: 13px;
   color: var(--text-secondary);
-  cursor: pointer;
   border-radius: 6px;
-  transition: background 0.12s ease;
+  transition: background 0.1s ease;
 }
 
-.tp-tool-pill:hover {
-  background: rgba(0, 0, 0, 0.03);
+.tp-step-row.active {
+  background: rgba(0, 0, 0, 0.02);
 }
 
-.tp-tool-pill-icon {
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
+/* Step icon — small square badge */
+.tp-step-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 11px;
+  flex-shrink: 0;
+  /* Tool steps: warm accent */
   background: rgba(201, 100, 66, 0.08);
   color: var(--primary-color);
-  flex-shrink: 0;
 }
 
-.tp-tool-pill-icon.error {
+.tp-step-icon.reasoning {
+  /* Reasoning steps: cool accent */
+  background: rgba(100, 130, 200, 0.1);
+  color: rgba(80, 110, 180, 0.85);
+}
+
+.tp-step-icon.error {
   background: rgba(255, 77, 79, 0.1);
   color: #ff4d4f;
 }
 
-.tp-tool-pill-label {
+/* Step label */
+.tp-step-label {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 450;
+  line-height: 1.4;
 }
 
-.tp-tool-pill-status {
+/* Step status badge */
+.tp-step-status {
   display: flex;
   align-items: center;
-  gap: 4px;
   font-size: 11px;
   flex-shrink: 0;
-  color: var(--text-tertiary);
+  color: var(--text-quaternary, var(--text-tertiary));
 }
 
-.tp-tool-pill-status.success {
-  color: var(--success-color);
+.tp-step-status.success {
+  color: var(--success-color, #52c41a);
 }
 
-.tp-tool-pill-status.error {
+.tp-step-status.error {
   color: #ff4d4f;
 }
 
-.tp-tool-pill-status.running {
+.tp-step-status.running {
   color: var(--primary-color);
 }
 
-.tp-tool-pill-duration {
+/* Step duration */
+.tp-step-duration {
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--text-quaternary, var(--text-tertiary));
   flex-shrink: 0;
+  opacity: 0.65;
+  font-variant-numeric: tabular-nums;
 }
 
-/* ---- Thought text (aside / voiceover) ---- */
+/* ================================================================
+   LIVE STREAMING — real-time thought display with typewriter cursor
+   ================================================================ */
 
-.tp-thought-inline {
-  font-size: 13px;
-  color: var(--text-tertiary);
-  font-style: italic;
-  line-height: 1.6;
-  padding: 2px 0;
+.tp-step-stream {
+  margin: 4px 0 6px 34px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
+  border-radius: 6px;
+  border-left: 2px solid rgba(100, 130, 200, 0.3);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  max-height: 240px;
+  overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  scroll-behavior: smooth;
 }
 
-.tp-thought-toggle {
-  display: inline;
-  margin-left: 4px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--primary-color);
+.tp-step-stream::-webkit-scrollbar {
+  width: 3px;
+}
+
+.tp-step-stream::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tp-step-stream::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 2px;
+}
+
+.tp-stream-truncated {
+  color: var(--text-quaternary);
+  font-size: 11px;
+  margin-bottom: 4px;
+  letter-spacing: 2px;
+}
+
+.tp-stream-text {
+  /* The streamed content */
+}
+
+/* Blinking cursor at end of stream */
+.tp-stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: var(--primary-color, #c96442);
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  animation: tp-cursor-blink 0.8s ease-in-out infinite;
+}
+
+@keyframes tp-cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* ================================================================
+   COMPLETED THOUGHT — preview block for finished reasoning steps
+   ================================================================ */
+
+.tp-step-thought-block {
+  margin: 2px 0 4px 34px;
+}
+
+.tp-step-thought-preview {
+  padding: 6px 10px;
+  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
+  border-radius: 6px;
+  border-left: 2px solid rgba(100, 130, 200, 0.15);
   font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+  transition: max-height 0.2s ease;
+}
+
+.tp-step-thought-preview.clickable {
   cursor: pointer;
-  opacity: 0.8;
-  transition: opacity 0.15s;
 }
 
-.tp-thought-toggle:hover {
-  opacity: 1;
-  text-decoration: underline;
+.tp-step-thought-preview.clickable:hover {
+  background: rgba(0, 0, 0, 0.03);
 }
 
-/* ---- Error inline ---- */
+.tp-thought-text {
+  /* Inline text */
+}
+
+/* ================================================================
+   TOOL PARAMS — shown inline when tool is being called
+   ================================================================ */
+
+.tp-tool-params {
+  margin: 2px 0 4px 34px;
+  padding: 6px 10px;
+  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
+  border-radius: 6px;
+  border-left: 2px solid rgba(201, 100, 66, 0.2);
+}
+
+.tp-tool-params-pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+  line-height: 1.5;
+}
+
+/* ================================================================
+   TOOL RESULT — shown after tool completes
+   ================================================================ */
+
+.tp-tool-result {
+  margin: 2px 0 4px 34px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-left: 2px solid rgba(82, 196, 26, 0.2);
+  border-radius: 0 4px 4px 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.tp-tool-result.clickable {
+  cursor: pointer;
+}
+
+.tp-tool-result.clickable:hover {
+  background: rgba(0, 0, 0, 0.015);
+}
+
+.tp-tool-result-text {
+  /* Inline text */
+}
+
+/* ================================================================
+   Error inline
+   ================================================================ */
 
 .tp-error-inline {
   font-size: 12px;
   color: #ff4d4f;
-  padding: 2px 0 2px 26px;
+  padding: 2px 0 2px 34px;
   line-height: 1.5;
 }
 
@@ -211,61 +382,22 @@
   font-style: italic;
 }
 
-/* ---- Detail expand (kept from original, simplified) ---- */
+/* ================================================================
+   Evidence
+   ================================================================ */
 
-.tp-step-detail-box {
-  margin: 4px 0 4px 26px;
-  background: var(--bg-tertiary);
-  border-radius: 6px;
-  border: 1px solid var(--border-color);
-  overflow: hidden;
-}
-
-.tp-step-detail-section {
-  padding: 8px 12px;
-}
-
-.tp-step-detail-section + .tp-step-detail-section {
-  border-top: 1px dashed var(--border-color);
-}
-
-.tp-step-detail-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-tertiary);
-  margin-bottom: 4px;
-  font-weight: 600;
-}
-
-.tp-step-detail-pre {
-  margin: 0;
-  padding: 8px;
-  background: var(--bg-primary);
-  border-radius: 4px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 240px;
-  overflow: auto;
-  line-height: 1.5;
-}
-
-/* ---- Evidence list ---- */
-
-.tp-evidence-list {
+.tp-evidence-block {
+  margin: 4px 0 4px 34px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .tp-evidence-item {
   border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 4px 8px;
-  background: var(--bg-primary);
+  background: var(--bg-primary, #fff);
   font-size: 11px;
 }
 
@@ -275,7 +407,7 @@
 }
 
 .tp-evidence-item-ref {
-  margin-top: 1px;
+  display: inline;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 10px;
   color: var(--text-secondary);
@@ -289,62 +421,68 @@
   line-height: 1.4;
 }
 
-/* ---- Scrollbar for content area ---- */
-
-.tp-content-scroll {
-  max-height: 70vh;
-  overflow-y: auto;
-}
-
-.tp-content-scroll::-webkit-scrollbar {
-  width: 4px;
-}
-
-.tp-content-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.tp-content-scroll::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.1);
-  border-radius: 2px;
-}
-
-.tp-content-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.18);
-}
-
-/* ---- Scrollbar for detail boxes ---- */
-
-.tp-step-detail-pre::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
-
-.tp-step-detail-pre::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.tp-step-detail-pre::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.12);
-  border-radius: 2px;
-}
-
-/* ---- Dark mode ---- */
+/* ================================================================
+   Dark mode
+   ================================================================ */
 
 @media (prefers-color-scheme: dark) {
-  .tp-tool-pill:hover {
-    background: rgba(255, 255, 255, 0.04);
+  .tp-container {
+    background: rgba(255, 255, 255, 0.02);
   }
 
-  .tp-content-scroll::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
+  .tp-container.tp-active {
+    border-color: color-mix(in srgb, var(--primary-color, #c96442) 25%, var(--border-color));
   }
 
-  .tp-content-scroll::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.18);
+  .tp-header:hover {
+    background: rgba(255, 255, 255, 0.03);
   }
 
-  .tp-step-detail-pre::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.12);
+  .tp-step-row.active {
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .tp-step-icon.reasoning {
+    background: rgba(120, 150, 220, 0.12);
+    color: rgba(140, 170, 240, 0.9);
+  }
+
+  .tp-step-stream {
+    background: rgba(255, 255, 255, 0.03);
+    border-left-color: rgba(120, 150, 220, 0.3);
+  }
+
+  .tp-step-thought-preview {
+    background: rgba(255, 255, 255, 0.03);
+    border-left-color: rgba(120, 150, 220, 0.15);
+  }
+
+  .tp-step-thought-preview.clickable:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .tp-tool-params {
+    background: rgba(255, 255, 255, 0.03);
+    border-left-color: rgba(201, 100, 66, 0.25);
+  }
+
+  .tp-tool-result {
+    border-left-color: rgba(82, 196, 26, 0.25);
+  }
+
+  .tp-tool-result.clickable:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .tp-steps-scroll::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .tp-step-stream::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .tp-evidence-item {
+    background: rgba(255, 255, 255, 0.03);
   }
 }

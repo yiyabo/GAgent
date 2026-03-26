@@ -32,6 +32,10 @@ from app.services.plans.decomposition_jobs import (
 )
 from app.services.plans.plan_session import PlanSession
 from app.services.request_principal import get_request_owner_id
+from app.services.response_style import (
+    PROFESSIONAL_STYLE_INSTRUCTION,
+    sanitize_professional_response_text,
+)
 from tool_box import execute_tool
 
 from .models import ActionStatusResponse
@@ -690,12 +694,13 @@ async def _generate_tool_analysis(
             f"{tools_text}\n\n"
             "Requirements:\n"
             + "\n".join(analysis_requirements)
+            + f"\n9. {PROFESSIONAL_STYLE_INSTRUCTION}"
             + "\n\nOutput analysis:"
         )
         llm_service = _get_llm_service_for_provider(llm_provider)
 
         analysis = await llm_service.chat_async(base_prompt)
-        return analysis.strip() if analysis else None
+        return sanitize_professional_response_text(analysis.strip()) if analysis else None
 
     except Exception as exc:
         logger.error(
@@ -728,11 +733,12 @@ async def _generate_tool_summary(
             "You are a project assistant. Provide a brief summary (1-3 sentences) based on tool execution.\n"
             f"User question: {user_message}\n"
             f"Tool execution overview:\n{tools_text}\n"
+            f"{PROFESSIONAL_STYLE_INSTRUCTION}\n"
             "Output summary:"
         )
         llm_service = _get_llm_service_for_provider(llm_provider)
         summary = await llm_service.chat_async(prompt)
-        return summary.strip() if summary else None
+        return sanitize_professional_response_text(summary.strip()) if summary else None
     except Exception as exc:
         logger.error(
             "[CHAT][SUMMARY] Failed to generate brief summary for session=%s: %s",
@@ -801,7 +807,8 @@ async def _generate_action_analysis(
             "Based on the decomposition, analyze coverage sufficiency, relationships between tasks, "
             "possible omissions, and potential refinement directions (if any). Do not repeat summaries like "
             "'X subtasks were generated'; provide a professional analysis body directly.\n"
-            "Requirements: at least 6 bullet points or 3 natural paragraphs; points must be clear, concrete, and actionable.\n\n"
+            "Requirements: at least 6 bullet points or 3 natural paragraphs; points must be clear, concrete, and actionable.\n"
+            f"{PROFESSIONAL_STYLE_INSTRUCTION}\n\n"
             f"User question: {user_message}\n\n"
             "Decomposition results:\n"
             f"{tasks_text}\n\n"
@@ -814,7 +821,8 @@ async def _generate_action_analysis(
             "Based on outputs from the following execution steps, provide a structured analysis: key findings, critical data, "
             "and next-step recommendations. Output the professional analysis body directly; avoid preambles like "
             "'I will analyze this now.'\n"
-            "Requirements: specific, data-driven, and actionable.\n\n"
+            "Requirements: specific, data-driven, and actionable.\n"
+            f"{PROFESSIONAL_STYLE_INSTRUCTION}\n\n"
             f"User question: {user_message}\n\n"
             "Execution results:\n"
             f"{steps_text}\n\n"
@@ -825,7 +833,7 @@ async def _generate_action_analysis(
     try:
         llm_service = _get_llm_service_for_provider(llm_provider)
         analysis = await llm_service.chat_async(prompt)
-        return analysis.strip() if analysis else None
+        return sanitize_professional_response_text(analysis.strip()) if analysis else None
     except Exception as exc:
         logger.error(
             "[CHAT][SUMMARY] Failed to generate action analysis for session=%s: %s",

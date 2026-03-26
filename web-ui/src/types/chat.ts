@@ -25,6 +25,39 @@ export interface ChatSessionsResponse {
 }
 
 export type ChatActionStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type RequestTier = 'light' | 'standard' | 'research' | 'execute';
+export type RequestRouteMode = 'manual_deepthink' | 'auto_simple' | 'auto_deepthink';
+export type ThinkingVisibility = 'visible' | 'progress' | 'hidden';
+
+export interface CompactProgressToolItem {
+  tool: string;
+  label?: string | null;
+  status: 'running' | 'retrying' | 'failed' | 'completed';
+  details?: string | null;
+}
+
+export interface CompactProgressHistoryItem {
+  phase?: string | null;
+  label?: string | null;
+  tool?: string | null;
+  status?: string | null;
+}
+
+export interface CompactProgressState {
+  phase?: string | null;
+  label?: string | null;
+  iteration?: number | null;
+  tool?: string | null;
+  status?: string | null;
+  current_tool?: string | null;
+  current_label?: string | null;
+  current_status?: string | null;
+  current_details?: string | null;
+  tool_items?: CompactProgressToolItem[];
+  expanded_notes?: string[];
+  history?: CompactProgressHistoryItem[];
+  updated_at?: string | null;
+}
 
 export interface ChatActionSummary {
   kind?: string | null;
@@ -80,6 +113,11 @@ export interface ChatResponseMetadata {
   task_name?: string | null;
   session_id?: string;
   tool_results?: ToolResultPayload[] | null;
+  request_tier?: RequestTier;
+  request_route_mode?: RequestRouteMode;
+  route_reason_codes?: string[];
+  thinking_visibility?: ThinkingVisibility;
+  deep_think_progress?: CompactProgressState;
   [key: string]: any;
 }
 
@@ -145,6 +183,11 @@ export interface ChatMessage {
     tool_executed?: boolean;
     tool_type?: string;
     tool_results?: ToolResultPayload[] | null;
+    request_tier?: RequestTier;
+    request_route_mode?: RequestRouteMode;
+    route_reason_codes?: string[];
+    thinking_visibility?: ThinkingVisibility;
+    deep_think_progress?: CompactProgressState;
     type?: string;
     job?: DecompositionJobStatus | null;
     job_id?: string;

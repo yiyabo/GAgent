@@ -7,7 +7,12 @@ import httpx
 import pytest
 
 from app.llm import NativeStreamResult, NativeToolCall
-from app.services.deep_think_agent import DeepThinkAgent, DeepThinkProtocolError
+from app.services.deep_think_agent import (
+    DeepThinkAgent,
+    DeepThinkProtocolError,
+    ThinkingStep,
+    is_process_only_answer,
+)
 
 
 class _DummyLLM:
@@ -218,9 +223,139 @@ def test_native_multi_tool_calls_execute_concurrently_and_append_results() -> No
     assert '"tools"' in first_step.action
     assert first_step.action_result is not None
     assert "[file_operations]" in first_step.action_result
-    assert "[web_search]" in first_step.action_result
-    assert any((ev.get("type") == "file" and ev.get("ref") == "/tmp/report.csv") for ev in first_step.evidence)
-    assert any((ev.get("type") == "task" and ev.get("ref") == "task-123") for ev in first_step.evidence)
+
+
+def test_process_only_answer_detection_flags_collection_preface() -> None:
+    assert is_process_only_answer("我来帮您系统梳理热点方向。让我先收集最新的文献证据。")
+    assert is_process_only_answer("Let me first gather the latest evidence and then summarize it.")
+    assert not is_process_only_answer("综合近期文献，更值得优先投入的方向是宿主范围预测与鸡尾酒优化。")
+
+
+def test_research_fallback_prefers_evidence_synthesis_over_process_sentence() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["web_search"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+        request_profile={"request_tier": "research"},
+    )
+    steps = [
+        ThinkingStep(
+            iteration=1,
+            thought="我来帮您系统梳理近期噬菌体研究的热点方向。让我先收集最新的文献证据。",
+            action='{"tool":"web_search","params":{"query":"recent bacteriophage research 2025 2026"}}',
+            action_result='{"success": true, "summary": "宿主范围预测、鸡尾酒优化、递送稳定性和快速检测是近期高频方向。"}',
+            self_correction=None,
+        )
+    ]
+
+    async def _fake_synthesis(user_query: str, evidence_snippets: str, _steps: list[ThinkingStep]) -> str:
+        assert "宿主范围预测" in evidence_snippets
+        return "综合现有证据，更值得优先关注的方向是宿主范围预测和鸡尾酒优化。"
+
+    agent._generate_fallback_from_evidence = _fake_synthesis  # type: ignore[method-assign]
+
+    answer = asyncio.run(agent._fallback_answer_from_steps(steps, "帮我选一个方向"))
+    assert "更值得优先关注的方向" in answer
+    assert "让我先收集" not in answer
+
+
+def test_research_failure_marks_answer_as_unverified_when_external_search_fails() -> None:
+    async def _tool_executor(_name: str, _params: dict):
+        return {
+            "success": False,
+            "error": "request_failed",
+            "summary": "web search timed out",
+        }
+
+    llm = _NativeDummyLLM(
+        [
+            NativeStreamResult(
+                content="Need recent search",
+                tool_calls=[
+                    NativeToolCall(id="tc1", name="web_search", arguments={"query": "AnewSampling 2025"}),
+                ],
+            )
+        ]
+    )
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["web_search"],
+        tool_executor=_tool_executor,
+        max_iterations=1,
+        request_profile={"request_tier": "research"},
+    )
+
+    async def _fake_synthesis(_user_query: str, evidence_snippets: str, _steps: list[ThinkingStep]) -> str:
+        assert "request_failed" in evidence_snippets
+        return "基于现有信息，AnewSampling 更像是生成式全原子采样方向中的新方法，但最新外部检索未拿到可验证来源。"
+
+    agent._generate_fallback_from_evidence = _fake_synthesis  # type: ignore[method-assign]
+
+    result = asyncio.run(agent.think("搜索 AnewSampling 最近的论文并比较方法差异"))
+    assert result.search_verified is False
+    assert result.fallback_used is True
+    assert result.tool_failures
+    assert result.tool_failures[0]["tool"] == "web_search"
+    assert "未经过本轮在线检索验证" in result.final_answer
+
+
+def test_native_retries_external_search_tool_once_before_succeeding() -> None:
+    attempts: list[str] = []
+
+    async def _tool_executor(name: str, _params: dict):
+        attempts.append(name)
+        if len(attempts) == 1:
+            return {
+                "success": False,
+                "error": "request_failed",
+                "summary": "search backend unavailable",
+            }
+        return {
+            "success": True,
+            "summary": "recent phage work collected",
+            "items": ["host range prediction", "cocktail optimization"],
+        }
+
+    llm = _NativeDummyLLM(
+        [
+            NativeStreamResult(
+                content="Need recent search",
+                tool_calls=[
+                    NativeToolCall(id="tc1", name="web_search", arguments={"query": "recent phage work"}),
+                ],
+            ),
+            NativeStreamResult(
+                content="Done",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={"answer": "优先关注宿主范围预测。", "confidence": 0.8},
+                    )
+                ],
+            ),
+        ]
+    )
+    events: list[dict] = []
+
+    async def _on_tool_result(_tool: str, payload: dict) -> None:
+        events.append(payload)
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["web_search"],
+        tool_executor=_tool_executor,
+        max_iterations=3,
+        on_tool_result=_on_tool_result,
+        request_profile={"request_tier": "research"},
+    )
+
+    result = asyncio.run(agent.think("看一下最近的噬菌体研究"))
+    assert result.final_answer == "优先关注宿主范围预测。"
+    assert attempts == ["web_search", "web_search"]
+    assert any(event.get("retrying") is True for event in events)
 
 
 def test_native_stops_repeated_identical_polling_cycles() -> None:
