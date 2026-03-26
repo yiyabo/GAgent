@@ -107,6 +107,13 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                         "type": "string",
                         "description": "The search query.",
                     },
+                    "queries": {
+                        "type": "array",
+                        "description": "Optional focused subqueries for parallel search on broad comparison tasks.",
+                        "items": {"type": "string"},
+                        "minItems": 2,
+                        "maxItems": 6,
+                    },
                 },
                 "required": ["query"],
             },

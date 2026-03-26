@@ -3,7 +3,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.prompts import prompt_manager
-from app.routers.chat.prompt_builder import compose_plan_status
+from app.routers.chat.prompt_builder import (
+    build_simple_stream_chat_prompt,
+    coerce_plain_text_chat_response,
+    compose_plan_status,
+)
+from app.services.response_style import sanitize_professional_response_text
 from app.services.deep_think_agent import DeepThinkAgent
 from app.services import tool_schemas
 
@@ -67,14 +72,15 @@ def test_compose_plan_status_unbound_matches_auto_plan_policy() -> None:
     assert "only trigger plan-related actions when the user explicitly requests" not in status
 
 
-def test_deep_think_native_and_legacy_prompts_share_aggressive_and_bio_priority_rules() -> None:
+def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_priority_rules() -> None:
     agent = _build_deep_think_agent()
     native_prompt = agent._build_native_system_prompt()
     legacy_prompt = agent._build_system_prompt()
 
     for prompt in (native_prompt, legacy_prompt):
-        assert "UNLIMITED resources" in prompt
-        assert "better to call 5 tools" in prompt
+        assert "First classify the request" in prompt
+        assert "Default to the lightest path that fully satisfies the user." in prompt
+        assert "Do NOT start broad web/literature research" in prompt
         assert "For accession-based FASTA downloads, call sequence_fetch first." in prompt
         assert "ALWAYS try bio_tools first before claude_code" in prompt
         assert "Never use claude_code as fallback for sequence_fetch failures." in prompt
@@ -82,6 +88,37 @@ def test_deep_think_native_and_legacy_prompts_share_aggressive_and_bio_priority_
 
     assert "PROTOCOL BOUNDARY (NATIVE TOOL CALLING)" in native_prompt
     assert "PROTOCOL BOUNDARY (LEGACY JSON)" in legacy_prompt
+
+
+def test_chat_prompts_default_to_professional_non_emoji_style() -> None:
+    agent = SimpleNamespace(
+        plan_session=SimpleNamespace(plan_id=None, outline=lambda **_: "[no plan]", summaries_for_prompt=lambda limit=10: ""),
+        extra_context={},
+        history=[],
+        mode="chat",
+        conversation_id="conv_1",
+        MAX_HISTORY=10,
+    )
+    simple_prompt = build_simple_stream_chat_prompt(agent, "请介绍一下你自己")
+    deep_agent = _build_deep_think_agent()
+    native_prompt = deep_agent._build_native_system_prompt()
+
+    for prompt in (simple_prompt, native_prompt):
+        lowered = prompt.lower()
+        assert "do not use celebratory, decorative, or playful emojis by default" in lowered
+        assert "professional" in lowered
+
+
+def test_response_style_sanitizer_removes_decorative_heading_emoji() -> None:
+    raw = "🎉 太好了！\n## ✅ 目前你们已经覆盖的核心模块\n- 🚀 下一步建议"
+    cleaned = sanitize_professional_response_text(raw)
+    assert cleaned == "太好了！\n## 目前你们已经覆盖的核心模块\n- 下一步建议"
+
+
+def test_plain_text_chat_response_coercion_sanitizes_emoji_heavy_reply() -> None:
+    raw = '{"llm_reply":{"message":"🎉 太好了！\\n## ✅ 结论\\n- 🚀 下一步"}}'
+    cleaned = coerce_plain_text_chat_response(raw)
+    assert cleaned == "太好了！\n## 结论\n- 下一步"
 
 
 def test_deep_think_prompt_boundaries_prevent_cross_protocol_confusion() -> None:

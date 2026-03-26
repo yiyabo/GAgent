@@ -8,7 +8,7 @@ vi.mock('@api/chat', () => ({
 }));
 
 import { chatApi } from '@api/chat';
-import { handleJobUpdate, processFinalPayload } from './streamHandlers';
+import { handleJobUpdate, handleProgressStatus, processFinalPayload } from './streamHandlers';
 
 const buildContext = () => {
   const assistantMessage = {
@@ -49,6 +49,8 @@ const buildContext = () => {
     },
     loadChatHistory: vi.fn().mockResolvedValue(undefined),
     autotitleSession: vi.fn().mockResolvedValue(undefined),
+    setActiveRunId: vi.fn(),
+    setSessionProcessing: vi.fn(),
     setCurrentWorkflowId: vi.fn((workflowId: string | null) => {
       store.currentWorkflowId = workflowId;
     }),
@@ -73,6 +75,7 @@ const buildContext = () => {
         flushHandle: null,
         thinkingDeltaFlushHandle: null,
         pendingThinkingDeltas: {},
+        pendingThinkingDeltaStartedAt: {},
         finalPayload: null,
         jobFinalized: false,
         isBackgroundDispatch: false,
@@ -134,5 +137,104 @@ describe('streamHandlers session sync', () => {
       'session-1',
       expect.objectContaining({ plan_id: 77, plan_title: 'Plan 77' }),
     );
+  });
+
+  it('clears stale compact progress current state when final payload completes', async () => {
+    const { store, ctx } = buildContext();
+
+    handleProgressStatus(ctx as any, {
+      phase: 'gathering',
+      label: '检索资料：flow matching biomolecular generation 2024 2025 2026',
+      details: 'flow matching biomolecular generation 2024 2025 2026',
+      tool: 'web_search',
+      status: 'active',
+      iteration: 1,
+    });
+
+    handleProgressStatus(ctx as any, {
+      phase: 'synthesizing',
+      label: '切换为保守总结',
+      tool: 'web_search',
+      status: 'failed',
+      iteration: 1,
+    });
+
+    ctx.state.finalPayload = {
+      response: 'final answer',
+      actions: [],
+      metadata: {
+        status: 'completed',
+      },
+    };
+
+    await processFinalPayload(ctx as any);
+
+    const metadata: any = store.messages[0].metadata;
+    expect(metadata.deep_think_progress.status).toBe('completed');
+    expect(metadata.deep_think_progress.current_status).toBeNull();
+    expect(metadata.deep_think_progress.current_tool).toBeNull();
+    expect(metadata.deep_think_progress.current_label).toBeNull();
+    expect(metadata.deep_think_progress.tool_items).toHaveLength(1);
+    expect(metadata.deep_think_progress.tool_items[0]).toMatchObject({
+      tool: 'web_search',
+      status: 'failed',
+    });
+  });
+
+  it('normalizes compact progress into tool items and dedupes retries', () => {
+    const { store, ctx } = buildContext();
+
+    handleProgressStatus(ctx as any, {
+      phase: 'gathering',
+      label: '检索资料：AnewSampling Learning the All-Atom Equilibrium Distribution biomolecular interactions',
+      details: 'AnewSampling Learning the All-Atom Equilibrium Distribution biomolecular interactions database open source data availability',
+      tool: 'web_search',
+      status: 'active',
+      iteration: 1,
+    });
+
+    handleProgressStatus(ctx as any, {
+      phase: 'gathering',
+      label: '检索失败，正在重试',
+      tool: 'web_search',
+      status: 'retrying',
+      iteration: 1,
+    });
+
+    const metadata: any = store.messages[0].metadata;
+    expect(metadata.thinking_visibility).toBe('progress');
+    expect(metadata.deep_think_progress.current_tool).toBe('web_search');
+    expect(metadata.deep_think_progress.current_status).toBe('retrying');
+    expect(metadata.deep_think_progress.tool_items).toHaveLength(1);
+    expect(metadata.deep_think_progress.tool_items[0]).toMatchObject({
+      tool: 'web_search',
+      status: 'retrying',
+    });
+    expect(metadata.deep_think_progress.tool_items[0].details).toContain('AnewSampling');
+    expect(metadata.deep_think_progress.history).toHaveLength(2);
+  });
+
+  it('keeps generic progress labels out of expanded notes', () => {
+    const { store, ctx } = buildContext();
+
+    handleProgressStatus(ctx as any, {
+      phase: 'analyzing',
+      label: '处理当前步骤',
+      status: 'active',
+      iteration: 1,
+    });
+
+    handleProgressStatus(ctx as any, {
+      phase: 'finalizing',
+      label: '根据搜索结果，关于 **AnewSampling** 论文及其数据库的开源情况如下： --- ## 论文基本信息 | 项目 | 详情 |',
+      status: 'active',
+      iteration: 2,
+    });
+
+    const metadata: any = store.messages[0].metadata;
+    expect(metadata.deep_think_progress.current_label).toContain('AnewSampling');
+    expect(metadata.deep_think_progress.current_label.length).toBeLessThanOrEqual(72);
+    expect(metadata.deep_think_progress.expanded_notes).toHaveLength(1);
+    expect(metadata.deep_think_progress.expanded_notes[0]).toContain('论文基本信息');
   });
 });

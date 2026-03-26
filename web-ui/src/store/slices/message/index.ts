@@ -29,6 +29,7 @@ import {
   handleThinkingStep,
   handleThinkingDelta,
   handleReasoningDelta,
+  handleProgressStatus,
   flushPendingThinkingDeltas,
   handleControlAck,
   handleToolOutput,
@@ -71,6 +72,10 @@ const _consumeUnifiedStream = async (
     }
     if (event.type === 'reasoning_delta') {
       handleReasoningDelta(ctx, event);
+      continue;
+    }
+    if (event.type === 'progress_status') {
+      handleProgressStatus(ctx, event);
       continue;
     }
     if (event.type === 'control_ack') {
@@ -543,6 +548,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   flushHandle: null,
   thinkingDeltaFlushHandle: null,
   pendingThinkingDeltas: {},
+  pendingThinkingDeltaStartedAt: {},
   finalPayload: null,
   jobFinalized: false,
   isBackgroundDispatch: false,
@@ -668,6 +674,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   flushHandle: null,
   thinkingDeltaFlushHandle: null,
   pendingThinkingDeltas: {},
+  pendingThinkingDeltaStartedAt: {},
   finalPayload: null,
   jobFinalized: false,
   isBackgroundDispatch: false,

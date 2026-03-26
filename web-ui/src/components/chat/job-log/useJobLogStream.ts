@@ -3,9 +3,13 @@ import { ENV } from '@/config/env';
 import { planTreeApi } from '@api/planTree';
 import type { ActionLogEntry, DecompositionJobStatus, JobLogEvent, ThinkingProcess, ThinkingStep } from '@/types';
 import { dispatchPlanSyncEvent } from '@utils/planSyncEvents';
+import {
+  inferThinkingLanguage,
+  defaultThinkingDisplayText,
+  extractThinkingFlushChunk,
+  THINKING_DELTA_FLUSH_INTERVAL_MS,
+} from '@utils/thinkingStream';
 import { FINAL_STATUSES, MAX_RENDER_LOGS, parseStreamData } from './constants';
-
-const CJK_CHAR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
 
 interface UseJobLogStreamOptions {
   jobId: string;
@@ -58,20 +62,6 @@ const _stringifyToolPayload = (payload: any): string => {
     return String(payload ?? '');
   }
 };
-
-const _normalizeThinkingLanguage = (value: unknown): 'zh' | 'en' =>
-  CJK_CHAR_RE.test(String(value ?? '')) ? 'zh' : 'en';
-
-const _localizedThinkingText = (language: 'zh' | 'en', zh: string, en: string): string =>
-  language === 'zh' ? zh : en;
-
-const _defaultThinkingDisplayText = (
-  iteration: number,
-  language: 'zh' | 'en'
-): string =>
-  iteration <= 0
-    ? _localizedThinkingText(language, '准备整理回复', 'Preparing the response')
-    : _localizedThinkingText(language, '分析当前步骤', 'Working through the current step');
 
 const _mergeToolResultIntoSteps = (
   steps: ThinkingStep[],
@@ -157,13 +147,13 @@ const _rebuildThinkingFromLogs = (
     if (index >= 0) {
       steps[index] = {
         ...steps[index],
-        thought: `${steps[index].thought || ''}${delta}`,
-        display_text:
-          steps[index].display_text ||
-          _defaultThinkingDisplayText(iteration, fallbackLanguage),
-        kind: steps[index].kind || 'reasoning',
-        status: steps[index].status || 'thinking',
-      };
+          thought: `${steps[index].thought || ''}${delta}`,
+          display_text:
+            steps[index].display_text ||
+            defaultThinkingDisplayText(iteration, fallbackLanguage),
+          kind: steps[index].kind || 'reasoning',
+          status: steps[index].status || 'thinking',
+        };
     }
   };
 
@@ -294,6 +284,124 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
   const actionCursorRef = React.useRef<string | null>(initialJob?.action_cursor ?? null);
   const completionNotifiedRef = React.useRef(false);
   const progressSyncAtRef = React.useRef(0);
+  const thinkingProcessRef = React.useRef<ThinkingProcess>({ status: 'active', steps: [] });
+  const pendingThinkingDeltasRef = React.useRef<Record<number, string>>({});
+  const pendingThinkingDeltaStartedAtRef = React.useRef<Record<number, number>>({});
+  const thinkingDeltaFlushHandleRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => {
+    thinkingProcessRef.current = thinkingProcess;
+  }, [thinkingProcess]);
+
+  const clearPendingThinkingFlush = React.useCallback(() => {
+    if (thinkingDeltaFlushHandleRef.current !== null) {
+      window.clearTimeout(thinkingDeltaFlushHandleRef.current);
+      thinkingDeltaFlushHandleRef.current = null;
+    }
+  }, []);
+
+  const getFallbackThinkingLanguage = React.useCallback((): 'zh' | 'en' => {
+    return inferThinkingLanguage(
+      thinkingProcessRef.current.summary ??
+        result?.content ??
+        jobMetadata?.message_preview ??
+        ''
+    );
+  }, [jobMetadata?.message_preview, result?.content]);
+
+  const flushPendingThinkingDeltas = React.useCallback((force: boolean = false) => {
+    const pendingEntries = Object.entries(pendingThinkingDeltasRef.current);
+    if (pendingEntries.length === 0) {
+      return;
+    }
+
+    const currentProcess = thinkingProcessRef.current;
+    const nextSteps = [...(currentProcess.steps ?? [])];
+    const nextPending: Record<number, string> = {};
+    const nextPendingStartedAt: Record<number, number> = {};
+    const fallbackLanguage = getFallbackThinkingLanguage();
+    const now = Date.now();
+    let didFlush = false;
+
+    for (const [iterationKey, bufferedDelta] of pendingEntries) {
+      const iteration = Number(iterationKey);
+      if (!Number.isFinite(iteration) || !bufferedDelta) {
+        continue;
+      }
+      const bufferedAt = pendingThinkingDeltaStartedAtRef.current[iteration] ?? now;
+      const { flushable, remaining } = extractThinkingFlushChunk(bufferedDelta, force);
+      let idx = nextSteps.findIndex((item) => item.iteration === iteration);
+      if (idx < 0) {
+        nextSteps.push({
+          iteration,
+          thought: '',
+          display_text: defaultThinkingDisplayText(iteration, fallbackLanguage),
+          kind: iteration <= 0 ? 'summary' : 'reasoning',
+          status: 'thinking',
+        });
+        idx = nextSteps.length - 1;
+      }
+
+      if (flushable) {
+        didFlush = true;
+        nextSteps[idx] = {
+          ...nextSteps[idx],
+          thought: `${nextSteps[idx].thought || ''}${flushable}`,
+          display_text:
+            nextSteps[idx].display_text ||
+            defaultThinkingDisplayText(iteration, fallbackLanguage),
+          kind: nextSteps[idx].kind || (iteration <= 0 ? 'summary' : 'reasoning'),
+          status: nextSteps[idx].status || 'thinking',
+        };
+      }
+
+      if (remaining) {
+        nextPending[iteration] = remaining;
+        nextPendingStartedAt[iteration] = bufferedAt;
+      }
+    }
+
+    pendingThinkingDeltasRef.current = nextPending;
+    pendingThinkingDeltaStartedAtRef.current = nextPendingStartedAt;
+
+    if (didFlush) {
+      nextSteps.sort((a, b) => a.iteration - b.iteration);
+      const nextProcess: ThinkingProcess = {
+        ...currentProcess,
+        status: 'active',
+        steps: nextSteps,
+      };
+      thinkingProcessRef.current = nextProcess;
+      setThinkingProcess(nextProcess);
+    }
+
+    if (
+      Object.keys(pendingThinkingDeltasRef.current).length > 0 &&
+      thinkingDeltaFlushHandleRef.current === null
+    ) {
+      thinkingDeltaFlushHandleRef.current = window.setTimeout(() => {
+        thinkingDeltaFlushHandleRef.current = null;
+        flushPendingThinkingDeltas(false);
+      }, THINKING_DELTA_FLUSH_INTERVAL_MS);
+    }
+  }, [getFallbackThinkingLanguage]);
+
+  const queueThinkingDelta = React.useCallback((iteration: number, delta: string) => {
+    if (!Number.isFinite(iteration) || !delta) {
+      return;
+    }
+    if (!pendingThinkingDeltasRef.current[iteration]) {
+      pendingThinkingDeltaStartedAtRef.current[iteration] = Date.now();
+    }
+    pendingThinkingDeltasRef.current[iteration] =
+      (pendingThinkingDeltasRef.current[iteration] || '') + delta;
+    if (thinkingDeltaFlushHandleRef.current === null) {
+      thinkingDeltaFlushHandleRef.current = window.setTimeout(() => {
+        thinkingDeltaFlushHandleRef.current = null;
+        flushPendingThinkingDeltas(false);
+      }, THINKING_DELTA_FLUSH_INTERVAL_MS);
+    }
+  }, [flushPendingThinkingDeltas]);
 
   const applySnapshot = React.useCallback((snapshot: DecompositionJobStatus | null) => {
     if (!snapshot) return;
@@ -323,16 +431,24 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
         typeof (snapshot.result.metadata as any)?.thinking_process?.summary === 'string')
           ? (snapshot.result.metadata as any).thinking_process.summary
           : undefined;
-      const fallbackLanguage = _normalizeThinkingLanguage(
+      const fallbackLanguage = inferThinkingLanguage(
         summaryFromMetadata ??
           snapshot.result?.content ??
           snapshot.metadata?.message_preview ??
           ''
       );
       const rebuilt = _rebuildThinkingFromLogs(replayLogs, snapshot.status, fallbackLanguage);
+      clearPendingThinkingFlush();
+      pendingThinkingDeltasRef.current = {};
+      pendingThinkingDeltaStartedAtRef.current = {};
+      thinkingProcessRef.current = rebuilt.process;
       setThinkingProcess(rebuilt.process);
       if (summaryFromMetadata) {
-        setThinkingProcess((prev) => ({ ...prev, summary: summaryFromMetadata }));
+        setThinkingProcess((prev) => {
+          const next = { ...prev, summary: summaryFromMetadata };
+          thinkingProcessRef.current = next;
+          return next;
+        });
       }
       setStreamPaused(rebuilt.streamPaused);
       setLastRuntimeControlAction(rebuilt.lastRuntimeControlAction);
@@ -345,7 +461,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
       actionCursorRef.current = snapshot.action_cursor ?? null;
     }
     setLastUpdatedAt(snapshot.finished_at ?? snapshot.started_at ?? snapshot.created_at ?? null);
-  }, []);
+  }, [clearPendingThinkingFlush]);
 
   const appendLogEvent = React.useCallback((event: JobLogEvent | undefined) => {
     if (!event) return;
@@ -359,64 +475,51 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
   }, []);
 
   const mergeThinkingStep = React.useCallback((step: ThinkingStep) => {
+    flushPendingThinkingDeltas(true);
     setThinkingProcess((prev) => {
       const nextSteps = [...(prev.steps || [])];
       const idx = nextSteps.findIndex((item) => item.iteration === step.iteration);
       if (idx >= 0) {
+        const existing = nextSteps[idx];
         nextSteps[idx] = {
-          ...nextSteps[idx],
+          ...existing,
           ...step,
+          thought: step.thought || existing?.thought || '',
+          display_text: step.display_text || existing?.display_text,
+          kind: step.kind || existing?.kind,
+          action_result: step.action_result ?? existing?.action_result ?? null,
         };
       } else {
         nextSteps.push(step);
       }
       nextSteps.sort((a, b) => a.iteration - b.iteration);
-      return {
+      const next: ThinkingProcess = {
         ...prev,
         status: 'active',
         steps: nextSteps,
       };
+      thinkingProcessRef.current = next;
+      return next;
     });
-  }, []);
+  }, [flushPendingThinkingDeltas]);
 
   const appendThinkingDelta = React.useCallback((iteration: number, delta: string) => {
-    if (!delta) return;
-    setThinkingProcess((prev) => {
-      const nextSteps = [...(prev.steps || [])];
-      const idx = nextSteps.findIndex((item) => item.iteration === iteration);
-      const fallbackLanguage = _normalizeThinkingLanguage(
-        prev.summary ?? result?.content ?? jobMetadata?.message_preview ?? ''
-      );
-      if (idx >= 0) {
-        nextSteps[idx] = {
-          ...nextSteps[idx],
-          thought: `${nextSteps[idx].thought || ''}${delta}`,
-          display_text:
-            nextSteps[idx].display_text ||
-            _defaultThinkingDisplayText(iteration, fallbackLanguage),
-          kind: nextSteps[idx].kind || 'reasoning',
-          status: nextSteps[idx].status || 'thinking',
-        };
-      }
-      nextSteps.sort((a, b) => a.iteration - b.iteration);
-      return {
-        ...prev,
-        status: 'active',
-        steps: nextSteps,
-      };
-    });
-  }, []);
+    queueThinkingDelta(iteration, delta);
+  }, [queueThinkingDelta]);
 
   const mergeToolResult = React.useCallback((tool: string, payload: any) => {
+    flushPendingThinkingDeltas(true);
     setThinkingProcess((prev) => {
       const currentSteps = Array.isArray(prev.steps) ? prev.steps : [];
-      return {
+      const next: ThinkingProcess = {
         ...prev,
         status: 'active',
         steps: _mergeToolResultIntoSteps(currentSteps, tool, payload),
       };
+      thinkingProcessRef.current = next;
+      return next;
     });
-  }, []);
+  }, [flushPendingThinkingDeltas]);
 
   const emitPlanProgressSync = React.useCallback(
     (payload?: {
@@ -622,13 +725,17 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
   React.useEffect(() => {
     completionNotifiedRef.current = false;
     progressSyncAtRef.current = 0;
-    setThinkingProcess({ status: 'active', steps: [] });
+    clearPendingThinkingFlush();
+    pendingThinkingDeltasRef.current = {};
+    pendingThinkingDeltaStartedAtRef.current = {};
+    thinkingProcessRef.current = { status: 'active', steps: [] };
+    setThinkingProcess(thinkingProcessRef.current);
     setStreamPaused(false);
     setLastRuntimeControlAction(null);
     setLastRuntimeControlAt(null);
     setRuntimeControlBusy(false);
     setRuntimeControlBusyAction(null);
-  }, [jobId]);
+  }, [clearPendingThinkingFlush, jobId]);
 
   React.useEffect(() => {
     if (cliLogVisible) {
@@ -763,10 +870,14 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
             setStatus(parsed.status);
             statusRef.current = parsed.status;
             if (FINAL_STATUSES.has(parsed.status)) {
-              setThinkingProcess((prev) => ({
-                ...prev,
-                status: parsed.status === 'failed' ? 'error' : 'completed',
-              }));
+              setThinkingProcess((prev) => {
+                const next: ThinkingProcess = {
+                  ...prev,
+                  status: parsed.status === 'failed' ? 'error' : 'completed',
+                };
+                thinkingProcessRef.current = next;
+                return next;
+              });
             }
           }
           if (parsed.stats) {
@@ -858,10 +969,11 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
 
     return () => {
       cancelled = true;
+      clearPendingThinkingFlush();
       closeStream();
       stopPolling();
     };
-  }, [appendLogEvent, appendThinkingDelta, applySnapshot, closeStream, emitPlanProgressSync, jobId, mergeThinkingStep, mergeToolResult, startPolling, stopPolling]);
+  }, [appendLogEvent, appendThinkingDelta, applySnapshot, clearPendingThinkingFlush, closeStream, emitPlanProgressSync, jobId, mergeThinkingStep, mergeToolResult, startPolling, stopPolling]);
 
   return {
     logs,

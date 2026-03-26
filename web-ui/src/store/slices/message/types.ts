@@ -9,6 +9,7 @@ export interface StreamMutableState {
   flushHandle: number | null;
   thinkingDeltaFlushHandle: number | null;
   pendingThinkingDeltas: Record<number, string>;
+  pendingThinkingDeltaStartedAt: Record<number, number>;
   finalPayload: ChatResponsePayload | null;
   jobFinalized: boolean;
   isBackgroundDispatch: boolean;

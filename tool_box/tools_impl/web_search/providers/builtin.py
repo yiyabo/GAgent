@@ -7,6 +7,7 @@ See: https://help.aliyun.com/zh/model-studio/web-search
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
@@ -223,6 +224,7 @@ async def search(
     }
 
     timeout = aiohttp.ClientTimeout(total=settings.builtin_request_timeout)
+    started_at = time.monotonic()
 
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -247,11 +249,18 @@ async def search(
     except WebSearchError:
         raise
     except Exception as exc:  # pragma: no cover - network/runtime
-        logger.error("DashScope Responses web_search request failed: %s", exc)
+        elapsed = round(time.monotonic() - started_at, 2)
+        exc_type = type(exc).__name__
+        message = str(exc).strip()
+        detail = f"{exc_type} after {elapsed}s"
+        if message:
+            detail = f"{detail}: {message}"
+        logger.error("DashScope Responses web_search request failed: %s", detail)
         raise WebSearchError(
             code="request_failed",
-            message=str(exc),
+            message=detail,
             provider="builtin",
+            meta={"url": api_url, "model": model, "elapsed_seconds": elapsed, "exception_type": exc_type},
         ) from exc
 
     if not isinstance(data, dict):
