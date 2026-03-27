@@ -170,6 +170,13 @@ _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE: Sequence[str] = (
     "ANTHROPIC_MODEL",
     "ANTHROPIC_AUTH_TOKEN",
 )
+_CLAUDE_ENV_KEYS_FOR_API_MODE: Sequence[str] = (
+    *_CLAUDE_ENV_KEYS_FOR_LOGIN_MODE,
+    "CLAUDE_API_KEY",
+    "CLAUDE_API_URL",
+    "CLAUDE_BASE_URL",
+    "CLAUDE_MODEL",
+)
 _CLAUDE_ENV_ALIAS_FOR_API_MODE: Sequence[tuple[str, str]] = (
     ("CLAUDE_CODE_API_KEY", "ANTHROPIC_API_KEY"),
     ("CLAUDE_CODE_BASE_URL", "ANTHROPIC_BASE_URL"),
@@ -263,8 +270,10 @@ def _build_claude_subprocess_env(auth_mode: str) -> Dict[str, str]:
         for key in _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE:
             env_map.pop(key, None)
     elif auth_mode == "api_env":
-        # In API mode, build a deterministic runtime env and never inherit login credentials.
-        for key in _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE:
+        # In API mode, build a deterministic runtime env and never inherit provider
+        # or model settings from the parent shell. Claude Code itself reads some
+        # CLAUDE_* variables, so scrub those too before wiring our explicit config.
+        for key in _CLAUDE_ENV_KEYS_FOR_API_MODE:
             env_map.pop(key, None)
         for source_key, target_key in _CLAUDE_ENV_ALIAS_FOR_API_MODE:
             value = str(os.getenv(source_key, "")).strip()
