@@ -3,16 +3,18 @@ Literature Pipeline Tool
 ------------------------
 Build a submission-grade literature pack for review writing:
 - Query PubMed via NCBI E-utilities (ESearch + EFetch XML)
+- Optionally merge Europe PMC REST search hits (same query string)
+- Optionally merge bioRxiv preprints (api.biorxiv.org date-sliced API + keyword filter)
 - Extract metadata (title/authors/year/journal/doi/pmid/pmcid/abstract)
 - Generate stable citekeys and write:
   - library.jsonl (structured records)
   - references.bib (BibTeX with citekeys)
   - evidence.md (lightweight evidence inventory with citekeys)
-- Download OA PDFs via PMC when PMCID is available (best-effort)
+- Download OA PDFs via PMC when PMCID is available; bioRxiv PDFs via journal PDF URLs when DOI is 10.1101/*
 
 Design principles:
-- No fabricated metadata: everything comes from NCBI/PMC responses.
-- OA-only PDF download: we only download from PMC article pages we can access.
+- No fabricated metadata: everything comes from NCBI/PMC/Europe PMC/bioRxiv API responses.
+- OA-only PDF download for PMC; bioRxiv uses publisher-hosted full.pdf links for 10.1101 DOIs.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ import logging
 import re
 import tarfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote_plus, urljoin
@@ -138,9 +140,10 @@ class PaperRecord:
     pmcid: Optional[str]
     abstract: Optional[str]
     url: Optional[str]
+    preprint_version: Optional[str] = None
 
     def to_json(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "citekey": self.citekey,
             "title": self.title,
             "authors": self.authors,
@@ -152,6 +155,9 @@ class PaperRecord:
             "abstract": self.abstract,
             "url": self.url,
         }
+        if self.preprint_version:
+            d["preprint_version"] = self.preprint_version
+        return d
 
     def pcid_safe(self) -> Optional[str]:
         return self.pmcid
@@ -348,6 +354,283 @@ async def _pubmed_efetch_xml(client: httpx.AsyncClient, pmids: List[str]) -> str
     r = await client.get(url, params=params, timeout=60.0)
     r.raise_for_status()
     return r.text
+
+
+_EUROPE_PMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+_BIORXIV_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "or",
+        "for",
+        "with",
+        "from",
+        "that",
+        "this",
+        "these",
+        "those",
+        "into",
+        "using",
+        "based",
+        "between",
+        "among",
+        "within",
+        "without",
+        "over",
+        "under",
+        "about",
+        "such",
+        "via",
+        "non",
+        "not",
+        "are",
+        "was",
+        "were",
+        "has",
+        "have",
+        "had",
+        "but",
+        "our",
+        "their",
+        "its",
+        "can",
+        "may",
+        "new",
+        "two",
+        "use",
+        "all",
+        "any",
+    }
+)
+
+
+def _record_dedup_key(rec: PaperRecord) -> str:
+    if rec.pmid and str(rec.pmid).strip():
+        return f"pmid:{str(rec.pmid).strip()}"
+    if rec.doi and str(rec.doi).strip():
+        return f"doi:{str(rec.doi).strip().lower()}"
+    t = re.sub(r"\s+", " ", (rec.title or "").lower()).strip()[:240]
+    return f"title:{t}"
+
+
+def _authors_from_delimited_string(author_string: str) -> List[str]:
+    if not (author_string or "").strip():
+        return []
+    parts = [p.strip() for p in re.split(r"[;,]", author_string) if p.strip()]
+    out: List[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
+
+
+async def _europepmc_search(client: httpx.AsyncClient, query: str, max_hits: int) -> List[Dict[str, Any]]:
+    """Europe PMC REST search (cursorMark pagination)."""
+    out: List[Dict[str, Any]] = []
+    cursor_mark: Optional[str] = "*"
+    max_hits = max(1, min(int(max_hits), 1000))
+    while len(out) < max_hits:
+        page_size = min(100, max_hits - len(out))
+        params: Dict[str, Any] = {
+            "query": query,
+            "format": "json",
+            "pageSize": page_size,
+            "resultType": "core",
+            "cursorMark": cursor_mark,
+        }
+        r = await client.get(_EUROPE_PMC_SEARCH, params=params, timeout=60.0)
+        r.raise_for_status()
+        data = r.json()
+        batch = data.get("resultList", {}).get("result") or []
+        if not batch:
+            break
+        out.extend(batch)
+        next_mark = data.get("nextCursorMark")
+        if not next_mark or next_mark == cursor_mark:
+            break
+        cursor_mark = next_mark
+        if len(batch) < page_size:
+            break
+    return out[:max_hits]
+
+
+def _paper_record_from_europepmc(hit: Dict[str, Any], seen_keys: Dict[str, int]) -> PaperRecord:
+    title = (hit.get("title") or "").strip() or "Untitled"
+    authors = _authors_from_delimited_string(str(hit.get("authorString") or ""))
+    journal: Optional[str] = None
+    ji = hit.get("journalInfo")
+    if isinstance(ji, dict):
+        jn = ji.get("journal")
+        if isinstance(jn, dict):
+            journal = (jn.get("title") or "").strip() or None
+    year = str(hit.get("pubYear") or "").strip() or None
+    if not year:
+        year = _normalize_year(str(hit.get("firstPublicationDate") or ""))
+    doi = (hit.get("doi") or "").strip() or None
+    pmid = str(hit.get("pmid") or "").strip() or None
+    pmcid_raw = hit.get("pmcid") or ""
+    pmcid = str(pmcid_raw).strip() if pmcid_raw else None
+    if pmcid and not pmcid.upper().startswith("PMC"):
+        pmcid = f"PMC{pmcid}" if pmcid.isdigit() else pmcid
+    abstract = (hit.get("abstractText") or "").strip() or None
+    url: Optional[str] = None
+    if pmid:
+        url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+    elif doi:
+        url = f"https://doi.org/{doi}"
+    else:
+        src = str(hit.get("source") or "MED")
+        eid = str(hit.get("id") or "").strip()
+        if eid:
+            url = f"https://europepmc.org/article/{src}/{eid}"
+    citekey = _build_citekey(
+        authors=[a.split(" ", 1)[0] for a in authors] if authors else ["Anon"],
+        year=year,
+        journal=journal,
+        seen=seen_keys,
+    )
+    return PaperRecord(
+        citekey=citekey,
+        title=title,
+        authors=authors,
+        year=year,
+        journal=journal,
+        doi=doi,
+        pmid=pmid,
+        pmcid=pmcid,
+        abstract=abstract,
+        url=url,
+    )
+
+
+def _biorxiv_query_keywords(query: str) -> List[str]:
+    # Unicode word chunks (English and other scripts); bioRxiv metadata is mostly English.
+    raw_tokens = re.findall(r"[\w\-]{3,}", (query or ""), flags=re.UNICODE)
+    out: List[str] = []
+    for w in raw_tokens:
+        wl = w.lower()
+        if wl in _BIORXIV_STOPWORDS:
+            continue
+        if not re.search(r"[a-zA-Z]", w):
+            continue
+        out.append(wl)
+    # de-dup preserve order
+    seen: set[str] = set()
+    dedup: List[str] = []
+    for w in out:
+        if w in seen:
+            continue
+        seen.add(w)
+        dedup.append(w)
+    return dedup[:24]
+
+
+def _biorxiv_text_matches_keywords(haystack: str, keywords: List[str]) -> bool:
+    if not keywords:
+        return False
+    low = haystack.lower()
+    hits = sum(1 for k in keywords if k in low)
+    need = 1 if len(keywords) <= 2 else 2
+    return hits >= min(need, len(keywords))
+
+
+async def _biorxiv_fetch_records(
+    client: httpx.AsyncClient,
+    query: str,
+    max_hits: int,
+    *,
+    years_back: int = 3,
+    seen_keys: Dict[str, int],
+) -> List[PaperRecord]:
+    """bioRxiv details API: date range + paginated cursor; filter rows by query keywords."""
+    keywords = _biorxiv_query_keywords(query)
+    if not keywords:
+        return []
+    max_hits = max(1, min(int(max_hits), 500))
+    years_back = max(1, min(int(years_back), 10))
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=365 * years_back)
+
+    out: List[PaperRecord] = []
+    cursor = 0
+    max_pages = 40
+    while len(out) < max_hits and cursor < max_pages:
+        url = f"https://api.biorxiv.org/details/biorxiv/{start}/{end}/{cursor}"
+        r = await client.get(url, timeout=90.0)
+        r.raise_for_status()
+        data = r.json()
+        coll = data.get("collection") or []
+        if not coll:
+            break
+        for item in coll:
+            if len(out) >= max_hits:
+                break
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "")
+            abstract = str(item.get("abstract") or "")
+            if not _biorxiv_text_matches_keywords(f"{title} {abstract}", keywords):
+                continue
+            rec = _paper_record_from_biorxiv(item, seen_keys)
+            out.append(rec)
+        cursor += 1
+        if len(coll) < 100:
+            break
+    return out
+
+
+def _paper_record_from_biorxiv(item: Dict[str, Any], seen_keys: Dict[str, int]) -> PaperRecord:
+    title = (item.get("title") or "").strip() or "Untitled"
+    authors = _authors_from_delimited_string(str(item.get("authors") or "").replace(";", ","))
+    year = _normalize_year(str(item.get("date") or "")) or str(item.get("date") or "")[:4]
+    doi = str(item.get("doi") or "").strip()
+    version = str(item.get("version") or "1").strip()
+    abstract = (item.get("abstract") or "").strip() or None
+    url = f"https://www.biorxiv.org/content/{doi}v{version}" if doi else None
+    citekey = _build_citekey(
+        authors=[a.split(" ", 1)[0] for a in authors] if authors else ["Anon"],
+        year=year,
+        journal="bioRxiv",
+        seen=seen_keys,
+    )
+    return PaperRecord(
+        citekey=citekey,
+        title=title,
+        authors=authors,
+        year=year,
+        journal="bioRxiv",
+        doi=doi,
+        pmid=None,
+        pmcid=None,
+        abstract=abstract,
+        url=url,
+        preprint_version=version,
+    )
+
+
+async def _download_biorxiv_pdf(
+    client: httpx.AsyncClient, doi: str, version: str, out_path: Path
+) -> Tuple[bool, Optional[str], Optional[str]]:
+    """Download bioRxiv full PDF for a 10.1101 DOI (best-effort)."""
+    v = (version or "1").strip()
+    clean = str(doi or "").strip()
+    if not clean.startswith("10.1101"):
+        return False, "not_a_biorxiv_doi", None
+    url = f"https://www.biorxiv.org/content/{clean}v{v}.full.pdf"
+    try:
+        pr = await client.get(url, timeout=_PMC_LEGACY_PDF_TIMEOUT, follow_redirects=True)
+        if pr.status_code >= 400:
+            return False, f"HTTP {pr.status_code}", None
+        if not _is_pdf_payload(pr.content, pr.headers.get("content-type"), url):
+            return False, f"Downloaded content-type not pdf: {pr.headers.get('content-type')}", None
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(pr.content)
+        return True, None, None
+    except Exception as exc:
+        return False, str(exc), None
 
 
 def _find_pmc_pdf_link(html: str, base_url: str) -> Optional[str]:
@@ -916,6 +1199,9 @@ async def literature_pipeline_handler(
     user_agent: Optional[str] = None,
     proxy: Optional[str] = None,
     session_id: Optional[str] = None,
+    include_europepmc: bool = True,
+    include_biorxiv: bool = True,
+    biorxiv_years_back: int = 3,
 ) -> Dict[str, Any]:
     if not isinstance(query, str) or not query.strip():
         return {"tool": "literature_pipeline", "success": False, "error": "missing_query"}
@@ -957,12 +1243,20 @@ async def literature_pipeline_handler(
 
     progress_steps = [
         "query_pubmed",
-        "fetch_metadata",
-        "build_bib",
-        "download_pdfs",
-        "write_evidence",
-        "done",
+        "fetch_metadata_pubmed",
     ]
+    if include_europepmc:
+        progress_steps.append("merge_europepmc")
+    if include_biorxiv:
+        progress_steps.append("merge_biorxiv")
+    progress_steps.extend(
+        [
+            "build_bib",
+            "download_pdfs",
+            "write_evidence",
+            "done",
+        ]
+    )
 
     def _bar(done: int, total: int, width: int = 24) -> str:
         total = max(1, total)
@@ -1041,6 +1335,46 @@ async def literature_pipeline_handler(
             except Exception as exc:
                 errors.append(f"efetch_batch_{i//batch_size+1}: {exc}")
 
+        dedup_keys: set[str] = {_record_dedup_key(r) for r in records}
+        europepmc_added = 0
+        biorxiv_added = 0
+
+        if include_europepmc:
+            try:
+                epmc_hits = await _europepmc_search(client, effective_query, max_results)
+                for hit in epmc_hits:
+                    rec = _paper_record_from_europepmc(hit, seen_keys)
+                    k = _record_dedup_key(rec)
+                    if k in dedup_keys:
+                        continue
+                    dedup_keys.add(k)
+                    records.append(rec)
+                    europepmc_added += 1
+            except Exception as exc:
+                errors.append(f"europepmc_search: {exc}")
+
+        if include_biorxiv:
+            try:
+                brx_records = await _biorxiv_fetch_records(
+                    client,
+                    effective_query,
+                    max_results,
+                    years_back=biorxiv_years_back,
+                    seen_keys=seen_keys,
+                )
+                for rec in brx_records:
+                    k = _record_dedup_key(rec)
+                    if k in dedup_keys:
+                        continue
+                    dedup_keys.add(k)
+                    records.append(rec)
+                    biorxiv_added += 1
+            except Exception as exc:
+                errors.append(f"biorxiv_fetch: {exc}")
+
+        if len(records) > max_results:
+            records = records[:max_results]
+
         # 3) Write library.jsonl
         _write_jsonl(library_path, (r.to_json() for r in records))
 
@@ -1048,17 +1382,46 @@ async def literature_pipeline_handler(
         bib_entries = "".join(_record_to_bibtex(r) for r in records)
         _write_text(bib_path, bib_entries)
 
-        # 5) Download PDFs (PMC only)
+        # 5) Download PDFs (PMC first, then bioRxiv)
         full_text_map: Dict[str, str] = {}
         if download_pdfs and max_pdfs > 0:
-            candidates = [r for r in records if r.pmcid][:max_pdfs]
+            pmc_candidates = [r for r in records if r.pmcid]
+            brx_candidates = [
+                r
+                for r in records
+                if (r.journal or "").lower() == "biorxiv"
+                and r.doi
+                and str(r.doi).strip().startswith("10.1101")
+                and not r.pmcid
+            ]
+            candidates: List[PaperRecord] = []
+            for r in pmc_candidates:
+                if len(candidates) >= max_pdfs:
+                    break
+                candidates.append(r)
+            for r in brx_candidates:
+                if len(candidates) >= max_pdfs:
+                    break
+                candidates.append(r)
             semaphore = asyncio.Semaphore(_PMC_DOWNLOAD_CONCURRENCY)
 
             async def _download_candidate(rec: PaperRecord) -> Dict[str, Any]:
                 out_pdf = pdf_dir / f"{rec.citekey}.pdf"
                 try:
                     async with semaphore:
-                        ok, err, downloaded_full_text = await _download_pmc_pdf(client, rec.pmcid or "", out_pdf)
+                        if rec.pmcid:
+                            ok, err, downloaded_full_text = await _download_pmc_pdf(
+                                client, rec.pmcid or "", out_pdf
+                            )
+                        elif (rec.journal or "").lower() == "biorxiv" and rec.doi:
+                            ok, err, downloaded_full_text = await _download_biorxiv_pdf(
+                                client,
+                                rec.doi,
+                                rec.preprint_version or "1",
+                                out_pdf,
+                            )
+                        else:
+                            ok, err, downloaded_full_text = False, "not_downloadable", None
                 except Exception as exc:
                     ok = False
                     err = f"{type(exc).__name__}: {exc}"
@@ -1144,11 +1507,18 @@ async def literature_pipeline_handler(
             "pmids": len(pmids),
             "records": len(records),
             "pmcid_records": len([r for r in records if r.pmcid]),
+            "europepmc_records_added": europepmc_added,
+            "biorxiv_records_added": biorxiv_added,
             "pdf_attempted": len(downloaded),
             "pdf_downloaded": len([d for d in downloaded if d.get("ok")]),
             "study_cards": len(study_cards),
             "full_text_study_cards": len([card for card in study_cards if card.get("evidence_tier") == "full_text"]),
             "quantitative_study_cards": len([card for card in study_cards if card.get("quantitative_findings")]),
+        },
+        "sources": {
+            "include_europepmc": include_europepmc,
+            "include_biorxiv": include_biorxiv,
+            "biorxiv_years_back": biorxiv_years_back,
         },
         "downloaded_pdfs": downloaded[:10],  # preview
         "errors": errors[:50] if errors else None,
@@ -1162,22 +1532,48 @@ async def literature_pipeline_handler(
 literature_pipeline_tool = {
     "name": "literature_pipeline",
     "description": (
-        "Build a literature pack for a review: query PubMed, fetch metadata, generate BibTeX citekeys, "
-        "download OA PDFs from PMC when available, and write evidence inventory."
+        "Build a literature pack for a review: query PubMed, optionally merge Europe PMC + bioRxiv preprints, "
+        "generate BibTeX citekeys, download OA PDFs (PMC and bioRxiv 10.1101/*), and write evidence inventory."
     ),
     "category": "information_retrieval",
     "parameters_schema": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "PubMed query term (supports boolean operators)."},
-            "max_results": {"type": "integer", "default": 80, "description": "Max PubMed results to fetch (<=500)."},
+            "query": {
+                "type": "string",
+                "description": "Search query (PubMed syntax for PubMed/Europe PMC; bioRxiv leg uses English keywords extracted from this string).",
+            },
+            "max_results": {
+                "type": "integer",
+                "default": 80,
+                "description": "Max records after merging PubMed + optional Europe PMC + bioRxiv (<=500).",
+            },
             "out_dir": {"type": "string", "description": "Output directory (project-relative preferred)."},
             "session_id": {
                 "type": "string",
                 "description": "Optional session id. When out_dir is omitted, outputs are written under the session tool_outputs directory.",
             },
-            "download_pdfs": {"type": "boolean", "default": True, "description": "Download OA PDFs from PMC when PMCID exists."},
-            "max_pdfs": {"type": "integer", "default": 80, "description": "Max PDFs to download (PMC only)."},
+            "download_pdfs": {
+                "type": "boolean",
+                "default": True,
+                "description": "Download OA PDFs from PMC when PMCID exists, and bioRxiv full PDF when DOI is 10.1101/*.",
+            },
+            "max_pdfs": {"type": "integer", "default": 80, "description": "Max PDFs to download (PMC first, then bioRxiv)."},
+            "include_europepmc": {
+                "type": "boolean",
+                "default": True,
+                "description": "Merge additional hits from Europe PMC REST search (deduped vs PubMed).",
+            },
+            "include_biorxiv": {
+                "type": "boolean",
+                "default": True,
+                "description": "Merge bioRxiv preprints from api.biorxiv.org (keyword-filtered; English tokens in query work best).",
+            },
+            "biorxiv_years_back": {
+                "type": "integer",
+                "default": 3,
+                "description": "bioRxiv API date window length in years (1–10).",
+            },
             "user_agent": {"type": "string", "description": "Optional User-Agent override."},
             "proxy": {
                 "type": "string",
@@ -1187,7 +1583,7 @@ literature_pipeline_tool = {
         "required": ["query"],
     },
     "handler": literature_pipeline_handler,
-    "tags": ["pubmed", "pmc", "bibtex", "review", "citations"],
+    "tags": ["pubmed", "pmc", "europepmc", "biorxiv", "bibtex", "review", "citations"],
     "examples": [
         "Build a pack for 'phage host interaction AND database' and save to runtime/literature/review_pack_x",
     ],

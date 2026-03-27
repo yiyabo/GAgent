@@ -857,6 +857,92 @@ def _section_requirements(section: str, *, review_mode: bool = False) -> List[st
     return ["Follow scientific writing standards for this section."]
 
 
+def _exemplar_style_enabled() -> bool:
+    """When True, inject Nature-tier exemplar hints (see docs/writing_exemplars/nature_exemplars.md)."""
+    raw = os.getenv("MANUSCRIPT_EXEMPLAR_STYLE_ENABLED", "1")
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _exemplar_style_instructions(section: str, *, review_mode: bool) -> str:
+    """Short style guidance aligned with curated Nature exemplars; empty when disabled."""
+    if not _exemplar_style_enabled():
+        return ""
+    s = _normalize_section_key(section)
+    r1 = (
+        "R1: Nature Reviews MCB (single-cell multi-omics landscape, 2023)—taxonomy of approaches, "
+        "thematic subsections, roadmap-style organization, limitations/outlook, disciplined citation density."
+    )
+    r2 = (
+        "R2: Nature AlphaFold (2021)—tight problem–method–headline result; benchmark-style evaluation narrative."
+    )
+    r3 = (
+        "R3: Nature NK cell therapies (2023)—long-form review arc (biology → modalities → analysis); "
+        "clinical translational framing."
+    )
+    lines = [
+        "Style exemplars (structure and tone only; do NOT copy wording; ground claims only in provided context; "
+        "see docs/writing_exemplars/nature_exemplars.md):",
+    ]
+    if s == "abstract":
+        if review_mode:
+            lines.append(f"- Primary: {r3}")
+            lines.append(f"- Secondary: {r2} (keep the abstract compact and evidence-grounded).")
+        else:
+            lines.append(f"- Primary: {r2}")
+            lines.append(f"- Secondary: {r3}.")
+    elif s == "introduction":
+        lines.append(f"- Primary: {r1}")
+        lines.append(f"- Secondary: {r3}.")
+    elif s == "method":
+        # Review/synthesis: weight R1+R3 per docs/writing_exemplars/nature_exemplars.md (R2 mainly abstract).
+        if review_mode:
+            lines.append(f"- Primary: {r1} (review: search/inclusion/synthesis methodology; classify/compare routes).")
+            lines.append(f"- Secondary: {r3} (translational or clinical framing where evidence supports).")
+        else:
+            lines.append(f"- Primary: {r2}")
+            lines.append(f"- Secondary: {r1} (when describing methodology families and comparisons).")
+    elif s == "experiment":
+        if review_mode:
+            lines.append(f"- Primary: {r3} (patterns across studies, modalities, and clinical contexts).")
+            lines.append(f"- Secondary: {r1} (thematic synthesis of study designs; link to Methods).")
+        else:
+            lines.append(f"- Primary: {r2}")
+            lines.append(
+                "- Frame datasets, controls, ablations, and statistics with reproducible detail."
+            )
+    elif s == "result":
+        if review_mode:
+            lines.append(f"- Primary: {r1} (thematic subsections; evidence-driven synthesis, not adjectives).")
+            lines.append(f"- Secondary: {r3} (cross-study comparison and translational reading).")
+            lines.append(
+                f"- Optional compactness: {r2} (headline quantitative claims only when cited evidence supports)."
+            )
+        else:
+            lines.append(f"- Primary: {r2}")
+            lines.append(f"- Secondary: {r1} (subsections driven by evidence themes).")
+    elif s == "discussion":
+        lines.append(f"- Primary: {r1}")
+        lines.append(f"- Secondary: {r3}.")
+    elif s == "conclusion":
+        lines.append(f"- Primary: {r1}")
+        lines.append(f"- Secondary: {r2} (close with open problems without adding new claims).")
+    elif s == "references":
+        lines.append(f"- Primary: {r1} (review-style citation discipline; pair claims with sources).")
+    else:
+        lines.append(f"- Primary: {r1}")
+        lines.append(f"- Secondary: {r2}.")
+    return "\n".join(lines) + "\n"
+
+
+def _merge_and_polish_exemplar_hint() -> str:
+    if not _exemplar_style_enabled():
+        return ""
+    return (
+        "Optional style target: improve cohesion and transitions toward Nature-tier review/article clarity "
+        "(see docs/writing_exemplars/nature_exemplars.md); do NOT add new facts or citations.\n\n"
+    )
+
+
 def _build_analysis_prompt(task: str, context_text: str, sections: List[str]) -> str:
     return (
         "You are preparing a scientific manuscript draft. "
@@ -895,8 +981,10 @@ def _build_section_prompt(
         if review_mode
         else ""
     )
+    exemplar_prefix = _exemplar_style_instructions(section, review_mode=review_mode)
     return (
         f"Write the section: {section_title}\n\n"
+        f"{exemplar_prefix}"
         "Requirements:\n"
         f"{requirements_text}\n\n"
         "Writing rules:\n"
@@ -980,8 +1068,10 @@ def _build_revision_prompt(
         if review_mode
         else ""
     )
+    exemplar_prefix = _exemplar_style_instructions(section, review_mode=review_mode)
     return (
         f"Revise the section: {section_title}\n\n"
+        f"{exemplar_prefix}"
         "Section requirements:\n"
         f"{requirements_text}\n\n"
         f"{mode_text}"
@@ -1001,11 +1091,13 @@ def _build_merge_prompt(
     analysis_memo: str,
     combined_text: str,
 ) -> str:
+    polish_hint = _merge_and_polish_exemplar_hint()
     return (
         "You are finalizing a scientific manuscript. "
         "Perform a global rewrite to ensure consistency, remove repetition, "
         "and improve transitions while preserving content.\n\n"
         "Rules:\n"
+        f"{polish_hint}"
         "- Keep section headings and order intact.\n"
         "- Do NOT add new facts or citations not supported by the input.\n"
         "- Ensure Methods and Experiments remain detailed.\n"
@@ -1029,9 +1121,11 @@ def _build_final_polish_prompt(
         if review_mode
         else ""
     )
+    polish_hint = _merge_and_polish_exemplar_hint()
     return (
         "You are the final manuscript editor for a publication-quality scientific paper. "
         "Perform a conservative final polish.\n\n"
+        f"{polish_hint}"
         "Allowed edits:\n"
         "- Remove repeated or near-duplicate sentences/paragraphs.\n"
         "- Tighten wording and improve readability.\n"

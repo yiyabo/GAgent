@@ -83,6 +83,15 @@ REF_EXTS = {
     ".bib",
 }
 
+# PDFs next to manuscript sources are usually downloaded references; keep only obvious build outputs in paper/
+MANUSCRIPT_PDF_STEMS = {
+    "main",
+    "manuscript",
+    "paper",
+    "submission",
+    "preprint",
+}
+
 DELIVERABLE_EXTS = CODE_EXTS | TABULAR_EXTS | IMAGE_EXTS | DOC_EXTS | PAPER_EXTS | REF_EXTS
 
 DOC_ALLOWED_STEMS = {
@@ -1520,10 +1529,21 @@ class DeliverablePublisher:
         suffix = path.suffix.lower()
         file_stem = path.stem.lower()
 
-        if "/paper/" in path_lower or suffix in {".tex", ".cls", ".sty", ".bst"}:
-            return "paper"
+        # Reference materials take priority over generic /paper/ path match
         if "/refs/" in path_lower or suffix in REF_EXTS or "references" in path.name.lower():
             return "refs"
+        if "/reference_paper" in path_lower and suffix == ".pdf":
+            return "refs"
+        # Manuscript LaTeX (and class/style) always live under paper/
+        if suffix in {".tex", ".cls", ".sty", ".bst"}:
+            return "paper"
+        # PDFs under paper/ are almost always downloaded papers, not the compiled manuscript
+        if suffix == ".pdf" and "/paper/" in path_lower:
+            if file_stem in MANUSCRIPT_PDF_STEMS:
+                return "paper"
+            return "refs"
+        if "/paper/" in path_lower:
+            return "paper"
         if "/code/" in path_lower or suffix in CODE_EXTS:
             return "code"
         if suffix in IMAGE_EXTS or suffix in TABULAR_EXTS:
@@ -1531,7 +1551,15 @@ class DeliverablePublisher:
         if suffix == ".pdf":
             if any(token in path_lower for token in ("/fig", "/figure", "/table", "/plot", "/chart")):
                 return "image_tabular"
-            return "paper"
+            # PDFs from literature_pipeline are downloaded references, not our paper
+            if any(token in path_lower for token in (
+                "/literature_pipeline/",
+                "/review_pack",
+                "/reference_paper",
+            )):
+                return "refs"
+            # Standalone PDFs are typically reference downloads, not the LaTeX project PDF
+            return "refs"
         if "/docs/" in path_lower or suffix in DOC_EXTS:
             if file_stem in DOC_ALLOWED_STEMS:
                 return "docs"

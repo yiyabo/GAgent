@@ -507,15 +507,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
     }
   }, [mainSteps.length, isActive]);
 
-  const handleContentWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    const atTop = el.scrollTop <= 0 && e.deltaY < 0;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1 && e.deltaY > 0;
-    if (atTop || atBottom) {
-      el.style.overflowY = 'hidden';
-      requestAnimationFrame(() => { el.style.overflowY = 'auto'; });
-    }
-  }, []);
+  // Scroll containment is handled by CSS `overscroll-behavior: contain`.
 
   return (
     <div className={`tp-container${isActive ? ' tp-active' : ''}`}>
@@ -578,7 +570,6 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
           >
             <div
               className={`tp-steps${isActive ? '' : ' tp-steps-scroll'}`}
-              onWheel={isActive ? undefined : handleContentWheel}
             >
               {mainSteps.map((step, idx) => (
                 <ThinkingStepItem

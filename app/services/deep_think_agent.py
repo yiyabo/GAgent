@@ -1067,9 +1067,30 @@ class DeepThinkAgent:
                 self._skip_current_step = False
                 messages.append({"role": "user", "content": "Skip current branch and continue with the next reasoning step."})
 
+            # Inject a strong nudge when nearing the iteration limit
+            if not final_answer and iteration >= self.max_iterations - 1:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "IMPORTANT: You are about to reach the maximum number of thinking steps. "
+                        "You MUST call submit_final_answer on the NEXT step with the best answer you can provide "
+                        "based on all evidence gathered so far. Do NOT continue researching — synthesize NOW."
+                    ),
+                })
+
         if final_answer and not self._is_valid_final_answer(final_answer, user_query=user_query):
             logger.info("[DEEP_THINK_NATIVE] Rejected process-only final answer; switching to fallback synthesis")
             final_answer = ""
+
+        # ---- Forced synthesis: one more LLM call with all evidence before falling back ----
+        if not final_answer and thinking_steps:
+            logger.info("[DEEP_THINK_NATIVE] No final answer after %d iterations; attempting forced synthesis", iteration)
+            final_answer = await self._forced_synthesis_from_steps(thinking_steps, user_query, messages)
+            if final_answer:
+                fallback_used = True
+                confidence = max(confidence, 0.5)
+                if self.on_final_delta:
+                    await self._stream_final_answer(final_answer)
 
         if not final_answer:
             fallback_used = True
@@ -1553,6 +1574,16 @@ Respond with ONLY a JSON object:
 
         if final_answer and not self._is_valid_final_answer(final_answer, user_query=user_query):
             final_answer = ""
+
+        # Forced synthesis before generic fallback (prompt-based path)
+        if not final_answer and thinking_steps:
+            logger.info("[DEEP_THINK] Attempting forced synthesis (prompt-based path)")
+            final_answer = await self._forced_synthesis_from_steps(thinking_steps, user_query, messages)
+            if final_answer:
+                fallback_used = True
+                confidence = max(confidence, 0.5)
+                if self.on_final_delta:
+                    await self._stream_final_answer(final_answer)
 
         if not final_answer:
             fallback_used = True
@@ -2425,12 +2456,23 @@ When ready to answer:
             return 'This is a light request. Finish now unless another short step is strictly necessary.'
         if tier == "standard":
             return 'Prefer answering now. Continue only if one more brief step materially improves the response.'
+        if iteration >= self.max_iterations - 1:
+            return (
+                'CRITICAL: This is your LAST step. You MUST call submit_final_answer NOW with the best answer '
+                'you can provide based on all evidence gathered. Do NOT call any more tools — synthesize and submit.'
+            )
         if iteration > 8:
-            return 'You have taken many steps. Consolidate what you already know and provide "final_answer" now unless one more targeted tool call is truly necessary.'
+            return (
+                'You have taken many steps. Consolidate what you already know and call submit_final_answer NOW. '
+                'Do NOT continue researching unless one more targeted tool call is absolutely essential.'
+            )
         elif iteration > 5:
-            return 'Check whether the user is already adequately answered. If yes, output "final_answer" now. Continue only if another step materially improves accuracy.'
+            return (
+                'Check whether the user is already adequately answered. If yes, call submit_final_answer now. '
+                'Continue only if another step materially improves accuracy.'
+            )
         else:
-            return 'Before continuing, ask whether another step or tool call is truly needed. If the current information is enough, include "final_answer" now.'
+            return 'Before continuing, ask whether another step or tool call is truly needed. If the current information is enough, call submit_final_answer now.'
 
     def _parse_llm_response_safe(self, response: str) -> tuple[Dict[str, Any], Optional[str]]:
         try:
@@ -2704,10 +2746,46 @@ When ready to answer:
         return "\n\n".join(parts)
 
     def _build_structured_fallback(self, steps: List[ThinkingStep], user_query: str = "") -> str:
+        """Last-resort fallback: include evidence excerpts rather than a generic 'no answer' message."""
         n = len(steps)
         counts = self._collect_tool_usage_counts(steps)
         stats = self._format_tool_usage_counts(counts)
         language = detect_reasoning_language(user_query)
+
+        # Collect any meaningful evidence to include in the fallback
+        evidence = self._collect_evidence_snippets(steps, max_steps=12, max_chars=4000, per_snippet_max=1200)
+        # Also collect useful thoughts
+        useful_thoughts: List[str] = []
+        for s in reversed(steps):
+            if isinstance(s.thought, str) and s.thought.strip() and not is_process_only_answer(s.thought, user_query=user_query):
+                cleaned = s.thought.strip()
+                if len(cleaned) > 50:
+                    useful_thoughts.append(cleaned[:800])
+                    if len(useful_thoughts) >= 3:
+                        break
+        useful_thoughts.reverse()
+
+        # If we have substantial evidence or thoughts, build a content-rich fallback
+        if evidence.strip() and len(evidence.strip()) > 100:
+            if language == "zh":
+                tools_part = f"（{stats}）" if stats else ""
+                header = f"经过 {n} 步深度思考{tools_part}，以下是收集到的关键信息：\n\n"
+                footer = "\n\n---\n*以上为工具输出摘要，可能需要进一步验证。如需更精确的结果，建议缩小问题范围后重试。*"
+            else:
+                tools_part = f" ({stats})" if stats else ""
+                header = f"After {n} reasoning step(s){tools_part}, here are the key findings:\n\n"
+                footer = "\n\n---\n*The above is a summary of tool outputs and may need further verification. For more precise results, try narrowing the question.*"
+            return header + evidence.strip() + footer
+
+        if useful_thoughts:
+            combined = "\n\n".join(useful_thoughts)
+            if language == "zh":
+                tools_part = f"（{stats}）" if stats else ""
+                return f"经过 {n} 步深度思考{tools_part}，以下是分析过程中的关键发现：\n\n{combined}"
+            tools_part = f" ({stats})" if stats else ""
+            return f"After {n} reasoning step(s){tools_part}, here are the key insights from the analysis:\n\n{combined}"
+
+        # Truly nothing useful — keep minimal message
         if language == "zh":
             tools_part = f"（{stats}）" if stats else "（未解析到明确工具名）"
             return (
@@ -2727,31 +2805,148 @@ When ready to answer:
         user_query: str,
         evidence_snippets: str,
         steps: List[ThinkingStep],
+        *,
+        max_retries: int = 3,
+        timeout: float = 45,
+        max_tokens: int = 2000,
     ) -> str:
         if not hasattr(self.llm_client, "chat_async"):
             raise DeepThinkProtocolError("LLM client does not support chat_async")
         n = len(steps)
         uq = (user_query or "").strip()
+
+        # Collect useful thoughts as additional context
+        thought_context = ""
+        useful_thoughts = [
+            s.thought.strip()
+            for s in steps
+            if isinstance(s.thought, str) and len(s.thought.strip()) > 30
+        ]
+        if useful_thoughts:
+            thought_context = (
+                "\n\nAssistant's reasoning during the process:\n"
+                + "\n".join(f"- {t[:300]}" for t in useful_thoughts[-5:])
+                + "\n"
+            )
+
         prompt = (
             f"User question:\n{uq[:2000]}\n\n"
-            f"Below are excerpts from tool outputs (may be truncated). "
-            f"DeepThink ran about {n} step(s) without submitting a final answer.\n\n"
-            f"{evidence_snippets}\n\n"
-            "Respond in the same language as the user question. Write a concise reply (about 3–8 short paragraphs or bullet groups):\n"
-            "1) Summarize the main facts or background reflected in the excerpts.\n"
-            "2) Explain why a single definite answer may not be possible, if applicable.\n"
-            "3) Suggest 1–2 practical next steps (e.g., narrow the question, ask verifiable facts).\n"
-            "Do not invent dates or claims absent from the excerpts; say so if excerpts are insufficient.\n"
+            f"Below are excerpts from tool outputs collected during {n} reasoning step(s). "
+            f"The system did not produce a final answer automatically, so you must synthesize one now.\n\n"
+            f"{evidence_snippets}"
+            f"{thought_context}\n\n"
+            "INSTRUCTIONS:\n"
+            "Respond in the same language as the user question. Provide a COMPLETE, USEFUL answer:\n"
+            "1) Directly answer the user's question based on the evidence available.\n"
+            "2) Summarize the key facts, findings, and data points from the excerpts.\n"
+            "3) If the evidence is insufficient for a complete answer, clearly state what was found and what remains unknown.\n"
+            "4) Use clear structure (headings, bullet points) for readability.\n"
+            "5) Do NOT say 'I could not find an answer' if there is ANY useful information — present what was found.\n"
+            "6) Do not invent dates or claims absent from the excerpts.\n"
             f"{PROFESSIONAL_STYLE_INSTRUCTION}"
         )
-        raw = await asyncio.wait_for(
-            self.llm_client.chat_async(prompt=prompt, max_tokens=500),
-            timeout=15,
-        )
-        cleaned = sanitize_professional_response_text(str(raw or "").strip())
-        if len(cleaned) < 20:
-            raise ValueError("fallback synthesis too short")
-        return cleaned
+
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_retries):
+            try:
+                raw = await asyncio.wait_for(
+                    self.llm_client.chat_async(prompt=prompt, max_tokens=max_tokens),
+                    timeout=timeout,
+                )
+                cleaned = sanitize_professional_response_text(str(raw or "").strip())
+                if len(cleaned) < 20:
+                    raise ValueError(f"fallback synthesis too short ({len(cleaned)} chars)")
+                return cleaned
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "DeepThink fallback synthesis attempt %d/%d failed: %s",
+                    attempt + 1,
+                    max_retries,
+                    str(exc)[:200],
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+
+        raise last_exc or ValueError("fallback synthesis failed after retries")
+
+    async def _forced_synthesis_from_steps(
+        self,
+        steps: List[ThinkingStep],
+        user_query: str,
+        messages: List[Dict[str, Any]],
+    ) -> str:
+        """Make one final LLM call with all context asking it to synthesize a complete answer.
+
+        This is more powerful than _generate_fallback_from_evidence because it
+        includes both evidence snippets and the assistant's reasoning thoughts,
+        giving the LLM rich context to produce a quality answer.
+        """
+        if not hasattr(self.llm_client, "chat_async"):
+            return ""
+
+        try:
+            evidence = self._collect_evidence_snippets(
+                steps, max_steps=12, max_chars=6000, per_snippet_max=1500
+            )
+            uq = (user_query or "").strip()
+            if not uq:
+                return ""
+
+            # Also collect assistant thoughts for additional context
+            thought_lines: List[str] = []
+            for s in steps:
+                if isinstance(s.thought, str) and len(s.thought.strip()) > 30:
+                    thought_lines.append(f"[Step {s.iteration} thought]: {s.thought.strip()[:500]}")
+            thoughts_text = "\n".join(thought_lines[-8:]) if thought_lines else ""
+
+            language = detect_reasoning_language(user_query)
+            if language == "zh":
+                instruction = (
+                    "你是一个深度思考AI助手。用户提出了一个问题，系统已经执行了多个工具调用来收集信息。"
+                    "现在请基于下面收集到的所有证据和推理过程，直接回答用户的问题。\n"
+                    "要求：\n"
+                    "- 提供完整、有用的回答\n"
+                    "- 使用清晰的结构（标题、要点列表）\n"
+                    "- 即使信息不完整，也请尽力基于已有证据给出最佳回答\n"
+                    "- 不要说'无法回答'，请展示已找到的信息\n"
+                    "- 不要编造证据中没有的信息"
+                )
+            else:
+                instruction = (
+                    "You are a Deep Thinking AI assistant. The user asked a question and the system "
+                    "has executed multiple tool calls to gather information. Now synthesize ALL the "
+                    "evidence and reasoning below into a complete, useful answer.\n"
+                    "Requirements:\n"
+                    "- Provide a complete, useful answer\n"
+                    "- Use clear structure (headings, bullet points)\n"
+                    "- Even if information is incomplete, provide the best answer from available evidence\n"
+                    "- Do NOT say you cannot answer — present what was found\n"
+                    "- Do not invent claims absent from the evidence"
+                )
+
+            prompt = (
+                f"{instruction}\n\n"
+                f"User question: {uq[:2000]}\n\n"
+                f"=== EVIDENCE FROM TOOLS ===\n{evidence}\n\n"
+            )
+            if thoughts_text:
+                prompt += f"=== REASONING PROCESS ===\n{thoughts_text}\n\n"
+            prompt += "Please provide your complete answer now:"
+
+            raw = await asyncio.wait_for(
+                self.llm_client.chat_async(prompt=prompt, max_tokens=3000),
+                timeout=60,
+            )
+            cleaned = sanitize_professional_response_text(str(raw or "").strip())
+            if len(cleaned) < 30 or is_process_only_answer(cleaned, user_query=user_query):
+                logger.warning("[DEEP_THINK_NATIVE] Forced synthesis produced insufficient content (%d chars)", len(cleaned))
+                return ""
+            logger.info("[DEEP_THINK_NATIVE] Forced synthesis succeeded (%d chars)", len(cleaned))
+            return cleaned
+        except Exception:
+            logger.warning("[DEEP_THINK_NATIVE] Forced synthesis failed", exc_info=True)
+            return ""
 
     async def _fallback_answer_from_steps(
         self,
