@@ -43,6 +43,7 @@ docs_summary
 docs_summary.zip
 paper
 tmp
+results
 
 # SQLite auxiliary files (WAL mode)
 *.db-shm
