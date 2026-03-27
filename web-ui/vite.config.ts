@@ -74,7 +74,7 @@ export default defineConfig(({ mode }) => {
 
   const apiBaseUrl = env.VITE_API_BASE_URL || 'http://localhost:9000';
   const wsBaseUrl = env.VITE_WS_BASE_URL || 'ws://localhost:9000';
-  const devServerPort = Number(env.VITE_DEV_SERVER_PORT) || 3000;
+  const devServerPort = Number(env.VITE_DEV_SERVER_PORT) || 3001;
   const devServerHost = env.VITE_DEV_SERVER_HOST || '0.0.0.0';
 
   return {

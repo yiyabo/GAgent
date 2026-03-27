@@ -5,6 +5,7 @@ import io
 import json
 import tarfile
 from pathlib import Path
+from typing import Any, Dict
 
 import pytest
 
@@ -422,7 +423,7 @@ def test_final_polish_timeout_disabled_by_default(monkeypatch: pytest.MonkeyPatc
     async def _sample() -> str:
         return "ok"
 
-    async def _fail_if_called(*args, **kwargs):
+    async def _fail_if_called(*_args, **_kwargs):
         called["wait_for"] = True
         raise AssertionError("asyncio.wait_for should not be used when timeout is disabled")
 
@@ -751,6 +752,8 @@ def test_literature_pipeline_scopes_default_output_by_session(
             max_results=2,
             download_pdfs=False,
             session_id="demo",
+            include_europepmc=False,
+            include_biorxiv=False,
         )
     )
 
@@ -810,6 +813,8 @@ def test_literature_pipeline_falls_back_from_zero_result_natural_language_query(
             query="Pseudomonas phage biology, genomics, host interaction, therapeutic applications, and experimental models",
             max_results=5,
             download_pdfs=False,
+            include_europepmc=False,
+            include_biorxiv=False,
         )
     )
 
@@ -917,6 +922,8 @@ def test_literature_pipeline_counts_oa_fulltext_without_pdf_file(
             max_results=2,
             download_pdfs=True,
             max_pdfs=2,
+            include_europepmc=False,
+            include_biorxiv=False,
         )
     )
 
@@ -977,6 +984,8 @@ def test_literature_pipeline_tolerates_pmc_download_exceptions(
             max_results=2,
             download_pdfs=True,
             max_pdfs=1,
+            include_europepmc=False,
+            include_biorxiv=False,
         )
     )
 
@@ -1132,3 +1141,63 @@ def test_manuscript_writer_review_mode_prompts_flag_review_synthesis_context() -
     assert expected_marker in section_prompt
     assert expected_marker in evaluation_prompt
     assert "Preserve explicit statements about missing quantitative evidence" in revision_prompt
+
+
+def test_manuscript_writer_exemplar_style_in_section_and_revision_prompts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MANUSCRIPT_EXEMPLAR_STYLE_ENABLED", raising=False)
+    requirements = manuscript_writer_module._section_requirements("introduction", review_mode=True)
+    section_prompt = manuscript_writer_module._build_section_prompt(
+        "Write a submission-ready English review article.",
+        "introduction",
+        "# Analysis Memo",
+        "context",
+        requirements,
+        review_mode=True,
+    )
+    revision_prompt = manuscript_writer_module._build_revision_prompt(
+        "introduction",
+        "# Analysis Memo",
+        "context",
+        "## Introduction\nText",
+        {"scores": {"structure": 0.7}, "defects": [], "revision_instructions": []},
+        requirements,
+        review_mode=True,
+    )
+    assert "Style exemplars" in section_prompt
+    assert "Nature Reviews MCB" in section_prompt
+    assert "Style exemplars" in revision_prompt
+
+
+def test_manuscript_writer_exemplar_style_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MANUSCRIPT_EXEMPLAR_STYLE_ENABLED", "0")
+    requirements = manuscript_writer_module._section_requirements("abstract", review_mode=False)
+    section_prompt = manuscript_writer_module._build_section_prompt(
+        "Task",
+        "abstract",
+        "# Memo",
+        "ctx",
+        requirements,
+        review_mode=False,
+    )
+    assert "Style exemplars" not in section_prompt
+
+
+def test_manuscript_writer_merge_prompt_includes_optional_exemplar_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MANUSCRIPT_EXEMPLAR_STYLE_ENABLED", raising=False)
+    merge_prompt = manuscript_writer_module._build_merge_prompt("task", "memo", "combined")
+    assert "Nature-tier" in merge_prompt or "nature_exemplars" in merge_prompt.lower()
+
+
+def test_exemplar_review_mode_body_weights_r1_r3_not_r2_primary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Aligns with docs: review synthesis favors R1+R3 in method/experiment/result; R2 mainly abstract."""
+    monkeypatch.delenv("MANUSCRIPT_EXEMPLAR_STYLE_ENABLED", raising=False)
+    method_r = manuscript_writer_module._exemplar_style_instructions("method", review_mode=True)
+    assert "Primary: R1" in method_r
+    assert "Nature Reviews MCB" in method_r.split("Primary:")[1][:200]
+    exp_r = manuscript_writer_module._exemplar_style_instructions("experiment", review_mode=True)
+    assert "Primary: R3" in exp_r
+    res_r = manuscript_writer_module._exemplar_style_instructions("result", review_mode=True)
+    assert "Primary: R1" in res_r
+    assert "Optional compactness: R2" in res_r or "R2" in res_r
+    method_a = manuscript_writer_module._exemplar_style_instructions("method", review_mode=False)
+    assert "Primary: R2" in method_a
