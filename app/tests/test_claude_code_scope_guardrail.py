@@ -197,6 +197,17 @@ def test_build_claude_subprocess_env_api_mode_drops_auth_token_when_key_present(
     assert "ANTHROPIC_AUTH_TOKEN" not in env_map
 
 
+def test_build_claude_subprocess_env_api_mode_drops_parent_claude_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QWEN_API_KEY", "qk")
+    monkeypatch.setenv("QWEN_MODEL", "qwen3.5-plus")
+    monkeypatch.setenv("CLAUDE_MODEL", "anthropic/claude-opus-4.6")
+    env_map = _build_claude_subprocess_env("api_env")
+    assert env_map.get("ANTHROPIC_MODEL") == "qwen3.5-plus"
+    assert "CLAUDE_MODEL" not in env_map
+
+
 def test_validate_api_mode_config_requires_credentials() -> None:
     assert _validate_api_mode_config({"ANTHROPIC_BASE_URL": "https://x"}) is not None
     assert _validate_api_mode_config({"ANTHROPIC_API_KEY": "k"}) is None
