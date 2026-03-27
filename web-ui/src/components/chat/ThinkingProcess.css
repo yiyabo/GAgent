@@ -102,22 +102,24 @@
 
 .tp-steps {
   padding: 2px 12px 8px;
+  max-height: 70vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .tp-steps-scroll {
   max-height: 60vh;
-  overflow-y: auto;
 }
 
-.tp-steps-scroll::-webkit-scrollbar {
+.tp-steps::-webkit-scrollbar {
   width: 4px;
 }
 
-.tp-steps-scroll::-webkit-scrollbar-track {
+.tp-steps::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.tp-steps-scroll::-webkit-scrollbar-thumb {
+.tp-steps::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.08);
   border-radius: 2px;
 }
@@ -232,6 +234,7 @@
   color: var(--text-secondary);
   max-height: 240px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   white-space: pre-wrap;
   word-break: break-word;
   scroll-behavior: smooth;
@@ -297,6 +300,7 @@
   word-break: break-word;
   max-height: 400px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   transition: max-height 0.2s ease;
 }
 
@@ -352,6 +356,7 @@
   border-radius: 0 4px 4px 0;
   max-height: 300px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .tp-tool-result.clickable {

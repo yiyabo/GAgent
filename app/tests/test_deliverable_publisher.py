@@ -771,3 +771,32 @@ def test_publish_uses_previous_manifest_source_for_legacy_figure_updates(tmp_pat
     assert report is not None
     assert (image_dir / "plot.png").read_bytes() == b"new-bytes"
     assert (figure_dir / "plot.png").read_bytes() == b"new-bytes"
+
+
+def test_classify_module_routes_reference_pdfs_away_from_paper_dir(tmp_path: Path):
+    """Downloaded papers saved under a paper/ tree must go to refs/, not paper/."""
+    publisher = _build_publisher(tmp_path)
+    ref_pdf = tmp_path / "workspace" / "paper" / "Agoni2025Biomolecules.pdf"
+    assert publisher._classify_module(ref_pdf) == "refs"
+    main_pdf = tmp_path / "workspace" / "paper" / "main.pdf"
+    assert publisher._classify_module(main_pdf) == "paper"
+    loose_pdf = tmp_path / "workspace" / "downloads" / "article.pdf"
+    assert publisher._classify_module(loose_pdf) == "refs"
+
+
+def test_publish_puts_reference_pdf_from_paper_tree_into_refs(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    pdf = tmp_path / "workspace" / "paper" / "Hu2025Naturecommunica.pdf"
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    report = publisher.publish_from_tool_result(
+        session_id="pdf_route001",
+        tool_name="claude_code",
+        raw_result={"output_path": str(pdf)},
+        summary="Downloaded reference PDF.",
+    )
+    assert report is not None
+    latest_root = tmp_path / "runtime" / "session_pdf_route001" / "deliverables" / "latest"
+    assert (latest_root / "refs" / "Hu2025Naturecommunica.pdf").exists()
+    assert not (latest_root / "paper" / "Hu2025Naturecommunica.pdf").exists()
