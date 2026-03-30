@@ -6,12 +6,37 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 
+from .subject_identity import (
+    build_subject_aliases,
+    canonicalize_subject_ref,
+    subject_identity_matches,
+)
+
 RequestTier = Literal["light", "standard", "research", "execute"]
 RequestRouteMode = Literal["manual_deepthink", "auto_simple", "auto_deepthink"]
 ThinkingVisibility = Literal["visible", "progress", "hidden"]
+IntentType = Literal[
+    "chat",
+    "local_read",
+    "local_inspect",
+    "local_mutation",
+    "research",
+    "execute_task",
+]
+CapabilityFloor = Literal[
+    "plain_chat",
+    "local_read",
+    "local_inspect",
+    "research",
+    "execute",
+]
+SubjectKind = Literal["none", "file", "directory", "workspace"]
 
 _MANUAL_DEEP_RE = re.compile(r"^\s*/(?:think|deep)\b", re.IGNORECASE)
 _NON_WORD_RE = re.compile(r"[\s\W_]+", re.UNICODE)
+_PATH_RE = re.compile(
+    r"(?P<path>(?:~?/|\.{1,2}/|/)?(?:[\w\-.一-龥]+/)+[\w\-.一-龥]+(?:\.[\w-]+)?)"
+)
 
 _LIGHT_EXACT = {
     "你好",
@@ -135,8 +160,6 @@ _EXECUTE_PHRASES = (
     "patch",
     "edit",
     "write code",
-    "open the file",
-    "analyze this file",
     "inspect log",
     "check the log",
     "create plan",
@@ -146,6 +169,8 @@ _EXECUTE_PHRASES = (
     "next step",
     "continue this task",
     "continue with",
+    "deliverable",
+    "submit",
     "帮我做",
     "执行",
     "运行",
@@ -154,17 +179,211 @@ _EXECUTE_PHRASES = (
     "调试",
     "改代码",
     "写代码",
-    "读取文件",
-    "分析这个文件",
     "查看日志",
     "检查日志",
     "创建计划",
     "生成计划",
     "拆解",
     "分解",
+    "提交",
+    "可提交",
+    "提交结果",
     "下一步",
     "继续这个任务",
     "继续做",
+    # Action verbs that independently signal execution intent
+    "尝试",
+    "试试",
+    "跑一下",
+    "跑一次",
+    "再试",
+    "再跑",
+    "再提交",
+    "再做",
+    "再来一次",
+    "重新提交",
+    "重新运行",
+    "重新执行",
+    "重试",
+    "try it",
+    "try again",
+    "retry",
+    "rerun",
+    "resubmit",
+    "attempt",
+)
+
+_LOCAL_READ_PHRASES = (
+    "read",
+    "open",
+    "inspect",
+    "look inside",
+    "look at the file",
+    "read the file",
+    "show the file",
+    "show contents",
+    "读取",
+    "阅读",
+    "打开",
+    "看看",
+    "看一下",
+    "查看",
+    "读一下",
+    "读这个",
+)
+
+_LOCAL_INSPECT_PHRASES = (
+    "analyze this file",
+    "what's inside",
+    "what is inside",
+    "show me what's inside",
+    "list the data",
+    "list the files",
+    "inspect the contents",
+    "inside",
+    "content",
+    "contents",
+    "schema",
+    "column",
+    "columns",
+    "读取文件",
+    "分析这个文件",
+    "里面",
+    "里头",
+    "内容",
+    "数据",
+    "有哪些数据",
+    "都有哪些数据",
+    "有啥",
+    "看看里面",
+    "展开看看",
+    "列数据",
+    "目录结构",
+)
+
+# PhageScope API / remote verification: require product anchor + remote-intent cue so we
+# upgrade to research floor (phagescope in allowed_tools) without lifting generic local reads.
+_PHAGESCOPE_DOMAIN_MARKERS = (
+    "phagescope",
+    "phage scope",
+)
+
+_PHAGESCOPE_REMOTE_INTENT_MARKERS = (
+    "ping",
+    "连通",
+    "连通性",
+    "访问",
+    "访问权限",
+    "api",
+    "token",
+    "验证",
+    "测试",
+    "下载",
+    "download",
+    "连接",
+    "credential",
+    "credentials",
+    "connectivity",
+    "登录",
+    "接口",
+)
+
+# Follow-up: user asks whether a remote PhageScope task (numeric id) is running / status — without
+# repeating the word "phagescope". Requires a PhageScope anchor (subject path or prior cue).
+_PHAGESCOPE_TASK_STATUS_PHRASES = (
+    "在跑",
+    "运行",
+    "运行中",
+    "状态",
+    "进度",
+    "查询",
+    "咨询",
+    "看看",
+    "任务",
+    "task",  # e.g. "task 38619" without Chinese 任务
+    "是否",
+    "真的",
+    "跑完",
+    "完成",
+    "下载",
+    "输出",
+    "验证",
+    "结果",
+)
+
+# Numeric remote task id + result/output vocabulary (no phagescope keyword / no workspace anchor).
+_PHAGESCOPE_TASK_RESULT_PHRASES = (
+    "下载",
+    "download",
+    "输出",
+    "结果",
+    "验证",
+    "quality",
+    "annotation",
+    "模块",
+    "module",
+)
+
+_LOCAL_MUTATION_PHRASES = (
+    "unzip",
+    "extract",
+    "decompress",
+    "unpack",
+    "rename",
+    "move",
+    "copy",
+    "delete",
+    "remove",
+    "organize",
+    "解压",
+    "解开",
+    "解包",
+    "展开",
+    "重命名",
+    "移动",
+    "复制",
+    "删除",
+    "整理",
+    "放回",
+    "放到",
+    "放在",
+)
+
+_ARCHIVE_OBJECT_PHRASES = (
+    ".zip",
+    " zip",
+    "zip包",
+    "zip 包",
+    "压缩包",
+    "压缩文件",
+    "archive",
+    "archives",
+)
+
+_MUTATION_SCOPE_PHRASES = (
+    "对应的zip包",
+    "对应的 zip 包",
+    "对应的压缩包",
+    "当前目录",
+    "原目录",
+    "原地",
+    "原处",
+    "就放在",
+    "放回原处",
+    "就在原目录",
+    "就在当前目录",
+    "这些zip",
+    "这些 zip",
+    "这些压缩包",
+    "这些包",
+    "把它们",
+    # Follow-up unzip instructions without repeating ".zip" in the same sentence
+    "继续解压",
+    "重新解压",
+    "再解压",
+    "解压一下",
+    "去解压",
+    "接着解压",
 )
 
 _FILE_OR_WORKSPACE_PHRASES = (
@@ -186,6 +405,8 @@ _FILE_OR_WORKSPACE_PHRASES = (
     "日志",
 )
 
+_DIRECTORY_PHRASES = ("folder", "directory", "目录", "文件夹")
+
 _FOLLOWTHROUGH_PHRASES = (
     "continue",
     "next step",
@@ -197,6 +418,20 @@ _FOLLOWTHROUGH_PHRASES = (
     "接着",
     "继续做",
     "继续这个",
+)
+
+# Action verbs used for compound detection: followthrough cue + action verb → execute
+_ACTION_VERB_PHRASES = (
+    "尝试", "试试", "试一下", "提交", "测试", "跑", "运行",
+    "执行", "部署", "构建", "修改", "修复", "调试", "安装", "配置",
+    "try", "attempt", "submit", "test", "run", "deploy", "build",
+    "fix", "install", "configure",
+)
+
+# Chat-only continuations: "继续说" should stay as chat, not escalate to execute
+_CHAT_CONTINUATION_PHRASES = (
+    "继续说", "继续讲", "继续解释", "继续介绍", "继续聊", "继续讨论",
+    "keep talking", "keep explaining", "go on explaining", "continue explaining",
 )
 
 _DEPTH_CUES = (
@@ -214,6 +449,86 @@ _DEPTH_CUES = (
     "分析下",
 )
 
+_REFERENTIAL_CUES = (
+    "里面",
+    "里头",
+    "这个",
+    "那个",
+    "其中",
+    "那里面",
+    "看看里面",
+    "展开看看",
+    "里面有啥",
+    "里面有什么",
+    "都有哪些数据",
+    "有哪些数据",
+    "有啥",
+    "what's inside",
+    "what is inside",
+    "inside it",
+    "inside there",
+    "show me inside",
+    "that one",
+    "this one",
+)
+
+_SUCCESSOR_TOOLSET: Dict[CapabilityFloor, List[str]] = {
+    "plain_chat": [],
+    "local_read": [
+        "file_operations",
+        "document_reader",
+        "vision_reader",
+    ],
+    "local_inspect": [
+        "file_operations",
+        "document_reader",
+        "vision_reader",
+        "result_interpreter",
+    ],
+    "research": [
+        "file_operations",
+        "document_reader",
+        "vision_reader",
+        "web_search",
+        "graph_rag",
+        "literature_pipeline",
+        "review_pack_writer",
+        "manuscript_writer",
+        "sequence_fetch",
+        "bio_tools",
+        "deeppl",
+        "phagescope",
+    ],
+    "execute": [
+        "file_operations",
+        "document_reader",
+        "vision_reader",
+        "result_interpreter",
+        "web_search",
+        "graph_rag",
+        "literature_pipeline",
+        "review_pack_writer",
+        "manuscript_writer",
+        "sequence_fetch",
+        "bio_tools",
+        "deeppl",
+        "phagescope",
+        "claude_code",
+        "plan_operation",
+        "deliverable_submit",
+        "terminal_session",
+        "verify_task",
+    ],
+}
+
+_CAPABILITY_ORDER: Dict[CapabilityFloor, int] = {
+    "plain_chat": 0,
+    "local_read": 1,
+    "local_inspect": 2,
+    "research": 3,
+    "execute": 4,
+}
+
 
 @dataclass(frozen=True)
 class RequestRoutingDecision:
@@ -223,6 +538,11 @@ class RequestRoutingDecision:
     manual_deep_think: bool
     thinking_visibility: ThinkingVisibility
     effective_user_message: str
+    intent_type: IntentType
+    capability_floor: CapabilityFloor
+    simple_channel_allowed: bool
+    subject_resolution: Dict[str, Any]
+    brevity_hint: bool
 
     @property
     def use_deep_think(self) -> bool:
@@ -234,6 +554,11 @@ class RequestRoutingDecision:
             "request_route_mode": self.request_route_mode,
             "route_reason_codes": list(self.route_reason_codes),
             "thinking_visibility": self.thinking_visibility,
+            "intent_type": self.intent_type,
+            "capability_floor": self.capability_floor,
+            "simple_channel_allowed": self.simple_channel_allowed,
+            "subject_resolution": dict(self.subject_resolution),
+            "brevity_hint": self.brevity_hint,
         }
         if self.thinking_visibility == "progress":
             payload["progress_mode"] = "compact"
@@ -247,6 +572,9 @@ class RequestTierProfile:
     max_iterations: int
     available_tools: List[str]
     output_bias: str
+    intent_type: IntentType
+    capability_floor: CapabilityFloor
+    simple_channel_allowed: bool
 
     def prompt_metadata(self) -> Dict[str, Any]:
         return {
@@ -255,7 +583,14 @@ class RequestTierProfile:
             "max_iterations": self.max_iterations,
             "output_bias": self.output_bias,
             "available_tools": list(self.available_tools),
+            "intent_type": self.intent_type,
+            "capability_floor": self.capability_floor,
+            "simple_channel_allowed": self.simple_channel_allowed,
         }
+
+
+def allowed_tools_for_capability_floor(capability_floor: CapabilityFloor) -> List[str]:
+    return list(_SUCCESSOR_TOOLSET.get(capability_floor, []))
 
 
 def manual_deep_think_requested(
@@ -286,41 +621,82 @@ def resolve_request_routing(
     raw_message = str(message or "")
     manual = manual_deep_think_requested(raw_message, context)
     effective_user_message = (
-        strip_manual_deep_prefix(raw_message) if _MANUAL_DEEP_RE.match(raw_message) else raw_message
+        strip_manual_deep_prefix(raw_message)
+        if _MANUAL_DEEP_RE.match(raw_message)
+        else raw_message
     )
-    request_tier, reasons = classify_request_tier(
+    subject_resolution, subject_reasons = resolve_subject_resolution(
+        message=effective_user_message,
+        history=history,
+        context=context,
+    )
+    intent_type, intent_reasons = resolve_intent_type(
+        message=effective_user_message,
+        context=context,
+        history=history,
+        subject_resolution=subject_resolution,
+        plan_id=plan_id,
+        current_task_id=current_task_id,
+    )
+    capability_floor, capability_reasons = determine_capability_floor(
+        intent_type=intent_type,
+    )
+    request_tier, reasons, brevity_hint = classify_request_tier(
         message=effective_user_message,
         history=history,
         context=context,
         plan_id=plan_id,
         current_task_id=current_task_id,
+        intent_type=intent_type,
     )
+    combined_reasons = list(
+        dict.fromkeys(subject_reasons + intent_reasons + capability_reasons + reasons)
+    )
+    simple_channel_allowed = (not manual) and capability_floor == "plain_chat"
+
     if manual:
-        reasons = ["manual_deepthink"] + [code for code in reasons if code != "manual_deepthink"]
+        combined_reasons = ["manual_deepthink"] + [
+            code for code in combined_reasons if code != "manual_deepthink"
+        ]
         return RequestRoutingDecision(
             request_tier=request_tier,
             request_route_mode="manual_deepthink",
-            route_reason_codes=reasons,
+            route_reason_codes=combined_reasons,
             manual_deep_think=True,
             thinking_visibility="visible",
             effective_user_message=effective_user_message,
+            intent_type=intent_type,
+            capability_floor=capability_floor,
+            simple_channel_allowed=simple_channel_allowed,
+            subject_resolution=subject_resolution,
+            brevity_hint=brevity_hint,
         )
-    if request_tier in {"research", "execute"}:
+    if simple_channel_allowed:
         return RequestRoutingDecision(
             request_tier=request_tier,
-            request_route_mode="auto_deepthink",
-            route_reason_codes=reasons,
+            request_route_mode="auto_simple",
+            route_reason_codes=combined_reasons,
             manual_deep_think=False,
-            thinking_visibility="progress",
+            thinking_visibility="visible",
             effective_user_message=effective_user_message,
+            intent_type=intent_type,
+            capability_floor=capability_floor,
+            simple_channel_allowed=simple_channel_allowed,
+            subject_resolution=subject_resolution,
+            brevity_hint=brevity_hint,
         )
     return RequestRoutingDecision(
         request_tier=request_tier,
-        request_route_mode="auto_simple",
-        route_reason_codes=reasons,
+        request_route_mode="auto_deepthink",
+        route_reason_codes=combined_reasons,
         manual_deep_think=False,
-        thinking_visibility="visible",
+        thinking_visibility="progress" if request_tier in {"research", "execute"} else "visible",
         effective_user_message=effective_user_message,
+        intent_type=intent_type,
+        capability_floor=capability_floor,
+        simple_channel_allowed=simple_channel_allowed,
+        subject_resolution=subject_resolution,
+        brevity_hint=brevity_hint,
     )
 
 
@@ -331,7 +707,8 @@ def classify_request_tier(
     context: Optional[Mapping[str, Any]] = None,
     plan_id: Optional[int] = None,
     current_task_id: Optional[int] = None,
-) -> tuple[RequestTier, List[str]]:
+    intent_type: IntentType = "chat",
+) -> tuple[RequestTier, List[str], bool]:
     text = str(message or "").strip()
     lowered = text.lower()
     collapsed = _NON_WORD_RE.sub("", lowered)
@@ -377,40 +754,197 @@ def classify_request_tier(
     if has_followthrough_cue and "brief_followup" not in reasons:
         reasons.append("followthrough_cue")
 
-    is_light_exact = collapsed in {_NON_WORD_RE.sub("", token.lower()) for token in _LIGHT_EXACT}
+    is_light_exact = collapsed in {
+        _NON_WORD_RE.sub("", token.lower()) for token in _LIGHT_EXACT
+    }
     is_light_phrase = _contains_any(lowered, _LIGHT_PHRASES)
-    is_short_direct_request = bool(text) and (len(text) <= 60 or len(text.split()) <= 14)
+    is_short_direct_request = bool(text) and (
+        len(text) <= 60 or len(text.split()) <= 14
+    )
     is_simple_question = is_short_direct_request and (
         "?" in text
         or "？" in text
-        or any(token in lowered for token in ("what", "why", "how", "can you", "可以", "怎么", "如何", "是什么"))
+        or any(
+            token in lowered
+            for token in ("what", "why", "how", "can you", "可以", "怎么", "如何", "是什么")
+        )
         or "吗" in text
     )
 
-    if has_attachments or task_bound or has_execute_keyword or (has_file_or_workspace_cue and not has_research_cue):
-        return "execute", reasons
+    if intent_type in {"local_mutation", "execute_task"}:
+        reasons.append("intent_execution")
+        return "execute", reasons, is_brief_followup
+
+    if intent_type == "research":
+        reasons.append("intent_research")
+        return "research", reasons, is_brief_followup
+
+    if has_attachments or task_bound or has_execute_keyword:
+        return "execute", reasons, is_brief_followup
 
     if plan_bound and (has_followthrough_cue or has_execute_keyword):
         if "plan_bound" not in reasons:
             reasons.append("plan_bound")
-        return "execute", reasons
+        return "execute", reasons, is_brief_followup
 
     if has_research_cue or has_time_sensitive_cue:
-        return "research", reasons
+        return "research", reasons, is_brief_followup
 
     if is_light_exact or is_light_phrase:
         reasons.append("light_social")
-        return "light", reasons
+        return "light", reasons, is_brief_followup
 
-    if is_brief_followup and not has_file_or_workspace_cue:
-        return "light", reasons
+    if is_brief_followup:
+        return "light", reasons, True
 
     if (is_simple_question or is_short_direct_request) and not has_depth_cue:
         reasons.append("short_direct_request")
-        return "light", reasons
+        return "light", reasons, False
 
     reasons.append("default_standard")
-    return "standard", reasons
+    return "standard", reasons, False
+
+
+def determine_capability_floor(
+    *,
+    intent_type: IntentType,
+) -> tuple[CapabilityFloor, List[str]]:
+    if intent_type == "local_read":
+        return "local_read", ["capability_local_read"]
+    if intent_type == "local_inspect":
+        return "local_inspect", ["capability_local_inspect"]
+    if intent_type == "local_mutation":
+        return "execute", ["capability_local_mutation", "capability_execute"]
+    if intent_type == "research":
+        return "research", ["capability_research"]
+    if intent_type == "execute_task":
+        return "execute", ["capability_execute"]
+    return "plain_chat", []
+
+
+def resolve_subject_resolution(
+    *,
+    message: str,
+    history: Optional[Sequence[Mapping[str, Any]]] = None,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[Dict[str, Any], List[str]]:
+    text = str(message or "").strip()
+    lowered = text.lower()
+    context_dict = dict(context or {})
+    reasons: List[str] = []
+    active_subject = context_dict.get("active_subject")
+    last_subject_action_class = str(context_dict.get("last_subject_action_class") or "").strip().lower()
+    current_turn = _current_user_turn_index(history)
+
+    attachments = context_dict.get("attachments")
+    if isinstance(attachments, list):
+        for item in attachments:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "").strip()
+            if not path:
+                continue
+            kind: SubjectKind = "file"
+            if item.get("type") in {"directory", "folder"}:
+                kind = "directory"
+            reasons.append("explicit_attachment_subject")
+            canonical_ref = canonicalize_subject_ref(path)
+            return (
+                {
+                    "kind": kind,
+                    "canonical_ref": canonical_ref or path,
+                    "display_ref": path,
+                    "aliases": build_subject_aliases(path, canonical_ref),
+                    "source": "explicit",
+                    "continuity": "new",
+                    "confidence": 0.98,
+                },
+                reasons,
+            )
+
+    explicit_path = _extract_explicit_path(text)
+    if explicit_path:
+        kind = _infer_subject_kind_from_text(explicit_path, lowered)
+        canonical_ref = canonicalize_subject_ref(explicit_path) or explicit_path
+        continuity = "new"
+        if subject_identity_matches(
+            active_subject,
+            candidate_ref=canonical_ref,
+            candidate_display_ref=explicit_path,
+        ):
+            continuity = "continued"
+        elif isinstance(active_subject, dict):
+            active_ref = str(active_subject.get("canonical_ref") or "").strip()
+            if active_ref:
+                continuity = "shifted"
+        reasons.append("explicit_subject")
+        return (
+            {
+                "kind": kind,
+                "canonical_ref": canonical_ref,
+                "display_ref": explicit_path,
+                "aliases": build_subject_aliases(explicit_path, canonical_ref),
+                "source": "explicit",
+                "continuity": continuity,
+                "confidence": 0.96,
+            },
+            reasons,
+        )
+
+    if _should_inherit_active_subject(
+        lowered,
+        active_subject,
+        current_turn,
+        last_subject_action_class=last_subject_action_class,
+    ):
+        inherited = dict(active_subject)
+        canonical_ref = canonicalize_subject_ref(
+            inherited.get("canonical_ref") or inherited.get("display_ref")
+        )
+        display_ref = str(inherited.get("display_ref") or canonical_ref).strip()
+        kind = str(inherited.get("kind") or "workspace").strip().lower()
+        reasons.append("inherited_subject")
+        return (
+            {
+                "kind": kind if kind in {"file", "directory", "workspace"} else "workspace",
+                "canonical_ref": canonical_ref,
+                "display_ref": display_ref or canonical_ref,
+                "aliases": build_subject_aliases(
+                    inherited.get("aliases"),
+                    canonical_ref,
+                    display_ref,
+                ),
+                "source": "inherited",
+                "continuity": "continued",
+                "confidence": 0.84,
+            },
+            reasons,
+        )
+
+    return (
+        {
+            "kind": "none",
+            "canonical_ref": None,
+            "display_ref": None,
+            "source": "none",
+            "continuity": "none",
+            "confidence": 0.0,
+        },
+        reasons,
+    )
+
+
+def _max_iterations_light(decision: RequestRoutingDecision) -> int:
+    """Plain chat stays 1–2 steps; tool-backed floors need room for tool + synthesis."""
+    if decision.capability_floor == "plain_chat":
+        return 1 if not decision.manual_deep_think else 2
+    return 2 if not decision.manual_deep_think else 3
+
+
+def _max_iterations_standard(decision: RequestRoutingDecision) -> int:
+    if decision.capability_floor == "plain_chat":
+        return 2 if decision.manual_deep_think else 1
+    return 3 if decision.manual_deep_think else 2
 
 
 def build_request_tier_profile(
@@ -424,69 +958,323 @@ def build_request_tier_profile(
         return RequestTierProfile(
             request_tier="light",
             thinking_budget=max(80, min(simple_thinking_budget, 400)),
-            max_iterations=1 if not decision.manual_deep_think else 2,
-            available_tools=[],
+            max_iterations=_max_iterations_light(decision),
+            available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
             output_bias="short_direct",
+            intent_type=decision.intent_type,
+            capability_floor=decision.capability_floor,
+            simple_channel_allowed=decision.simple_channel_allowed,
         )
     if decision.request_tier == "standard":
         return RequestTierProfile(
             request_tier="standard",
             thinking_budget=max(120, min(simple_thinking_budget, 900)),
-            max_iterations=2 if decision.manual_deep_think else 1,
-            available_tools=[],
+            max_iterations=_max_iterations_standard(decision),
+            available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
             output_bias="concise_complete",
+            intent_type=decision.intent_type,
+            capability_floor=decision.capability_floor,
+            simple_channel_allowed=decision.simple_channel_allowed,
         )
     if decision.request_tier == "research":
+        research_cap = min(default_max_iterations, 8)
         return RequestTierProfile(
             request_tier="research",
             thinking_budget=max(simple_thinking_budget, min(default_thinking_budget, 10000)),
-            max_iterations=min(default_max_iterations, 8),
-            available_tools=[
-                "web_search",
-                "graph_rag",
-                "document_reader",
-                "vision_reader",
-                "literature_pipeline",
-                "review_pack_writer",
-                "manuscript_writer",
-                "sequence_fetch",
-                "bio_tools",
-                "deeppl",
-                "phagescope",
-                "file_operations",
-                "plan_operation",
-                "terminal_session",
-                "verify_task",
-                "claude_code",
-            ],
+            max_iterations=max(3, research_cap),
+            available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
             output_bias="evidence_backed",
+            intent_type=decision.intent_type,
+            capability_floor=decision.capability_floor,
+            simple_channel_allowed=decision.simple_channel_allowed,
         )
+    execute_cap = min(default_max_iterations, 6)
     return RequestTierProfile(
         request_tier="execute",
         thinking_budget=max(200, min(default_thinking_budget, 7000)),
-        max_iterations=min(default_max_iterations, 6),
-        available_tools=[
-            "graph_rag",
-            "sequence_fetch",
-            "claude_code",
-            "file_operations",
-            "document_reader",
-            "vision_reader",
-            "bio_tools",
-            "phagescope",
-            "deeppl",
-            "plan_operation",
-            "terminal_session",
-            "verify_task",
-            "web_search",
-        ],
+        max_iterations=max(3, execute_cap),
+        available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
         output_bias="task_completion",
+        intent_type=decision.intent_type,
+        capability_floor=decision.capability_floor,
+        simple_channel_allowed=decision.simple_channel_allowed,
     )
+
+
+def _max_capability(left: CapabilityFloor, right: CapabilityFloor) -> CapabilityFloor:
+    if _CAPABILITY_ORDER[left] >= _CAPABILITY_ORDER[right]:
+        return left
+    return right
 
 
 def _contains_any(text: str, phrases: Sequence[str]) -> bool:
     haystack = text.lower()
     return any(phrase.lower() in haystack for phrase in phrases)
+
+
+def _references_prior_subject(lowered: str) -> bool:
+    return _contains_any(lowered, _REFERENTIAL_CUES)
+
+
+def _references_mutation_subject(
+    lowered: str,
+    *,
+    last_subject_action_class: str = "",
+) -> bool:
+    if last_subject_action_class not in {"read_only", "inspect", "mutation"}:
+        return False
+    has_mutation_verb = _contains_any(lowered, _LOCAL_MUTATION_PHRASES)
+    has_archive_target = _contains_any(lowered, _ARCHIVE_OBJECT_PHRASES)
+    has_scope_target = _contains_any(lowered, _MUTATION_SCOPE_PHRASES)
+    return has_mutation_verb and (has_archive_target or has_scope_target)
+
+
+def _extract_explicit_path(text: str) -> Optional[str]:
+    if not text:
+        return None
+    for match in _PATH_RE.finditer(text):
+        candidate = str(match.group("path") or "").strip().strip("`'\"")
+        if not candidate or "://" in candidate:
+            continue
+        if candidate in {".", ".."}:
+            continue
+        if "/" not in candidate and "\\" not in candidate:
+            continue
+        return candidate.replace("\\", "/")
+    return None
+
+
+def _is_phagescope_remote_verification_intent(lowered: str) -> bool:
+    """True when the user is asking to verify PhageScope API/connectivity (not generic phage analysis)."""
+    if not _contains_any(lowered, _PHAGESCOPE_DOMAIN_MARKERS):
+        return False
+    return _contains_any(lowered, _PHAGESCOPE_REMOTE_INTENT_MARKERS)
+
+
+def _subject_refs_phagescope_workspace(subject: Mapping[str, Any]) -> bool:
+    """True when inherited/explicit subject paths live under a phagescope workspace (session continuity)."""
+    for key in ("canonical_ref", "display_ref"):
+        v = subject.get(key)
+        if isinstance(v, str) and "phagescope" in v.replace("\\", "/").lower():
+            return True
+    aliases = subject.get("aliases")
+    if isinstance(aliases, (list, tuple)):
+        for a in aliases:
+            if isinstance(a, str) and "phagescope" in a.replace("\\", "/").lower():
+                return True
+    return False
+
+
+def _text_has_phagescope_remote_task_id(text: str) -> bool:
+    """Heuristic: PhageScope remote task ids are typically 5+ digit numbers."""
+    return bool(re.search(r"(?<![0-9])(\d{5,})(?![0-9])", text))
+
+
+def _is_phagescope_task_status_followup(
+    lowered: str,
+    subject: Mapping[str, Any],
+    context_dict: Mapping[str, Any],
+) -> bool:
+    """User checks a numeric task id + running/status without saying 'phagescope' again; keep research tools."""
+    if not _text_has_phagescope_remote_task_id(lowered):
+        return False
+    if not _contains_any(lowered, _PHAGESCOPE_TASK_STATUS_PHRASES):
+        return False
+    if _contains_any(lowered, _PHAGESCOPE_DOMAIN_MARKERS):
+        return True
+    if _subject_refs_phagescope_workspace(subject):
+        return True
+    active = context_dict.get("active_subject")
+    if isinstance(active, dict) and _subject_refs_phagescope_workspace(active):
+        return True
+    return False
+
+
+def _is_phagescope_task_result_followup(lowered: str) -> bool:
+    """
+    Fetch/download/verify pipeline outputs for a numeric remote task id without 'phagescope' or workspace anchor.
+
+    Example: '下载 task 38619 的 quality 和 annotation 输出进行验证' must route to research (phagescope allowed).
+    """
+    if not _text_has_phagescope_remote_task_id(lowered):
+        return False
+    return _contains_any(lowered, _PHAGESCOPE_TASK_RESULT_PHRASES)
+
+
+def resolve_intent_type(
+    *,
+    message: str,
+    context: Optional[Mapping[str, Any]] = None,
+    history: Optional[Sequence[Mapping[str, Any]]] = None,
+    subject_resolution: Optional[Mapping[str, Any]] = None,
+    plan_id: Optional[int] = None,
+    current_task_id: Optional[int] = None,
+) -> tuple[IntentType, List[str]]:
+    text = str(message or "").strip()
+    lowered = text.lower()
+    context_dict = dict(context or {})
+    subject = dict(subject_resolution or {})
+    subject_kind = str(subject.get("kind") or "none").strip().lower()
+    active_subject = context_dict.get("active_subject")
+    last_subject_action_class = str(context_dict.get("last_subject_action_class") or "").strip().lower()
+    reasons: List[str] = []
+
+    has_research_cue = _contains_any(lowered, _RESEARCH_PHRASES)
+    has_time_sensitive_cue = _contains_any(lowered, _TIME_SENSITIVE_PHRASES)
+    has_execute_keyword = _contains_any(lowered, _EXECUTE_PHRASES)
+    has_local_read_cue = _contains_any(lowered, _LOCAL_READ_PHRASES)
+    has_local_inspect_cue = _contains_any(lowered, _LOCAL_INSPECT_PHRASES)
+    has_local_mutation_cue = _contains_any(lowered, _LOCAL_MUTATION_PHRASES)
+    has_archive_object_cue = _contains_any(lowered, _ARCHIVE_OBJECT_PHRASES)
+    has_mutation_scope_cue = _contains_any(lowered, _MUTATION_SCOPE_PHRASES)
+    has_attachments = isinstance(context_dict.get("attachments"), list) and bool(
+        context_dict.get("attachments")
+    )
+    has_subject_context = subject_kind != "none" or isinstance(active_subject, dict)
+    # Allow follow-up "再解压/继续解压" when the prior turn already touched the same subject path
+    # even if subject_resolution for this message is empty (short follow-ups).
+    has_local_subject_continuity = last_subject_action_class in {
+        "read_only",
+        "inspect",
+        "mutation",
+    }
+    mutation_context_ok = has_subject_context or has_local_subject_continuity
+    task_bound = current_task_id is not None or context_dict.get("current_task_id") is not None
+    plan_bound = plan_id is not None or context_dict.get("plan_id") is not None
+    has_followthrough_cue = _contains_any(lowered, _FOLLOWTHROUGH_PHRASES)
+    explicit_path = _extract_explicit_path(text)
+
+    # Compound detection: followthrough cue ("继续") + action verb ("尝试") → execute,
+    # unless the message is a chat continuation ("继续说", "继续讲").
+    has_action_verb = _contains_any(lowered, _ACTION_VERB_PHRASES)
+    is_chat_continuation = _contains_any(lowered, _CHAT_CONTINUATION_PHRASES)
+    followthrough_implies_execute = (
+        has_followthrough_cue and has_action_verb and not is_chat_continuation
+    )
+
+    if has_execute_keyword or task_bound or (plan_bound and has_followthrough_cue) or followthrough_implies_execute:
+        reasons.append("intent_execute_task")
+        if followthrough_implies_execute and not has_execute_keyword:
+            reasons.append("execution_keyword")
+        return "execute_task", reasons
+
+    if (
+        mutation_context_ok
+        and has_local_mutation_cue
+        and (
+            has_archive_object_cue
+            or has_mutation_scope_cue
+            or _references_mutation_subject(
+                lowered,
+                last_subject_action_class=last_subject_action_class,
+            )
+        )
+    ) or (
+        bool(explicit_path)
+        and has_local_mutation_cue
+        and (has_archive_object_cue or has_mutation_scope_cue)
+    ):
+        reasons.append("intent_local_mutation")
+        return "local_mutation", reasons
+
+    if _is_phagescope_remote_verification_intent(lowered):
+        reasons.append("intent_phagescope_remote_verify")
+        return "research", reasons
+
+    if _is_phagescope_task_status_followup(lowered, subject, context_dict):
+        reasons.append("intent_phagescope_task_status")
+        return "research", reasons
+
+    if _is_phagescope_task_result_followup(lowered):
+        reasons.append("intent_phagescope_task_result")
+        return "research", reasons
+
+    if has_research_cue or has_time_sensitive_cue:
+        reasons.append("intent_research")
+        return "research", reasons
+
+    if has_attachments:
+        reasons.append("intent_local_inspect")
+        return "local_inspect", reasons
+
+    if subject_kind != "none":
+        if has_local_inspect_cue or _references_prior_subject(lowered):
+            reasons.append("intent_local_inspect")
+            return "local_inspect", reasons
+        if has_local_read_cue or subject.get("source") == "explicit":
+            reasons.append("intent_local_read")
+            return "local_read", reasons
+        reasons.append("intent_local_read")
+        return "local_read", reasons
+
+    if has_local_inspect_cue:
+        reasons.append("intent_local_inspect")
+        return "local_inspect", reasons
+    if has_local_read_cue:
+        reasons.append("intent_local_read")
+        return "local_read", reasons
+
+    reasons.append("intent_chat")
+    return "chat", reasons
+
+
+def _infer_subject_kind_from_text(path_text: str, lowered_message: str) -> SubjectKind:
+    if _contains_any(lowered_message, _DIRECTORY_PHRASES):
+        return "directory"
+    if path_text.endswith("/"):
+        return "directory"
+    basename = path_text.rsplit("/", 1)[-1]
+    if "." in basename:
+        return "file"
+    return "workspace"
+
+
+def _current_user_turn_index(
+    history: Optional[Sequence[Mapping[str, Any]]],
+) -> int:
+    if not history:
+        return 1
+    return 1 + sum(
+        1 for item in history if str(item.get("role") or "").strip().lower() == "user"
+    )
+
+
+def _should_inherit_active_subject(
+    lowered_message: str,
+    active_subject: Any,
+    current_turn: int,
+    *,
+    last_subject_action_class: str = "",
+) -> bool:
+    if not isinstance(active_subject, dict):
+        return False
+    if not (
+        _references_prior_subject(lowered_message)
+        or _references_mutation_subject(
+            lowered_message,
+            last_subject_action_class=last_subject_action_class,
+        )
+    ):
+        return False
+    canonical_ref = str(active_subject.get("canonical_ref") or "").strip()
+    if not canonical_ref:
+        return False
+    verification_state = str(active_subject.get("verification_state") or "").strip().lower()
+    if verification_state == "stale":
+        return False
+    try:
+        salience = int(active_subject.get("salience", 0))
+    except (TypeError, ValueError):
+        salience = 0
+    if salience <= 0:
+        return False
+    try:
+        last_ref_turn = int(active_subject.get("last_referenced_turn", 0))
+    except (TypeError, ValueError):
+        last_ref_turn = 0
+    if last_ref_turn and (current_turn - last_ref_turn) > 5:
+        return False
+    return True
 
 
 def _last_role(

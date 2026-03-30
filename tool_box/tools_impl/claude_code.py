@@ -809,7 +809,9 @@ async def claude_code_handler(
             f"1. Write executable scripts to code/\n"
             f"2. Run the scripts and capture outputs\n"
             f"3. Save all figures/results to results/\n"
-            f"4. Provide a summary of actual outputs produced"
+            f"4. Put code meant for published deliverables under results/submission/ or results/deliverable/ "
+            f"(other outputs remain in RAW session results only)\n"
+            f"5. Provide a summary of actual outputs produced"
             f"{allowed_dirs_info}"
         )
         

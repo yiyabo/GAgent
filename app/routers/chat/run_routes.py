@@ -151,13 +151,13 @@ async def cancel_run(run_id: str, request: Request) -> Dict[str, str]:
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
     ensure_owner_access(request, row.get("owner_id"), detail="run owner mismatch")
-    accepted = await route_control_message(
+    # Always set the in-process cancel event; routed control can fail cross-worker or if owner lease lags.
+    hub.request_cancel(run_id)
+    await route_control_message(
         "run",
         run_id,
         {"type": "chat_run.cancel", "run_id": run_id},
     )
-    if not accepted:
-        hub.request_cancel(run_id)
     return {"run_id": run_id, "status": "cancel_requested"}
 
 

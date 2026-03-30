@@ -21,6 +21,9 @@ import {
 } from '@utils/toolResults';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { recoverPlanBindingFromMessages } from './planRecovery';
+
+/** Recent turns attached to each API request. Align with backend `CHAT_HISTORY_MAX_MESSAGES` (default 80, cap 200). */
+const CHAT_REQUEST_HISTORY_LIMIT = 80;
 import { startActionStatusPolling, flushAnalysisText, scheduleFlush, retryActionRun as retryActionRunHelper } from './helpers';
 import {
   handleDelta,
@@ -515,7 +518,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   const providerToUse = defaultSearchProvider ?? currentSession?.defaultSearchProvider ?? undefined;
   const baseModelToUse = defaultBaseModel ?? currentSession?.defaultBaseModel ?? undefined;
   const llmProviderToUse = defaultLLMProvider ?? currentSession?.defaultLLMProvider ?? undefined;
-  const recentMessages = get().messages.slice(-10).map((msg) => ({
+  const recentMessages = get().messages.slice(-CHAT_REQUEST_HISTORY_LIMIT).map((msg) => ({
   role: msg.type,
   content: msg.content,
   timestamp: msg.timestamp.toISOString(),
@@ -617,9 +620,6 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   return;
   }
   const resumeKey = resolveChatSessionProcessingKey(currentSession);
-  if (processingSessionIds.has(resumeKey)) {
-  return;
-  }
   const apiSid = currentSession?.session_id ?? currentSession?.id;
   if (!apiSid) {
   return;
@@ -638,9 +638,35 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   const data = await res.json();
   const run = data?.runs?.[0];
   if (!run?.run_id) {
+  // Server has no active run; client may still show "running" after backend restart.
+  if (processingSessionIds.has(resumeKey)) {
+  get().setActiveRunId(resumeKey, null);
+  get().setSessionProcessing(resumeKey, false);
+  const msgs = get().messages;
+  const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+  if (last?.type === 'assistant' && (last.metadata as any)?.status === 'pending') {
+  get().updateMessage(last.id, {
+  content:
+  (last.content && String(last.content).trim())
+  ? last.content
+  : '对话已中断（服务端已重启或无进行中的任务）。请重新发送消息。',
+  metadata: {
+  ...(last.metadata as any),
+  status: 'failed',
+  errors: ['No active run on server (e.g. server restarted).'],
+  },
+  });
+  }
+  }
   return;
   }
   const runId = run.run_id as string;
+  if (processingSessionIds.has(resumeKey)) {
+  const activeId = get().activeRunIds.get(resumeKey);
+  if (activeId === runId) {
+  return;
+  }
+  }
   const last = messages[messages.length - 1];
   let assistantMessageId: string;
   if (

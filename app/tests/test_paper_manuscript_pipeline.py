@@ -252,7 +252,7 @@ def test_paper_builder_uses_staged_figure_paths(tmp_path: Path) -> None:
     builder.ensure_structure(paper_dir=paper_dir, refs_dir=refs_dir, title="Demo")
 
     main_tex = (paper_dir / "main.tex").read_text(encoding="utf-8")
-    assert "\\graphicspath{{figures/}}" in main_tex
+    assert "\\graphicspath{{../image_tabular/}}" in main_tex
 
     section_path = builder.update_section(
         paper_dir=paper_dir,

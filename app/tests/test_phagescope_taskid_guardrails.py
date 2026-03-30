@@ -10,6 +10,17 @@ from tool_box.tools_impl import phagescope as phagescope_module
 from tool_box.tools_impl.phagescope import phagescope_handler
 
 
+def test_extract_taskid_from_submit_result_reads_results_object() -> None:
+    """Remote JSON often places taskid under ``results`` (not ``data.data``)."""
+    sub = {
+        "success": True,
+        "status_code": 200,
+        "data": {"status": "Success", "results": {"taskid": 38625}},
+    }
+    tid = phagescope_module._extract_taskid_from_submit_result(sub)
+    assert tid == "38625"
+
+
 def test_phagescope_save_all_rejects_non_numeric_taskid_alias() -> None:
     result = asyncio.run(
         phagescope_handler(

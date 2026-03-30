@@ -10,7 +10,7 @@ from .database_config import (
     get_main_database_path,
     get_cache_database_path,
 )
-from .deliverable_config import DeliverableSettings, get_deliverable_settings
+from .deliverable_config import DeliverableSettings, DeliverablesIngestMode, get_deliverable_settings
 from .executor_config import ExecutorSettings, get_executor_settings
 from .rag_config import (
     GraphRAGSettings,
@@ -25,6 +25,7 @@ __all__ = [
     "get_main_database_path",
     "get_cache_database_path",
     "DeliverableSettings",
+    "DeliverablesIngestMode",
     "get_deliverable_settings",
     "ExecutorSettings",
     "get_executor_settings",

@@ -381,6 +381,19 @@ class TaskExecutor:
             stdout = result.get("stdout", "")
             stderr = result.get("stderr", "")
 
+            err_text: Optional[str] = None
+            if not success:
+                err_text = (stderr.strip() if stderr else "") or (
+                    str(result.get("error") or "").strip()
+                )
+                if not err_text:
+                    rc = result.get("exit_code")
+                    err_text = (
+                        f"Claude Code exited with exit_code={rc}"
+                        if rc is not None
+                        else "Claude Code finished without success"
+                    )
+
             # Copy Claude Code artifacts to output_dir.
             # Handle all 4 sub-directories: results/, code/, data/, docs/.
             task_dir = result.get("task_directory_full", "")
@@ -419,12 +432,12 @@ class TaskExecutor:
                 final_code=None,  # Claude Code manages generated code internally.
                 code_description=f"Task completed by Claude Code: {task_title}",
                 code_output=stdout,
-                code_error=stderr if stderr else None,
+                code_error=(stderr if stderr else err_text) if not success else None,
                 total_attempts=1,  # Retries are handled internally by Claude Code.
                 has_visualization=has_visualization,
                 visualization_purpose=visualization_purpose,
                 visualization_analysis=visualization_analysis,
-                error_message=stderr if not success else None
+                error_message=err_text,
             )
 
         except Exception as e:

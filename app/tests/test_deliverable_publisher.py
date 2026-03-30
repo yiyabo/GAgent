@@ -3,11 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from app.config.deliverable_config import DeliverableSettings, RESEARCH_MODULES
+from app.config.deliverable_config import DeliverableSettings, DeliverablesIngestMode, RESEARCH_MODULES
 from app.services.deliverables.publisher import DeliverablePublisher
 
 
-def _build_publisher(tmp_path: Path) -> DeliverablePublisher:
+def _build_publisher(
+    tmp_path: Path, *, ingest_mode: DeliverablesIngestMode = "legacy"
+) -> DeliverablePublisher:
     settings = DeliverableSettings(
         enabled=True,
         default_template="research",
@@ -15,6 +17,7 @@ def _build_publisher(tmp_path: Path) -> DeliverablePublisher:
         history_max=1,
         single_version_only=True,
         modules=RESEARCH_MODULES,
+        ingest_mode=ingest_mode,
     )
     return DeliverablePublisher(
         settings=settings,
@@ -23,9 +26,143 @@ def _build_publisher(tmp_path: Path) -> DeliverablePublisher:
     )
 
 
+def test_explicit_ingest_skips_heuristic_paths_for_claude_code(tmp_path: Path) -> None:
+    publisher = _build_publisher(tmp_path, ingest_mode="explicit")
+    png = tmp_path / "workspace" / "submission" / "plot.png"
+    png.parent.mkdir(parents=True, exist_ok=True)
+    png.write_bytes(b"img")
+
+    report = publisher.publish_from_tool_result(
+        session_id="exp_skip001",
+        tool_name="claude_code",
+        raw_result={"output_path": str(png), "success": True},
+        summary="Generated plot.",
+    )
+
+    assert report is None
+    latest_root = tmp_path / "runtime" / "session_exp_skip001" / "deliverables" / "latest"
+    assert not (latest_root / "image_tabular" / "plot.png").exists()
+
+
+def test_explicit_ingest_applies_deliverable_submit_artifacts(tmp_path: Path) -> None:
+    publisher = _build_publisher(tmp_path, ingest_mode="explicit")
+    png = tmp_path / "workspace" / "submission" / "plot.png"
+    png.parent.mkdir(parents=True, exist_ok=True)
+    png.write_bytes(b"img")
+
+    report = publisher.publish_from_tool_result(
+        session_id="exp_submit001",
+        tool_name="deliverable_submit",
+        raw_result={
+            "success": True,
+            "deliverable_submit": {
+                "publish": True,
+                "artifacts": [{"path": str(png), "module": "image_tabular"}],
+            },
+        },
+        summary="User-approved deliverables.",
+    )
+
+    assert report is not None
+    assert report.submit_artifacts_requested == 1
+    assert report.submit_artifacts_published == 1
+    assert report.submit_artifacts_skipped == 0
+    assert report.warnings == []
+    latest_root = tmp_path / "runtime" / "session_exp_submit001" / "deliverables" / "latest"
+    assert (latest_root / "image_tabular" / "plot.png").read_bytes() == b"img"
+
+
+def test_explicit_ingest_deliverable_submit_reports_partial_warnings(tmp_path: Path) -> None:
+    publisher = _build_publisher(tmp_path, ingest_mode="explicit")
+    png = tmp_path / "workspace" / "submission" / "plot.png"
+    png.parent.mkdir(parents=True, exist_ok=True)
+    png.write_bytes(b"img")
+
+    report = publisher.publish_from_tool_result(
+        session_id="exp_submit_warn001",
+        tool_name="deliverable_submit",
+        raw_result={
+            "success": True,
+            "deliverable_submit": {
+                "publish": True,
+                "artifacts": [
+                    {"path": str(png), "module": "image_tabular"},
+                    {"path": str(tmp_path / "workspace" / "missing.png"), "module": "image_tabular"},
+                    {"path": str(png), "module": "unknown"},
+                ],
+            },
+        },
+        summary="User-approved deliverables.",
+    )
+
+    assert report is not None
+    assert report.submit_artifacts_requested == 3
+    assert report.submit_artifacts_published == 1
+    assert report.submit_artifacts_skipped == 2
+    assert len(report.warnings) == 2
+    assert "does not exist" in report.warnings[0]
+    assert "unsupported module 'unknown'" in report.warnings[1]
+    latest_root = tmp_path / "runtime" / "session_exp_submit_warn001" / "deliverables" / "latest"
+    assert (latest_root / "image_tabular" / "plot.png").read_bytes() == b"img"
+
+
+def test_explicit_ingest_deliverable_submit_returns_report_when_all_artifacts_skipped(tmp_path: Path) -> None:
+    publisher = _build_publisher(tmp_path, ingest_mode="explicit")
+
+    report = publisher.publish_from_tool_result(
+        session_id="exp_submit_skip001",
+        tool_name="deliverable_submit",
+        raw_result={
+            "success": True,
+            "deliverable_submit": {
+                "publish": True,
+                "artifacts": [
+                    {"path": str(tmp_path / "workspace" / "missing.png"), "module": "image_tabular"},
+                    {"path": str(tmp_path / "workspace" / "missing.py"), "module": "code"},
+                ],
+            },
+        },
+        summary="User-approved deliverables.",
+    )
+
+    assert report is not None
+    assert report.submit_artifacts_requested == 2
+    assert report.submit_artifacts_published == 0
+    assert report.submit_artifacts_skipped == 2
+    assert len(report.warnings) == 2
+    manifest_path = tmp_path / "runtime" / "session_exp_submit_skip001" / "deliverables" / "manifest_latest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["published_files_count"] == 0
+    assert report.submit_summary().startswith(
+        "Deliverable submit published 0 artifact(s); skipped 2 with warnings"
+    )
+
+
+def test_explicit_ingest_manuscript_writer_still_publishes_sections(tmp_path: Path) -> None:
+    publisher = _build_publisher(tmp_path, ingest_mode="explicit")
+    section_file = tmp_path / "workspace" / "sections" / "01_introduction.md"
+    section_file.parent.mkdir(parents=True, exist_ok=True)
+    section_file.write_text("## Intro\nHello.\n", encoding="utf-8")
+
+    report = publisher.publish_from_tool_result(
+        session_id="exp_ms001",
+        tool_name="manuscript_writer",
+        raw_result={
+            "tool": "manuscript_writer",
+            "sections": [{"section": "introduction", "path": str(section_file)}],
+        },
+        summary="intro",
+        task_name="Write introduction",
+    )
+
+    assert report is not None
+    latest_root = tmp_path / "runtime" / "session_exp_ms001" / "deliverables" / "latest"
+    assert (latest_root / "paper" / "sections" / "introduction.tex").exists()
+
+
 def test_publish_copies_code_into_latest_manifest(tmp_path: Path):
     publisher = _build_publisher(tmp_path)
-    source = tmp_path / "workspace" / "analysis.py"
+    source = tmp_path / "workspace" / "submission" / "analysis.py"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("print('hello deliverables')\n", encoding="utf-8")
 
@@ -46,6 +183,24 @@ def test_publish_copies_code_into_latest_manifest(tmp_path: Path):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["published_files_count"] >= 1
     assert "code" in manifest["published_modules"]
+
+
+def test_publish_deliverable_code_paths_promotes_explicit_paths(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    source = tmp_path / "workspace" / "adhoc" / "tool.py"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("x = 1\n", encoding="utf-8")
+
+    report = publisher.publish_from_tool_result(
+        session_id="explicit_code001",
+        tool_name="claude_code",
+        raw_result={"output_path": str(source), "deliverable_code_paths": [str(source)]},
+        summary="Saved tool.",
+    )
+
+    assert report is not None
+    latest_root = tmp_path / "runtime" / "session_explicit_code001" / "deliverables" / "latest"
+    assert (latest_root / "code" / "tool.py").exists()
 
 
 def test_publish_creates_incremental_paper_docs_and_refs(tmp_path: Path):
@@ -213,10 +368,10 @@ def test_publish_scans_task_directory_not_session_root(tmp_path: Path):
     runtime_session = tmp_path / "runtime" / "session_session_alpha"
     task_dir = runtime_session / "task_intro"
     other_task_dir = runtime_session / "task_noise"
-    (task_dir / "code").mkdir(parents=True, exist_ok=True)
-    (other_task_dir / "code").mkdir(parents=True, exist_ok=True)
-    (task_dir / "code" / "intro.py").write_text("print('intro')\n", encoding="utf-8")
-    (other_task_dir / "code" / "noise.py").write_text("print('noise')\n", encoding="utf-8")
+    (task_dir / "submission").mkdir(parents=True, exist_ok=True)
+    (other_task_dir / "submission").mkdir(parents=True, exist_ok=True)
+    (task_dir / "submission" / "intro.py").write_text("print('intro')\n", encoding="utf-8")
+    (other_task_dir / "submission" / "noise.py").write_text("print('noise')\n", encoding="utf-8")
 
     report = publisher.publish_from_tool_result(
         session_id="session_alpha",
@@ -238,8 +393,8 @@ def test_publish_prefers_produced_files_over_directory_scan(tmp_path: Path):
     publisher = _build_publisher(tmp_path)
     runtime_session = tmp_path / "runtime" / "session_session_alpha"
     task_root = runtime_session / "plan7_task11"
-    old_file = task_root / "run_older" / "code" / "noise.py"
-    new_file = task_root / "run_new" / "code" / "intro.py"
+    old_file = task_root / "run_older" / "submission" / "noise.py"
+    new_file = task_root / "run_new" / "submission" / "intro.py"
     old_file.parent.mkdir(parents=True, exist_ok=True)
     new_file.parent.mkdir(parents=True, exist_ok=True)
     old_file.write_text("print('old')\n", encoding="utf-8")
@@ -263,7 +418,7 @@ def test_publish_prefers_produced_files_over_directory_scan(tmp_path: Path):
 
 def test_publish_skips_failed_tool_results(tmp_path: Path):
     publisher = _build_publisher(tmp_path)
-    source = tmp_path / "workspace" / "analysis.py"
+    source = tmp_path / "workspace" / "submission" / "analysis.py"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("print('hello')\n", encoding="utf-8")
 
@@ -348,7 +503,7 @@ def test_publish_accepts_paths_under_project_symlink(tmp_path: Path):
     project_data_link = tmp_path / "data"
     project_data_link.symlink_to(external_root, target_is_directory=True)
 
-    source = project_data_link / "experiment_ML" / "1" / "code" / "siamcat_repro" / "train.py"
+    source = project_data_link / "experiment_ML" / "1" / "submission" / "siamcat_repro" / "train.py"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("print('symlink-source')\n", encoding="utf-8")
 
@@ -654,8 +809,7 @@ def test_publish_manuscript_section_stages_markdown_images(tmp_path: Path):
         / "session_section_figure001"
         / "deliverables"
         / "latest"
-        / "paper"
-        / "figures"
+        / "image_tabular"
         / "roc.png"
     )
     assert staged.exists()
@@ -691,8 +845,7 @@ def test_publish_updates_staged_figure_for_same_source_path(tmp_path: Path):
         / "session_figure_update001"
         / "deliverables"
         / "latest"
-        / "paper"
-        / "figures"
+        / "image_tabular"
         / "summary.png"
     )
     assert staged.exists()
@@ -734,11 +887,8 @@ def test_publish_uses_previous_manifest_source_for_legacy_figure_updates(tmp_pat
     session_root = tmp_path / "runtime" / "session_legacy_figure001" / "deliverables"
     latest_root = session_root / "latest"
     image_dir = latest_root / "image_tabular"
-    figure_dir = latest_root / "paper" / "figures"
     image_dir.mkdir(parents=True, exist_ok=True)
-    figure_dir.mkdir(parents=True, exist_ok=True)
     (image_dir / "plot.png").write_bytes(b"old-bytes")
-    (figure_dir / "plot.png").write_bytes(b"old-bytes")
     (session_root / "manifest_latest.json").write_text(
         json.dumps(
             {
@@ -746,11 +896,6 @@ def test_publish_uses_previous_manifest_source_for_legacy_figure_updates(tmp_pat
                     {
                         "module": "image_tabular",
                         "path": "image_tabular/plot.png",
-                        "source_path": str(figure),
-                    },
-                    {
-                        "module": "paper",
-                        "path": "paper/figures/plot.png",
                         "source_path": str(figure),
                     },
                 ]
@@ -770,7 +915,6 @@ def test_publish_uses_previous_manifest_source_for_legacy_figure_updates(tmp_pat
 
     assert report is not None
     assert (image_dir / "plot.png").read_bytes() == b"new-bytes"
-    assert (figure_dir / "plot.png").read_bytes() == b"new-bytes"
 
 
 def test_classify_module_routes_reference_pdfs_away_from_paper_dir(tmp_path: Path):
@@ -782,6 +926,8 @@ def test_classify_module_routes_reference_pdfs_away_from_paper_dir(tmp_path: Pat
     assert publisher._classify_module(main_pdf) == "paper"
     loose_pdf = tmp_path / "workspace" / "downloads" / "article.pdf"
     assert publisher._classify_module(loose_pdf) == "refs"
+    stray_pdf = tmp_path / "workspace" / "scratch" / "unclassified.pdf"
+    assert publisher._classify_module(stray_pdf) is None
 
 
 def test_publish_puts_reference_pdf_from_paper_tree_into_refs(tmp_path: Path):

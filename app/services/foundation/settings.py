@@ -47,6 +47,8 @@ try:
 except Exception:
     _DOTENV_LOADED = False
 
+# Absolute ceiling for injected chat history (env `CHAT_HISTORY_MAX_MESSAGES` is clamped to this).
+CHAT_HISTORY_ABS_MAX = 200
 
 if _USE_PYDANTIC:
 
@@ -137,6 +139,11 @@ if _USE_PYDANTIC:
         auth_open_signup: bool = Field(default=True, env="AUTH_OPEN_SIGNUP")
         chat_include_action_summary: bool = Field(
             default=True, env="CHAT_INCLUDE_ACTION_SUMMARY"
+        )
+        # Recent messages injected into prompts / DeepThink context (per session turn).
+        # Higher values increase recall but also prompt size and API cost.
+        chat_history_max_messages: int = Field(
+            default=80, ge=1, le=CHAT_HISTORY_ABS_MAX, env="CHAT_HISTORY_MAX_MESSAGES"
         )
         job_log_retention_days: int = Field(
             default=30, env="JOB_LOG_RETENTION_DAYS"
@@ -396,6 +403,12 @@ else:
                 "yes",
                 "on",
             }
+
+            try:
+                raw_ch = int(os.getenv("CHAT_HISTORY_MAX_MESSAGES", "80"))
+            except Exception:
+                raw_ch = 80
+            self.chat_history_max_messages = max(1, min(CHAT_HISTORY_ABS_MAX, raw_ch))
 
 
 @lru_cache(maxsize=1)

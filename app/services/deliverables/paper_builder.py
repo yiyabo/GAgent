@@ -265,7 +265,7 @@ class PaperBuilder:
             "\\usepackage{amssymb}\n"
             "\\usepackage{amsfonts}\n"
             "\\usepackage[numbers]{natbib}\n"
-            "\\graphicspath{{figures/}}\n"
+            "\\graphicspath{{../image_tabular/}}\n"
             "\\geometry{margin=1in}\n"
             f"\\title{{{safe_title}}}\n"
             "\\author{}\n"

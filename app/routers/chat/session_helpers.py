@@ -19,6 +19,12 @@ from app.llm import LLMClient
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
 VALID_BASE_MODELS = {"qwen3.5-plus", "qwen3-max-2026-01-23", "qwen-turbo"}
 VALID_LLM_PROVIDERS = {"qwen"}
+SESSION_RUNTIME_CONTEXT_KEYS = (
+    "active_subject",
+    "last_failure_state",
+    "last_evidence_state",
+    "last_subject_action_class",
+)
 _PHAGESCOPE_TASKID_RE = re.compile(r"(?<![A-Za-z0-9])(\d{4,})(?![A-Za-z0-9])")
 _PHAGESCOPE_TRACKING_JOB_RE = re.compile(r"^act_[A-Za-z0-9]+$")
 _PHAGESCOPE_TASKID_HINT_RE = re.compile(
@@ -113,6 +119,19 @@ def _extract_session_settings(
     if llm_provider:
         settings["default_llm_provider"] = llm_provider
     return settings or None
+
+
+def _extract_session_runtime_context(
+    metadata: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not metadata:
+        return {}
+    runtime: Dict[str, Any] = {}
+    for key in SESSION_RUNTIME_CONTEXT_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            runtime[key] = dict(value)
+    return runtime
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +313,18 @@ def _update_session_metadata(
             tuple(params),
         )
         conn.commit()
+
+
+def _load_session_runtime_context(
+    session_id: str,
+    *,
+    owner_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    from ...database import get_db  # lazy import to avoid cycles
+
+    with get_db() as conn:
+        metadata = _load_session_metadata_dict(conn, session_id, owner_id=owner_id)
+    return _extract_session_runtime_context(metadata)
 
 
 def _normalize_modulelist_value(value: Any) -> List[str]:

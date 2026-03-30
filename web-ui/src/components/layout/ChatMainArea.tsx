@@ -38,6 +38,27 @@ import type { ChatMessage as ChatMessageType, Memory } from '@/types';
 import VirtualList, { ListRef } from 'rc-virtual-list';
 import { isLikelyPersistedDuplicateMessage } from '@/utils/chatMessageUtils';
 
+/** FastAPI/axios errors often put the reason in `response.data.detail`; BaseApi may not surface it on `Error.message`. */
+function httpErrorDetail(err: unknown): { status?: number; detail: string } {
+  const ax = err as { response?: { status?: number; data?: { detail?: unknown; message?: string } }; message?: string };
+  const status = ax?.response?.status;
+  const raw = ax?.response?.data?.detail;
+  if (typeof raw === 'string' && raw.trim()) {
+    return { status, detail: raw.trim() };
+  }
+  if (Array.isArray(raw)) {
+    const joined = raw
+      .map((x: { msg?: string }) => (typeof x?.msg === 'string' ? x.msg : ''))
+      .filter(Boolean)
+      .join('; ');
+    if (joined) return { status, detail: joined };
+  }
+  if (err instanceof Error && err.message) {
+    return { status, detail: err.message };
+  }
+  return { status, detail: '请重试' };
+}
+
 const { TextArea } = Input;
 const { Title, Text } = Typography;
 
@@ -495,7 +516,17 @@ const ChatMainArea: React.FC = () => {
       } catch (err) {
         console.error('[ChatMainArea] Failed to send steer:', err);
         setInputText(draft);
-        message.error('发送引导失败，请重试');
+        const { status, detail } = httpErrorDetail(err);
+        if (status === 409) {
+          const k = resolveChatSessionProcessingKey(currentSession);
+          useChatStore.getState().setActiveRunId(k, null);
+          useChatStore.getState().setSessionProcessing(k, false);
+          message.error(
+            `发送引导失败：本轮 Run 已结束或不再接受中途引导（${detail}）。界面已退出「进行中」；若需继续请重新发送消息。`
+          );
+        } else {
+          message.error(`发送引导失败：${detail}`);
+        }
       } finally {
         setSteerSending(false);
       }

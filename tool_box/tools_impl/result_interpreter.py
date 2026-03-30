@@ -17,6 +17,22 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# OpenAI tool schemas only require `operation`; models often omit title/description for
+# analyze/generate. Defaults keep the pipeline usable without failing the whole turn.
+_DEFAULT_TASK_TITLE = "Data analysis"
+_DEFAULT_TASK_DESCRIPTION = (
+    "Analyze the provided dataset(s) according to the user's request in the conversation."
+)
+
+
+def _coalesce_task_fields(
+    task_title: Optional[str],
+    task_description: Optional[str],
+) -> tuple[str, str]:
+    t = (task_title or "").strip() or _DEFAULT_TASK_TITLE
+    d = (task_description or "").strip() or _DEFAULT_TASK_DESCRIPTION
+    return t, d
+
 
 def _prepare_data_files(file_paths: List[str]) -> tuple[List[str], str, Optional[str]]:
     """Ensure data files live under a single directory for Docker mounting.
@@ -131,8 +147,7 @@ async def result_interpreter_handler(
             if not paths:
                 return {"success": False, "error": "file_paths or file_path is required"}
 
-            if not task_title or not task_description:
-                return {"success": False, "error": "task_title and task_description are required"}
+            task_title, task_description = _coalesce_task_fields(task_title, task_description)
 
             # Extract metadata.
             metadata_list = []
@@ -223,8 +238,7 @@ Working directory: {exec_work_dir}
             if not paths:
                 return {"success": False, "error": "file_paths or file_path is required"}
 
-            if not task_title or not task_description:
-                return {"success": False, "error": "task_title and task_description are required"}
+            task_title, task_description = _coalesce_task_fields(task_title, task_description)
 
             # Temporary directory reference for cleanup.
             staging_dir_to_cleanup: Optional[str] = None
@@ -285,8 +299,7 @@ Working directory: {exec_work_dir}
             if not paths:
                 return {"success": False, "error": "data_paths or file_paths is required"}
 
-            if not task_description:
-                return {"success": False, "error": "task_description is required"}
+            task_title, task_description = _coalesce_task_fields(task_title, task_description)
 
             from app.services.interpreter.interpreter import run_analysis_async
 
