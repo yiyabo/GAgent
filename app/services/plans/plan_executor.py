@@ -215,7 +215,7 @@ When a task requires tool execution, request one of these tools:
 
 **SPECIALIZED:**
 - phagescope: PhageScope platform operations (submit jobs, check status, fetch results)
-  Parameters: {"action": "submit|task_list|task_detail|task_log|result|quality|download|save_all", optional "session_id", ...}
+  Parameters: {"action": "submit|task_list|task_detail|task_log|result|quality|download|save_all|batch_submit|batch_reconcile|batch_retry", optional "session_id", "phage_ids", "batch_id", "strategy", ...}
   IMPORTANT: submit is async and should return taskid quickly. For long-running jobs, prefer submit now and check status later.
 - deeppl: DeepPL lifecycle prediction (DNABERT-based)
   Parameters: {"action": "help|predict|job_status", for predict exactly one of "input_file" or "sequence_text", optional "execution_mode", "remote_profile", "model_path", "background", "job_id", "session_id"}
@@ -226,6 +226,12 @@ When a task requires tool execution, request one of these tools:
   Parameters: {"topic": "<topic>", optional "query", "max_results", "download_pdfs", "sections", "max_revisions", "evaluation_threshold", "session_id"}
 - manuscript_writer: Generate research manuscripts
   Parameters: {"task": "<writing task>", "output_path": "<path>"}
+
+**DELIVERABLES (session sidebar / paper bundle):**
+- deliverable_submit: Promote specific files into the session Deliverables tree (code, image_tabular, paper, refs, docs).
+  Parameters: {"publish": true|false, "artifacts": [{"path": "<file>", "module": "code|image_tabular|paper|refs|docs", optional "reason": "<note>"}]}
+  When DELIVERABLES_INGEST_MODE=explicit, tool outputs (e.g. claude_code) are NOT auto-mirrored into Deliverables; call this after the user wants figures/code included for submission.
+  Do not call for browse-only reads unless the user asks to publish to Deliverables.
 """
 
     TASK_TYPE_GUIDANCE = """
@@ -250,13 +256,14 @@ When a task requires tool execution, request one of these tools:
 - For lifecycle prediction with DeepPL → use deeppl action=predict and include explicit label/confidence in the response.
 - For literature evidence collection only → use literature_pipeline.
 - For a literature-backed review/survey draft → use review_pack_writer.
+- For publishing selected outputs to the session Deliverables panel under explicit ingest → use deliverable_submit after files exist and the user wants them in the submission bundle.
 """
 
     OUTPUT_SCHEMA = """{
   "status": "success" | "failed" | "skipped" | "needs_tool",
   "content": "<main result text or reasoning for tool request>",
   "tool_call": {  // REQUIRED when status is "needs_tool", otherwise omit
-    "name": "sequence_fetch" | "bio_tools" | "claude_code" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "deeppl" | "literature_pipeline" | "review_pack_writer" | "manuscript_writer",
+    "name": "sequence_fetch" | "bio_tools" | "claude_code" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "deeppl" | "literature_pipeline" | "review_pack_writer" | "manuscript_writer" | "deliverable_submit",
     "parameters": { <tool-specific parameters> }
   },
   "notes": ["optional notes"],
@@ -1378,6 +1385,7 @@ class PlanExecutor:
                 "plan_operation",
                 "manuscript_writer",
                 "terminal_session",
+                "deliverable_submit",
             ],
             tool_executor=_tool_wrapper,
             max_iterations=12,
@@ -1953,6 +1961,23 @@ class PlanExecutor:
                 if out_dir:
                     return f"PhageScope save_all completed: {out_dir}"
                 return "PhageScope save_all completed."
+            if action == "batch_submit":
+                if result.get("success") is False:
+                    return f"PhageScope batch_submit failed: {result.get('error') or 'unknown error'}"
+                return (
+                    f"PhageScope batch_submit: batch_id={result.get('batch_id')}; "
+                    f"primary_taskid={result.get('primary_taskid')}; manifest={result.get('manifest_path')}."
+                )
+            if action == "batch_reconcile":
+                if result.get("success") is False:
+                    return f"PhageScope batch_reconcile failed: {result.get('error') or 'unknown error'}"
+                miss = result.get("missing_phage_ids") or []
+                n = len(miss) if isinstance(miss, list) else 0
+                return f"PhageScope batch_reconcile: batch_id={result.get('batch_id')}; missing_count={n}."
+            if action == "batch_retry":
+                if result.get("success") is False:
+                    return f"PhageScope batch_retry failed: {result.get('error') or 'unknown error'}"
+                return f"PhageScope batch_retry: batch_id={result.get('batch_id')}."
             return f"PhageScope {action} succeeded."
 
         if tool_name == "deeppl" and isinstance(result, dict):

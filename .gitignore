@@ -17,6 +17,7 @@ docs/
 .mplconfig/fontlist-v390.json
 .agent
 .cursor/
+phagescope
 
 # Bio Tools - Test Data & Logs
 logs/

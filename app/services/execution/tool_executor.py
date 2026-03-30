@@ -7,9 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from app.services.deliverables import get_deliverable_publisher
+from app.services.deliverables import (
+    format_deliverable_submit_summary,
+    get_deliverable_publisher,
+)
 
 logger = logging.getLogger(__name__)
+_READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
 
 
 @dataclass
@@ -22,6 +26,7 @@ class ToolExecutionContext:
     current_job_id: Optional[str] = None
     channel: str = "plan_executor"
     mode: str = "task_execution"
+    capability_floor: str = "execute"
     on_stdout: Optional[Callable[[str], Awaitable[None]]] = None
     on_stderr: Optional[Callable[[str], Awaitable[None]]] = None
 
@@ -39,9 +44,11 @@ class UnifiedToolExecutor:
         "bio_tools": 86400,
         "phagescope": 60,
         "deeppl": 1800,
-        "result_interpreter": 300,
+        # analyze/execute run Claude Code inside; 300s was too short and surfaced as result.error=timeout.
+        "result_interpreter": 1200,
         "plan_operation": 1200,
         "manuscript_writer": 600,
+        "deliverable_submit": 60,
     }
 
     def __init__(self, *, default_timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:
@@ -65,6 +72,10 @@ class UnifiedToolExecutor:
             await self._safe_callback(on_tool_start, tool_name, dict(safe_params))
 
         timeout = int(self.TOOL_TIMEOUTS.get(tool_name, self._default_timeout))
+        if tool_name == "phagescope":
+            act = str(safe_params.get("action") or "").strip().lower()
+            if act.startswith("batch_"):
+                timeout = max(timeout, 600)
         try:
             from tool_box import execute_tool
 
@@ -98,7 +109,8 @@ class UnifiedToolExecutor:
                 await self._safe_callback(on_tool_result, tool_name, dict(payload))
             return payload
 
-        summary = self._summarize_tool_result(tool_name, result)
+        base_summary = self._summarize_tool_result(tool_name, result)
+        summary = base_summary
         if result is None:
             tool_success = False
         elif isinstance(result, dict):
@@ -120,7 +132,7 @@ class UnifiedToolExecutor:
                     session_id=context.session_id,
                     tool_name=tool_name,
                     raw_result=result,
-                    summary=summary,
+                    summary=base_summary,
                     source={"channel": context.channel, "mode": context.mode},
                     job_id=context.current_job_id,
                     plan_id=context.plan_id,
@@ -130,6 +142,11 @@ class UnifiedToolExecutor:
                     publish_status="final" if tool_success else "draft",
                 )
                 if report is not None:
+                    if tool_name == "deliverable_submit":
+                        submit_summary = format_deliverable_submit_summary(report)
+                        if submit_summary:
+                            summary = submit_summary
+                            payload["summary"] = summary
                     payload["deliverables"] = report.to_dict()
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Deliverable publishing failed: %s", exc)
@@ -218,6 +235,24 @@ class UnifiedToolExecutor:
         if context.session_id:
             safe_params["session_id"] = context.session_id
 
+        if tool_name == "phagescope":
+            # LLMs often emit task_id/operation; handler only accepts taskid/action (prepare_handler_kwargs drops unknown keys).
+            if safe_params.get("taskid") is None and safe_params.get("task_id") is not None:
+                safe_params["taskid"] = safe_params.pop("task_id")
+            if safe_params.get("action") is None:
+                legacy_op = safe_params.get("operation")
+                if isinstance(legacy_op, str) and legacy_op.strip():
+                    safe_params["action"] = legacy_op.strip()
+            safe_params.pop("operation", None)
+
+        capability_floor = str(context.capability_floor or "execute").strip().lower()
+        if tool_name == "file_operations" and capability_floor in {"local_read", "local_inspect", "research"}:
+            operation = str(safe_params.get("operation") or "").strip().lower()
+            if operation and operation not in _READ_ONLY_FILE_OPERATIONS:
+                raise ValueError(
+                    f"file_operations {operation} requires execute capability; current capability_floor={capability_floor}"
+                )
+
         return safe_params
 
     @staticmethod
@@ -304,6 +339,23 @@ class UnifiedToolExecutor:
                 if out_dir:
                     return f"PhageScope save_all completed: {out_dir}"
                 return "PhageScope save_all completed."
+            if action == "batch_submit":
+                bid = result.get("batch_id")
+                pt = result.get("primary_taskid")
+                mp = result.get("manifest_path")
+                if result.get("success") is False:
+                    return f"PhageScope batch_submit failed: {result.get('error') or 'unknown error'}"
+                return f"PhageScope batch_submit: batch_id={bid}; primary_taskid={pt}; manifest={mp}."
+            if action == "batch_reconcile":
+                if result.get("success") is False:
+                    return f"PhageScope batch_reconcile failed: {result.get('error') or 'unknown error'}"
+                miss = result.get("missing_phage_ids") or []
+                n = len(miss) if isinstance(miss, list) else 0
+                return f"PhageScope batch_reconcile: batch_id={result.get('batch_id')}; missing_count={n}."
+            if action == "batch_retry":
+                if result.get("success") is False:
+                    return f"PhageScope batch_retry failed: {result.get('error') or 'unknown error'}"
+                return f"PhageScope batch_retry: batch_id={result.get('batch_id')}; done."
             return f"PhageScope {action} succeeded."
 
         if tool_name == "deeppl" and isinstance(result, dict):

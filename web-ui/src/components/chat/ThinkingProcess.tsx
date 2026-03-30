@@ -17,7 +17,7 @@ import {
   SyncOutlined,
 } from '@ant-design/icons';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Button } from 'antd';
+import { Button, Tooltip } from 'antd';
 import './ThinkingProcess.css';
 
 interface ThinkingProcessProps {
@@ -27,10 +27,13 @@ interface ThinkingProcessProps {
   onPause?: () => void;
   onResume?: () => void;
   onSkipStep?: () => void;
+  /** Stops the whole chat run (POST /chat/runs/:id/cancel), not just the current reasoning step. */
+  onCancelRun?: () => void;
   paused?: boolean;
   controlDisabled?: boolean;
   controlBusy?: boolean;
   controlBusyAction?: 'pause' | 'resume' | 'skip_step' | null;
+  cancelRunBusy?: boolean;
 }
 
 interface ToolSemantic {
@@ -172,11 +175,11 @@ function _toMs(value?: string): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
+/** Sub-second: ms; otherwise seconds (one decimal) — avoids ambiguous `m` (minutes vs meters). */
 function formatDurationMs(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms)) return '--';
   if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60_000).toFixed(1)}m`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function stepDurationMs(step: ThinkingStep): number | null {
@@ -471,10 +474,12 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   onPause,
   onResume,
   onSkipStep,
+  onCancelRun,
   paused = false,
   controlDisabled = false,
   controlBusy = false,
   controlBusyAction = null,
+  cancelRunBusy = false,
 }) => {
   const [isExpanded, setIsExpanded] = useState(!isFinished && process.status === 'active');
   const language = useMemo(() => detectLanguage(process), [process]);
@@ -545,14 +550,41 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
             >
               {paused ? 'Resume' : 'Pause'}
             </Button>
-            <Button
-              size="small"
-              onClick={onSkipStep}
-              disabled={controlDisabled}
-              loading={controlBusy && controlBusyAction === 'skip_step'}
+            <Tooltip
+              title={localize(
+                language,
+                '仅在本步结束后生效；卡在模型或工具内部时可能无效。',
+                'Takes effect after the current step finishes; may not interrupt an in-flight LLM or tool call.',
+              )}
             >
-              Skip
-            </Button>
+              <Button
+                size="small"
+                onClick={onSkipStep}
+                disabled={controlDisabled || cancelRunBusy}
+                loading={controlBusy && controlBusyAction === 'skip_step'}
+              >
+                Skip
+              </Button>
+            </Tooltip>
+            {onCancelRun && (
+              <Tooltip
+                title={localize(
+                  language,
+                  '请求终止本次对话运行（与 Skip 不同）。',
+                  'Request cancel for this chat run (unlike Skip).',
+                )}
+              >
+                <Button
+                  size="small"
+                  danger
+                  onClick={onCancelRun}
+                  disabled={controlDisabled || cancelRunBusy}
+                  loading={cancelRunBusy}
+                >
+                  {localize(language, '停止', 'Stop')}
+                </Button>
+              </Tooltip>
+            )}
           </span>
         )}
 

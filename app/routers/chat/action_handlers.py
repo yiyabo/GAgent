@@ -48,18 +48,32 @@ from app.config.tool_policy import get_tool_policy, is_tool_allowed
 from app.config.decomposer_config import get_decomposer_settings
 from app.config.executor_config import get_executor_settings
 from app.services.foundation.settings import get_settings
-from app.services.deliverables import get_deliverable_publisher
+from app.services.deliverables import (
+    format_deliverable_submit_summary,
+    get_deliverable_publisher,
+)
 from app.services.upload_storage import delete_session_storage
 from app.services.tool_output_storage import store_tool_output
 from tool_box import execute_tool
 
 from .models import AgentStep, AgentResult
+from .request_routing import allowed_tools_for_capability_floor
 from .session_helpers import (
     _lookup_phagescope_task_memory,
     _normalize_search_provider,
     _resolve_phagescope_taskid_alias,
     _record_phagescope_task_memory,
     _update_session_metadata,
+)
+from .subject_identity import (
+    build_subject_aliases,
+    canonicalize_subject_ref,
+    normalize_tool_path,
+    subject_identity_matches,
+)
+from .terminal_mutation_verify import (
+    prepare_local_mutation_terminal_write,
+    verify_local_mutation_terminal_write,
 )
 from .tool_results import (
     sanitize_tool_result,
@@ -89,6 +103,22 @@ _append_recent_tool_result_fn = append_recent_tool_result
 _BIO_TOOLS_NO_CLAUDE_FALLBACK_KEY = "bio_tools_no_claude_fallback"
 _SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY = "sequence_fetch_no_claude_fallback"
 _task_verifier = TaskVerificationService()
+_RUNTIME_CONTEXT_KEYS = (
+    "active_subject",
+    "last_failure_state",
+    "last_evidence_state",
+    "last_subject_action_class",
+)
+_READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
+_MUTATING_FILE_OPERATIONS = {"write", "copy", "move", "delete"}
+_LOCAL_SUBJECT_TOOLS = {
+    "file_operations",
+    "document_reader",
+    "vision_reader",
+    "result_interpreter",
+    "claude_code",
+    "terminal_session",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +295,486 @@ def maybe_synthesize_phagescope_saveall_analysis(agent: Any, steps: List[AgentSt
     return "\n".join(lines).strip()
 
 
+def _persist_runtime_context(agent: Any) -> None:
+    if not getattr(agent, "session_id", None):
+        return
+
+    def _updater(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        for key in _RUNTIME_CONTEXT_KEYS:
+            value = (getattr(agent, "extra_context", {}) or {}).get(key)
+            if isinstance(value, dict):
+                metadata[key] = dict(value)
+            else:
+                metadata.pop(key, None)
+        return metadata
+
+    _update_session_metadata(agent.session_id, _updater)
+
+
+def _current_user_turn(agent: Any) -> int:
+    try:
+        return int((getattr(agent, "extra_context", {}) or {}).get("current_user_turn_index") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _infer_subject_kind(path_text: str, operation: Optional[str] = None) -> str:
+    candidate = str(path_text or "").strip()
+    if not candidate:
+        return "workspace"
+    if operation == "list" or candidate.endswith("/"):
+        return "directory"
+    basename = candidate.rstrip("/").rsplit("/", 1)[-1]
+    if "." in basename:
+        return "file"
+    return "workspace"
+
+
+def _extract_subject_from_tool_call(
+    tool_name: str,
+    params: Dict[str, Any],
+    *,
+    active_subject: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    if tool_name == "file_operations":
+        path = str(params.get("path") or "").strip()
+        if path:
+            operation = str(params.get("operation") or "").strip().lower()
+            canonical_ref = normalize_tool_path(path, active_subject=active_subject)
+            return {
+                "canonical_ref": canonical_ref or path,
+                "display_ref": path,
+                "kind": _infer_subject_kind(path, operation),
+                "last_tool_scope": operation or tool_name,
+                "aliases": build_subject_aliases(path, canonical_ref),
+            }
+    if tool_name == "document_reader":
+        path = str(params.get("file_path") or "").strip()
+        if path:
+            canonical_ref = normalize_tool_path(path, active_subject=active_subject)
+            return {
+                "canonical_ref": canonical_ref or path,
+                "display_ref": path,
+                "kind": "file",
+                "last_tool_scope": str(params.get("operation") or tool_name).strip() or tool_name,
+                "aliases": build_subject_aliases(path, canonical_ref),
+            }
+    if tool_name == "vision_reader":
+        path = str(params.get("image_path") or "").strip()
+        if path:
+            canonical_ref = normalize_tool_path(path, active_subject=active_subject)
+            return {
+                "canonical_ref": canonical_ref or path,
+                "display_ref": path,
+                "kind": "file",
+                "last_tool_scope": str(params.get("operation") or tool_name).strip() or tool_name,
+                "aliases": build_subject_aliases(path, canonical_ref),
+            }
+    if tool_name == "result_interpreter":
+        file_paths = params.get("file_paths")
+        path = ""
+        if isinstance(file_paths, list) and file_paths:
+            path = str(file_paths[0] or "").strip()
+        elif isinstance(params.get("file_path"), str):
+            path = str(params.get("file_path") or "").strip()
+        if path:
+            canonical_ref = normalize_tool_path(path, active_subject=active_subject)
+            return {
+                "canonical_ref": canonical_ref or path,
+                "display_ref": path,
+                "kind": "file",
+                "last_tool_scope": str(params.get("operation") or tool_name).strip() or tool_name,
+                "aliases": build_subject_aliases(path, canonical_ref),
+            }
+    return None
+
+
+def _normalize_local_tool_params(agent: Any, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    active_subject = (
+        dict((getattr(agent, "extra_context", {}) or {}).get("active_subject") or {})
+        if isinstance((getattr(agent, "extra_context", {}) or {}).get("active_subject"), dict)
+        else None
+    )
+    normalized = dict(params)
+
+    if tool_name == "file_operations":
+        if isinstance(normalized.get("path"), str):
+            normalized["path"] = normalize_tool_path(
+                normalized.get("path"),
+                active_subject=active_subject,
+            )
+        if isinstance(normalized.get("destination"), str):
+            normalized["destination"] = canonicalize_subject_ref(normalized.get("destination"))
+    elif tool_name == "document_reader" and isinstance(normalized.get("file_path"), str):
+        normalized["file_path"] = normalize_tool_path(
+            normalized.get("file_path"),
+            active_subject=active_subject,
+        )
+    elif tool_name == "vision_reader" and isinstance(normalized.get("image_path"), str):
+        normalized["image_path"] = normalize_tool_path(
+            normalized.get("image_path"),
+            active_subject=active_subject,
+        )
+    elif tool_name == "result_interpreter":
+        if isinstance(normalized.get("file_path"), str):
+            normalized["file_path"] = normalize_tool_path(
+                normalized.get("file_path"),
+                active_subject=active_subject,
+            )
+        file_paths = normalized.get("file_paths")
+        if isinstance(file_paths, list):
+            normalized["file_paths"] = [
+                normalize_tool_path(item, active_subject=active_subject) if isinstance(item, str) else item
+                for item in file_paths
+            ]
+    return normalized
+
+
+def _infer_subject_action_class(
+    *,
+    tool_name: str,
+    params: Dict[str, Any],
+    extra_context: Dict[str, Any],
+    success: bool,
+    sanitized: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    if not success:
+        return None
+    if tool_name == "file_operations":
+        operation = str(params.get("operation") or "").strip().lower()
+        if operation == "list":
+            return "inspect"
+        if operation in {"read", "exists", "info"}:
+            return "read_only"
+        if operation in _MUTATING_FILE_OPERATIONS:
+            return "mutation"
+        return None
+    if tool_name in {"document_reader", "vision_reader", "result_interpreter"}:
+        return "inspect"
+    if tool_name == "terminal_session":
+        operation = str(params.get("operation") or "").strip().lower()
+        intent_type = str(extra_context.get("intent_type") or "").strip().lower()
+        if intent_type == "local_mutation" and operation == "write":
+            vs = str((sanitized or {}).get("verification_state") or "").strip().lower()
+            if vs == "verified_success":
+                return "mutation"
+            return None
+        if operation in {"replay", "list"}:
+            return "inspect"
+    return None
+
+
+def _collect_produced_artifacts(
+    sanitized: Dict[str, Any],
+    storage_info: Any = None,
+) -> List[str]:
+    produced: List[str] = []
+    storage_payload = sanitized.get("storage") if isinstance(sanitized, dict) else None
+    if isinstance(storage_payload, dict):
+        for key in ("output_dir", "result_path", "manifest_path", "preview_path"):
+            value = storage_payload.get(key)
+            if isinstance(value, str) and value.strip():
+                produced.append(value.strip())
+    if storage_info is not None:
+        for key in ("output_dir", "result_path", "manifest_path", "preview_path"):
+            value = getattr(storage_info, key, None)
+            if isinstance(value, str) and value.strip():
+                produced.append(value.strip())
+    deduped: List[str] = []
+    seen = set()
+    for item in produced:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _update_runtime_context_from_tool(
+    agent: Any,
+    *,
+    tool_name: str,
+    params: Dict[str, Any],
+    sanitized: Dict[str, Any],
+    summary: str,
+    storage_info: Any = None,
+) -> None:
+    extra_context = getattr(agent, "extra_context", {}) or {}
+    current_turn = _current_user_turn(agent)
+    intent_type_ctx = str(extra_context.get("intent_type") or "").strip().lower()
+    is_term_mut_write = (
+        tool_name == "terminal_session"
+        and str(params.get("operation") or "").strip().lower() == "write"
+        and intent_type_ctx == "local_mutation"
+    )
+    subject = _extract_subject_from_tool_call(
+        tool_name,
+        params,
+        active_subject=extra_context.get("active_subject") if isinstance(extra_context.get("active_subject"), dict) else None,
+    )
+    active_subject = extra_context.get("active_subject")
+    if not isinstance(active_subject, dict):
+        active_subject = {}
+    subject_ref = ""
+    subject_kind = "workspace"
+    display_ref = ""
+    last_tool_scope = tool_name
+    if isinstance(subject, dict):
+        subject_ref = canonicalize_subject_ref(
+            subject.get("canonical_ref") or subject.get("display_ref")
+        )
+        subject_kind = str(subject.get("kind") or "workspace").strip() or "workspace"
+        display_ref = str(subject.get("display_ref") or subject_ref).strip() or subject_ref
+        last_tool_scope = str(subject.get("last_tool_scope") or tool_name).strip() or tool_name
+    elif tool_name in _LOCAL_SUBJECT_TOOLS:
+        subject_ref = canonicalize_subject_ref(
+            active_subject.get("canonical_ref") or active_subject.get("display_ref")
+        )
+        subject_kind = str(active_subject.get("kind") or "workspace").strip() or "workspace"
+        display_ref = str(active_subject.get("display_ref") or subject_ref).strip() or subject_ref
+        last_tool_scope = str(active_subject.get("last_tool_scope") or tool_name).strip() or tool_name
+
+    success = sanitized.get("success") is not False
+    error_message = str(
+        sanitized.get("error") or sanitized.get("message") or summary or "unknown error"
+    ).strip()
+    verification_state = "verified"
+    lowered_error = error_message.lower()
+    if not success:
+        if "not found" in lowered_error or "不存在" in error_message:
+            verification_state = "not_found"
+        else:
+            verification_state = "failed"
+    elif is_term_mut_write and isinstance(sanitized, dict):
+        mut_vs = str(sanitized.get("verification_state") or "").strip().lower()
+        if mut_vs == "verified_failure":
+            verification_state = "failed"
+        elif mut_vs in ("unverified", "not_attempted") or mut_vs == "":
+            verification_state = "unresolved"
+
+    if subject_ref:
+        subject_aliases = build_subject_aliases(
+            subject.get("aliases") if isinstance(subject, dict) else None,
+            subject_ref,
+            display_ref,
+        )
+        same_subject = subject_identity_matches(
+            active_subject,
+            candidate_ref=subject_ref,
+            candidate_display_ref=display_ref,
+            candidate_aliases=subject_aliases,
+        )
+        existing = active_subject if same_subject else {}
+        extra_context["active_subject"] = {
+            "kind": subject_kind,
+            "canonical_ref": subject_ref,
+            "display_ref": (
+                str(existing.get("display_ref") or "").strip() if same_subject else display_ref
+            ) or display_ref or subject_ref,
+            "aliases": build_subject_aliases(
+                existing.get("aliases") if same_subject else None,
+                subject_aliases,
+                subject_ref,
+                display_ref,
+            ),
+            "verification_state": verification_state,
+            "salience": 5,
+            "last_tool_scope": last_tool_scope,
+            "created_turn": existing.get("created_turn") or current_turn,
+            "last_referenced_turn": current_turn,
+            "last_verified_turn": current_turn if success else existing.get("last_verified_turn"),
+        }
+
+    produced_artifacts = _collect_produced_artifacts(sanitized, storage_info=storage_info)
+    if is_term_mut_write and isinstance(sanitized, dict):
+        mut_vs = str(sanitized.get("verification_state") or "").strip().lower()
+        if mut_vs == "verified_failure":
+            subject_aliases_tm: List[str] = []
+            if subject_ref:
+                subject_aliases_tm = build_subject_aliases(
+                    subject.get("aliases") if isinstance(subject, dict) else None,
+                    subject_ref,
+                    display_ref,
+                )
+                extra_context["last_failure_state"] = {
+                    "subject_ref": subject_ref,
+                    "subject_aliases": subject_aliases_tm,
+                    "tool_name": tool_name,
+                    "operation": "write",
+                    "error_message": str(sanitized.get("verification_summary") or error_message).strip(),
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                }
+            extra_context["last_evidence_state"] = {
+                "status": "failed",
+                "verified_facts": [],
+                "produced_artifacts": produced_artifacts,
+                "unresolved": [str(sanitized.get("verification_summary") or "verification failed")],
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+            agent.extra_context = extra_context
+            if getattr(agent, "session_id", None):
+                try:
+                    _persist_runtime_context(agent)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("Failed to persist runtime context: %s", exc)
+            return
+        if mut_vs in ("unverified", "not_attempted") or mut_vs == "":
+            pending = str(
+                sanitized.get("verification_summary") or "command dispatched; verification pending"
+            ).strip()
+            extra_context["last_evidence_state"] = {
+                "status": "unverified",
+                "verified_facts": [pending] if pending else [],
+                "produced_artifacts": produced_artifacts,
+                "unresolved": [],
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+            agent.extra_context = extra_context
+            if getattr(agent, "session_id", None):
+                try:
+                    _persist_runtime_context(agent)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("Failed to persist runtime context: %s", exc)
+            return
+    if success:
+        extra_context["last_evidence_state"] = {
+            "status": "verified" if subject_ref else "success",
+            "verified_facts": [summary] if summary else [],
+            "produced_artifacts": produced_artifacts,
+            "unresolved": [],
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+        if subject_ref:
+            failure_state = extra_context.get("last_failure_state")
+            if isinstance(failure_state, dict) and subject_identity_matches(
+                {
+                    "canonical_ref": failure_state.get("subject_ref"),
+                    "display_ref": failure_state.get("subject_ref"),
+                    "aliases": failure_state.get("subject_aliases"),
+                },
+                candidate_ref=subject_ref,
+                candidate_display_ref=display_ref,
+                candidate_aliases=subject_aliases,
+            ):
+                extra_context.pop("last_failure_state", None)
+        action_class = _infer_subject_action_class(
+            tool_name=tool_name,
+            params=params,
+            extra_context=extra_context,
+            success=success,
+            sanitized=sanitized,
+        )
+        if action_class:
+            extra_context["last_subject_action_class"] = action_class
+    else:
+        if subject_ref:
+            extra_context["last_failure_state"] = {
+                "subject_ref": subject_ref,
+                "subject_aliases": subject_aliases,
+                "tool_name": tool_name,
+                "operation": str(params.get("operation") or tool_name).strip() or tool_name,
+                "error_message": error_message,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+        extra_context["last_evidence_state"] = {
+            "status": "failed",
+            "verified_facts": [],
+            "produced_artifacts": produced_artifacts,
+            "unresolved": [error_message] if error_message else [],
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+
+    agent.extra_context = extra_context
+    if getattr(agent, "session_id", None):
+        try:
+            _persist_runtime_context(agent)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed to persist runtime context: %s", exc)
+
+
+def _capability_guard_failure(
+    agent: Any,
+    action: LLMAction,
+    *,
+    tool_name: str,
+    params: Dict[str, Any],
+    message: str,
+    error_code: str,
+) -> AgentStep:
+    sanitized = {
+        "success": False,
+        "tool": tool_name,
+        "error": message,
+        "error_code": error_code,
+    }
+    try:
+        _update_runtime_context_from_tool(
+            agent,
+            tool_name=tool_name,
+            params=params,
+            sanitized=sanitized,
+            summary=message,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Failed to update runtime context for blocked tool: %s", exc)
+    return AgentStep(
+        action=action,
+        success=False,
+        message=message,
+        details={"error": error_code, "tool": tool_name, "result": sanitized},
+    )
+
+
+def _enforce_capability_guard(
+    agent: Any,
+    action: LLMAction,
+    tool_name: str,
+    params: Dict[str, Any],
+) -> Optional[AgentStep]:
+    capability_floor = str((getattr(agent, "extra_context", {}) or {}).get("capability_floor") or "execute").strip()
+    allowed_tools = set(allowed_tools_for_capability_floor(capability_floor)) if capability_floor else set()
+    if capability_floor and tool_name not in allowed_tools:
+        return _capability_guard_failure(
+            agent,
+            action,
+            tool_name=tool_name,
+            params=params,
+            message=(
+                f"Tool '{tool_name}' is not available for capability floor "
+                f"'{capability_floor}'."
+            ),
+            error_code="tool_not_available",
+        )
+
+    if tool_name == "file_operations" and capability_floor in {"local_read", "local_inspect", "research"}:
+        operation = str(params.get("operation") or "").strip().lower()
+        if operation in _MUTATING_FILE_OPERATIONS:
+            return _capability_guard_failure(
+                agent,
+                action,
+                tool_name=tool_name,
+                params=params,
+                message=(
+                    f"file_operations {operation} requires execute capability; "
+                    f"current capability floor is '{capability_floor}'."
+                ),
+                error_code="operation_not_permitted",
+            )
+        if operation and operation not in _READ_ONLY_FILE_OPERATIONS:
+            return _capability_guard_failure(
+                agent,
+                action,
+                tool_name=tool_name,
+                params=params,
+                message=(
+                    f"file_operations {operation} is not allowed under "
+                    f"'{capability_floor}'."
+                ),
+                error_code="operation_not_permitted",
+            )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # handle_tool_action
 # ---------------------------------------------------------------------------
@@ -288,6 +798,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         )
 
     params = dict(action.parameters or {})
+    params = _normalize_local_tool_params(agent, tool_name, params)
     original_task: Optional[str] = None
 
     # 🔄 If LLM specified target_task_id, prioritize it for task-status updates.
@@ -297,6 +808,10 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             agent.extra_context["current_task_id"] = int(target_task_id)
         except (TypeError, ValueError):
             pass
+
+    capability_block = _enforce_capability_guard(agent, action, tool_name, params)
+    if capability_block is not None:
+        return capability_block
 
     if tool_name == "web_search":
         query = params.get("query")
@@ -1252,6 +1767,61 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
 
         params = clean_params
 
+    elif tool_name == "result_interpreter":
+        operation = params.get("operation")
+        if not isinstance(operation, str) or not operation.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="result_interpreter requires a non-empty `operation` string.",
+                details={"error": "missing_operation", "tool": tool_name},
+            )
+        operation = operation.strip()
+        valid_ops = {"metadata", "generate", "execute", "analyze", "plan_analyze"}
+        if operation not in valid_ops:
+            return AgentStep(
+                action=action,
+                success=False,
+                message=f"Unsupported result_interpreter operation: {operation!r}.",
+                details={"error": "invalid_operation", "tool": tool_name},
+            )
+        clean_params: Dict[str, Any] = {"operation": operation}
+        fp = params.get("file_path")
+        if isinstance(fp, str) and fp.strip():
+            clean_params["file_path"] = fp.strip()
+        for list_key in ("file_paths", "data_paths"):
+            raw_list = params.get(list_key)
+            if isinstance(raw_list, list):
+                cleaned = [
+                    str(x).strip()
+                    for x in raw_list
+                    if isinstance(x, str) and x.strip()
+                ]
+                if cleaned:
+                    clean_params[list_key] = cleaned
+        for key in ("task_title", "task_description", "code", "work_dir", "data_dir", "output_dir"):
+            val = params.get(key)
+            if isinstance(val, str) and val.strip():
+                clean_params[key] = val.strip()
+        for int_key in ("max_depth", "node_budget"):
+            if params.get(int_key) is not None:
+                try:
+                    clean_params[int_key] = int(params[int_key])
+                except (TypeError, ValueError):
+                    pass
+        params = clean_params
+
+    elif tool_name == "deliverable_submit":
+        raw_artifacts = params.get("artifacts")
+        if not isinstance(raw_artifacts, list):
+            raw_artifacts = []
+        publish_val = params.get("publish", True)
+        if isinstance(publish_val, str):
+            publish_val = publish_val.strip().lower() in {"1", "true", "yes", "on", "y"}
+        params = {"publish": bool(publish_val), "artifacts": raw_artifacts}
+        if isinstance(agent.session_id, str) and agent.session_id.strip():
+            params["session_id"] = agent.session_id.strip()
+
     else:
         return AgentStep(
             action=action,
@@ -1259,6 +1829,10 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             message=f"Tool {tool_name} is not supported yet.",
             details={"error": "unsupported_tool", "tool": tool_name},
         )
+
+    pre_terminal_mutation_snapshot: Optional[Dict[str, Any]] = None
+    mutation_marker_id: Optional[int] = None
+    mutation_original_command: Optional[str] = None
 
     try:
         # PhageScope: provide elegant progress during wait/poll (job_update -> stats.tool_progress)
@@ -1438,8 +2012,20 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                         break
                     await asyncio.sleep(max(0.2, poll_interval))
             else:
+                (
+                    params,
+                    pre_terminal_mutation_snapshot,
+                    mutation_marker_id,
+                    mutation_original_command,
+                ) = await prepare_local_mutation_terminal_write(agent, tool_name, params)
                 raw_result = await execute_tool(tool_name, **params)
         else:
+            (
+                params,
+                pre_terminal_mutation_snapshot,
+                mutation_marker_id,
+                mutation_original_command,
+            ) = await prepare_local_mutation_terminal_write(agent, tool_name, params)
             raw_result = await execute_tool(tool_name, **params)
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception(
@@ -1476,6 +2062,28 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             sanitized = patched
     except Exception:
         pass
+
+    if (
+        tool_name == "terminal_session"
+        and str(params.get("operation") or "").strip().lower() == "write"
+        and mutation_marker_id is not None
+        and mutation_original_command is not None
+        and isinstance(sanitized, dict)
+        and sanitized.get("success") is not False
+    ):
+        try:
+            sanitized = await verify_local_mutation_terminal_write(
+                agent,
+                sanitized=sanitized,
+                params=params,
+                pre_snapshot=pre_terminal_mutation_snapshot,
+                marker_id=mutation_marker_id,
+                original_command=mutation_original_command,
+            )
+        except Exception as exc:
+            logger.debug("local_mutation terminal verification failed: %s", exc)
+        if isinstance(sanitized, dict):
+            sanitized.setdefault("operation", str(params.get("operation") or "write"))
 
     if tool_name == "sequence_fetch":
         if (
@@ -1519,7 +2127,68 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         elif sanitized.get("success") is not False:
             agent.extra_context.pop(_BIO_TOOLS_NO_CLAUDE_FALLBACK_KEY, None)
 
-    summary = _summarize_tool_result_fn(tool_name, sanitized)
+    base_summary = _summarize_tool_result_fn(tool_name, sanitized)
+    summary = base_summary
+    success = sanitized.get("success", True)
+    deliverable_report = None
+    if agent.session_id:
+        publish_task_id: Optional[int] = None
+        publish_task_name: Optional[str] = None
+        publish_task_instruction: Optional[str] = None
+        try:
+            current_task_id = agent.extra_context.get("current_task_id")
+            if current_task_id is not None:
+                publish_task_id = int(current_task_id)
+        except (TypeError, ValueError):
+            publish_task_id = None
+
+        if publish_task_id is not None and agent.plan_session.plan_id is not None:
+            try:
+                tree = agent.plan_session.repo.get_plan_tree(agent.plan_session.plan_id)
+                if tree.has_node(publish_task_id):
+                    task_node = tree.get_node(publish_task_id)
+                    publish_task_name = task_node.display_name()
+                    publish_task_instruction = task_node.instruction
+            except Exception as exc:  # pragma: no cover - best-effort
+                logger.debug(
+                    "Unable to resolve task context for deliverable publish in session %s: %s",
+                    agent.session_id,
+                    exc,
+                )
+
+        try:
+            publish_payload = _drop_callables_fn(raw_result)
+            deliverable_report = get_deliverable_publisher().publish_from_tool_result(
+                session_id=agent.session_id,
+                tool_name=tool_name,
+                raw_result=publish_payload,
+                summary=base_summary,
+                source={
+                    "channel": "chat",
+                    "action_kind": action.kind,
+                    "action_name": action.name,
+                    "step_order": action.order,
+                },
+                job_id=get_current_job(),
+                plan_id=agent.plan_session.plan_id,
+                task_id=publish_task_id,
+                task_name=publish_task_name,
+                task_instruction=publish_task_instruction,
+                publish_status="final" if success is not False else "draft",
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Failed to publish deliverables for session %s tool %s: %s",
+                agent.session_id,
+                tool_name,
+                exc,
+            )
+
+    if tool_name == "deliverable_submit":
+        submit_summary = format_deliverable_submit_summary(deliverable_report)
+        if submit_summary:
+            summary = submit_summary
+
     _append_recent_tool_result_fn(agent.extra_context, tool_name, summary, sanitized)
 
     storage_info = None
@@ -1608,6 +2277,18 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         except Exception as exc:  # pragma: no cover - best-effort
             logger.debug("Failed to attach phagescope storage paths: %s", exc)
 
+    try:
+        _update_runtime_context_from_tool(
+            agent,
+            tool_name=tool_name,
+            params=params,
+            sanitized=sanitized,
+            summary=summary,
+            storage_info=storage_info,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Failed to update runtime evidence for tool %s: %s", tool_name, exc)
+
     if tool_name == "phagescope" and agent.session_id:
         action_value = params.get("action")
         if action_value == "submit" and sanitized.get("success"):
@@ -1619,61 +2300,6 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                     agent.session_id,
                     exc,
                 )
-
-    success = sanitized.get("success", True)
-    deliverable_report = None
-    if agent.session_id:
-        publish_task_id: Optional[int] = None
-        publish_task_name: Optional[str] = None
-        publish_task_instruction: Optional[str] = None
-        try:
-            current_task_id = agent.extra_context.get("current_task_id")
-            if current_task_id is not None:
-                publish_task_id = int(current_task_id)
-        except (TypeError, ValueError):
-            publish_task_id = None
-
-        if publish_task_id is not None and agent.plan_session.plan_id is not None:
-            try:
-                tree = agent.plan_session.repo.get_plan_tree(agent.plan_session.plan_id)
-                if tree.has_node(publish_task_id):
-                    task_node = tree.get_node(publish_task_id)
-                    publish_task_name = task_node.display_name()
-                    publish_task_instruction = task_node.instruction
-            except Exception as exc:  # pragma: no cover - best-effort
-                logger.debug(
-                    "Unable to resolve task context for deliverable publish in session %s: %s",
-                    agent.session_id,
-                    exc,
-                )
-
-        try:
-            publish_payload = _drop_callables_fn(raw_result)
-            deliverable_report = get_deliverable_publisher().publish_from_tool_result(
-                session_id=agent.session_id,
-                tool_name=tool_name,
-                raw_result=publish_payload,
-                summary=summary,
-                source={
-                    "channel": "chat",
-                    "action_kind": action.kind,
-                    "action_name": action.name,
-                    "step_order": action.order,
-                },
-                job_id=get_current_job(),
-                plan_id=agent.plan_session.plan_id,
-                task_id=publish_task_id,
-                task_name=publish_task_name,
-                task_instruction=publish_task_instruction,
-                publish_status="final" if success is not False else "draft",
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(
-                "Failed to publish deliverables for session %s tool %s: %s",
-                agent.session_id,
-                tool_name,
-                exc,
-            )
 
     if success is False:
         message = summary or f"{tool_name} failed to execute."
@@ -1924,6 +2550,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             "session_id": agent.session_id,  # For tool calls.
             "user_message": agent._current_user_message if hasattr(agent, "_current_user_message") else None,
             "chat_history": agent.history,
+            "chat_history_max_messages": getattr(agent, "max_history_messages", 80),
             "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
             "paper_mode": paper_mode,
         }
@@ -2349,6 +2976,7 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
             "session_id": agent.session_id,  # For tool calls.
             "user_message": agent._current_user_message if hasattr(agent, "_current_user_message") else None,
             "chat_history": agent.history,
+            "chat_history_max_messages": getattr(agent, "max_history_messages", 80),
             "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
             "paper_mode": paper_mode,
         }
@@ -2541,6 +3169,7 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
         session_ctx = {
             "user_message": agent._current_user_message if hasattr(agent, "_current_user_message") else None,
             "chat_history": agent.history,
+            "chat_history_max_messages": getattr(agent, "max_history_messages", 80),
             "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
         }
         if task_id_raw is None:

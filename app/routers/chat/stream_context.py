@@ -19,6 +19,7 @@ from .session_helpers import (
     _derive_conversation_id,
     _get_session_current_task,
     _get_session_settings,
+    _load_session_runtime_context,
     _normalize_base_model,
     _normalize_llm_provider,
     _normalize_search_provider,
@@ -104,6 +105,9 @@ def build_agent_for_chat_request(
         if save_user_message:
             _save_chat_message(request.session_id, "user", request.message)
         session_settings = _get_session_settings(request.session_id)
+        runtime_context = _load_session_runtime_context(request.session_id)
+        for key, value in runtime_context.items():
+            context.setdefault(key, value)
         if "current_task_id" not in context:
             current_task_id = _get_session_current_task(request.session_id)
             if current_task_id is not None:

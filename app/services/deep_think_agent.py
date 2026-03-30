@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from app.services.execution.tool_executor import UnifiedToolExecutor
+from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.response_style import (
     PROFESSIONAL_STYLE_INSTRUCTION,
     sanitize_professional_response_text,
@@ -70,6 +71,13 @@ def _format_bio_tools_catalog(catalog: Dict[str, List[str]]) -> str:
 _BIO_TOOLS_CATALOG = _load_bio_tools_catalog()
 _BIO_TOOLS_NAMES = sorted(_BIO_TOOLS_CATALOG.keys())
 _BIO_TOOLS_CATALOG_TEXT = _format_bio_tools_catalog(_BIO_TOOLS_CATALOG)
+_INTERNAL_ARTIFACT_FILENAMES = {"result.json", "manifest.json", "preview.json"}
+_INTERNAL_TOOL_OUTPUT_RE = re.compile(
+    r"/job_[^/]+/step_\d+_[^/]+/(?:result|manifest|preview)\.json$",
+    re.IGNORECASE,
+)
+# Native tool steps often prefix JSON: "[file_operations] {...}"
+_TOOL_RESULT_PREFIX_RE = re.compile(r"^\[[^\]]*]\s*")
 
 
 @dataclass
@@ -443,6 +451,9 @@ class DeepThinkAgent:
     def _request_tier(self) -> str:
         return str(self.request_profile.get("request_tier") or "").strip().lower()
 
+    def _capability_floor(self) -> str:
+        return str(self.request_profile.get("capability_floor") or "").strip().lower()
+
     def _is_research_or_execute(self) -> bool:
         return self._request_tier() in {"research", "execute"}
 
@@ -592,14 +603,27 @@ class DeepThinkAgent:
 
     def _build_request_tier_block(self) -> str:
         tier = self._request_tier()
+        floor = (self._capability_floor() or "plain_chat").strip().lower()
+        non_plain = floor != "plain_chat"
+        light_tool_note = (
+            "\n- Capability is not plain_chat: use tools when the answer depends on file/workspace/remote state; "
+            "a no-tool guess is not an acceptable substitute for a check you could run.\n"
+            if non_plain
+            else ""
+        )
+        std_tool_note = (
+            "\n- Capability is not plain_chat: prioritize tool-backed facts over stylistic completeness.\n"
+            if non_plain
+            else ""
+        )
         if tier == "light":
             return (
                 "=== REQUEST TIER: LIGHT ===\n"
                 "- Answer directly and briefly.\n"
-                "- Do not use research framing or background exposition.\n"
+                "- Use the smallest amount of explanation that fully answers the user.\n"
                 "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
-                "- Do not call tools unless the user explicitly changes scope.\n"
                 "- Prefer finishing in one short reasoning pass.\n"
+                + light_tool_note
             )
         if tier == "standard":
             return (
@@ -607,7 +631,8 @@ class DeepThinkAgent:
                 "- Give a concise but complete direct answer.\n"
                 "- Avoid research style output unless the user explicitly asks for sources or latest information.\n"
                 "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
-                "- Prefer zero-tool completion.\n"
+                "- Prefer low-overhead execution, but do not ignore required evidence.\n"
+                + std_tool_note
             )
         if tier == "research":
             return (
@@ -627,13 +652,70 @@ class DeepThinkAgent:
             )
         return ""
 
+    def _build_capability_floor_block(self) -> str:
+        capability_floor = self._capability_floor() or "plain_chat"
+        intent_type = str(self.request_profile.get("intent_type") or "").strip().lower()
+        simple_channel_allowed = bool(self.request_profile.get("simple_channel_allowed", True))
+        lines = [
+            "=== CAPABILITY FLOOR ===",
+            f"- Minimum capability required for this request: {capability_floor}.",
+            (
+                "- Plain-text chat is allowed only when capability_floor=plain_chat "
+                "and no verification is required."
+            ),
+        ]
+        if not simple_channel_allowed:
+            lines.append("- Simple/plain-chat fallback is disabled for this request.")
+        if capability_floor in {"local_read", "local_inspect"}:
+            lines.append(
+                "- This request requires grounded local inspection: use file_operations/document_reader/vision_reader as appropriate before summarizing contents."
+            )
+            lines.append(
+                "- If tool evidence fails, say so explicitly and do not claim the file or directory was read."
+            )
+        if intent_type == "local_mutation":
+            lines.append(
+                "- This request is a local filesystem mutation. If execution tools are available, do the change instead of telling the user to run commands manually."
+            )
+            lines.append(
+                "- Prefer terminal_session for unzip/extract/move/rename/delete style operations; do not invent a file_operations unzip API."
+            )
+            lines.append(
+                "- Use quoted absolute paths inside terminal_session.write data when possible, and prefer running within the active subject directory."
+            )
+        elif capability_floor == "research":
+            lines.append(
+                "- Use web_search, bio_tools, phagescope, sequence_fetch, or other listed tools when claims need verification; do not skip tools purely to save steps."
+            )
+        elif capability_floor == "execute":
+            lines.append(
+                "- Use execution, terminal, code, or plan tools when they materially advance the task; prefer real commands over hand-wavy instructions."
+            )
+        return "\n".join(lines) + "\n"
+
+    def _build_grounded_tooling_block(self) -> str:
+        """Extra nudge when capability_floor is not plain_chat (tools are in play)."""
+        floor = (self._capability_floor() or "plain_chat").strip().lower()
+        if floor == "plain_chat":
+            return ""
+        return (
+            "=== GROUNDED TOOLING (NON-PLAIN REQUEST) ===\n"
+            "- This turn is not plain_chat: listed tools are available for verification.\n"
+            "- If the answer depends on local files, workspace contents, remote task/API state, sequences, or "
+            "other checkable facts, use the appropriate tool(s) before stating specifics.\n"
+            "- Do not substitute confident-sounding prose for evidence when a listed tool can obtain the "
+            "ground truth within reasonable latency.\n"
+            "- If a tool fails or is not in the allowlist, say so plainly; do not invent tool-like certainty.\n\n"
+        )
+
     def _build_shared_strategy_block(self) -> str:
         return (
             "=== EFFORT AND TOOLING POLICY ===\n"
             "1. First classify the request: casual chat, direct answer, evidence-backed research, or execution task.\n"
             "2. Match effort to the request. Default to the lightest path that fully satisfies the user.\n"
             "3. Do NOT start broad web/literature research for greetings, casual follow-ups, simple explanations, or opinion-style questions.\n"
-            "4. Use tools only when they materially improve correctness or usefulness: latest information, explicit citations, factual verification, file/workspace actions, or complex analysis.\n"
+            "4. Use tools when they materially improve correctness or usefulness: latest information, explicit citations, factual verification, file/workspace actions, or complex analysis. "
+            "When CAPABILITY FLOOR is not plain_chat, prefer tool-backed checks for anything that depends on real files, remote services, or run results (unless the user clearly wants opinion-only).\n"
             "5. One precise tool call is better than several redundant calls.\n"
             "6. Conclude as soon as the user's need is satisfied; do not pad the reply with extra background, market analysis, or references unless they help answer the request.\n"
             "7. If the user asks for depth, latest research, or sources, then increase rigor and evidence gathering.\n\n"
@@ -678,7 +760,21 @@ class DeepThinkAgent:
         history = context.get("chat_history", [])
         if not history:
             return prompt
-        recent = history[-30:] if len(history) > 30 else history
+        raw_lim = context.get("chat_history_max_messages")
+        if isinstance(raw_lim, int) and raw_lim > 0:
+            limit = min(raw_lim, CHAT_HISTORY_ABS_MAX)
+        else:
+            try:
+                limit = max(
+                    1,
+                    min(
+                        CHAT_HISTORY_ABS_MAX,
+                        int(getattr(get_settings(), "chat_history_max_messages", 80)),
+                    ),
+                )
+            except Exception:
+                limit = 80
+        recent = history[-limit:] if len(history) > limit else history
         lines = []
         for msg in recent:
             role = msg.get("role", "unknown")
@@ -1182,21 +1278,32 @@ class DeepThinkAgent:
             "Your goal is to choose the right depth for the user's request: be thorough when needed, but do not over-research simple questions.\n\n"
             + self._build_shared_strategy_block()
             + self._build_request_tier_block()
+            + self._build_capability_floor_block()
+            + self._build_grounded_tooling_block()
             + "\n"
             + "\n=== WORKFLOW ===\n"
             "1. First decide whether the request needs tools at all.\n"
             "2. For simple conversational or high-level requests, reason briefly and answer directly.\n"
             "3. For evidence-heavy or time-sensitive requests, gather targeted evidence with the minimum necessary tool usage.\n"
+            "3a. If capability_floor is not plain_chat and the user asks about files, data, or remote job state, prefer at least one relevant tool call before a final answer.\n"
             "4. Call submit_final_answer once the user's request is adequately answered.\n"
             "5. Keep iterative reasoning visible to the user, but concise and relevant.\n\n"
+            + "=== AVAILABLE TOOLS ===\n"
+            + "\n".join(f"- {tool}" for tool in self.available_tools)
+            + "\n\n"
             + self._build_protocol_boundary_block("native")
             + "\n=== RULES ===\n"
             "- Do NOT call submit_final_answer prematurely.\n"
             "- Do NOT launch broad web/literature research unless the user asks for sources, latest information, deep analysis, or the task is clearly evidence-sensitive.\n"
-            "- Prefer zero-tool or one-tool answers for simple requests.\n"
+            "- Prefer zero-tool or one-tool answers for simple requests when capability_floor is plain_chat; when it is not, prefer necessary tool verification over guessing.\n"
             "- Keep quick checks synchronous; use background workflows only for clearly long-running operations.\n"
             "- Prioritize directness, relevance, and user intent over maximum comprehensiveness.\n"
             "- Prioritize evidence-backed conclusions over speculation when evidence is actually needed.\n"
+            "- Grounding (configs and files): Only report file paths, env vars, API provider names, or model IDs that appear "
+            "verbatim in tool outputs from this session. If you intended to read path A but the tool output shows path B was read, "
+            "state that mismatch explicitly; do not invent contents for A.\n"
+            "- PhageScope: Do not claim remote access, credentials, download capability, or that an optimization 'validated PhageScope' "
+            "unless phagescope tool results (e.g. action=ping or task_list) appear in the evidence with success fields.\n"
         )
         return self._append_reference_context(prompt, context)
 
@@ -1695,12 +1802,26 @@ Respond with ONLY a JSON object:
             return []
         paths: List[str] = []
         for m in self.ARTIFACT_PATH_RE.finditer(text):
-            paths.append(m.group(1))
+            candidate = m.group(1)
+            if not self._is_internal_artifact_path(candidate):
+                paths.append(candidate)
         for m in self.BARE_PATH_RE.finditer(text):
             candidate = m.group(1)
-            if candidate not in paths:
+            if candidate not in paths and not self._is_internal_artifact_path(candidate):
                 paths.append(candidate)
         return list(dict.fromkeys(paths))
+
+    @staticmethod
+    def _is_internal_artifact_path(path: str) -> bool:
+        normalized = "/" + str(path or "").strip().replace("\\", "/").lstrip("/")
+        if not normalized or normalized == "/":
+            return False
+        basename = normalized.rsplit("/", 1)[-1].lower()
+        if basename in _INTERNAL_ARTIFACT_FILENAMES and "/tool_outputs/" in normalized.lower():
+            return True
+        if normalized.lower().endswith("/deliverables/manifest_latest.json"):
+            return True
+        return bool(_INTERNAL_TOOL_OUTPUT_RE.search(normalized))
 
     async def _emit_artifacts(self, tool_name: str, result: Any, iteration: int) -> None:
         if not self.on_artifact:
@@ -2211,7 +2332,12 @@ Respond with ONLY a JSON object:
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. For broad comparisons, prefer focused parallel subqueries with Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\"]}.",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
-            "document_reader": "Read local documents with format-aware parsing. Use this first for .docx/.pdf/.txt content extraction. Params: {\"operation\": \"read_any|read_pdf|read_text\", \"file_path\": \"/abs/path\"}",
+            "document_reader": (
+                "Read local documents (.docx, .pdf, .txt, .md). For .csv/.tsv, this tool "
+                "returns a built-in preview (headers + sample rows) — use it for quick inspection; "
+                "for aggregation, row counts on huge files, or plots use claude_code. "
+                "Params: {\"operation\": \"read_any|read_pdf|read_text\", \"file_path\": \"/abs/path\"}"
+            ),
             "vision_reader": "Read PDFs and images using vision model. Use for visual OCR/figures/equations, not for DOCX. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\"}",
             "bio_tools": (
                 "PREFERRED for bioinformatics: Execute Docker-based tools for FASTA/FASTQ/sequence analysis. "
@@ -2227,11 +2353,18 @@ Respond with ONLY a JSON object:
             "phagescope": """PhageScope cloud platform for phage genome analysis.
 IMPORTANT: This is an ASYNC service - tasks run remotely and take minutes to hours.
 
+Connectivity / access checks (user asks to test PhageScope, verify remote connectivity, or confirm download/API):
+- FIRST call action=ping (optional base_url only; add token only if the user explicitly provided one). Never use file_operations or local directory listing as a substitute for PhageScope connectivity.
+- If ping succeeds and account-scoped verification is needed, use task_list with userid.
+- Do not ask for a mandatory "API Token from the user center"; documented flows use `userid`. The tool's `token` param is optional and usually omitted.
+
 Workflow:
 1. submit: Submit sequences → Returns taskid immediately (DO NOT wait)
 2. task_list: Check all your submitted tasks
 3. task_detail: Check specific task status
 4. result: Get results ONLY when task is COMPLETED
+5. save_all: After Success, use this to write the full local bundle (folders + summary.json). Do not equate `result`/JSON with a complete on-disk package.
+6. Batch: `batch_submit` (phage_ids + modulelist; strategy multi_one_task or per_strain) writes a manifest; after Success use `batch_reconcile` (batch_id) to find missing accessions vs phage rows; use `batch_retry` (batch_id) to re-submit missing ids one strain per task. Prefer these over memorizing taskids.
 
 After submit, stop PhageScope result retrieval in this turn unless user explicitly asks to query status only.
 After submit, ALWAYS tell user with 3 parts:
@@ -2248,7 +2381,7 @@ Parameter rules (CRITICAL):
 - `result` requires `taskid` + `result_kind` (quality/proteins/phage_detail/modules/tree/phagefasta).
 - `taskid` must be the numeric remote task id (e.g., 37468), not a local job id like `act_xxx`.
 
-Params: {"action": "submit|task_list|task_detail|result|save_all|download", "userid": "...", "phageid": "...", "phageids": "...", "taskid": "...", "result_kind": "..."}""",
+Params: {"action": "submit|task_list|task_detail|result|save_all|download|batch_submit|batch_reconcile|batch_retry", "userid": "...", "phageid": "...", "phageids": "...", "phage_ids": [...], "batch_id": "...", "taskid": "...", "result_kind": "..."}""",
             "deeppl": """DeepPL lifecycle prediction tool (DNABERT-based).
 
 Actions:
@@ -2303,7 +2436,7 @@ IMPORTANT: When creating plans, ensure each task has clear, actionable instructi
             "terminal_session": """Interactive terminal (PTY shell) for running commands directly.
 
 Operations:
-- write: Send command and get output. Params: {"operation": "write", "data": "pwd\\n"}. terminal_id is auto-resolved — no need to call ensure first. Returns {output, status}. status="completed" means command finished; status="running" means still executing.
+- write: Send command and get output. Params: {"operation": "write", "data": "pwd\\n"}. terminal_id is auto-resolved — no need to call ensure first. Returns {output, status, verification_state, exit_code, ...}. `success` means bytes reached the PTY. `status` is "completed" only when output briefly idles (PTY settle), NOT guaranteed shell success. For local mutations, trust `verification_state`: verified_success / verified_failure / unverified — never infer completion from status="completed" alone.
 - replay: Get recent terminal output. Params: {"operation": "replay", "terminal_id": "tid", "limit": 50}
 - list: List active terminal sessions. Params: {"operation": "list"}
 - close: Close a terminal session. Params: {"operation": "close", "terminal_id": "tid"}
@@ -2331,6 +2464,12 @@ IMPORTANT: data must end with \\n to execute the command.""",
                 "and manuscript_writer. "
                 "Params: {\"topic\": \"Pseudomonas phage\", optional \"query\", \"max_results\", "
                 "\"download_pdfs\", \"sections\", \"max_revisions\", \"evaluation_threshold\", \"session_id\"}."
+            ),
+            "deliverable_submit": (
+                "Promote specific files into the session Deliverables bundle. "
+                "Params: {\"publish\": true|false, \"artifacts\": [{\"path\": \"/path/to/file\", "
+                "\"module\": \"code|image_tabular|paper|refs|docs\", optional \"reason\": \"note\"}]}. "
+                "Use this after files already exist and the user wants them included in Deliverables."
             ),
         }
 
@@ -2395,6 +2534,8 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 
 {self._build_shared_strategy_block()}
 {self._build_request_tier_block()}
+{self._build_capability_floor_block()}
+{self._build_grounded_tooling_block()}
 === THINKING WORKFLOW ===
 1. First classify whether the request needs tools, targeted evidence, or just a direct answer.
 2. Break the query into sub-problems only when that materially helps.
@@ -2452,7 +2593,13 @@ When ready to answer:
     def _get_next_step_prompt(self, iteration: int) -> str:
         """Generate prompt for the next step, encouraging completion if steps are getting long."""
         tier = self._request_tier()
+        floor = (self._capability_floor() or "plain_chat").strip().lower()
         if tier == "light":
+            if floor != "plain_chat":
+                return (
+                    "Light tier but non-plain capability: if you still need file or tool evidence to answer "
+                    "accurately, call the tool now; otherwise finish with submit_final_answer."
+                )
             return 'This is a light request. Finish now unless another short step is strictly necessary.'
         if tier == "standard":
             return 'Prefer answering now. Continue only if one more brief step materially improves the response.'
@@ -2713,6 +2860,65 @@ When ready to answer:
         idx = [i for i in idx if 0 <= i < n]
         return [steps[i] for i in idx]
 
+    @staticmethod
+    def _slim_evidence_text_for_synthesis(text: str) -> str:
+        """Drop internal tool-output paths and compress terminal_session JSON for synthesis.
+
+        Important: tool results are often a *single* JSON line containing ``storage`` paths.
+        Line-based removal previously deleted the entire line, leaving **empty evidence** for
+        fallback synthesis — causing the LLM to hallucinate \"no tool output\" answers.
+        """
+        stripped = str(text or "").strip()
+        if not stripped:
+            return ""
+        candidate = _TOOL_RESULT_PREFIX_RE.sub("", stripped).strip()
+
+        def _drop_storage_keys(node: Any) -> Any:
+            if isinstance(node, dict):
+                return {
+                    k: _drop_storage_keys(v)
+                    for k, v in node.items()
+                    if k not in {"storage", "deliverables"}
+                }
+            if isinstance(node, list):
+                return [_drop_storage_keys(x) for x in node]
+            return node
+
+        try:
+            obj = json.loads(candidate)
+        except Exception:
+            # Non-JSON: avoid deleting one-line blobs; redact path substrings only.
+            if "/tool_outputs/" in stripped.lower():
+                redacted = re.sub(
+                    r"/[^\s\"']*tool_outputs[^\s\"']*",
+                    "[internal_tool_output_path]",
+                    stripped,
+                    flags=re.IGNORECASE,
+                )
+                return redacted[:12000]
+            return stripped[:12000]
+
+        if isinstance(obj, dict):
+            obj = _drop_storage_keys(obj)
+            if str(obj.get("tool") or "") == "terminal_session" or "terminal_id" in obj:
+                slim: Dict[str, Any] = {
+                    "tool": "terminal_session",
+                    "operation": obj.get("operation"),
+                    "verification_state": obj.get("verification_state"),
+                    "command_state": obj.get("command_state"),
+                    "exit_code": obj.get("exit_code"),
+                    "verification_summary": obj.get("verification_summary"),
+                    "status": obj.get("status"),
+                    "output": obj.get("output"),
+                }
+                if isinstance(obj.get("verification_evidence"), dict):
+                    slim["verification_evidence"] = obj.get("verification_evidence")
+                compact = {k: v for k, v in slim.items() if v is not None}
+                out = json.dumps(compact, ensure_ascii=False)
+                return out[:12000]
+            return json.dumps(obj, ensure_ascii=False)[:12000]
+        return str(obj)[:12000]
+
     def _collect_evidence_snippets(
         self,
         steps: List[ThinkingStep],
@@ -2730,7 +2936,8 @@ When ready to answer:
             ar = step.action_result
             if not isinstance(ar, str) or not ar.strip():
                 continue
-            text = " ".join(ar.split()).strip()
+            text = self._slim_evidence_text_for_synthesis(ar)
+            text = " ".join(text.split()).strip()
             if len(text) > per_snippet_max:
                 text = text[: per_snippet_max - 3] + "..."
             block = f"[Step {step.iteration}]\n{text}"
@@ -2910,7 +3117,16 @@ When ready to answer:
                     "- 使用清晰的结构（标题、要点列表）\n"
                     "- 即使信息不完整，也请尽力基于已有证据给出最佳回答\n"
                     "- 不要说'无法回答'，请展示已找到的信息\n"
-                    "- 不要编造证据中没有的信息"
+                    "- 不要编造证据中没有的信息\n"
+                    "- 严禁：若「证据」里没有某文件的完整读取内容，却声称已读取该文件；严禁根据常识列举 "
+                    "`.env` 里「通常会有」的 Qwen/OpenAI/GLM 等名称，除非这些字符串出现在证据原文中。\n"
+                    "- 若推理里打算读 A 文件，但证据实际只有 B 文件，必须在答案中说明「未读到 A」或「仅见 B」，不得假装已检查 A。\n"
+                    "- 若用户要验证 PhageScope 远程访问，而证据中没有任何 phagescope 工具的成功返回，"
+                    "必须明确写出「尚未执行 phagescope 远程请求」，不得声称已确认 PhageScope 权限或「优化已验证 PhageScope」。\n"
+                    "- 介绍 PhageScope 接口时不要臆造「必须去官网用户中心申请 API Token」等；官方文档以 `userid` 为主，"
+                    "工具里 `token` 为可选；无证据时不要断言具体凭证流程。\n"
+                    "- 不要引导用户去查看、粘贴 `.env` 来「验证 PhageScope」；除非用户明确问本地部署密钥。"
+                    "连通性应以 `phagescope` 工具（如 ping）为准；勿臆造 `PHAGESCOPE_API_TOKEN` 等变量名。"
                 )
             else:
                 instruction = (
@@ -2922,7 +3138,17 @@ When ready to answer:
                     "- Use clear structure (headings, bullet points)\n"
                     "- Even if information is incomplete, provide the best answer from available evidence\n"
                     "- Do NOT say you cannot answer — present what was found\n"
-                    "- Do not invent claims absent from the evidence"
+                    "- Do not invent claims absent from the evidence\n"
+                    "- Do not claim a file was read unless its contents (or an explicit excerpt) appear in the evidence; "
+                    "if reasoning mentions file A but evidence only shows file B, say so.\n"
+                    "- Do not list typical `.env` API provider names unless they appear verbatim in the evidence.\n"
+                    "- For PhageScope access checks: if no phagescope tool success appears in the evidence, "
+                    "state clearly that remote PhageScope was not exercised; do not claim credentials or that ping succeeded.\n"
+                    "- When describing PhageScope API requirements, do not invent a mandatory API token from a "
+                    "\"user center\" unless the evidence says so; documented flows center on `userid`; tool `token` is optional.\n"
+                    "- Do not tell the user to inspect or paste `.env` for PhageScope verification unless they explicitly "
+                    "ask about local secrets; use phagescope tool (e.g. ping). This codebase only documents optional env "
+                    "`PHAGESCOPE_BASE_URL` and `PHAGESCOPE_SSL_VERIFY`, not a `PHAGESCOPE_API_TOKEN` variable."
                 )
 
             prompt = (

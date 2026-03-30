@@ -204,6 +204,61 @@ async def read_image(file_path: str, use_ocr: bool = False) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to read image: {e}"}
 
 
+def _read_csv_tsv_preview(abs_path: Path, suffix: str) -> Dict[str, Any]:
+    """
+    Return the first chunk of a CSV/TSV as plain text so the agent can inspect headers
+    and sample rows without a second tool call. Full stats/plots still need claude_code.
+    """
+    try:
+        size_bytes = abs_path.stat().st_size
+    except OSError:
+        size_bytes = 0
+    if size_bytes > 10 * 1024 * 1024:
+        return {
+            "success": False,
+            "error": f"Tabular file too large (>{size_bytes/1024/1024:.2f}MB), limit is 10MB",
+        }
+
+    max_lines = 150
+    max_bytes = 400_000
+    lines: list[str] = []
+    total_bytes = 0
+    try:
+        with abs_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if len(lines) >= max_lines:
+                    break
+                raw = line.encode("utf-8", errors="replace")
+                if total_bytes + len(raw) > max_bytes:
+                    take = max_bytes - total_bytes
+                    if take > 0:
+                        lines.append(raw[:take].decode("utf-8", errors="replace").rstrip("\n\r"))
+                    break
+                lines.append(line.rstrip("\n\r"))
+                total_bytes += len(raw)
+    except Exception as exc:
+        logger.error("Failed to preview tabular file: %s", exc)
+        return {"success": False, "error": f"Failed to read tabular preview: {exc}"}
+
+    text = "\n".join(lines)
+    return {
+        "success": True,
+        "file_path": str(abs_path),
+        "file_name": abs_path.name,
+        "file_size_kb": f"{size_bytes/1024:.2f} KB" if size_bytes else None,
+        "format": suffix.lstrip(".") or "tabular",
+        "text": text,
+        "text_length": len(text),
+        "preview_only": True,
+        "tabular_preview": True,
+        "preview_line_count": len(lines),
+        "summary": (
+            f"Tabular preview ({suffix}): first {len(lines)} line(s), {len(text)} characters. "
+            "For row counts, filtering, aggregation, or plots, use claude_code."
+        ),
+    }
+
+
 async def read_text_like(file_path: str) -> Dict[str, Any]:
     """Read text/markdown and other small text files. Rejects structured data formats."""
     abs_path = Path(file_path).expanduser().resolve()
@@ -218,14 +273,21 @@ async def read_text_like(file_path: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Text file too large (>{size_bytes/1024/1024:.2f}MB), limit is 10MB"}
 
     suffix = abs_path.suffix.lower()
-    
-    # Reject structured data formats - these should use claude_code for proper analysis
-    structured_data_exts = {".csv", ".tsv", ".json", ".xlsx", ".xls", ".parquet"}
+
+    # Tabular text: return an automatic preview so the agent is not blocked if it picks
+    # document_reader; heavy analysis still belongs in claude_code.
+    if suffix in {".csv", ".tsv"}:
+        return _read_csv_tsv_preview(abs_path, suffix)
+
+    structured_data_exts = {".json", ".xlsx", ".xls", ".parquet"}
     if suffix in structured_data_exts:
         return {
             "success": False,
-            "error": f"Structured data file ({suffix}) detected. For CSV, Excel, JSON, or other tabular data, use `claude_code` tool for proper data analysis, visualization, or manipulation. `document_reader` is only for unstructured text content.",
-            "suggestion": "Use claude_code with a task like: 'Read and analyze the data in {file_path}'",
+            "error": (
+                f"Structured data file ({suffix}) detected. For JSON/Excel/Parquet, use "
+                f"`claude_code` for analysis. `document_reader` only returns automatic previews for .csv/.tsv."
+            ),
+            "suggestion": f"Use claude_code with a task like: 'Read and analyze the data in {file_path}'",
         }
     
     # Allowed text formats
@@ -420,7 +482,12 @@ async def document_reader_handler(
 
 document_reader_tool = {
     "name": "document_reader",
-    "description": "Extract content from files locally. Supports: PDF text extraction, DOCX text extraction, image metadata (dimensions, format, size), text/Markdown/CSV/JSON files. For visual understanding like OCR, describing figures, or reading equations, use vision_reader instead.",
+    "description": (
+        "Extract content from files locally: PDF, DOCX, images, plain text/Markdown. "
+        "For .csv/.tsv, returns an automatic text preview (first ~150 lines) so the agent "
+        "can read headers and samples; use claude_code for aggregation, filtering, or plots. "
+        "For JSON/Excel/Parquet, use claude_code. For OCR/figures, use vision_reader."
+    ),
     "category": "document_processing",
     "parameters_schema": {
         "type": "object",

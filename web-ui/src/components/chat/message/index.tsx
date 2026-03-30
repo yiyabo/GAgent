@@ -4,9 +4,11 @@ import {
   Space,
   Button,
   Divider,
+  message as antdMessage,
 } from 'antd';
 import { ChatMessage as ChatMessageType, ToolResultPayload } from '@/types';
 import { planTreeApi } from '@api/planTree';
+import { chatApi } from '@api/chat';
 import JobLogPanel from '../JobLogPanel';
 import { ThinkingProcess } from '../ThinkingProcess';
 import { MarkdownRenderer } from '../MarkdownRenderer';
@@ -148,10 +150,16 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
   const status = metadata?.status;
   const isStreaming =
     unifiedStream && (status === 'pending' || status === 'running');
+  /** Same id as chat run (dt_...). Prefer chat_run_id — it is set as soon as the run is created; deep_think_job_id may arrive later via control_ack. */
+  const chatRunIdFromMeta =
+    typeof (metadata as any)?.chat_run_id === 'string'
+      ? String((metadata as any).chat_run_id).trim()
+      : null;
   const deepThinkJobId =
     typeof (metadata as any)?.deep_think_job_id === 'string'
-      ? ((metadata as any).deep_think_job_id as string)
+      ? String((metadata as any).deep_think_job_id).trim()
       : null;
+  const runIdForDeepThink = chatRunIdFromMeta || deepThinkJobId;
   const hasCompactProgress =
     (metadata as any)?.thinking_visibility === 'progress' &&
     Boolean((metadata as any)?.deep_think_progress);
@@ -163,29 +171,46 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
   const [deepThinkControlBusyAction, setDeepThinkControlBusyAction] = useState<
     'pause' | 'resume' | 'skip_step' | null
   >(null);
+  const [deepThinkCancelRunBusy, setDeepThinkCancelRunBusy] = useState(false);
   const thinkingIsFinished =
     message.metadata?.status === 'completed' ||
     message.metadata?.status === 'failed' ||
     message.thinking_process?.status === 'completed' ||
     message.thinking_process?.status === 'error';
   const deepThinkCanControl = Boolean(
-    deepThinkJobId &&
+    runIdForDeepThink &&
       message.thinking_process?.status === 'active' &&
       !thinkingIsFinished,
   );
   const deepThinkControlDisabled =
-    !deepThinkJobId || deepThinkControlBusyAction !== null;
+    !runIdForDeepThink || deepThinkControlBusyAction !== null || deepThinkCancelRunBusy;
+
+  const issueCancelRun = React.useCallback(async () => {
+    if (!runIdForDeepThink || deepThinkCancelRunBusy) return;
+    setDeepThinkCancelRunBusy(true);
+    try {
+      await chatApi.cancelRun(runIdForDeepThink);
+      antdMessage.success('已请求停止本次运行');
+    } catch (error) {
+      console.warn('Failed to cancel chat run:', error);
+      antdMessage.error(
+        error instanceof Error ? error.message : '停止失败，请稍后重试或刷新页面',
+      );
+    } finally {
+      setDeepThinkCancelRunBusy(false);
+    }
+  }, [runIdForDeepThink, deepThinkCancelRunBusy]);
 
   React.useEffect(() => {
     setDeepThinkPaused(deepThinkPausedFromMetadata);
-  }, [deepThinkPausedFromMetadata, deepThinkJobId]);
+  }, [deepThinkPausedFromMetadata, runIdForDeepThink]);
 
   const issueDeepThinkControl = React.useCallback(
     async (action: 'pause' | 'resume' | 'skip_step') => {
-      if (!deepThinkJobId || deepThinkControlBusyAction !== null) return;
+      if (!runIdForDeepThink || deepThinkControlBusyAction !== null) return;
       setDeepThinkControlBusyAction(action);
       try {
-        const response = await planTreeApi.controlJob(deepThinkJobId, { action });
+        const response = await planTreeApi.controlJob(runIdForDeepThink, { action });
         if (response.success) {
           if (action === 'pause') setDeepThinkPaused(true);
           if (action === 'resume') setDeepThinkPaused(false);
@@ -196,7 +221,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
         setDeepThinkControlBusyAction(null);
       }
     },
-    [deepThinkJobId, deepThinkControlBusyAction],
+    [runIdForDeepThink, deepThinkControlBusyAction],
   );
 
   // In unified stream mode, show typing indicator only at initial pending stage
@@ -321,23 +346,11 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
       );
     }
     if (!displayTextForUi) return null;
-    if (isStreaming) {
-      return (
-        <div
-          style={{
-            marginTop: 4,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {displayTextForUi}
-          <span className="stream-cursor">▍</span>
-        </div>
-      );
-    }
+    // Use Markdown during streaming too; plain text showed raw ### / table pipes to users.
     return (
-      <div style={{ marginTop: 4 }}>
+      <div style={{ marginTop: 4 }} className="assistant-markdown-stream">
         <MarkdownRenderer content={displayTextForUi} sessionId={effectiveSessionId} />
+        {isStreaming ? <span className="stream-cursor">▍</span> : null}
       </div>
     );
   };
@@ -438,10 +451,12 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                       onSkipStep={() => {
                         void issueDeepThinkControl('skip_step');
                       }}
+                      onCancelRun={issueCancelRun}
                       paused={deepThinkPaused}
                       controlDisabled={deepThinkControlDisabled}
                       controlBusy={deepThinkControlBusyAction !== null}
                       controlBusyAction={deepThinkControlBusyAction}
+                      cancelRunBusy={deepThinkCancelRunBusy}
                     />
                   )}
                   {summaryBlock}
@@ -475,10 +490,12 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                     onSkipStep={() => {
                       void issueDeepThinkControl('skip_step');
                     }}
+                    onCancelRun={issueCancelRun}
                     paused={deepThinkPaused}
                     controlDisabled={deepThinkControlDisabled}
                     controlBusy={deepThinkControlBusyAction !== null}
                     controlBusyAction={deepThinkControlBusyAction}
+                    cancelRunBusy={deepThinkCancelRunBusy}
                   />
                 )}
                 {summaryBlock ?? renderContent()}

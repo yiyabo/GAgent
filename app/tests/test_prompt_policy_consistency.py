@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from app.prompts import prompt_manager
 from app.routers.chat.prompt_builder import (
+    agent_history_limit,
     build_simple_stream_chat_prompt,
     coerce_plain_text_chat_response,
     compose_plan_status,
 )
+from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX
 from app.services.response_style import sanitize_professional_response_text
 from app.services.deep_think_agent import DeepThinkAgent
 from app.services import tool_schemas
@@ -27,6 +30,7 @@ def _build_deep_think_agent() -> DeepThinkAgent:
             "web_search",
             "claude_code",
             "plan_operation",
+            "deliverable_submit",
         ],
         tool_executor=_noop_tool_executor,
     )
@@ -40,6 +44,14 @@ def test_structured_action_catalog_includes_bio_tools() -> None:
     assert any("tool_operation: deeppl" in line for line in base_actions)
     bio_line = next(line for line in base_actions if "tool_operation: bio_tools" in line)
     assert "sequence_text" in bio_line
+
+
+def test_structured_action_catalog_includes_deliverable_submit() -> None:
+    prompts = prompt_manager.get_category("structured_agent")
+    base_actions = prompts["action_catalog"]["base_actions"]
+    line = next(line for line in base_actions if "tool_operation: deliverable_submit" in line)
+    assert "artifacts" in line
+    assert "DELIVERABLES_INGEST_MODE" in line
 
 
 def test_unbound_rules_use_auto_create_plan_without_confirmation_language() -> None:
@@ -88,6 +100,17 @@ def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_prio
 
     assert "PROTOCOL BOUNDARY (NATIVE TOOL CALLING)" in native_prompt
     assert "PROTOCOL BOUNDARY (LEGACY JSON)" in legacy_prompt
+    assert "Promote specific files into the session Deliverables bundle." in legacy_prompt
+
+
+def test_agent_history_limit_clamps_overrides() -> None:
+    """Manual max_history_messages / MAX_HISTORY must not exceed CHAT_HISTORY_ABS_MAX."""
+    over = SimpleNamespace(max_history_messages=CHAT_HISTORY_ABS_MAX + 50)
+    assert agent_history_limit(over) == CHAT_HISTORY_ABS_MAX
+    legacy_over = SimpleNamespace(MAX_HISTORY=CHAT_HISTORY_ABS_MAX + 10)
+    assert agent_history_limit(legacy_over) == CHAT_HISTORY_ABS_MAX
+    small = SimpleNamespace(MAX_HISTORY=10)
+    assert agent_history_limit(small) == 10
 
 
 def test_chat_prompts_default_to_professional_non_emoji_style() -> None:
@@ -133,6 +156,68 @@ def test_deep_think_prompt_boundaries_prevent_cross_protocol_confusion() -> None
     assert "Respond with valid JSON only using keys: thinking, action, final_answer" not in native_prompt
 
 
+def test_deep_think_slim_evidence_keeps_json_when_storage_paths_in_single_line() -> None:
+    """Regression: single-line tool JSON must not become empty after redaction (fallback synthesis)."""
+    agent = _build_deep_think_agent()
+    blob = (
+        '[file_operations] {"tool": "file_operations", "success": true, '
+        '"result": {"count": 11, "items": [], '
+        '"storage": {"result_path": "/runtime/x/tool_outputs/job/step/result.json"}}}'
+    )
+    slim = agent._slim_evidence_text_for_synthesis(blob)
+    assert "11" in slim or "count" in slim
+    assert "tool_outputs" not in slim.lower()
+
+
+def test_deep_think_filters_internal_storage_artifacts_from_evidence() -> None:
+    agent = _build_deep_think_agent()
+    payload = {
+        "stdout": (
+            "Generated file at /Users/apple/LLM/agent/runtime/session_demo/tool_outputs/job_dt_x/"
+            "step_1_file_operations_abc123/result.json\n"
+            "Generated file at /Users/apple/LLM/agent/runtime/session_demo/tool_outputs/job_dt_x/"
+            "step_1_file_operations_abc123/manifest.json\n"
+            "Generated file at /Users/apple/LLM/agent/runtime/session_demo/tool_outputs/job_dt_x/"
+            "step_1_file_operations_abc123/preview.json\n"
+            "Generated file at /Users/apple/LLM/agent/runtime/session_demo/deliverables/manifest_latest.json\n"
+            "Generated file at /Users/apple/LLM/agent/results/report.csv"
+        ),
+    }
+
+    evidence = agent._extract_evidence("file_operations", {}, payload)
+    refs = [item["ref"] for item in evidence if item.get("type") == "file"]
+
+    assert "/Users/apple/LLM/agent/results/report.csv" in refs
+    assert not any(ref.endswith("/result.json") for ref in refs)
+    assert not any(ref.endswith("/manifest.json") for ref in refs)
+    assert not any(ref.endswith("/preview.json") for ref in refs)
+    assert not any(ref.endswith("/deliverables/manifest_latest.json") for ref in refs)
+
+
+def test_deep_think_emit_artifacts_skips_internal_storage_files() -> None:
+    seen: list[dict[str, str]] = []
+
+    async def _on_artifact(meta: dict[str, str]) -> None:
+        seen.append(meta)
+
+    agent = DeepThinkAgent(
+        llm_client=SimpleNamespace(),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        on_artifact=_on_artifact,
+    )
+
+    payload = {
+        "summary": "Generated file at /Users/apple/LLM/agent/runtime/session_demo/tool_outputs/job_dt_x/step_1_file_operations_abc123/result.json",
+        "report": "saved to /Users/apple/LLM/agent/results/report.csv",
+    }
+
+    asyncio.run(agent._emit_artifacts("file_operations", payload, 1))
+
+    assert len(seen) == 1
+    assert seen[0]["path"].endswith("/report.csv")
+
+
 def test_phagescope_prompt_and_schema_mark_proteins_as_result_not_submit_module() -> None:
     prompts = prompt_manager.get_category("structured_agent")
     base_actions = prompts["action_catalog"]["base_actions"]
@@ -149,7 +234,14 @@ def test_phagescope_prompt_and_schema_mark_proteins_as_result_not_submit_module(
     assert "result/output names" in lowered_rule
 
     schema = tool_schemas.TOOL_REGISTRY["phagescope"]
+    actions = schema["function"]["parameters"]["properties"]["action"]["enum"]
+    assert "ping" in actions, "DeepThink schema must expose ping for API/connectivity checks"
     module_desc = schema["function"]["parameters"]["properties"]["modulelist"]["description"].lower()
     assert "submit modules only" in module_desc
     assert "proteins" in module_desc
     assert "not use result/output names" in module_desc
+
+    ping_rule = next(
+        rule for rule in common_rules if "ping" in rule and "PhageScope" in rule
+    )
+    assert "file_operations" in ping_rule.lower()

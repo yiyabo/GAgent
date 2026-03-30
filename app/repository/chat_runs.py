@@ -238,3 +238,37 @@ def get_last_event_seq(run_id: str) -> int:
     if not row:
         return -1
     return int(row.get("last_event_seq") or -1)
+
+
+_STALE_RUN_ERROR = "server restarted; run interrupted"
+
+
+def fix_stale_chat_runs_on_startup() -> int:
+    """Mark queued/running runs as failed after process restart.
+
+    In-memory workers and steer queues are gone; leaving rows as ``running`` makes
+    ``GET .../runs?status=running`` lie, and SSE replay never reaches ``final``/``error``
+    so clients hang. We append a terminal ``error`` event then mark the run finished.
+    """
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT run_id FROM chat_runs WHERE status IN ('queued', 'running')"
+        ).fetchall()
+    n = 0
+    for row in rows:
+        rid = str(row["run_id"])
+        try:
+            append_chat_run_event(
+                rid,
+                {
+                    "type": "error",
+                    "message": "Server restarted; this run was interrupted.",
+                    "run_interrupted": True,
+                },
+            )
+            mark_chat_run_finished(rid, "failed", error=_STALE_RUN_ERROR)
+            n += 1
+        except Exception:
+            continue
+    return n

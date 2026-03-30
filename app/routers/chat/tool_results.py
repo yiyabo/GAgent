@@ -72,10 +72,79 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
         }
         if "error" in raw_result:
             sanitized["error"] = raw_result.get("error")
+        for _k in ("artifact_scope", "local_bundle_hint", "taskid", "result_kind"):
+            if _k in raw_result:
+                sanitized[_k] = raw_result.get(_k)
+        act_l = str(raw_result.get("action") or "").strip().lower()
+        if act_l == "batch_submit":
+            for key in (
+                "batch_id",
+                "manifest_path",
+                "primary_taskid",
+                "strategy",
+                "requested_phage_ids",
+                "warning",
+            ):
+                if key in raw_result:
+                    sanitized[key] = raw_result.get(key)
+            pst = raw_result.get("per_strain_tasks")
+            if isinstance(pst, list):
+                sanitized["per_strain_tasks"] = pst[:40]
+            sr = raw_result.get("submit_result")
+            if isinstance(sr, dict):
+                sanitized["submit_result"] = {
+                    "success": sr.get("success"),
+                    "status_code": sr.get("status_code"),
+                    "action": sr.get("action"),
+                    "error": sr.get("error"),
+                }
+        elif act_l == "batch_reconcile":
+            for key in (
+                "batch_id",
+                "manifest_path",
+                "primary_taskid",
+                "requested_phage_ids",
+                "observed_phage_ids",
+                "missing_phage_ids",
+                "reconcile_note",
+                "warning",
+            ):
+                if key in raw_result:
+                    val = raw_result.get(key)
+                    if isinstance(val, list) and key in {"requested_phage_ids", "observed_phage_ids", "missing_phage_ids"}:
+                        sanitized[key] = val[:80]
+                    else:
+                        sanitized[key] = val
+            pr = raw_result.get("result_phage")
+            if isinstance(pr, dict):
+                sanitized["result_phage"] = {
+                    "success": pr.get("success"),
+                    "status_code": pr.get("status_code"),
+                    "action": pr.get("action"),
+                    "not_ready": pr.get("not_ready"),
+                }
+        elif act_l == "batch_retry":
+            for key in ("batch_id", "manifest_path", "retry_phage_ids", "warning"):
+                if key in raw_result:
+                    sanitized[key] = raw_result.get(key)
+            rr = raw_result.get("retry_results")
+            if isinstance(rr, list):
+                sanitized["retry_results"] = [
+                    {
+                        "phage_id": item.get("phage_id"),
+                        "taskid": item.get("taskid"),
+                        "success": (item.get("submit") or {}).get("success")
+                        if isinstance(item.get("submit"), dict)
+                        else None,
+                    }
+                    for item in rr[:40]
+                    if isinstance(item, dict)
+                ]
         # Keep key local artifact paths for save_all so follow-up file reads can work.
         if str(raw_result.get("action") or "").strip().lower() == "save_all":
             for key in (
                 "taskid",
+                "artifact_scope",
                 "output_directory",
                 "output_directory_rel",
                 "summary_file",
@@ -166,6 +235,36 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             if trimmed_paths:
                 sanitized["artifact_paths"] = trimmed_paths
 
+        return sanitized
+
+    if tool_name == "terminal_session" and isinstance(raw_result, dict):
+        sanitized: Dict[str, Any] = {
+            "tool": tool_name,
+            "success": raw_result.get("success", True),
+        }
+        if "error" in raw_result:
+            sanitized["error"] = raw_result.get("error")
+        for key in (
+            "operation",
+            "terminal_id",
+            "session_id",
+            "bytes_sent",
+            "output",
+            "status",
+            "message",
+            "command_state",
+            "verification_state",
+            "exit_code",
+            "verification_summary",
+            "verification_evidence",
+            "replay",
+            "items",
+            "count",
+        ):
+            if key in raw_result:
+                sanitized[key] = raw_result[key]
+        if "success" not in sanitized:
+            sanitized["success"] = False if sanitized.get("error") else True
         return sanitized
 
     if isinstance(raw_result, dict):
@@ -348,6 +447,34 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
                 return f"PhageScope submit succeeded: taskid={taskid}; running in background."
             return "PhageScope submit succeeded; task is running in background."
 
+        if action_lower == "batch_submit":
+            bid = result.get("batch_id") or "?"
+            pt = result.get("primary_taskid")
+            mp = result.get("manifest_path")
+            strat = result.get("strategy") or "multi_one_task"
+            if result.get("success") is False:
+                err = result.get("error") or "Execution failed"
+                return f"PhageScope batch_submit failed: {err}"
+            if strat == "per_strain":
+                return f"PhageScope batch_submit (per_strain): batch_id={bid}; manifest={mp}."
+            return f"PhageScope batch_submit: batch_id={bid}; primary_taskid={pt}; manifest={mp}."
+
+        if action_lower == "batch_reconcile":
+            if result.get("success") is False:
+                err = result.get("error") or "Execution failed"
+                return f"PhageScope batch_reconcile failed: {err}"
+            bid = result.get("batch_id") or "?"
+            miss = result.get("missing_phage_ids") or []
+            nmiss = len(miss) if isinstance(miss, list) else 0
+            return f"PhageScope batch_reconcile: batch_id={bid}; missing_phage_ids={nmiss}."
+
+        if action_lower == "batch_retry":
+            if result.get("success") is False:
+                err = result.get("error") or "Execution failed"
+                return f"PhageScope batch_retry failed: {err}"
+            bid = result.get("batch_id") or "?"
+            return f"PhageScope batch_retry: batch_id={bid}; see retry_results in tool output."
+
         if action_lower == "task_detail":
             snapshot = _extract_phagescope_task_snapshot(result)
             status = (
@@ -358,17 +485,50 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
             done = counts.get("done") if isinstance(counts.get("done"), int) else None
             total = counts.get("total") if isinstance(counts.get("total"), int) else None
+            suffix = ""
+            if result.get("local_bundle_hint"):
+                suffix = " Full local bundle still needs action=save_all (API JSON alone is not the full folder tree)."
             if isinstance(done, int) and isinstance(total, int) and total > 0:
-                return f"PhageScope task_detail succeeded: status={status}, progress={done}/{total}."
-            return f"PhageScope task_detail succeeded: status={status}."
+                return f"PhageScope task_detail succeeded: status={status}, progress={done}/{total}.{suffix}"
+            return f"PhageScope task_detail succeeded: status={status}.{suffix}"
 
         payload = result.get("data")
         message = None
         if isinstance(payload, dict):
             message = payload.get("message") or payload.get("status")
         if message:
-            return f"PhageScope {action} succeeded: {message}"
-        return f"PhageScope {action} succeeded."
+            base = f"PhageScope {action} succeeded: {message}"
+        else:
+            base = f"PhageScope {action} succeeded."
+        if result.get("local_bundle_hint") and str(action).strip().lower() in {
+            "result",
+            "download",
+            "task_log",
+            "query",
+        }:
+            base += " Full local bundle still needs action=save_all (API JSON alone is not the full folder tree)."
+        return base
+
+    if tool_name == "terminal_session":
+        op = str(result.get("operation") or "").strip().lower()
+        if result.get("success") is False:
+            err = result.get("error") or result.get("message") or "Execution failed"
+            return f"terminal_session {op or 'operation'} failed: {err}"
+        if op == "write":
+            vs = str(result.get("verification_state") or "").strip().lower()
+            summary = str(result.get("verification_summary") or "").strip()
+            if vs == "verified_success":
+                return summary or "terminal_session write: command verified successfully"
+            if vs == "verified_failure":
+                return summary or "terminal_session write: command failed verification"
+            if summary:
+                return summary
+            st = str(result.get("status") or "")
+            return (
+                f"terminal_session write: command dispatched; PTY settle={st} "
+                "(use verification_state for mutation outcomes)"
+            )
+        return f"terminal_session {op or 'operation'} succeeded."
 
     if tool_name == "web_search":
         query = result.get("query") or ""

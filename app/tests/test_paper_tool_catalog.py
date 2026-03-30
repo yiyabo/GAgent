@@ -17,6 +17,7 @@ def test_native_tool_schemas_include_paper_pipeline_tools() -> None:
             "literature_pipeline",
             "review_pack_writer",
             "manuscript_writer",
+            "deliverable_submit",
         ]
     )
     function_names = {
@@ -28,3 +29,4 @@ def test_native_tool_schemas_include_paper_pipeline_tools() -> None:
     assert "literature_pipeline" in function_names
     assert "review_pack_writer" in function_names
     assert "manuscript_writer" in function_names
+    assert "deliverable_submit" in function_names
