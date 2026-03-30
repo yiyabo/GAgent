@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -28,6 +29,9 @@ _PHAGESCOPE_TASKID_HINT_RE = re.compile(
     r"(?:remote[_\s-]?task[_\s-]?id|task[_\s-]?id|task)\s*[:=]?\s*['\"]?(\d{4,})",
     flags=re.IGNORECASE,
 )
+
+# batch_submit: models often omit modulelist; single-strain submit would fail with 400 otherwise.
+_DEFAULT_BATCH_SUBMIT_MODULELIST: List[str] = ["quality"]
 
 # Result endpoint map
 RESULT_ENDPOINTS = {
@@ -75,6 +79,31 @@ RESULT_KIND_TO_FILENAME: Dict[str, str] = {
 FILENAME_TO_RESULT_KIND: Dict[str, str] = {
     filename.lower(): kind for kind, filename in RESULT_KIND_TO_FILENAME.items()
 }
+
+# Successful result/task_detail/download return JSON or a single file — not the same as save_all's folder tree.
+ARTIFACT_SCOPE_API_ONLY = "api_response_only"
+LOCAL_BUNDLE_HINT_EN = (
+    "This call returns API/JSON (or one artifact) only. "
+    "For a full local bundle (metadata/, annotation/, raw_api_responses/, etc.), use action=save_all with the same numeric taskid."
+)
+
+
+def _with_api_only_artifact_hint(result: Dict[str, Any], taskid: Optional[str] = None) -> Dict[str, Any]:
+    """Tag non-save_all successes so agents do not equate them with a save_all disk bundle."""
+    if not result.get("success"):
+        return result
+    action = str(result.get("action") or "").strip().lower()
+    if action in {"save_all", "ping", "submit", "task_list", "input_check", "cluster_submit"}:
+        return result
+    if action not in {"result", "task_detail", "task_log", "download", "quality", "query"}:
+        return result
+    out = dict(result)
+    out["artifact_scope"] = ARTIFACT_SCOPE_API_ONLY
+    out["local_bundle_hint"] = LOCAL_BUNDLE_HINT_EN
+    tid = taskid if taskid is not None else out.get("taskid")
+    if tid:
+        out["taskid"] = str(tid)
+    return out
 
 # Analysis type configuration
 ANALYSIS_TYPES = {
@@ -205,6 +234,9 @@ async def _do_httpx_request(
 
 
 def _normalize_phagescope_taskid(value: Any) -> Optional[str]:
+    # bool is a subclass of int in Python; never treat True/False as a task id.
+    if isinstance(value, bool):
+        return None
     if isinstance(value, int):
         return str(value) if value >= 0 else None
     if not isinstance(value, str):
@@ -394,6 +426,542 @@ def _resolve_session_phagescope_root(session_id: Optional[str]) -> Optional[Path
     except Exception as exc:
         logger.warning("Failed to resolve session-scoped PhageScope root for %s: %s", token, exc)
         return None
+
+
+def _get_manifests_directory(session_id: Optional[str]) -> Tuple[Path, Optional[str]]:
+    """Return ``.../work/phagescope/manifests`` under the session, or ``runtime/phagescope/manifests`` fallback."""
+    warning: Optional[str] = None
+    token = str(session_id or "").strip()
+    if token:
+        root = _resolve_session_phagescope_root(token)
+        if root is not None:
+            mdir = root / "manifests"
+            mdir.mkdir(parents=True, exist_ok=True)
+            return mdir.resolve(), None
+    mdir = Path("runtime/phagescope/manifests")
+    mdir.mkdir(parents=True, exist_ok=True)
+    warning = "no session_id: manifest stored under runtime/phagescope/manifests"
+    return mdir.resolve(), warning
+
+
+def _dedupe_phage_ids_preserve_order(ids: List[str]) -> List[str]:
+    seen: set = set()
+    out: List[str] = []
+    for item in ids:
+        t = str(item or "").strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def _normalize_phage_id_list(
+    value: Any,
+    *,
+    file_path: Optional[str] = None,
+) -> List[str]:
+    """Coerce phage ID list from string (semicolon/comma/newline), list/tuple, or optional file path."""
+    raw: List[str] = []
+    if file_path:
+        p = Path(str(file_path).strip()).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(f"phage_ids_file not found: {p}")
+        text = p.read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            raw.append(line)
+    if value is not None:
+        if isinstance(value, str):
+            for part in re.split(r"[\s,;]+", value.replace("\n", ";")):
+                part = part.strip()
+                if part:
+                    raw.append(part)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                s = str(item or "").strip()
+                if s:
+                    raw.append(s)
+    return _dedupe_phage_ids_preserve_order(raw)
+
+
+def _phage_accession_ids_from_result_payload(payload: Any) -> set:
+    """Extract accession-like IDs from PhageScope ``result`` phage JSON."""
+    if not isinstance(payload, dict):
+        return set()
+    rows = payload.get("results")
+    if not isinstance(rows, list):
+        return set()
+    ids: set = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in ("Acession_ID", "Accession_ID", "phageid", "phage_id", "contig_id"):
+            v = row.get(key)
+            if isinstance(v, str) and v.strip():
+                ids.add(v.strip())
+    return ids
+
+
+def _load_manifest_json(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        raise FileNotFoundError(f"manifest not found: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("manifest must be a JSON object")
+    return data
+
+
+def _save_manifest_json(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _extract_taskid_from_submit_result(result: Dict[str, Any]) -> Optional[str]:
+    """Parse remote task id from submit responses (only ``taskid`` / ``task_id`` fields, not status_code)."""
+
+    def _coerce_taskid_value(value: Any) -> Optional[str]:
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            # Avoid confusing HTTP status codes (e.g. 200) with PhageScope task ids.
+            if value < 1000:
+                return None
+            return str(value)
+        if isinstance(value, str):
+            s = value.strip()
+            if s.isdigit() and int(s) >= 1000:
+                return s
+        return None
+
+    data = result.get("data")
+    if isinstance(data, dict):
+        for key in ("taskid", "task_id", "remote_taskid"):
+            if key in data:
+                tid = _coerce_taskid_value(data.get(key))
+                if tid:
+                    return tid
+        inner = data.get("data")
+        if isinstance(inner, dict):
+            for key in ("taskid", "task_id", "remote_taskid"):
+                if key in inner:
+                    tid = _coerce_taskid_value(inner.get(key))
+                    if tid:
+                        return tid
+        # Many PhageScope deployments return taskid under ``results``, not nested ``data``.
+        results = data.get("results")
+        if isinstance(results, dict):
+            for key in ("taskid", "task_id", "remote_taskid", "id"):
+                if key in results:
+                    tid = _coerce_taskid_value(results.get(key))
+                    if tid:
+                        return tid
+    return None
+
+
+def _coerce_modulelist_for_manifest(modulelist: Any) -> Any:
+    if modulelist is None:
+        return None
+    if isinstance(modulelist, (list, tuple)):
+        return [str(x) for x in modulelist]
+    if isinstance(modulelist, str):
+        return modulelist
+    if isinstance(modulelist, dict):
+        return modulelist
+    return str(modulelist)
+
+
+async def _phagescope_batch_submit(
+    *,
+    base_url: str,
+    token: Optional[str],
+    timeout: float,
+    session_id: Optional[str],
+    userid: str,
+    modulelist: Any,
+    rundemo: str,
+    analysistype: str,
+    inputtype: str,
+    sequence: Optional[str],
+    file_path: Optional[str],
+    comparedatabase: Optional[str],
+    neednum: Optional[str],
+    phage_ids: Any,
+    phage_ids_file: Optional[str],
+    batch_id: Optional[str],
+    strategy: str,
+    manifest_path_override: Optional[str],
+) -> Dict[str, Any]:
+    try:
+        ids = _normalize_phage_id_list(phage_ids, file_path=phage_ids_file)
+    except OSError as exc:
+        return {"success": False, "status_code": 400, "action": "batch_submit", "error": str(exc)}
+    if not ids:
+        return {
+            "success": False,
+            "status_code": 400,
+            "action": "batch_submit",
+            "error": "phage_ids (or phage_ids_file) is required and must list at least one phage id",
+        }
+    if not modulelist:
+        modulelist = list(_DEFAULT_BATCH_SUBMIT_MODULELIST)
+
+    bid = str(batch_id or "").strip() or str(uuid.uuid4())
+    manifests_dir, path_warning = _get_manifests_directory(session_id)
+    if manifest_path_override:
+        mpath = Path(str(manifest_path_override).strip()).expanduser().resolve()
+    else:
+        mpath = manifests_dir / f"{bid}.json"
+
+    strat = str(strategy or "multi_one_task").strip().lower()
+    if strat not in {"multi_one_task", "per_strain"}:
+        return {
+            "success": False,
+            "status_code": 400,
+            "action": "batch_submit",
+            "error": "strategy must be multi_one_task or per_strain",
+        }
+
+    manifest: Dict[str, Any] = {
+        "version": 1,
+        "batch_id": bid,
+        "strategy": strat,
+        "requested_phage_ids": ids,
+        "userid": userid,
+        "modulelist": _coerce_modulelist_for_manifest(modulelist),
+        "rundemo": str(rundemo).lower(),
+        "analysistype": analysistype,
+        "inputtype": inputtype,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "manifest_path": str(mpath),
+        "primary_taskid": None,
+        "per_strain_tasks": [],
+        "retries": [],
+        "last_reconcile": None,
+    }
+
+    if strat == "multi_one_task":
+        joined = ";".join(ids)
+        sub = await phagescope_handler(
+            action="submit",
+            base_url=base_url,
+            token=token,
+            timeout=timeout,
+            phageids=joined,
+            userid=userid,
+            modulelist=modulelist,
+            rundemo=rundemo,
+            analysistype=analysistype,
+            inputtype=inputtype,
+            sequence=sequence,
+            file_path=file_path,
+            session_id=session_id,
+            comparedatabase=comparedatabase,
+            neednum=neednum,
+        )
+        tid = _extract_taskid_from_submit_result(sub) if isinstance(sub, dict) else None
+        manifest["primary_taskid"] = tid
+        manifest["primary_submit"] = {"success": sub.get("success"), "status_code": sub.get("status_code")}
+        _save_manifest_json(mpath, manifest)
+        out: Dict[str, Any] = {
+            "success": sub.get("success") is not False and bool(tid),
+            "status_code": sub.get("status_code") or 200,
+            "action": "batch_submit",
+            "batch_id": bid,
+            "strategy": strat,
+            "requested_phage_ids": ids,
+            "primary_taskid": tid,
+            "manifest_path": str(mpath),
+            "submit_result": sub,
+        }
+        if path_warning:
+            out["warning"] = path_warning
+        if not tid:
+            out["success"] = False
+            out["error"] = sub.get("error") or "could not extract taskid from submit response"
+        return out
+
+    per: List[Dict[str, Any]] = []
+    all_ok = True
+    for pid in ids:
+        sub = await phagescope_handler(
+            action="submit",
+            base_url=base_url,
+            token=token,
+            timeout=timeout,
+            phageid=pid,
+            userid=userid,
+            modulelist=modulelist,
+            rundemo=rundemo,
+            analysistype=analysistype,
+            inputtype=inputtype,
+            sequence=sequence,
+            file_path=file_path,
+            session_id=session_id,
+            comparedatabase=comparedatabase,
+            neednum=neednum,
+        )
+        tid = _extract_taskid_from_submit_result(sub) if isinstance(sub, dict) else None
+        if sub.get("success") is False or not tid:
+            all_ok = False
+        per.append({"phage_id": pid, "taskid": tid, "submit": sub})
+    manifest["per_strain_tasks"] = per
+    _save_manifest_json(mpath, manifest)
+    out = {
+        "success": all_ok,
+        "status_code": 200 if all_ok else 207,
+        "action": "batch_submit",
+        "batch_id": bid,
+        "strategy": strat,
+        "requested_phage_ids": ids,
+        "per_strain_tasks": per,
+        "manifest_path": str(mpath),
+    }
+    if path_warning:
+        out["warning"] = path_warning
+    return out
+
+
+async def _phagescope_batch_reconcile(
+    *,
+    base_url: str,
+    token: Optional[str],
+    timeout: float,
+    session_id: Optional[str],
+    batch_id: str,
+    taskid: Optional[str],
+    wait: bool,
+    poll_interval: float,
+    poll_timeout: float,
+    manifest_path_override: Optional[str],
+) -> Dict[str, Any]:
+    bid = str(batch_id or "").strip()
+    if not bid:
+        return {"success": False, "status_code": 400, "action": "batch_reconcile", "error": "batch_id is required"}
+    manifests_dir, path_warning = _get_manifests_directory(session_id)
+    if manifest_path_override:
+        mpath = Path(str(manifest_path_override).strip()).expanduser().resolve()
+    else:
+        mpath = manifests_dir / f"{bid}.json"
+    try:
+        manifest = _load_manifest_json(mpath)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"success": False, "status_code": 400, "action": "batch_reconcile", "error": str(exc)}
+
+    remote_tid = str(taskid or "").strip() or str(manifest.get("primary_taskid") or "").strip()
+    if not remote_tid:
+        return {
+            "success": False,
+            "status_code": 400,
+            "action": "batch_reconcile",
+            "error": "taskid is required (or manifest must contain primary_taskid)",
+        }
+
+    td = await phagescope_handler(
+        action="task_detail",
+        base_url=base_url,
+        token=token,
+        timeout=timeout,
+        taskid=remote_tid,
+        session_id=session_id,
+    )
+    if td.get("success") is False:
+        return {
+            "success": False,
+            "status_code": td.get("status_code") or 400,
+            "action": "batch_reconcile",
+            "error": td.get("error") or "task_detail failed",
+            "task_detail": td,
+        }
+    res_block = (td.get("data") or {}).get("results") if isinstance(td.get("data"), dict) else None
+    remote_status = ""
+    if isinstance(res_block, dict):
+        remote_status = str(res_block.get("status") or "").strip()
+    if remote_status.lower() != "success":
+        return {
+            "success": False,
+            "status_code": 409,
+            "action": "batch_reconcile",
+            "error": f"remote task status is not Success (got {remote_status or 'unknown'})",
+            "remote_status": remote_status,
+            "task_detail": td,
+        }
+
+    pr = await phagescope_handler(
+        action="result",
+        base_url=base_url,
+        token=token,
+        timeout=timeout,
+        taskid=remote_tid,
+        result_kind="phage",
+        session_id=session_id,
+        wait=wait,
+        poll_interval=poll_interval,
+        poll_timeout=poll_timeout,
+    )
+    observed: set = set()
+    if pr.get("success"):
+        pdata = pr.get("data")
+        if isinstance(pdata, dict):
+            observed = _phage_accession_ids_from_result_payload(pdata)
+    requested_list = manifest.get("requested_phage_ids") or []
+    if not isinstance(requested_list, list):
+        requested_list = []
+    requested_set = {str(x).strip() for x in requested_list if str(x).strip()}
+    missing = sorted(requested_set - observed)
+    reconcile_note: Optional[str] = None
+    if not observed and pr.get("success"):
+        reconcile_note = (
+            "No rows in phage result; requested_vs_observed diff may be meaningless until result phage is populated."
+        )
+    elif missing and manifest.get("rundemo") in ("true", "1", "yes"):
+        reconcile_note = (
+            "Some requested IDs are missing from phage results; with rundemo=true the platform may substitute demo "
+            "contigs so observed IDs may not match requested accessions."
+        )
+
+    manifest["last_reconcile"] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "primary_taskid": remote_tid,
+        "remote_status": remote_status,
+        "observed_phage_ids": sorted(observed),
+        "missing_phage_ids": missing,
+        "reconcile_note": reconcile_note,
+        "result_phage_success": pr.get("success"),
+        "result_phage_status_code": pr.get("status_code"),
+    }
+    _save_manifest_json(mpath, manifest)
+
+    out: Dict[str, Any] = {
+        "success": True,
+        "status_code": 200,
+        "action": "batch_reconcile",
+        "batch_id": bid,
+        "primary_taskid": remote_tid,
+        "manifest_path": str(mpath),
+        "requested_phage_ids": sorted(requested_set),
+        "observed_phage_ids": sorted(observed),
+        "missing_phage_ids": missing,
+        "reconcile_note": reconcile_note,
+        "result_phage": pr,
+    }
+    if path_warning:
+        out["warning"] = path_warning
+    return out
+
+
+async def _phagescope_batch_retry(
+    *,
+    base_url: str,
+    token: Optional[str],
+    timeout: float,
+    session_id: Optional[str],
+    userid: str,
+    modulelist: Any,
+    rundemo: str,
+    analysistype: str,
+    inputtype: str,
+    sequence: Optional[str],
+    file_path: Optional[str],
+    comparedatabase: Optional[str],
+    neednum: Optional[str],
+    batch_id: str,
+    retry_phage_ids: Any,
+    manifest_path_override: Optional[str],
+) -> Dict[str, Any]:
+    bid = str(batch_id or "").strip()
+    if not bid:
+        return {"success": False, "status_code": 400, "action": "batch_retry", "error": "batch_id is required"}
+    manifests_dir, path_warning = _get_manifests_directory(session_id)
+    if manifest_path_override:
+        mpath = Path(str(manifest_path_override).strip()).expanduser().resolve()
+    else:
+        mpath = manifests_dir / f"{bid}.json"
+    try:
+        manifest = _load_manifest_json(mpath)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"success": False, "status_code": 400, "action": "batch_retry", "error": str(exc)}
+
+    to_retry: List[str]
+    if retry_phage_ids is not None:
+        to_retry = _normalize_phage_id_list(retry_phage_ids)
+    else:
+        lr = manifest.get("last_reconcile")
+        if isinstance(lr, dict) and isinstance(lr.get("missing_phage_ids"), list):
+            to_retry = [str(x).strip() for x in lr["missing_phage_ids"] if str(x).strip()]
+        else:
+            to_retry = []
+
+    if not to_retry:
+        return {
+            "success": False,
+            "status_code": 400,
+            "action": "batch_retry",
+            "error": "retry_phage_ids is required when last_reconcile.missing_phage_ids is empty or missing",
+        }
+
+    mod = modulelist if modulelist is not None else manifest.get("modulelist")
+    uid = userid or str(manifest.get("userid") or "agent_default_user")
+    rd = str(manifest.get("rundemo") or rundemo or "false").lower()
+    atype = str(manifest.get("analysistype") or analysistype or "Annotation Pipline")
+    itype = str(manifest.get("inputtype") or inputtype or "enter")
+
+    retries = manifest.get("retries")
+    if not isinstance(retries, list):
+        retries = []
+
+    results: List[Dict[str, Any]] = []
+    for pid in to_retry:
+        sub = await phagescope_handler(
+            action="submit",
+            base_url=base_url,
+            token=token,
+            timeout=timeout,
+            phageid=pid,
+            userid=uid,
+            modulelist=mod,
+            rundemo=rd,
+            analysistype=atype,
+            inputtype=itype,
+            sequence=sequence,
+            file_path=file_path,
+            session_id=session_id,
+            comparedatabase=comparedatabase,
+            neednum=neednum,
+        )
+        tid = _extract_taskid_from_submit_result(sub) if isinstance(sub, dict) else None
+        entry = {
+            "phage_id": pid,
+            "taskid": tid,
+            "success": sub.get("success") is not False and bool(tid),
+            "at": datetime.now(timezone.utc).isoformat(),
+            "submit_status_code": sub.get("status_code"),
+        }
+        if sub.get("success") is False or not tid:
+            entry["error"] = sub.get("error") or "submit failed"
+        retries.append(entry)
+        results.append({"phage_id": pid, "taskid": tid, "submit": sub})
+
+    manifest["retries"] = retries
+    manifest["last_batch_retry_at"] = datetime.now(timezone.utc).isoformat()
+    _save_manifest_json(mpath, manifest)
+
+    slice_entries = retries[-len(to_retry) :] if retries else []
+    all_ok = bool(slice_entries) and all(bool(e.get("success")) for e in slice_entries)
+    out: Dict[str, Any] = {
+        "success": all_ok,
+        "status_code": 200 if all_ok else 207,
+        "action": "batch_retry",
+        "batch_id": bid,
+        "manifest_path": str(mpath),
+        "retry_phage_ids": to_retry,
+        "retry_results": results,
+    }
+    if path_warning:
+        out["warning"] = path_warning
+    return out
 
 
 def _infer_result_kind_from_path(path: str, fallback_kind: Optional[str] = None) -> Optional[str]:
@@ -808,6 +1376,11 @@ def _build_phage_payload(phageid: Optional[str], phageids: Optional[str]) -> Dic
         payload["phageid"] = _ensure_json_list_string(phageid)
     if phageids:
         payload["phageids"] = _ensure_semicolon_list_string(phageids)
+        # Remote API requires both `phageid` (JSON list) and `phageids` (semicolon-separated).
+        # When only phageids is provided (e.g. batch_submit multi_one_task), derive phageid from it.
+        if not phageid:
+            parts = [p.strip() for p in phageids.replace(",", ";").split(";") if p.strip()]
+            payload["phageid"] = json.dumps(parts) if parts else _ensure_json_list_string(phageids)
     elif phageid:
         payload["phageids"] = _ensure_semicolon_list_string(phageid)
     return payload
@@ -823,6 +1396,63 @@ def _extract_error_message(payload: Dict[str, Any]) -> Optional[str]:
         first_line = raw.strip().splitlines()[0]
         return first_line.strip()[:240]
     return None
+
+
+def _merge_http_and_business_success(status_code: int, payload: Any) -> Tuple[bool, Dict[str, Any]]:
+    """Combine HTTP status with PhageScope JSON ``code`` when present (phageapi.md).
+
+    Documented semantics: ``code`` 0 = success, 1 = warning (non-fatal), >= 2 = error.
+    When ``code`` is absent, success follows HTTP status only.
+    """
+    http_ok = status_code < 400
+    meta: Dict[str, Any] = {}
+    if not isinstance(payload, dict) or "code" not in payload:
+        return http_ok, meta
+    try:
+        code_int = int(payload["code"])  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return http_ok, meta
+    meta["business_code"] = code_int
+    if code_int >= 2:
+        meta["business_failure"] = True
+        err = _extract_error_message(payload)
+        if err:
+            meta["error"] = err
+        return False, meta
+    if code_int == 1:
+        meta["business_warning"] = True
+    return http_ok, meta
+
+
+def _response_with_business_layer(
+    action: str,
+    status_code: int,
+    payload: Any,
+    **extra: Any,
+) -> Dict[str, Any]:
+    """HTTP 200 with business ``code`` >= 2 => ``success`` False."""
+    success, biz_meta = _merge_http_and_business_success(status_code, payload)
+    out: Dict[str, Any] = {
+        "success": success,
+        "status_code": status_code,
+        "data": payload,
+        "action": action,
+    }
+    if "business_code" in biz_meta:
+        out["business_code"] = biz_meta["business_code"]
+    if biz_meta.get("business_warning"):
+        out["business_warning"] = True
+    if biz_meta.get("business_failure"):
+        out["business_failure"] = True
+    be = biz_meta.get("error")
+    if be:
+        out["error"] = be
+    elif not success and biz_meta.get("business_code") is not None:
+        out["error"] = f"PhageScope API returned business code {biz_meta['business_code']} (expected 0 or 1)."
+    out.update(extra)
+    if not success and be and not out.get("error"):
+        out["error"] = be
+    return out
 
 
 def _is_retriable_result_error(status_code: int, payload: Dict[str, Any]) -> bool:
@@ -1067,6 +1697,13 @@ async def phagescope_handler(
     # Cluster analysis specific parameters
     comparedatabase: Optional[str] = None,
     neednum: Optional[str] = None,
+    # Batch orchestration (manifest under session work/phagescope/manifests)
+    phage_ids: Optional[Any] = None,
+    batch_id: Optional[str] = None,
+    strategy: str = "multi_one_task",
+    manifest_path: Optional[str] = None,
+    retry_phage_ids: Optional[Any] = None,
+    phage_ids_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     base_url = _get_base_url(base_url)
     headers = {"Accept": "application/json"}
@@ -1086,11 +1723,78 @@ async def phagescope_handler(
             phageids = ";".join(accession_ids)
             sequence = None
 
+    if action == "batch_submit":
+        # Submit-style names (phageids / phage_id) are common; batch_submit previously only read
+        # phage_ids / phage_ids_file, so calls with phageids only looked "empty" and failed validation.
+        effective_phage_ids = phage_ids
+        if effective_phage_ids is None and phageids is not None and str(phageids).strip():
+            effective_phage_ids = phageids
+        if effective_phage_ids is None and phageid is not None and str(phageid).strip():
+            effective_phage_ids = phageid
+        return await _phagescope_batch_submit(
+            base_url=base_url,
+            token=token,
+            timeout=timeout,
+            session_id=session_id,
+            userid=userid,
+            modulelist=modulelist,
+            rundemo=rundemo,
+            analysistype=analysistype,
+            inputtype=inputtype,
+            sequence=sequence,
+            file_path=file_path,
+            comparedatabase=comparedatabase,
+            neednum=neednum,
+            phage_ids=effective_phage_ids,
+            phage_ids_file=phage_ids_file,
+            batch_id=batch_id,
+            strategy=strategy,
+            manifest_path_override=manifest_path,
+        )
+
     if action == "quality":
         action = "result"
         result_kind = result_kind or "quality"
     raw_taskid = taskid
     taskid = _resolve_phagescope_taskid(taskid, session_id=session_id)
+
+    if action == "batch_reconcile":
+        return await _phagescope_batch_reconcile(
+            base_url=base_url,
+            token=token,
+            timeout=timeout,
+            session_id=session_id,
+            batch_id=str(batch_id or "").strip(),
+            taskid=taskid,
+            wait=wait,
+            poll_interval=poll_interval,
+            poll_timeout=poll_timeout,
+            manifest_path_override=manifest_path,
+        )
+
+    if action == "batch_retry":
+        return await _phagescope_batch_retry(
+            base_url=base_url,
+            token=token,
+            timeout=timeout,
+            session_id=session_id,
+            userid=userid,
+            modulelist=modulelist,
+            rundemo=rundemo,
+            analysistype=analysistype,
+            inputtype=inputtype,
+            sequence=sequence,
+            file_path=file_path,
+            comparedatabase=comparedatabase,
+            neednum=neednum,
+            batch_id=str(batch_id or "").strip(),
+            retry_phage_ids=retry_phage_ids,
+            manifest_path_override=manifest_path,
+        )
+
+    # "download" without a concrete path is a common LLM mistake; batch-fetch artifacts instead.
+    if action == "download" and not download_path and taskid:
+        action = "save_all"
 
     if (
         action in {"save_all", "task_log"}
@@ -1159,6 +1863,17 @@ async def phagescope_handler(
                     "error": "Failed to list tasks for query",
                     "data": payload,
                 }
+            q_ok, q_meta = _merge_http_and_business_success(status_code, payload)
+            if not q_ok:
+                return {
+                    "success": False,
+                    "status_code": status_code,
+                    "action": "query",
+                    "data": payload,
+                    "error": q_meta.get("error")
+                    or f"PhageScope task list returned business code {q_meta.get('business_code')}",
+                    **{k: v for k, v in q_meta.items() if k in ("business_code", "business_failure")},
+                }
             tasks = payload.get("results") if isinstance(payload, dict) else None
             if isinstance(tasks, list) and tasks:
                 def _task_key(item: Any) -> int:
@@ -1189,7 +1904,7 @@ async def phagescope_handler(
     try:
         if action == "ping":
             status_code, payload = await _request("GET", base_url, "/", headers=headers, timeout=timeout)
-            return {"success": status_code < 400, "status_code": status_code, "data": payload, "action": "ping"}
+            return _response_with_business_layer("ping", status_code, payload)
 
         if action == "input_check":
             data = _build_phage_payload(phageid, phageids)
@@ -1210,7 +1925,7 @@ async def phagescope_handler(
             finally:
                 if files:
                     files["submitfile"].close()
-            return {"success": status_code < 400, "status_code": status_code, "data": payload, "action": "input_check"}
+            return _response_with_business_layer("input_check", status_code, payload)
 
         if action == "submit" or action == "cluster_submit":
             if not userid:
@@ -1311,17 +2026,16 @@ async def phagescope_handler(
             finally:
                 if files:
                     files["submitfile"].close()
-            return {
-                "success": status_code < 400,
-                "status_code": status_code,
-                "data": payload,
-                "action": action,
-                "endpoint": endpoint,
-                "analysistype": actual_analysistype,
-                "requested_modules": requested_module_items,
-                "normalized_modules": module_items,
-                "warnings": module_warnings or None,
-            }
+            return _response_with_business_layer(
+                action,
+                status_code,
+                payload,
+                endpoint=endpoint,
+                analysistype=actual_analysistype,
+                requested_modules=requested_module_items,
+                normalized_modules=module_items,
+                warnings=module_warnings or None,
+            )
 
         if action == "task_list":
             if not userid:
@@ -1329,7 +2043,7 @@ async def phagescope_handler(
             status_code, payload = await _request(
                 "GET", base_url, "/tasks/list/", params={"userid": userid}, headers=headers, timeout=timeout
             )
-            return {"success": status_code < 400, "status_code": status_code, "data": payload, "action": action}
+            return _response_with_business_layer(action, status_code, payload)
 
         if action == "task_detail":
             if not taskid and (phageid or phageids):
@@ -1350,7 +2064,10 @@ async def phagescope_handler(
                     parsed_detail = _safe_json_loads(task_detail) if isinstance(task_detail, str) else None
                     if parsed_detail is not None:
                         payload["parsed_task_detail"] = parsed_detail
-                return {"success": status_code < 400, "status_code": status_code, "data": payload, "action": action}
+                return _with_api_only_artifact_hint(
+                    _response_with_business_layer(action, status_code, payload),
+                    taskid,
+                )
 
             # Fallback: task_detail called with phageid -> redirect to result/phage_detail
             action = "result"
@@ -1372,7 +2089,10 @@ async def phagescope_handler(
                 headers=headers,
                 timeout=timeout,
             )
-            return {"success": status_code < 400, "status_code": status_code, "data": payload, "action": action}
+            return _with_api_only_artifact_hint(
+                _response_with_business_layer(action, status_code, payload),
+                taskid,
+            )
 
         if action == "result":
             if not result_kind:
@@ -1456,13 +2176,37 @@ async def phagescope_handler(
             status_code, payload = await _request(
                 "GET", base_url, endpoint, params=params, headers=headers, timeout=timeout
             )
-            if status_code < 400:
-                return {
+            biz_ok, biz_meta = _merge_http_and_business_success(status_code, payload)
+            if status_code < 400 and biz_ok:
+                out = {
                     "success": True,
                     "status_code": status_code,
                     "data": payload,
                     "action": action,
                     "result_kind": result_kind,
+                }
+                if "business_code" in biz_meta:
+                    out["business_code"] = biz_meta["business_code"]
+                if biz_meta.get("business_warning"):
+                    out["business_warning"] = True
+                return _with_api_only_artifact_hint(out, str(taskid) if taskid is not None else None)
+
+            if status_code < 400 and not biz_ok:
+                err = biz_meta.get("error") or (
+                    f"PhageScope API returned business code {biz_meta.get('business_code')} (expected 0 or 1)."
+                )
+                return {
+                    "success": False,
+                    "status_code": status_code,
+                    "data": payload,
+                    "action": action,
+                    "result_kind": result_kind,
+                    "error": err,
+                    **{
+                        k: v
+                        for k, v in biz_meta.items()
+                        if k in ("business_code", "business_failure", "business_warning")
+                    },
                 }
 
             # Soft-fail: remote result file not ready yet (common for phage/proteins).
@@ -1523,17 +2267,38 @@ async def phagescope_handler(
                         timeout=timeout,
                     )
                     if last_status_code < 400:
+                        lb_ok, lb_meta = _merge_http_and_business_success(last_status_code, last_payload)
+                        if lb_ok:
+                            out = {
+                                "success": True,
+                                "status_code": last_status_code,
+                                "data": last_payload,
+                                "action": action,
+                                "result_kind": result_kind,
+                                "polling": {
+                                    "waited": True,
+                                    "attempts": attempts,
+                                    "poll_timeout": poll_timeout,
+                                    "poll_interval": poll_interval,
+                                },
+                            }
+                            if "business_code" in lb_meta:
+                                out["business_code"] = lb_meta["business_code"]
+                            if lb_meta.get("business_warning"):
+                                out["business_warning"] = True
+                            return _with_api_only_artifact_hint(out, str(taskid) if taskid is not None else None)
                         return {
-                            "success": True,
+                            "success": False,
                             "status_code": last_status_code,
                             "data": last_payload,
                             "action": action,
                             "result_kind": result_kind,
-                            "polling": {
-                                "waited": True,
-                                "attempts": attempts,
-                                "poll_timeout": poll_timeout,
-                                "poll_interval": poll_interval,
+                            "error": lb_meta.get("error")
+                            or f"PhageScope API returned business code {lb_meta.get('business_code')}",
+                            **{
+                                k: v
+                                for k, v in lb_meta.items()
+                                if k in ("business_code", "business_failure", "business_warning")
                             },
                         }
 
@@ -1730,30 +2495,36 @@ async def phagescope_handler(
                                 dest = Path(save_path).expanduser().resolve()
                                 dest.parent.mkdir(parents=True, exist_ok=True)
                                 dest.write_bytes(content)
-                                return {
+                                return _with_api_only_artifact_hint(
+                                    {
+                                        "success": True,
+                                        "status_code": 200,
+                                        "action": action,
+                                        "saved_path": str(dest),
+                                        "content_type": content_type,
+                                        "content_length": len(content),
+                                        "fallback": "result_api_tsv",
+                                        "taskid": str(taskid),
+                                        "dynamic_rebuild_attempted": dynamic_rebuild_attempted,
+                                    },
+                                    str(taskid),
+                                )
+                            preview = content[: max(preview_bytes, 0)]
+                            return _with_api_only_artifact_hint(
+                                {
                                     "success": True,
                                     "status_code": 200,
                                     "action": action,
-                                    "saved_path": str(dest),
+                                    "data": preview.decode("utf-8", errors="replace"),
                                     "content_type": content_type,
                                     "content_length": len(content),
+                                    "preview_bytes": len(preview),
                                     "fallback": "result_api_tsv",
                                     "taskid": str(taskid),
                                     "dynamic_rebuild_attempted": dynamic_rebuild_attempted,
-                                }
-                            preview = content[: max(preview_bytes, 0)]
-                            return {
-                                "success": True,
-                                "status_code": 200,
-                                "action": action,
-                                "data": preview.decode("utf-8", errors="replace"),
-                                "content_type": content_type,
-                                "content_length": len(content),
-                                "preview_bytes": len(preview),
-                                "fallback": "result_api_tsv",
-                                "taskid": str(taskid),
-                                "dynamic_rebuild_attempted": dynamic_rebuild_attempted,
-                            }
+                                },
+                                str(taskid),
+                            )
                 else:
                     logger.warning(
                         "Download action: no fallback endpoint available for path '%s' (kind=%s)",
@@ -1776,7 +2547,7 @@ async def phagescope_handler(
                 dest = Path(save_path).expanduser().resolve()
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content)
-                return {
+                dl_ok = {
                     "success": response.status_code < 400,
                     "status_code": response.status_code,
                     "action": action,
@@ -1784,38 +2555,49 @@ async def phagescope_handler(
                     "content_type": content_type,
                     "content_length": len(content),
                 }
+                if taskid:
+                    dl_ok["taskid"] = str(taskid)
+                return _with_api_only_artifact_hint(dl_ok, str(taskid) if taskid else None)
             preview = content[: max(preview_bytes, 0)]
             if "application/json" in content_type:
                 try:
                     payload = json.loads(content.decode("utf-8", errors="replace"))
                 except json.JSONDecodeError:
                     payload = {"raw": content.decode("utf-8", errors="replace")}
-                return {
-                    "success": response.status_code < 400,
-                    "status_code": response.status_code,
-                    "action": action,
-                    "data": payload,
-                    "content_type": content_type,
-                    "content_length": len(content),
-                }
+                return _with_api_only_artifact_hint(
+                    _response_with_business_layer(
+                        action,
+                        response.status_code,
+                        payload,
+                        content_type=content_type,
+                        content_length=len(content),
+                    ),
+                    str(taskid) if taskid else None,
+                )
             if content_type.startswith("text/"):
-                return {
+                return _with_api_only_artifact_hint(
+                    {
+                        "success": response.status_code < 400,
+                        "status_code": response.status_code,
+                        "action": action,
+                        "data": preview.decode("utf-8", errors="replace"),
+                        "content_type": content_type,
+                        "content_length": len(content),
+                        "preview_bytes": len(preview),
+                    },
+                    str(taskid) if taskid else None,
+                )
+            return _with_api_only_artifact_hint(
+                {
                     "success": response.status_code < 400,
                     "status_code": response.status_code,
                     "action": action,
-                    "data": preview.decode("utf-8", errors="replace"),
                     "content_type": content_type,
                     "content_length": len(content),
                     "preview_bytes": len(preview),
-                }
-            return {
-                "success": response.status_code < 400,
-                "status_code": response.status_code,
-                "action": action,
-                "content_type": content_type,
-                "content_length": len(content),
-                "preview_bytes": len(preview),
-            }
+                },
+                str(taskid) if taskid else None,
+            )
 
         if action == "save_all":
             # Requires taskid; optionally accepts output_dir
@@ -1864,6 +2646,14 @@ async def phagescope_handler(
                     if status_code >= 400:
                         errors.append(f"{result_kind}: HTTP {status_code}")
                         return None
+                    rk_ok, rk_meta = _merge_http_and_business_success(status_code, payload)
+                    if not rk_ok:
+                        err = rk_meta.get("error") or ""
+                        suffix = f" ({err})" if err else ""
+                        errors.append(
+                            f"{result_kind}: business code {rk_meta.get('business_code')}{suffix}"
+                        )
+                        return None
                     return payload
                 except Exception as e:
                     errors.append(f"{result_kind}: {str(e)}")
@@ -1873,6 +2663,14 @@ async def phagescope_handler(
             detail_status, detail_payload = await _request(
                 "GET", base_url, "/tasks/detail/", params={"taskid": taskid}, headers=headers, timeout=timeout
             )
+            if detail_status < 400:
+                td_ok, td_meta = _merge_http_and_business_success(detail_status, detail_payload)
+                if not td_ok:
+                    err = td_meta.get("error") or ""
+                    suffix = f" ({err})" if err else ""
+                    errors.append(
+                        f"task_detail: business code {td_meta.get('business_code')}{suffix}"
+                    )
             raw_responses["task_detail"] = {"status_code": detail_status, "payload": detail_payload}
             (raw_dir / "task_detail_raw.json").write_text(
                 json.dumps(detail_payload, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -1986,6 +2784,14 @@ async def phagescope_handler(
                         raw_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
                         if status_code >= 400:
                             errors.append(f"modules[{module_name}]: HTTP {status_code}")
+                            continue
+                        mod_ok, mod_meta = _merge_http_and_business_success(status_code, payload)
+                        if not mod_ok:
+                            err = mod_meta.get("error") or ""
+                            suffix = f" ({err})" if err else ""
+                            errors.append(
+                                f"modules[{module_name}]: business code {mod_meta.get('business_code')}{suffix}"
+                            )
                             continue
 
                         # Persist per-module payload for easier downstream debugging/consumption.
@@ -2116,6 +2922,7 @@ async def phagescope_handler(
                 "success": True if (core_saved or len(errors) == 0) else False,
                 "status_code": 200 if len(errors) == 0 else 207,  # 207 = Multi-Status
                 "action": action,
+                "artifact_scope": "local_bundle",
                 "taskid": taskid,
                 "output_directory": str(output_dir.resolve()),
                 "output_directory_rel": str(output_dir),
@@ -2159,6 +2966,9 @@ phagescope_tool = {
                     "download",
                     "query",
                     "save_all",
+                    "batch_submit",
+                    "batch_reconcile",
+                    "batch_retry",
                 ],
             },
             "base_url": {"type": "string", "description": "API base URL"},
@@ -2230,6 +3040,29 @@ phagescope_tool = {
             "neednum": {
                 "type": "string",
                 "description": "Number of results to return (for cluster_submit)",
+            },
+            "phage_ids": {
+                "description": "For batch_submit: list of phage accessions or semicolon/newline-separated string (use with batch_submit).",
+            },
+            "batch_id": {
+                "type": "string",
+                "description": "Batch manifest id (UUID); used by batch_submit/batch_reconcile/batch_retry.",
+            },
+            "strategy": {
+                "type": "string",
+                "description": "batch_submit: multi_one_task (default) or per_strain",
+                "default": "multi_one_task",
+            },
+            "manifest_path": {
+                "type": "string",
+                "description": "Optional explicit path to batch manifest JSON (advanced).",
+            },
+            "retry_phage_ids": {
+                "description": "For batch_retry: explicit ids to retry; if omitted, uses last_reconcile.missing_phage_ids from manifest.",
+            },
+            "phage_ids_file": {
+                "type": "string",
+                "description": "Optional path to a text file with one phage id per line (batch_submit).",
             },
         },
         "required": ["action"],

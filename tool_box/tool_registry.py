@@ -12,6 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from .tools import register_tool
+from .tools_impl.deliverable_submit import deliverable_submit_tool
 from .tools_impl import (
     claude_code_tool,
     database_query_tool,
@@ -59,6 +60,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     bio_tools_tool,
     result_interpreter_tool,
     plan_operation_tool,
+    deliverable_submit_tool,
 ]
 
 # Tools that need special field mapping

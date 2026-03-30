@@ -99,6 +99,7 @@ def test_plan_executor_passes_reference_context_into_deep_think(monkeypatch: pyt
 
     class _DeepThinkProbe:
         def __init__(self, *args, **kwargs):
+            captured["available_tools"] = kwargs.get("available_tools")
             return
 
         def pause(self) -> None:
@@ -173,3 +174,4 @@ def test_plan_executor_passes_reference_context_into_deep_think(monkeypatch: pyt
     ]
     assert "/tmp/paper/evidence.md" in task_context.paper_context_paths
     assert "/tmp/analysis/output.csv" in task_context.paper_context_paths
+    assert "deliverable_submit" in (captured.get("available_tools") or [])

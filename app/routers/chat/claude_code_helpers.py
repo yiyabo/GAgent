@@ -8,6 +8,8 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
+
 from .session_helpers import _find_key_recursive
 
 if TYPE_CHECKING:
@@ -37,10 +39,20 @@ def build_conversation_summary_for_cc(
     """
     if not history:
         return ""
+    try:
+        tail_n = max(
+            1,
+            min(
+                CHAT_HISTORY_ABS_MAX,
+                int(getattr(get_settings(), "chat_history_max_messages", 80)),
+            ),
+        )
+    except Exception:
+        tail_n = 80
     PER_MSG_CAP = 600
     lines: List[str] = []
     used = 0
-    for msg in reversed(history[-30:]):
+    for msg in reversed(history[-tail_n:]):
         role = msg.get("role", "unknown")
         content = (msg.get("content") or "").strip()
         if not content:

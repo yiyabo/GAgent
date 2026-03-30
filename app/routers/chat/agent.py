@@ -17,7 +17,7 @@ from app.config.executor_config import get_executor_settings
 from app.repository.chat_action_runs import create_action_run, fetch_action_run, update_action_run
 from app.repository.plan_storage import append_action_log_entry, update_decomposition_job_status
 from app.llm import LLMClient
-from app.services.foundation.settings import get_settings
+from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.llm.decomposer_service import PlanDecomposerLLMService
 from app.services.llm.llm_service import LLMService, get_llm_service
 from app.services.llm.structured_response import LLMAction, LLMStructuredResponse, schema_as_json
@@ -170,9 +170,22 @@ from .session_helpers import (
     _record_phagescope_task_memory,
     _save_chat_message,
     _set_session_plan_id,
+    _update_session_metadata,
+)
+from .subject_identity import (
+    build_subject_aliases,
+    canonicalize_subject_ref,
+    subject_identity_matches,
 )
 
 logger = logging.getLogger(__name__)
+_RUNTIME_CONTEXT_KEYS = (
+    "active_subject",
+    "last_failure_state",
+    "last_evidence_state",
+    "last_subject_action_class",
+)
+_LOCAL_CAPABILITY_FLOORS = {"local_read", "local_inspect"}
 
 
 def _build_simple_chat_thinking_process(reasoning_text: str) -> Optional[Dict[str, Any]]:
@@ -202,10 +215,228 @@ def _build_simple_chat_thinking_process(reasoning_text: str) -> Optional[Dict[st
     }
 
 
+def _current_user_turn_index_from_history(
+    history: Optional[List[Dict[str, Any]]],
+) -> int:
+    if not history:
+        return 1
+    return 1 + sum(
+        1
+        for item in history
+        if str(item.get("role") or "").strip().lower() == "user"
+    )
+
+
+def _persist_runtime_context(agent: Any) -> None:
+    if not getattr(agent, "session_id", None):
+        return
+
+    def _updater(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        for key in _RUNTIME_CONTEXT_KEYS:
+            value = (getattr(agent, "extra_context", {}) or {}).get(key)
+            if isinstance(value, dict):
+                metadata[key] = dict(value)
+            else:
+                metadata.pop(key, None)
+        return metadata
+
+    _update_session_metadata(agent.session_id, _updater)
+
+
+def _seed_active_subject_from_routing(
+    agent: Any,
+    routing_decision: RequestRoutingDecision,
+) -> None:
+    subject = (
+        dict(routing_decision.subject_resolution)
+        if isinstance(routing_decision.subject_resolution, dict)
+        else {}
+    )
+    kind = str(subject.get("kind") or "none").strip().lower()
+    canonical_ref = canonicalize_subject_ref(
+        subject.get("canonical_ref") or subject.get("display_ref")
+    )
+    if kind == "none" or not canonical_ref:
+        return
+    display_ref = str(subject.get("display_ref") or canonical_ref).strip() or canonical_ref
+    aliases = build_subject_aliases(subject.get("aliases"), canonical_ref, display_ref)
+
+    current_turn = int(
+        (getattr(agent, "extra_context", {}) or {}).get("current_user_turn_index")
+        or _current_user_turn_index_from_history(getattr(agent, "history", None))
+    )
+    existing = (
+        dict((getattr(agent, "extra_context", {}) or {}).get("active_subject") or {})
+        if isinstance((getattr(agent, "extra_context", {}) or {}).get("active_subject"), dict)
+        else {}
+    )
+    same_subject = subject_identity_matches(
+        existing,
+        candidate_ref=canonical_ref,
+        candidate_display_ref=display_ref,
+        candidate_aliases=aliases,
+    )
+    verification_state = (
+        str(existing.get("verification_state") or "").strip() if same_subject else "unresolved"
+    ) or "unresolved"
+    active_subject = {
+        "kind": kind,
+        "canonical_ref": canonical_ref,
+        "display_ref": display_ref,
+        "aliases": aliases,
+        "verification_state": verification_state,
+        "salience": 5,
+        "last_tool_scope": existing.get("last_tool_scope") if same_subject else None,
+        "created_turn": existing.get("created_turn") if same_subject else current_turn,
+        "last_referenced_turn": current_turn,
+        "last_verified_turn": existing.get("last_verified_turn") if same_subject else None,
+    }
+    agent.extra_context["active_subject"] = active_subject
+
+
+def _build_grounded_local_failure_message(
+    *,
+    failure_state: Dict[str, Any],
+    active_subject: Optional[Dict[str, Any]],
+    query: str,
+) -> str:
+    language = detect_reasoning_language(query or "")
+    subject_ref = ""
+    if isinstance(active_subject, dict):
+        subject_ref = str(
+            active_subject.get("display_ref") or active_subject.get("canonical_ref") or ""
+        ).strip()
+    if not subject_ref:
+        subject_ref = str(failure_state.get("subject_ref") or "该路径").strip() or "该路径"
+    error_message = str(failure_state.get("error_message") or "").strip() or "unknown error"
+    lowered_error = error_message.lower()
+    if language == "zh":
+        if "not found" in lowered_error or "不存在" in error_message:
+            return (
+                f"我目前还不能确认 `{subject_ref}` 里面有哪些数据。"
+                f"刚才对该路径的真实检查返回了 `{error_message}`，所以现在没有足够证据说已经读到了目录或文件内容。"
+            )
+        if "permission" in lowered_error or "权限" in error_message:
+            return (
+                f"我目前还不能确认 `{subject_ref}` 的内容。"
+                f"真实工具调用返回了权限相关失败：`{error_message}`。"
+            )
+        if "tool_not_available" in lowered_error or "not available" in lowered_error:
+            return (
+                f"我目前还不能确认 `{subject_ref}` 的内容。"
+                f"这轮请求需要本地只读探索能力，但实际可用工具不足：`{error_message}`。"
+            )
+        return (
+            f"我目前还不能确认 `{subject_ref}` 的内容。"
+            f"刚才的真实工具结果是失败：`{error_message}`，因此现在证据不足，不能说已经读到了文件或目录内容。"
+        )
+    if "not found" in lowered_error:
+        return (
+            f"I cannot confirm what is inside `{subject_ref}` yet. "
+            f"The real tool result for that path was `{error_message}`, so there is not enough evidence to claim the file or directory was read."
+        )
+    if "permission" in lowered_error:
+        return (
+            f"I cannot confirm the contents of `{subject_ref}` yet. "
+            f"The real tool result was a permission failure: `{error_message}`."
+        )
+    if "tool_not_available" in lowered_error or "not available" in lowered_error:
+        return (
+            f"I cannot confirm the contents of `{subject_ref}` yet. "
+            f"This request requires local inspection, but the required tool capability was unavailable: `{error_message}`."
+        )
+    return (
+        f"I cannot confirm the contents of `{subject_ref}` yet. "
+        f"The real tool result failed with `{error_message}`, so there is not enough evidence to claim the file or directory was read."
+    )
+
+
+def _apply_grounded_local_answer(
+    agent: Any,
+    answer: str,
+    routing_decision: RequestRoutingDecision,
+) -> str:
+    intent_type = str(getattr(routing_decision, "intent_type", "") or "").strip().lower()
+    if (
+        routing_decision.capability_floor not in _LOCAL_CAPABILITY_FLOORS
+        and intent_type != "local_mutation"
+    ):
+        return str(answer or "").strip()
+    evidence_state = (getattr(agent, "extra_context", {}) or {}).get("last_evidence_state")
+    active_subject = (getattr(agent, "extra_context", {}) or {}).get("active_subject")
+    if intent_type == "local_mutation" and isinstance(evidence_state, dict):
+        st = str(evidence_state.get("status") or "").strip().lower()
+        if st == "unverified":
+            subject_ref = ""
+            if isinstance(active_subject, dict):
+                subject_ref = str(
+                    active_subject.get("display_ref") or active_subject.get("canonical_ref") or ""
+                ).strip()
+            if not subject_ref:
+                subject_ref = "当前目标路径"
+            language = detect_reasoning_language(routing_decision.effective_user_message or "")
+            if language == "zh":
+                return (
+                    f"命令已发送到终端，但还没有足够证据确认本地修改已经完成（例如解压/移动/删除是否真正成功）。"
+                    f"目标：`{subject_ref}`。请稍后重试 `terminal_session replay` 或用 `file_operations` 检查路径。"
+                )
+            return (
+                f"The command was sent to the terminal, but there is not enough evidence yet to confirm "
+                f"the local file change completed successfully. Subject: `{subject_ref}`. "
+                f"Retry `terminal_session replay` or verify paths with `file_operations`."
+            )
+    if isinstance(evidence_state, dict):
+        verified_facts = evidence_state.get("verified_facts")
+        est = str(evidence_state.get("status") or "").strip().lower()
+        if est == "verified" and isinstance(verified_facts, list) and verified_facts:
+            return str(answer or "").strip()
+    failure_state = (getattr(agent, "extra_context", {}) or {}).get("last_failure_state")
+    if not isinstance(failure_state, dict):
+        return str(answer or "").strip()
+    if intent_type == "local_mutation":
+        subject_ref = ""
+        if isinstance(active_subject, dict):
+            subject_ref = str(
+                active_subject.get("display_ref") or active_subject.get("canonical_ref") or ""
+            ).strip()
+        if not subject_ref:
+            subject_ref = str(failure_state.get("subject_ref") or "当前目标路径").strip() or "当前目标路径"
+        error_message = str(failure_state.get("error_message") or "unknown error").strip()
+        language = detect_reasoning_language(routing_decision.effective_user_message or "")
+        lowered_error = error_message.lower()
+        if language == "zh":
+            if "not found" in lowered_error or "不存在" in error_message:
+                return (
+                    f"我还没有成功完成对 `{subject_ref}` 的本地修改。"
+                    f"真实工具调用返回了 `{error_message}`，所以目标 zip 或目录目前没有被成功处理。"
+                )
+            return (
+                f"我还没有成功完成对 `{subject_ref}` 的本地修改。"
+                f"真实工具调用失败：`{error_message}`。"
+            )
+        if "not found" in lowered_error:
+            return (
+                f"I could not complete the requested local file change for `{subject_ref}`. "
+                f"The real tool result was `{error_message}`, so the target zip or directory was not processed."
+            )
+        return (
+            f"I could not complete the requested local file change for `{subject_ref}`. "
+            f"The real tool result failed with `{error_message}`."
+        )
+
+    return _build_grounded_local_failure_message(
+        failure_state=failure_state,
+        active_subject=active_subject if isinstance(active_subject, dict) else None,
+        query=routing_decision.effective_user_message,
+    )
+
+
 class StructuredChatAgent:
     """Plan conversation agent using a structured schema."""
 
-    MAX_HISTORY = 30
+    # Legacy attribute for tests / duck-typed agents. Runtime uses `max_history_messages`
+    # from settings (`CHAT_HISTORY_MAX_MESSAGES`, default 80).
+    MAX_HISTORY = 80
     PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*previous\.([^\}]+)\s*\}\}")
 
     def __init__(
@@ -224,6 +455,11 @@ class StructuredChatAgent:
         self.session_id = session_id
         self.conversation_id = conversation_id
         self.history = history or []
+        try:
+            _ch_raw = int(getattr(get_settings(), "chat_history_max_messages", 80))
+        except Exception:
+            _ch_raw = 80
+        self.max_history_messages = max(1, min(CHAT_HISTORY_ABS_MAX, _ch_raw))
         self.extra_context = extra_context or {}
         provider = _normalize_search_provider(
             self.extra_context.get("default_search_provider")
@@ -909,7 +1145,29 @@ class StructuredChatAgent:
         """
         routing_decision, route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
-        if routing_decision.request_route_mode == "auto_simple":
+        self.extra_context.update(
+            {
+                "request_tier": routing_decision.request_tier,
+                "request_route_mode": routing_decision.request_route_mode,
+                "intent_type": routing_decision.intent_type,
+                "capability_floor": routing_decision.capability_floor,
+                "simple_channel_allowed": routing_decision.simple_channel_allowed,
+                "subject_resolution": dict(routing_decision.subject_resolution),
+                "brevity_hint": routing_decision.brevity_hint,
+                "current_user_turn_index": _current_user_turn_index_from_history(self.history),
+            }
+        )
+        _seed_active_subject_from_routing(self, routing_decision)
+        if self.session_id:
+            try:
+                _persist_runtime_context(self)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Failed to persist routing runtime context: %s", exc)
+
+        if (
+            routing_decision.capability_floor == "plain_chat"
+            and routing_decision.simple_channel_allowed
+        ):
             async for chunk in self.stream_simple_chat(
                 effective_user_message,
                 routing_decision=routing_decision,
@@ -1712,6 +1970,7 @@ class StructuredChatAgent:
                                             "user_message": effective_user_message,
                                             "request_tier": routing_decision.request_tier,
                                             "chat_history": self.history,
+                                            "chat_history_max_messages": self.max_history_messages,
                                             "recent_tool_results": self.extra_context.get(
                                                 "recent_tool_results", []
                                             ),
@@ -1857,6 +2116,7 @@ class StructuredChatAgent:
                 think_context = {
                     **self.extra_context,
                     "chat_history": self.history,
+                    "chat_history_max_messages": self.max_history_messages,
                     "session_id": self.session_id,
                     **routing_decision.metadata(),
                     **route_profile.prompt_metadata(),
@@ -1953,6 +2213,13 @@ class StructuredChatAgent:
             elif event_type == "result":
                 # Final result, yield as standard chat message
                 res: DeepThinkResult = item["result"]
+                grounded_answer = _apply_grounded_local_answer(
+                    self,
+                    res.final_answer,
+                    routing_decision,
+                )
+                if grounded_answer != str(res.final_answer or "").strip():
+                    res = replace(res, final_answer=grounded_answer)
                 result_job_id = (
                     str(item.get("job_id"))
                     if isinstance(item.get("job_id"), str) and item.get("job_id")
@@ -1970,6 +2237,7 @@ class StructuredChatAgent:
                 # 💾 Save Deep Think response to database
                 if self.session_id and full_response:
                     try:
+                        _persist_runtime_context(self)
                         plan_tree = getattr(self, "plan_tree", None)
                         plan_title = plan_tree.title if plan_tree else None
                         metadata_payload: Dict[str, Any] = {
@@ -2169,6 +2437,7 @@ class StructuredChatAgent:
 
         if self.session_id and display_text:
             try:
+                _persist_runtime_context(self)
                 from .session_helpers import _save_chat_message
                 save_meta: Dict[str, Any] = {
                     "plan_id": self.plan_session.plan_id,

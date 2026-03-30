@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from app.config.tool_policy import get_tool_policy, is_tool_allowed
 from app.prompts import prompt_manager
+from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.response_style import (
     PROFESSIONAL_STYLE_INSTRUCTION,
     sanitize_professional_response_text,
@@ -14,6 +15,21 @@ from app.services.response_style import (
 from .request_routing import resolve_request_routing
 
 logger = logging.getLogger(__name__)
+
+
+def agent_history_limit(agent: Any) -> int:
+    """How many recent chat messages to inject into prompts (instance, legacy, or settings)."""
+    lim = getattr(agent, "max_history_messages", None)
+    if isinstance(lim, int) and lim > 0:
+        return max(1, min(CHAT_HISTORY_ABS_MAX, lim))
+    legacy = getattr(agent, "MAX_HISTORY", None)
+    if isinstance(legacy, int) and legacy > 0:
+        return max(1, min(CHAT_HISTORY_ABS_MAX, legacy))
+    try:
+        raw = int(getattr(get_settings(), "chat_history_max_messages", 80))
+    except Exception:
+        raw = 80
+    return max(1, min(CHAT_HISTORY_ABS_MAX, raw))
 
 
 def should_use_deep_think(agent: Any, message: str) -> bool:
@@ -60,7 +76,7 @@ def build_prompt(agent: Any, user_message: str) -> str:
         prompt_parts.append(memory_section)
 
     prompt_parts.extend([
-        f"History (latest {agent.MAX_HISTORY} messages):\n{history_text}",
+        f"History (latest {agent_history_limit(agent)} messages):\n{history_text}",
         "\n=== Plan Overview ===",
         plan_outline,
     ])
@@ -126,7 +142,7 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
         PROFESSIONAL_STYLE_INSTRUCTION,
         "Do NOT output JSON, YAML, or XML. Do NOT wrap the reply in code fences unless showing a short code sample.",
         "Do NOT emit tool call payloads or {\"llm_reply\": ...} schemas — they will be shown raw to the user and will break the UI.",
-        "If the user needs live web data or tool runs, say clearly that they should open or bind a research plan in the app for full agent mode.",
+        "If the user needs live web data, local file inspection, or any tool-backed verification, say clearly that this plain chat channel cannot verify those facts directly.",
         "",
         f"Extra context:\n{context_text}",
     ]
@@ -135,7 +151,7 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
 
     prompt_parts.extend(
         [
-            f"History (latest {agent.MAX_HISTORY} messages):\n{history_text}",
+            f"History (latest {agent_history_limit(agent)} messages):\n{history_text}",
             "\n=== Plan Overview ===",
             plan_outline,
         ]
@@ -272,7 +288,7 @@ def get_structured_agent_prompts() -> Dict[str, Any]:
 def format_history(agent: Any) -> str:
     if not agent.history:
         return "<empty>"
-    truncated = agent.history[-agent.MAX_HISTORY :]
+    truncated = agent.history[-agent_history_limit(agent) :]
     return "\n".join(
         f"{item.get('role', 'user')}: {item.get('content', '')}"
         for item in truncated

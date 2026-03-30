@@ -112,3 +112,16 @@ def test_format_sse_includes_id_line() -> None:
     assert "data:" in line
     payload = json.loads(line.split("data: ", 1)[1].split("\n", 1)[0])
     assert payload["type"] == "delta"
+
+
+def test_fix_stale_chat_runs_on_startup(memory_chat_run_db: sqlite3.Connection) -> None:
+    cr.create_chat_run("run_stale", "sess_unit", "{}")
+    cr.mark_chat_run_started("run_stale")
+    assert cr.get_chat_run("run_stale")["status"] == "running"
+    n = cr.fix_stale_chat_runs_on_startup()
+    assert n == 1
+    row = cr.get_chat_run("run_stale")
+    assert row["status"] == "failed"
+    assert "restarted" in (row.get("error") or "").lower()
+    evs = cr.fetch_events_after("run_stale", -1)
+    assert any(p.get("type") == "error" for _, p in evs)

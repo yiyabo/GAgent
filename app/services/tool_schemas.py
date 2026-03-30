@@ -250,7 +250,12 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "type": "function",
         "function": {
             "name": "document_reader",
-            "description": "Read local documents with format-aware parsing (.docx, .pdf, .txt).",
+            "description": (
+                "Read local documents with format-aware parsing (.docx, .pdf, .txt, .md). "
+                "For .csv and .tsv, returns an automatic preview (first ~150 lines) as text; "
+                "for full table stats, filtering, or plots use claude_code. "
+                "Do not use for .xlsx/.json/.parquet (use claude_code)."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -472,16 +477,57 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "name": "phagescope",
             "description": (
                 "PhageScope cloud platform for phage genome analysis. ASYNC service. "
+                "Use for reachability and remote workflow questions: call action=ping first (HTTP check); "
+                "do not infer connectivity from local file listing. "
+                "Documented flows center on userid; do not ask users for a generic 'API Token' unless they "
+                "or platform docs explicitly require Bearer auth. "
                 "Workflow: submit -> task_list/task_detail -> result. "
-                "After submit, report the taskid and tell the user to check status later."
+                "After submit, report the taskid and tell the user to check status later. "
+                "IMPORTANT: result/quality/task_detail/download return API/JSON (or one file), not a full local folder tree; "
+                "for a complete on-disk bundle (metadata/, annotation/, raw_api_responses/, summary.json), use action=save_all "
+                "with the numeric taskid after the remote task succeeds. "
+                "Batch: action=batch_submit submits multiple phage ids (default strategy multi_one_task = one remote taskid) and "
+                "writes a manifest JSON under the session work directory; batch_reconcile diffs requested ids vs result/phage rows; "
+                "batch_retry re-submits missing ids one strain per task. Prefer these over memorizing taskids in chat."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["submit", "task_list", "task_detail", "result", "save_all", "download", "input_check"],
-                        "description": "The PhageScope action to perform.",
+                        "enum": [
+                            "ping",
+                            "input_check",
+                            "submit",
+                            "cluster_submit",
+                            "task_list",
+                            "task_detail",
+                            "task_log",
+                            "result",
+                            "quality",
+                            "download",
+                            "query",
+                            "save_all",
+                            "batch_submit",
+                            "batch_reconcile",
+                            "batch_retry",
+                        ],
+                        "description": (
+                            "PhageScope action. Use ping for connectivity/API checks (no other params required). "
+                            "Use task_list with userid to verify account-scoped access when ping succeeds. "
+                            "Use batch_submit/batch_reconcile/batch_retry for multi-strain workflows with manifest persistence."
+                        ),
+                    },
+                    "base_url": {
+                        "type": "string",
+                        "description": "Optional API base URL override (defaults from server configuration).",
+                    },
+                    "token": {
+                        "type": "string",
+                        "description": (
+                            "Rarely needed. Optional Bearer token only if the platform/account explicitly "
+                            "requires it; omit by default (phageapi-style flows use userid, not a mandatory token)."
+                        ),
                     },
                     "userid": {"type": "string", "description": "User ID for the PhageScope platform."},
                     "phageid": {"type": "string", "description": "Single phage ID or accession."},
@@ -490,7 +536,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                         "type": "string",
                         "description": (
                             "Numeric PhageScope remote task ID for status/result queries "
-                            "(e.g., 37468), not local job ids like act_xxx."
+                            "(e.g., 37468), not local job ids like act_xxx. "
+                            "Use this field name; if you emit task_id instead, the server maps it to taskid."
                         ),
                     },
                     "modulelist": {
@@ -499,13 +546,33 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                             "Comma-separated submit modules only. For Annotation Pipline, use real submit "
                             "modules such as quality, annotation, host, lifestyle, terminator, taxonomic, "
                             "trna, anticrispr, crispr, arvf, transmembrane. Do not use result/output names "
-                            "such as proteins, phage_detail, phagefasta, or tree in submit modulelist."
+                            "such as proteins, phage_detail, phagefasta, or tree in submit modulelist. "
+                            "For action=batch_submit, if omitted the backend defaults to [quality]."
                         ),
                     },
                     "result_kind": {
                         "type": "string",
                         "enum": ["quality", "proteins", "phage_detail", "modules", "tree", "phagefasta"],
                         "description": "Type of result to retrieve.",
+                    },
+                    "phage_ids": {
+                        "description": "For batch_submit: array of accessions or a single string with semicolons/newlines.",
+                    },
+                    "batch_id": {
+                        "type": "string",
+                        "description": "Batch manifest id (batch_reconcile, batch_retry; optional on batch_submit to fix the id).",
+                    },
+                    "strategy": {
+                        "type": "string",
+                        "description": "batch_submit: multi_one_task (default) or per_strain.",
+                    },
+                    "manifest_path": {"type": "string", "description": "Optional explicit manifest JSON path."},
+                    "retry_phage_ids": {
+                        "description": "batch_retry: explicit list of ids; if omitted, uses last reconcile missing list.",
+                    },
+                    "phage_ids_file": {
+                        "type": "string",
+                        "description": "batch_submit: optional path to newline-separated phage ids.",
                     },
                 },
                 "required": ["action"],
@@ -581,8 +648,11 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["metadata", "generate", "execute", "analyze"],
-                        "description": "Analysis operation. 'analyze' is the recommended full pipeline.",
+                        "enum": ["metadata", "generate", "execute", "analyze", "plan_analyze"],
+                        "description": (
+                            "Analysis operation. 'analyze' is the full pipeline; "
+                            "'metadata' for schema peek; 'plan_analyze' for plan-linked workflows."
+                        ),
                     },
                     "file_paths": {
                         "type": "array",
@@ -595,11 +665,25 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     },
                     "task_title": {
                         "type": "string",
-                        "description": "Title for the analysis task.",
+                        "description": (
+                            "Short title for analyze/generate/plan_analyze. "
+                            "If omitted, the server uses a sensible default."
+                        ),
                     },
                     "task_description": {
                         "type": "string",
-                        "description": "Description of what to analyze.",
+                        "description": (
+                            "What to compute or interpret. Required for quality results; "
+                            "if omitted, a generic default is used."
+                        ),
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Python code (for execute operation).",
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Optional output directory (plan_analyze).",
                     },
                 },
                 "required": ["operation"],
@@ -661,6 +745,49 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     },
                 },
                 "required": ["task", "output_path"],
+            },
+        },
+    },
+    "deliverable_submit": {
+        "type": "function",
+        "function": {
+            "name": "deliverable_submit",
+            "description": (
+                "Promote specific files into the session Deliverables tree for paper or submission use. "
+                "Use after files already exist and the user wants them published into Deliverables."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "publish": {
+                        "type": "boolean",
+                        "description": "If false, do not copy files in this call.",
+                    },
+                    "artifacts": {
+                        "type": "array",
+                        "description": "Artifacts to copy into deliverables/latest/<module>/.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute or project-relative source file path.",
+                                },
+                                "module": {
+                                    "type": "string",
+                                    "enum": ["code", "image_tabular", "paper", "refs", "docs"],
+                                    "description": "Target Deliverables module.",
+                                },
+                                "reason": {
+                                    "type": "string",
+                                    "description": "Optional audit note for why this artifact is being published.",
+                                },
+                            },
+                            "required": ["path", "module"],
+                        },
+                    },
+                },
+                "required": ["artifacts"],
             },
         },
     },

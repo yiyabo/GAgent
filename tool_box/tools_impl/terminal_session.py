@@ -93,8 +93,15 @@ async def terminal_session_handler(
             "terminal_id": terminal_id,
             "bytes_sent": len(payload),
             "output": result["output"],
+            # `status` is PTY settle state only: "completed" means no recent output for idle_timeout,
+            # not shell exit success. Chat-side mutation verification uses verification_state.
             "status": "completed" if settled else "running",
             "message": None if settled else "Command still running. Use replay to check output later.",
+            "command_state": "unverified",
+            "verification_state": "not_attempted",
+            "exit_code": None,
+            "verification_summary": None,
+            "verification_evidence": None,
         }
 
     if op == "resize":

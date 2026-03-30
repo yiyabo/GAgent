@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from app.routers.chat.agent import StructuredChatAgent
 from app.routers.chat.request_routing import (
     build_request_tier_profile,
+    resolve_intent_type,
     resolve_request_routing,
 )
 
@@ -43,6 +45,14 @@ def test_request_tier_routes_attachment_request_to_execute_auto_deepthink() -> N
     assert decision.request_route_mode == "auto_deepthink"
     assert decision.thinking_visibility == "progress"
     assert "has_attachments" in decision.route_reason_codes
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert profile.max_iterations == 6
 
 
 def test_request_tier_keeps_manual_deepthink_visible_for_light_request() -> None:
@@ -88,6 +98,358 @@ def test_manual_deepthink_search_request_routes_to_research_with_tools() -> None
         default_max_iterations=64,
     )
     assert "web_search" in profile.available_tools
+    assert "deliverable_submit" not in profile.available_tools
+
+
+def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -> None:
+    decision = resolve_request_routing(
+        message="都有哪些数据在里面哇",
+        context={
+            "active_subject": {
+                "kind": "workspace",
+                "canonical_ref": "data/张老师卵巢癌单细胞数据",
+                "display_ref": "data/张老师卵巢癌单细胞数据",
+                "verification_state": "not_found",
+                "salience": 5,
+                "last_referenced_turn": 2,
+            }
+        },
+        history=[
+            {"role": "user", "content": "你阅读一下这个文件：data/张老师卵巢癌单细胞数据"},
+            {"role": "assistant", "content": "我去看一下。"},
+        ],
+    )
+
+    assert decision.request_tier == "light"
+    assert decision.request_route_mode == "auto_deepthink"
+    assert decision.capability_floor == "local_inspect"
+    assert decision.subject_resolution["source"] == "inherited"
+    assert decision.simple_channel_allowed is False
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert "file_operations" in profile.available_tools
+    assert "result_interpreter" in profile.available_tools
+    assert "claude_code" not in profile.available_tools
+    assert "deliverable_submit" not in profile.available_tools
+    assert profile.max_iterations == 2
+
+
+def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
+    decision = resolve_request_routing(
+        message="/think 都有哪些数据哇",
+        context={
+            "active_subject": {
+                "kind": "workspace",
+                "canonical_ref": "data/demo",
+                "display_ref": "data/demo",
+                "verification_state": "verified",
+                "salience": 5,
+                "last_referenced_turn": 3,
+            }
+        },
+        history=[
+            {"role": "user", "content": "看一下 data/demo"},
+            {"role": "assistant", "content": "好的"},
+        ],
+    )
+
+    assert decision.request_tier == "light"
+    assert decision.request_route_mode == "manual_deepthink"
+    assert decision.capability_floor == "local_inspect"
+    assert decision.simple_channel_allowed is False
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert "file_operations" in profile.available_tools
+    assert "result_interpreter" in profile.available_tools
+    assert "claude_code" not in profile.available_tools
+    assert profile.max_iterations == 3
+
+
+def test_phagescope_remote_verify_elevates_to_research_with_phagescope_tool() -> None:
+    decision = resolve_request_routing(
+        message="确认 PhageScope 访问权限，你测试一下",
+        context={
+            "active_subject": {
+                "kind": "workspace",
+                "canonical_ref": "data/张老师卵巢癌单细胞数据",
+                "display_ref": "data/张老师卵巢癌单细胞数据",
+                "verification_state": "not_found",
+                "salience": 5,
+                "last_referenced_turn": 2,
+            }
+        },
+        history=[
+            {"role": "user", "content": "你阅读一下这个文件：data/张老师卵巢癌单细胞数据"},
+            {"role": "assistant", "content": "我去看一下。"},
+        ],
+    )
+
+    assert decision.intent_type == "research"
+    assert decision.capability_floor == "research"
+    assert "intent_phagescope_remote_verify" in decision.route_reason_codes
+    assert decision.request_tier == "research"
+    assert decision.request_route_mode == "auto_deepthink"
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert "phagescope" in profile.available_tools
+    assert profile.max_iterations == 8
+
+
+def test_phagescope_task_download_outputs_elevates_to_research_without_anchor() -> None:
+    """Log regression: English 'task' + 下载/输出/验证 + module names must not fall through to plain_chat."""
+    decision = resolve_request_routing(
+        message="/think 下载 task 38619 的 quality 和 annotation 输出进行验证",
+        context={},
+        history=[],
+    )
+    assert decision.intent_type == "research"
+    assert "intent_phagescope_task_result" in decision.route_reason_codes
+    assert decision.capability_floor == "research"
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert "phagescope" in profile.available_tools
+
+
+def test_phagescope_task_status_followup_elevates_to_research_without_saying_phagescope() -> None:
+    """Numeric task id + status wording + subject under phagescope/ must keep phagescope tool available."""
+    intent, reasons = resolve_intent_type(
+        message="你再咨询一下：38619，这个任务，看看是不是真的在跑",
+        context={},
+        subject_resolution={
+            "kind": "file",
+            "canonical_ref": "/Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv",
+            "aliases": ["/Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv"],
+            "source": "inherited",
+            "continuity": "continued",
+        },
+    )
+    assert intent == "research"
+    assert "intent_phagescope_task_status" in reasons
+
+    decision = resolve_request_routing(
+        message="/think 你再咨询一下：38619，这个任务，看看是不是真的在跑",
+        context={
+            "active_subject": {
+                "kind": "file",
+                "canonical_ref": "/Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv",
+                "display_ref": "phagescope/gvd_phage_meta_data.tsv",
+                "aliases": ["/Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv"],
+                "source": "inherited",
+                "continuity": "continued",
+            }
+        },
+        history=[
+            {"role": "user", "content": "测试 phagescope 提交"},
+            {"role": "assistant", "content": "已提交任务 38619。"},
+        ],
+    )
+    assert decision.intent_type == "research"
+    assert "intent_phagescope_task_status" in decision.route_reason_codes
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert "phagescope" in profile.available_tools
+
+
+def test_inherited_subject_data_inquiry_does_not_include_phagescope_without_remote_cue() -> None:
+    decision = resolve_request_routing(
+        message="都有哪些数据在里面哇",
+        context={
+            "active_subject": {
+                "kind": "workspace",
+                "canonical_ref": "data/张老师卵巢癌单细胞数据",
+                "display_ref": "data/张老师卵巢癌单细胞数据",
+                "verification_state": "not_found",
+                "salience": 5,
+                "last_referenced_turn": 2,
+            }
+        },
+        history=[
+            {"role": "user", "content": "你阅读一下这个文件：data/张老师卵巢癌单细胞数据"},
+            {"role": "assistant", "content": "我去看一下。"},
+        ],
+    )
+
+    assert decision.capability_floor == "local_inspect"
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert "phagescope" not in profile.available_tools
+
+
+def test_explicit_absolute_path_matches_existing_relative_subject_identity() -> None:
+    workspace_path = str((Path.cwd() / "data/张老师卵巢癌单细胞数据").resolve())
+
+    decision = resolve_request_routing(
+        message=f"{workspace_path}\n这个路径，你再看看",
+        context={
+            "active_subject": {
+                "kind": "workspace",
+                "canonical_ref": "data/张老师卵巢癌单细胞数据",
+                "display_ref": "data/张老师卵巢癌单细胞数据",
+                "verification_state": "not_found",
+                "salience": 5,
+                "last_referenced_turn": 2,
+            }
+        },
+        history=[
+            {"role": "user", "content": "你阅读一下这个文件：data/张老师卵巢癌单细胞数据"},
+            {"role": "assistant", "content": "我去看一下。"},
+        ],
+    )
+
+    assert decision.subject_resolution["canonical_ref"] == workspace_path
+    assert decision.subject_resolution["continuity"] == "continued"
+    assert decision.subject_resolution["source"] == "explicit"
+
+
+def test_local_mutation_followup_routes_to_execute_with_inherited_subject() -> None:
+    decision = resolve_request_routing(
+        message="你帮我直接解压吧，就放在对应的zip包那里即可",
+        context={
+            "active_subject": {
+                "kind": "directory",
+                "canonical_ref": "data/张老师卵巢癌单细胞数据/张老师卵巢癌单细胞数据",
+                "display_ref": "data/张老师卵巢癌单细胞数据/张老师卵巢癌单细胞数据",
+                "verification_state": "verified",
+                "salience": 5,
+                "last_referenced_turn": 4,
+            },
+            "last_subject_action_class": "inspect",
+        },
+        history=[
+            {"role": "user", "content": "都有哪些数据在里面哇"},
+            {"role": "assistant", "content": "我已经看到了里面的 zip 文件。"},
+        ],
+    )
+
+    assert decision.intent_type == "local_mutation"
+    assert decision.request_tier == "execute"
+    assert decision.request_route_mode == "auto_deepthink"
+    assert decision.capability_floor == "execute"
+    assert decision.simple_channel_allowed is False
+    assert decision.subject_resolution["source"] == "inherited"
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert "terminal_session" in profile.available_tools
+
+
+def test_reunzip_short_followup_routes_without_active_subject_in_context() -> None:
+    """Regression: brief follow-ups like '重新解压' must not fall through to plain_chat."""
+    decision = resolve_request_routing(
+        message="OK的，你重新解压一下吧",
+        context={"last_subject_action_class": "inspect"},
+        history=[
+            {"role": "user", "content": "看看目录里有什么"},
+            {"role": "assistant", "content": "目录里有很多 zip 文件。"},
+        ],
+    )
+    assert decision.intent_type == "local_mutation"
+    assert decision.capability_floor == "execute"
+    assert decision.simple_channel_allowed is False
+
+
+def test_archive_followups_promote_to_local_mutation() -> None:
+    messages = [
+        "解压这些 zip",
+        "把这些压缩包展开",
+        "就在原目录解压",
+    ]
+
+    for message in messages:
+        decision = resolve_request_routing(
+            message=message,
+            context={
+                "active_subject": {
+                    "kind": "directory",
+                    "canonical_ref": "data/demo",
+                    "display_ref": "data/demo",
+                    "verification_state": "verified",
+                    "salience": 5,
+                    "last_referenced_turn": 3,
+                },
+                "last_subject_action_class": "inspect",
+            },
+            history=[
+                {"role": "user", "content": "看看 data/demo 里有什么"},
+                {"role": "assistant", "content": "我看到了几个 zip 压缩包。"},
+            ],
+        )
+        assert decision.intent_type == "local_mutation"
+        assert decision.capability_floor == "execute"
+        assert decision.simple_channel_allowed is False
+
+
+def test_unrelated_abstract_question_does_not_inherit_local_subject() -> None:
+    decision = resolve_request_routing(
+        message="解释一下 transformer 和 rnn 的区别",
+        context={
+            "active_subject": {
+                "kind": "directory",
+                "canonical_ref": "data/demo",
+                "display_ref": "data/demo",
+                "verification_state": "verified",
+                "salience": 5,
+                "last_referenced_turn": 3,
+            },
+            "last_subject_action_class": "inspect",
+        },
+        history=[
+            {"role": "user", "content": "看看 data/demo 里有什么"},
+            {"role": "assistant", "content": "我已经看到了里面的数据文件。"},
+        ],
+    )
+
+    assert decision.intent_type == "chat"
+    assert decision.subject_resolution["kind"] == "none"
+    assert decision.capability_floor == "plain_chat"
+
+
+def test_execute_tier_profile_includes_deliverable_submit() -> None:
+    decision = resolve_request_routing(
+        message="帮我分析这个文件并整理成可提交的结果",
+        context={"attachments": [{"type": "document", "path": "/tmp/a.pdf"}]},
+    )
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+
+    assert decision.request_tier == "execute"
+    assert "deliverable_submit" in profile.available_tools
 
 
 def test_process_unified_stream_delegates_light_request_to_simple_chat() -> None:
@@ -143,3 +505,44 @@ def test_process_unified_stream_delegates_light_request_to_simple_chat() -> None
     }
     assert len(chunks) == 1
     assert '"request_route_mode": "auto_simple"' in chunks[0]
+
+
+# ---------------------------------------------------------------------------
+# Followthrough + action verb compound detection
+# ---------------------------------------------------------------------------
+
+def test_followthrough_plus_action_verb_routes_to_execute() -> None:
+    """'继续' + action verb '尝试' → execute_task, not chat."""
+    intent, reasons = resolve_intent_type(message="继续用这五个进行尝试")
+    assert intent == "execute_task"
+    assert "intent_execute_task" in reasons
+
+
+def test_followthrough_with_code_context() -> None:
+    intent, reasons = resolve_intent_type(
+        message="继续用这五个进行尝试，我又修改了一下代码",
+    )
+    assert intent == "execute_task"
+
+
+def test_retry_patterns_route_to_execute() -> None:
+    for msg in ["再试一下", "重试", "再提交", "再跑一次", "试试看"]:
+        intent, _ = resolve_intent_type(message=msg)
+        assert intent == "execute_task", f"Expected execute_task for '{msg}', got {intent}"
+
+
+def test_chat_continuation_stays_chat() -> None:
+    """'继续说' / '继续讲' should remain chat."""
+    for msg in ["继续说", "继续讲", "继续解释一下"]:
+        intent, _ = resolve_intent_type(message=msg)
+        assert intent == "chat", f"Expected chat for '{msg}', got {intent}"
+
+
+def test_english_followthrough_plus_action_routes_to_execute() -> None:
+    intent, _ = resolve_intent_type(message="continue trying with those five")
+    assert intent == "execute_task"
+
+
+def test_english_chat_continuation_stays_chat() -> None:
+    intent, _ = resolve_intent_type(message="keep explaining the concept")
+    assert intent == "chat"

@@ -136,6 +136,11 @@ export class ChatApi extends BaseApi {
   ): Promise<{ run_id: string; status: string }> => {
   return this.post<{ run_id: string; status: string }>(`/chat/runs/${runId}/steer`, { message, session_id: sessionId });
   };
+
+  /** Request cancellation of a background chat run (sets cancel_event; may take effect after current await). */
+  cancelRun = async (runId: string): Promise<{ run_id: string; status: string }> => {
+    return this.post<{ run_id: string; status: string }>(`/chat/runs/${encodeURIComponent(runId)}/cancel`, {});
+  };
 }
 
 export const chatApi = new ChatApi();

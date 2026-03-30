@@ -62,6 +62,7 @@ from .session_helpers import (
     _get_session_settings,
     _load_chat_history,
     _load_session_metadata_dict,
+    _load_session_runtime_context,
     _lookup_plan_title,
     _normalize_base_model,
     _normalize_llm_provider,
@@ -286,6 +287,12 @@ async def chat_message(
                 request.session_id,
                 owner_id=owner_id,
             )
+            runtime_context = _load_session_runtime_context(
+                request.session_id,
+                owner_id=owner_id,
+            )
+            for key, value in runtime_context.items():
+                context.setdefault(key, value)
             # If current_task_id is missing in context, try loading from session.
             if "current_task_id" not in context:
                 current_task_id = _get_session_current_task(

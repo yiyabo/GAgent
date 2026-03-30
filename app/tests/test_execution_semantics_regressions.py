@@ -8,9 +8,11 @@ import pytest
 
 from app.routers import chat_routes
 from app.routers.chat_routes import AgentStep, StructuredChatAgent
+from app.routers.chat.agent import _apply_grounded_local_answer
 from app.routers.chat import action_handlers as action_handlers_module
 from app.routers.chat import session_helpers as session_helpers_module
 from app.routers.chat.session_helpers import _extract_taskid_from_result
+from app.services.deliverables.publisher import PublishReport
 from app.services.llm.structured_response import (
     LLMAction,
     LLMReply,
@@ -270,6 +272,234 @@ def test_optional_file_read_failure_remains_failed(
     result = step.details.get("result")
     assert isinstance(result, dict)
     assert result.get("success") is False
+
+
+def test_local_inspect_blocks_claude_code_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = None
+    agent.extra_context = {
+        "capability_floor": "local_inspect",
+        "active_subject": {
+            "kind": "workspace",
+            "canonical_ref": "/tmp/demo",
+            "display_ref": "/tmp/demo",
+            "verification_state": "unresolved",
+            "salience": 5,
+        },
+    }
+
+    monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
+
+    called = {"value": False}
+
+    async def _unexpected_execute_tool(_name: str, **_kwargs):
+        called["value"] = True
+        return {"success": True}
+
+    monkeypatch.setattr(action_handlers_module, "execute_tool", _unexpected_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="claude_code",
+        parameters={"task": "inspect"},
+        order=1,
+    )
+
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is False
+    assert called["value"] is False
+    assert step.details["error"] == "tool_not_available"
+    assert agent.extra_context["last_failure_state"]["tool_name"] == "claude_code"
+
+
+def test_local_read_blocks_file_operations_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = None
+    agent.extra_context = {"capability_floor": "local_read"}
+
+    monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
+
+    async def _unexpected_execute_tool(_name: str, **_kwargs):
+        raise AssertionError("execute_tool should not run for blocked write operations")
+
+    monkeypatch.setattr(action_handlers_module, "execute_tool", _unexpected_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="file_operations",
+        parameters={"operation": "write", "path": "/tmp/demo.txt", "content": "x"},
+        order=1,
+    )
+
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is False
+    assert step.details["error"] == "operation_not_permitted"
+    assert "requires execute capability" in step.message
+
+
+def test_grounded_local_answer_overrides_unverified_success_claim() -> None:
+    agent = _build_minimal_agent()
+    agent.extra_context = {
+        "active_subject": {
+            "kind": "workspace",
+            "canonical_ref": "data/demo",
+            "display_ref": "data/demo",
+            "verification_state": "not_found",
+            "salience": 5,
+        },
+        "last_failure_state": {
+            "subject_ref": "data/demo",
+            "tool_name": "file_operations",
+            "operation": "list",
+            "error_message": "Directory not found",
+            "timestamp": "2026-03-29T00:00:00Z",
+        },
+        "last_evidence_state": {
+            "status": "failed",
+            "verified_facts": [],
+            "produced_artifacts": [],
+            "unresolved": ["Directory not found"],
+            "timestamp": "2026-03-29T00:00:00Z",
+        },
+    }
+
+    grounded = _apply_grounded_local_answer(
+        agent,
+        "我已经读取了目录内容，并看到了 result.json 和 preview.json。",
+        SimpleNamespace(
+            capability_floor="local_inspect",
+            effective_user_message="都有哪些数据在里面哇",
+        ),
+    )
+
+    assert "不能确认" in grounded
+    assert "Directory not found" in grounded
+
+
+def test_local_tool_path_alias_is_normalized_to_active_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = None
+    canonical_ref = str((Path.cwd() / "data/demo").resolve())
+    agent.extra_context = {
+        "capability_floor": "local_inspect",
+        "active_subject": {
+            "kind": "workspace",
+            "canonical_ref": canonical_ref,
+            "display_ref": "data/demo",
+            "aliases": ["data/demo", canonical_ref],
+            "verification_state": "verified",
+            "salience": 5,
+        },
+    }
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    captured: dict[str, str] = {}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        captured["tool"] = name
+        captured["path"] = kwargs.get("path")
+        return {
+            "success": False,
+            "tool": "file_operations",
+            "error": "Directory not found",
+        }
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(action_handlers_module, "execute_tool", _fake_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="file_operations",
+        parameters={"operation": "list", "path": "/data/demo"},
+        order=1,
+    )
+
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is False
+    assert captured["tool"] == "file_operations"
+    assert captured["path"] == canonical_ref
+    assert agent.extra_context["last_failure_state"]["subject_ref"] == canonical_ref
+
+
+def test_local_inspect_blocks_terminal_session_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = None
+    agent.extra_context = {"capability_floor": "local_inspect"}
+
+    monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
+
+    async def _unexpected_execute_tool(_name: str, **_kwargs):
+        raise AssertionError("terminal_session should not run under local_inspect")
+
+    monkeypatch.setattr(action_handlers_module, "execute_tool", _unexpected_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="terminal_session",
+        parameters={"operation": "write", "data": "unzip demo.zip\n"},
+        order=1,
+    )
+
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is False
+    assert step.details["error"] == "tool_not_available"
+
+
+def test_grounded_local_mutation_failure_overrides_plain_success_claim() -> None:
+    agent = _build_minimal_agent()
+    agent.extra_context = {
+        "active_subject": {
+            "kind": "directory",
+            "canonical_ref": "data/demo",
+            "display_ref": "data/demo",
+            "verification_state": "verified",
+            "salience": 5,
+        },
+        "last_failure_state": {
+            "subject_ref": "data/demo",
+            "tool_name": "terminal_session",
+            "operation": "write",
+            "error_message": "zip file not found",
+            "timestamp": "2026-03-29T00:00:00Z",
+        },
+        "last_evidence_state": {
+            "status": "failed",
+            "verified_facts": [],
+            "produced_artifacts": [],
+            "unresolved": ["zip file not found"],
+            "timestamp": "2026-03-29T00:00:00Z",
+        },
+    }
+
+    grounded = _apply_grounded_local_answer(
+        agent,
+        "我已经完成了解压，文件都放在原目录里了。",
+        SimpleNamespace(
+            capability_floor="execute",
+            intent_type="local_mutation",
+            effective_user_message="你帮我直接解压吧，就放在对应的zip包那里即可",
+        ),
+    )
+
+    assert "本地修改" in grounded
+    assert "zip file not found" in grounded
 
 
 def test_bio_tools_is_supported_in_tool_action_handler(
@@ -646,6 +876,66 @@ def test_literature_pipeline_forwards_session_id_from_agent(
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
     assert kwargs.get("session_id") == "test-session"
+
+
+def test_deliverable_submit_forwards_session_id_and_uses_publish_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        captured["name"] = name
+        captured["kwargs"] = kwargs
+        return {
+            "success": True,
+            "tool": "deliverable_submit",
+            "deliverable_submit": {
+                "publish": True,
+                "artifacts": [{"path": "/tmp/plot.png", "module": "image_tabular"}],
+            },
+        }
+
+    class _Publisher:
+        def publish_from_tool_result(self, **_kwargs):
+            return PublishReport(
+                version_id="v1",
+                published_files_count=1,
+                published_modules=["image_tabular"],
+                manifest_path="/tmp/manifest.json",
+                paper_status={},
+                submit_artifacts_requested=2,
+                submit_artifacts_published=1,
+                submit_artifacts_skipped=1,
+                warnings=["artifact[1] skipped: path '/tmp/missing.png' does not exist"],
+            )
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(action_handlers_module, "execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(action_handlers_module, "get_deliverable_publisher", lambda: _Publisher())
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="deliverable_submit",
+        parameters={"artifacts": [{"path": "/tmp/plot.png", "module": "image_tabular"}]},
+        order=1,
+    )
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is True
+    assert captured["name"] == "deliverable_submit"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("session_id") == "test-session"
+    assert step.message.startswith("Deliverable submit published 1 artifact(s); skipped 1 with warnings")
+    deliverables = step.details.get("deliverables") or {}
+    assert deliverables["submit_artifacts_requested"] == 2
+    assert deliverables["submit_artifacts_published"] == 1
+    assert deliverables["submit_artifacts_skipped"] == 1
 
 
 def test_extract_taskid_from_result_prefers_numeric_remote_taskid() -> None:
