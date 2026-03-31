@@ -2900,10 +2900,10 @@ Operations:
 WORKFLOW for Plan Creation:
 1. If the request depends on latest external evidence or best practices, optionally use web_search first
 2. For a new plan, call 'create' directly from the current context
-3. For a bound plan, use 'get', 'review', or 'optimize' on the existing plan_id
-4. Use 'review' to check dependency issues AND research-plan rubric quality when review is actually needed
-5. Use 'optimize' only when you have concrete changes to apply
-6. Report the real plan result to the user with plan_id when available
+3. After a successful new-plan create, prefer 'review' so rubric metadata is available for the UI and later optimization
+4. For a bound plan, use 'get', 'review', or 'optimize' on the existing plan_id
+5. Use 'optimize' only when review or user feedback gives you concrete changes to apply
+6. Report the real plan result to the user with plan_id and rubric status when available
 
 IMPORTANT: When creating plans, ensure each task has clear, actionable instructions!""",
             "terminal_session": """Interactive terminal (PTY shell) for running commands directly.
