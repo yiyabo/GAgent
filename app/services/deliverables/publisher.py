@@ -185,7 +185,7 @@ EXPLICIT_FILE_ITEM_KEYS = {
 }
 
 TEXT_DELIVERABLE_TOOLS = {
-    "claude_code",
+    "code_executor",
     "manuscript_writer",
     "review_pack_writer",
     "paper_replication",
@@ -491,7 +491,7 @@ class DeliverablePublisher:
             and not manuscript_has_section_artifacts
             and self._should_use_legacy_file_ingest(normalized_tool)
         ):
-            if normalized_tool == "claude_code":
+            if normalized_tool == "code_executor":
                 # CC: only publish to paper when task_name implies a section; do not use instruction/text
                 section = self._paper_builder.infer_section(
                     task_name=task_name,
@@ -1891,7 +1891,7 @@ class DeliverablePublisher:
     def _should_publish_text_blob(*, tool_name: str, raw_result: Any) -> bool:
         normalized_tool = str(tool_name or "").strip().lower()
         # Claude Code: only publish to paper when infer_section returns a section (handled at call site)
-        if normalized_tool == "claude_code":
+        if normalized_tool == "code_executor":
             return False
         if normalized_tool in TEXT_DELIVERABLE_TOOLS:
             return True
