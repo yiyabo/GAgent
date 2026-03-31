@@ -467,6 +467,20 @@ class DeepThinkAgent:
     def _plan_request_mode(self) -> str:
         return str(self.request_profile.get("plan_request_mode") or "").strip().lower()
 
+    def _requires_plan_review(self) -> bool:
+        return bool(self.request_profile.get("requires_plan_review"))
+
+    def _requires_plan_optimize(self) -> bool:
+        return bool(self.request_profile.get("requires_plan_optimize"))
+
+    def _required_bound_plan_operations(self) -> List[str]:
+        ops: List[str] = []
+        if self._requires_plan_review():
+            ops.append("review")
+        if self._requires_plan_optimize():
+            ops.append("optimize")
+        return ops
+
     @staticmethod
     def _coerce_positive_int(value: Any) -> Optional[int]:
         try:
@@ -768,6 +782,105 @@ class DeepThinkAgent:
             )
             return outcome
 
+        required_update_ops = self._required_bound_plan_operations()
+        if required_update_ops:
+            satisfied_events: Dict[str, Dict[str, Any]] = {}
+            for event in events:
+                if not event.get("success"):
+                    continue
+                operation = str(event.get("operation") or "").strip().lower()
+                if operation not in required_update_ops:
+                    continue
+                event_plan_id = event.get("plan_id") or bound_plan_id
+                if (
+                    bound_plan_id is not None
+                    and event_plan_id is not None
+                    and event_plan_id != bound_plan_id
+                ):
+                    continue
+                satisfied_events.setdefault(operation, event)
+
+            missing_ops = [op for op in required_update_ops if op not in satisfied_events]
+            if not missing_ops:
+                last_required_op = required_update_ops[-1]
+                matched_event = satisfied_events[last_required_op]
+                success_message = {
+                    ("review",): _localized_text(
+                        language,
+                        "已成功审核当前结构化计划。",
+                        "The bound structured plan was reviewed successfully.",
+                    ),
+                    ("optimize",): _localized_text(
+                        language,
+                        "已成功优化当前结构化计划。",
+                        "The bound structured plan was optimized successfully.",
+                    ),
+                    ("review", "optimize"): _localized_text(
+                        language,
+                        "已成功审核并优化当前结构化计划。",
+                        "The bound structured plan was reviewed and optimized successfully.",
+                    ),
+                }.get(
+                    tuple(required_update_ops),
+                    _localized_text(
+                        language,
+                        "已成功更新当前结构化计划。",
+                        "Structured plan updated successfully.",
+                    ),
+                )
+                outcome.update(
+                    {
+                        "satisfied": True,
+                        "state": "updated",
+                        "message": success_message,
+                        "plan_id": matched_event.get("plan_id") or bound_plan_id,
+                        "plan_title": matched_event.get("plan_title") or bound_plan_title,
+                        "operation": last_required_op,
+                    }
+                )
+                return outcome
+
+            missing_text = {
+                ("review",): _localized_text(
+                    language,
+                    "当前结构化计划尚未成功审核。",
+                    "The bound structured plan was not reviewed successfully.",
+                ),
+                ("optimize",): _localized_text(
+                    language,
+                    "当前结构化计划尚未成功优化。",
+                    "The bound structured plan was not optimized successfully.",
+                ),
+                ("review", "optimize"): _localized_text(
+                    language,
+                    "当前结构化计划尚未完成审核并优化。",
+                    "The bound structured plan was not both reviewed and optimized successfully.",
+                ),
+            }.get(
+                tuple(required_update_ops),
+                _localized_text(
+                    language,
+                    "当前结构化计划未更新成功。",
+                    "The bound structured plan was not updated successfully.",
+                ),
+            )
+            if events:
+                last_error = str(events[-1].get("error") or "").strip()
+                outcome.update(
+                    {
+                        "state": "failed",
+                        "message": (missing_text + (f" {last_error}" if last_error else "")).strip(),
+                    }
+                )
+                return outcome
+            outcome.update(
+                {
+                    "state": "text_only",
+                    "message": missing_text,
+                }
+            )
+            return outcome
+
         allowed_update_ops = {"get", "review", "optimize"}
         for event in events:
             if not event.get("success"):
@@ -827,6 +940,7 @@ class DeepThinkAgent:
             return ""
         mode = self._plan_request_mode()
         current_plan_id = self._current_plan_id()
+        required_update_ops = self._required_bound_plan_operations()
         lines = [
             "=== STRUCTURED PLAN REQUIREMENT ===",
             "- The user explicitly asked for a real structured plan. A prose-only answer does NOT satisfy this request.",
@@ -836,9 +950,22 @@ class DeepThinkAgent:
                 "- Before submit_final_answer, you must successfully call plan_operation with operation='create' and obtain a real plan_id."
             )
         elif mode == "update_bound":
-            lines.append(
-                "- Before submit_final_answer, you must successfully call plan_operation on the currently bound plan using get/review/optimize."
-            )
+            if required_update_ops == ["review"]:
+                lines.append(
+                    "- Before submit_final_answer, you must successfully call plan_operation with operation='review' on the currently bound plan."
+                )
+            elif required_update_ops == ["optimize"]:
+                lines.append(
+                    "- Before submit_final_answer, you must successfully call plan_operation with operation='optimize' on the currently bound plan and apply real plan changes."
+                )
+            elif required_update_ops == ["review", "optimize"]:
+                lines.append(
+                    "- Before submit_final_answer, you must successfully call plan_operation with operation='review' on the currently bound plan, then call operation='optimize' to apply real changes."
+                )
+            else:
+                lines.append(
+                    "- Before submit_final_answer, you must successfully call plan_operation on the currently bound plan using get/review/optimize."
+                )
             if current_plan_id is not None:
                 lines.append(f"- The bound plan_id is {current_plan_id}. Do not create a new plan unless the user explicitly asked for a new one.")
         lines.append(
@@ -849,6 +976,7 @@ class DeepThinkAgent:
     def _get_structured_plan_retry_prompt(self) -> str:
         mode = self._plan_request_mode()
         current_plan_id = self._current_plan_id()
+        required_update_ops = self._required_bound_plan_operations()
         if mode in {"create", "create_new"}:
             return (
                 "This request requires a real structured plan. You have not successfully created one yet. "
@@ -856,6 +984,24 @@ class DeepThinkAgent:
                 "or you need to clearly report that structured plan creation failed."
             )
         if current_plan_id is not None:
+            if required_update_ops == ["review"]:
+                return (
+                    f"This request requires reviewing the bound structured plan (plan_id={current_plan_id}). "
+                    "Call plan_operation with operation='review' now. Do not finish with submit_final_answer until review succeeds "
+                    "or you need to clearly report that the structured plan was not reviewed."
+                )
+            if required_update_ops == ["optimize"]:
+                return (
+                    f"This request requires optimizing the bound structured plan (plan_id={current_plan_id}). "
+                    "Call plan_operation with operation='optimize' now and apply real plan changes. Do not finish with submit_final_answer "
+                    "until optimize succeeds or you need to clearly report that the structured plan was not optimized."
+                )
+            if required_update_ops == ["review", "optimize"]:
+                return (
+                    f"This request requires reviewing and then optimizing the bound structured plan (plan_id={current_plan_id}). "
+                    "Call plan_operation with operation='review' first, then call operation='optimize' with concrete changes. "
+                    "Do not finish with submit_final_answer until both succeed or you need to clearly report that review/optimization did not complete."
+                )
             return (
                 f"This request requires updating the bound structured plan (plan_id={current_plan_id}). "
                 "Call plan_operation with get/review/optimize on that plan now. Do not finish with submit_final_answer until one succeeds "
