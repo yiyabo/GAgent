@@ -15,6 +15,7 @@ from .subject_identity import (
 RequestTier = Literal["light", "standard", "research", "execute"]
 RequestRouteMode = Literal["manual_deepthink", "auto_simple", "auto_deepthink"]
 ThinkingVisibility = Literal["visible", "progress", "hidden"]
+PlanRequestMode = Literal["create", "update_bound", "create_new"]
 IntentType = Literal[
     "chat",
     "local_read",
@@ -218,6 +219,69 @@ _EXECUTE_PHRASES = (
     "直接做",
     "直接开始",
     "开工",
+)
+
+# NOTE: All phrases MUST be lowercase — used with _contains_any_lowered().
+_PLAN_REQUEST_PHRASES = (
+    "create plan",
+    "create a plan",
+    "make plan",
+    "make a plan",
+    "build a plan",
+    "draft a plan",
+    "generate a plan",
+    "give me a plan",
+    "turn this into a plan",
+    "创建计划",
+    "生成计划",
+    "制定计划",
+    "做个计划",
+    "做一个计划",
+    "做一份计划",
+    "制作计划",
+    "制作一个计划",
+    "制作plan",
+    "制作一个plan",
+    "给我一个计划",
+    "给我一个plan",
+    "帮我做个计划",
+    "帮我制定计划",
+    "帮我做个plan",
+    "帮我制定plan",
+    "做个plan",
+    "做一个plan",
+    "做一份plan",
+    "整理成计划",
+    "整理成plan",
+    "变成计划",
+    "变成plan",
+)
+
+_PLAN_REQUEST_RE = re.compile(
+    r"(?:(?:create|make|build|draft|generate|give me|turn(?: this)? into|创建|生成|制定|制作|做|给我|帮我做|帮我制定)"
+    r".{0,12}(?<![a-z])plan(?![a-z]))|(?:(?<![a-z])plan(?![a-z]).{0,12}(?:for me|please|给我|来看看|看看|一下))",
+    re.IGNORECASE,
+)
+
+# NOTE: All phrases MUST be lowercase — used with _contains_any_lowered().
+_PLAN_NEW_REQUEST_PHRASES = (
+    "new plan",
+    "another plan",
+    "fresh plan",
+    "新建计划",
+    "新建一个计划",
+    "新建一个plan",
+    "再建一个计划",
+    "再建一个plan",
+    "重新建一个计划",
+    "重新建一个plan",
+    "新做一个计划",
+    "新做一个plan",
+    "另做一个计划",
+    "另做一个plan",
+    "新的plan",
+    "另一个plan",
+    "另一个计划",
 )
 
 _LOCAL_READ_PHRASES = (
@@ -637,6 +701,8 @@ class RequestRoutingDecision:
     simple_channel_allowed: bool
     subject_resolution: Dict[str, Any]
     brevity_hint: bool
+    requires_structured_plan: bool = False
+    plan_request_mode: Optional[PlanRequestMode] = None
 
     @property
     def use_deep_think(self) -> bool:
@@ -653,6 +719,8 @@ class RequestRoutingDecision:
             "simple_channel_allowed": self.simple_channel_allowed,
             "subject_resolution": dict(self.subject_resolution),
             "brevity_hint": self.brevity_hint,
+            "requires_structured_plan": self.requires_structured_plan,
+            "plan_request_mode": self.plan_request_mode,
         }
         if self.thinking_visibility == "progress":
             payload["progress_mode"] = "compact"
@@ -669,6 +737,8 @@ class RequestTierProfile:
     intent_type: IntentType
     capability_floor: CapabilityFloor
     simple_channel_allowed: bool
+    requires_structured_plan: bool = False
+    plan_request_mode: Optional[PlanRequestMode] = None
 
     def prompt_metadata(self) -> Dict[str, Any]:
         return {
@@ -680,6 +750,8 @@ class RequestTierProfile:
             "intent_type": self.intent_type,
             "capability_floor": self.capability_floor,
             "simple_channel_allowed": self.simple_channel_allowed,
+            "requires_structured_plan": self.requires_structured_plan,
+            "plan_request_mode": self.plan_request_mode,
         }
 
 
@@ -747,6 +819,13 @@ def resolve_request_routing(
         dict.fromkeys(subject_reasons + intent_reasons + capability_reasons + reasons)
     )
     simple_channel_allowed = (not manual) and capability_floor == "plain_chat"
+    context_plan_id = (context or {}).get("plan_id")
+    effective_plan_bound = plan_id is not None or context_plan_id is not None
+    plan_request_mode = _resolve_plan_request_mode(
+        effective_user_message,
+        plan_bound=effective_plan_bound,
+    )
+    requires_structured_plan = plan_request_mode is not None
 
     if manual:
         combined_reasons = ["manual_deepthink"] + [
@@ -764,6 +843,8 @@ def resolve_request_routing(
             simple_channel_allowed=simple_channel_allowed,
             subject_resolution=subject_resolution,
             brevity_hint=brevity_hint,
+            requires_structured_plan=requires_structured_plan,
+            plan_request_mode=plan_request_mode,
         )
     if simple_channel_allowed:
         return RequestRoutingDecision(
@@ -778,6 +859,8 @@ def resolve_request_routing(
             simple_channel_allowed=simple_channel_allowed,
             subject_resolution=subject_resolution,
             brevity_hint=brevity_hint,
+            requires_structured_plan=requires_structured_plan,
+            plan_request_mode=plan_request_mode,
         )
     return RequestRoutingDecision(
         request_tier=request_tier,
@@ -791,6 +874,8 @@ def resolve_request_routing(
         simple_channel_allowed=simple_channel_allowed,
         subject_resolution=subject_resolution,
         brevity_hint=brevity_hint,
+        requires_structured_plan=requires_structured_plan,
+        plan_request_mode=plan_request_mode,
     )
 
 
@@ -1064,27 +1149,29 @@ def build_request_tier_profile(
     simple_thinking_budget: int,
     default_max_iterations: int,
 ) -> RequestTierProfile:
+    common = dict(
+        available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
+        intent_type=decision.intent_type,
+        capability_floor=decision.capability_floor,
+        simple_channel_allowed=decision.simple_channel_allowed,
+        requires_structured_plan=decision.requires_structured_plan,
+        plan_request_mode=decision.plan_request_mode,
+    )
     if decision.request_tier == "light":
         return RequestTierProfile(
             request_tier="light",
             thinking_budget=max(80, min(simple_thinking_budget, 400)),
             max_iterations=_max_iterations_light(decision),
-            available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
             output_bias="short_direct",
-            intent_type=decision.intent_type,
-            capability_floor=decision.capability_floor,
-            simple_channel_allowed=decision.simple_channel_allowed,
+            **common,
         )
     if decision.request_tier == "standard":
         return RequestTierProfile(
             request_tier="standard",
             thinking_budget=max(120, min(simple_thinking_budget, 900)),
             max_iterations=_max_iterations_standard(decision),
-            available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
             output_bias="concise_complete",
-            intent_type=decision.intent_type,
-            capability_floor=decision.capability_floor,
-            simple_channel_allowed=decision.simple_channel_allowed,
+            **common,
         )
     if decision.request_tier == "research":
         research_cap = min(default_max_iterations, 8)
@@ -1092,22 +1179,16 @@ def build_request_tier_profile(
             request_tier="research",
             thinking_budget=max(simple_thinking_budget, min(default_thinking_budget, 10000)),
             max_iterations=max(3, research_cap),
-            available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
             output_bias="evidence_backed",
-            intent_type=decision.intent_type,
-            capability_floor=decision.capability_floor,
-            simple_channel_allowed=decision.simple_channel_allowed,
+            **common,
         )
     execute_cap = min(default_max_iterations, 6)
     return RequestTierProfile(
         request_tier="execute",
         thinking_budget=max(200, min(default_thinking_budget, 7000)),
         max_iterations=max(3, execute_cap),
-        available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
         output_bias="task_completion",
-        intent_type=decision.intent_type,
-        capability_floor=decision.capability_floor,
-        simple_channel_allowed=decision.simple_channel_allowed,
+        **common,
     )
 
 
@@ -1120,6 +1201,47 @@ def _max_capability(left: CapabilityFloor, right: CapabilityFloor) -> Capability
 def _contains_any(text: str, phrases: Sequence[str]) -> bool:
     haystack = text.lower()
     return any(phrase.lower() in haystack for phrase in phrases)
+
+
+def _contains_any_lowered(lowered_text: str, phrases: Sequence[str]) -> bool:
+    """Like _contains_any but caller guarantees text is already lowercased."""
+    return any(phrase in lowered_text for phrase in phrases)
+
+
+def _has_explicit_plan_request(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return _contains_any_lowered(lowered, _PLAN_REQUEST_PHRASES) or _contains_any_lowered(
+        lowered, _PLAN_NEW_REQUEST_PHRASES
+    ) or bool(_PLAN_REQUEST_RE.search(lowered))
+
+
+def _is_explicit_new_plan_request(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return _contains_any_lowered(lowered, _PLAN_NEW_REQUEST_PHRASES)
+
+
+def _resolve_plan_request_mode(
+    text: str,
+    *,
+    plan_bound: bool,
+) -> Optional[PlanRequestMode]:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return None
+    has_plan = _contains_any_lowered(lowered, _PLAN_REQUEST_PHRASES) or _contains_any_lowered(
+        lowered, _PLAN_NEW_REQUEST_PHRASES
+    ) or bool(_PLAN_REQUEST_RE.search(lowered))
+    if not has_plan:
+        return None
+    if _contains_any_lowered(lowered, _PLAN_NEW_REQUEST_PHRASES):
+        return "create_new"
+    if plan_bound:
+        return "update_bound"
+    return "create"
 
 
 def _has_recent_image_artifacts(context: Optional[Mapping[str, Any]]) -> bool:
@@ -1286,6 +1408,7 @@ def resolve_intent_type(
     has_research_cue = _contains_any(lowered, _RESEARCH_PHRASES)
     has_time_sensitive_cue = _contains_any(lowered, _TIME_SENSITIVE_PHRASES)
     has_execute_keyword = _contains_any(lowered, _EXECUTE_PHRASES)
+    has_plan_request = _has_explicit_plan_request(text)
     has_local_read_cue = _contains_any(lowered, _LOCAL_READ_PHRASES)
     has_local_inspect_cue = _contains_any(lowered, _LOCAL_INSPECT_PHRASES)
     has_local_mutation_cue = _contains_any(lowered, _LOCAL_MUTATION_PHRASES)
@@ -1337,6 +1460,10 @@ def resolve_intent_type(
     ):
         reasons.append("intent_show_existing_image")
         return "local_read", reasons
+
+    if has_plan_request:
+        reasons.append("intent_plan_request")
+        return "execute_task", reasons
 
     if has_execute_keyword or task_bound or (plan_bound and has_followthrough_cue) or followthrough_implies_execute:
         reasons.append("intent_execute_task")

@@ -22,7 +22,7 @@ async def _noop_tool_executor(_name: str, _params: dict):
     return {"success": True}
 
 
-def _build_deep_think_agent() -> DeepThinkAgent:
+def _build_deep_think_agent(request_profile: dict | None = None) -> DeepThinkAgent:
     return DeepThinkAgent(
         llm_client=SimpleNamespace(),
         available_tools=[
@@ -35,6 +35,7 @@ def _build_deep_think_agent() -> DeepThinkAgent:
             "deliverable_submit",
         ],
         tool_executor=_noop_tool_executor,
+        request_profile=request_profile,
     )
 
 
@@ -103,6 +104,43 @@ def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_prio
     assert "PROTOCOL BOUNDARY (NATIVE TOOL CALLING)" in native_prompt
     assert "PROTOCOL BOUNDARY (LEGACY JSON)" in legacy_prompt
     assert "Promote specific files into the session Deliverables bundle." in legacy_prompt
+
+
+def test_deep_think_prompts_require_structured_plan_tool_for_explicit_plan_requests() -> None:
+    agent = _build_deep_think_agent()
+    native_prompt = agent._build_native_system_prompt()
+    legacy_prompt = agent._build_system_prompt()
+
+    for prompt in (native_prompt, legacy_prompt):
+        assert "plan or task breakdown" in prompt
+        assert "use plan_operation to create or update a structured plan" in prompt
+        assert "prose-only pseudo-plan" in prompt
+
+
+def test_deep_think_prompts_pin_real_structured_plan_actions_when_required() -> None:
+    agent = _build_deep_think_agent(
+        {
+            "requires_structured_plan": True,
+            "plan_request_mode": "update_bound",
+            "current_plan_id": 42,
+        }
+    )
+    native_prompt = agent._build_native_system_prompt()
+    legacy_prompt = agent._build_system_prompt()
+
+    for prompt in (native_prompt, legacy_prompt):
+        assert "STRUCTURED PLAN REQUIREMENT" in prompt
+        assert "prose-only answer does NOT satisfy this request" in prompt
+        assert "bound plan_id is 42" in prompt
+
+
+def test_plan_operation_guidance_makes_research_optional() -> None:
+    agent = _build_deep_think_agent()
+    native_prompt = agent._build_native_system_prompt()
+    legacy_prompt = agent._build_system_prompt()
+
+    assert "research is optional" in native_prompt
+    assert "Research before planning only when current external best practices" in legacy_prompt
 
 
 def test_agent_history_limit_clamps_overrides() -> None:

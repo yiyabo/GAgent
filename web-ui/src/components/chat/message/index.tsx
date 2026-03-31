@@ -387,6 +387,34 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     if (!metadata) return null;
     const planTitle = metadata.plan_title;
     const planId = metadata.plan_id;
+    const planCreationState = typeof metadata.plan_creation_state === 'string'
+      ? metadata.plan_creation_state
+      : null;
+    const planCreationMessage = typeof metadata.plan_creation_message === 'string'
+      ? metadata.plan_creation_message.trim()
+      : '';
+    if (planCreationState === 'text_only' || planCreationState === 'failed') {
+      const statusLabel = planCreationState === 'failed'
+        ? 'Plan Status: 结构化计划创建失败'
+        : 'Plan Status: 仅生成文本建议，未创建结构化计划';
+      return (
+        <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+          <div>{statusLabel}</div>
+          {planCreationMessage ? <div>{planCreationMessage}</div> : null}
+        </div>
+      );
+    }
+    if (planCreationState === 'created' || planCreationState === 'updated') {
+      return (
+        <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+          <div>
+            Linked Plan:
+            {planTitle ? ` ${planTitle}` : ''}
+            {planId !== undefined && planId !== null ? ` (#${planId})` : ''}
+          </div>
+        </div>
+      );
+    }
     if (!planTitle && (planId === undefined || planId === null)) {
       return null;
     }
