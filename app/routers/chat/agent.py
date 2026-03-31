@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple, Union
@@ -798,6 +799,16 @@ def _structured_plan_metadata_from_result(
     if message:
         metadata["plan_creation_message"] = message
     return metadata
+
+
+def _plan_runtime_metadata(plan_tree: Any) -> Dict[str, Any]:
+    metadata = getattr(plan_tree, "metadata", None)
+    if not isinstance(metadata, dict):
+        return {}
+    plan_evaluation = metadata.get("plan_evaluation")
+    if isinstance(plan_evaluation, dict):
+        return {"plan_evaluation": dict(plan_evaluation)}
+    return {}
 
 
 def _should_bind_created_plan(
@@ -2423,7 +2434,11 @@ class StructuredChatAgent:
                                             plan_id,
                                             wait_for_completion=False,
                                             session_context=session_ctx,
+                                            after_success=lambda: self._run_created_plan_auto_review_sync(
+                                                plan_id
+                                            ),
                                         )
+                                        auto_review_mode = "not_scheduled"
                                         if decompose_result:
                                             if decompose_result.get("result") is not None:
                                                 summary = decompose_result["result"]
@@ -2439,7 +2454,19 @@ class StructuredChatAgent:
                                                 result["decomposition_note"] = (
                                                     "Automatic task decomposition completed before review."
                                                 )
+                                                if self._start_background_created_plan_auto_review(
+                                                    plan_id
+                                                ):
+                                                    result["auto_review"] = {
+                                                        "status": "scheduled",
+                                                        "mode": "background",
+                                                    }
+                                                    auto_review_mode = "background"
                                             elif decompose_result.get("job") is not None:
+                                                decompose_job = decompose_result.get("job")
+                                                decompose_job_id = getattr(
+                                                    decompose_job, "job_id", None
+                                                )
                                                 logger.info(
                                                     "[DeepThink] Auto-decomposition submitted for plan %s",
                                                     plan_id,
@@ -2448,14 +2475,39 @@ class StructuredChatAgent:
                                                 result["decomposition_note"] = (
                                                     "Automatic task decomposition has been submitted for background execution."
                                                 )
+                                                result["auto_review"] = {
+                                                    "status": "scheduled",
+                                                    "mode": "after_decomposition",
+                                                    "decomposition_job_id": decompose_job_id,
+                                                }
+                                                auto_review_mode = (
+                                                    "after_decomposition"
+                                                )
+                                            elif self._start_background_created_plan_auto_review(
+                                                plan_id
+                                            ):
+                                                result["auto_review"] = {
+                                                    "status": "scheduled",
+                                                    "mode": "background",
+                                                }
+                                                auto_review_mode = "background"
+                                        elif self._start_background_created_plan_auto_review(
+                                            plan_id
+                                        ):
+                                            result["auto_review"] = {
+                                                "status": "scheduled",
+                                                "mode": "background",
+                                            }
+                                            auto_review_mode = "background"
 
                                         deep_think_bg_category = "task_creation"
 
                                         logger.info(
                                             "[DeepThink] Auto-bound plan %s to session "
                                             "(decomposition dispatched to background, "
-                                            "auto-optimize skipped)",
+                                            "auto-review=%s, auto-optimize skipped)",
                                             plan_id,
+                                            auto_review_mode,
                                         )
                                     except Exception as bind_err:
                                         logger.warning(
@@ -2716,6 +2768,7 @@ class StructuredChatAgent:
                         _persist_runtime_context(self)
                         plan_tree = getattr(self, "plan_tree", None)
                         structured_plan_meta = _structured_plan_metadata_from_result(res)
+                        plan_runtime_meta = _plan_runtime_metadata(plan_tree)
                         resolved_plan_id = res.structured_plan_plan_id or self.plan_session.plan_id
                         plan_title = res.structured_plan_title or (plan_tree.title if plan_tree else None)
                         metadata_payload: Dict[str, Any] = {
@@ -2730,6 +2783,7 @@ class StructuredChatAgent:
                             "fallback_used": res.fallback_used,
                             **routing_decision.metadata(),
                             **structured_plan_meta,
+                            **plan_runtime_meta,
                         }
                         if current_turn_artifact_gallery:
                             metadata_payload["artifact_gallery"] = merge_artifact_gallery(
@@ -2790,6 +2844,7 @@ class StructuredChatAgent:
                 bg_category = item.get("bg_category")
                 plan_tree = getattr(self, "plan_tree", None)
                 structured_plan_meta = _structured_plan_metadata_from_result(res)
+                plan_runtime_meta = _plan_runtime_metadata(plan_tree)
                 resolved_plan_id = res.structured_plan_plan_id or self.plan_session.plan_id
                 plan_title = res.structured_plan_title or (plan_tree.title if plan_tree else None)
                 final_metadata: Dict[str, Any] = {
@@ -2801,6 +2856,7 @@ class StructuredChatAgent:
                     "fallback_used": res.fallback_used,
                     **routing_decision.metadata(),
                     **structured_plan_meta,
+                    **plan_runtime_meta,
                 }
                 if current_turn_artifact_gallery:
                     final_metadata["artifact_gallery"] = merge_artifact_gallery(
@@ -3209,8 +3265,82 @@ class StructuredChatAgent:
 
     _coerce_int = staticmethod(_coerce_int_fn)
 
-    def _auto_decompose_plan(self, plan_id, *, wait_for_completion=False, session_context=None):
-        return _auto_decompose_plan_fn(self, plan_id, wait_for_completion=wait_for_completion, session_context=session_context)
+    def _run_created_plan_auto_review_sync(
+        self,
+        plan_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            review_result = asyncio.run(
+                execute_tool(
+                    "plan_operation",
+                    operation="review",
+                    plan_id=plan_id,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "[DeepThink] Auto-review failed for plan %s: %s",
+                plan_id,
+                exc,
+            )
+            return None
+
+        if not isinstance(review_result, dict):
+            logger.warning(
+                "[DeepThink] Auto-review for plan %s returned non-dict payload: %r",
+                plan_id,
+                review_result,
+            )
+            return None
+        if not review_result.get("success"):
+            logger.warning(
+                "[DeepThink] Auto-review for plan %s did not succeed: %s",
+                plan_id,
+                review_result.get("error") or review_result,
+            )
+            return None
+
+        logger.info(
+            "[DeepThink] Auto-reviewed plan %s after create (status=%s, rubric_score=%s)",
+            plan_id,
+            review_result.get("status"),
+            review_result.get("rubric_score"),
+        )
+        return dict(review_result)
+
+    def _start_background_created_plan_auto_review(self, plan_id: int) -> bool:
+        try:
+            thread = threading.Thread(
+                target=self._run_created_plan_auto_review_sync,
+                args=(plan_id,),
+                name=f"deepthink-plan-review-{plan_id}",
+                daemon=True,
+            )
+            thread.start()
+        except Exception as exc:
+            logger.warning(
+                "[DeepThink] Failed to start background auto-review for plan %s: %s",
+                plan_id,
+                exc,
+            )
+            return False
+        return True
+
+    def _auto_decompose_plan(
+        self,
+        plan_id,
+        *,
+        wait_for_completion=False,
+        session_context=None,
+        after_success=None,
+    ):
+        return _auto_decompose_plan_fn(
+            self,
+            plan_id,
+            wait_for_completion=wait_for_completion,
+            session_context=session_context,
+            after_success=after_success,
+        )
 
     def _persist_if_dirty(self):
         return _persist_if_dirty_fn(self)
