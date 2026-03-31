@@ -674,3 +674,57 @@ def apply_plan_first_guardrail(
         )
     ]
     return structured
+
+
+def apply_explicit_plan_review_guardrail(
+    agent: Any,
+    structured: LLMStructuredResponse,
+) -> LLMStructuredResponse:
+    plan_id = getattr(getattr(agent, "plan_session", None), "plan_id", None)
+    if plan_id is None:
+        return structured
+
+    review_required = bool(agent.extra_context.get("requires_plan_review")) or bool(
+        agent.extra_context.get("requires_plan_optimize")
+    )
+    if not review_required:
+        return structured
+
+    actions = list(structured.actions or [])
+    has_review = any(
+        action.kind == "plan_operation" and action.name == "review_plan"
+        for action in actions
+    )
+    if has_review:
+        return structured
+
+    review_action = LLMAction(
+        kind="plan_operation",
+        name="review_plan",
+        parameters={"plan_id": int(plan_id)},
+        order=1,
+        blocking=True,
+    )
+    optimize_actions = [
+        action for action in actions
+        if action.kind == "plan_operation" and action.name == "optimize_plan"
+    ]
+    if optimize_actions:
+        rewritten = [review_action]
+        next_order = 2
+        for action in actions:
+            copied = action.model_copy(deep=True)
+            copied.order = next_order
+            rewritten.append(copied)
+            next_order += 1
+        structured.actions = rewritten
+        logger.info(
+            "[CHAT][GUARDRAIL][PLAN_REVIEW] prepended review_plan before optimize_plan for explicit review/optimize request"
+        )
+        return structured
+
+    structured.actions = [review_action]
+    logger.info(
+        "[CHAT][GUARDRAIL][PLAN_REVIEW] replaced actions with review_plan for explicit review request"
+    )
+    return structured

@@ -112,6 +112,7 @@ from .code_executor_helpers import (
 )
 from .guardrail_handlers import (
     apply_completion_claim_guardrail as _apply_completion_claim_guardrail_fn,
+    apply_explicit_plan_review_guardrail as _apply_explicit_plan_review_guardrail_fn,
     apply_experiment_fallback as _apply_experiment_fallback_fn,
     apply_phagescope_fallback as _apply_phagescope_fallback_fn,
     apply_plan_first_guardrail as _apply_plan_first_guardrail_fn,
@@ -925,9 +926,13 @@ class StructuredChatAgent:
         self._task_verifier = TaskVerificationService()
 
     async def handle(self, user_message: str) -> AgentResult:
-        structured = await self._invoke_llm(user_message)
+        routing_decision, _route_profile = self._resolve_request_routing(user_message)
+        effective_user_message = routing_decision.effective_user_message
+        self._update_routing_context(routing_decision)
+        structured = await self._invoke_llm(effective_user_message)
         structured = await self._apply_experiment_fallback(structured)
         structured = self._apply_plan_first_guardrail(structured)
+        structured = self._apply_explicit_plan_review_guardrail(structured)
         structured = self._apply_phagescope_fallback(structured)
         structured = self._apply_task_execution_followthrough_guardrail(structured)
         structured = self._apply_completion_claim_guardrail(structured)
@@ -935,9 +940,13 @@ class StructuredChatAgent:
 
     async def get_structured_response(self, user_message: str) -> LLMStructuredResponse:
         """Return the raw structured response without executing actions."""
-        structured = await self._invoke_llm(user_message)
+        routing_decision, _route_profile = self._resolve_request_routing(user_message)
+        effective_user_message = routing_decision.effective_user_message
+        self._update_routing_context(routing_decision)
+        structured = await self._invoke_llm(effective_user_message)
         structured = await self._apply_experiment_fallback(structured)
         structured = self._apply_plan_first_guardrail(structured)
+        structured = self._apply_explicit_plan_review_guardrail(structured)
         structured = self._apply_phagescope_fallback(structured)
         structured = self._apply_task_execution_followthrough_guardrail(structured)
         return self._apply_completion_claim_guardrail(structured)
@@ -998,6 +1007,11 @@ class StructuredChatAgent:
         self, structured: LLMStructuredResponse,
     ) -> LLMStructuredResponse:
         return _apply_plan_first_guardrail_fn(self, structured)
+
+    def _apply_explicit_plan_review_guardrail(
+        self, structured: LLMStructuredResponse,
+    ) -> LLMStructuredResponse:
+        return _apply_explicit_plan_review_guardrail_fn(self, structured)
 
 
     def _resolve_code_executor_task_context(self):
@@ -1539,20 +1553,7 @@ class StructuredChatAgent:
         """
         routing_decision, route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
-        self.extra_context.update(
-            {
-                "request_tier": routing_decision.request_tier,
-                "request_route_mode": routing_decision.request_route_mode,
-                "intent_type": routing_decision.intent_type,
-                "capability_floor": routing_decision.capability_floor,
-                "simple_channel_allowed": routing_decision.simple_channel_allowed,
-                "subject_resolution": dict(routing_decision.subject_resolution),
-                "brevity_hint": routing_decision.brevity_hint,
-                "requires_structured_plan": routing_decision.requires_structured_plan,
-                "plan_request_mode": routing_decision.plan_request_mode,
-                "current_user_turn_index": _current_user_turn_index_from_history(self.history),
-            }
-        )
+        self._update_routing_context(routing_decision)
         if routing_decision.requires_structured_plan:
             logger.info(
                 "[CHAT][ROUTING][PLAN] session=%s mode=%s plan_id=%s route=%s tier=%s",
@@ -3074,6 +3075,24 @@ class StructuredChatAgent:
             default_max_iterations=_resolve_deep_think_max_iterations(),
         )
         return decision, profile
+
+    def _update_routing_context(self, routing_decision: RequestRoutingDecision) -> None:
+        self.extra_context.update(
+            {
+                "request_tier": routing_decision.request_tier,
+                "request_route_mode": routing_decision.request_route_mode,
+                "intent_type": routing_decision.intent_type,
+                "capability_floor": routing_decision.capability_floor,
+                "simple_channel_allowed": routing_decision.simple_channel_allowed,
+                "subject_resolution": dict(routing_decision.subject_resolution),
+                "brevity_hint": routing_decision.brevity_hint,
+                "requires_structured_plan": routing_decision.requires_structured_plan,
+                "plan_request_mode": routing_decision.plan_request_mode,
+                "requires_plan_review": routing_decision.requires_plan_review,
+                "requires_plan_optimize": routing_decision.requires_plan_optimize,
+                "current_user_turn_index": _current_user_turn_index_from_history(self.history),
+            }
+        )
 
     async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
         self._current_user_message = user_message
