@@ -7,7 +7,7 @@ plan binding, tree refresh, decomposition, and persistence.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from app.services.llm.structured_response import LLMStructuredResponse
 from app.services.plans.decomposition_jobs import start_decomposition_job_thread
@@ -78,6 +78,7 @@ def auto_decompose_plan(
     *,
     wait_for_completion: bool = False,
     session_context: Optional[Dict[str, Any]] = None,
+    after_success: Optional[Callable[[], None]] = None,
 ) -> Optional[Dict[str, Any]]:
     settings = agent.decomposer_settings
     if not settings.auto_on_create:
@@ -134,6 +135,7 @@ def auto_decompose_plan(
             mode="plan_bfs",
             max_depth=settings.max_depth,
             node_budget=settings.total_node_budget,
+            after_success=after_success,
         )
     except Exception as exc:  # pragma: no cover - defensive
         message = f"Failed to submit automatic task decomposition: {exc}"

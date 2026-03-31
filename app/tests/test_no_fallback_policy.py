@@ -708,6 +708,7 @@ def _build_deep_think_test_agent() -> StructuredChatAgent:
     agent.history = []
     agent.session_id = None
     agent.llm_service = object()
+    agent.max_history_messages = 20
     return agent
 
 
@@ -821,8 +822,12 @@ def test_deep_think_create_new_rebinds_existing_plan(
     agent.session_id = "session-create-new"
     agent.max_history_messages = 20
     agent._dirty = False
+    scheduled_reviews: list[int] = []
     agent._refresh_plan_tree = lambda force_reload=False: None
     agent._auto_decompose_plan = lambda *_args, **_kwargs: None
+    agent._start_background_created_plan_auto_review = (
+        lambda plan_id: scheduled_reviews.append(plan_id) or True
+    )
 
     events = asyncio.run(
         _collect_deep_think_events(agent, "新建一个plan，和刚才那个分开")
@@ -836,6 +841,191 @@ def test_deep_think_create_new_rebinds_existing_plan(
     assert agent.plan_session.bound_ids == [99]
     assert final_metadata["plan_id"] == 99
     assert session_updates == [("session-create-new", 99)]
+    assert scheduled_reviews == [99]
+
+
+def test_deep_think_schedules_auto_review_after_create_without_blocking_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _DeepThinkJobStub:
+        def create_job(self, **_kwargs):
+            return None
+
+        def mark_running(self, _job_id: str) -> None:
+            return
+
+        def register_subscriber(self, _job_id: str, _loop):
+            return None
+
+        def register_runtime_controller(self, _job_id: str, _controller) -> bool:
+            return False
+
+        def unregister_runtime_controller(self, _job_id: str) -> None:
+            return
+
+        def unregister_subscriber(self, _job_id: str, _queue) -> None:
+            return
+
+        def mark_success(self, _job_id: str, **_kwargs) -> None:
+            return
+
+        def mark_failure(self, _job_id: str, _error: str, **_kwargs) -> None:
+            return
+
+        def attach_plan(self, _job_id: str, _plan_id: int) -> None:
+            return
+
+    tool_calls: list[tuple[str, dict]] = []
+
+    async def _fake_execute_tool(name: str, **params):
+        tool_calls.append((name, dict(params)))
+        assert name == "plan_operation"
+        if params["operation"] == "create":
+            return {
+                "success": True,
+                "operation": "create",
+                "plan_id": 67,
+                "title": "Scored plan",
+            }
+        raise AssertionError(f"Unexpected tool call: {params}")
+
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkPlanCreateProbe)
+    monkeypatch.setattr("app.routers.chat.agent.execute_tool", _fake_execute_tool)
+    monkeypatch.setattr("app.routers.chat.agent.plan_decomposition_jobs", _DeepThinkJobStub())
+    monkeypatch.setattr("app.routers.chat.agent._persist_runtime_context", lambda _agent: None)
+    monkeypatch.setattr("app.routers.chat.agent._save_chat_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.routers.chat.agent._set_session_plan_id", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.routers.chat.agent.set_current_job", lambda _job_id: None)
+    monkeypatch.setattr("app.routers.chat.agent.reset_current_job", lambda _token: None)
+
+    agent = _build_deep_think_test_agent()
+    agent.plan_session = _PlanSessionBindStub(plan_id=None)
+    agent.session_id = "session-auto-review"
+    agent.max_history_messages = 20
+    agent._dirty = False
+    scheduled_reviews: list[int] = []
+
+    def _fake_refresh(force_reload=False):  # type: ignore[no-untyped-def]
+        _ = force_reload
+        agent.plan_tree = SimpleNamespace(title="Scored plan", metadata={})
+        return agent.plan_tree
+
+    agent._refresh_plan_tree = _fake_refresh
+    agent._auto_decompose_plan = lambda *_args, **_kwargs: None
+    agent._start_background_created_plan_auto_review = (
+        lambda plan_id: scheduled_reviews.append(plan_id) or True
+    )
+
+    events = asyncio.run(_collect_deep_think_events(agent, "做一个plan"))
+
+    final_events = [evt for evt in events if evt.get("type") == "final"]
+    assert final_events, "Expected a final DeepThink SSE event."
+    final_metadata = final_events[-1]["payload"]["metadata"]
+
+    assert [params["operation"] for _, params in tool_calls] == ["create"]
+    assert final_metadata["plan_id"] == 67
+    assert "plan_evaluation" not in final_metadata
+    assert scheduled_reviews == [67]
+
+
+def test_deep_think_defers_auto_review_until_decomposition_job_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _DeepThinkJobStub:
+        def create_job(self, **_kwargs):
+            return None
+
+        def mark_running(self, _job_id: str) -> None:
+            return
+
+        def register_subscriber(self, _job_id: str, _loop):
+            return None
+
+        def register_runtime_controller(self, _job_id: str, _controller) -> bool:
+            return False
+
+        def unregister_runtime_controller(self, _job_id: str) -> None:
+            return
+
+        def unregister_subscriber(self, _job_id: str, _queue) -> None:
+            return
+
+        def mark_success(self, _job_id: str, **_kwargs) -> None:
+            return
+
+        def mark_failure(self, _job_id: str, _error: str, **_kwargs) -> None:
+            return
+
+        def attach_plan(self, _job_id: str, _plan_id: int) -> None:
+            return
+
+    tool_calls: list[tuple[str, dict]] = []
+
+    async def _fake_execute_tool(name: str, **params):
+        tool_calls.append((name, dict(params)))
+        assert name == "plan_operation"
+        if params["operation"] == "create":
+            return {
+                "success": True,
+                "operation": "create",
+                "plan_id": 67,
+                "title": "Deferred review plan",
+            }
+        raise AssertionError(f"Unexpected tool call: {params}")
+
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkPlanCreateProbe)
+    monkeypatch.setattr("app.routers.chat.agent.execute_tool", _fake_execute_tool)
+    monkeypatch.setattr("app.routers.chat.agent.plan_decomposition_jobs", _DeepThinkJobStub())
+    monkeypatch.setattr("app.routers.chat.agent._persist_runtime_context", lambda _agent: None)
+    monkeypatch.setattr("app.routers.chat.agent._save_chat_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.routers.chat.agent._set_session_plan_id", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.routers.chat.agent.set_current_job", lambda _job_id: None)
+    monkeypatch.setattr("app.routers.chat.agent.reset_current_job", lambda _token: None)
+
+    agent = _build_deep_think_test_agent()
+    agent.plan_session = _PlanSessionBindStub(plan_id=None)
+    agent.session_id = "session-auto-review-deferred"
+    agent.max_history_messages = 20
+    agent._dirty = False
+    agent._refresh_plan_tree = (
+        lambda force_reload=False: SimpleNamespace(
+            title="Deferred review plan",
+            metadata={},
+        )
+    )
+
+    callback_holder: dict[str, object] = {}
+    scheduled_reviews: list[int] = []
+    deferred_reviews: list[int] = []
+
+    def _fake_auto_decompose(plan_id, **kwargs):  # type: ignore[no-untyped-def]
+        assert plan_id == 67
+        callback_holder["after_success"] = kwargs.get("after_success")
+        return {"job": SimpleNamespace(job_id="job-67")}
+
+    agent._auto_decompose_plan = _fake_auto_decompose
+    agent._start_background_created_plan_auto_review = (
+        lambda plan_id: scheduled_reviews.append(plan_id) or True
+    )
+    agent._run_created_plan_auto_review_sync = (
+        lambda plan_id: deferred_reviews.append(plan_id) or {"success": True}
+    )
+
+    events = asyncio.run(_collect_deep_think_events(agent, "做一个需要自动拆解的plan"))
+
+    final_events = [evt for evt in events if evt.get("type") == "final"]
+    assert final_events, "Expected a final DeepThink SSE event."
+    final_metadata = final_events[-1]["payload"]["metadata"]
+
+    assert [params["operation"] for _, params in tool_calls] == ["create"]
+    assert final_metadata["plan_id"] == 67
+    assert "plan_evaluation" not in final_metadata
+    assert scheduled_reviews == []
+    assert deferred_reviews == []
+    after_success = callback_holder.get("after_success")
+    assert callable(after_success)
+    after_success()
+    assert deferred_reviews == [67]
 
 
 def test_deep_think_blocks_code_executor_until_bio_recovery(

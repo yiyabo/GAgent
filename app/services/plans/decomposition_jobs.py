@@ -1157,6 +1157,7 @@ def execute_decomposition_job(
     expand_depth: Optional[int] = None,
     node_budget: Optional[int] = None,
     allow_existing_children: Optional[bool] = None,
+    after_success: Optional[Callable[[], None]] = None,
 ) -> None:
     token = set_current_job(job_id)
     try:
@@ -1205,6 +1206,15 @@ def execute_decomposition_job(
                 "stopped_reason": result.stopped_reason,
             },
         )
+        if callable(after_success):
+            try:
+                after_success()
+            except Exception as exc:
+                log_job_event(
+                    "warning",
+                    "Post-decomposition hook failed.",
+                    {"error": str(exc)},
+                )
         plan_decomposition_jobs.mark_success(
             job_id,
             result=result,
@@ -1231,6 +1241,7 @@ def start_decomposition_job_thread(
     expand_depth: Optional[int] = None,
     node_budget: Optional[int] = None,
     allow_existing_children: Optional[bool] = None,
+    after_success: Optional[Callable[[], None]] = None,
 ) -> PlanDecompositionJob:
     effective_node_budget: Optional[int] = (
         None if node_budget is None or node_budget <= 0 else int(node_budget)
@@ -1273,6 +1284,7 @@ def start_decomposition_job_thread(
             "expand_depth": expand_depth,
             "node_budget": effective_node_budget,
             "allow_existing_children": allow_existing_children,
+            "after_success": after_success,
         },
         daemon=True,
     )
