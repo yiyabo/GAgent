@@ -26,7 +26,7 @@ def _build_publisher(
     )
 
 
-def test_explicit_ingest_skips_heuristic_paths_for_claude_code(tmp_path: Path) -> None:
+def test_explicit_ingest_skips_heuristic_paths_for_code_executor(tmp_path: Path) -> None:
     publisher = _build_publisher(tmp_path, ingest_mode="explicit")
     png = tmp_path / "workspace" / "submission" / "plot.png"
     png.parent.mkdir(parents=True, exist_ok=True)
@@ -34,7 +34,7 @@ def test_explicit_ingest_skips_heuristic_paths_for_claude_code(tmp_path: Path) -
 
     report = publisher.publish_from_tool_result(
         session_id="exp_skip001",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={"output_path": str(png), "success": True},
         summary="Generated plot.",
     )
@@ -168,7 +168,7 @@ def test_publish_copies_code_into_latest_manifest(tmp_path: Path):
 
     report = publisher.publish_from_tool_result(
         session_id="abc123",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={"output_path": str(source)},
         summary="Generated implementation script.",
         task_name="Implement method",
@@ -193,7 +193,7 @@ def test_publish_deliverable_code_paths_promotes_explicit_paths(tmp_path: Path):
 
     report = publisher.publish_from_tool_result(
         session_id="explicit_code001",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={"output_path": str(source), "deliverable_code_paths": [str(source)]},
         summary="Saved tool.",
     )
@@ -332,7 +332,7 @@ def test_publish_ignores_non_whitelisted_docs(tmp_path: Path):
 
     report = publisher.publish_from_tool_result(
         session_id="noise001",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={"output_path": str(source)},
         summary="Generated report.",
     )
@@ -350,7 +350,7 @@ def test_publish_ignores_path_like_strings_in_non_path_fields(tmp_path: Path):
 
     report = publisher.publish_from_tool_result(
         session_id="noise_paths",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={
             "stdout": f"Generated file at {source}",
             "message": f"See {source}",
@@ -375,7 +375,7 @@ def test_publish_scans_task_directory_not_session_root(tmp_path: Path):
 
     report = publisher.publish_from_tool_result(
         session_id="session_alpha",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={
             "session_directory": str(runtime_session),
             "task_directory_full": str(task_dir),
@@ -402,7 +402,7 @@ def test_publish_prefers_produced_files_over_directory_scan(tmp_path: Path):
 
     report = publisher.publish_from_tool_result(
         session_id="session_alpha",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={
             "task_directory_full": str(task_root),
             "produced_files": [str(new_file)],
@@ -424,7 +424,7 @@ def test_publish_skips_failed_tool_results(tmp_path: Path):
 
     report = publisher.publish_from_tool_result(
         session_id="failed001",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={"success": False, "output_path": str(source), "error": "boom"},
         summary="Execution failed.",
     )
@@ -824,7 +824,7 @@ def test_publish_updates_staged_figure_for_same_source_path(tmp_path: Path):
 
     first = publisher.publish_from_tool_result(
         session_id="figure_update001",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={"output_path": str(figure)},
         summary="Generated figure.",
     )
@@ -833,7 +833,7 @@ def test_publish_updates_staged_figure_for_same_source_path(tmp_path: Path):
     figure.write_bytes(b"new-image")
     second = publisher.publish_from_tool_result(
         session_id="figure_update001",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={"output_path": str(figure)},
         summary="Updated figure.",
     )
@@ -863,7 +863,7 @@ def test_publish_rejects_conflicting_figure_basenames_from_different_sources(tmp
 
     first = publisher.publish_from_tool_result(
         session_id="figure_conflict001",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={"output_path": str(figure_a)},
         summary="Generated first figure.",
     )
@@ -872,7 +872,7 @@ def test_publish_rejects_conflicting_figure_basenames_from_different_sources(tmp
     with pytest.raises(ValueError, match="Conflicting deliverable basename 'plot.png'"):
         publisher.publish_from_tool_result(
             session_id="figure_conflict001",
-            tool_name="claude_code",
+            tool_name="code_executor",
             raw_result={"output_path": str(figure_b)},
             summary="Generated conflicting figure.",
         )
@@ -908,7 +908,7 @@ def test_publish_uses_previous_manifest_source_for_legacy_figure_updates(tmp_pat
     figure.write_bytes(b"new-bytes")
     report = publisher.publish_from_tool_result(
         session_id="legacy_figure001",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={"output_path": str(figure)},
         summary="Updated legacy figure.",
     )
@@ -938,7 +938,7 @@ def test_publish_puts_reference_pdf_from_paper_tree_into_refs(tmp_path: Path):
 
     report = publisher.publish_from_tool_result(
         session_id="pdf_route001",
-        tool_name="claude_code",
+        tool_name="code_executor",
         raw_result={"output_path": str(pdf)},
         summary="Downloaded reference PDF.",
     )

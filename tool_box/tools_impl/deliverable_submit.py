@@ -49,11 +49,14 @@ async def deliverable_submit_handler(
 deliverable_submit_tool = {
     "name": "deliverable_submit",
     "description": (
-        "Promote specific files into the session Deliverables folder (code, image_tabular, paper, refs, docs). "
-        "Call only when the user or task requires publishing artifacts for submission. "
-        "Each artifact must include path and module. "
-        "When DELIVERABLES_INGEST_MODE=explicit, this is the primary way to add files to Deliverables "
-        "(besides manuscript_writer/review_pack_writer automatic outputs)."
+        "Submit FINAL output files to the session Deliverables panel. "
+        "Use this ONLY for publication-ready artifacts:\n"
+        "- Visualization plots (PNG/SVG/PDF charts, figures)\n"
+        "- Summary tables (final analysis results, NOT raw data)\n"
+        "- Manuscripts and reports (LaTeX, Markdown)\n"
+        "- Finished code scripts that produced the above\n"
+        "Do NOT submit: raw input data, intermediate CSVs, downloaded references, logs.\n"
+        "Each artifact requires a path and target module (code, image_tabular, paper, refs, docs)."
     ),
     "category": "deliverables",
     "parameters_schema": {
