@@ -98,6 +98,11 @@ export const buildArtifactFileUrl = (sessionId: string, path: string) => {
   return `${ENV.API_BASE_URL}/artifacts/sessions/${sessionId}/file?path=${encoded}`;
 };
 
+export const buildWorkspaceFileUrl = (sessionId: string, path: string) => {
+  const encoded = encodeURIComponent(path);
+  return `${ENV.API_BASE_URL}/artifacts/sessions/${sessionId}/workspace-file?path=${encoded}`;
+};
+
 export const buildDeliverableFileUrl = (
   sessionId: string,
   path: string,

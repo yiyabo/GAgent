@@ -75,7 +75,17 @@ export type ChatStreamEvent =
     | { type: 'progress_status'; phase?: string; label?: string; details?: string | null; iteration?: number | null; tool?: string | null; status?: string | null }
     | { type: 'control_ack'; job_id?: string; available?: boolean; paused?: boolean; action?: string | null }
     | { type: 'tool_output'; tool?: string; stream?: string; content?: string; iteration?: number | null }
-    | { type: 'artifact'; path?: string; extension?: string; source_tool?: string; iteration?: number }
+    | {
+        type: 'artifact';
+        path?: string;
+        extension?: string;
+        source_tool?: string;
+        iteration?: number;
+        display_name?: string;
+        mime_family?: string;
+        origin?: string;
+        tracking_id?: string | null;
+      }
     | { type: 'steer_ack'; message?: string; iteration?: number };
 
 export const parseChatStreamEvent = (raw: string): ChatStreamEvent | null => {
@@ -643,19 +653,19 @@ export const resolveHistoryCursor = (messages: ChatMessage[]): number | null => 
 // Background task detection
 // ---------------------------------------------------------------------------
 
-export type BackgroundCategory = 'phagescope' | 'claude_code' | 'task_creation';
+export type BackgroundCategory = 'phagescope' | 'code_executor' | 'task_creation';
 
 /** Human-readable labels for each background category. */
 export const BACKGROUND_CATEGORY_LABELS: Record<BackgroundCategory, string> = {
     phagescope: 'PhageScope',
-    claude_code: 'Claude Code',
+    code_executor: 'Code Executor',
     task_creation: 'Task creation / decomposition',
 };
 
 /** Tool-operation action names that map to a background category. */
 const _BG_TOOL_NAMES: Record<string, BackgroundCategory> = {
     phagescope: 'phagescope',
-    claude_code: 'claude_code',
+    code_executor: 'code_executor',
 };
 
 /** Plan-operation action names that trigger long-running decomposition. */
@@ -663,7 +673,7 @@ const _BG_PLAN_OPS = new Set(['create_plan', 'optimize_plan']);
 
 /**
  * Detect whether a chat response payload represents a long-running background
- * task.  Returns the category string (``"phagescope"`` / ``"claude_code"`` /
+ * task.  Returns the category string (``"phagescope"`` / ``"code_executor"`` /
  * ``"task_creation"``) or ``null`` for normal short tasks.
  *
  * Detection strategy:
@@ -680,7 +690,7 @@ export const detectBackgroundCategory = (
     const explicit = meta?.background_category;
     if (
         typeof explicit === 'string' &&
-        (explicit === 'phagescope' || explicit === 'claude_code' || explicit === 'task_creation')
+        (explicit === 'phagescope' || explicit === 'code_executor' || explicit === 'task_creation')
     ) {
         return explicit as BackgroundCategory;
     }

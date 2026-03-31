@@ -26,6 +26,10 @@ import {
   collectToolResultsFromSteps,
 } from '@utils/toolResults';
 import {
+  collectArtifactGallery,
+  mergeArtifactGalleries,
+} from '@/utils/artifactGallery';
+import {
   derivePlanSyncEventsFromActions,
   dispatchPlanSyncEvent,
   extractPlanIdFromActions,
@@ -130,6 +134,13 @@ export async function handleJobUpdate(ctx: StreamHandlerContext, event: any): Pr
   const stepList = Array.isArray(payload.result?.steps) ? (payload.result?.steps as Array<Record<string, any>>) : [];
   const actionsFromSteps = buildActionsFromSteps(stepList);
   const mergedToolResults = mergeToolResults(collectToolResultsFromMetadata(existingMetadata.tool_results), mergeToolResults(collectToolResultsFromMetadata(payload.result?.tool_results), collectToolResultsFromSteps(stepList)));
+  const mergedArtifactGallery = mergeArtifactGalleries(
+    collectArtifactGallery(existingMetadata.artifact_gallery),
+    mergeArtifactGalleries(
+      collectArtifactGallery(payload.result?.artifact_gallery),
+      collectArtifactGallery(payload.metadata?.artifact_gallery),
+    ),
+  );
   const updatedMetadata: ChatResponseMetadata = { ...existingMetadata, status: jobStatus ?? existingMetadata.status };
   (updatedMetadata as any).unified_stream = true;
   // Tool progress (e.g., PhageScope polling progress)
@@ -145,6 +156,7 @@ export async function handleJobUpdate(ctx: StreamHandlerContext, event: any): Pr
   if (payload.job_id && !updatedMetadata.tracking_id) updatedMetadata.tracking_id = payload.job_id;
   if (actionsFromSteps.length > 0) { updatedMetadata.actions = actionsFromSteps; updatedMetadata.action_list = actionsFromSteps; }
   if (mergedToolResults.length > 0) updatedMetadata.tool_results = mergedToolResults;
+  if (mergedArtifactGallery.length > 0) updatedMetadata.artifact_gallery = mergedArtifactGallery;
   if (payload.error) updatedMetadata.errors = [...(updatedMetadata.errors ?? []), payload.error];
   ctx.get().updateMessage(ctx.assistantMessageId, { metadata: updatedMetadata });
 
@@ -796,6 +808,14 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
   }
   const initialToolResults = collectToolResultsFromMetadata(result.metadata?.tool_results);
   if (initialToolResults.length > 0) assistantMetadata.tool_results = initialToolResults;
+  const initialArtifactGallery = mergeArtifactGalleries(
+    collectArtifactGallery((ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId)?.metadata as any)?.artifact_gallery),
+    mergeArtifactGalleries(
+      collectArtifactGallery(result.metadata?.artifact_gallery),
+      collectArtifactGallery((result as any).artifact_gallery),
+    ),
+  );
+  if (initialArtifactGallery.length > 0) assistantMetadata.artifact_gallery = initialArtifactGallery;
 
   ctx.get().updateMessage(ctx.assistantMessageId, {
     content: (assistantMetadata as any).unified_stream === true ? (assistantMetadata.analysis_text?.trim() ? assistantMetadata.analysis_text : (((assistantMetadata as any).plan_message as string) || assistantMetadata.final_summary || '')) : (result.response ?? ctx.state.streamedContent),
@@ -914,6 +934,13 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
           if (target) {
             const meta = (target.metadata as ChatResponseMetadata) ?? {};
             const mergedResults = mergeToolResults(collectToolResultsFromMetadata((lastStatus.result as any)?.tool_results), collectToolResultsFromMetadata((lastStatus.metadata as any)?.tool_results));
+            const mergedArtifactGallery = mergeArtifactGalleries(
+              collectArtifactGallery((meta as any)?.artifact_gallery),
+              mergeArtifactGalleries(
+                collectArtifactGallery((lastStatus.result as any)?.artifact_gallery),
+                collectArtifactGallery((lastStatus.metadata as any)?.artifact_gallery),
+              ),
+            );
             const analysis = (typeof (lastStatus.result as any)?.analysis_text === 'string' ? (lastStatus.result as any).analysis_text : null)?.trim();
             const summary = (typeof (lastStatus.result as any)?.final_summary === 'string' ? (lastStatus.result as any).final_summary : (typeof (lastStatus.metadata as any)?.final_summary === 'string' ? (lastStatus.metadata as any).final_summary : null))?.trim();
             const completionContent = analysis ?? summary ?? (
@@ -925,6 +952,7 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
             if (analysis) nextMeta.analysis_text = analysis;
             if (summary) nextMeta.final_summary = summary;
             if (mergedResults.length > 0) nextMeta.tool_results = mergedResults; else delete nextMeta.tool_results;
+            if (mergedArtifactGallery.length > 0) nextMeta.artifact_gallery = mergedArtifactGallery; else delete nextMeta.artifact_gallery;
             ctx.get().updateMessage(ctx.assistantMessageId, { content: completionContent, metadata: nextMeta });
             const sessionKey = ctx.get().currentSession?.session_id ?? ctx.get().currentSession?.id ?? null;
             if (sessionKey) void ctx.get().loadChatHistory(sessionKey).catch((e: any) => console.warn('Sync failed:', e));

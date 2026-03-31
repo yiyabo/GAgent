@@ -84,7 +84,7 @@ export interface JobLogTailResponse {
   truncated: boolean;
 }
 
-export type BackgroundTaskCategory = 'task_creation' | 'phagescope' | 'claude_code';
+export type BackgroundTaskCategory = 'task_creation' | 'phagescope' | 'code_executor';
 
 export interface BackgroundTaskItem {
   category: BackgroundTaskCategory;

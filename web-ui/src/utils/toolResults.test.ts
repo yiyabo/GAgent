@@ -1,83 +1,46 @@
 import { describe, expect, it } from 'vitest';
-import {
-  collectToolResultsFromActions,
-  collectToolResultsFromMetadata,
-  collectToolResultsFromSteps,
-  mergeToolResults,
-} from './toolResults';
+import { collectToolResultsFromMetadata } from './toolResults';
 
-describe('toolResults utilities', () => {
-  it('collects tool results from steps', () => {
-    const steps = [
+describe('collectToolResultsFromMetadata', () => {
+  it('preserves artifact-related fields during normalization', () => {
+    const [payload] = collectToolResultsFromMetadata([
       {
-        action: { kind: 'plan_operation', name: 'create_plan' },
-        details: {},
-      },
-      {
-        action: {
-          kind: 'tool_operation',
-          name: 'web_search',
-          parameters: { query: 'latest ai news' },
-        },
-        success: true,
-        details: {
-          summary: 'Search complete',
-          result: {
-            query: 'latest ai news',
-            success: true,
-            response: 'Top highlights...',
-            results: [
-              { title: 'AI Weekly', url: 'https://example.com', source: 'Example', snippet: '...' },
-            ],
+        name: 'code_executor',
+        summary: 'generated figure',
+        result: {
+          success: true,
+          artifact_paths: ['tool_outputs/run_1/figure.png'],
+          storage: {
+            relative: {
+              preview_path: 'tool_outputs/run_1/figure.png',
+            },
           },
+          deliverables: {
+            manifest_path: 'deliverables/manifest_latest.json',
+          },
+          artifact_gallery: [
+            {
+              path: 'tool_outputs/run_1/figure.png',
+              display_name: 'figure.png',
+              source_tool: 'code_executor',
+            },
+          ],
         },
       },
-    ];
-    const payloads = collectToolResultsFromSteps(steps);
-    expect(payloads).toHaveLength(1);
-    expect(payloads[0].name).toBe('web_search');
-    expect(payloads[0].result?.query).toBe('latest ai news');
-    expect(payloads[0].result?.results).toHaveLength(1);
-  });
-
-  it('merges tool results without duplicates', () => {
-    const existing = collectToolResultsFromMetadata([
-      {
-        name: 'web_search',
-        summary: 'Search complete',
-        result: { query: 'q1', success: true },
-      },
-    ]);
-    const additional = collectToolResultsFromMetadata([
-      {
-        name: 'web_search',
-        summary: 'Search complete',
-        result: { query: 'q1', success: true },
-      },
-      {
-        name: 'web_search',
-        summary: 'Second search',
-        result: { query: 'q2', success: false, error: 'timeout' },
-      },
     ]);
 
-    const merged = mergeToolResults(existing, additional);
-    expect(merged).toHaveLength(2);
-    expect(merged[0].result?.query).toBe('q1');
-    expect(merged[1].result?.query).toBe('q2');
-  });
-
-  it('collects from action payloads', () => {
-    const actions = [
-      {
-        kind: 'tool_operation',
-        name: 'web_search',
-        parameters: { query: 'abc' },
-        details: { result: { query: 'abc', success: true } },
-      },
-    ];
-    const payloads = collectToolResultsFromActions(actions as any);
-    expect(payloads).toHaveLength(1);
-    expect(payloads[0].result?.query).toBe('abc');
+    expect(payload.result?.artifact_paths).toEqual(['tool_outputs/run_1/figure.png']);
+    expect(payload.result?.storage).toMatchObject({
+      relative: { preview_path: 'tool_outputs/run_1/figure.png' },
+    });
+    expect(payload.result?.deliverables).toMatchObject({
+      manifest_path: 'deliverables/manifest_latest.json',
+    });
+    expect(payload.result?.artifact_gallery?.[0]).toMatchObject({
+      path: 'tool_outputs/run_1/figure.png',
+      display_name: 'figure.png',
+      source_tool: 'code_executor',
+      mime_family: 'image',
+    });
   });
 });

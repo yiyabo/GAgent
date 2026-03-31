@@ -24,6 +24,8 @@ from app.services.request_principal import ensure_owner_access
 from app.services.session_paths import normalize_session_base
 
 from . import register_router
+from .chat.artifact_gallery import is_image_artifact_path
+from .chat.subject_identity import _workspace_root
 
 # Optional markdown import
 try:
@@ -676,6 +678,37 @@ async def get_session_artifact_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+
+    media_type, _ = mimetypes.guess_type(str(target))
+    return FileResponse(
+        path=target,
+        media_type=media_type or "application/octet-stream",
+        filename=target.name,
+    )
+
+
+@router.get("/sessions/{session_id}/workspace-file")
+async def get_session_workspace_file(
+    session_id: str,
+    request: Request,
+    path: str = Query(..., min_length=1),
+) -> FileResponse:
+    _ensure_session_access(session_id, request)
+    workspace_root = _workspace_root().resolve()
+    raw_path = str(path or "").strip()
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = workspace_root / candidate
+    target = candidate.resolve(strict=False)
+
+    _assert_path_within(target, workspace_root, detail="Invalid workspace path")
+    if not is_image_artifact_path(target.name):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace file not found",
+        )
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace file not found")
 
     media_type, _ = mimetypes.guess_type(str(target))
     return FileResponse(
