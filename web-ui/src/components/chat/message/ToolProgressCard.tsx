@@ -68,7 +68,7 @@ const TOOL_LABELS: Record<string, string> = {
   file_operations: 'file_operations',
   graph_rag: 'graph_rag',
   result_interpreter: 'result_interpreter',
-  claude_code: 'claude_code',
+  code_executor: 'code_executor',
 };
 
 const PHASE_LABELS: Record<string, string> = {
@@ -660,16 +660,16 @@ interface BackgroundDispatchCardProps {
 
 export const BackgroundDispatchCard: React.FC<BackgroundDispatchCardProps> = ({ metadata }) => {
   const bgCategory = (metadata as any)?.background_category as string | undefined;
-  const isBackgroundDispatch = Boolean(bgCategory && (bgCategory === 'phagescope' || bgCategory === 'claude_code' || bgCategory === 'task_creation'));
+  const isBackgroundDispatch = Boolean(bgCategory && (bgCategory === 'phagescope' || bgCategory === 'code_executor' || bgCategory === 'task_creation'));
   if (!isBackgroundDispatch) return null;
   const categoryLabels: Record<string, string> = {
     phagescope: 'PhageScope',
-    claude_code: 'Claude Code',
+    code_executor: 'Code Executor',
     task_creation: 'Task Creation / Decomposition',
   };
   const categoryColors: Record<string, string> = {
     phagescope: 'purple',
-    claude_code: 'geekblue',
+    code_executor: 'geekblue',
     task_creation: 'cyan',
   };
   const label = categoryLabels[bgCategory!] ?? bgCategory;

@@ -7,6 +7,10 @@ import {
   mergeToolResults,
   collectToolResultsFromMetadata,
 } from '@utils/toolResults';
+import {
+  collectArtifactGallery,
+  mergeArtifactGalleries,
+} from '@/utils/artifactGallery';
 import type { StoreGet, StoreSet, StreamMutableState } from './types';
 
 export function startActionStatusPolling(
@@ -31,8 +35,15 @@ export function startActionStatusPolling(
   const targetMessage = get().messages.find((msg: any) => msg.id === messageId);
   if (!targetMessage) return done;
   const currentMeta: ChatResponseMetadata = { ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}) };
+  const remoteArtifactGallery = mergeArtifactGalleries(
+    collectArtifactGallery(currentMeta.artifact_gallery),
+    mergeArtifactGalleries(
+      collectArtifactGallery(statusResp.result?.artifact_gallery),
+      collectArtifactGallery(statusResp.metadata?.artifact_gallery),
+    ),
+  );
   const contentCandidate = (remoteAnalysis && remoteAnalysis.trim()) || (remoteFinalSummary && remoteFinalSummary.trim()) || (remoteReply && remoteReply.trim()) || targetMessage.content || initialContent || '';
-  get().updateMessage(messageId, { content: contentCandidate, metadata: { ...currentMeta, status, analysis_text: remoteAnalysis ?? currentMeta.analysis_text, final_summary: remoteFinalSummary ?? currentMeta.final_summary, tool_results: remoteToolResults.length > 0 ? remoteToolResults : currentMeta.tool_results } });
+  get().updateMessage(messageId, { content: contentCandidate, metadata: { ...currentMeta, status, analysis_text: remoteAnalysis ?? currentMeta.analysis_text, final_summary: remoteFinalSummary ?? currentMeta.final_summary, tool_results: remoteToolResults.length > 0 ? remoteToolResults : currentMeta.tool_results, artifact_gallery: remoteArtifactGallery.length > 0 ? remoteArtifactGallery : currentMeta.artifact_gallery } });
   if (done) {
   const sessionKey = get().currentSession?.session_id ?? get().currentSession?.id ?? null;
   if (sessionKey) void get().loadChatHistory(sessionKey).catch((e: any) => console.warn('failed:', e));
@@ -115,7 +126,11 @@ export async function retryActionRun(
   ? 'Execution completed. Please review the generated results.'
   : 'Execution failed. Please review error details.');
   const results = mergeToolResults(collectToolResultsFromMetadata(lastStatus.result?.tool_results), collectToolResultsFromMetadata(lastStatus.metadata?.tool_results));
-  get().updateMessage(pendingId, { content, metadata: { status: lastStatus.status as ChatActionStatus, unified_stream: true, actions: lastStatus.actions ?? [], tool_results: results.length > 0 ? results : undefined, errors: lastStatus.errors ?? undefined } as any });
+  const artifactGallery = mergeArtifactGalleries(
+  collectArtifactGallery(lastStatus.result?.artifact_gallery),
+  collectArtifactGallery(lastStatus.metadata?.artifact_gallery),
+  );
+  get().updateMessage(pendingId, { content, metadata: { status: lastStatus.status as ChatActionStatus, unified_stream: true, actions: lastStatus.actions ?? [], tool_results: results.length > 0 ? results : undefined, artifact_gallery: artifactGallery.length > 0 ? artifactGallery : undefined, errors: lastStatus.errors ?? undefined } as any });
   }
   } catch (error) {
   console.error('Retry failed:', error);

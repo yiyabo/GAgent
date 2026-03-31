@@ -3,6 +3,7 @@ import { ENV } from '@/config/env';
 import { ChatMessage } from '@/types';
 import { buildToolResultsCache, resolveHistoryCursor } from '@store/chatUtils';
 import { collectToolResultsFromMetadata } from '@utils/toolResults';
+import { collectArtifactGallery } from '@/utils/artifactGallery';
 import { parseChatTimestamp } from '@/utils/chatMessageUtils';
 
 export const MESSAGES_QUERY_KEY = (sessionId: string) => ['messages', sessionId];
@@ -41,6 +42,10 @@ export function useMessages(sessionId: string | null | undefined) {
                 const toolResults = collectToolResultsFromMetadata(metadata.tool_results);
                 if (toolResults.length > 0) {
                     metadata.tool_results = toolResults;
+                }
+                const artifactGallery = collectArtifactGallery(metadata.artifact_gallery);
+                if (artifactGallery.length > 0) {
+                    metadata.artifact_gallery = artifactGallery;
                 }
 
                 // Hydrate thinking_process from metadata if available

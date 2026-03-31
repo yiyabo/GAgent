@@ -19,7 +19,7 @@ import './ExecutorPanel.css';
 dayjs.extend(relativeTime);
 const { Text } = Typography;
 
-const GROUP_ORDER: BackgroundTaskCategory[] = ['task_creation', 'phagescope', 'claude_code'];
+const GROUP_ORDER: BackgroundTaskCategory[] = ['task_creation', 'phagescope', 'code_executor'];
 const FINAL_STATUSES = new Set(['succeeded', 'completed', 'failed']);
 
 const parseServerTime = (time?: string | null) => {
@@ -57,8 +57,8 @@ const EMPTY_BOARD = (): BackgroundTaskBoardResponse => ({
   failed: 0,
   items: [],
   },
-  claude_code: {
-  key: 'claude_code',
+  code_executor: {
+  key: 'code_executor',
   label: 'Claude Code',
   total: 0,
   running: 0,
@@ -647,7 +647,7 @@ const ExecutorPanel: React.FC = () => {
    const normalized = normalizeJobStatus(item.status);
    const canExpand =
      item.job_type === 'plan_execute' ||
-     (item.category === 'claude_code' && normalized === 'running') ||
+     (item.category === 'code_executor' && normalized === 'running') ||
      item.job_type === 'bio_tools_run';
    return (
    <TaskRow

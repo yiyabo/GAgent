@@ -47,7 +47,7 @@ const CJK_CHAR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
 const TOOL_META: Record<string, { icon: React.ReactNode; zh: string; en: string }> = {
   web_search: { icon: <GlobalOutlined />, zh: '检索资料', en: 'Searching the web' },
   file_operations: { icon: <FileTextOutlined />, zh: '处理文件', en: 'Working with files' },
-  claude_code: { icon: <CodeOutlined />, zh: '执行代码与分析', en: 'Executing code' },
+  code_executor: { icon: <CodeOutlined />, zh: '执行代码与分析', en: 'Executing code' },
   bio_tools: { icon: <ExperimentOutlined />, zh: '运行分析工具', en: 'Running analysis tools' },
   document_reader: { icon: <FileTextOutlined />, zh: '阅读文档', en: 'Reading documents' },
   vision_reader: { icon: <EyeOutlined />, zh: '分析图像内容', en: 'Analyzing visual content' },
@@ -142,7 +142,7 @@ function extractSemanticLabel(
       else if (params.operation) label = localize(language, `处理文件：${fileName}`, `${params.operation}: ${fileName}`);
       break;
     }
-    case 'claude_code':
+    case 'code_executor':
       if (params.task) label = localize(language, `执行代码任务：${String(params.task).slice(0, 48)}`, `Code task: ${String(params.task).slice(0, 60)}`);
       break;
     case 'document_reader':

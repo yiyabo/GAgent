@@ -149,6 +149,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
     const listRef = useRef<ListRef>(null);
     const pendingAdjustRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
     const loadMoreLockRef = useRef(false);
+    const stickyBottomRef = useRef(true); // Track whether we should stay pinned to bottom
     const listData = useMemo<ChatListItem[]>(() => {
       if (relevantMemories.length === 0) {
         return messages;
@@ -184,15 +185,41 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
       );
     }, [sessionId]);
 
+    // Aggressively scroll to bottom: index-based + native DOM, repeated with delays
+    // to handle rc-virtual-list's unreliable initial positioning and async image loading.
+    const scrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+    const forceScrollToBottom = useCallback(() => {
+      // Clear any pending scroll timers to avoid stacking.
+      scrollTimersRef.current.forEach(clearTimeout);
+      scrollTimersRef.current = [];
+
+      const doScroll = () => {
+        if (!listRef.current || !stickyBottomRef.current) return;
+        // Index-based: tells VirtualList to render items near the end.
+        listRef.current.scrollTo({ index: listData.length - 1, align: 'bottom' });
+        // Native DOM: scrolls to true bottom regardless of estimation.
+        const el = listRef.current.nativeElement;
+        if (el) el.scrollTop = el.scrollHeight;
+      };
+
+      doScroll();
+      // Retry at increasing delays to catch VirtualList measurement + image loading.
+      for (const delay of [50, 150, 400, 1000]) {
+        scrollTimersRef.current.push(setTimeout(doScroll, delay));
+      }
+    }, [listData.length]);
+
+    // Clean up timers on unmount.
+    useEffect(() => () => scrollTimersRef.current.forEach(clearTimeout), []);
+
+    // Trigger scroll-to-bottom when messages change or history finishes loading.
     useEffect(() => {
-      if (!listRef.current || listData.length === 0) {
-        return;
-      }
-      if (pendingAdjustRef.current || isHistoryLoading) {
-        return;
-      }
-      listRef.current.scrollTo({ index: listData.length - 1, align: 'bottom' });
-    }, [listData, isProcessing, isHistoryLoading]);
+      if (!listRef.current || listData.length === 0) return;
+      if (pendingAdjustRef.current || isHistoryLoading) return;
+      stickyBottomRef.current = true;
+      forceScrollToBottom();
+    }, [listData, isProcessing, isHistoryLoading, forceScrollToBottom]);
 
     useEffect(() => {
       if (isHistoryLoading) {
@@ -213,10 +240,14 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
     const resolvedHeight = listHeight > 0 ? listHeight : 360;
     const handleScroll = useCallback(
       (event: React.UIEvent<HTMLElement>) => {
+        const target = event.currentTarget;
+        // Track whether user is near the bottom (within 150px).
+        const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+        stickyBottomRef.current = distanceToBottom < 150;
+
         if (!onReachTop || !canLoadMore || isHistoryLoading || loadMoreLockRef.current) {
           return;
         }
-        const target = event.currentTarget;
         if (target.scrollTop <= 80) {
           if (listRef.current) {
             pendingAdjustRef.current = {
@@ -236,7 +267,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
         ref={listRef}
         data={listData}
         height={resolvedHeight}
-        itemHeight={120}
+        itemHeight={400}
         itemKey="id"
         onScroll={handleScroll}
         style={{

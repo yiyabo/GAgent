@@ -94,6 +94,16 @@ export interface PlanSyncEventDetail {
   raw?: unknown;
 }
 
+export interface ArtifactGalleryItem {
+  path: string;
+  display_name?: string | null;
+  source_tool?: string | null;
+  mime_family?: string | null;
+  origin?: string | null;
+  created_at?: string | null;
+  tracking_id?: string | null;
+}
+
 export interface ChatResponseMetadata {
   status?: ChatActionStatus;
   tracking_id?: string;
@@ -113,6 +123,7 @@ export interface ChatResponseMetadata {
   task_name?: string | null;
   session_id?: string;
   tool_results?: ToolResultPayload[] | null;
+  artifact_gallery?: ArtifactGalleryItem[] | null;
   request_tier?: RequestTier;
   request_route_mode?: RequestRouteMode;
   route_reason_codes?: string[];
@@ -140,6 +151,7 @@ export interface ActionStatusResponse {
   finished_at?: string | null;
   metadata?: {
     tool_results?: ToolResultPayload[] | null;
+    artifact_gallery?: ArtifactGalleryItem[] | null;
     final_summary?: string;
     [key: string]: any;
   } | null;
@@ -183,6 +195,7 @@ export interface ChatMessage {
     tool_executed?: boolean;
     tool_type?: string;
     tool_results?: ToolResultPayload[] | null;
+    artifact_gallery?: ArtifactGalleryItem[] | null;
     request_tier?: RequestTier;
     request_route_mode?: RequestRouteMode;
     route_reason_codes?: string[];

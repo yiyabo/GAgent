@@ -139,6 +139,34 @@ describe('streamHandlers session sync', () => {
     );
   });
 
+  it('hydrates artifact gallery from final payload metadata', async () => {
+    const { store, ctx } = buildContext();
+    ctx.state.finalPayload = {
+      response: '这里是刚才那张图片。',
+      actions: [],
+      metadata: {
+        status: 'completed',
+        artifact_gallery: [
+          {
+            path: 'tool_outputs/run_1/figure.png',
+            display_name: 'figure.png',
+            source_tool: 'code_executor',
+          },
+        ],
+      },
+    };
+
+    await processFinalPayload(ctx as any);
+
+    expect((store.messages[0].metadata as any).artifact_gallery).toHaveLength(1);
+    expect((store.messages[0].metadata as any).artifact_gallery[0]).toMatchObject({
+      path: 'tool_outputs/run_1/figure.png',
+      display_name: 'figure.png',
+      source_tool: 'code_executor',
+      mime_family: 'image',
+    });
+  });
+
   it('clears stale compact progress current state when final payload completes', async () => {
     const { store, ctx } = buildContext();
 

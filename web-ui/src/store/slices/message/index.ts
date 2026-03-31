@@ -19,6 +19,10 @@ import { ENV } from '@/config/env';
 import {
   collectToolResultsFromMetadata,
 } from '@utils/toolResults';
+import {
+  collectArtifactGallery,
+  mergeArtifactGalleries,
+} from '@/utils/artifactGallery';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { recoverPlanBindingFromMessages } from './planRecovery';
 
@@ -90,6 +94,18 @@ const _consumeUnifiedStream = async (
       continue;
     }
     if (event.type === 'artifact') {
+      const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
+      if (targetMessage) {
+        const existingMetadata = { ...((targetMessage.metadata as Record<string, any> | undefined) ?? {}) };
+        const mergedGallery = mergeArtifactGalleries(
+          collectArtifactGallery(existingMetadata.artifact_gallery),
+          collectArtifactGallery([event]),
+        );
+        if (mergedGallery.length > 0) {
+          existingMetadata.artifact_gallery = mergedGallery;
+          ctx.get().updateMessage(ctx.assistantMessageId, { metadata: existingMetadata });
+        }
+      }
       window.dispatchEvent(new CustomEvent('artifactProduced', { detail: event }));
       continue;
     }
@@ -346,6 +362,10 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   }
   if (toolResults.length > 0) {
   metadata.tool_results = toolResults;
+  }
+  const artifactGallery = collectArtifactGallery(metadata.artifact_gallery);
+  if (artifactGallery.length > 0) {
+  metadata.artifact_gallery = artifactGallery;
   }
 
   // Hydrate thinking_process from metadata with schema normalization.

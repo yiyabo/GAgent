@@ -1,6 +1,29 @@
-import { buildArtifactFileUrl } from '@api/artifacts';
+import { buildArtifactFileUrl, buildWorkspaceFileUrl } from '@api/artifacts';
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg)$/i;
+const WORKSPACE_ABS_RE = /^(\/|)(Users|home|private|Volumes|tmp|var|opt|workspace|workspaces|data|mnt|srv|root)\//i;
+
+export function normalizeArtifactImagePath(src: string | null | undefined): string {
+  if (src == null || typeof src !== 'string') {
+    return '';
+  }
+  const trimmed = src.trim();
+  if (!trimmed) {
+    return '';
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  if (WORKSPACE_ABS_RE.test(trimmed)) {
+    return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  }
+  return trimmed.replace(/^\/+/, '');
+}
+
+export function isWorkspaceAbsoluteImagePath(src: string | null | undefined): boolean {
+  const normalized = normalizeArtifactImagePath(src);
+  return normalized.startsWith('/') && WORKSPACE_ABS_RE.test(normalized);
+}
 
 /**
  * Rewrite markdown image `src` to session artifact file URL when safe.
@@ -12,30 +35,25 @@ export function resolveArtifactImageSrc(
   src: string | null | undefined,
   sessionId: string | null | undefined,
 ): string {
-  if (src == null || typeof src !== 'string') {
+  const normalized = normalizeArtifactImagePath(src);
+  if (!normalized) {
     return '';
   }
-  const trimmed = src.trim();
-  if (!trimmed) {
-    return '';
-  }
-  if (/^https?:\/\//i.test(trimmed)) {
-    return trimmed;
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized;
   }
   const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
   if (!sid) {
-    return trimmed;
-  }
-
-  const normalized = trimmed.replace(/^\/+/, '');
-  if (!normalized) {
-    return trimmed;
+    return normalized;
   }
   if (normalized.includes('..') || normalized.includes('\\')) {
-    return trimmed;
+    return normalized;
   }
   if (!IMAGE_EXT_RE.test(normalized)) {
-    return trimmed;
+    return normalized;
+  }
+  if (isWorkspaceAbsoluteImagePath(normalized)) {
+    return buildWorkspaceFileUrl(sid, normalized);
   }
 
   return buildArtifactFileUrl(sid, normalized);
@@ -51,10 +69,10 @@ export function collectArtifactImagePathsFromResult(result: Record<string, any> 
   const out: string[] = [];
   const push = (p: unknown) => {
     if (typeof p !== 'string' || !p.trim()) return;
-    const t = p.trim();
+    const t = normalizeArtifactImagePath(p);
     if (!IMAGE_EXT_RE.test(t)) return;
     if (t.includes('..') || t.includes('\\')) return;
-    out.push(t.replace(/^\/+/, ''));
+    out.push(t);
   };
 
   const raw = result.artifact_paths;
@@ -67,6 +85,14 @@ export function collectArtifactImagePathsFromResult(result: Record<string, any> 
     const sap = (storage as Record<string, unknown>).artifact_paths;
     if (Array.isArray(sp)) sp.forEach(push);
     if (Array.isArray(sap)) sap.forEach(push);
+  }
+  const gallery = result.artifact_gallery;
+  if (Array.isArray(gallery)) {
+    gallery.forEach((item) => {
+      if (item && typeof item === 'object') {
+        push((item as Record<string, unknown>).path);
+      }
+    });
   }
 
   return [...new Set(out)];

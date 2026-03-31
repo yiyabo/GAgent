@@ -13,6 +13,7 @@ import JobLogPanel from '../JobLogPanel';
 import { ThinkingProcess } from '../ThinkingProcess';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import { TypingIndicator } from '../TypingIndicator';
+import ArtifactGallery from '../ArtifactGallery';
 import type { DecompositionJobStatus } from '@/types';
 import { FINAL_JOB_STATUSES, normalizeJobStatus, computeDecomposeProgress } from './utils';
 import MessageAvatar from './MessageAvatar';
@@ -20,6 +21,7 @@ import ToolProgressCard, { BackgroundDispatchCard } from './ToolProgressCard';
 import MessageActions from './MessageActions';
 import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
+import { collectArtifactGallery } from '@/utils/artifactGallery';
 
 const { Text } = Typography;
 
@@ -118,6 +120,10 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
         ? (metadata?.tool_results as ToolResultPayload[])
         : [],
     [metadata?.tool_results],
+  );
+  const artifactGallery = useMemo(
+    () => collectArtifactGallery((metadata as any)?.artifact_gallery),
+    [metadata],
   );
   const normalizedAssistantContent = useMemo(
     () => (type === 'assistant' ? extractLlmReplyMessage(content) : content),
@@ -315,7 +321,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
 
   // ---- Background dispatch card ----
   const bgCategory = (metadata as any)?.background_category as string | undefined;
-  const isBackgroundDispatch = Boolean(bgCategory && (bgCategory === 'phagescope' || bgCategory === 'claude_code' || bgCategory === 'task_creation'));
+  const isBackgroundDispatch = Boolean(bgCategory && (bgCategory === 'phagescope' || bgCategory === 'code_executor' || bgCategory === 'task_creation'));
 
   const renderSummary = () => {
     const responsePlaceholderVisible =
@@ -460,6 +466,9 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                     />
                   )}
                   {summaryBlock}
+                  {artifactGallery.length > 0 && (
+                    <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />
+                  )}
                 </>
               );
             }
@@ -499,6 +508,9 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                   />
                 )}
                 {summaryBlock ?? renderContent()}
+                {artifactGallery.length > 0 && (
+                  <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />
+                )}
                 {renderPendingActions()}
                 {!isPendingAction && renderUnifiedStatusLine()}
                 {!isPendingAction && (

@@ -1,4 +1,5 @@
 import type { ChatActionSummary, ToolResultItem, ToolResultPayload } from '@/types';
+import { collectArtifactGallery } from './artifactGallery';
 
 type StepLike = {
   action?: {
@@ -97,6 +98,33 @@ const normalizeToolResultPayload = (raw: any): ToolResultPayload | null => {
 
   if (isNonEmptyString(result.prompt)) {
     normalized.result = { ...(normalized.result ?? {}), prompt: result.prompt };
+  }
+  if (Array.isArray(result.artifact_paths)) {
+    normalized.result = {
+      ...(normalized.result ?? {}),
+      artifact_paths: result.artifact_paths
+        .filter((item: unknown) => isNonEmptyString(item))
+        .map((item: string) => item.trim()),
+    };
+  }
+  if (result.storage && typeof result.storage === 'object') {
+    normalized.result = {
+      ...(normalized.result ?? {}),
+      storage: { ...(result.storage as Record<string, any>) },
+    };
+  }
+  if (result.deliverables && typeof result.deliverables === 'object') {
+    normalized.result = {
+      ...(normalized.result ?? {}),
+      deliverables: { ...(result.deliverables as Record<string, any>) },
+    };
+  }
+  const artifactGallery = collectArtifactGallery(result.artifact_gallery);
+  if (artifactGallery.length > 0) {
+    normalized.result = {
+      ...(normalized.result ?? {}),
+      artifact_gallery: artifactGallery,
+    };
   }
   if (Array.isArray(result.triples)) {
     normalized.result = { ...(normalized.result ?? {}), triples: result.triples };
