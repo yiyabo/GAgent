@@ -783,6 +783,33 @@ def _apply_grounded_local_answer(
     )
 
 
+def _structured_plan_metadata_from_result(
+    result: DeepThinkResult,
+) -> Dict[str, Any]:
+    if not result.structured_plan_required:
+        return {}
+    state = str(result.structured_plan_state or "").strip() or (
+        "created" if result.structured_plan_satisfied else "text_only"
+    )
+    metadata: Dict[str, Any] = {
+        "plan_creation_state": state,
+    }
+    message = str(result.structured_plan_message or "").strip()
+    if message:
+        metadata["plan_creation_message"] = message
+    return metadata
+
+
+def _should_bind_created_plan(
+    *,
+    existing_plan_id: Optional[int],
+    plan_request_mode: Optional[str],
+) -> bool:
+    if existing_plan_id is None:
+        return True
+    return str(plan_request_mode or "").strip().lower() == "create_new"
+
+
 class StructuredChatAgent:
     """Plan conversation agent using a structured schema."""
 
@@ -1510,9 +1537,20 @@ class StructuredChatAgent:
                 "simple_channel_allowed": routing_decision.simple_channel_allowed,
                 "subject_resolution": dict(routing_decision.subject_resolution),
                 "brevity_hint": routing_decision.brevity_hint,
+                "requires_structured_plan": routing_decision.requires_structured_plan,
+                "plan_request_mode": routing_decision.plan_request_mode,
                 "current_user_turn_index": _current_user_turn_index_from_history(self.history),
             }
         )
+        if routing_decision.requires_structured_plan:
+            logger.info(
+                "[CHAT][ROUTING][PLAN] session=%s mode=%s plan_id=%s route=%s tier=%s",
+                self.session_id,
+                routing_decision.plan_request_mode,
+                self.plan_session.plan_id,
+                routing_decision.request_route_mode,
+                routing_decision.request_tier,
+            )
         _seed_active_subject_from_routing(self, routing_decision)
         if self.session_id:
             try:
@@ -2314,7 +2352,10 @@ class StructuredChatAgent:
                             plan_id = result.get("plan_id")
                             if plan_id:
                                 existing_plan_id = self.plan_session.plan_id
-                                if existing_plan_id is not None:
+                                if not _should_bind_created_plan(
+                                    existing_plan_id=existing_plan_id,
+                                    plan_request_mode=routing_decision.plan_request_mode,
+                                ):
                                     logger.warning(
                                         "[DeepThink] plan_operation create returned plan %s "
                                         "but session already bound to plan %s; "
@@ -2327,6 +2368,17 @@ class StructuredChatAgent:
                                 else:
                                     try:
                                         self.plan_session.bind(plan_id)
+                                        if (
+                                            existing_plan_id is not None
+                                            and existing_plan_id != plan_id
+                                        ):
+                                            logger.info(
+                                                "[DeepThink] Rebound session from plan %s to new plan %s "
+                                                "for explicit create_new request",
+                                                existing_plan_id,
+                                                plan_id,
+                                            )
+                                            result["rebound_from_plan_id"] = existing_plan_id
                                         self._refresh_plan_tree(force_reload=True)
                                         self.extra_context["plan_id"] = plan_id
                                         self._dirty = True
@@ -2496,9 +2548,12 @@ class StructuredChatAgent:
                 except Exception:  # pragma: no cover - defensive
                     ctor_params = {}
                 if "request_profile" in ctor_params:
+                    plan_tree = getattr(self, "plan_tree", None)
                     dt_agent_kwargs["request_profile"] = {
                         **route_profile.prompt_metadata(),
                         **routing_decision.metadata(),
+                        "current_plan_id": self.plan_session.plan_id,
+                        "current_plan_title": plan_tree.title if plan_tree else None,
                     }
                 dt_agent = dt_agent_cls(**dt_agent_kwargs)
 
@@ -2660,9 +2715,11 @@ class StructuredChatAgent:
                     try:
                         _persist_runtime_context(self)
                         plan_tree = getattr(self, "plan_tree", None)
-                        plan_title = plan_tree.title if plan_tree else None
+                        structured_plan_meta = _structured_plan_metadata_from_result(res)
+                        resolved_plan_id = res.structured_plan_plan_id or self.plan_session.plan_id
+                        plan_title = res.structured_plan_title or (plan_tree.title if plan_tree else None)
                         metadata_payload: Dict[str, Any] = {
-                            "plan_id": self.plan_session.plan_id,
+                            "plan_id": resolved_plan_id,
                             "plan_title": plan_title,
                             "deep_think": True,
                             "iterations": res.total_iterations,
@@ -2672,6 +2729,7 @@ class StructuredChatAgent:
                             "search_verified": res.search_verified,
                             "fallback_used": res.fallback_used,
                             **routing_decision.metadata(),
+                            **structured_plan_meta,
                         }
                         if current_turn_artifact_gallery:
                             metadata_payload["artifact_gallery"] = merge_artifact_gallery(
@@ -2709,6 +2767,18 @@ class StructuredChatAgent:
                             "[CHAT][DEEP_THINK] Response saved to database for session=%s",
                             self.session_id,
                         )
+                        if res.structured_plan_required:
+                            logger.info(
+                                "[CHAT][DEEP_THINK][PLAN] session=%s required=%s mode=%s state=%s satisfied=%s plan_id=%s operation=%s message=%s",
+                                self.session_id,
+                                res.structured_plan_required,
+                                routing_decision.plan_request_mode,
+                                res.structured_plan_state,
+                                res.structured_plan_satisfied,
+                                resolved_plan_id,
+                                res.structured_plan_operation,
+                                res.structured_plan_message,
+                            )
                     except Exception as save_err:
                         logger.warning(
                             "[CHAT][DEEP_THINK] Failed to save response: %s",
@@ -2719,15 +2789,18 @@ class StructuredChatAgent:
                 # No need to yield it again here to avoid duplication
                 bg_category = item.get("bg_category")
                 plan_tree = getattr(self, "plan_tree", None)
-                plan_title = plan_tree.title if plan_tree else None
+                structured_plan_meta = _structured_plan_metadata_from_result(res)
+                resolved_plan_id = res.structured_plan_plan_id or self.plan_session.plan_id
+                plan_title = res.structured_plan_title or (plan_tree.title if plan_tree else None)
                 final_metadata: Dict[str, Any] = {
-                    "plan_id": self.plan_session.plan_id,  # Include plan_id so frontend can update
+                    "plan_id": resolved_plan_id,  # Include plan_id so frontend can update
                     "plan_title": plan_title,
                     "deep_think": True,
                     "tool_failures": res.tool_failures,
                     "search_verified": res.search_verified,
                     "fallback_used": res.fallback_used,
                     **routing_decision.metadata(),
+                    **structured_plan_meta,
                 }
                 if current_turn_artifact_gallery:
                     final_metadata["artifact_gallery"] = merge_artifact_gallery(

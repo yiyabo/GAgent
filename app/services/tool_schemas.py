@@ -797,7 +797,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "name": "plan_operation",
             "description": (
                 "Plan creation and optimization tool. Operations: create, review, optimize, get. "
-                "For plan creation, research first with web_search, then create -> review -> optimize."
+                "Use create for new structured plans and get/review/optimize for bound plans. "
+                "Research with web_search first only when latest external evidence materially affects the plan."
             ),
             "parameters": {
                 "type": "object",
