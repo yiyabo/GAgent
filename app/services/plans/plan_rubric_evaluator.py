@@ -627,8 +627,19 @@ def _invoke_evaluator_client(
     prompt: str,
     evaluator_model: Optional[str],
 ) -> str:
+    messages = [{"role": "user", "content": prompt}]
+
+    # LLMClient owns a shared AsyncClient that is created during app startup on the
+    # main event loop. Reusing that AsyncClient from a fresh loop in a worker thread
+    # causes "bound to a different event loop" failures during rubric review.
+    #
+    # Rubric evaluation is a synchronous API, so prefer the sync HTTP path for the
+    # concrete built-in client. Keep the async fallback for custom evaluator stubs
+    # used in tests or alternative integrations that only expose async methods.
+    if isinstance(client, LLMClient):
+        return client.chat("", messages=messages, model=evaluator_model)
+
     async def _runner() -> str:
-        messages = [{"role": "user", "content": prompt}]
         stream_chat_async = getattr(client, "stream_chat_async", None)
         if callable(stream_chat_async):
             chunks: List[str] = []
