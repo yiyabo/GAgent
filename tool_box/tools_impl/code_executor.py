@@ -110,11 +110,74 @@ def _compact_cli_text(value: Optional[str], *, limit: int = 320) -> str:
     return text[: max(0, limit - 3)] + "..."
 
 
+def _extract_readable_error(stderr: str) -> str:
+    """Extract a human-readable error from Claude CLI stderr.
+
+    When the CLI crashes, stderr may contain a minified JS stack trace that is
+    useless for debugging.  This function detects that pattern and produces a
+    concise summary instead.
+    """
+    if not stderr or not stderr.strip():
+        return ""
+
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+
+    # 1. Detect known structured error messages first.
+    for line in lines:
+        lower = line.lower()
+        if "cannot be launched inside another claude code session" in lower:
+            return "Nested Claude Code session detected. Unset the CLAUDECODE env var."
+        if "error:" in lower and len(line) < 300:
+            return line
+
+    # 2. Detect minified JavaScript dump (CLI crash).
+    joined = " ".join(lines)
+    is_minified_js = (
+        "cli.js:" in joined
+        and any(kw in joined for kw in (
+            "function(", "var ", "Object.defineProperty",
+            "exports.", "DefaultTransporter", "status>=400",
+        ))
+    )
+    if is_minified_js:
+        # Try to extract HTTP status hint from the minified code context.
+        import re
+        status_match = re.search(r'status[>=]+\s*(\d{3})', joined)
+        if status_match:
+            status_code = status_match.group(1)
+            if status_code in {"401", "403"}:
+                return (
+                    f"Claude CLI crashed (HTTP {status_code} from upstream Anthropic-compatible API). "
+                    "Check provider credentials and authorization settings."
+                )
+            if status_code == "429":
+                return (
+                    "Claude CLI crashed (HTTP 429 from upstream Anthropic-compatible API). "
+                    "The provider likely rate-limited the request."
+                )
+            if status_code == "400":
+                return (
+                    "Claude CLI crashed (HTTP 400 from upstream Anthropic-compatible API). "
+                    "The upstream rejected the request; this is not necessarily a local API-key/base-URL problem."
+                )
+            return (
+                f"Claude CLI crashed (HTTP {status_code} from upstream Anthropic-compatible API). "
+                "Check provider debug logs and request compatibility."
+            )
+        return (
+            "Claude CLI crashed with an unhandled JS exception. "
+            "This usually indicates an API connectivity or authentication error."
+        )
+
+    # 3. Fallback: truncate to a readable length.
+    return _compact_cli_text(joined, limit=360)
+
+
 def _build_cli_failure_error(*, return_code: Optional[int], stderr: str, stdout: str) -> str:
     parts: List[str] = []
     if return_code is not None:
         parts.append(f"exit_code={return_code}")
-    stderr_excerpt = _compact_cli_text(stderr, limit=360)
+    stderr_excerpt = _extract_readable_error(stderr)
     if stderr_excerpt:
         parts.append(f"stderr={stderr_excerpt}")
     stdout_excerpt = _compact_cli_text(stdout, limit=220)
@@ -129,7 +192,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 
 # Claude Code runtime directory
 _RUNTIME_DIR = get_runtime_root()
-_LOG_DIR = _RUNTIME_DIR / "claude_code_logs"
+_LOG_DIR = _RUNTIME_DIR / "code_executor_logs"
 
 # Strict execution boundary: only a constrained subset of tools is allowed.
 _HARD_ALLOWED_TOOL_NAMES: Sequence[str] = (
@@ -168,6 +231,7 @@ _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE: Sequence[str] = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
     "ANTHROPIC_AUTH_TOKEN",
 )
 _CLAUDE_ENV_KEYS_FOR_API_MODE: Sequence[str] = (
@@ -182,6 +246,7 @@ _CLAUDE_ENV_ALIAS_FOR_API_MODE: Sequence[tuple[str, str]] = (
     ("CLAUDE_CODE_BASE_URL", "ANTHROPIC_BASE_URL"),
     ("CLAUDE_CODE_AUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"),
     ("CLAUDE_CODE_API_MODEL", "ANTHROPIC_MODEL"),
+    ("CLAUDE_CODE_SMALL_FAST_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"),
 )
 
 
@@ -264,8 +329,13 @@ def _resolve_auth_mode(value: Any) -> str:
     return _DEFAULT_AUTH_MODE
 
 
-def _build_claude_subprocess_env(auth_mode: str) -> Dict[str, str]:
+def _build_code_executor_subprocess_env(auth_mode: str) -> Dict[str, str]:
     env_map = dict(os.environ)
+
+    # Always remove CLAUDECODE to prevent "nested session" detection when the
+    # backend itself runs inside a Claude Code session (e.g. during testing).
+    env_map.pop("CLAUDECODE", None)
+
     if auth_mode == "claude_login":
         for key in _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE:
             env_map.pop(key, None)
@@ -294,6 +364,12 @@ def _build_claude_subprocess_env(auth_mode: str) -> Dict[str, str]:
                 str(os.getenv("QWEN_MODEL", "")).strip()
                 or _DEFAULT_API_MODEL
             )
+        if not env_map.get("ANTHROPIC_SMALL_FAST_MODEL"):
+            env_map["ANTHROPIC_SMALL_FAST_MODEL"] = (
+                env_map.get("ANTHROPIC_MODEL", "").strip()
+                or str(os.getenv("QWEN_MODEL", "")).strip()
+                or _DEFAULT_API_MODEL
+            )
 
         # Avoid auth conflict in API mode: prefer API key when both exist; only keep
         # ANTHROPIC_AUTH_TOKEN when explicitly provided via CLAUDE_CODE_AUTH_TOKEN.
@@ -305,6 +381,7 @@ def _build_claude_subprocess_env(auth_mode: str) -> Dict[str, str]:
                 env_map["ANTHROPIC_AUTH_TOKEN"] = explicit_auth_token
             else:
                 env_map.pop("ANTHROPIC_AUTH_TOKEN", None)
+
     return env_map
 
 
@@ -329,6 +406,28 @@ def _coerce_positive_int(value: Any, *, field_name: str) -> Optional[int]:
     if parsed <= 0:
         raise ValueError(f"{field_name} must be a positive integer")
     return parsed
+
+
+def _resolve_cli_retry_policy() -> tuple[int, float]:
+    """Return (max_retries, base_delay_seconds) for Claude CLI transient failures."""
+    raw_retries = str(os.getenv("CLAUDE_CODE_MAX_RETRIES", "")).strip()
+    raw_delay = str(os.getenv("CLAUDE_CODE_RETRY_BASE_DELAY_S", "")).strip()
+
+    max_retries = 4
+    if raw_retries:
+        try:
+            max_retries = max(0, min(8, int(raw_retries)))
+        except ValueError:
+            max_retries = 4
+
+    base_delay_s = 5.0
+    if raw_delay:
+        try:
+            base_delay_s = max(0.5, min(60.0, float(raw_delay)))
+        except ValueError:
+            base_delay_s = 5.0
+
+    return max_retries, base_delay_s
 
 
 def _validate_scope_contract(
@@ -569,7 +668,91 @@ Directory name:"""
         return f"task_{task_hash}"
 
 
-async def claude_code_handler(
+async def _execute_task_locally(
+    task: str,
+    *,
+    work_dir: Optional[str] = None,
+    data_dir: Optional[str] = None,
+    extra_dirs: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Execute a task using the unified local code execution backend.
+
+    Delegates to ``execute_code_locally()`` which handles code generation,
+    file-persistent execution, error classification, and LLM-based fixing.
+    """
+    from app.services.interpreter.code_execution import execute_code_locally
+    from app.services.llm.llm_service import get_llm_service
+
+    logger.info("[CODE_EXECUTOR_LOCAL] Using local execution backend for task")
+
+    if not work_dir:
+        import tempfile
+        work_dir = tempfile.mkdtemp(prefix="cc_local_")
+    else:
+        work_dir = str(work_dir).strip()
+
+    os.makedirs(work_dir, exist_ok=True)
+
+    # Build task description with directory context.
+    results_dir = os.path.join(work_dir, "results")
+    task_desc = (
+        f"{task}\n\n"
+        f"Working directory: {work_dir}\n"
+        f"Save outputs to: {results_dir}"
+    )
+    if data_dir:
+        task_desc += f"\nPrimary data directory: {data_dir}"
+
+    readable_dirs: List[str] = []
+    seen_dirs: set = set()
+    for item in extra_dirs or ():
+        candidate = str(item or "").strip()
+        if not candidate or candidate in seen_dirs:
+            continue
+        seen_dirs.add(candidate)
+        readable_dirs.append(candidate)
+    if readable_dirs:
+        task_desc += (
+            "\nReadable directories:\n"
+            + "\n".join(f"- {path}" for path in readable_dirs)
+        )
+
+    outcome = await execute_code_locally(
+        task_title="Code execution task",
+        task_description=task_desc,
+        metadata_list=[],
+        llm_service=get_llm_service(),
+        work_dir=work_dir,
+        data_dir=data_dir,
+    )
+
+    result: Dict[str, Any] = {
+        "success": outcome.success,
+        "task": task,
+        "stdout": outcome.stdout,
+        "stderr": outcome.stderr,
+        "exit_code": outcome.exit_code,
+        "task_directory_full": work_dir,
+        "code_file": outcome.code_file,
+        "result": outcome.stdout if outcome.success else outcome.stderr,
+        "generated_code": outcome.code,
+        "error_category": outcome.error_category,
+    }
+
+    # Auto-submit visualization files to Deliverables (explicit mode compatible).
+    if outcome.success and outcome.visualization_files:
+        result["deliverable_submit"] = {
+            "publish": True,
+            "artifacts": [
+                {"path": f, "module": "image_tabular", "reason": "auto-submit from code_executor"}
+                for f in outcome.visualization_files
+            ],
+        }
+
+    return result
+
+
+async def code_executor_handler(
     task: str,
     allowed_tools: Optional[Any] = None,
     add_dirs: Optional[Any] = None,
@@ -607,6 +790,13 @@ async def claude_code_handler(
     Returns:
         Dict containing execution results
     """
+    use_local_backend = False
+    try:
+        from app.config.executor_config import get_executor_settings
+        use_local_backend = get_executor_settings().code_execution_backend == "local"
+    except Exception:
+        use_local_backend = False
+
     log_file = None
     log_path = None
     log_lock = asyncio.Lock()
@@ -676,18 +866,22 @@ async def claude_code_handler(
 
         logger.info(f"Using task workspace: {task_work_dir}")
 
+        debug_log_path: Optional[Path] = None
+
         try:
             job_id = get_current_job()
             if job_id:
                 _LOG_DIR.mkdir(parents=True, exist_ok=True)
                 log_path = _LOG_DIR / f"{job_id}.log"
             else:
-                log_path = task_work_dir / "results" / f"{file_prefix}_claude_code.log"
+                log_path = task_work_dir / "results" / f"{file_prefix}_code_executor.log"
+            debug_log_path = task_work_dir / "results" / f"{file_prefix}_claude_debug.log"
 
             log_file = open(log_path, "a", encoding="utf-8")
             log_file.write(f"[{datetime.utcnow().isoformat()}Z] Claude Code started\n")
             log_file.write(f"task: {task}\n")
             log_file.write(f"workspace: {task_work_dir}\n")
+            log_file.write(f"debug_log: {debug_log_path}\n")
             log_file.flush()
             log_job_event("info", "Claude Code log file initialized.", {"log_path": str(log_path)})
             log_job_event("info", "Claude Code process starting.", {"workspace": str(task_work_dir)})
@@ -703,32 +897,9 @@ async def claude_code_handler(
                 "task": task,
             }
         normalized_add_dirs = _normalize_csv_values(add_dirs)
-        effective_auth_mode = _resolve_auth_mode(auth_mode)
-        subprocess_env = _build_claude_subprocess_env(effective_auth_mode)
-        if effective_auth_mode == "api_env":
-            api_mode_error = _validate_api_mode_config(subprocess_env)
-            if api_mode_error:
-                return {
-                    "success": False,
-                    "error": api_mode_error,
-                    "task": task,
-                }
-        effective_model = (
-            str(
-                model
-                or os.getenv("CLAUDE_CODE_MODEL", "")
-                or os.getenv("CLAUDE_CODE_API_MODEL", "")
-                or subprocess_env.get("ANTHROPIC_MODEL", "")
-            ).strip()
-            or None
-        )
-        effective_setting_sources = _resolve_setting_sources(
-            setting_sources,
-            auth_mode=effective_auth_mode,
-        )
-
         # Process additional directories to allow access, convert to absolute paths
         allowed_dirs = []
+        resolved_add_dirs: List[str] = []
         
         # Always include project's data directory by default
         default_data_dir = _PROJECT_ROOT / "data"
@@ -768,50 +939,123 @@ async def claude_code_handler(
                 resolved_str = str(resolved)
                 if resolved_str not in allowed_dirs:
                     allowed_dirs.append(resolved_str)
+                if resolved_str not in resolved_add_dirs:
+                    resolved_add_dirs.append(resolved_str)
             
-        # Build concise task prompt with skills info and execution directive
-        # Get available skills for reference
-        available_skills = _get_available_skills()
-        skills_info = ""
-        if available_skills:
-            skills_info = (
-                f"Available skills: {', '.join(available_skills)}\n"
-            )
-        
         allowed_dirs_info = ""
         if allowed_dirs:
             allowed_dirs_info = (
-                "\n\nIMPORTANT: You have access to these additional directories (use ABSOLUTE paths):\n"
+                "\n\nExtra readable directories (ABSOLUTE paths):\n"
                 + "\n".join(f"  - {d}" for d in allowed_dirs)
             )
 
+        local_data_dir: Optional[str] = None
+        if len(resolved_add_dirs) == 1:
+            local_data_dir = resolved_add_dirs[0]
+        elif not resolved_add_dirs and default_data_dir.exists():
+            local_data_dir = str(default_data_dir)
+
+        if use_local_backend:
+            local_result = await _execute_task_locally(
+                task=task,
+                work_dir=str(task_work_dir),
+                data_dir=local_data_dir,
+                extra_dirs=allowed_dirs,
+            )
+            produced_files = _collect_run_artifacts(
+                run_dir=task_work_dir,
+                subdirs=task_subdirs,
+            )
+            session_artifact_paths = _promote_task_results_to_session_root(
+                session_dir=session_dir,
+                task_work_dir=task_work_dir,
+            )
+            success = bool(local_result.get("success", False))
+            result_payload = {
+                "tool": "code_executor",
+                "task": task,
+                "plan_id": resolved_plan_id,
+                "task_id": resolved_task_id,
+                "require_task_context": require_task_context,
+                "task_directory": task_dir_base,
+                "task_directory_full": str(task_work_dir),
+                "task_root_directory": str(task_root_dir),
+                "run_directory": str(task_work_dir),
+                "run_id": run_id,
+                "task_subdirectories": task_subdirs,
+                "file_prefix": file_prefix,
+                "session_directory": str(session_dir),
+                "success": success,
+                "stdout": str(local_result.get("stdout") or ""),
+                "stderr": str(local_result.get("stderr") or ""),
+                "exit_code": local_result.get("exit_code", -1),
+                "execution_mode": "code_executor_local",
+                "working_directory": str(task_work_dir),
+                "log_path": str(log_path) if log_path else None,
+                "debug_log_path": None,
+                "allowed_tools_effective": normalized_allowed_tools,
+                "claude_model_effective": None,
+                "claude_setting_sources_effective": None,
+                "claude_auth_mode_effective": None,
+                "produced_files": produced_files,
+                "produced_files_count": len(produced_files),
+                "artifact_paths": session_artifact_paths,
+            }
+            code_file = str(local_result.get("code_file") or "").strip()
+            if code_file:
+                result_payload["code_file"] = code_file
+            result_text = str(local_result.get("result") or "").strip()
+            if result_text:
+                result_payload["result"] = result_text
+            if not success:
+                result_payload["error"] = (
+                    str(local_result.get("error") or "").strip()
+                    or str(local_result.get("stderr") or "").strip()
+                    or "Local code execution failed."
+                )
+            return result_payload
+
+        effective_auth_mode = _resolve_auth_mode(auth_mode)
+        subprocess_env = _build_code_executor_subprocess_env(effective_auth_mode)
+        if effective_auth_mode == "api_env":
+            api_mode_error = _validate_api_mode_config(subprocess_env)
+            if api_mode_error:
+                return {
+                    "success": False,
+                    "error": api_mode_error,
+                    "task": task,
+                }
+        effective_model = (
+            str(
+                model
+                or os.getenv("CLAUDE_CODE_MODEL", "")
+                or os.getenv("CLAUDE_CODE_API_MODEL", "")
+                or subprocess_env.get("ANTHROPIC_MODEL", "")
+            ).strip()
+            or None
+        )
+        effective_setting_sources = _resolve_setting_sources(
+            setting_sources,
+            auth_mode=effective_auth_mode,
+        )
+
         enhanced_task = (
-            f"[SINGLE TASK EXECUTION MODE]\n"
-            f"You are executing ONE specific task assigned by the outer agent. Do NOT plan or execute additional tasks.\n\n"
-            f"CONSTRAINTS:\n"
-            f"- Execute ONLY the task described below, nothing more\n"
-            f"- Do NOT decompose into multiple sub-projects or expand scope\n"
-            f"- Default to direct task execution; do NOT run standalone preflight checks like CLI version/install/environment diagnostics unless explicitly requested or required after an observed failure\n"
-            f"- If the task is too complex, report it and stop (let the outer agent decompose it)\n"
-            f"- Focus on producing concrete outputs for THIS task only\n\n"
-            f"SCOPE GUARDRAIL (MANDATORY):\n"
-            f"- If the request still contains planning/roadmap/decomposition work OR more than one independent objective,\n"
-            f"  STOP immediately and output exactly:\n"
+            f"[ATOMIC TASK]\n"
+            f"Execute only the task below. Do not broaden scope or create extra tasks.\n"
+            f"If the request still needs planning or decomposition, output exactly:\n"
             f"  {_BLOCK_SCOPE_STATUS}\n"
             f"  {_BLOCK_SCOPE_REASON}\n"
-            f"  DETAIL: <one sentence>\n\n"
-            f"Working directory: {task_work_dir}\n"
-            f"Output folders: results/ (figures), code/ (scripts), data/ (tables), docs/ (reports)\n"
+            f"  DETAIL: <one sentence>\n"
+            f"Use direct execution; skip standalone environment diagnostics unless an observed failure requires them.\n\n"
+            f"Workspace: {task_work_dir}\n"
+            f"Output dirs: results/ code/ data/ docs/\n"
             f"File prefix: {file_prefix}\n"
-            f"{skills_info}\n"
             f"Task:\n{task}\n\n"
-            f"Requirements:\n"
-            f"1. Write executable scripts to code/\n"
-            f"2. Run the scripts and capture outputs\n"
-            f"3. Save all figures/results to results/\n"
-            f"4. Put code meant for published deliverables under results/submission/ or results/deliverable/ "
-            f"(other outputs remain in RAW session results only)\n"
-            f"5. Provide a summary of actual outputs produced"
+            f"Deliverables:\n"
+            f"1. Write scripts under code/ only when needed.\n"
+            f"2. Run them and save outputs under results/, data/, or docs/.\n"
+            f"3. Put publishable deliverable code under results/submission/ or results/deliverable/.\n"
+            f"4. Return a summary of actual outputs produced."
             f"{allowed_dirs_info}"
         )
         
@@ -823,6 +1067,9 @@ async def claude_code_handler(
             '--output-format', output_format,
             '--max-turns', '50',  # Allow more turns for complex tasks
         ]
+
+        if debug_log_path is not None:
+            cmd.extend(['--debug-file', str(debug_log_path)])
 
         if effective_model:
             cmd.extend(['--model', effective_model])
@@ -841,21 +1088,22 @@ async def claude_code_handler(
             cmd.append('--dangerously-skip-permissions')
         
         logger.info(f"Executing Claude CLI in task workspace: {task_work_dir}")
-        
-        # Use asyncio.create_subprocess_exec for non-blocking stream handling
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(task_work_dir),
-            env=subprocess_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            # No timeout limit for long-running tasks
+
+        # Diagnostic: log key env vars (redacted) to debug API connectivity issues.
+        _diag_key = subprocess_env.get("ANTHROPIC_API_KEY", "")
+        _diag_url = subprocess_env.get("ANTHROPIC_BASE_URL", "")
+        _diag_model = subprocess_env.get("ANTHROPIC_MODEL", "")
+        _diag_small_fast_model = subprocess_env.get("ANTHROPIC_SMALL_FAST_MODEL", "")
+        logger.info(
+            "[CODE_EXECUTOR_DIAG] api_key_len=%d base_url=%s model=%s small_fast_model=%s auth_mode=%s setting_sources=%s",
+            len(_diag_key), _diag_url, _diag_model, _diag_small_fast_model,
+            effective_auth_mode, effective_setting_sources,
         )
 
-        stdout_lines = []
-        stderr_lines = []
+        # Retry logic for transient provider / CLI failures.
+        max_cli_retries, cli_retry_base_delay_s = _resolve_cli_retry_policy()
 
-        async def read_stream(stream, lines, callback, stream_name: str):
+        async def _read_stream(stream, lines, callback, stream_name: str):
             while True:
                 line = await stream.readline()
                 if not line:
@@ -879,27 +1127,77 @@ async def claude_code_handler(
                     except Exception as e:
                         logger.error(f"Error in stream callback: {e}")
 
-        # Create tasks to read stdout and stderr concurrently
-        stdout_task = asyncio.create_task(
-            read_stream(process.stdout, stdout_lines, on_stdout, "stdout")
-        )
-        stderr_task = asyncio.create_task(
-            read_stream(process.stderr, stderr_lines, on_stderr, "stderr")
-        )
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        return_code = -1
 
-        # Wait for process to finish and streams to close
-        try:
-            await asyncio.wait([stdout_task, stderr_task])
-            return_code = await process.wait()
-        except (asyncio.CancelledError, Exception) as _wait_exc:
+        for _attempt in range(1, max_cli_retries + 2):
+            stdout_lines.clear()
+            stderr_lines.clear()
+
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(task_work_dir),
+                env=subprocess_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            stdout_task = asyncio.create_task(
+                _read_stream(process.stdout, stdout_lines, on_stdout, "stdout")
+            )
+            stderr_task = asyncio.create_task(
+                _read_stream(process.stderr, stderr_lines, on_stderr, "stderr")
+            )
+
             try:
-                process.kill()
-                await process.wait()
-            except Exception:
-                pass
-            if isinstance(_wait_exc, asyncio.CancelledError):
+                await asyncio.wait([stdout_task, stderr_task])
+                return_code = await process.wait()
+            except (asyncio.CancelledError, Exception) as _wait_exc:
+                try:
+                    process.kill()
+                    await process.wait()
+                except Exception:
+                    pass
+                if isinstance(_wait_exc, asyncio.CancelledError):
+                    raise
                 raise
-            raise
+
+            if return_code == 0:
+                break  # Success — no retry needed.
+
+            # Check if this is a retryable failure (CLI crash, not a scope block).
+            _stderr_preview = " ".join(stderr_lines)[:500]
+            _is_scope_block = _detect_scope_blocked(
+                "\n".join(stdout_lines), None,
+            )
+            if _is_scope_block:
+                logger.info("[CODE_EXECUTOR_RETRY] Scope block detected, not retrying.")
+                break
+
+            if _attempt <= max_cli_retries:
+                retry_delay_s = min(cli_retry_base_delay_s * (2 ** (_attempt - 1)), 30.0)
+                logger.warning(
+                    "[CODE_EXECUTOR_RETRY] CLI failed (attempt %d/%d, exit=%d). "
+                    "Retrying in %.1fs... stderr_hint=%s",
+                    _attempt, max_cli_retries + 1, return_code,
+                    retry_delay_s, _extract_readable_error("\n".join(stderr_lines))[:200],
+                )
+                if log_file:
+                    try:
+                        log_file.write(
+                            f"[{datetime.utcnow().isoformat()}Z] Retry {_attempt}/{max_cli_retries} "
+                            f"after exit={return_code}, waiting {retry_delay_s:.1f}s\n"
+                        )
+                        log_file.flush()
+                    except Exception:
+                        pass
+                await asyncio.sleep(retry_delay_s)
+            else:
+                logger.error(
+                    "[CODE_EXECUTOR_RETRY] CLI failed after %d attempts (exit=%d).",
+                    _attempt, return_code,
+                )
 
         success = return_code == 0
         stdout = "\n".join(stdout_lines)
@@ -933,7 +1231,7 @@ async def claude_code_handler(
 
         # Build return result
         result_payload = {
-            "tool": "claude_code",
+            "tool": "code_executor",
             "task": task,
             "plan_id": resolved_plan_id,
             "task_id": resolved_task_id,
@@ -951,9 +1249,10 @@ async def claude_code_handler(
             "stderr": stderr,
             "output_data": output_data,
             "exit_code": return_code,
-            "execution_mode": "claude_code_local",
+            "execution_mode": "code_executor_local",
             "working_directory": str(task_work_dir),
             "log_path": str(log_path) if log_path else None,
+            "debug_log_path": str(debug_log_path) if debug_log_path else None,
             "allowed_tools_effective": normalized_allowed_tools,
             "claude_model_effective": effective_model,
             "claude_setting_sources_effective": effective_setting_sources,
@@ -1004,8 +1303,8 @@ async def claude_code_handler(
 
 
 # ToolBox tool definition
-claude_code_tool = {
-    "name": "claude_code",
+code_executor_tool = {
+    "name": "code_executor",
     "description": (
         "**PRIMARY TOOL FOR COMPLEX CODING TASKS** - Execute one atomic implementation task using Claude Code. "
         "The runtime enforces a strict tool allowlist and task-scoped workspace isolation. "
@@ -1029,5 +1328,5 @@ claude_code_tool = {
         },
         "required": ["task"]
     },
-    "handler": claude_code_handler,
+    "handler": code_executor_handler,
 }

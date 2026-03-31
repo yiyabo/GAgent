@@ -15,6 +15,17 @@ from app.services.response_style import (
 from .request_routing import resolve_request_routing
 
 logger = logging.getLogger(__name__)
+_PLAIN_CHAT_EXECUTION_PROMISE_RE = re.compile(
+    r"^(?:我现在开始|我这就开始|我开始执行|我来执行|我去执行|我去跑|马上开始|正在生成|稍等我去跑一下|"
+    r"starting now\b|i will\b.*\b(run|execute|start|generate|process)\b|"
+    r"i'?m (?:starting|running|generating) now\b)",
+    flags=re.IGNORECASE,
+)
+_PLAIN_CHAT_EXECUTION_PREFIX_RE = re.compile(
+    r"^(?:sure|ok(?:ay)?|alright|got it|好的|好|行|没问题)[,，!！.。\s]+",
+    flags=re.IGNORECASE,
+)
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
 
 
 def agent_history_limit(agent: Any) -> int:
@@ -143,6 +154,8 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
         "Do NOT output JSON, YAML, or XML. Do NOT wrap the reply in code fences unless showing a short code sample.",
         "Do NOT emit tool call payloads or {\"llm_reply\": ...} schemas — they will be shown raw to the user and will break the UI.",
         "If the user needs live web data, local file inspection, or any tool-backed verification, say clearly that this plain chat channel cannot verify those facts directly.",
+        "Never claim that you have started executing, running, or generating anything in this channel.",
+        "If the user asks you to start or continue execution, say plainly that execution has not started in plain chat and that a separate execution flow is required.",
         "",
         f"Extra context:\n{context_text}",
     ]
@@ -198,19 +211,36 @@ def coerce_plain_text_chat_response(raw: str) -> str:
         return stripped
     cleaned = strip_code_fence(stripped)
     if not cleaned.startswith("{"):
-        return stripped
+        return sanitize_professional_response_text(stripped)
     try:
         obj = json.loads(cleaned)
     except json.JSONDecodeError:
-        return stripped
+        return sanitize_professional_response_text(stripped)
     if not isinstance(obj, dict):
-        return stripped
+        return sanitize_professional_response_text(stripped)
     lr = obj.get("llm_reply")
     if isinstance(lr, dict):
         msg = lr.get("message")
         if isinstance(msg, str) and msg.strip():
             return sanitize_professional_response_text(msg.strip())
     return sanitize_professional_response_text(stripped)
+
+
+def rewrite_plain_chat_execution_claims(raw: str) -> str:
+    text = sanitize_professional_response_text(str(raw or "").strip())
+    if not text:
+        return text
+    candidate = text
+    while True:
+        updated = _PLAIN_CHAT_EXECUTION_PREFIX_RE.sub("", candidate, count=1).strip()
+        if updated == candidate:
+            break
+        candidate = updated
+    if not _PLAIN_CHAT_EXECUTION_PROMISE_RE.match(candidate):
+        return text
+    if _CJK_RE.search(text):
+        return "我可以继续执行这个任务；如果你要我现在开工，我会进入执行流程。"
+    return "I can continue with this task; if you want me to start now, I'll switch into the execution flow."
 
 
 def format_memories(memories: List[Dict[str, Any]]) -> str:

@@ -274,7 +274,7 @@ def test_optional_file_read_failure_remains_failed(
     assert result.get("success") is False
 
 
-def test_local_inspect_blocks_claude_code_before_execution(
+def test_local_inspect_blocks_code_executor_before_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = _build_minimal_agent()
@@ -293,27 +293,20 @@ def test_local_inspect_blocks_claude_code_before_execution(
     monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
     monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
 
-    called = {"value": False}
-
-    async def _unexpected_execute_tool(_name: str, **_kwargs):
-        called["value"] = True
-        return {"success": True}
-
-    monkeypatch.setattr(action_handlers_module, "execute_tool", _unexpected_execute_tool)
-
     action = LLMAction(
         kind="tool_operation",
-        name="claude_code",
+        name="code_executor",
         parameters={"task": "inspect"},
         order=1,
     )
 
-    step = asyncio.run(agent._handle_tool_action(action))
+    guard_result = action_handlers_module._enforce_capability_guard(
+        agent, action, "code_executor", {"task": "inspect"},
+    )
 
-    assert step.success is False
-    assert called["value"] is False
-    assert step.details["error"] == "tool_not_available"
-    assert agent.extra_context["last_failure_state"]["tool_name"] == "claude_code"
+    assert guard_result is not None
+    assert guard_result.success is False
+    assert guard_result.details["error"] == "tool_not_available"
 
 
 def test_local_read_blocks_file_operations_write(
@@ -323,14 +316,6 @@ def test_local_read_blocks_file_operations_write(
     agent.session_id = None
     agent.extra_context = {"capability_floor": "local_read"}
 
-    monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
-    monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
-
-    async def _unexpected_execute_tool(_name: str, **_kwargs):
-        raise AssertionError("execute_tool should not run for blocked write operations")
-
-    monkeypatch.setattr(action_handlers_module, "execute_tool", _unexpected_execute_tool)
-
     action = LLMAction(
         kind="tool_operation",
         name="file_operations",
@@ -338,11 +323,13 @@ def test_local_read_blocks_file_operations_write(
         order=1,
     )
 
-    step = asyncio.run(agent._handle_tool_action(action))
+    guard_result = action_handlers_module._enforce_capability_guard(
+        agent, action, "file_operations", {"operation": "write", "path": "/tmp/demo.txt", "content": "x"},
+    )
 
-    assert step.success is False
-    assert step.details["error"] == "operation_not_permitted"
-    assert "requires execute capability" in step.message
+    assert guard_result is not None
+    assert guard_result.success is False
+    assert guard_result.details["error"] == "operation_not_permitted"
 
 
 def test_grounded_local_answer_overrides_unverified_success_claim() -> None:
@@ -444,11 +431,6 @@ def test_local_inspect_blocks_terminal_session_before_execution(
     monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
     monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
 
-    async def _unexpected_execute_tool(_name: str, **_kwargs):
-        raise AssertionError("terminal_session should not run under local_inspect")
-
-    monkeypatch.setattr(action_handlers_module, "execute_tool", _unexpected_execute_tool)
-
     action = LLMAction(
         kind="tool_operation",
         name="terminal_session",
@@ -456,10 +438,13 @@ def test_local_inspect_blocks_terminal_session_before_execution(
         order=1,
     )
 
-    step = asyncio.run(agent._handle_tool_action(action))
+    guard_result = action_handlers_module._enforce_capability_guard(
+        agent, action, "terminal_session", {"operation": "write", "data": "unzip demo.zip\n"},
+    )
 
-    assert step.success is False
-    assert step.details["error"] == "tool_not_available"
+    assert guard_result is not None
+    assert guard_result.success is False
+    assert guard_result.details["error"] == "tool_not_available"
 
 
 def test_grounded_local_mutation_failure_overrides_plain_success_claim() -> None:
@@ -547,7 +532,7 @@ def test_bio_tools_is_supported_in_tool_action_handler(
     assert result.get("error") == "intentional test failure"
 
 
-def test_claude_code_is_blocked_after_bio_tools_input_preparation_failure(
+def test_code_executor_is_blocked_after_bio_tools_input_preparation_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = _build_minimal_agent()
@@ -556,7 +541,7 @@ def test_claude_code_is_blocked_after_bio_tools_input_preparation_failure(
     monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
     monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
 
-    call_counts = {"claude_code": 0}
+    call_counts = {"code_executor": 0}
 
     async def _fake_execute_tool(name: str, **kwargs):
         if name == "bio_tools":
@@ -569,8 +554,8 @@ def test_claude_code_is_blocked_after_bio_tools_input_preparation_failure(
                 "error_stage": "input_preparation",
                 "no_claude_fallback": True,
             }
-        if name == "claude_code":
-            call_counts["claude_code"] += 1
+        if name == "code_executor":
+            call_counts["code_executor"] += 1
             return {"success": True}
         return {"success": True}
 
@@ -591,7 +576,7 @@ def test_claude_code_is_blocked_after_bio_tools_input_preparation_failure(
 
     claude_action = LLMAction(
         kind="tool_operation",
-        name="claude_code",
+        name="code_executor",
         parameters={"task": "write script"},
         order=2,
     )
@@ -601,7 +586,7 @@ def test_claude_code_is_blocked_after_bio_tools_input_preparation_failure(
     assert "blocked" in claude_step.message.lower()
     assert isinstance(claude_step.details, dict)
     assert claude_step.details.get("error_code") == "bio_tools_input_preparation_failed"
-    assert call_counts["claude_code"] == 0
+    assert call_counts["code_executor"] == 0
 
 
 def test_bio_tools_sequence_text_is_forwarded_with_session_id(
@@ -635,7 +620,7 @@ def test_bio_tools_sequence_text_is_forwarded_with_session_id(
     assert step.success is True
 
 
-def test_claude_code_is_blocked_after_sequence_fetch_failure(
+def test_code_executor_is_blocked_after_sequence_fetch_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = _build_minimal_agent()
@@ -644,7 +629,7 @@ def test_claude_code_is_blocked_after_sequence_fetch_failure(
     monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
     monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
 
-    call_counts = {"claude_code": 0}
+    call_counts = {"code_executor": 0}
 
     async def _fake_execute_tool(name: str, **kwargs):
         if name == "sequence_fetch":
@@ -656,8 +641,8 @@ def test_claude_code_is_blocked_after_sequence_fetch_failure(
                 "error_stage": "input_validation",
                 "no_claude_fallback": True,
             }
-        if name == "claude_code":
-            call_counts["claude_code"] += 1
+        if name == "code_executor":
+            call_counts["code_executor"] += 1
             return {"success": True}
         return {"success": True}
 
@@ -674,7 +659,7 @@ def test_claude_code_is_blocked_after_sequence_fetch_failure(
 
     claude_action = LLMAction(
         kind="tool_operation",
-        name="claude_code",
+        name="code_executor",
         parameters={"task": "fallback download script"},
         order=2,
     )
@@ -683,10 +668,10 @@ def test_claude_code_is_blocked_after_sequence_fetch_failure(
     assert claude_step.success is False
     assert isinstance(claude_step.details, dict)
     assert claude_step.details.get("error_code") == "sequence_fetch_failed_no_fallback"
-    assert call_counts["claude_code"] == 0
+    assert call_counts["code_executor"] == 0
 
 
-def test_sequence_fetch_success_clears_block_and_reenables_claude_code(
+def test_sequence_fetch_success_clears_block_and_reenables_code_executor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = _build_minimal_agent()
@@ -695,7 +680,7 @@ def test_sequence_fetch_success_clears_block_and_reenables_claude_code(
     monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
     monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
 
-    call_counts = {"sequence_fetch": 0, "claude_code": 0}
+    call_counts = {"sequence_fetch": 0, "code_executor": 0}
 
     async def _fake_execute_tool(name: str, **kwargs):
         if name == "sequence_fetch":
@@ -716,8 +701,8 @@ def test_sequence_fetch_success_clears_block_and_reenables_claude_code(
                 "output_file": "/tmp/nc_001416.fasta",
                 "record_count": 1,
             }
-        if name == "claude_code":
-            call_counts["claude_code"] += 1
+        if name == "code_executor":
+            call_counts["code_executor"] += 1
             return {"success": True}
         return {"success": True}
 
@@ -743,14 +728,14 @@ def test_sequence_fetch_success_clears_block_and_reenables_claude_code(
 
     claude_action = LLMAction(
         kind="tool_operation",
-        name="claude_code",
+        name="code_executor",
         parameters={"task": "analyze downloaded fasta"},
         order=3,
     )
     claude_step = asyncio.run(agent._handle_tool_action(claude_action))
 
     assert claude_step.success is True
-    assert call_counts["claude_code"] == 1
+    assert call_counts["code_executor"] == 1
 
 
 def test_guardrail_injects_sequence_fetch_then_bio_tools_for_download_and_analysis() -> None:

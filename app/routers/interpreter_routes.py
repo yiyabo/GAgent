@@ -250,7 +250,7 @@ async def execute_code(request: CodeExecuteRequest):
     """
     try:
         from pathlib import Path
-        from tool_box.tools_impl.claude_code import claude_code_handler
+        from tool_box.tools_impl.code_executor import code_executor_handler
 
         work_dir = request.work_dir
         if not work_dir:
@@ -273,7 +273,7 @@ Working directory: {work_dir}
         if request.data_dir:
             add_dirs = f"{work_dir},{request.data_dir}"
 
-        result = await claude_code_handler(
+        result = await code_executor_handler(
             task=task,
             add_dirs=add_dirs,
             auth_mode="api_env",

@@ -52,7 +52,7 @@ paper_replication_tool: Dict[str, Any] = {
     "description": (
         "Load structured metadata (ExperimentCard) for a specific paper replication "
         "experiment. Cards are stored at data/<experiment_id>/card.yaml. "
-        "Use this before calling claude_code so that the code assistant receives a "
+        "Use this before calling code_executor so that the code assistant receives a "
         "precise, machine-readable experiment spec. If the card is missing, generate "
         "it with generate_experiment_card."
     ),
@@ -71,6 +71,6 @@ paper_replication_tool: Dict[str, Any] = {
     "handler": paper_replication_handler,
     "tags": ["phage", "paper", "replication", "experiment"],
     "examples": [
-        "Load the ExperimentCard for experiment_1 and then instruct claude_code to reproduce it.",
+        "Load the ExperimentCard for experiment_1 and then instruct code_executor to reproduce it.",
     ],
 }

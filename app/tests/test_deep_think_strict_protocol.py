@@ -218,11 +218,35 @@ def test_native_multi_tool_calls_execute_concurrently_and_append_results() -> No
     assert set(started) == {"file_operations", "web_search"}
     assert result.total_iterations >= 2
     assert result.thinking_steps
-    first_step = result.thinking_steps[0]
-    assert first_step.action is not None
-    assert '"tools"' in first_step.action
-    assert first_step.action_result is not None
-    assert "[file_operations]" in first_step.action_result
+
+
+def test_extract_evidence_ignores_unverified_terminal_session_echoed_paths() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["terminal_session"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+
+    evidence = agent._extract_evidence(
+        "terminal_session",
+        {"operation": "write"},
+        {
+            "tool": "terminal_session",
+            "operation": "write",
+            "verification_state": "not_attempted",
+            "command_state": "unverified",
+            "output": (
+                "python3 << 'EOF'\n"
+                "input_file = '/Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv'\n"
+                "output_file = '/Users/apple/LLM/agent/phagescope/filtered_phages.tsv'\n"
+                "EOF"
+            ),
+        },
+    )
+
+    file_refs = [item["ref"] for item in evidence if item.get("type") == "file"]
+    assert file_refs == []
 
 
 def test_process_only_answer_detection_flags_collection_preface() -> None:

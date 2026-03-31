@@ -211,6 +211,13 @@ _EXECUTE_PHRASES = (
     "rerun",
     "resubmit",
     "attempt",
+    "开始执行",
+    "开始做",
+    "开始完成任务",
+    "开始完成",
+    "直接做",
+    "直接开始",
+    "开工",
 )
 
 _LOCAL_READ_PHRASES = (
@@ -413,11 +420,98 @@ _FOLLOWTHROUGH_PHRASES = (
     "go ahead",
     "do it",
     "finish it",
+    "start now",
     "继续",
     "下一步",
     "接着",
     "继续做",
     "继续这个",
+    "直接做",
+    "开始做",
+    "开始执行",
+    "开始完成任务",
+    "开工",
+)
+
+_IMAGE_NOUN_PHRASES = (
+    "image",
+    "images",
+    "picture",
+    "pictures",
+    "photo",
+    "photos",
+    "图",
+    "图片",
+    "这张图",
+    "那张图",
+    "刚才那张图",
+    "上一张图",
+    "前一张图",
+)
+
+_IMAGE_SHOW_PHRASES = (
+    "show",
+    "display",
+    "view",
+    "see",
+    "look at",
+    "show me",
+    "display it",
+    "展示",
+    "显示",
+    "给我看",
+    "看看",
+    "看一下",
+    "再看",
+    "贴出来",
+)
+
+_IMAGE_REFERENCE_PHRASES = (
+    "刚才那张",
+    "刚刚那张",
+    "上一张",
+    "前一张",
+    "那张图",
+    "那张图片",
+    "最新那张",
+    "最后那张",
+)
+
+_IMAGE_REGENERATE_PHRASES = (
+    "regenerate",
+    "generate another",
+    "new variant",
+    "another image",
+    "重新生成",
+    "重画",
+    "再来一张",
+    "换个风格",
+    "换一种风格",
+    "生成一张新的",
+    "再生成",
+    "新变体",
+)
+
+_IMAGE_DISPLAY_EXECUTION_OVERRIDE_PHRASES = (
+    "开始执行",
+    "开始做",
+    "开始完成任务",
+    "开始完成",
+    "直接做",
+    "直接开始",
+    "开工",
+    "继续做",
+    "继续这个任务",
+    "继续这个",
+    "try it",
+    "try again",
+    "retry",
+    "rerun",
+    "resubmit",
+    "start now",
+    "go ahead",
+    "do it",
+    "finish it",
 )
 
 # Action verbs used for compound detection: followthrough cue + action verb → execute
@@ -513,7 +607,7 @@ _SUCCESSOR_TOOLSET: Dict[CapabilityFloor, List[str]] = {
         "bio_tools",
         "deeppl",
         "phagescope",
-        "claude_code",
+        "code_executor",
         "plan_operation",
         "deliverable_submit",
         "terminal_session",
@@ -735,8 +829,6 @@ def classify_request_tier(
     has_execute_keyword = _contains_any(lowered, _EXECUTE_PHRASES)
     has_file_or_workspace_cue = _contains_any(lowered, _FILE_OR_WORKSPACE_PHRASES)
     has_depth_cue = _contains_any(lowered, _DEPTH_CUES)
-    if has_execute_keyword:
-        reasons.append("execution_keyword")
     if has_file_or_workspace_cue:
         reasons.append("file_or_workspace_cue")
     if has_depth_cue:
@@ -753,6 +845,22 @@ def classify_request_tier(
     has_followthrough_cue = _contains_any(lowered, _FOLLOWTHROUGH_PHRASES)
     if has_followthrough_cue and "brief_followup" not in reasons:
         reasons.append("followthrough_cue")
+
+    has_action_verb = _contains_any(lowered, _ACTION_VERB_PHRASES)
+    is_chat_continuation = _contains_any(lowered, _CHAT_CONTINUATION_PHRASES)
+    followthrough_implies_execute = (
+        has_followthrough_cue and has_action_verb and not is_chat_continuation
+    )
+    prioritize_image_display = should_prioritize_existing_image_display(
+        message,
+        context_dict,
+        task_bound=task_bound,
+        plan_followthrough=bool(plan_bound and has_followthrough_cue),
+        followthrough_implies_execute=followthrough_implies_execute,
+    )
+
+    if has_execute_keyword and not prioritize_image_display:
+        reasons.append("execution_keyword")
 
     is_light_exact = collapsed in {
         _NON_WORD_RE.sub("", token.lower()) for token in _LIGHT_EXACT
@@ -779,10 +887,12 @@ def classify_request_tier(
         reasons.append("intent_research")
         return "research", reasons, is_brief_followup
 
-    if has_attachments or task_bound or has_execute_keyword:
+    if has_attachments or task_bound or (has_execute_keyword and not prioritize_image_display):
         return "execute", reasons, is_brief_followup
 
-    if plan_bound and (has_followthrough_cue or has_execute_keyword):
+    if plan_bound and (
+        has_followthrough_cue or (has_execute_keyword and not prioritize_image_display)
+    ):
         if "plan_bound" not in reasons:
             reasons.append("plan_bound")
         return "execute", reasons, is_brief_followup
@@ -1012,6 +1122,60 @@ def _contains_any(text: str, phrases: Sequence[str]) -> bool:
     return any(phrase.lower() in haystack for phrase in phrases)
 
 
+def _has_recent_image_artifacts(context: Optional[Mapping[str, Any]]) -> bool:
+    if not context:
+        return False
+    items = context.get("recent_image_artifacts")
+    if not isinstance(items, list):
+        return False
+    return any(
+        isinstance(item, dict) and str(item.get("path") or "").strip()
+        for item in items
+    )
+
+
+def requests_image_regeneration(message: str) -> bool:
+    lowered = str(message or "").strip().lower()
+    if not lowered:
+        return False
+    return _contains_any(lowered, _IMAGE_REGENERATE_PHRASES)
+
+
+def requests_existing_image_display(
+    message: str,
+    context: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    lowered = str(message or "").strip().lower()
+    if not lowered:
+        return False
+    if requests_image_regeneration(lowered):
+        return False
+    if context is not None and not _has_recent_image_artifacts(context):
+        return False
+    has_show = _contains_any(lowered, _IMAGE_SHOW_PHRASES)
+    has_image_noun = _contains_any(lowered, _IMAGE_NOUN_PHRASES)
+    has_reference = _contains_any(lowered, _IMAGE_REFERENCE_PHRASES)
+    return (has_show and has_image_noun) or has_reference
+
+
+def should_prioritize_existing_image_display(
+    message: str,
+    context: Optional[Mapping[str, Any]] = None,
+    *,
+    task_bound: bool = False,
+    plan_followthrough: bool = False,
+    followthrough_implies_execute: bool = False,
+) -> bool:
+    lowered = str(message or "").strip().lower()
+    if not requests_existing_image_display(lowered, context):
+        return False
+    if task_bound or plan_followthrough or followthrough_implies_execute:
+        return False
+    if _contains_any(lowered, _IMAGE_DISPLAY_EXECUTION_OVERRIDE_PHRASES):
+        return False
+    return True
+
+
 def _references_prior_subject(lowered: str) -> bool:
     return _contains_any(lowered, _REFERENTIAL_CUES)
 
@@ -1127,6 +1291,8 @@ def resolve_intent_type(
     has_local_mutation_cue = _contains_any(lowered, _LOCAL_MUTATION_PHRASES)
     has_archive_object_cue = _contains_any(lowered, _ARCHIVE_OBJECT_PHRASES)
     has_mutation_scope_cue = _contains_any(lowered, _MUTATION_SCOPE_PHRASES)
+    has_image_display_cue = requests_existing_image_display(message, context_dict)
+    has_image_regeneration_cue = requests_image_regeneration(message)
     has_attachments = isinstance(context_dict.get("attachments"), list) and bool(
         context_dict.get("attachments")
     )
@@ -1151,6 +1317,26 @@ def resolve_intent_type(
     followthrough_implies_execute = (
         has_followthrough_cue and has_action_verb and not is_chat_continuation
     )
+
+    if (
+        has_image_regeneration_cue
+        and (
+            _contains_any(lowered, _IMAGE_NOUN_PHRASES)
+            or _has_recent_image_artifacts(context_dict)
+        )
+    ):
+        reasons.extend(["intent_execute_task", "image_regeneration"])
+        return "execute_task", reasons
+
+    if should_prioritize_existing_image_display(
+        message,
+        context_dict,
+        task_bound=task_bound,
+        plan_followthrough=bool(plan_bound and has_followthrough_cue),
+        followthrough_implies_execute=followthrough_implies_execute,
+    ):
+        reasons.append("intent_show_existing_image")
+        return "local_read", reasons
 
     if has_execute_keyword or task_bound or (plan_bound and has_followthrough_cue) or followthrough_implies_execute:
         reasons.append("intent_execute_task")
@@ -1196,6 +1382,10 @@ def resolve_intent_type(
     if has_attachments:
         reasons.append("intent_local_inspect")
         return "local_inspect", reasons
+
+    if has_image_display_cue:
+        reasons.append("intent_show_existing_image")
+        return "local_read", reasons
 
     if subject_kind != "none":
         if has_local_inspect_cue or _references_prior_subject(lowered):

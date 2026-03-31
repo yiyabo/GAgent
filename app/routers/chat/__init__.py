@@ -77,11 +77,11 @@ from .guardrail_handlers import (  # noqa: F401
     resolve_followthrough_target_task_id,
 )
 
-from .claude_code_helpers import (  # noqa: F401
-    resolve_claude_code_task_context,
+from .code_executor_helpers import (  # noqa: F401
+    resolve_code_executor_task_context,
     normalize_csv_arg,
     summarize_amem_experiences_for_cc,
-    compose_claude_code_atomic_task_prompt,
+    compose_code_executor_atomic_task_prompt,
     resolve_previous_path,
     resolve_placeholders_in_value,
     resolve_action_placeholders,

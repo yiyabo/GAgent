@@ -20,7 +20,7 @@ def test_analysis_only_response_uses_source_job_results(
         "result": {
             "tool_results": [
                 {
-                    "name": "claude_code",
+                    "name": "code_executor",
                     "summary": "done",
                     "parameters": {"task": "fibonacci"},
                     "result": {"success": True, "output": "ok"},
@@ -30,7 +30,7 @@ def test_analysis_only_response_uses_source_job_results(
     }
 
     async def _fake_generate_tool_analysis(**kwargs):
-        assert kwargs["tool_results"][0]["name"] == "claude_code"
+        assert kwargs["tool_results"][0]["name"] == "code_executor"
         return "job-scoped analysis"
 
     monkeypatch.setattr(chat_routes, "fetch_action_run", lambda _run_id: fake_record)

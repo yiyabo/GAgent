@@ -152,7 +152,7 @@ def test_jobs_board_classifies_items_and_exposes_progress_fields(
         session_id="sess-a",
         plan_id=42,
         status="queued",
-        action_name="claude_code",
+        action_name="code_executor",
         created_at="2026-02-19 10:01:00",
     )
     _insert_job_index(
@@ -197,7 +197,7 @@ def test_jobs_board_classifies_items_and_exposes_progress_fields(
     payload = response.json()
     groups = payload["groups"]
 
-    assert set(groups.keys()) == {"task_creation", "phagescope", "claude_code"}
+    assert set(groups.keys()) == {"task_creation", "phagescope", "code_executor"}
     assert payload["total"] == 3
     assert payload["generated_at"]
 
@@ -211,7 +211,7 @@ def test_jobs_board_classifies_items_and_exposes_progress_fields(
     assert phage_item["taskid"] == "remote-42"
     assert phage_item["remote_status"] == "running"
 
-    claude_item = groups["claude_code"]["items"][0]
+    claude_item = groups["code_executor"]["items"][0]
     assert claude_item["job_id"] == "act_claude_1"
     assert claude_item["progress_percent"] == 0
     assert claude_item["progress_status"] == "queued"
@@ -235,7 +235,7 @@ def test_jobs_board_filters_finished_items_when_requested(
         session_id="sess-b",
         plan_id=7,
         status="pending",
-        action_name="claude_code",
+        action_name="code_executor",
         created_at="2026-02-19 11:00:00",
     )
     _insert_action_run(
@@ -292,7 +292,7 @@ def test_jobs_board_filters_finished_items_when_requested(
     assert response.status_code == 200
     groups = response.json()["groups"]
 
-    assert groups["claude_code"]["items"] == []
+    assert groups["code_executor"]["items"] == []
     assert groups["phagescope"]["items"][0]["job_id"] == "act_phage_running"
     assert groups["task_creation"]["items"][0]["job_id"] == "job_decompose_running"
 
@@ -397,7 +397,7 @@ def test_jobs_board_includes_plan_execute_jobs_in_claude_group(
     assert response.status_code == 200
     groups = response.json()["groups"]
 
-    claude_items = groups["claude_code"]["items"]
+    claude_items = groups["code_executor"]["items"]
     assert len(claude_items) == 1
     exec_item = claude_items[0]
     assert exec_item["job_id"] == "job_exec_1"

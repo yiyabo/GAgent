@@ -24,6 +24,7 @@ SESSION_RUNTIME_CONTEXT_KEYS = (
     "last_failure_state",
     "last_evidence_state",
     "last_subject_action_class",
+    "recent_image_artifacts",
 )
 _PHAGESCOPE_TASKID_RE = re.compile(r"(?<![A-Za-z0-9])(\d{4,})(?![A-Za-z0-9])")
 _PHAGESCOPE_TRACKING_JOB_RE = re.compile(r"^act_[A-Za-z0-9]+$")
@@ -131,6 +132,8 @@ def _extract_session_runtime_context(
         value = metadata.get(key)
         if isinstance(value, dict):
             runtime[key] = dict(value)
+        elif isinstance(value, list) and key == "recent_image_artifacts":
+            runtime[key] = [dict(item) for item in value if isinstance(item, dict)]
     return runtime
 
 
@@ -1212,6 +1215,7 @@ def _merge_async_metadata(
     actions: List[Dict[str, Any]],
     actions_summary: Optional[List[Dict[str, Any]]],
     tool_results: List[Dict[str, Any]],
+    artifact_gallery: Optional[List[Dict[str, Any]]] = None,
     errors: List[str],
     job_id: Optional[str] = None,
     job_payload: Optional[Dict[str, Any]] = None,
@@ -1234,6 +1238,10 @@ def _merge_async_metadata(
         metadata["tool_results"] = tool_results
     elif "tool_results" in metadata:
         metadata.pop("tool_results")
+    if artifact_gallery:
+        metadata["artifact_gallery"] = artifact_gallery
+    elif "artifact_gallery" in metadata:
+        metadata.pop("artifact_gallery")
     metadata["errors"] = errors or []
     if "raw_actions" not in metadata and actions:
         metadata["raw_actions"] = actions

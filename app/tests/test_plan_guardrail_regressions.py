@@ -118,7 +118,7 @@ def test_plan_first_guardrail_uses_previous_context_for_generic_confirmation() -
         actions=[
             LLMAction(
                 kind="tool_operation",
-                name="claude_code",
+                name="code_executor",
                 parameters={
                     "task": (
                         "Train and evaluate a DeepSEA baseline, then output ROC plots and an AUC table."
@@ -132,4 +132,4 @@ def test_plan_first_guardrail_uses_previous_context_for_generic_confirmation() -
     patched = agent._apply_plan_first_guardrail(structured)
 
     assert len(patched.actions) == 1
-    assert patched.actions[0].name == "claude_code"
+    assert patched.actions[0].name == "code_executor"

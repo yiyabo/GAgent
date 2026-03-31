@@ -1030,7 +1030,7 @@ def _write_skill_assets(matrix: Dict[str, Any]) -> None:
         1. Prefer operations listed in `references/verified_ops.md`.
         2. If operation choice is uncertain, call `bio_tools(operation="help")` for candidate tools first.
         3. Prefer Tier-1 PASS operations before Tier-2 operations when both satisfy intent.
-        4. Only fall back to `claude_code` after at least one valid bio_tools attempt fails.
+        4. Only fall back to `code_executor` after at least one valid bio_tools attempt fails.
 
         ## Input strategy
         - Pass local absolute paths for `input_file` and path-like params.

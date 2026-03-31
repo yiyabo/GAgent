@@ -1,4 +1,4 @@
-"""Claude Code execution helpers for atomic task context, CSV normalization,
+"""Code executor helpers for atomic task context, CSV normalization,
 AMEM experience summarization, prompt composition, and placeholder resolution.
 """
 
@@ -24,7 +24,7 @@ PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*previous\.([^\}]+)\s*\}\}")
 # Conversation summary builder for CC context injection
 # ---------------------------------------------------------------------------
 
-_CC_CONVERSATION_BUDGET = 16_000  # characters
+_CC_CONVERSATION_BUDGET = 3_000  # characters
 
 
 def build_conversation_summary_for_cc(
@@ -34,7 +34,7 @@ def build_conversation_summary_for_cc(
     """Build a compact conversation summary from recent chat history.
 
     Iterates from newest to oldest, keeping messages until *budget* characters
-    are exhausted.  Each message is capped at 600 chars to avoid a single huge
+    are exhausted.  Each message is capped at 240 chars to avoid a single huge
     reply blowing the budget.
     """
     if not history:
@@ -49,7 +49,7 @@ def build_conversation_summary_for_cc(
         )
     except Exception:
         tail_n = 80
-    PER_MSG_CAP = 600
+    PER_MSG_CAP = 240
     lines: List[str] = []
     used = 0
     for msg in reversed(history[-tail_n:]):
@@ -99,7 +99,7 @@ def collect_completed_task_outputs(
     return "\n".join(parts)
 
 
-def resolve_claude_code_task_context(agent: Any) -> Tuple[Optional["PlanNode"], Optional[str]]:
+def resolve_code_executor_task_context(agent: Any) -> Tuple[Optional["PlanNode"], Optional[str]]:
     plan_id = agent.plan_session.plan_id
     if plan_id is None:
         return None, "missing_plan_binding"
@@ -140,7 +140,7 @@ def resolve_claude_code_task_context(agent: Any) -> Tuple[Optional["PlanNode"], 
             pass
         node = tree.get_node(atomic_task_id)
         logger.info(
-            "[CLAUDE_CODE] Redirected composite task %s to atomic descendant %s",
+            "[CODE_EXECUTOR] Redirected composite task %s to atomic descendant %s",
             task_id,
             atomic_task_id,
         )
@@ -231,7 +231,7 @@ def summarize_amem_experiences_for_cc(
     return "\n".join(lines)
 
 
-def compose_claude_code_atomic_task_prompt(
+def compose_code_executor_atomic_task_prompt(
     *,
     task_node: "PlanNode",
     original_task: str,

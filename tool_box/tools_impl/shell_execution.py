@@ -54,7 +54,7 @@ async def shell_execute_handler(
 
 shell_execution_tool = {
     "name": "shell_execute",
-    "description": "Execute simple shell commands in an ISOLATED workspace (NOT the project directory). Use ONLY for basic commands that don't need access to project files. For complex tasks, file analysis, or ML/data science work, use claude_code instead.",
+    "description": "Execute simple shell commands in an ISOLATED workspace (NOT the project directory). Use ONLY for basic commands that don't need access to project files. For complex tasks, file analysis, or ML/data science work, use code_executor instead.",
     "category": "execution",
     "parameters_schema": {
         "type": "object",

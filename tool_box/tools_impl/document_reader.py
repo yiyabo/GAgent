@@ -207,7 +207,7 @@ async def read_image(file_path: str, use_ocr: bool = False) -> Dict[str, Any]:
 def _read_csv_tsv_preview(abs_path: Path, suffix: str) -> Dict[str, Any]:
     """
     Return the first chunk of a CSV/TSV as plain text so the agent can inspect headers
-    and sample rows without a second tool call. Full stats/plots still need claude_code.
+    and sample rows without a second tool call. Full stats/plots still need code_executor.
     """
     try:
         size_bytes = abs_path.stat().st_size
@@ -254,7 +254,7 @@ def _read_csv_tsv_preview(abs_path: Path, suffix: str) -> Dict[str, Any]:
         "preview_line_count": len(lines),
         "summary": (
             f"Tabular preview ({suffix}): first {len(lines)} line(s), {len(text)} characters. "
-            "For row counts, filtering, aggregation, or plots, use claude_code."
+            "For row counts, filtering, aggregation, or plots, use code_executor."
         ),
     }
 
@@ -274,20 +274,24 @@ async def read_text_like(file_path: str) -> Dict[str, Any]:
 
     suffix = abs_path.suffix.lower()
 
-    # Tabular text: return an automatic preview so the agent is not blocked if it picks
-    # document_reader; heavy analysis still belongs in claude_code.
+    # Tabular/structured text: return an automatic preview so the agent is not
+    # blocked.  Heavy analysis (aggregation, filtering, plots) still belongs in
+    # code_executor, but giving a preview prevents unnecessary tool failures.
     if suffix in {".csv", ".tsv"}:
         return _read_csv_tsv_preview(abs_path, suffix)
 
-    structured_data_exts = {".json", ".xlsx", ".xls", ".parquet"}
-    if suffix in structured_data_exts:
+    if suffix in {".json", ".yaml", ".yml"}:
+        return _read_csv_tsv_preview(abs_path, suffix)
+
+    binary_data_exts = {".xlsx", ".xls", ".parquet"}
+    if suffix in binary_data_exts:
         return {
             "success": False,
             "error": (
-                f"Structured data file ({suffix}) detected. For JSON/Excel/Parquet, use "
-                f"`claude_code` for analysis. `document_reader` only returns automatic previews for .csv/.tsv."
+                f"Binary data file ({suffix}) detected. For Excel/Parquet, use "
+                f"`code_executor` for analysis. `document_reader` handles text-based formats only."
             ),
-            "suggestion": f"Use claude_code with a task like: 'Read and analyze the data in {file_path}'",
+            "suggestion": f"Use code_executor with a task like: 'Read and analyze the data in {file_path}'",
         }
     
     # Allowed text formats
@@ -421,7 +425,7 @@ async def document_reader_handler(
                 "is_directory": True,
                 "file_path": str(abs_path),
                 "entries": entries,
-                "summary": f"Path is a directory containing {len(entries)} items. Use claude_code for recursive analysis, or specify a file path.",
+                "summary": f"Path is a directory containing {len(entries)} items. Use code_executor for recursive analysis, or specify a file path.",
             }
         except Exception as e:
             logger.error("Failed to list directory: %s", e)
@@ -484,9 +488,9 @@ document_reader_tool = {
     "name": "document_reader",
     "description": (
         "Extract content from files locally: PDF, DOCX, images, plain text/Markdown. "
-        "For .csv/.tsv, returns an automatic text preview (first ~150 lines) so the agent "
-        "can read headers and samples; use claude_code for aggregation, filtering, or plots. "
-        "For JSON/Excel/Parquet, use claude_code. For OCR/figures, use vision_reader."
+        "For .csv/.tsv/.json/.yaml, returns an automatic text preview (first ~150 lines) "
+        "so the agent can read headers and samples; use code_executor for aggregation, "
+        "filtering, or plots. For Excel/Parquet, use code_executor. For OCR/figures, use vision_reader."
     ),
     "category": "document_processing",
     "parameters_schema": {

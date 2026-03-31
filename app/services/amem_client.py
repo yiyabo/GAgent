@@ -124,7 +124,7 @@ class AMemClient:
             content = self._format_execution_memory(task, result, session_id, plan_id, metadata)
             
             # Base tags.
-            tags = ["claude_code", "execution"]
+            tags = ["code_executor", "execution"]
             if result.get("success"):
                 tags.append("success")
             else:

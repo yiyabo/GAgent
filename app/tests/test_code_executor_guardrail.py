@@ -1,16 +1,21 @@
+import asyncio
+import json
 import pytest  # pylint: disable=import-error  # type: ignore[import-unresolved]
 from pathlib import Path
 
-from tool_box.tools_impl.claude_code import (
+from tool_box.tools_impl import code_executor as code_executor_module
+from tool_box.tools_impl.code_executor import (
     _DEFAULT_ALLOWED_TOOL_NAMES,
     _build_cli_failure_error,
-    _build_claude_subprocess_env,
+    _build_code_executor_subprocess_env,
     _compact_cli_text,
     _coerce_positive_int,
     _detect_scope_blocked,
+    _extract_readable_error,
     _is_path_within,
     _normalize_csv_values,
     _promote_task_results_to_session_root,
+    _resolve_cli_retry_policy,
     _resolve_auth_mode,
     _resolve_allowed_tools,
     _resolve_setting_sources,
@@ -51,6 +56,17 @@ def test_build_cli_failure_error_includes_exit_and_stream_excerpts() -> None:
     )
     assert "exit_code=127" in message
     assert "stderr=claude: command not found" in message
+
+
+def test_extract_readable_error_does_not_default_http_400_to_missing_api_key() -> None:
+    stderr = (
+        "file:///usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js:317\n"
+        "var rb=A(...); DefaultTransporter=Wn; if(G&&G.status>=400)D.message=W,D.status=G.status;"
+    )
+    message = _extract_readable_error(stderr)
+    assert "HTTP 400" in message
+    assert "upstream rejected the request" in message
+    assert "ANTHROPIC_API_KEY" not in message
 
 
 def test_compact_cli_text_truncates_and_normalizes_whitespace() -> None:
@@ -159,53 +175,76 @@ def test_resolve_auth_mode_variants(raw_mode: str | None, expected: str) -> None
     assert _resolve_auth_mode(raw_mode) == expected
 
 
-def test_build_claude_subprocess_env_strips_anthropic_vars_in_login_mode(
+def test_build_code_executor_subprocess_env_strips_anthropic_vars_in_login_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "u")
-    env_map = _build_claude_subprocess_env("claude_login")
+    monkeypatch.setenv("ANTHROPIC_SMALL_FAST_MODEL", "claude-haiku-4-5-20251001")
+    env_map = _build_code_executor_subprocess_env("claude_login")
     assert "ANTHROPIC_API_KEY" not in env_map
     assert "ANTHROPIC_BASE_URL" not in env_map
+    assert "ANTHROPIC_SMALL_FAST_MODEL" not in env_map
 
 
-def test_build_claude_subprocess_env_uses_qwen_key_in_api_mode(
+def test_build_code_executor_subprocess_env_uses_qwen_key_in_api_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("QWEN_API_KEY", "qk")
-    env_map = _build_claude_subprocess_env("api_env")
+    env_map = _build_code_executor_subprocess_env("api_env")
     assert env_map.get("ANTHROPIC_API_KEY") == "qk"
 
 
-def test_build_claude_subprocess_env_api_mode_uses_claude_code_aliases(
+def test_build_code_executor_subprocess_env_api_mode_uses_code_executor_aliases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CLAUDE_CODE_API_KEY", "alias-key")
     monkeypatch.setenv("CLAUDE_CODE_BASE_URL", "https://alias.example/v1")
-    env_map = _build_claude_subprocess_env("api_env")
+    env_map = _build_code_executor_subprocess_env("api_env")
     assert env_map.get("ANTHROPIC_API_KEY") == "alias-key"
     assert env_map.get("ANTHROPIC_BASE_URL") == "https://alias.example/v1"
 
 
-def test_build_claude_subprocess_env_api_mode_drops_auth_token_when_key_present(
+def test_build_code_executor_subprocess_env_api_mode_drops_auth_token_when_key_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("QWEN_API_KEY", "qk")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "t")
-    env_map = _build_claude_subprocess_env("api_env")
+    env_map = _build_code_executor_subprocess_env("api_env")
     assert env_map.get("ANTHROPIC_API_KEY") == "qk"
     assert "ANTHROPIC_AUTH_TOKEN" not in env_map
 
 
-def test_build_claude_subprocess_env_api_mode_drops_parent_claude_model(
+def test_build_code_executor_subprocess_env_api_mode_drops_parent_claude_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("QWEN_API_KEY", "qk")
     monkeypatch.setenv("QWEN_MODEL", "qwen3.5-plus")
     monkeypatch.setenv("CLAUDE_MODEL", "anthropic/claude-opus-4.6")
-    env_map = _build_claude_subprocess_env("api_env")
+    env_map = _build_code_executor_subprocess_env("api_env")
     assert env_map.get("ANTHROPIC_MODEL") == "qwen3.5-plus"
     assert "CLAUDE_MODEL" not in env_map
+
+
+def test_build_code_executor_subprocess_env_api_mode_pins_small_fast_model_to_qwen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QWEN_API_KEY", "qk")
+    monkeypatch.setenv("QWEN_MODEL", "qwen3.5-plus")
+    monkeypatch.setenv("ANTHROPIC_SMALL_FAST_MODEL", "claude-haiku-4-5-20251001")
+    env_map = _build_code_executor_subprocess_env("api_env")
+    assert env_map.get("ANTHROPIC_MODEL") == "qwen3.5-plus"
+    assert env_map.get("ANTHROPIC_SMALL_FAST_MODEL") == "qwen3.5-plus"
+
+
+def test_resolve_cli_retry_policy_defaults_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLAUDE_CODE_MAX_RETRIES", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_RETRY_BASE_DELAY_S", raising=False)
+    assert _resolve_cli_retry_policy() == (4, 5.0)
+
+    monkeypatch.setenv("CLAUDE_CODE_MAX_RETRIES", "6")
+    monkeypatch.setenv("CLAUDE_CODE_RETRY_BASE_DELAY_S", "2.5")
+    assert _resolve_cli_retry_policy() == (6, 2.5)
 
 
 def test_validate_api_mode_config_requires_credentials() -> None:
@@ -237,3 +276,61 @@ def test_promote_task_results_to_session_root_overwrites_stable_paths(tmp_path: 
     (run_b / "results" / "plot.png").write_bytes(b"v2")
     _promote_task_results_to_session_root(session_dir=session_dir, task_work_dir=run_b)
     assert (session_dir / "results" / "plot.png").read_bytes() == b"v2"
+
+
+def test_local_backend_enforces_scope_contract_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _unexpected_local(**_kwargs):
+        raise AssertionError("_execute_task_locally should not run without task context")
+
+    monkeypatch.setattr(code_executor_module, "_execute_task_locally", _unexpected_local)
+
+    result = asyncio.run(
+        code_executor_module.code_executor_handler(
+            task="demo task",
+            require_task_context=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["blocked_by_scope_guardrail"] is True
+    assert result["blocked_reason"] == "missing_atomic_context"
+
+
+def test_local_backend_returns_promoted_artifact_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", tmp_path / "runtime")
+
+    async def _fake_local(*, work_dir: str, **_kwargs):
+        results_dir = Path(work_dir) / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "plot.png").write_bytes(b"png")
+        return {
+            "success": True,
+            "stdout": "ok\n",
+            "stderr": "",
+            "exit_code": 0,
+            "code_file": str(Path(work_dir) / "task_code.py"),
+            "result": "generated plot.png",
+        }
+
+    monkeypatch.setattr(code_executor_module, "_execute_task_locally", _fake_local)
+
+    result = asyncio.run(
+        code_executor_module.code_executor_handler(
+            task="generate a plot",
+            plan_id=1,
+            task_id=2,
+            require_task_context=True,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["task_directory"] == "plan1_task2"
+    assert "results/plot.png" in result["artifact_paths"]
+    assert any(path.endswith("plot.png") for path in result["produced_files"])
+    session_dir = (tmp_path / "runtime" / "session_adhoc").resolve()
+    assert (session_dir / "results" / "plot.png").read_bytes() == b"png"

@@ -134,7 +134,7 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
     )
     assert "file_operations" in profile.available_tools
     assert "result_interpreter" in profile.available_tools
-    assert "claude_code" not in profile.available_tools
+    assert "code_executor" not in profile.available_tools
     assert "deliverable_submit" not in profile.available_tools
     assert profile.max_iterations == 2
 
@@ -171,7 +171,7 @@ def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
     )
     assert "file_operations" in profile.available_tools
     assert "result_interpreter" in profile.available_tools
-    assert "claude_code" not in profile.available_tools
+    assert "code_executor" not in profile.available_tools
     assert profile.max_iterations == 3
 
 
@@ -505,6 +505,167 @@ def test_process_unified_stream_delegates_light_request_to_simple_chat() -> None
     }
     assert len(chunks) == 1
     assert '"request_route_mode": "auto_simple"' in chunks[0]
+
+
+def test_start_task_followup_routes_to_execute_instead_of_plain_chat() -> None:
+    decision = resolve_request_routing(
+        message="你开始完成任务吧",
+        history=[
+            {"role": "user", "content": "已经没有 Claude Code了，我修改成其他的了。"},
+            {"role": "assistant", "content": "我可以继续执行这个任务；如果要我现在开工，我会进入执行流程。"},
+        ],
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.capability_floor == "execute"
+    assert decision.request_route_mode == "auto_deepthink"
+    assert decision.request_tier == "execute"
+
+
+def test_existing_image_display_routes_to_local_read_when_recent_images_exist() -> None:
+    decision = resolve_request_routing(
+        message="把刚才那张图片给我看",
+        context={
+            "recent_image_artifacts": [
+                {
+                    "path": "tool_outputs/run_1/cover.png",
+                    "display_name": "cover.png",
+                    "source_tool": "code_executor",
+                }
+            ]
+        },
+    )
+
+    assert decision.intent_type == "local_read"
+    assert decision.capability_floor == "local_read"
+    assert decision.request_route_mode == "auto_deepthink"
+    assert "intent_show_existing_image" in decision.route_reason_codes
+
+
+def test_existing_image_display_with_repair_context_still_routes_to_local_read() -> None:
+    decision = resolve_request_routing(
+        message="给我看看图片，我修复了刚刚的bug",
+        context={
+            "recent_image_artifacts": [
+                {
+                    "path": "/Users/apple/LLM/agent/phagescope/results/host_family_donut.png",
+                    "display_name": "host_family_donut.png",
+                    "source_tool": "file_operations",
+                }
+            ]
+        },
+    )
+
+    assert decision.intent_type == "local_read"
+    assert decision.capability_floor == "local_read"
+    assert decision.request_tier == "light"
+    assert "intent_show_existing_image" in decision.route_reason_codes
+
+
+def test_explicit_execution_still_overrides_existing_image_display() -> None:
+    decision = resolve_request_routing(
+        message="开始执行，然后把刚才那张图片给我看",
+        context={
+            "recent_image_artifacts": [
+                {
+                    "path": "tool_outputs/run_1/cover.png",
+                    "display_name": "cover.png",
+                    "source_tool": "code_executor",
+                }
+            ]
+        },
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.capability_floor == "execute"
+
+
+def test_image_regeneration_followup_routes_to_execute() -> None:
+    decision = resolve_request_routing(
+        message="重新生成那张图，换个风格",
+        context={
+            "recent_image_artifacts": [
+                {
+                    "path": "tool_outputs/run_1/cover.png",
+                    "display_name": "cover.png",
+                    "source_tool": "code_executor",
+                }
+            ]
+        },
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.capability_floor == "execute"
+    assert decision.request_route_mode == "auto_deepthink"
+
+
+def test_process_unified_stream_reuses_recent_image_without_starting_deep_think() -> None:
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=None)
+    agent.extra_context = {
+        "recent_image_artifacts": [
+            {
+                "path": "tool_outputs/run_2/figure.png",
+                "display_name": "figure.png",
+                "source_tool": "code_executor",
+                "mime_family": "image",
+                "origin": "artifact",
+                "created_at": "2026-03-31T00:00:00Z",
+                "tracking_id": "dt_demo",
+            }
+        ]
+    }
+    agent.history = []
+    agent.session_id = None
+    agent.llm_service = object()
+
+    async def _collect() -> list[str]:
+        chunks: list[str] = []
+        async for chunk in agent.process_unified_stream("把刚才那张图片给我看"):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(_collect())
+
+    assert len(chunks) == 1
+    payload = json.loads(chunks[0].removeprefix("data: ").strip())
+    assert payload["type"] == "final"
+    assert payload["payload"]["response"] == "这里是刚才那张图片。"
+    assert payload["payload"]["metadata"]["artifact_gallery"][0]["path"] == "tool_outputs/run_2/figure.png"
+
+
+def test_process_unified_stream_asks_for_clarification_when_multiple_recent_images_match() -> None:
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=None)
+    agent.extra_context = {
+        "recent_image_artifacts": [
+            {
+                "path": "tool_outputs/run_2/figure_a.png",
+                "display_name": "figure_a.png",
+                "source_tool": "code_executor",
+            },
+            {
+                "path": "tool_outputs/run_2/figure_b.png",
+                "display_name": "figure_b.png",
+                "source_tool": "code_executor",
+            },
+        ]
+    }
+    agent.history = []
+    agent.session_id = None
+    agent.llm_service = object()
+
+    async def _collect() -> list[str]:
+        chunks: list[str] = []
+        async for chunk in agent.process_unified_stream("展示图片"):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(_collect())
+    payload = json.loads(chunks[0].removeprefix("data: ").strip())
+
+    assert "我先不重新生成" in payload["payload"]["response"]
+    assert "artifact_gallery" not in payload["payload"]["metadata"]
 
 
 # ---------------------------------------------------------------------------
