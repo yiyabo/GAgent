@@ -1,6 +1,7 @@
 import asyncio
 import json
 
+from app.llm import LLMClient
 from app.services.plans.plan_models import PlanNode, PlanTree
 from app.services.plans.plan_rubric_evaluator import (
     PlanRubricResult,
@@ -164,5 +165,70 @@ def test_evaluate_plan_rubric_prefers_async_client_path() -> None:
     assert client.stream_called is True
     assert client.async_called is False
     assert client.sync_called is False
+    assert result.feedback.get("status") != "evaluation_unavailable"
+    assert result.overall_score > 0
+
+
+def test_evaluate_plan_rubric_uses_sync_path_for_builtin_client_inside_running_loop(
+    monkeypatch,
+) -> None:
+    tree = _build_review_tree()
+    rubric = rubric_definition_en()
+    subcriteria_scores = {
+        dim: {key: 0.85 for key in data["subcriteria"].keys()}
+        for dim, data in rubric.items()
+    }
+    evidence = {
+        dim: {key: [f"[1] Evidence for {dim}.{key}"] for key in data["subcriteria"].keys()}
+        for dim, data in rubric.items()
+    }
+    payload = json.dumps(
+        {
+            "rubric_version": "plan_rubric_v1",
+            "plan_id": tree.id,
+            "subcriteria_scores": subcriteria_scores,
+            "evidence": evidence,
+            "feedback": {
+                "strengths": ["Clear structure"],
+                "weaknesses": ["Need slightly more detail"],
+                "actionable_revisions": ["Add dataset versions"],
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    client = LLMClient(
+        provider="qwen",
+        api_key="dummy-key",
+        url="https://example.com/v1/chat/completions",
+        model="qwen3.5-plus",
+    )
+    calls = {"sync": 0, "async": 0, "stream": 0}
+
+    def _fake_chat(*_args, **_kwargs):
+        calls["sync"] += 1
+        return payload
+
+    async def _forbid_async(*_args, **_kwargs):
+        calls["async"] += 1
+        raise AssertionError("async evaluator path should not run for built-in LLMClient")
+
+    async def _forbid_stream(*_args, **_kwargs):
+        calls["stream"] += 1
+        raise AssertionError("stream evaluator path should not run for built-in LLMClient")
+        yield ""
+
+    monkeypatch.setattr(client, "chat", _fake_chat)
+    monkeypatch.setattr(client, "chat_async", _forbid_async)
+    monkeypatch.setattr(client, "stream_chat_async", _forbid_stream)
+
+    async def _call_in_running_loop():
+        return evaluate_plan_rubric(tree, evaluator_client=client)
+
+    result = asyncio.run(_call_in_running_loop())
+
+    assert calls["sync"] == 1
+    assert calls["async"] == 0
+    assert calls["stream"] == 0
     assert result.feedback.get("status") != "evaluation_unavailable"
     assert result.overall_score > 0
