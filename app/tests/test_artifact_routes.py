@@ -9,6 +9,10 @@ from fastapi import HTTPException, status
 from app.routers import artifact_routes
 
 
+def _allow_access(*args, **kwargs) -> None:
+    return None
+
+
 def test_resolve_session_dir_prefers_expected_root_by_purpose(
     tmp_path: Path,
     monkeypatch,
@@ -74,21 +78,48 @@ def test_resolve_session_dir_prefers_runtime_for_raw_when_both_have_tool_outputs
     assert resolved == runtime_session.resolve()
 
 
+def test_workspace_file_route_rejects_non_image_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    secret_file = workspace_root / ".env"
+    secret_file.parent.mkdir(parents=True, exist_ok=True)
+    secret_file.write_text("API_KEY=secret\n", encoding="utf-8")
+
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _allow_access)
+    monkeypatch.setattr(artifact_routes, "_workspace_root", lambda: workspace_root)
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            artifact_routes.get_session_workspace_file(
+                "session_demo",
+                None,
+                path=str(secret_file),
+            )
+        )
+
+    assert excinfo.value.status_code == status.HTTP_404_NOT_FOUND
+
+
 @pytest.mark.parametrize("target", ["list", "manifest"])
 def test_session_missing_returns_empty_payload(monkeypatch, target: str) -> None:
     def _raise_not_found(*args, **kwargs):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="missing")
 
     monkeypatch.setattr(artifact_routes, "_resolve_session_dir", _raise_not_found)
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _allow_access)
 
     if target == "list":
-        response = asyncio.run(artifact_routes.list_session_deliverables("session_missing"))
+        response = asyncio.run(
+            artifact_routes.list_session_deliverables("session_missing", None)
+        )
         assert response.count == 0
         assert response.items == []
         assert response.modules == {}
     else:
         response = asyncio.run(
-            artifact_routes.get_session_deliverables_manifest("session_missing")
+            artifact_routes.get_session_deliverables_manifest("session_missing", None)
         )
         assert response.manifest == {}
         assert response.manifest_path is None
@@ -169,10 +200,12 @@ def test_list_session_deliverables_exposes_paper_drafts_when_sections_exist(
 
     monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
     monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", info_root)
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _allow_access)
 
     response = asyncio.run(
         artifact_routes.list_session_deliverables(
             "session_abc123",
+            None,
             scope="latest",
             version=None,
             include_draft=False,
@@ -227,10 +260,12 @@ def test_list_session_deliverables_blocked_release_does_not_fallback_to_drafts(
 
     monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
     monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", info_root)
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _allow_access)
 
     response = asyncio.run(
         artifact_routes.list_session_deliverables(
             "session_abc124",
+            None,
             scope="latest",
             version=None,
             include_draft=True,
@@ -272,10 +307,12 @@ def test_raw_artifact_routes_hide_paths_listed_in_manifest_prefixes(
 
     monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
     monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", info_root)
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _allow_access)
 
     listing = asyncio.run(
         artifact_routes.list_session_artifacts(
             "session_hidden001",
+            None,
             max_depth=6,
             include_dirs=False,
             limit=100,
@@ -288,8 +325,56 @@ def test_raw_artifact_routes_hide_paths_listed_in_manifest_prefixes(
         asyncio.run(
             artifact_routes.get_session_artifact_text(
                 "session_hidden001",
+                None,
                 path="tool_outputs/review_pack_writer/review_pack_20260311_000000/review_draft.md",
                 max_bytes=200000,
             )
         )
     assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_workspace_file_route_serves_workspace_image(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    image_path = workspace_root / "phagescope" / "results" / "plot.png"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(b"png")
+
+    monkeypatch.setattr(artifact_routes, "_workspace_root", lambda: workspace_root)
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", lambda *args, **kwargs: None)
+
+    response = asyncio.run(
+        artifact_routes.get_session_workspace_file(
+            "session_demo",
+            None,
+            path=str(image_path),
+        )
+    )
+
+    assert Path(response.path) == image_path
+
+
+def test_workspace_file_route_blocks_paths_outside_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    outside_path = tmp_path / "outside.png"
+    outside_path.write_bytes(b"png")
+
+    monkeypatch.setattr(artifact_routes, "_workspace_root", lambda: workspace_root)
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", lambda *args, **kwargs: None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            artifact_routes.get_session_workspace_file(
+                "session_demo",
+                None,
+                path=str(outside_path),
+            )
+        )
+
+    assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
