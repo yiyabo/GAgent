@@ -203,10 +203,10 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             },
         },
     },
-    "claude_code": {
+    "code_executor": {
         "type": "function",
         "function": {
-            "name": "claude_code",
+            "name": "code_executor",
             "description": (
                 "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools "
                 "cannot handle the task. For standard bioinformatics tasks, ALWAYS try "
@@ -253,8 +253,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "description": (
                 "Read local documents with format-aware parsing (.docx, .pdf, .txt, .md). "
                 "For .csv and .tsv, returns an automatic preview (first ~150 lines) as text; "
-                "for full table stats, filtering, or plots use claude_code. "
-                "Do not use for .xlsx/.json/.parquet (use claude_code)."
+                "for full table stats, filtering, or plots use code_executor. "
+                "Do not use for .xlsx/.json/.parquet (use code_executor)."
             ),
             "parameters": {
                 "type": "object",

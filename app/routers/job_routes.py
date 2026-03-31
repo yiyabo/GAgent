@@ -19,7 +19,7 @@ from . import register_router
 
 job_router = APIRouter(prefix="/jobs", tags=["jobs"])
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
-_CLAUDE_LOG_DIR = _PROJECT_ROOT / "runtime" / "claude_code_logs"
+_CLAUDE_LOG_DIR = _PROJECT_ROOT / "runtime" / "code_executor_logs"
 _logger = logging.getLogger(__name__)
 
 
@@ -68,7 +68,7 @@ class JobControlResponse(BaseModel):
 
 
 class BackgroundTaskItem(BaseModel):
-    category: Literal["task_creation", "phagescope", "claude_code"]
+    category: Literal["task_creation", "phagescope", "code_executor"]
     job_id: str
     job_type: str
     status: str
@@ -93,7 +93,7 @@ class BackgroundTaskItem(BaseModel):
 
 
 class BackgroundTaskGroup(BaseModel):
-    key: Literal["task_creation", "phagescope", "claude_code"]
+    key: Literal["task_creation", "phagescope", "code_executor"]
     label: str
     total: int
     running: int
@@ -196,16 +196,16 @@ def _extract_actions_from_structured(structured_json: Optional[str]) -> List[Dic
 def _classify_action_run(
     job_payload: Optional[Dict[str, Any]],
     actions: List[Dict[str, Any]],
-) -> Optional[Literal["task_creation", "phagescope", "claude_code"]]:
+) -> Optional[Literal["task_creation", "phagescope", "code_executor"]]:
     job_type = str((job_payload or {}).get("job_type") or "").strip().lower()
     if job_type == "phagescope_track":
         return "phagescope"
     if job_type == "plan_decompose":
         return "task_creation"
     if job_type == "plan_execute":
-        return "claude_code"
+        return "code_executor"
 
-    has_claude_code = False
+    has_code_executor = False
     has_phagescope = False
     has_plan_creation = False
     for action in actions:
@@ -215,15 +215,15 @@ def _classify_action_run(
             has_plan_creation = True
         if kind != "tool_operation":
             continue
-        if name == "claude_code":
-            has_claude_code = True
+        if name == "code_executor":
+            has_code_executor = True
         if name == "phagescope":
             has_phagescope = True
 
     if has_phagescope:
         return "phagescope"
-    if has_claude_code:
-        return "claude_code"
+    if has_code_executor:
+        return "code_executor"
     if has_plan_creation:
         return "task_creation"
     return None
@@ -247,7 +247,7 @@ def _default_label(category: str) -> str:
         return "Task Creation"
     if category == "phagescope":
         return "PhageScope Job"
-    if category == "claude_code":
+    if category == "code_executor":
         return "Claude Code Execution"
     return "Background Job"
 
@@ -319,7 +319,7 @@ def _extract_phagescope_progress(job_payload: Optional[Dict[str, Any]]) -> Dict[
     return out
 
 
-def _build_group(key: Literal["task_creation", "phagescope", "claude_code"], label: str) -> BackgroundTaskGroup:
+def _build_group(key: Literal["task_creation", "phagescope", "code_executor"], label: str) -> BackgroundTaskGroup:
     return BackgroundTaskGroup(
         key=key,
         label=label,
@@ -687,11 +687,11 @@ def get_background_task_board(
     groups: Dict[str, BackgroundTaskGroup] = {
         "task_creation": _build_group("task_creation", "Task Creation"),
         "phagescope": _build_group("phagescope", "PhageScope"),
-        "claude_code": _build_group("claude_code", "Claude Code"),
+        "code_executor": _build_group("code_executor", "Code Executor"),
     }
     seen: set[str] = set()
 
-    # 1) Chat action runs -> classify into phagescope / claude_code
+    # 1) Chat action runs -> classify into phagescope / code_executor
     params: List[Any] = []
     where_parts: List[str] = ["owner_id=?"]
     params.append(owner_id)
@@ -742,7 +742,7 @@ def get_background_task_board(
         job_payload = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False) or {}
         actions = _extract_actions_from_structured(row["structured_json"])
         category = _classify_action_run(job_payload, actions)
-        if category not in {"phagescope", "claude_code", "task_creation"}:
+        if category not in {"phagescope", "code_executor", "task_creation"}:
             continue
 
         status = str(job_payload.get("status") or row["status"] or "queued")
@@ -874,7 +874,7 @@ def get_background_task_board(
         )
         session_value = metadata.get("session_id")
         item = BackgroundTaskItem(
-            category="claude_code",
+            category="code_executor",
             job_id=job_id,
             job_type=str(job_payload.get("job_type") or "plan_execute"),
             status=status,
@@ -885,17 +885,17 @@ def get_background_task_board(
             started_at=job_payload.get("started_at"),
             finished_at=job_payload.get("finished_at"),
             **_extract_item_progress(
-                category="claude_code",
+                category="code_executor",
                 status=status,
                 job_payload=job_payload,
             ),
             error=job_payload.get("error"),
         )
-        _append_item(groups["claude_code"], item)
+        _append_item(groups["code_executor"], item)
         seen.add(job_id)
 
     # cap each group and total
-    for key in ("task_creation", "phagescope", "claude_code"):
+    for key in ("task_creation", "phagescope", "code_executor"):
         group = groups[key]
         group.items = sorted(
             group.items,
@@ -963,7 +963,7 @@ async def stream_background_task_board(
     def _fingerprint(snap: Dict[str, Any]) -> str:
         groups = snap.get("groups") or {}
         parts = []
-        for key in ("task_creation", "phagescope", "claude_code"):
+        for key in ("task_creation", "phagescope", "code_executor"):
             items = (groups.get(key) or {}).get("items") or []
             parts.append(f"{key}:{len(items)}:" + ",".join(
                 f"{it.get('job_id','')}|{it.get('status','')}|{it.get('progress_percent','')}"

@@ -251,7 +251,7 @@ async def chat_message(
             if has_image:
                 hints.append("Use vision_reader for image understanding")
             if has_data:
-                hints.append("Use claude_code for data-file analysis (.csv/.json/.xlsx)")
+                hints.append("Use code_executor for data-file analysis (.csv/.json/.xlsx)")
             if hints:
                 attachment_info += f"\n💡 Hint: {'; '.join(hints)}."
 

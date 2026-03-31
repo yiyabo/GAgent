@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from .tools import register_tool
 from .tools_impl.deliverable_submit import deliverable_submit_tool
 from .tools_impl import (
-    claude_code_tool,
+    code_executor_tool,
     database_query_tool,
     deeppl_tool,
     document_reader_tool,
@@ -66,11 +66,11 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
 # Tools that need special field mapping
 _CUSTOM_TOOLS: List[Dict[str, Any]] = [
     {
-        "name": claude_code_tool["name"],
-        "description": claude_code_tool["description"],
+        "name": code_executor_tool["name"],
+        "description": code_executor_tool["description"],
         "category": "execution",
-        "parameters_schema": claude_code_tool["parameters"],
-        "handler": claude_code_tool["handler"],
+        "parameters_schema": code_executor_tool["parameters"],
+        "handler": code_executor_tool["handler"],
         "tags": ["code", "execution", "claude", "local"],
         "examples": [
             "Train a machine learning model on data/code_task/train.csv",

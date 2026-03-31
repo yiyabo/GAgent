@@ -57,6 +57,10 @@ from app.services.tool_output_storage import store_tool_output
 from tool_box import execute_tool
 
 from .models import AgentStep, AgentResult
+from .artifact_gallery import (
+    extract_artifact_gallery_from_result,
+    update_recent_image_artifacts,
+)
 from .request_routing import allowed_tools_for_capability_floor
 from .session_helpers import (
     _lookup_phagescope_task_memory,
@@ -108,6 +112,7 @@ _RUNTIME_CONTEXT_KEYS = (
     "last_failure_state",
     "last_evidence_state",
     "last_subject_action_class",
+    "recent_image_artifacts",
 )
 _READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
 _MUTATING_FILE_OPERATIONS = {"write", "copy", "move", "delete"}
@@ -116,7 +121,7 @@ _LOCAL_SUBJECT_TOOLS = {
     "document_reader",
     "vision_reader",
     "result_interpreter",
-    "claude_code",
+    "code_executor",
     "terminal_session",
 }
 
@@ -304,6 +309,8 @@ def _persist_runtime_context(agent: Any) -> None:
             value = (getattr(agent, "extra_context", {}) or {}).get(key)
             if isinstance(value, dict):
                 metadata[key] = dict(value)
+            elif isinstance(value, list) and key == "recent_image_artifacts":
+                metadata[key] = [dict(item) for item in value if isinstance(item, dict)]
             else:
                 metadata.pop(key, None)
         return metadata
@@ -586,6 +593,11 @@ def _update_runtime_context_from_tool(
         }
 
     produced_artifacts = _collect_produced_artifacts(sanitized, storage_info=storage_info)
+    if isinstance(sanitized.get("artifact_gallery"), list):
+        update_recent_image_artifacts(
+            extra_context,
+            sanitized.get("artifact_gallery"),
+        )
     if is_term_mut_write and isinstance(sanitized, dict):
         mut_vs = str(sanitized.get("verification_state") or "").strip().lower()
         if mut_vs == "verified_failure":
@@ -1111,7 +1123,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
 
         params = clean_params
 
-    elif tool_name == "claude_code":
+    elif tool_name == "code_executor":
         seq_block_payload = agent.extra_context.get(_SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY)
         if seq_block_payload:
             seq_root_reason = (
@@ -1120,7 +1132,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 else ""
             )
             seq_reason_text = (
-                "claude_code fallback is blocked because sequence_fetch failed in input/download stage. "
+                "code_executor fallback is blocked because sequence_fetch failed in input/download stage. "
                 "Retry sequence_fetch with valid accession input."
             )
             if seq_root_reason:
@@ -1155,7 +1167,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 else ""
             )
             reason_text = (
-                "claude_code fallback is blocked because bio_tools input preparation failed. "
+                "code_executor fallback is blocked because bio_tools input preparation failed. "
                 "Retry bio_tools with a valid FASTA/raw sequence input."
             )
             if root_reason:
@@ -1182,7 +1194,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 details=details,
             )
 
-        prepared = await agent._prepare_claude_code_params(
+        prepared = await agent._prepare_code_executor_params(
             action=action,
             tool_name=tool_name,
             params=params,
@@ -2093,7 +2105,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         ):
             blocked_summary = str(
                 raw_result.get("error")
-                or "sequence_fetch failed and claude_code fallback is blocked."
+                or "sequence_fetch failed and code_executor fallback is blocked."
             ).strip()
             agent.extra_context[_SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY] = {
                 "summary": blocked_summary,
@@ -2114,7 +2126,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         ):
             blocked_summary = str(
                 raw_result.get("error")
-                or "bio_tools input preparation failed; claude_code fallback is blocked."
+                or "bio_tools input preparation failed; code_executor fallback is blocked."
             ).strip()
             agent.extra_context[_BIO_TOOLS_NO_CLAUDE_FALLBACK_KEY] = {
                 "summary": blocked_summary,
@@ -2188,8 +2200,6 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         submit_summary = format_deliverable_submit_summary(deliverable_report)
         if submit_summary:
             summary = submit_summary
-
-    _append_recent_tool_result_fn(agent.extra_context, tool_name, summary, sanitized)
 
     storage_info = None
     if agent.session_id:
@@ -2277,6 +2287,20 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         except Exception as exc:  # pragma: no cover - best-effort
             logger.debug("Failed to attach phagescope storage paths: %s", exc)
 
+    artifact_gallery = extract_artifact_gallery_from_result(
+        sanitized,
+        session_id=agent.session_id,
+        source_tool=tool_name,
+        tracking_id=get_current_job(),
+        created_at=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    )
+    if artifact_gallery:
+        sanitized["artifact_gallery"] = artifact_gallery
+        if isinstance(raw_result, dict):
+            raw_result.setdefault("artifact_gallery", artifact_gallery)
+
+    _append_recent_tool_result_fn(agent.extra_context, tool_name, summary, sanitized)
+
     try:
         _update_runtime_context_from_tool(
             agent,
@@ -2307,7 +2331,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         message = summary or f"{tool_name} finished execution."
 
     # 💾 A-mem integration: save execution result asynchronously without blocking.
-    if tool_name == "claude_code":
+    if tool_name == "code_executor":
         try:
             from app.services.amem_client import get_amem_client
             amem_client = get_amem_client()

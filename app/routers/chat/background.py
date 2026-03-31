@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 # Action names that correspond to long-running background tasks.
 _BACKGROUND_TOOL_NAMES: Dict[str, str] = {
     "phagescope": "phagescope",
-    "claude_code": "claude_code",
+    "code_executor": "code_executor",
     "deeppl": "deeppl",
 }
 
@@ -29,7 +29,7 @@ def _classify_background_category(
 ) -> Optional[str]:
     """Classify an action run as a long-running background category.
 
-    Returns ``"phagescope"``, ``"claude_code"``, ``"deeppl"``, or ``"task_creation"``
+    Returns ``"phagescope"``, ``"code_executor"``, ``"deeppl"``, or ``"task_creation"``
     when the actions indicate a long-running background task, otherwise
     ``None``.
     """

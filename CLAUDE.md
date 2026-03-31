@@ -56,7 +56,7 @@ tool_box/               # Tool ecosystem
 ├── cache.py            #   LRU + persistent result cache
 └── tools_impl/         #   Tool implementations
     ├── phagescope.py   #     Bacteriophage analysis (噬菌体分析)
-    ├── claude_code.py  #     Code execution via subprocess
+    ├── code_executor.py  #     Code execution via subprocess
     ├── terminal_session.py  # SSH with approval flow
     ├── manuscript_writer.py # Scientific writing
     └── ...             #     20+ tools total
@@ -217,6 +217,44 @@ fix: add paste/drag-drop upload to ChatMainArea
 ```
 
 **Branches:** `feature/xxx`, `bugfix/xxx`, main branch: `main`
+
+---
+
+## 12. Debugging Protocol（调试规范）
+
+**排查任何异常行为，第一步必须看 log，不要靠猜测。**
+
+### 日志位置
+
+```bash
+tail -100 log/backend.log          # 查看最新 100 行
+tail -f log/backend.log            # 实时跟踪
+grep "ERROR\|error" log/backend.log | tail -50   # 只看错误
+grep "phagescope\|POST\|HTTP" log/backend.log | tail -50  # 工具调用记录
+```
+
+### 必须结合 log 判断的场景
+
+| 场景 | 要在 log 里确认的内容 |
+|------|----------------------|
+| AI 给出结果但疑似未调工具 | 是否有对应的 POST 请求记录，`tools_used` 字段是否为空 |
+| PhageScope 提交失败/返回错误 | 实际发出的 HTTP payload、response status、error message |
+| 意图路由异常（该用工具没用） | `capability_floor`、`request_tier`、`route_reason_codes` |
+| 工具返回结果与预期不符 | 工具实际入参、HTTP 响应原文 |
+| 任务状态 Faileds | 服务端 job_id、module_status、module_log.error |
+
+### 关键 log 字段说明
+
+```
+capability_floor    → 决定 agent 可用工具集，plain_chat = 无工具 = 风险幻觉
+request_tier        → 请求分级：plain_chat / research / execute_task
+tools_used          → 本次实际调用的工具列表（空 = 未调工具）
+route_reason_codes  → 路由决策依据，排查意图分类错误的关键
+```
+
+### 黄金法则
+
+> **"AI 说它做了"不等于"它真的做了"。永远用 log 验证工具是否被实际调用。**
 
 ---
 

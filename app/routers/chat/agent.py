@@ -67,8 +67,8 @@ def _resolve_deep_think_max_iterations() -> int:
     return max(1, min(parsed, _DEEP_THINK_MAX_ITER_CAP))
 
 
-def _claude_code_job_stream_loggers(job_id: str) -> Tuple[Any, Any]:
-    """Stdout/stderr hooks for claude_code when a plan decomposition job log stream is active."""
+def _code_executor_job_stream_loggers(job_id: str) -> Tuple[Any, Any]:
+    """Stdout/stderr hooks for code_executor when a plan decomposition job log stream is active."""
 
     async def on_stdout(line: str) -> None:
         plan_decomposition_jobs.append_log(job_id, "stdout", line, {})
@@ -86,6 +86,11 @@ from .action_execution import (
     resolve_job_meta as _resolve_job_meta_fn,
     truncate_summary_text as _truncate_summary_text_fn,
 )
+from .artifact_gallery import (
+    build_artifact_gallery_item,
+    merge_artifact_gallery,
+    update_recent_image_artifacts,
+)
 from .action_handlers import (
     handle_context_request as _handle_context_request_fn,
     handle_plan_action as _handle_plan_action_fn,
@@ -95,11 +100,11 @@ from .action_handlers import (
     handle_unknown_action as _handle_unknown_action_fn,
     maybe_synthesize_phagescope_saveall_analysis as _maybe_synthesize_phagescope_saveall_analysis_fn,
 )
-from .claude_code_helpers import (
-    compose_claude_code_atomic_task_prompt as _compose_claude_code_atomic_task_prompt_fn,
+from .code_executor_helpers import (
+    compose_code_executor_atomic_task_prompt as _compose_code_executor_atomic_task_prompt_fn,
     normalize_csv_arg as _normalize_csv_arg_fn,
     resolve_action_placeholders as _resolve_action_placeholders_fn,
-    resolve_claude_code_task_context as _resolve_claude_code_task_context_fn,
+    resolve_code_executor_task_context as _resolve_code_executor_task_context_fn,
     resolve_placeholders_in_value as _resolve_placeholders_in_value_fn,
     resolve_previous_path as _resolve_previous_path_fn,
     summarize_amem_experiences_for_cc as _summarize_amem_experiences_for_cc_fn,
@@ -146,12 +151,15 @@ from .prompt_builder import (
     format_history as _format_history_fn,
     format_memories as _format_memories_fn,
     get_structured_agent_prompts as _get_structured_agent_prompts_fn,
+    rewrite_plain_chat_execution_claims as _rewrite_plain_chat_execution_claims_fn,
     strip_code_fence as _strip_code_fence_fn,
 )
 from .request_routing import (
     RequestRoutingDecision,
     RequestTierProfile,
     build_request_tier_profile,
+    requests_existing_image_display,
+    requests_image_regeneration,
     resolve_request_routing,
 )
 from .background import _sse_message
@@ -184,8 +192,50 @@ _RUNTIME_CONTEXT_KEYS = (
     "last_failure_state",
     "last_evidence_state",
     "last_subject_action_class",
+    "recent_image_artifacts",
 )
 _LOCAL_CAPABILITY_FLOORS = {"local_read", "local_inspect"}
+_BRIEF_EXECUTE_INTENT_TYPES = {
+    "execute_task",
+    "local_mutation",
+    "local_read",
+    "local_inspect",
+}
+_CONTINUATION_FILENAME_RE = re.compile(
+    r"(?<![A-Za-z0-9_/.-])([A-Za-z0-9][A-Za-z0-9_.-]{1,120}\.(?:tsv|csv|txt|json|ya?ml|gff3?|fa|fasta|faa|fna|fastq|fq|md|pdf|png|jpe?g|svg|xlsx?|zip|gz|tar))",
+    flags=re.IGNORECASE,
+)
+_REAL_ABSOLUTE_PATH_PREFIXES = (
+    "/Users/",
+    "/home/",
+    "/tmp/",
+    "/var/",
+    "/opt/",
+    "/private/",
+    "/Volumes/",
+    "/etc/",
+    "/dev/",
+    "/mnt/",
+    "/srv/",
+    "/root/",
+    "/workspace/",
+    "/workspaces/",
+    "/data/",
+)
+_LOW_SIGNAL_CONTINUATION_FILENAMES = {
+    "result.json",
+    "manifest.json",
+    "preview.json",
+}
+_IMAGE_PREVIOUS_SELECTION_PHRASES = ("上一张", "前一张", "previous image", "prior image")
+_IMAGE_LATEST_SELECTION_PHRASES = (
+    "刚才那张",
+    "刚刚那张",
+    "最新那张",
+    "最后那张",
+    "latest image",
+    "last image",
+)
 
 
 def _build_simple_chat_thinking_process(reasoning_text: str) -> Optional[Dict[str, Any]]:
@@ -227,6 +277,306 @@ def _current_user_turn_index_from_history(
     )
 
 
+def _is_brief_execute_followup_request(
+    routing_decision: Any,
+) -> bool:
+    if routing_decision is None:
+        return False
+    request_tier = str(getattr(routing_decision, "request_tier", "") or "").strip().lower()
+    intent_type = str(getattr(routing_decision, "intent_type", "") or "").strip().lower()
+    brevity_hint = bool(getattr(routing_decision, "brevity_hint", False))
+    return (
+        request_tier == "execute"
+        and brevity_hint
+        and intent_type in _BRIEF_EXECUTE_INTENT_TYPES
+    )
+
+
+def _clip_continuation_text(value: Any, *, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _append_unique_hint(target: List[str], seen: set[str], value: Any, *, limit: int = 6) -> None:
+    text = str(value or "").strip()
+    if not text:
+        return
+    normalized = text.lower()
+    if normalized in seen:
+        return
+    seen.add(normalized)
+    target.append(text)
+    if len(target) > limit:
+        del target[limit:]
+
+
+def _looks_like_real_absolute_path(value: Any) -> bool:
+    path = str(value or "").strip()
+    if not path.startswith("/"):
+        return False
+    return any(path.startswith(prefix) for prefix in _REAL_ABSOLUTE_PATH_PREFIXES)
+
+
+def _path_hint_priority(path: str) -> int:
+    normalized = str(path or "").strip().lower()
+    basename = os.path.basename(normalized)
+    score = 0
+    if "/runtime/" not in normalized:
+        score += 4
+    else:
+        score -= 3
+    if any(marker in normalized for marker in ("/phagescope/", "/data/", "/paper/", "/results/")):
+        score += 4
+    if "." in basename:
+        score += 2
+    if basename in _LOW_SIGNAL_CONTINUATION_FILENAMES:
+        score -= 6
+    return score
+
+
+def _extract_recent_path_and_filename_hints(
+    history: Optional[List[Dict[str, Any]]],
+    recent_tool_results: Any,
+    active_subject: Any,
+) -> Dict[str, List[str]]:
+    paths: List[str] = []
+    filenames: List[str] = []
+    seen_paths: set[str] = set()
+    seen_filenames: set[str] = set()
+
+    def _collect_text_hints(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        for path in _extract_declared_absolute_paths_fn(text):
+            if not _looks_like_real_absolute_path(path):
+                continue
+            _append_unique_hint(paths, seen_paths, path, limit=6)
+            basename = os.path.basename(path)
+            if basename and "." in basename and basename.lower() not in _LOW_SIGNAL_CONTINUATION_FILENAMES:
+                _append_unique_hint(filenames, seen_filenames, basename, limit=6)
+        for match in _CONTINUATION_FILENAME_RE.findall(text):
+            filename = str(match or "").strip()
+            if not filename:
+                continue
+            if "/" in filename:
+                continue
+            if filename.lower() in _LOW_SIGNAL_CONTINUATION_FILENAMES:
+                continue
+            _append_unique_hint(filenames, seen_filenames, filename, limit=6)
+
+    if isinstance(active_subject, dict):
+        for key in ("canonical_ref", "display_ref"):
+            value = str(active_subject.get(key) or "").strip()
+            if not value:
+                continue
+            if _looks_like_real_absolute_path(value):
+                _append_unique_hint(paths, seen_paths, value, limit=6)
+            else:
+                _collect_text_hints(value)
+
+    if isinstance(history, list):
+        for item in reversed(history):
+            if not isinstance(item, dict):
+                continue
+            _collect_text_hints(item.get("content"))
+
+    if isinstance(recent_tool_results, list):
+        for item in reversed(recent_tool_results):
+            if not isinstance(item, dict):
+                continue
+            _collect_text_hints(item.get("summary"))
+            result_payload = item.get("result")
+            if result_payload is None:
+                continue
+            try:
+                serialized = json.dumps(result_payload, ensure_ascii=False, default=str)
+            except Exception:
+                serialized = str(result_payload)
+            _collect_text_hints(serialized)
+
+    ranked_paths = sorted(paths, key=_path_hint_priority, reverse=True)
+
+    return {
+        "known_paths": ranked_paths[:4],
+        "known_filenames": filenames[:4],
+    }
+
+
+def _build_brief_execute_continuation_summary(
+    agent: Any,
+    routing_decision: Any,
+) -> Optional[Dict[str, Any]]:
+    if not _is_brief_execute_followup_request(routing_decision):
+        return None
+
+    history = getattr(agent, "history", None) or []
+    extra_context = getattr(agent, "extra_context", {}) or {}
+    previous_user_request = ""
+    previous_assistant_summary = ""
+    if isinstance(history, list):
+        for item in reversed(history):
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "assistant" and not previous_assistant_summary:
+                previous_assistant_summary = _clip_continuation_text(content, limit=260)
+            elif role == "user" and not previous_user_request:
+                previous_user_request = _clip_continuation_text(content, limit=220)
+            if previous_user_request and previous_assistant_summary:
+                break
+
+    summary: Dict[str, Any] = {}
+    if previous_user_request:
+        summary["previous_user_request"] = previous_user_request
+    if previous_assistant_summary:
+        summary["previous_assistant_summary"] = previous_assistant_summary
+
+    active_subject = extra_context.get("active_subject")
+    if isinstance(active_subject, dict):
+        active_ref = str(
+            active_subject.get("display_ref") or active_subject.get("canonical_ref") or ""
+        ).strip()
+        if active_ref:
+            summary["active_subject"] = _clip_continuation_text(active_ref, limit=240)
+
+    hints = _extract_recent_path_and_filename_hints(
+        history,
+        extra_context.get("recent_tool_results", []),
+        active_subject,
+    )
+    if hints["known_paths"]:
+        summary["known_paths"] = hints["known_paths"]
+    if hints["known_filenames"]:
+        summary["known_filenames"] = hints["known_filenames"]
+
+    recent_image_artifacts = extra_context.get("recent_image_artifacts")
+    if isinstance(recent_image_artifacts, list) and recent_image_artifacts:
+        image_anchors: List[str] = []
+        for item in recent_image_artifacts[:4]:
+            if not isinstance(item, dict):
+                continue
+            display_name = str(item.get("display_name") or "").strip()
+            path = str(item.get("path") or "").strip()
+            source_tool = str(item.get("source_tool") or "").strip()
+            anchor = display_name or path
+            if not anchor:
+                continue
+            if source_tool:
+                anchor = f"{anchor} ({source_tool})"
+            image_anchors.append(anchor)
+        if image_anchors:
+            summary["recent_image_artifacts"] = image_anchors
+
+    recent_tool_results = extra_context.get("recent_tool_results", [])
+    if isinstance(recent_tool_results, list) and recent_tool_results:
+        latest = recent_tool_results[-1]
+        if isinstance(latest, dict):
+            tool_name = str(latest.get("tool") or latest.get("name") or "").strip()
+            tool_summary = _clip_continuation_text(latest.get("summary"), limit=260)
+            if tool_summary:
+                summary["latest_tool_result"] = (
+                    f"{tool_name}: {tool_summary}" if tool_name else tool_summary
+                )
+
+    failure_state = extra_context.get("last_failure_state")
+    if isinstance(failure_state, dict):
+        tool_name = str(failure_state.get("tool_name") or "").strip()
+        operation = str(failure_state.get("operation") or "").strip()
+        error_message = _clip_continuation_text(
+            failure_state.get("error_message"),
+            limit=220,
+        )
+        if error_message:
+            prefix = " ".join(part for part in (tool_name, operation) if part).strip()
+            summary["last_failure"] = (
+                f"{prefix}: {error_message}" if prefix else error_message
+            )
+
+    return summary or None
+
+
+def _select_recent_image_artifacts(
+    user_message: str,
+    recent_items: Sequence[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], str]:
+    normalized_items = [dict(item) for item in recent_items if isinstance(item, dict)]
+    if not normalized_items:
+        return [], "none"
+    if len(normalized_items) == 1:
+        return [normalized_items[0]], "single"
+
+    lowered = str(user_message or "").strip().lower()
+    if any(token in lowered for token in _IMAGE_PREVIOUS_SELECTION_PHRASES):
+        return [normalized_items[1]], "previous"
+    if any(token in lowered for token in _IMAGE_LATEST_SELECTION_PHRASES):
+        return [normalized_items[0]], "latest"
+
+    for item in normalized_items:
+        display_name = str(item.get("display_name") or "").strip().lower()
+        path = str(item.get("path") or "").strip().lower()
+        basename = os.path.basename(path).strip().lower()
+        if display_name and display_name in lowered:
+            return [item], "named"
+        if basename and basename in lowered:
+            return [item], "named"
+
+    return [], "ambiguous"
+
+
+def _build_recent_image_display_response(
+    agent: Any,
+    *,
+    user_message: str,
+    routing_decision: RequestRoutingDecision,
+) -> Optional[tuple[str, Dict[str, Any]]]:
+    extra_context = getattr(agent, "extra_context", {}) or {}
+    if requests_image_regeneration(user_message):
+        return None
+    if not requests_existing_image_display(user_message, extra_context):
+        return None
+
+    recent_items = extra_context.get("recent_image_artifacts")
+    if not isinstance(recent_items, list) or not recent_items:
+        return None
+
+    selected_items, selection_mode = _select_recent_image_artifacts(user_message, recent_items)
+    metadata: Dict[str, Any] = {
+        "status": "completed",
+        **routing_decision.metadata(),
+    }
+
+    if not selected_items:
+        if selection_mode != "ambiguous":
+            return None
+        response_text = (
+            "当前会话里有多张图片。我先不重新生成。你要看哪一张？"
+            "可以说“最新那张”“上一张”，或直接说文件名。"
+        )
+        metadata["analysis_text"] = response_text
+        metadata["final_summary"] = response_text
+        return response_text, metadata
+
+    merged_gallery = merge_artifact_gallery(None, selected_items, limit=4)
+    update_recent_image_artifacts(extra_context, merged_gallery)
+    metadata["artifact_gallery"] = merged_gallery
+
+    if selection_mode == "previous":
+        response_text = "这里是上一张图片。"
+    elif selection_mode in {"latest", "single"}:
+        response_text = "这里是刚才那张图片。"
+    else:
+        response_text = "这里是你要看的那张图片。"
+    metadata["analysis_text"] = response_text
+    metadata["final_summary"] = response_text
+    return response_text, metadata
+
+
 def _persist_runtime_context(agent: Any) -> None:
     if not getattr(agent, "session_id", None):
         return
@@ -236,6 +586,8 @@ def _persist_runtime_context(agent: Any) -> None:
             value = (getattr(agent, "extra_context", {}) or {}).get(key)
             if isinstance(value, dict):
                 metadata[key] = dict(value)
+            elif isinstance(value, list) and key == "recent_image_artifacts":
+                metadata[key] = [dict(item) for item in value if isinstance(item, dict)]
             else:
                 metadata.pop(key, None)
         return metadata
@@ -610,14 +962,14 @@ class StructuredChatAgent:
         return _apply_plan_first_guardrail_fn(self, structured)
 
 
-    def _resolve_claude_code_task_context(self):
-        return _resolve_claude_code_task_context_fn(self)
+    def _resolve_code_executor_task_context(self):
+        return _resolve_code_executor_task_context_fn(self)
 
     _normalize_csv_arg = staticmethod(_normalize_csv_arg_fn)
 
     _summarize_amem_experiences_for_cc = staticmethod(_summarize_amem_experiences_for_cc_fn)
 
-    _compose_claude_code_atomic_task_prompt = staticmethod(_compose_claude_code_atomic_task_prompt_fn)
+    _compose_code_executor_atomic_task_prompt = staticmethod(_compose_code_executor_atomic_task_prompt_fn)
 
     def _resolve_previous_path(self, previous_result, path):
         return _resolve_previous_path_fn(previous_result, path)
@@ -628,12 +980,12 @@ class StructuredChatAgent:
     def _resolve_action_placeholders(self, action, previous_result):
         return _resolve_action_placeholders_fn(action, previous_result)
 
-    def _should_route_claude_code_unscoped(
+    def _should_route_code_executor_unscoped(
         self, context_error: Optional[str]
     ) -> bool:
         if not context_error:
             return False
-        allow_raw = self.extra_context.get("allow_unscoped_claude_code", True)
+        allow_raw = self.extra_context.get("allow_unscoped_code_executor", True)
         if isinstance(allow_raw, str):
             allow_unscoped = allow_raw.strip().lower() in {"1", "true", "yes", "on"}
         else:
@@ -654,7 +1006,7 @@ class StructuredChatAgent:
             "target_task_not_atomic",
         }
 
-    async def _prepare_claude_code_params(
+    async def _prepare_code_executor_params(
         self,
         action: LLMAction,
         tool_name: str,
@@ -665,7 +1017,7 @@ class StructuredChatAgent:
             return AgentStep(
                 action=action,
                 success=False,
-                message="claude_code requires a non-empty `task` string.",
+                message="code_executor requires a non-empty `task` string.",
                 details={"error": "invalid_task", "tool": tool_name},
             )
 
@@ -673,17 +1025,20 @@ class StructuredChatAgent:
         allowed_tools = self._normalize_csv_arg(params.get("allowed_tools"))
         add_dirs = self._normalize_csv_arg(params.get("add_dirs"))
 
-        task_node, context_error = self._resolve_claude_code_task_context()
+        task_node, context_error = self._resolve_code_executor_task_context()
         if context_error or task_node is None:
-            if self._should_route_claude_code_unscoped(context_error):
+            if self._should_route_code_executor_unscoped(context_error):
                 logger.info(
                     "[CLAUDE_CODE] Routing to unscoped execution (reason=%s, source=%s)",
                     context_error,
                     self.extra_context.get("_current_task_source"),
                 )
                 # Inject conversation summary even for unscoped execution
-                from app.routers.chat.claude_code_helpers import build_conversation_summary_for_cc
-                conv_summary = build_conversation_summary_for_cc(getattr(self, 'history', None) or [])
+                from app.routers.chat.code_executor_helpers import build_conversation_summary_for_cc
+                conv_summary = build_conversation_summary_for_cc(
+                    getattr(self, 'history', None) or [],
+                    budget=1200,
+                )
                 unscoped_task = original_task
                 if conv_summary:
                     unscoped_task = (
@@ -707,26 +1062,26 @@ class StructuredChatAgent:
                 if not current_job_id:
                     current_job_id, _ = self._resolve_job_meta()
                 if current_job_id:
-                    out_cb, err_cb = _claude_code_job_stream_loggers(current_job_id)
+                    out_cb, err_cb = _code_executor_job_stream_loggers(current_job_id)
                     prepared_params["on_stdout"] = out_cb
                     prepared_params["on_stderr"] = err_cb
 
                 return prepared_params, original_task
 
             context_messages = {
-                "missing_plan_binding": "claude_code execution requires a bound plan. Please create/bind a plan first.",
-                "missing_target_task": "claude_code execution requires a target atomic task context. Please select or run a task first.",
-                "invalid_target_task": "claude_code execution requires a valid numeric task id.",
+                "missing_plan_binding": "code_executor execution requires a bound plan. Please create/bind a plan first.",
+                "missing_target_task": "code_executor execution requires a target atomic task context. Please select or run a task first.",
+                "invalid_target_task": "code_executor execution requires a valid numeric task id.",
                 "plan_tree_unavailable": "Unable to load the current plan tree. Please retry after refreshing plan state.",
                 "target_task_not_found": "The selected task was not found in the current plan.",
-                "target_task_not_atomic": "claude_code can only execute atomic tasks. Please decompose this task and execute a leaf task.",
+                "target_task_not_atomic": "code_executor can only execute atomic tasks. Please decompose this task and execute a leaf task.",
             }
             return AgentStep(
                 action=action,
                 success=False,
                 message=context_messages.get(
                     context_error or "",
-                    "claude_code execution requires a bound atomic task context.",
+                    "code_executor execution requires a bound atomic task context.",
                 ),
                 details={
                     "error": context_error or "missing_task_context",
@@ -756,18 +1111,19 @@ class StructuredChatAgent:
             logger.warning("[AMEM] Failed to query experiences: %s", amem_err)
 
         # Build conversation summary for CC context injection
-        from app.routers.chat.claude_code_helpers import (
+        from app.routers.chat.code_executor_helpers import (
             build_conversation_summary_for_cc,
             collect_completed_task_outputs,
         )
         conversation_summary = build_conversation_summary_for_cc(
-            getattr(self, 'history', None) or []
+            getattr(self, 'history', None) or [],
+            budget=1800,
         )
         data_context = collect_completed_task_outputs(
             self.plan_tree, task_node.id
         )
 
-        constrained_task = self._compose_claude_code_atomic_task_prompt(
+        constrained_task = self._compose_code_executor_atomic_task_prompt(
             task_node=task_node,
             original_task=original_task,
             amem_hints=amem_hints,
@@ -794,7 +1150,7 @@ class StructuredChatAgent:
         if not current_job_id:
             current_job_id, _ = self._resolve_job_meta()
         if current_job_id:
-            out_cb, err_cb = _claude_code_job_stream_loggers(current_job_id)
+            out_cb, err_cb = _code_executor_job_stream_loggers(current_job_id)
             prepared_params["on_stdout"] = out_cb
             prepared_params["on_stderr"] = err_cb
 
@@ -811,12 +1167,12 @@ class StructuredChatAgent:
         extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         if (
-            tool_name == "claude_code"
+            tool_name == "code_executor"
             and isinstance(params, dict)
             and params.get("require_task_context") is False
         ):
             logger.info(
-                "[TASK_SYNC] Skipping task status sync for unscoped claude_code execution"
+                "[TASK_SYNC] Skipping task status sync for unscoped code_executor execution"
             )
             return
 
@@ -1164,6 +1520,40 @@ class StructuredChatAgent:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("Failed to persist routing runtime context: %s", exc)
 
+        direct_image_response = _build_recent_image_display_response(
+            self,
+            user_message=effective_user_message,
+            routing_decision=routing_decision,
+        )
+        if direct_image_response is not None:
+            response_text, response_metadata = direct_image_response
+            if self.session_id and response_text:
+                try:
+                    _persist_runtime_context(self)
+                    _save_chat_message(
+                        self.session_id,
+                        "assistant",
+                        response_text,
+                        metadata=response_metadata,
+                    )
+                except Exception as save_err:  # pragma: no cover - defensive
+                    logger.warning(
+                        "[CHAT][IMAGE_REUSE] Failed to save direct response: %s",
+                        save_err,
+                    )
+            payload = {
+                "type": "final",
+                "payload": {
+                    "response": response_text,
+                    "actions": [],
+                    "metadata": response_metadata,
+                },
+            }
+            if event_sink is not None:
+                await event_sink(payload)
+            yield _sse_message(payload)
+            return
+
         if (
             routing_decision.capability_floor == "plain_chat"
             and routing_decision.simple_channel_allowed
@@ -1184,6 +1574,7 @@ class StructuredChatAgent:
         active_tool_iteration: Optional[int] = None
         thinking_visible = routing_decision.thinking_visibility == "visible"
         progress_visible = routing_decision.thinking_visibility == "progress"
+        current_turn_artifact_gallery: List[Dict[str, Any]] = []
 
         if deep_think_job_id:
             try:
@@ -1469,7 +1860,7 @@ class StructuredChatAgent:
                     await queue.put(
                         {
                             "type": "tool_output",
-                            "tool": "claude_code",
+                            "tool": "code_executor",
                             "stream": level,
                             "content": message,
                             "iteration": active_tool_iteration,
@@ -1582,12 +1973,12 @@ class StructuredChatAgent:
 
                 def _build_bio_recovery_blocked_payload() -> Dict[str, Any]:
                     summary = (
-                        "claude_code fallback is blocked until bio_tools recovery completes "
+                        "code_executor fallback is blocked until bio_tools recovery completes "
                         "(run bio_tools help, then retry a bio_tools operation once)."
                     )
                     payload: Dict[str, Any] = {
                         "success": False,
-                        "tool": "claude_code",
+                        "tool": "code_executor",
                         "error": summary,
                         "summary": summary,
                         "blocked_reason": "bio_tools_recovery_not_completed",
@@ -1604,14 +1995,14 @@ class StructuredChatAgent:
                     if isinstance(block_context, dict):
                         root_cause = str(block_context.get("summary") or "").strip()
                     summary = (
-                        "claude_code fallback is blocked because bio_tools input preparation failed. "
+                        "code_executor fallback is blocked because bio_tools input preparation failed. "
                         "Retry bio_tools with valid input_file or sequence_text."
                     )
                     if root_cause:
                         summary = f"{summary} Root cause: {root_cause}"
                     payload: Dict[str, Any] = {
                         "success": False,
-                        "tool": "claude_code",
+                        "tool": "code_executor",
                         "error": summary,
                         "summary": summary,
                         "blocked_reason": "bio_tools_input_preparation_failed",
@@ -1628,14 +2019,14 @@ class StructuredChatAgent:
                     if isinstance(block_context, dict):
                         root_cause = str(block_context.get("summary") or "").strip()
                     summary = (
-                        "claude_code fallback is blocked because sequence_fetch failed in input/download stage. "
+                        "code_executor fallback is blocked because sequence_fetch failed in input/download stage. "
                         "Retry sequence_fetch with valid accession input."
                     )
                     if root_cause:
                         summary = f"{summary} Root cause: {root_cause}"
                     payload: Dict[str, Any] = {
                         "success": False,
-                        "tool": "claude_code",
+                        "tool": "code_executor",
                         "error": summary,
                         "summary": summary,
                         "blocked_reason": "sequence_fetch_failed_no_fallback",
@@ -1653,12 +2044,12 @@ class StructuredChatAgent:
                     safe_params = params if isinstance(params, dict) else {}
 
                     if name not in ("plan_operation", "verify_task"):
-                        if name == "claude_code":
+                        if name == "code_executor":
                             sequence_block_context = self.extra_context.get(sequence_input_block_key)
                             if isinstance(sequence_block_context, dict):
                                 blocked_payload = _build_sequence_input_blocked_payload(sequence_block_context)
                                 logger.warning(
-                                    "[DeepThink] Blocked claude_code fallback due to sequence_fetch failure."
+                                    "[DeepThink] Blocked code_executor fallback due to sequence_fetch failure."
                                 )
                                 return blocked_payload
 
@@ -1666,18 +2057,18 @@ class StructuredChatAgent:
                             if isinstance(block_context, dict):
                                 blocked_payload = _build_bio_input_blocked_payload(block_context)
                                 logger.warning(
-                                    "[DeepThink] Blocked claude_code fallback due to bio_tools input preparation failure."
+                                    "[DeepThink] Blocked code_executor fallback due to bio_tools input preparation failure."
                                 )
                                 return blocked_payload
 
                         if (
-                            name == "claude_code"
+                            name == "code_executor"
                             and bio_failure_active
                             and not (help_seen_after_failure and retry_seen_after_help)
                         ):
                             blocked_payload = _build_bio_recovery_blocked_payload()
                             logger.warning(
-                                "[DeepThink] Blocked claude_code fallback before bio_tools recovery: failed_tool=%s",
+                                "[DeepThink] Blocked code_executor fallback before bio_tools recovery: failed_tool=%s",
                                 failed_tool_name or "unknown",
                             )
                             return blocked_payload
@@ -2039,7 +2430,31 @@ class StructuredChatAgent:
                     pass
 
                 async def on_artifact(meta: Dict[str, Any]) -> None:
-                    await queue.put({"type": "artifact", **meta})
+                    artifact_meta = dict(meta or {})
+                    gallery_item = build_artifact_gallery_item(
+                        artifact_meta.get("path"),
+                        session_id=self.session_id,
+                        source_tool=artifact_meta.get("source_tool"),
+                        tracking_id=deep_think_job_id,
+                        created_at=None,
+                        display_name=artifact_meta.get("display_name"),
+                        origin=artifact_meta.get("origin"),
+                    )
+                    if gallery_item is not None:
+                        current_turn_artifact_gallery[:] = merge_artifact_gallery(
+                            current_turn_artifact_gallery,
+                            [gallery_item],
+                        )
+                        update_recent_image_artifacts(self.extra_context, [gallery_item])
+                        artifact_meta = {
+                            **artifact_meta,
+                            "path": gallery_item["path"],
+                            "display_name": gallery_item["display_name"],
+                            "mime_family": gallery_item["mime_family"],
+                            "origin": gallery_item["origin"],
+                            "tracking_id": gallery_item["tracking_id"],
+                        }
+                    await queue.put({"type": "artifact", **artifact_meta})
 
                 async def on_reasoning_delta(iteration: int, delta: str) -> None:
                     if not thinking_visible:
@@ -2121,6 +2536,12 @@ class StructuredChatAgent:
                     **routing_decision.metadata(),
                     **route_profile.prompt_metadata(),
                 }
+                continuation_summary = _build_brief_execute_continuation_summary(
+                    self,
+                    routing_decision,
+                )
+                if continuation_summary:
+                    think_context["continuation_summary"] = continuation_summary
 
                 # Run think
                 result = await dt_agent.think(effective_user_message, think_context)
@@ -2252,6 +2673,11 @@ class StructuredChatAgent:
                             "fallback_used": res.fallback_used,
                             **routing_decision.metadata(),
                         }
+                        if current_turn_artifact_gallery:
+                            metadata_payload["artifact_gallery"] = merge_artifact_gallery(
+                                None,
+                                current_turn_artifact_gallery,
+                            )
                         if thinking_visible:
                             metadata_payload["thinking_process"] = {
                                 "status": "completed",
@@ -2303,6 +2729,11 @@ class StructuredChatAgent:
                     "fallback_used": res.fallback_used,
                     **routing_decision.metadata(),
                 }
+                if current_turn_artifact_gallery:
+                    final_metadata["artifact_gallery"] = merge_artifact_gallery(
+                        None,
+                        current_turn_artifact_gallery,
+                    )
                 if bg_category:
                     final_metadata["background_category"] = bg_category
                 if result_job_id:
@@ -2414,6 +2845,7 @@ class StructuredChatAgent:
 
         full_response = "".join(content_parts)
         display_text = _coerce_plain_text_chat_response_fn(full_response)
+        display_text = _rewrite_plain_chat_execution_claims_fn(display_text)
         thinking_process = {
             "status": "completed",
             "total_iterations": 1,

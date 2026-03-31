@@ -38,6 +38,7 @@ async def terminal_session_handler(
             ssh_config=ssh_cfg,
         )
         return {
+            "operation": op,
             "success": True,
             "terminal_id": session.terminal_id,
             "session_id": session.session_id,
@@ -54,6 +55,7 @@ async def terminal_session_handler(
             mode="ssh" if mode == "ssh" else "sandbox",
         )
         return {
+            "operation": op,
             "success": True,
             "terminal_id": session.terminal_id,
             "session_id": session.session_id,
@@ -64,13 +66,13 @@ async def terminal_session_handler(
 
     if op == "list":
         items = await terminal_session_manager.list_sessions(session_id=session_id)
-        return {"success": True, "items": items, "count": len(items)}
+        return {"operation": op, "success": True, "items": items, "count": len(items)}
 
     if op == "close":
         if not terminal_id:
             raise ValueError("terminal_id is required for close")
         await terminal_session_manager.close_session(terminal_id)
-        return {"success": True, "terminal_id": terminal_id}
+        return {"operation": op, "success": True, "terminal_id": terminal_id}
 
     if op == "write":
         if not terminal_id:
@@ -89,6 +91,7 @@ async def terminal_session_handler(
         )
         settled = result["settled"]
         return {
+            "operation": op,
             "success": True,
             "terminal_id": terminal_id,
             "bytes_sent": len(payload),
@@ -110,7 +113,13 @@ async def terminal_session_handler(
         if cols is None or rows is None:
             raise ValueError("cols and rows are required for resize")
         await terminal_session_manager.resize(terminal_id, int(cols), int(rows))
-        return {"success": True, "terminal_id": terminal_id, "cols": int(cols), "rows": int(rows)}
+        return {
+            "operation": op,
+            "success": True,
+            "terminal_id": terminal_id,
+            "cols": int(cols),
+            "rows": int(rows),
+        }
 
     if op == "approve":
         if not terminal_id or not approval_id:
@@ -120,7 +129,12 @@ async def terminal_session_handler(
             approval_id,
             approved=True if approved is None else bool(approved),
         )
-        return {"success": ok, "terminal_id": terminal_id, "approval_id": approval_id}
+        return {
+            "operation": op,
+            "success": ok,
+            "terminal_id": terminal_id,
+            "approval_id": approval_id,
+        }
 
     if op == "reject":
         if not terminal_id or not approval_id:
@@ -130,19 +144,36 @@ async def terminal_session_handler(
             approval_id,
             approved=False,
         )
-        return {"success": ok, "terminal_id": terminal_id, "approval_id": approval_id}
+        return {
+            "operation": op,
+            "success": ok,
+            "terminal_id": terminal_id,
+            "approval_id": approval_id,
+        }
 
     if op == "pending_approvals":
         if not terminal_id:
             raise ValueError("terminal_id is required for pending_approvals")
         items = await terminal_session_manager.pending_approvals(terminal_id)
-        return {"success": True, "terminal_id": terminal_id, "items": items, "count": len(items)}
+        return {
+            "operation": op,
+            "success": True,
+            "terminal_id": terminal_id,
+            "items": items,
+            "count": len(items),
+        }
 
     if op == "replay":
         if not terminal_id:
             raise ValueError("terminal_id is required for replay")
         replay = await terminal_session_manager.get_replay(terminal_id, limit=max(1, int(limit)))
-        return {"success": True, "terminal_id": terminal_id, "replay": replay, "count": len(replay)}
+        return {
+            "operation": op,
+            "success": True,
+            "terminal_id": terminal_id,
+            "replay": replay,
+            "count": len(replay),
+        }
 
     if op == "audit":
         if not terminal_id:
@@ -154,7 +185,13 @@ async def terminal_session_handler(
             event_type=event_type,
             limit=max(1, int(limit)),
         )
-        return {"success": True, "terminal_id": terminal_id, "items": rows, "count": len(rows)}
+        return {
+            "operation": op,
+            "success": True,
+            "terminal_id": terminal_id,
+            "items": rows,
+            "count": len(rows),
+        }
 
     raise ValueError(
         "Unknown operation. Supported operations: create, ensure, list, close, write, resize, "

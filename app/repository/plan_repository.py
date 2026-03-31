@@ -200,7 +200,7 @@ class PlanRepository:
         """Mark ancestor nodes as completed if all their direct children are completed/skipped.
 
         This is a lightweight roll-up to keep root/group tasks in sync when only leaf tasks are executed
-        via tools (e.g. claude_code) without explicitly executing the parent nodes themselves.
+        via tools (e.g. code_executor) without explicitly executing the parent nodes themselves.
         """
 
         def _child_is_completed_like(status_value: Any, execution_result_value: Any) -> bool:

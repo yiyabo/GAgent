@@ -28,6 +28,7 @@ class ExecutorSettings:
     skill_selection_mode: str = "hybrid"
     skill_max_per_task: int = 3
     skill_trace_enabled: bool = True
+    code_execution_backend: str = "claude_code"  # "local" | "claude_code"
 
 
 @lru_cache(maxsize=1)
@@ -122,6 +123,11 @@ def get_executor_settings() -> ExecutorSettings:
         ),
         skill_trace_enabled=_env_bool(
             "SKILL_TRACE_ENABLED", defaults.skill_trace_enabled
+        ),
+        code_execution_backend=_env_choice(
+            "CODE_EXECUTION_BACKEND",
+            defaults.code_execution_backend,
+            {"local", "claude_code"},
         ),
     )
 

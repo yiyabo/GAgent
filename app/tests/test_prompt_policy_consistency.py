@@ -9,11 +9,13 @@ from app.routers.chat.prompt_builder import (
     build_simple_stream_chat_prompt,
     coerce_plain_text_chat_response,
     compose_plan_status,
+    rewrite_plain_chat_execution_claims,
 )
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX
 from app.services.response_style import sanitize_professional_response_text
 from app.services.deep_think_agent import DeepThinkAgent
 from app.services import tool_schemas
+from app.routers.chat.agent import _build_brief_execute_continuation_summary
 
 
 async def _noop_tool_executor(_name: str, _params: dict):
@@ -28,7 +30,7 @@ def _build_deep_think_agent() -> DeepThinkAgent:
             "bio_tools",
             "deeppl",
             "web_search",
-            "claude_code",
+            "code_executor",
             "plan_operation",
             "deliverable_submit",
         ],
@@ -94,9 +96,9 @@ def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_prio
         assert "Default to the lightest path that fully satisfies the user." in prompt
         assert "Do NOT start broad web/literature research" in prompt
         assert "For accession-based FASTA downloads, call sequence_fetch first." in prompt
-        assert "ALWAYS try bio_tools first before claude_code" in prompt
-        assert "Never use claude_code as fallback for sequence_fetch failures." in prompt
-        assert "Never use claude_code as fallback for bio_tools input-conversion/parsing failures." in prompt
+        assert "ALWAYS try bio_tools first before code_executor" in prompt
+        assert "Never use code_executor as fallback for sequence_fetch failures." in prompt
+        assert "Never use code_executor as fallback for bio_tools input-conversion/parsing failures." in prompt
 
     assert "PROTOCOL BOUNDARY (NATIVE TOOL CALLING)" in native_prompt
     assert "PROTOCOL BOUNDARY (LEGACY JSON)" in legacy_prompt
@@ -167,6 +169,189 @@ def test_deep_think_slim_evidence_keeps_json_when_storage_paths_in_single_line()
     slim = agent._slim_evidence_text_for_synthesis(blob)
     assert "11" in slim or "count" in slim
     assert "tool_outputs" not in slim.lower()
+
+
+def test_brief_execute_followup_prompt_skips_recent_chat_history() -> None:
+    agent = DeepThinkAgent(
+        llm_client=SimpleNamespace(),
+        available_tools=["result_interpreter", "file_operations"],
+        tool_executor=_noop_tool_executor,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "brevity_hint": True,
+        },
+    )
+    context = {
+        "request_tier": "execute",
+        "intent_type": "execute_task",
+        "brevity_hint": True,
+        "user_message": "继续执行一下",
+        "chat_history": [
+            {"role": "user", "content": "更早的旧请求 A"},
+            {"role": "assistant", "content": "更早的旧总结 B"},
+            {"role": "user", "content": "中间的旧请求 C"},
+            {"role": "assistant", "content": "中间的旧总结 D"},
+            {"role": "user", "content": "再往后的旧请求 E"},
+            {"role": "assistant", "content": "再往后的旧总结 F"},
+            {"role": "user", "content": "上一轮失败的是 result_interpreter 和 code_executor"},
+            {"role": "assistant", "content": "上一次已经确认 code_executor 400 修好了，下一步继续重跑宿主筛选"},
+            {"role": "assistant", "content": ""},
+        ],
+        "recent_tool_results": [
+            {"tool": "phagescope", "summary": "旧的批量上传测试完成"},
+            {"tool": "result_interpreter", "summary": "当前筛选已产出 10071 条结果"},
+        ],
+        "continuation_summary": {
+            "previous_user_request": "重新跑宿主筛选",
+            "previous_assistant_summary": "上一次已经确认 code_executor 400 修好了，下一步继续重跑宿主筛选",
+            "known_paths": ["/Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv"],
+            "known_filenames": ["gvd_phage_meta_data.tsv"],
+            "latest_tool_result": "result_interpreter: 当前筛选已产出 10071 条结果",
+            "recent_image_artifacts": ["figure.png (code_executor)"],
+        },
+    }
+
+    native_prompt = agent._build_native_system_prompt(context=context)
+    legacy_prompt = agent._build_system_prompt(context=context)
+
+    for prompt in (native_prompt, legacy_prompt):
+        assert "=== RECENT CONVERSATION ===" not in prompt
+        assert "=== EXECUTION CONTINUATION SUMMARY ===" in prompt
+        assert "=== RECENT CONTINUATION CONTEXT ===" in prompt
+        assert "Focus on the current execution result or current task outcome." in prompt
+        assert "Known path anchor: /Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv" in prompt
+        assert "Known filename anchors: gvd_phage_meta_data.tsv" in prompt
+        assert "Recent image artifacts: figure.png (code_executor)" in prompt
+        assert "当前筛选已产出 10071 条结果" in prompt
+        assert "旧的批量上传测试完成" not in prompt
+        assert "上一轮失败的是 result_interpreter 和 code_executor" in prompt
+        assert "上一次已经确认 code_executor 400 修好了" in prompt
+        assert "更早的旧请求 A" not in prompt
+        assert "更早的旧总结 B" not in prompt
+        assert "再往后的旧请求 E" in prompt
+        assert "再往后的旧总结 F" in prompt
+
+
+def test_execute_tier_prompt_warns_against_progress_recaps_for_brief_followups() -> None:
+    agent = DeepThinkAgent(
+        llm_client=SimpleNamespace(),
+        available_tools=["result_interpreter"],
+        tool_executor=_noop_tool_executor,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "brevity_hint": True,
+        },
+    )
+
+    native_prompt = agent._build_native_system_prompt()
+    legacy_prompt = agent._build_system_prompt()
+
+    for prompt in (native_prompt, legacy_prompt):
+        assert "Do not recap prior project milestones" in prompt
+        assert "Do not append next-step menus" in prompt
+        assert "continue from that anchor instead of restarting broad workspace discovery" in prompt
+
+
+def test_brief_execute_continuation_summary_extracts_path_anchors_from_older_history() -> None:
+    agent = SimpleNamespace(
+        history=[
+            {
+                "role": "assistant",
+                "content": "较早说明里提到源文件在 /Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv",
+            },
+            {"role": "user", "content": "再跑一轮完整的吧"},
+            {
+                "role": "assistant",
+                "content": "code_executor 400 已修复，下一步直接继续宿主筛选，不要回到路径排查。",
+            },
+        ],
+        extra_context={
+            "recent_tool_results": [
+                {
+                    "tool": "result_interpreter",
+                    "summary": "当前筛选已产出 10071 条结果",
+                    "result": {"work_dir": "/Users/apple/LLM/agent/runtime/session_demo"},
+                }
+            ]
+        },
+    )
+    routing_decision = SimpleNamespace(
+        request_tier="execute",
+        intent_type="execute_task",
+        brevity_hint=True,
+    )
+
+    summary = _build_brief_execute_continuation_summary(agent, routing_decision)
+
+    assert summary is not None
+    assert summary["previous_user_request"] == "再跑一轮完整的吧"
+    assert "宿主筛选" in summary["previous_assistant_summary"]
+    assert "/Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv" in summary["known_paths"]
+    assert "gvd_phage_meta_data.tsv" in summary["known_filenames"]
+    assert summary["latest_tool_result"].startswith("result_interpreter:")
+
+
+def test_brief_execute_continuation_summary_includes_recent_image_anchors() -> None:
+    agent = SimpleNamespace(
+        history=[
+            {"role": "user", "content": "把图重新整理一下"},
+            {"role": "assistant", "content": "上一轮已经产出封面图和摘要图。"},
+        ],
+        extra_context={
+            "recent_image_artifacts": [
+                {
+                    "path": "tool_outputs/run_2/cover.png",
+                    "display_name": "cover.png",
+                    "source_tool": "code_executor",
+                },
+                {
+                    "path": "tool_outputs/run_2/summary.png",
+                    "display_name": "summary.png",
+                    "source_tool": "code_executor",
+                },
+            ]
+        },
+    )
+    routing_decision = SimpleNamespace(
+        request_tier="execute",
+        intent_type="execute_task",
+        brevity_hint=True,
+    )
+
+    summary = _build_brief_execute_continuation_summary(agent, routing_decision)
+
+    assert summary is not None
+    assert summary["recent_image_artifacts"] == [
+        "cover.png (code_executor)",
+        "summary.png (code_executor)",
+    ]
+
+
+def test_plain_chat_execution_claims_are_rewritten_to_non_committal_text() -> None:
+    rewritten = rewrite_plain_chat_execution_claims("我现在开始执行并给你生成结果。")
+
+    assert rewritten == "我可以继续执行这个任务；如果你要我现在开工，我会进入执行流程。"
+
+
+def test_plain_chat_execution_claims_keep_quoted_phrase_explanations() -> None:
+    rewritten = rewrite_plain_chat_execution_claims(
+        'The phrase "starting now" means 立即开始。'
+    )
+
+    assert rewritten == 'The phrase "starting now" means 立即开始。'
+
+
+def test_plain_chat_execution_claims_preserve_english_reply_language() -> None:
+    rewritten = rewrite_plain_chat_execution_claims(
+        "Sure, starting now. I'll generate the report."
+    )
+
+    assert (
+        rewritten
+        == "I can continue with this task; if you want me to start now, I'll switch into the execution flow."
+    )
 
 
 def test_deep_think_filters_internal_storage_artifacts_from_evidence() -> None:

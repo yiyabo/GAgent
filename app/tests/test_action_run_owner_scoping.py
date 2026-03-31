@@ -171,7 +171,7 @@ def test_analysis_only_chat_response_passes_owner_to_action_lookup(monkeypatch) 
             "result": {
                 "tool_results": [
                     {
-                        "name": "claude_code",
+                        "name": "code_executor",
                         "summary": "done",
                         "parameters": {"task": "fib"},
                         "result": {"success": True},
@@ -181,7 +181,7 @@ def test_analysis_only_chat_response_passes_owner_to_action_lookup(monkeypatch) 
         }
 
     async def _fake_generate_tool_analysis(**kwargs):
-        assert kwargs["tool_results"][0]["name"] == "claude_code"
+        assert kwargs["tool_results"][0]["name"] == "code_executor"
         return "owner-scoped analysis"
 
     monkeypatch.setattr(chat_routes, "fetch_action_run", _fetch_action_run)

@@ -46,7 +46,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 class ToolCallRequest(BaseModel):
     """Tool call request from executor LLM."""
-    name: str = Field(description="Tool name: claude_code, web_search, document_reader, etc.")
+    name: str = Field(description="Tool name: code_executor, web_search, document_reader, etc.")
     parameters: Dict[str, Any] = Field(default_factory=dict, description="Tool parameters")
 
 
@@ -194,9 +194,9 @@ When a task requires tool execution, request one of these tools:
   NOTE: If unsure which tool/operation should be used for the requested analysis, request web_search first with a focused query, then return a bio_tools call.
 
 **CODE EXECUTION & DATA ANALYSIS:**
-- claude_code: Execute one concrete implementation task (data analysis, visualization, model building)
+- code_executor: Execute one concrete implementation task (data analysis, visualization, model building)
   Parameters: {"task": "<atomic implementation instruction only>", "allowed_tools": "Bash,Edit"}
-  IMPORTANT: Never ask claude_code to do planning/decomposition/roadmap work.
+  IMPORTANT: Never ask code_executor to do planning/decomposition/roadmap work.
   IMPORTANT: Default to direct objective execution. Do NOT request standalone CLI preflight
   checks (for example version/install/environment diagnostics) unless the user explicitly asks
   for diagnostics or a prior execution has already failed due to environment/tooling issues.
@@ -230,7 +230,7 @@ When a task requires tool execution, request one of these tools:
 **DELIVERABLES (session sidebar / paper bundle):**
 - deliverable_submit: Promote specific files into the session Deliverables tree (code, image_tabular, paper, refs, docs).
   Parameters: {"publish": true|false, "artifacts": [{"path": "<file>", "module": "code|image_tabular|paper|refs|docs", optional "reason": "<note>"}]}
-  When DELIVERABLES_INGEST_MODE=explicit, tool outputs (e.g. claude_code) are NOT auto-mirrored into Deliverables; call this after the user wants figures/code included for submission.
+  When DELIVERABLES_INGEST_MODE=explicit, tool outputs (e.g. code_executor) are NOT auto-mirrored into Deliverables; call this after the user wants figures/code included for submission.
   Do not call for browse-only reads unless the user asks to publish to Deliverables.
 """
 
@@ -241,12 +241,12 @@ When a task requires tool execution, request one of these tools:
 - For FASTA/FASTQ/sequence analysis → use bio_tools FIRST (status: "needs_tool")
 - If the user provides sequence text instead of a file, call bio_tools with sequence_text.
 - If bioinformatics tool/operation routing is uncertain, use web_search first to disambiguate, then call bio_tools (status: "needs_tool")
-- Do not use claude_code as fallback for bio_tools input conversion/parsing failures.
-- Do not use claude_code as fallback for sequence_fetch download/input failures.
-- For data analysis/visualization/charts → use claude_code (status: "needs_tool")
-- For model code building/training → use claude_code (status: "needs_tool")
-- Never use claude_code for task planning or decomposition; planning stays in the orchestration layer.
-- For claude_code coding tasks, request direct implementation/execution first; avoid standalone
+- Do not use code_executor as fallback for bio_tools input conversion/parsing failures.
+- Do not use code_executor as fallback for sequence_fetch download/input failures.
+- For data analysis/visualization/charts → use code_executor (status: "needs_tool")
+- For model code building/training → use code_executor (status: "needs_tool")
+- Never use code_executor for task planning or decomposition; planning stays in the orchestration layer.
+- For code_executor coding tasks, request direct implementation/execution first; avoid standalone
   "check CLI/version/environment" steps unless diagnostics are explicitly requested or needed after a failure.
 - For web information lookup → use web_search (status: "needs_tool")
 - For reading text files (PDF/TXT) → use document_reader (status: "needs_tool")
@@ -263,7 +263,7 @@ When a task requires tool execution, request one of these tools:
   "status": "success" | "failed" | "skipped" | "needs_tool",
   "content": "<main result text or reasoning for tool request>",
   "tool_call": {  // REQUIRED when status is "needs_tool", otherwise omit
-    "name": "sequence_fetch" | "bio_tools" | "claude_code" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "deeppl" | "literature_pipeline" | "review_pack_writer" | "manuscript_writer" | "deliverable_submit",
+    "name": "sequence_fetch" | "bio_tools" | "code_executor" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "deeppl" | "literature_pipeline" | "review_pack_writer" | "manuscript_writer" | "deliverable_submit",
     "parameters": { <tool-specific parameters> }
   },
   "notes": ["optional notes"],
@@ -1227,7 +1227,7 @@ class PlanExecutor:
                 [
                     "Paper mode is enabled: prioritize dependency artifact_paths and paper_context_paths as primary evidence.",
                     "Do not claim completion without explicit citation integrity checks against provided reference files.",
-                    "CRITICAL TOOL SELECTION: For writing ANY paper content (sections, drafts, revisions, full assembly), you MUST use manuscript_writer. Do NOT use claude_code to write paper text. claude_code may only be used for data analysis, code generation, or non-writing tasks.",
+                    "CRITICAL TOOL SELECTION: For writing ANY paper content (sections, drafts, revisions, full assembly), you MUST use manuscript_writer. Do NOT use code_executor to write paper text. code_executor may only be used for data analysis, code generation, or non-writing tasks.",
                 ]
             )
         # --- Skill content injection ---
@@ -1373,7 +1373,7 @@ class PlanExecutor:
                 "web_search",
                 "graph_rag",
                 "sequence_fetch",
-                "claude_code",
+                "code_executor",
                 "file_operations",
                 "document_reader",
                 "vision_reader",
