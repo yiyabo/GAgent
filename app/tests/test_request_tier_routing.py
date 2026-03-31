@@ -101,6 +101,83 @@ def test_manual_deepthink_search_request_routes_to_research_with_tools() -> None
     assert "deliverable_submit" not in profile.available_tools
 
 
+def test_manual_deepthink_mixed_plan_request_routes_to_execute_with_plan_tool() -> None:
+    decision = resolve_request_routing(message="/think 很好啊，那你针对于这个，制作一个plan来看看吧")
+
+    assert decision.intent_type == "execute_task"
+    assert decision.capability_floor == "execute"
+    assert decision.request_tier == "execute"
+    assert decision.request_route_mode == "manual_deepthink"
+    assert "intent_plan_request" in decision.route_reason_codes
+    assert decision.requires_structured_plan is True
+    assert decision.plan_request_mode == "create"
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert "plan_operation" in profile.available_tools
+    assert profile.requires_structured_plan is True
+    assert profile.plan_request_mode == "create"
+
+
+def test_manual_deepthink_research_then_plan_request_still_routes_to_execute() -> None:
+    decision = resolve_request_routing(
+        message="/think 我的意思是，根据你上面说的进行的调研，制作一个plan给我，我们来完成你说的那些"
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.capability_floor == "execute"
+    assert decision.request_tier == "execute"
+    assert decision.request_route_mode == "manual_deepthink"
+    assert "intent_plan_request" in decision.route_reason_codes
+    assert decision.requires_structured_plan is True
+    assert decision.plan_request_mode == "create"
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert "plan_operation" in profile.available_tools
+    assert profile.plan_request_mode == "create"
+
+
+def test_bound_plan_request_defaults_to_updating_current_plan() -> None:
+    decision = resolve_request_routing(
+        message="/think 基于上面的内容做一个plan",
+        plan_id=42,
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.capability_floor == "execute"
+    assert decision.requires_structured_plan is True
+    assert decision.plan_request_mode == "update_bound"
+
+
+def test_bound_plan_request_with_explicit_new_language_creates_new_plan() -> None:
+    decision = resolve_request_routing(
+        message="/think 新建一个plan，和刚才那个分开",
+        plan_id=42,
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.capability_floor == "execute"
+    assert decision.requires_structured_plan is True
+    assert decision.plan_request_mode == "create_new"
+
+
+def test_english_followup_another_one_does_not_trigger_plan_mode() -> None:
+    decision = resolve_request_routing(message="show me another one")
+
+    assert decision.requires_structured_plan is False
+    assert decision.plan_request_mode is None
+    assert "intent_plan_request" not in decision.route_reason_codes
+
+
 def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -> None:
     decision = resolve_request_routing(
         message="都有哪些数据在里面哇",

@@ -86,6 +86,16 @@ def _build_agent(responses: list[str], *, max_iterations: int = 1) -> DeepThinkA
     )
 
 
+def _build_plan_agent(request_profile: dict) -> DeepThinkAgent:
+    return DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["plan_operation"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+        request_profile=request_profile,
+    )
+
+
 def test_parse_llm_response_requires_json_protocol() -> None:
     agent = _build_agent([])
     parsed = agent._parse_llm_response(
@@ -218,6 +228,91 @@ def test_native_multi_tool_calls_execute_concurrently_and_append_results() -> No
     assert set(started) == {"file_operations", "web_search"}
     assert result.total_iterations >= 2
     assert result.thinking_steps
+
+
+def test_structured_plan_outcome_detects_created_plan() -> None:
+    agent = _build_plan_agent(
+        {
+            "requires_structured_plan": True,
+            "plan_request_mode": "create",
+        }
+    )
+    step = ThinkingStep(
+        iteration=1,
+        thought="",
+        action=json.dumps({"tool": "plan_operation", "params": {"operation": "create"}}),
+        action_result='[plan_operation] {"success": true, "tool": "plan_operation", "result": {"success": true, "operation": "create", "plan_id": 55, "title": "Plan 55"}, "error": null}',
+        self_correction=None,
+    )
+
+    outcome = agent._summarize_structured_plan_outcome([step], user_query="做一个plan")
+    assert outcome["required"] is True
+    assert outcome["state"] == "created"
+    assert outcome["satisfied"] is True
+    assert outcome["plan_id"] == 55
+
+
+def test_structured_plan_outcome_detects_bound_plan_update() -> None:
+    agent = _build_plan_agent(
+        {
+            "requires_structured_plan": True,
+            "plan_request_mode": "update_bound",
+            "current_plan_id": 42,
+            "current_plan_title": "Plan 42",
+        }
+    )
+    step = ThinkingStep(
+        iteration=1,
+        thought="",
+        action=json.dumps({"tool": "plan_operation", "params": {"operation": "review", "plan_id": 42}}),
+        action_result='[plan_operation] {"success": true, "tool": "plan_operation", "result": {"success": true, "operation": "review", "plan_id": 42, "plan_title": "Plan 42"}, "error": null}',
+        self_correction=None,
+    )
+
+    outcome = agent._summarize_structured_plan_outcome([step], user_query="更新这个plan")
+    assert outcome["state"] == "updated"
+    assert outcome["satisfied"] is True
+    assert outcome["plan_id"] == 42
+
+
+def test_structured_plan_outcome_marks_text_only_when_tool_never_called() -> None:
+    agent = _build_plan_agent(
+        {
+            "requires_structured_plan": True,
+            "plan_request_mode": "create",
+        }
+    )
+    step = ThinkingStep(
+        iteration=1,
+        thought="这里有一段文本计划",
+        action=None,
+        action_result=None,
+        self_correction=None,
+    )
+
+    outcome = agent._summarize_structured_plan_outcome([step], user_query="做一个plan")
+    assert outcome["state"] == "text_only"
+    assert outcome["satisfied"] is False
+
+
+def test_structured_plan_outcome_marks_failed_when_plan_tool_fails() -> None:
+    agent = _build_plan_agent(
+        {
+            "requires_structured_plan": True,
+            "plan_request_mode": "create",
+        }
+    )
+    step = ThinkingStep(
+        iteration=1,
+        thought="",
+        action=json.dumps({"tool": "plan_operation", "params": {"operation": "create"}}),
+        action_result='[plan_operation] {"success": false, "tool": "plan_operation", "result": {"success": false, "operation": "create", "error": "Plan title is required"}, "error": "Plan title is required"}',
+        self_correction=None,
+    )
+
+    outcome = agent._summarize_structured_plan_outcome([step], user_query="做一个plan")
+    assert outcome["state"] == "failed"
+    assert outcome["satisfied"] is False
 
 
 def test_extract_evidence_ignores_unverified_terminal_session_echoed_paths() -> None:

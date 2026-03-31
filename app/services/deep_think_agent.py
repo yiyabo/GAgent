@@ -109,6 +109,13 @@ class DeepThinkResult:
     tool_failures: List[Dict[str, Any]] = field(default_factory=list)
     search_verified: bool = True
     fallback_used: bool = False
+    structured_plan_required: bool = False
+    structured_plan_satisfied: bool = False
+    structured_plan_state: Optional[str] = None
+    structured_plan_message: Optional[str] = None
+    structured_plan_plan_id: Optional[int] = None
+    structured_plan_title: Optional[str] = None
+    structured_plan_operation: Optional[str] = None
 
 
 @dataclass
@@ -454,6 +461,27 @@ class DeepThinkAgent:
     def _capability_floor(self) -> str:
         return str(self.request_profile.get("capability_floor") or "").strip().lower()
 
+    def _requires_structured_plan(self) -> bool:
+        return bool(self.request_profile.get("requires_structured_plan"))
+
+    def _plan_request_mode(self) -> str:
+        return str(self.request_profile.get("plan_request_mode") or "").strip().lower()
+
+    @staticmethod
+    def _coerce_positive_int(value: Any) -> Optional[int]:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def _current_plan_id(self) -> Optional[int]:
+        return self._coerce_positive_int(self.request_profile.get("current_plan_id"))
+
+    def _current_plan_title(self) -> Optional[str]:
+        title = str(self.request_profile.get("current_plan_title") or "").strip()
+        return title or None
+
     def _is_research_or_execute(self) -> bool:
         return self._request_tier() in {"research", "execute"}
 
@@ -495,11 +523,29 @@ class DeepThinkAgent:
     @classmethod
     def _extract_outcomes_from_step(cls, step: ThinkingStep) -> List[Dict[str, Any]]:
         outcomes: List[Dict[str, Any]] = []
+        for entry in cls._extract_tool_payloads_from_step(step):
+            payload = entry.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            success, error = cls._normalize_tool_callback_outcome(payload)
+            outcomes.append(
+                {
+                    "tool": entry.get("tool"),
+                    "success": success,
+                    "error": error or payload.get("error"),
+                    "summary": payload.get("summary"),
+                }
+            )
+        return outcomes
+
+    @classmethod
+    def _extract_tool_payloads_from_step(cls, step: ThinkingStep) -> List[Dict[str, Any]]:
+        entries: List[Dict[str, Any]] = []
         action_payload = cls._try_parse_json_object(step.action)
         tool_names = cls._tool_names_from_payload(action_payload)
         action_result_text = str(step.action_result or "").strip()
         if not tool_names or not action_result_text:
-            return outcomes
+            return entries
 
         matched_any = False
         for block in [part.strip() for part in action_result_text.split("\n\n") if part.strip()]:
@@ -509,42 +555,39 @@ class DeepThinkAgent:
             payload = cls._try_parse_json_object(match.group("payload"))
             if not payload:
                 continue
-            success, error = cls._normalize_tool_callback_outcome(payload)
-            outcomes.append(
+            entries.append(
                 {
                     "tool": match.group("tool").strip(),
-                    "success": success,
-                    "error": error or payload.get("error"),
-                    "summary": payload.get("summary"),
+                    "payload": payload,
                 }
             )
             matched_any = True
 
         if matched_any:
-            return outcomes
+            return entries
 
         payload = cls._try_parse_json_object(action_result_text)
-        if not payload:
-            if len(tool_names) == 1 and action_result_text.lower().startswith("error"):
-                outcomes.append(
-                    {
-                        "tool": tool_names[0],
+        if payload:
+            entries.append(
+                {
+                    "tool": tool_names[0],
+                    "payload": payload,
+                }
+            )
+            return entries
+
+        if len(tool_names) == 1 and action_result_text.lower().startswith("error"):
+            entries.append(
+                {
+                    "tool": tool_names[0],
+                    "payload": {
                         "success": False,
                         "error": action_result_text,
                         "summary": action_result_text,
-                    }
-                )
-            return outcomes
-        success, error = cls._normalize_tool_callback_outcome(payload)
-        outcomes.append(
-            {
-                "tool": tool_names[0],
-                "success": success,
-                "error": error or payload.get("error"),
-                "summary": payload.get("summary"),
-            }
-        )
-        return outcomes
+                    },
+                }
+            )
+        return entries
 
     @classmethod
     def _collect_tool_failures_from_steps(cls, steps: List[ThinkingStep]) -> List[Dict[str, Any]]:
@@ -613,6 +656,237 @@ class DeepThinkAgent:
         if text.startswith(normalized_notice):
             return text
         return f"{normalized_notice}\n\n{text}"
+
+    @staticmethod
+    def _unwrap_tool_result(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the innermost result dict, handling nested {result: {...}} wrappers."""
+        inner = payload.get("result")
+        return inner if isinstance(inner, dict) else payload
+
+    @classmethod
+    def _collect_plan_operation_events(cls, steps: List[ThinkingStep]) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
+        for step in steps:
+            for entry in cls._extract_tool_payloads_from_step(step):
+                if str(entry.get("tool") or "").strip().lower() != "plan_operation":
+                    continue
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                rp = cls._unwrap_tool_result(payload)
+                success = bool(rp.get("success", payload.get("success")))
+                operation = str(rp.get("operation") or "").strip().lower()
+                plan_id = cls._coerce_positive_int(rp.get("plan_id"))
+                plan_title = str(rp.get("plan_title") or rp.get("title") or "").strip()
+                error = str(rp.get("error") or "").strip()
+                if not error:
+                    error = str(payload.get("error") or payload.get("summary") or "").strip()
+                events.append(
+                    {
+                        "success": success,
+                        "operation": operation or None,
+                        "plan_id": plan_id,
+                        "plan_title": plan_title or None,
+                        "error": error or None,
+                    }
+                )
+        return events
+
+    def _summarize_structured_plan_outcome(
+        self,
+        steps: List[ThinkingStep],
+        *,
+        user_query: str = "",
+    ) -> Dict[str, Any]:
+        required = self._requires_structured_plan()
+        mode = self._plan_request_mode()
+        bound_plan_id = self._current_plan_id()
+        bound_plan_title = self._current_plan_title()
+        language = detect_reasoning_language(user_query)
+        outcome: Dict[str, Any] = {
+            "required": required,
+            "mode": mode or None,
+            "called": False,
+            "satisfied": False,
+            "state": None,
+            "message": None,
+            "plan_id": bound_plan_id,
+            "plan_title": bound_plan_title,
+            "operation": None,
+        }
+        if not required or not mode:
+            return outcome
+
+        events = self._collect_plan_operation_events(steps)
+        outcome["called"] = bool(events)
+
+        if mode in {"create", "create_new"}:
+            for event in events:
+                if event.get("success") and event.get("operation") == "create" and event.get("plan_id") is not None:
+                    outcome.update(
+                        {
+                            "satisfied": True,
+                            "state": "created",
+                            "message": _localized_text(
+                                language,
+                                "已成功创建结构化计划。",
+                                "Structured plan created successfully.",
+                            ),
+                            "plan_id": event.get("plan_id"),
+                            "plan_title": event.get("plan_title") or bound_plan_title,
+                            "operation": "create",
+                        }
+                    )
+                    return outcome
+
+            if events:
+                last_error = str(events[-1].get("error") or "").strip()
+                outcome.update(
+                    {
+                        "state": "failed",
+                        "message": (
+                            _localized_text(
+                                language,
+                                "结构化计划创建失败。",
+                                "Structured plan creation failed.",
+                            )
+                            + (f" {last_error}" if last_error else "")
+                        ).strip(),
+                    }
+                )
+                return outcome
+
+            outcome.update(
+                {
+                    "state": "text_only",
+                    "message": _localized_text(
+                        language,
+                        "本轮只生成了文本建议，未创建结构化计划。",
+                        "This run produced text guidance only; no structured plan was created.",
+                    ),
+                }
+            )
+            return outcome
+
+        allowed_update_ops = {"get", "review", "optimize"}
+        for event in events:
+            if not event.get("success"):
+                continue
+            if event.get("operation") not in allowed_update_ops:
+                continue
+            event_plan_id = event.get("plan_id") or bound_plan_id
+            if bound_plan_id is not None and event_plan_id is not None and event_plan_id != bound_plan_id:
+                continue
+            outcome.update(
+                {
+                    "satisfied": True,
+                    "state": "updated",
+                    "message": _localized_text(
+                        language,
+                        "已成功更新当前结构化计划。",
+                        "Structured plan updated successfully.",
+                    ),
+                    "plan_id": event_plan_id,
+                    "plan_title": event.get("plan_title") or bound_plan_title,
+                    "operation": event.get("operation"),
+                }
+            )
+            return outcome
+
+        if events:
+            last_error = str(events[-1].get("error") or "").strip()
+            outcome.update(
+                {
+                    "state": "failed",
+                    "message": (
+                        _localized_text(
+                            language,
+                            "当前结构化计划未更新成功。",
+                            "The bound structured plan was not updated successfully.",
+                        )
+                        + (f" {last_error}" if last_error else "")
+                    ).strip(),
+                }
+            )
+            return outcome
+
+        outcome.update(
+            {
+                "state": "text_only",
+                "message": _localized_text(
+                    language,
+                    "本轮只生成了文本建议，未更新当前结构化计划。",
+                    "This run produced text guidance only; the bound structured plan was not updated.",
+                ),
+            }
+        )
+        return outcome
+
+    def _build_structured_plan_requirement_block(self) -> str:
+        if not self._requires_structured_plan():
+            return ""
+        mode = self._plan_request_mode()
+        current_plan_id = self._current_plan_id()
+        lines = [
+            "=== STRUCTURED PLAN REQUIREMENT ===",
+            "- The user explicitly asked for a real structured plan. A prose-only answer does NOT satisfy this request.",
+        ]
+        if mode in {"create", "create_new"}:
+            lines.append(
+                "- Before submit_final_answer, you must successfully call plan_operation with operation='create' and obtain a real plan_id."
+            )
+        elif mode == "update_bound":
+            lines.append(
+                "- Before submit_final_answer, you must successfully call plan_operation on the currently bound plan using get/review/optimize."
+            )
+            if current_plan_id is not None:
+                lines.append(f"- The bound plan_id is {current_plan_id}. Do not create a new plan unless the user explicitly asked for a new one.")
+        lines.append(
+            "- If plan_operation fails or is never called, your final answer must clearly state that no structured plan was created or updated."
+        )
+        return "\n".join(lines) + "\n"
+
+    def _get_structured_plan_retry_prompt(self) -> str:
+        mode = self._plan_request_mode()
+        current_plan_id = self._current_plan_id()
+        if mode in {"create", "create_new"}:
+            return (
+                "This request requires a real structured plan. You have not successfully created one yet. "
+                "Call plan_operation with operation='create' now. Do not finish with submit_final_answer until create succeeds "
+                "or you need to clearly report that structured plan creation failed."
+            )
+        if current_plan_id is not None:
+            return (
+                f"This request requires updating the bound structured plan (plan_id={current_plan_id}). "
+                "Call plan_operation with get/review/optimize on that plan now. Do not finish with submit_final_answer until one succeeds "
+                "or you need to clearly report that the structured plan was not updated."
+            )
+        return (
+            "This request requires a real structured plan action. Use plan_operation now before submit_final_answer."
+        )
+
+    def _ensure_structured_plan_notice(
+        self,
+        answer: str,
+        *,
+        outcome: Dict[str, Any],
+        user_query: str,
+    ) -> str:
+        text = str(answer or "").strip()
+        if not outcome.get("required") or outcome.get("satisfied"):
+            return text
+        notice = sanitize_professional_response_text(str(outcome.get("message") or "").strip())
+        if not notice:
+            notice = _localized_text(
+                detect_reasoning_language(user_query or text),
+                "本轮未创建或更新结构化计划。",
+                "A structured plan was not created or updated in this run.",
+            )
+        if not text:
+            return notice
+        if text.startswith(notice):
+            return text
+        return f"{notice}\n\n{text}"
 
     def _build_request_tier_block(self) -> str:
         tier = self._request_tier()
@@ -726,7 +1000,8 @@ class DeepThinkAgent:
             "- Never use code_executor as fallback for sequence_fetch failures.\n"
             "- Never use code_executor as fallback for bio_tools input-conversion/parsing failures.\n"
             "- For status polling tools, if state is unchanged across several checks, stop active polling and summarize current status.\n"
-            "- For plan creation, research first only when current external best practices or factual verification are important; otherwise draft from existing context and fill gaps with targeted research.\n"
+            "- If the user explicitly asks for a plan or task breakdown and plan_operation is available, use plan_operation to create or update a structured plan instead of replying with a prose-only pseudo-plan.\n"
+            "- For plan creation, research is optional. Use web_search first only when latest evidence or external best practices materially affect the plan; otherwise create or update the plan directly from current context.\n"
             "- For web_search: cite verifiable sources. When stating time-sensitive or factual claims, include URLs from the tool JSON "
             "`results` list (title/url) in your final answer. If `results` is empty and the tool response has no URLs, say sources were "
             "not returned and avoid presenting specific claims as independently verified.\n"
@@ -1196,6 +1471,26 @@ class DeepThinkAgent:
                         )
                         final_answer = ""
                     else:
+                        structured_plan_outcome = self._summarize_structured_plan_outcome(
+                            thinking_steps,
+                            user_query=user_query,
+                        )
+                        if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+                            current_step.self_correction = (
+                                "Rejected the final answer because the required structured plan was not created or updated yet."
+                            )
+                            final_answer = ""
+                            thinking_steps.append(current_step)
+                            if self.on_thinking:
+                                await self._safe_callback(current_step)
+                            messages.append({"role": "assistant", "content": result.content or ""})
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": self._get_structured_plan_retry_prompt(),
+                                }
+                            )
+                            continue
                         final_answer = candidate_answer
                     thinking_steps.append(current_step)
                     if self.on_thinking:
@@ -1261,13 +1556,18 @@ class DeepThinkAgent:
 
             # Inject a strong nudge when nearing the iteration limit
             if not final_answer and iteration >= self.max_iterations - 1:
-                messages.append({
-                    "role": "user",
-                    "content": (
+                final_step_prompt = (
+                    self._get_structured_plan_retry_prompt()
+                    if self._requires_structured_plan()
+                    else (
                         "IMPORTANT: You are about to reach the maximum number of thinking steps. "
                         "You MUST call submit_final_answer on the NEXT step with the best answer you can provide "
                         "based on all evidence gathered so far. Do NOT continue researching — synthesize NOW."
-                    ),
+                    )
+                )
+                messages.append({
+                    "role": "user",
+                    "content": final_step_prompt,
                 })
 
         if final_answer and not self._is_valid_final_answer(final_answer, user_query=user_query):
@@ -1299,6 +1599,15 @@ class DeepThinkAgent:
             tool_failures=tool_failures,
             search_verified=search_verified,
         )
+        structured_plan_outcome = self._summarize_structured_plan_outcome(
+            thinking_steps,
+            user_query=user_query,
+        )
+        final_answer = self._ensure_structured_plan_notice(
+            final_answer,
+            outcome=structured_plan_outcome,
+            user_query=user_query,
+        )
         final_answer = sanitize_professional_response_text(final_answer)
 
         try:
@@ -1316,6 +1625,13 @@ class DeepThinkAgent:
             tool_failures=tool_failures,
             search_verified=search_verified,
             fallback_used=fallback_used,
+            structured_plan_required=bool(structured_plan_outcome.get("required")),
+            structured_plan_satisfied=bool(structured_plan_outcome.get("satisfied")),
+            structured_plan_state=structured_plan_outcome.get("state"),
+            structured_plan_message=structured_plan_outcome.get("message"),
+            structured_plan_plan_id=structured_plan_outcome.get("plan_id"),
+            structured_plan_title=structured_plan_outcome.get("plan_title"),
+            structured_plan_operation=structured_plan_outcome.get("operation"),
         )
 
     def _build_native_system_prompt(
@@ -1374,6 +1690,7 @@ class DeepThinkAgent:
             "Your goal is to choose the right depth for the user's request: be thorough when needed, but do not over-research simple questions.\n\n"
             + self._build_shared_strategy_block()
             + self._build_request_tier_block()
+            + self._build_structured_plan_requirement_block()
             + self._build_capability_floor_block()
             + self._build_grounded_tooling_block()
             + "\n"
@@ -1507,11 +1824,30 @@ class DeepThinkAgent:
                 if parsed.get("is_final"):
                     candidate_answer = parsed.get("final_answer", "")
                     confidence = parsed.get("confidence", 0.8)
-                    final_answer = (
-                        candidate_answer
-                        if self._is_valid_final_answer(candidate_answer, user_query=user_query)
-                        else ""
-                    )
+                    if self._is_valid_final_answer(candidate_answer, user_query=user_query):
+                        structured_plan_outcome = self._summarize_structured_plan_outcome(
+                            thinking_steps,
+                            user_query=user_query,
+                        )
+                        final_answer = (
+                            candidate_answer
+                            if not structured_plan_outcome.get("required")
+                            or structured_plan_outcome.get("satisfied")
+                            else ""
+                        )
+                        if not final_answer:
+                            current_step.self_correction = (
+                                "Rejected the final answer because the required structured plan was not created or updated yet."
+                            )
+                            messages.append({"role": "assistant", "content": response_text})
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": self._get_structured_plan_retry_prompt(),
+                                }
+                            )
+                    else:
+                        final_answer = ""
                     current_step.status = "done"
                     thinking_steps.append(current_step)
                     if self.on_thinking:
@@ -1520,6 +1856,8 @@ class DeepThinkAgent:
                     # Stream final answer if callback provided
                     if self.on_final_delta and final_answer:
                         await self._stream_final_answer(final_answer)
+                    if not final_answer and self._requires_structured_plan():
+                        continue
                     break
 
                 if current_step.action:
@@ -1754,11 +2092,19 @@ Respond with ONLY a JSON object:
                 if parsed.get("is_final"):
                     candidate_answer = parsed.get("final_answer", "")
                     confidence = parsed.get("confidence", 0.7)
-                    final_answer = (
-                        candidate_answer
-                        if self._is_valid_final_answer(candidate_answer, user_query=user_query)
-                        else ""
-                    )
+                    if self._is_valid_final_answer(candidate_answer, user_query=user_query):
+                        structured_plan_outcome = self._summarize_structured_plan_outcome(
+                            thinking_steps,
+                            user_query=user_query,
+                        )
+                        final_answer = (
+                            candidate_answer
+                            if not structured_plan_outcome.get("required")
+                            or structured_plan_outcome.get("satisfied")
+                            else ""
+                        )
+                    else:
+                        final_answer = ""
 
                     # Stream final answer
                     if self.on_final_delta and final_answer:
@@ -1801,6 +2147,15 @@ Respond with ONLY a JSON object:
             tool_failures=tool_failures,
             search_verified=search_verified,
         )
+        structured_plan_outcome = self._summarize_structured_plan_outcome(
+            thinking_steps,
+            user_query=user_query,
+        )
+        final_answer = self._ensure_structured_plan_notice(
+            final_answer,
+            outcome=structured_plan_outcome,
+            user_query=user_query,
+        )
         final_answer = sanitize_professional_response_text(final_answer)
 
         try:
@@ -1818,6 +2173,13 @@ Respond with ONLY a JSON object:
             tool_failures=tool_failures,
             search_verified=search_verified,
             fallback_used=fallback_used,
+            structured_plan_required=bool(structured_plan_outcome.get("required")),
+            structured_plan_satisfied=bool(structured_plan_outcome.get("satisfied")),
+            structured_plan_state=structured_plan_outcome.get("state"),
+            structured_plan_message=structured_plan_outcome.get("message"),
+            structured_plan_plan_id=structured_plan_outcome.get("plan_id"),
+            structured_plan_title=structured_plan_outcome.get("plan_title"),
+            structured_plan_operation=structured_plan_outcome.get("operation"),
         )
 
     async def _safe_callback(self, step: ThinkingStep):
@@ -2536,12 +2898,12 @@ Operations:
 - get: Get plan details. Params: {"operation": "get", "plan_id": 123}
 
 WORKFLOW for Plan Creation:
-1. First use web_search to research relevant technologies/best practices
-2. Create initial plan with 'create' operation
-3. Use 'review' to check dependency issues AND research-plan rubric quality
-4. If issues found, use 'optimize' to fix them
-5. Repeat review-optimize until BOTH health_score and rubric_score are strong
-6. Report final plan to user with summary
+1. If the request depends on latest external evidence or best practices, optionally use web_search first
+2. For a new plan, call 'create' directly from the current context
+3. For a bound plan, use 'get', 'review', or 'optimize' on the existing plan_id
+4. Use 'review' to check dependency issues AND research-plan rubric quality when review is actually needed
+5. Use 'optimize' only when you have concrete changes to apply
+6. Report the real plan result to the user with plan_id when available
 
 IMPORTANT: When creating plans, ensure each task has clear, actionable instructions!""",
             "terminal_session": """Interactive terminal (PTY shell) for running commands directly.
@@ -2645,6 +3007,7 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 
 {self._build_shared_strategy_block()}
 {self._build_request_tier_block()}
+{self._build_structured_plan_requirement_block()}
 {self._build_capability_floor_block()}
 {self._build_grounded_tooling_block()}
 === THINKING WORKFLOW ===
@@ -2672,7 +3035,7 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 Try at least 3 different recovery attempts before reporting failure.
 
 === PLAN CREATION RULE ===
-When creating a plan, research first with web_search only when current external best practices or factual verification are important. Otherwise draft from existing context first, then use targeted research to fill gaps.
+Research before planning only when current external best practices or factual verification materially affect the plan. Otherwise create or update the structured plan directly from the current context first.
 
 {self._build_protocol_boundary_block("legacy")}
 === OUTPUT FORMAT ===
@@ -2703,6 +3066,14 @@ When ready to answer:
 
     def _get_next_step_prompt(self, iteration: int) -> str:
         """Generate prompt for the next step, encouraging completion if steps are getting long."""
+        if self._requires_structured_plan():
+            if iteration >= self.max_iterations - 1:
+                return (
+                    "CRITICAL: This request requires a real structured plan action. "
+                    "If no successful plan_operation has happened yet, call it NOW. "
+                    "Only use submit_final_answer after a real create/update succeeds, or to clearly report that the structured plan was not created or updated."
+                )
+            return self._get_structured_plan_retry_prompt()
         tier = self._request_tier()
         floor = (self._capability_floor() or "plain_chat").strip().lower()
         if tier == "light":
@@ -3227,6 +3598,10 @@ When ready to answer:
             thoughts_text = "\n".join(thought_lines[-8:]) if thought_lines else ""
 
             language = detect_reasoning_language(user_query)
+            structured_plan_outcome = self._summarize_structured_plan_outcome(
+                steps,
+                user_query=user_query,
+            )
             if language == "zh":
                 instruction = (
                     "你是一个深度思考AI助手。用户提出了一个问题，系统已经执行了多个工具调用来收集信息。"
@@ -3247,6 +3622,11 @@ When ready to answer:
                     "- 不要引导用户去查看、粘贴 `.env` 来「验证 PhageScope」；除非用户明确问本地部署密钥。"
                     "连通性应以 `phagescope` 工具（如 ping）为准；勿臆造 `PHAGESCOPE_API_TOKEN` 等变量名。"
                 )
+                if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+                    instruction += (
+                        "\n- 这次请求要求产出真实的结构化计划。当前证据里没有成功的 `plan_operation` 创建/更新结果。"
+                        "\n- 你必须明确写出：本轮未成功创建或更新结构化计划；不要把普通 markdown 文本说成已经创建好的计划。"
+                    )
                 if self._is_brief_execute_followup():
                     instruction += (
                         "\n- 这是一次简短的执行跟进。优先汇报当前任务结果或最新工具结果。"
@@ -3274,6 +3654,12 @@ When ready to answer:
                     "ask about local secrets; use phagescope tool (e.g. ping). This codebase only documents optional env "
                     "`PHAGESCOPE_BASE_URL` and `PHAGESCOPE_SSL_VERIFY`, not a `PHAGESCOPE_API_TOKEN` variable."
                 )
+                if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+                    instruction += (
+                        "\n- This request required a real structured plan result."
+                        "\n- No successful plan_operation create/update is present in the evidence, so you must explicitly say that a structured plan was not created or updated in this run."
+                        "\n- Do not present ordinary markdown text as if the system already created the plan."
+                    )
                 if self._is_brief_execute_followup():
                     instruction += (
                         "\n- This is a short execution follow-up. Prioritize the current task outcome or latest tool result."

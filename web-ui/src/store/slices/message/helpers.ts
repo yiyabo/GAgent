@@ -29,9 +29,18 @@ export function startActionStatusPolling(
   const status = statusResp.status;
   const done = status === 'completed' || status === 'failed';
   const remoteToolResults = mergeToolResults(collectToolResultsFromMetadata(statusResp.result?.tool_results), collectToolResultsFromMetadata(statusResp.metadata?.tool_results));
-  const remoteAnalysis = typeof statusResp.result?.analysis_text === 'string' ? statusResp.result.analysis_text : (typeof statusResp.metadata?.analysis_text === 'string' ? statusResp.metadata.analysis_text : undefined);
-  const remoteFinalSummary = typeof statusResp.result?.final_summary === 'string' ? statusResp.result.final_summary : (typeof statusResp.metadata?.final_summary === 'string' ? statusResp.metadata.final_summary : undefined);
+  const strFromResultOrMeta = (field: string): string | undefined => {
+    const r = statusResp.result as Record<string, unknown> | undefined;
+    const m = statusResp.metadata as Record<string, unknown> | undefined;
+    return typeof r?.[field] === 'string' ? (r[field] as string)
+      : typeof m?.[field] === 'string' ? (m[field] as string)
+      : undefined;
+  };
+  const remoteAnalysis = strFromResultOrMeta('analysis_text');
+  const remoteFinalSummary = strFromResultOrMeta('final_summary');
   const remoteReply = typeof statusResp.result?.reply === 'string' ? statusResp.result.reply : undefined;
+  const remotePlanCreationState = strFromResultOrMeta('plan_creation_state');
+  const remotePlanCreationMessage = strFromResultOrMeta('plan_creation_message');
   const targetMessage = get().messages.find((msg: any) => msg.id === messageId);
   if (!targetMessage) return done;
   const currentMeta: ChatResponseMetadata = { ...((targetMessage.metadata as ChatResponseMetadata | undefined) ?? {}) };
@@ -43,7 +52,17 @@ export function startActionStatusPolling(
     ),
   );
   const contentCandidate = (remoteAnalysis && remoteAnalysis.trim()) || (remoteFinalSummary && remoteFinalSummary.trim()) || (remoteReply && remoteReply.trim()) || targetMessage.content || initialContent || '';
-  get().updateMessage(messageId, { content: contentCandidate, metadata: { ...currentMeta, status, analysis_text: remoteAnalysis ?? currentMeta.analysis_text, final_summary: remoteFinalSummary ?? currentMeta.final_summary, tool_results: remoteToolResults.length > 0 ? remoteToolResults : currentMeta.tool_results, artifact_gallery: remoteArtifactGallery.length > 0 ? remoteArtifactGallery : currentMeta.artifact_gallery } });
+  const updatedMeta: ChatResponseMetadata = {
+    ...currentMeta,
+    status,
+    analysis_text: remoteAnalysis ?? currentMeta.analysis_text,
+    final_summary: remoteFinalSummary ?? currentMeta.final_summary,
+    plan_creation_state: (remotePlanCreationState ?? currentMeta.plan_creation_state) as ChatResponseMetadata['plan_creation_state'],
+    plan_creation_message: remotePlanCreationMessage ?? currentMeta.plan_creation_message,
+    tool_results: remoteToolResults.length > 0 ? remoteToolResults : currentMeta.tool_results,
+    artifact_gallery: remoteArtifactGallery.length > 0 ? remoteArtifactGallery : currentMeta.artifact_gallery,
+  };
+  get().updateMessage(messageId, { content: contentCandidate, metadata: updatedMeta });
   if (done) {
   const sessionKey = get().currentSession?.session_id ?? get().currentSession?.id ?? null;
   if (sessionKey) void get().loadChatHistory(sessionKey).catch((e: any) => console.warn('failed:', e));

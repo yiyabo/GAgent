@@ -109,6 +109,8 @@ export interface ChatResponseMetadata {
   tracking_id?: string;
   plan_id?: number | null;
   plan_title?: string | null;
+  plan_creation_state?: 'created' | 'updated' | 'text_only' | 'failed' | null;
+  plan_creation_message?: string | null;
   plan_outline?: string | null;
   plan_persisted?: boolean;
   success?: boolean;
@@ -170,6 +172,8 @@ export interface ChatMessage {
     session_id?: string;
     backend_id?: number;
     plan_id?: number | null;
+    plan_creation_state?: 'created' | 'updated' | 'text_only' | 'failed' | null;
+    plan_creation_message?: string | null;
     status?: ChatActionStatus;
     tracking_id?: string;
     errors?: string[];

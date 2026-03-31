@@ -167,6 +167,27 @@ describe('streamHandlers session sync', () => {
     });
   });
 
+  it('preserves structured plan downgrade metadata from final payload', async () => {
+    const { store, ctx } = buildContext();
+    ctx.state.finalPayload = {
+      response: '这里是一段文本建议。',
+      actions: [],
+      metadata: {
+        status: 'completed',
+        plan_creation_state: 'text_only',
+        plan_creation_message: '本轮只生成了文本建议，未创建结构化计划。',
+      },
+    };
+
+    await processFinalPayload(ctx as any);
+
+    expect((store.messages[0].metadata as any).plan_creation_state).toBe('text_only');
+    expect((store.messages[0].metadata as any).plan_creation_message).toBe(
+      '本轮只生成了文本建议，未创建结构化计划。',
+    );
+    expect(store.currentSession.plan_id).toBeNull();
+  });
+
   it('clears stale compact progress current state when final payload completes', async () => {
     const { store, ctx } = buildContext();
 

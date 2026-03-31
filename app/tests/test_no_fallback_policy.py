@@ -299,6 +299,73 @@ class _DeepThinkProbeBase:
         return
 
 
+class _PlanSessionBindStub:
+    def __init__(self, plan_id: int | None = None) -> None:
+        self.plan_id = plan_id
+        self.bound_ids: list[int] = []
+
+    def bind(self, plan_id: int) -> None:
+        self.plan_id = plan_id
+        self.bound_ids.append(plan_id)
+
+
+class _DeepThinkPlanCreateProbe(_DeepThinkProbeBase):
+    def __init__(
+        self,
+        *,
+        llm_client,
+        available_tools,
+        tool_executor,
+        max_iterations,
+        tool_timeout,
+        on_thinking,
+        on_thinking_delta,
+        on_final_delta,
+        on_tool_start=None,
+        on_tool_result=None,
+        on_artifact=None,
+        **_kwargs,
+    ) -> None:
+        _ = (
+            llm_client,
+            available_tools,
+            max_iterations,
+            tool_timeout,
+            on_thinking,
+            on_thinking_delta,
+            on_final_delta,
+            on_tool_start,
+            on_tool_result,
+            on_artifact,
+        )
+        self._tool_executor = tool_executor
+
+    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+        _ = (user_query, context)
+        await self._tool_executor(
+            "plan_operation",
+            {
+                "operation": "create",
+                "title": "Replacement plan",
+                "description": "Create a separate plan.",
+                "tasks": [
+                    {
+                        "name": "Task 1",
+                        "instruction": "Do the replacement work.",
+                    }
+                ],
+            },
+        )
+        return DeepThinkResult(
+            final_answer="Created a new plan.",
+            thinking_steps=[],
+            total_iterations=1,
+            tools_used=["plan_operation"],
+            confidence=1.0,
+            thinking_summary="ok",
+        )
+
+
 class _DeepThinkToolResultProtocolProbe(_DeepThinkProbeBase):
     def __init__(
         self,
@@ -692,6 +759,83 @@ def test_deep_think_tool_wrapper_tolerates_non_dict_tool_result(
     assert tool_result.get("success") is False
     assert tool_result.get("protocol_warning") is True
     assert tool_result.get("recovery_required") is None
+
+
+def test_deep_think_create_new_rebinds_existing_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _DeepThinkJobStub:
+        def create_job(self, **_kwargs):
+            return None
+
+        def mark_running(self, _job_id: str) -> None:
+            return
+
+        def register_subscriber(self, _job_id: str, _loop):
+            return None
+
+        def register_runtime_controller(self, _job_id: str, _controller) -> bool:
+            return False
+
+        def unregister_runtime_controller(self, _job_id: str) -> None:
+            return
+
+        def unregister_subscriber(self, _job_id: str, _queue) -> None:
+            return
+
+        def mark_success(self, _job_id: str, **_kwargs) -> None:
+            return
+
+        def mark_failure(self, _job_id: str, _error: str, **_kwargs) -> None:
+            return
+
+        def attach_plan(self, _job_id: str, _plan_id: int) -> None:
+            return
+
+    session_updates: list[tuple[str, int]] = []
+
+    async def _fake_execute_tool(name: str, **params):
+        assert name == "plan_operation"
+        assert params["operation"] == "create"
+        return {
+            "success": True,
+            "operation": "create",
+            "plan_id": 99,
+            "title": "Replacement plan",
+        }
+
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkPlanCreateProbe)
+    monkeypatch.setattr("app.routers.chat.agent.execute_tool", _fake_execute_tool)
+    monkeypatch.setattr("app.routers.chat.agent.plan_decomposition_jobs", _DeepThinkJobStub())
+    monkeypatch.setattr("app.routers.chat.agent._persist_runtime_context", lambda _agent: None)
+    monkeypatch.setattr("app.routers.chat.agent._save_chat_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "app.routers.chat.agent._set_session_plan_id",
+        lambda session_id, plan_id, **_kwargs: session_updates.append((session_id, plan_id)),
+    )
+    monkeypatch.setattr("app.routers.chat.agent.set_current_job", lambda _job_id: None)
+    monkeypatch.setattr("app.routers.chat.agent.reset_current_job", lambda _token: None)
+
+    agent = _build_deep_think_test_agent()
+    agent.plan_session = _PlanSessionBindStub(plan_id=42)
+    agent.session_id = "session-create-new"
+    agent.max_history_messages = 20
+    agent._dirty = False
+    agent._refresh_plan_tree = lambda force_reload=False: None
+    agent._auto_decompose_plan = lambda *_args, **_kwargs: None
+
+    events = asyncio.run(
+        _collect_deep_think_events(agent, "新建一个plan，和刚才那个分开")
+    )
+
+    final_events = [evt for evt in events if evt.get("type") == "final"]
+    assert final_events, "Expected a final DeepThink SSE event."
+    final_metadata = final_events[-1]["payload"]["metadata"]
+
+    assert agent.plan_session.plan_id == 99
+    assert agent.plan_session.bound_ids == [99]
+    assert final_metadata["plan_id"] == 99
+    assert session_updates == [("session-create-new", 99)]
 
 
 def test_deep_think_blocks_code_executor_until_bio_recovery(
