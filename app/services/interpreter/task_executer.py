@@ -2,7 +2,8 @@
 Task execution orchestration.
 
 This module routes tasks to one of two paths:
-1. Code-required tasks executed via Claude Code.
+1. Code-required tasks executed locally (LLM generates code → subprocess runs it)
+   or via Claude Code CLI (legacy, configurable via CODE_EXECUTION_BACKEND).
 2. Text-only tasks answered directly by the LLM.
 
 Skills support:
@@ -19,12 +20,14 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from app.config.executor_config import get_executor_settings
 from app.services.llm.llm_service import LLMService, get_llm_service
 from app.services.skills import SkillsLoader, get_skills_loader
+from .code_execution import execute_code_locally, CodeExecutionOutcome
 from .metadata import DatasetMetadata, DataProcessor
 from .prompts.task_executer import (
     TASK_TYPE_SYSTEM_PROMPT,
@@ -202,10 +205,7 @@ class TaskExecutor:
 - Format: {metadata.file_format}
 - Rows: {metadata.total_rows}
 - Columns: {metadata.total_columns}
-- Sample values (first 3 columns x 3 values): {"; ".join(
-            f"{col.name}: {col.sample_values[:3]}"
-            for col in metadata.columns[:3]
-        )}"""
+- Key columns: {", ".join(col.name for col in metadata.columns[:6])}"""
             summaries.append(summary)
         return "\n\n".join(summaries)
 
@@ -304,6 +304,13 @@ class TaskExecutor:
                 logger.info("TaskExecutor skill trace: %s", trace)
             if injection_result.content:
                 return f"\n## Skill Guidance\n{injection_result.content}\n", trace
+            if selection_result.selected_skill_ids:
+                skill_list = ", ".join(selection_result.selected_skill_ids)
+                return (
+                    "\n## Skill Hints\n"
+                    f"- Relevant skills: {skill_list}\n"
+                    "- Use them only if they materially help complete this task.\n"
+                ), trace
         except Exception as e:
             logger.warning(f"Skill guidance preparation failed: {e}")
         return "", trace
@@ -317,56 +324,146 @@ class TaskExecutor:
         task_id: Optional[int] = None,
         skill_hints: str = "",
     ) -> TaskExecutionResult:
-        """Execute a code-required task through Claude Code."""
-        from tool_box.tools_impl.claude_code import claude_code_handler
+        """Execute a code-required task.
+
+        Dispatches to local execution (LLM generates code → subprocess runs it)
+        or Claude Code CLI based on the CODE_EXECUTION_BACKEND setting.
+        """
+        settings = get_executor_settings()
+        if settings.code_execution_backend == "claude_code":
+            return await self._execute_code_task_legacy_cli(
+                task_title, task_description, subtask_results,
+                is_visualization, task_id, skill_hints,
+            )
+
+        return await self._execute_code_task_local(
+            task_title, task_description, subtask_results,
+            is_visualization, task_id, skill_hints,
+        )
+
+    @staticmethod
+    def _local_code_filename(task_id: Optional[int]) -> str:
+        if task_id is not None:
+            return f"task_{int(task_id)}_code.py"
+        return f"task_code_{uuid4().hex[:8]}.py"
+
+    async def _execute_code_task_local(
+        self,
+        task_title: str,
+        task_description: str,
+        subtask_results: str = "",
+        is_visualization: bool = False,
+        task_id: Optional[int] = None,
+        skill_hints: str = "",
+    ) -> TaskExecutionResult:
+        """Execute a code-required task via unified local code execution."""
+        logger.info(f"Executing task with local interpreter: {task_title}")
+
+        # ---- Build augmented task description ----
+        data_files_info = '\n'.join([f"  - {fp}" for fp in self.data_file_paths])
+        augmented_desc = f"""{task_description}
+
+## Data Files (absolute paths)
+{data_files_info}
+
+## Directories
+- Data directory: {self.data_dir}
+- Output directory: {self.output_dir}
+- Save results to: {self.output_dir}/results/
+"""
+        if subtask_results:
+            augmented_desc += f"\n## Subtask Results (for reference)\n{subtask_results}\n"
+        if is_visualization:
+            augmented_desc += (
+                "\n## Visualization Requirement\n"
+                "Generate the requested visualizations and save image outputs "
+                f"to {self.output_dir}/results/\n"
+            )
+        if skill_hints:
+            augmented_desc += skill_hints
+
+        # ---- Delegate to unified execution function ----
+        outcome: CodeExecutionOutcome = await execute_code_locally(
+            task_title=task_title,
+            task_description=augmented_desc,
+            metadata_list=self.metadata_list,
+            llm_service=self.llm_service,
+            work_dir=self.output_dir,
+            data_dir=self.data_dir,
+            code_filename=self._local_code_filename(task_id),
+        )
+
+        viz_purpose = None
+        if outcome.visualization_files:
+            viz_purpose = f"Visualization generated for task '{task_title}'"
+
+        return TaskExecutionResult(
+            task_type=TaskType.CODE_REQUIRED,
+            success=outcome.success,
+            final_code=outcome.code,
+            code_description=outcome.description,
+            code_output=outcome.stdout,
+            code_error=outcome.stderr if not outcome.success else None,
+            total_attempts=outcome.attempts,
+            has_visualization=outcome.has_visualization,
+            visualization_purpose=viz_purpose or outcome.visualization_purpose,
+            visualization_analysis=outcome.visualization_analysis,
+            error_message=outcome.stderr if not outcome.success else None,
+        )
+
+    async def _execute_code_task_legacy_cli(
+        self,
+        task_title: str,
+        task_description: str,
+        subtask_results: str = "",
+        is_visualization: bool = False,
+        task_id: Optional[int] = None,
+        skill_hints: str = "",
+    ) -> TaskExecutionResult:
+        """Legacy: execute a code-required task through Claude Code CLI."""
+        from tool_box.tools_impl.code_executor import code_executor_handler
 
         logger.info(f"Executing task with Claude Code: {task_title}")
 
         # Build enriched task description.
         datasets_summary = self._format_datasets_summary()
-
-        # Build absolute data file list.
         data_files_info = '\n'.join([f"  - {fp}" for fp in self.data_file_paths])
 
-        enhanced_task = f"""## Task: {task_title}
+        enhanced_task = f"""## Task
+{task_title}
 
-## Task Description
+## Objective
 {task_description}
 
-## Dataset Summary
+## Datasets
 {datasets_summary}
 
-## Data File Paths (use these absolute paths)
+## Data Files
 {data_files_info}
 
-## Directory Info
-- Data directory: {self.data_dir}
-- Output directory: {self.output_dir}
+## Directories
+- Data: {self.data_dir}
+- Output: {self.output_dir}
 """
 
-        # Append optional skill guidance.
         if skill_hints:
             enhanced_task += skill_hints
-
         if subtask_results:
             enhanced_task += f"\n## Subtask Results (for reference)\n{subtask_results}\n"
-
         if is_visualization:
             enhanced_task += (
                 "\n## Visualization Requirement\n"
                 "Generate the requested visualizations and save image outputs to the output directory.\n"
             )
 
-        # Build allowed directory list.
         add_dirs_list = [self.data_dir]
         if self.output_dir != self.data_dir:
             add_dirs_list.append(self.output_dir)
         add_dirs = ",".join(add_dirs_list)
 
-        # Invoke Claude Code.
         try:
             strict_task_context = self.plan_id is not None and task_id is not None
-            result = await claude_code_handler(
+            result = await code_executor_handler(
                 task=enhanced_task,
                 add_dirs=add_dirs,
                 session_id=self.session_id,
@@ -395,7 +492,6 @@ class TaskExecutor:
                     )
 
             # Copy Claude Code artifacts to output_dir.
-            # Handle all 4 sub-directories: results/, code/, data/, docs/.
             task_dir = result.get("task_directory_full", "")
             if task_dir and self.output_dir:
                 subdirs_to_copy = ["results", "code", "data", "docs"]
@@ -409,13 +505,8 @@ class TaskExecutor:
                                 shutil.copy2(f, dst_dir / f.name)
                         logger.info(f"Copied artifacts from {src_dir} to {dst_dir}")
 
-            # Parse output and infer visualization metadata.
             has_visualization = False
             visualization_purpose = None
-            visualization_analysis = None
-
-            # Detect generated image files.
-            task_dir = result.get("task_directory_full", "")
             if task_dir:
                 result_dir = Path(task_dir) / "results"
                 if result_dir.exists():
@@ -429,14 +520,13 @@ class TaskExecutor:
             return TaskExecutionResult(
                 task_type=TaskType.CODE_REQUIRED,
                 success=success,
-                final_code=None,  # Claude Code manages generated code internally.
+                final_code=None,
                 code_description=f"Task completed by Claude Code: {task_title}",
                 code_output=stdout,
                 code_error=(stderr if stderr else err_text) if not success else None,
-                total_attempts=1,  # Retries are handled internally by Claude Code.
+                total_attempts=1,
                 has_visualization=has_visualization,
                 visualization_purpose=visualization_purpose,
-                visualization_analysis=visualization_analysis,
                 error_message=err_text,
             )
 
@@ -525,7 +615,7 @@ class TaskExecutor:
         tool_hints: List[str] = []
         task_text = f"{task_title}\n{task_description}".lower()
         if task_type == TaskType.CODE_REQUIRED:
-            tool_hints.append("claude_code")
+            tool_hints.append("code_executor")
         if any(str(path).lower().endswith((".fasta", ".fa", ".fna", ".fastq", ".fq", ".sam", ".bam")) for path in self.data_file_paths) or any(
             token in task_text
             for token in ("fasta", "fastq", "sequence", "genome", "alignment", "assembly", "annotation", "phage")

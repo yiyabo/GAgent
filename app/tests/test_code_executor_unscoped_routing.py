@@ -93,16 +93,16 @@ def _build_agent() -> StructuredChatAgent:
     return agent
 
 
-def test_resolve_claude_code_task_context_does_not_auto_redirect_session_composite() -> None:
+def test_resolve_code_executor_task_context_does_not_auto_redirect_session_composite() -> None:
     agent = _build_agent()
 
-    node, error = agent._resolve_claude_code_task_context()
+    node, error = agent._resolve_code_executor_task_context()
 
     assert node is None
     assert error == "target_task_not_atomic"
 
 
-def test_prepare_claude_code_params_routes_unscoped_for_session_stale_composite(
+def test_prepare_code_executor_params_routes_unscoped_for_session_stale_composite(
     monkeypatch,
 ) -> None:
     agent = _build_agent()
@@ -110,7 +110,7 @@ def test_prepare_claude_code_params_routes_unscoped_for_session_stale_composite(
 
     action = LLMAction(
         kind="tool_operation",
-        name="claude_code",
+        name="code_executor",
         parameters={
             "task": "Write a Python Fibonacci sequence program and run it",
             "allowed_tools": ["Write", "Bash", "Read"],
@@ -119,9 +119,9 @@ def test_prepare_claude_code_params_routes_unscoped_for_session_stale_composite(
     )
 
     prepared = asyncio.run(
-        agent._prepare_claude_code_params(
+        agent._prepare_code_executor_params(
             action=action,
-            tool_name="claude_code",
+            tool_name="code_executor",
             params=dict(action.parameters),
         )
     )
@@ -139,7 +139,7 @@ def test_prepare_claude_code_params_routes_unscoped_for_session_stale_composite(
     assert prepared_params.get("allowed_tools") == "Write,Bash,Read"
 
 
-def test_sync_task_status_skips_for_unscoped_claude_code() -> None:
+def test_sync_task_status_skips_for_unscoped_code_executor() -> None:
     repo = _RepoTaskSyncStub()
     agent = StructuredChatAgent.__new__(StructuredChatAgent)
     agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
@@ -147,7 +147,7 @@ def test_sync_task_status_skips_for_unscoped_claude_code() -> None:
     agent._dirty = False
 
     agent._sync_task_status_after_tool_execution(
-        tool_name="claude_code",
+        tool_name="code_executor",
         success=True,
         summary="ok",
         message="ok",
@@ -158,7 +158,7 @@ def test_sync_task_status_skips_for_unscoped_claude_code() -> None:
     assert repo.cascaded == []
 
 
-def test_sync_task_status_runs_for_scoped_claude_code() -> None:
+def test_sync_task_status_runs_for_scoped_code_executor() -> None:
     repo = _RepoTaskSyncStub()
     agent = StructuredChatAgent.__new__(StructuredChatAgent)
     agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
@@ -166,7 +166,7 @@ def test_sync_task_status_runs_for_scoped_claude_code() -> None:
     agent._dirty = False
 
     agent._sync_task_status_after_tool_execution(
-        tool_name="claude_code",
+        tool_name="code_executor",
         success=True,
         summary="ok",
         message="ok",
@@ -207,7 +207,7 @@ def test_sync_task_status_marks_failed_when_verification_fails(tmp_path) -> None
     agent._task_verifier = TaskVerificationService()
 
     agent._sync_task_status_after_tool_execution(
-        tool_name="claude_code",
+        tool_name="code_executor",
         success=True,
         summary="finished",
         message="finished",

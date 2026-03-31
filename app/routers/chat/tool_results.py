@@ -27,6 +27,60 @@ from .session_helpers import (
 
 logger = logging.getLogger(__name__)
 
+
+def _trim_text(value: str, *, limit: int) -> str:
+    text = value.strip()
+    if len(text) > limit:
+        return text[: limit - 3] + "..."
+    return text
+
+
+def _extract_result_interpreter_output_text(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return text
+    if isinstance(payload, dict):
+        for key in ("result", "output", "summary", "message"):
+            candidate = payload.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+    return text
+
+
+def _first_meaningful_line(value: str) -> Optional[str]:
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line in {"---", "```"}:
+            continue
+        line = line.lstrip("#").strip()
+        if not line:
+            continue
+        return _trim_text(line, limit=240)
+    return None
+
+
+def _compact_column_names(value: Any) -> Optional[List[str]]:
+    if not isinstance(value, list):
+        return None
+    names: List[str] = []
+    for item in value[:20]:
+        if isinstance(item, str) and item.strip():
+            names.append(item.strip())
+            continue
+        if isinstance(item, dict):
+            name = item.get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+    return names or None
+
 # ---------------------------------------------------------------------------
 # normalize_dependencies
 # ---------------------------------------------------------------------------
@@ -191,12 +245,26 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                 sanitized[key] = raw_result.get(key)
         return sanitized
 
-    if tool_name == "claude_code" and isinstance(raw_result, dict):
+    if tool_name == "code_executor" and isinstance(raw_result, dict):
         def _trim(text: str, limit: int = 800) -> str:
             text = text.strip()
             if len(text) > limit:
                 return text[: limit - 3] + "..."
             return text
+
+        def _normalize_claude_error(message: str) -> str:
+            normalized = message.strip()
+            legacy = (
+                "Claude CLI crashed (likely HTTP 400 from API). "
+                "Check ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL configuration."
+            )
+            modern = (
+                "Claude CLI crashed (HTTP 400 from upstream Anthropic-compatible API). "
+                "The upstream rejected the request; this is not necessarily a local API-key/base-URL problem."
+            )
+            if legacy in normalized:
+                return normalized.replace(legacy, modern)
+            return normalized
 
         sanitized: Dict[str, Any] = {
             "tool": tool_name,
@@ -220,7 +288,7 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             sanitized["output"] = _trim(output_value)
 
         if "error" in raw_result:
-            sanitized["error"] = str(raw_result["error"])
+            sanitized["error"] = _normalize_claude_error(str(raw_result["error"]))
 
         tool_calls = raw_result.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
@@ -234,6 +302,19 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                     trimmed_paths.append(item.strip().replace("\\", "/"))
             if trimmed_paths:
                 sanitized["artifact_paths"] = trimmed_paths
+
+        # P1b: expose generated code and error category to agent.
+        generated_code = raw_result.get("generated_code")
+        if isinstance(generated_code, str) and generated_code.strip():
+            sanitized["generated_code"] = _trim(generated_code, limit=2000)
+
+        error_category = raw_result.get("error_category")
+        if error_category:
+            sanitized["error_category"] = error_category
+
+        code_file = raw_result.get("code_file")
+        if isinstance(code_file, str) and code_file.strip():
+            sanitized["code_file"] = code_file
 
         return sanitized
 
@@ -260,11 +341,85 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             "replay",
             "items",
             "count",
+            "artifact_paths",
         ):
             if key in raw_result:
                 sanitized[key] = raw_result[key]
         if "success" not in sanitized:
             sanitized["success"] = False if sanitized.get("error") else True
+        return sanitized
+
+    if tool_name == "result_interpreter" and isinstance(raw_result, dict):
+        sanitized: Dict[str, Any] = {
+            "tool": tool_name,
+            "operation": raw_result.get("operation"),
+            "success": raw_result.get("success", False),
+        }
+        if "error" in raw_result:
+            sanitized["error"] = raw_result.get("error")
+
+        execution_status = raw_result.get("execution_status")
+        if isinstance(execution_status, str) and execution_status.strip():
+            sanitized["execution_status"] = execution_status.strip()
+
+        metadata = raw_result.get("metadata")
+        if isinstance(metadata, list):
+            compact_metadata: List[Dict[str, Any]] = []
+            for item in metadata[:5]:
+                if not isinstance(item, dict):
+                    continue
+                compact_item: Dict[str, Any] = {}
+                for key in (
+                    "filename",
+                    "file_format",
+                    "file_size_bytes",
+                    "total_rows",
+                    "total_columns",
+                ):
+                    if key in item:
+                        compact_item[key] = item.get(key)
+                column_names = (
+                    _compact_column_names(item.get("primary_columns"))
+                    or _compact_column_names(item.get("column_names"))
+                    or _compact_column_names(item.get("columns"))
+                )
+                if column_names:
+                    compact_item["column_names"] = column_names
+                if compact_item:
+                    compact_metadata.append(compact_item)
+            if compact_metadata:
+                sanitized["metadata"] = compact_metadata
+
+        code_description = raw_result.get("code_description")
+        if isinstance(code_description, str) and code_description.strip():
+            sanitized["code_description"] = _trim_text(code_description, limit=300)
+
+        execution_output = _extract_result_interpreter_output_text(
+            raw_result.get("execution_output")
+        )
+        if execution_output:
+            sanitized["execution_output"] = _trim_text(execution_output, limit=4000)
+
+        execution_error = raw_result.get("execution_error")
+        if isinstance(execution_error, str) and execution_error.strip():
+            sanitized["execution_error"] = _trim_text(execution_error, limit=1200)
+
+        generated_code = raw_result.get("generated_code")
+        if isinstance(generated_code, str) and generated_code.strip():
+            sanitized["generated_code"] = _trim_text(generated_code, limit=1500)
+
+        work_dir = raw_result.get("work_dir")
+        if isinstance(work_dir, str) and work_dir.strip():
+            sanitized["work_dir"] = work_dir.strip()
+
+        if "has_visualization" in raw_result:
+            sanitized["has_visualization"] = bool(raw_result.get("has_visualization"))
+
+        for key in ("visualization_purpose", "visualization_analysis"):
+            value = raw_result.get(key)
+            if isinstance(value, str) and value.strip():
+                sanitized[key] = _trim_text(value, limit=500)
+
         return sanitized
 
     if isinstance(raw_result, dict):
@@ -356,6 +511,16 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                 sanitized["success"] = False
             else:
                 sanitized["success"] = True
+        for key in ("artifact_paths", "storage", "deliverables", "artifact_gallery"):
+            value = raw_result.get(key)
+            if value is None:
+                continue
+            if isinstance(value, dict):
+                sanitized[key] = dict(value)
+            elif isinstance(value, list):
+                sanitized[key] = list(value)
+            else:
+                sanitized[key] = value
         if tool_name == "graph_rag":
             if not sanitized.get("success"):
                 sanitized["empty_result"] = False
@@ -511,6 +676,10 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
 
     if tool_name == "terminal_session":
         op = str(result.get("operation") or "").strip().lower()
+        if not op and any(
+            key in result for key in ("bytes_sent", "status", "command_state", "verification_state")
+        ):
+            op = "write"
         if result.get("success") is False:
             err = result.get("error") or result.get("message") or "Execution failed"
             return f"terminal_session {op or 'operation'} failed: {err}"
@@ -579,10 +748,12 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             return f"{prefix} finished. Prompt summary: {snippet}"
         return f"{prefix} finished."
 
-    if tool_name == "claude_code":
+    if tool_name == "code_executor":
+        category = result.get("error_category") or ""
+        category_hint = f" [{category}]" if category else ""
         if result.get("success") is False:
             error = result.get("error") or "Code execution failed"
-            return f"Claude Code execution failed: {error}"
+            return f"code_executor failed{category_hint}: {error}"
 
         uploaded = result.get("uploaded_files") or []
         file_info = f" (with {len(uploaded)} file(s))" if uploaded else ""
@@ -590,9 +761,9 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
         stdout_text = result.get("stdout") or result.get("output") or ""
         if stdout_text.strip():
             snippet = stdout_text.strip()
-            return f"Claude Code execution{file_info} succeeded. Output: {snippet}"
+            return f"code_executor{file_info} succeeded. Output: {snippet}"
 
-        return f"Claude Code execution{file_info} succeeded."
+        return f"code_executor{file_info} succeeded."
 
     if tool_name == "deeppl":
         action = result.get("action") or "deeppl"
@@ -692,6 +863,29 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
         if isinstance(output_file, str) and output_file:
             parts.append(f"saved to {output_file}")
         return "; ".join(parts) + "."
+
+    if tool_name == "result_interpreter":
+        operation = str(result.get("operation") or "operation").strip() or "operation"
+        if result.get("success") is False:
+            error = (
+                result.get("execution_error")
+                or result.get("error")
+                or "Analysis failed"
+            )
+            return f"result_interpreter {operation} failed: {error}"
+
+        output_text = _extract_result_interpreter_output_text(
+            result.get("execution_output")
+        )
+        first_line = _first_meaningful_line(output_text or "")
+        if first_line:
+            return f"result_interpreter {operation} succeeded. Summary: {first_line}"
+
+        execution_status = str(result.get("execution_status") or "").strip()
+        if execution_status and execution_status.lower() != "success":
+            return f"result_interpreter {operation} finished with status={execution_status}."
+
+        return f"result_interpreter {operation} succeeded."
 
     return f"{tool_name} finished execution."
 
@@ -793,6 +987,37 @@ def append_recent_tool_result(
                     compressed_result[key] = val
                 elif isinstance(val, (int, float, bool)):
                     compressed_result[key] = val
+        for key in ("artifact_paths", "artifact_gallery"):
+            value = sanitized.get(key)
+            if isinstance(value, list) and value:
+                compressed_result[key] = value[:8]
+        storage_value = sanitized.get("storage")
+        if isinstance(storage_value, dict):
+            relative = (
+                dict(storage_value.get("relative"))
+                if isinstance(storage_value.get("relative"), dict)
+                else None
+            )
+            compressed_storage: Dict[str, Any] = {}
+            for key in ("preview_path", "result_path", "output_dir"):
+                value = storage_value.get(key)
+                if isinstance(value, str) and len(value) < 400:
+                    compressed_storage[key] = value
+            if relative:
+                compressed_storage["relative"] = relative
+            if compressed_storage:
+                compressed_result["storage"] = compressed_storage
+        deliverables_value = sanitized.get("deliverables")
+        if isinstance(deliverables_value, dict):
+            compressed_deliverables: Dict[str, Any] = {}
+            for key in ("manifest_path", "version_id", "published_files_count"):
+                value = deliverables_value.get(key)
+                if isinstance(value, str) and len(value) < 400:
+                    compressed_deliverables[key] = value
+                elif isinstance(value, (int, float, bool)):
+                    compressed_deliverables[key] = value
+            if compressed_deliverables:
+                compressed_result["deliverables"] = compressed_deliverables
         compression_level = "summary_only"
 
     entry = {

@@ -8,7 +8,7 @@ def _executor() -> PlanExecutor:
 def test_build_tool_failure_error_prefers_explicit_error() -> None:
     executor = _executor()
     message = executor._build_tool_failure_error(
-        "claude_code",
+        "code_executor",
         {"success": False, "error": "explicit failure"},
     )
     assert message == "explicit failure"
@@ -17,7 +17,7 @@ def test_build_tool_failure_error_prefers_explicit_error() -> None:
 def test_build_tool_failure_error_uses_exit_and_stream_context() -> None:
     executor = _executor()
     message = executor._build_tool_failure_error(
-        "claude_code",
+        "code_executor",
         {
             "success": False,
             "exit_code": 127,
@@ -26,7 +26,7 @@ def test_build_tool_failure_error_uses_exit_and_stream_context() -> None:
         },
     )
 
-    assert message.startswith("claude_code failed:")
+    assert message.startswith("code_executor failed:")
     assert "exit_code=127" in message
     assert "stderr=claude: command not found" in message
     assert "stdout=attempted fallback command" in message

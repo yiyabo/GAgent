@@ -14,6 +14,7 @@ from app.services.deliverables import (
 
 logger = logging.getLogger(__name__)
 _READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
+_MUTATING_FILE_OPERATIONS = {"write", "copy", "move", "delete"}
 
 
 @dataclass
@@ -34,7 +35,7 @@ class ToolExecutionContext:
 class UnifiedToolExecutor:
     DEFAULT_TIMEOUT_SECONDS = 60
     TOOL_TIMEOUTS = {
-        "claude_code": 1200,
+        "code_executor": 1200,
         "web_search": 180,
         "sequence_fetch": 120,
         "document_reader": 200,
@@ -203,7 +204,7 @@ class UnifiedToolExecutor:
     ) -> Dict[str, Any]:
         safe_params = dict(params or {})
 
-        if tool_name == "claude_code":
+        if tool_name == "code_executor":
             for key in (
                 "require_task_context",
                 "skip_permissions",
@@ -248,9 +249,13 @@ class UnifiedToolExecutor:
         capability_floor = str(context.capability_floor or "execute").strip().lower()
         if tool_name == "file_operations" and capability_floor in {"local_read", "local_inspect", "research"}:
             operation = str(safe_params.get("operation") or "").strip().lower()
-            if operation and operation not in _READ_ONLY_FILE_OPERATIONS:
+            if operation in _MUTATING_FILE_OPERATIONS:
                 raise ValueError(
                     f"file_operations {operation} requires execute capability; current capability_floor={capability_floor}"
+                )
+            if operation and operation not in _READ_ONLY_FILE_OPERATIONS:
+                raise ValueError(
+                    f"file_operations {operation} is not allowed under capability_floor={capability_floor}"
                 )
 
         return safe_params

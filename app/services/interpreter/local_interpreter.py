@@ -65,6 +65,14 @@ class LocalCodeInterpreter:
 
         logger.info(f"LocalCodeInterpreter initialized: work_dir={self.work_dir}, data_dir={self.data_dir}")
 
+    def _build_env(self) -> dict:
+        """Build subprocess environment with injected path variables."""
+        env = os.environ.copy()
+        env["DATA_DIR"] = self.data_dir or self.work_dir
+        env["WORKSPACE"] = self.work_dir
+        env["DATA"] = self.data_dir or self.work_dir
+        return env
+
     def run_python_code(self, code: str) -> CodeExecutionResult:
         """
         Execute Python code locally.
@@ -84,29 +92,11 @@ class LocalCodeInterpreter:
                 delete=False,
                 encoding='utf-8'
             ) as f:
-                preamble = f'''# Auto-injected path setup
-import os
-import sys
-
-os.chdir("{self.work_dir}")
-
-os.environ["DATA_DIR"] = "{self.data_dir or self.work_dir}"
-
-_DATA_PATH = "{self.data_dir or self.work_dir}"
-_WORKSPACE_PATH = "{self.work_dir}"
-
-os.environ["WORKSPACE"] = _WORKSPACE_PATH
-os.environ["DATA"] = _DATA_PATH
-
-'''
-                f.write(preamble)
+                f.write(self.build_preamble())
                 f.write(code)
                 script_path = f.name
 
-            env = os.environ.copy()
-            env["DATA_DIR"] = self.data_dir or self.work_dir
-            env["WORKSPACE"] = self.work_dir
-            env["DATA"] = self.data_dir or self.work_dir
+            env = self._build_env()
 
             logger.info(f"Executing local Python code (timeout={self.timeout}s, cwd={self.work_dir})")
 
@@ -159,3 +149,70 @@ os.environ["DATA"] = _DATA_PATH
                     os.unlink(script_path)
                 except Exception:
                     pass
+
+    def run_file(self, code_file: str) -> CodeExecutionResult:
+        """Execute a persistent .py file without deleting it afterward.
+
+        Unlike :meth:`run_python_code` this does **not** create a temporary
+        copy or inject a preamble — the caller is responsible for writing the
+        complete script (including any path-setup preamble) to *code_file*
+        before calling this method.
+
+        The file is preserved after execution so that callers can inspect the
+        latest code version for debugging or iterative fix-and-retry cycles.
+        """
+        env = self._build_env()
+
+        logger.info(
+            "Executing file %s (timeout=%ds, cwd=%s)",
+            code_file, self.timeout, self.work_dir,
+        )
+
+        try:
+            result = subprocess.run(
+                ["python", code_file],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                cwd=self.work_dir,
+                env=env,
+            )
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            if result.returncode == 0:
+                return CodeExecutionResult(
+                    status="success", output=stdout, error=stderr, exit_code=0,
+                )
+            return CodeExecutionResult(
+                status="failed", output=stdout, error=stderr,
+                exit_code=result.returncode,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("File execution timed out after %ds: %s", self.timeout, code_file)
+            return CodeExecutionResult(
+                status="timeout", output="",
+                error=f"Execution timed out after {self.timeout} seconds.",
+                exit_code=-1,
+            )
+        except Exception as e:
+            logger.exception("File execution error: %s", e)
+            return CodeExecutionResult(
+                status="error", output="", error=str(e), exit_code=-1,
+            )
+
+    def build_preamble(self) -> str:
+        """Return the path-setup preamble for scripts written to persistent files."""
+        return f'''# Auto-injected path setup
+import os
+
+os.chdir("{self.work_dir}")
+
+os.environ["DATA_DIR"] = "{self.data_dir or self.work_dir}"
+
+_DATA_PATH = "{self.data_dir or self.work_dir}"
+_WORKSPACE_PATH = "{self.work_dir}"
+
+os.environ["WORKSPACE"] = _WORKSPACE_PATH
+os.environ["DATA"] = _DATA_PATH
+
+'''

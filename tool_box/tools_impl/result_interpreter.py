@@ -119,11 +119,7 @@ async def result_interpreter_handler(
         Execution result dictionary.
     """
     # Lazy import to avoid circular dependency.
-    from app.services.interpreter import (
-        DataProcessor,
-        CodeGenerator,
-        LocalCodeInterpreter,
-    )
+    from app.services.interpreter import DataProcessor, CodeGenerator
 
     try:
         if operation == "metadata":
@@ -175,17 +171,16 @@ async def result_interpreter_handler(
             }
 
         elif operation == "execute":
-            # Execute code through Claude Code.
+            # Execute code through the scoped code executor.
             if not code:
                 return {"success": False, "error": "code is required for execute operation"}
 
-            from pathlib import Path
-            from tool_box.tools_impl.claude_code import claude_code_handler
+            from tool_box.tools_impl.code_executor import code_executor_handler
 
             exec_work_dir = work_dir or tempfile.mkdtemp(prefix="interpreter_")
             os.makedirs(exec_work_dir, exist_ok=True)
+            os.makedirs(os.path.join(exec_work_dir, "results"), exist_ok=True)
 
-            # Build task description.
             task = f"""Execute the following Python code:
 
 ```python
@@ -197,12 +192,11 @@ Working directory: {exec_work_dir}
             if data_dir:
                 task += f"\nData directory: {data_dir}"
 
-            # Run via Claude Code.
             add_dirs = exec_work_dir
             if data_dir:
                 add_dirs = f"{exec_work_dir},{data_dir}"
 
-            result = await claude_code_handler(
+            result = await code_executor_handler(
                 task=task,
                 add_dirs=add_dirs,
                 auth_mode="api_env",
@@ -210,17 +204,26 @@ Working directory: {exec_work_dir}
                 require_task_context=False,
             )
 
-            # Copy Claude Code outputs to work_dir.
             task_dir = result.get("task_directory_full", "")
             if task_dir and exec_work_dir:
                 src_results = Path(task_dir) / "results"
                 dst_results = Path(exec_work_dir) / "results"
                 if src_results.exists():
-                    dst_results.mkdir(parents=True, exist_ok=True)
-                    for f in src_results.iterdir():
-                        if f.is_file():
-                            shutil.copy2(f, dst_results / f.name)
-                    logger.info(f"Copied output files from {src_results} to {dst_results}")
+                    try:
+                        same_results_dir = src_results.resolve() == dst_results.resolve()
+                    except Exception:
+                        same_results_dir = False
+                    if same_results_dir:
+                        logger.info(
+                            "Skipping result copy because source and destination are identical: %s",
+                            src_results,
+                        )
+                    else:
+                        dst_results.mkdir(parents=True, exist_ok=True)
+                        for f in src_results.iterdir():
+                            if f.is_file():
+                                shutil.copy2(f, dst_results / f.name)
+                        logger.info(f"Copied output files from {src_results} to {dst_results}")
 
             return {
                 "success": result.get("success", False),

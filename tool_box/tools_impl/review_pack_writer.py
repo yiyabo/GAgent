@@ -10,7 +10,7 @@ Pipeline (deterministic orchestration, keeps individual tools usable):
 Outputs are written under the chosen out_dir (project-relative preferred).
 
 Notes:
-- This tool does NOT rely on claude_code.
+- This tool does NOT rely on code_executor.
 - It reuses the existing tool implementations directly.
 """
 

@@ -39,6 +39,10 @@ from app.services.response_style import (
 from tool_box import execute_tool
 
 from .models import ActionStatusResponse
+from .artifact_gallery import (
+    extract_artifact_gallery_from_result,
+    merge_artifact_gallery,
+)
 from .services import (
     get_structured_chat_agent_cls,
     plan_decomposer_service,
@@ -80,7 +84,7 @@ _AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
     "web_search",
     "graph_rag",
     "sequence_fetch",
-    "claude_code",
+    "code_executor",
     "file_operations",
     "document_reader",
     "vision_reader",
@@ -272,6 +276,30 @@ def _build_lifecycle_consensus_from_tool_results(
             else "DeepPL and PhageScope lifecycle labels disagree; review integrase/repressor evidence."
         ),
     }
+
+
+def _build_artifact_gallery_from_tool_results(
+    tool_results_payload: List[Dict[str, Any]],
+    *,
+    session_id: Optional[str],
+    tracking_id: Optional[str],
+) -> List[Dict[str, Any]]:
+    gallery: List[Dict[str, Any]] = []
+    for item in tool_results_payload or []:
+        if not isinstance(item, dict):
+            continue
+        result_payload = item.get("result")
+        if not isinstance(result_payload, dict):
+            continue
+        extracted = extract_artifact_gallery_from_result(
+            result_payload,
+            session_id=session_id,
+            source_tool=item.get("name") or item.get("tool"),
+            tracking_id=tracking_id,
+        )
+        if extracted:
+            gallery = merge_artifact_gallery(gallery, extracted)
+    return gallery
 
 
 def _extract_blocking_failures(steps: List[Any]) -> List[Dict[str, Any]]:
@@ -1428,6 +1456,7 @@ async def _execute_action_run(run_id: str) -> None:
         result_dict["success"] = effective_success
         result_dict["errors"] = effective_errors
         tool_results_payload: List[Dict[str, Any]] = []
+        artifact_gallery_payload: List[Dict[str, Any]] = []
 
         # Diagnostic logging: record all steps.
         logger.info(
@@ -1494,6 +1523,13 @@ async def _execute_action_run(run_id: str) -> None:
 
         if tool_results_payload:
             result_dict["tool_results"] = tool_results_payload
+            artifact_gallery_payload = _build_artifact_gallery_from_tool_results(
+                tool_results_payload,
+                session_id=record.get("session_id"),
+                tracking_id=run_id,
+            )
+            if artifact_gallery_payload:
+                result_dict["artifact_gallery"] = artifact_gallery_payload
             logger.info(
                 "[CHAT][TOOL_RESULTS] session=%s tracking=%s collected %d tool results",
                 record.get("session_id"),
@@ -1610,6 +1646,7 @@ async def _execute_action_run(run_id: str) -> None:
                 actions=[step.action_payload for step in result.steps],
                 actions_summary=result.actions_summary,
                 tool_results=tool_results_payload,
+                artifact_gallery=artifact_gallery_payload,
                 errors=effective_errors,
                 job_id=job.job_id,
                 job_payload=job_snapshot,
@@ -1752,6 +1789,9 @@ async def get_action_status(tracking_id: str, request: Request):
     metadata = {}
     if tool_results:
         metadata["tool_results"] = tool_results
+    artifact_gallery = result_data.get("artifact_gallery")
+    if isinstance(artifact_gallery, list) and artifact_gallery:
+        metadata["artifact_gallery"] = artifact_gallery
     if final_summary:
         metadata["final_summary"] = final_summary
     if isinstance(result_data.get("lifecycle_consensus"), dict):

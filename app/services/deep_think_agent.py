@@ -257,7 +257,7 @@ def summarize_tool_step_display(step: ThinkingStep, *, language: str) -> str:
         if operation == "list":
             return _localized_text(language, "查看目录内容", "Inspecting directory contents")
         return _localized_text(language, "处理文件内容", "Working with files")
-    if tool_name == "claude_code":
+    if tool_name == "code_executor":
         return _localized_text(language, "执行代码与分析", "Executing code and analysis")
     if tool_name in {"bio_tools", "phagescope", "deeppl", "sequence_fetch"}:
         return _localized_text(language, "运行分析工具", "Running analysis tools")
@@ -457,6 +457,19 @@ class DeepThinkAgent:
     def _is_research_or_execute(self) -> bool:
         return self._request_tier() in {"research", "execute"}
 
+    def _is_brief_execute_followup(self) -> bool:
+        tier = self._request_tier()
+        intent_type = str(self.request_profile.get("intent_type") or "").strip().lower()
+        brevity_hint = bool(self.request_profile.get("brevity_hint"))
+        if tier != "execute" or not brevity_hint:
+            return False
+        return intent_type in {
+            "execute_task",
+            "local_mutation",
+            "local_read",
+            "local_inspect",
+        }
+
     def _is_valid_final_answer(self, text: str, *, user_query: str) -> bool:
         cleaned = sanitize_professional_response_text(str(text or "").strip())
         if len(cleaned) < 4:
@@ -643,69 +656,51 @@ class DeepThinkAgent:
                 "- Keep research focused on the exact user question; avoid unrelated survey padding.\n"
             )
         if tier == "execute":
+            execute_focus_note = ""
+            if self._is_brief_execute_followup():
+                execute_focus_note = (
+                    "- This is a short execution follow-up: focus the final answer on the current task outcome.\n"
+                    "- Do not recap prior project milestones, older test rounds, or historical status tables unless the user explicitly asks.\n"
+                    "- Do not append next-step menus or optional directions unless the user asks what to do next.\n"
+                    "- If continuation context already identifies the target file, path, task, or blocker, continue from that anchor instead of restarting broad workspace discovery.\n"
+                )
             return (
                 "=== REQUEST TIER: EXECUTE ===\n"
                 "- Prioritize finishing the requested task over broad background research.\n"
                 "- Use file/code/task tools as needed.\n"
                 "- Keep the tone professional and execution-focused; avoid decorative emojis or cheerleading.\n"
                 "- Use web_search only to fill a concrete factual gap that blocks execution quality.\n"
+                + execute_focus_note
             )
         return ""
 
     def _build_capability_floor_block(self) -> str:
         capability_floor = self._capability_floor() or "plain_chat"
         intent_type = str(self.request_profile.get("intent_type") or "").strip().lower()
-        simple_channel_allowed = bool(self.request_profile.get("simple_channel_allowed", True))
         lines = [
-            "=== CAPABILITY FLOOR ===",
-            f"- Minimum capability required for this request: {capability_floor}.",
-            (
-                "- Plain-text chat is allowed only when capability_floor=plain_chat "
-                "and no verification is required."
-            ),
+            "=== TOOL ACCESS ===",
+            "- You have access to ALL registered tools. Choose the right tool based on user intent.",
+            "- For simple chat questions, you may answer directly without tools.",
+            "- For questions involving data, files, remote services, or verifiable facts, use tools to obtain ground truth — never fabricate results.",
+            "- If a tool call fails, report the failure honestly; do not invent tool-like certainty.",
         ]
-        if not simple_channel_allowed:
-            lines.append("- Simple/plain-chat fallback is disabled for this request.")
-        if capability_floor in {"local_read", "local_inspect"}:
-            lines.append(
-                "- This request requires grounded local inspection: use file_operations/document_reader/vision_reader as appropriate before summarizing contents."
-            )
-            lines.append(
-                "- If tool evidence fails, say so explicitly and do not claim the file or directory was read."
-            )
         if intent_type == "local_mutation":
             lines.append(
-                "- This request is a local filesystem mutation. If execution tools are available, do the change instead of telling the user to run commands manually."
+                "- This request is a local filesystem mutation. Do the change directly instead of telling the user to run commands manually."
             )
             lines.append(
-                "- Prefer terminal_session for unzip/extract/move/rename/delete style operations; do not invent a file_operations unzip API."
-            )
-            lines.append(
-                "- Use quoted absolute paths inside terminal_session.write data when possible, and prefer running within the active subject directory."
-            )
-        elif capability_floor == "research":
-            lines.append(
-                "- Use web_search, bio_tools, phagescope, sequence_fetch, or other listed tools when claims need verification; do not skip tools purely to save steps."
-            )
-        elif capability_floor == "execute":
-            lines.append(
-                "- Use execution, terminal, code, or plan tools when they materially advance the task; prefer real commands over hand-wavy instructions."
+                "- Prefer terminal_session for unzip/extract/move/rename/delete style operations."
             )
         return "\n".join(lines) + "\n"
 
     def _build_grounded_tooling_block(self) -> str:
-        """Extra nudge when capability_floor is not plain_chat (tools are in play)."""
-        floor = (self._capability_floor() or "plain_chat").strip().lower()
-        if floor == "plain_chat":
-            return ""
+        """Nudge the agent to use tools for verification when facts are checkable."""
         return (
-            "=== GROUNDED TOOLING (NON-PLAIN REQUEST) ===\n"
-            "- This turn is not plain_chat: listed tools are available for verification.\n"
+            "=== GROUNDED TOOLING ===\n"
             "- If the answer depends on local files, workspace contents, remote task/API state, sequences, or "
             "other checkable facts, use the appropriate tool(s) before stating specifics.\n"
-            "- Do not substitute confident-sounding prose for evidence when a listed tool can obtain the "
-            "ground truth within reasonable latency.\n"
-            "- If a tool fails or is not in the allowlist, say so plainly; do not invent tool-like certainty.\n\n"
+            "- Do not substitute confident-sounding prose for evidence when a tool can obtain the "
+            "ground truth within reasonable latency.\n\n"
         )
 
     def _build_shared_strategy_block(self) -> str:
@@ -724,12 +719,12 @@ class DeepThinkAgent:
             "- Prefer clear headings and plain wording over expressive decoration.\n\n"
             "=== TOOL PRIORITY ===\n"
             "- For accession-based FASTA downloads, call sequence_fetch first.\n"
-            "- For FASTA/FASTQ/sequence work, ALWAYS try bio_tools first before claude_code.\n"
+            "- For FASTA/FASTQ/sequence work, ALWAYS try bio_tools first before code_executor.\n"
             "- If the user provides inline sequence text (not a file), pass it as bio_tools(sequence_text=...).\n"
             "- If bio_tools routing is uncertain, call bio_tools(operation='help') first; use web_search only when help is insufficient.\n"
-            "- For complex custom analysis not covered by bio_tools, then use claude_code.\n"
-            "- Never use claude_code as fallback for sequence_fetch failures.\n"
-            "- Never use claude_code as fallback for bio_tools input-conversion/parsing failures.\n"
+            "- For complex custom analysis not covered by bio_tools, then use code_executor.\n"
+            "- Never use code_executor as fallback for sequence_fetch failures.\n"
+            "- Never use code_executor as fallback for bio_tools input-conversion/parsing failures.\n"
             "- For status polling tools, if state is unchanged across several checks, stop active polling and summarize current status.\n"
             "- For plan creation, research first only when current external best practices or factual verification are important; otherwise draft from existing context and fill gaps with targeted research.\n"
             "- For web_search: cite verifiable sources. When stating time-sensitive or factual claims, include URLs from the tool JSON "
@@ -754,12 +749,29 @@ class DeepThinkAgent:
         )
 
     @staticmethod
+    def _is_brief_execute_followup_context(context: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(context, dict):
+            return False
+        tier = str(context.get("request_tier") or "").strip().lower()
+        intent_type = str(context.get("intent_type") or "").strip().lower()
+        brevity_hint = bool(context.get("brevity_hint"))
+        if tier != "execute" or not brevity_hint:
+            return False
+        return intent_type in {
+            "execute_task",
+            "local_mutation",
+            "local_read",
+            "local_inspect",
+        }
+
+    @staticmethod
     def _append_recent_chat_history(prompt: str, context: Optional[Dict[str, Any]]) -> str:
         if not context:
             return prompt
         history = context.get("chat_history", [])
         if not history:
             return prompt
+        brief_execute_followup = DeepThinkAgent._is_brief_execute_followup_context(context)
         raw_lim = context.get("chat_history_max_messages")
         if isinstance(raw_lim, int) and raw_lim > 0:
             limit = min(raw_lim, CHAT_HISTORY_ABS_MAX)
@@ -774,15 +786,26 @@ class DeepThinkAgent:
                 )
             except Exception:
                 limit = 80
+        if brief_execute_followup:
+            limit = min(limit, 6)
+            filtered_history = []
+            for msg in history:
+                content = str(msg.get("content") or "").strip()
+                if not content:
+                    continue
+                filtered_history.append(msg)
+            history = filtered_history
         recent = history[-limit:] if len(history) > limit else history
         lines = []
         for msg in recent:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
-            if len(content) > 500:
-                content = content[:500] + "..."
+            clip_limit = 240 if brief_execute_followup else 500
+            if len(content) > clip_limit:
+                content = content[:clip_limit] + "..."
             lines.append(f"[{role}]: {content}")
-        return prompt + "\n=== RECENT CONVERSATION ===\n" + "\n".join(lines)
+        header = "=== RECENT CONTINUATION CONTEXT ===" if brief_execute_followup else "=== RECENT CONVERSATION ==="
+        return prompt + f"\n{header}\n" + "\n".join(lines)
 
     @staticmethod
     def _clip_reference_text(value: Any, *, limit: int = 800) -> str:
@@ -801,16 +824,90 @@ class DeepThinkAgent:
             return prompt
 
         blocks: List[str] = []
+        brief_execute_followup = cls._is_brief_execute_followup_context(context)
 
         user_message = context.get("user_message")
         if isinstance(user_message, str) and user_message.strip():
             blocks.append("=== ORIGINAL USER REQUEST ===")
             blocks.append(cls._clip_reference_text(user_message, limit=1200))
 
+        if brief_execute_followup:
+            blocks.append("=== RESPONSE FOCUS ===")
+            blocks.append("- Focus on the current execution result or current task outcome.")
+            blocks.append("- Do not recap prior project milestones, older runs, or historical progress tables.")
+            blocks.append("- Do not append next-step suggestions unless the user explicitly asks for them.")
+            blocks.append("- If a continuation summary already names the target file, path, task, or prior blocker, continue from that anchor instead of restarting workspace discovery.")
+
+        continuation_summary = context.get("continuation_summary")
+        if brief_execute_followup and isinstance(continuation_summary, dict):
+            continuation_lines: List[str] = []
+            previous_user_request = cls._clip_reference_text(
+                continuation_summary.get("previous_user_request"),
+                limit=240,
+            )
+            if previous_user_request:
+                continuation_lines.append(f"- Previous user request: {previous_user_request}")
+            previous_assistant_summary = cls._clip_reference_text(
+                continuation_summary.get("previous_assistant_summary"),
+                limit=280,
+            )
+            if previous_assistant_summary:
+                continuation_lines.append(f"- Previous assistant summary: {previous_assistant_summary}")
+            active_subject = cls._clip_reference_text(
+                continuation_summary.get("active_subject"),
+                limit=240,
+            )
+            if active_subject:
+                continuation_lines.append(f"- Active subject: {active_subject}")
+            known_paths = continuation_summary.get("known_paths")
+            if isinstance(known_paths, list):
+                for path in known_paths[:4]:
+                    path_text = cls._clip_reference_text(path, limit=240)
+                    if path_text:
+                        continuation_lines.append(f"- Known path anchor: {path_text}")
+            known_filenames = continuation_summary.get("known_filenames")
+            if isinstance(known_filenames, list):
+                filename_texts = [
+                    cls._clip_reference_text(name, limit=120)
+                    for name in known_filenames[:4]
+                    if cls._clip_reference_text(name, limit=120)
+                ]
+                if filename_texts:
+                    continuation_lines.append(
+                        f"- Known filename anchors: {', '.join(filename_texts)}"
+                    )
+            latest_tool_result = cls._clip_reference_text(
+                continuation_summary.get("latest_tool_result"),
+                limit=260,
+            )
+            if latest_tool_result:
+                continuation_lines.append(f"- Latest tool result: {latest_tool_result}")
+            recent_image_artifacts = continuation_summary.get("recent_image_artifacts")
+            if isinstance(recent_image_artifacts, list):
+                image_texts = [
+                    cls._clip_reference_text(item, limit=160)
+                    for item in recent_image_artifacts[:4]
+                    if cls._clip_reference_text(item, limit=160)
+                ]
+                if image_texts:
+                    continuation_lines.append(
+                        f"- Recent image artifacts: {', '.join(image_texts)}"
+                    )
+            last_failure = cls._clip_reference_text(
+                continuation_summary.get("last_failure"),
+                limit=240,
+            )
+            if last_failure:
+                continuation_lines.append(f"- Last known blocker: {last_failure}")
+            if continuation_lines:
+                blocks.append("=== EXECUTION CONTINUATION SUMMARY ===")
+                blocks.extend(continuation_lines)
+
         tool_results = context.get("recent_tool_results", [])
         if isinstance(tool_results, list) and tool_results:
             blocks.append("=== RECENT TOOL RESULTS ===")
-            for item in tool_results[-3:]:
+            recent_items = tool_results[-1:] if brief_execute_followup else tool_results[-3:]
+            for item in recent_items:
                 if not isinstance(item, dict):
                     continue
                 tool_name = str(item.get("tool") or item.get("name") or "unknown").strip()
@@ -832,10 +929,9 @@ class DeepThinkAgent:
                 for path in normalized_paths[:10]:
                     blocks.append(f"- {path}")
 
-        prompt = cls._append_recent_chat_history(prompt, context)
-        if not blocks:
-            return prompt
-        return prompt + "\n" + "\n".join(blocks)
+        if blocks:
+            prompt = prompt + "\n" + "\n".join(blocks)
+        return cls._append_recent_chat_history(prompt, context)
 
     async def think(
         self,
@@ -1797,6 +1893,20 @@ Respond with ONLY a JSON object:
 
     def _extract_artifact_paths(self, tool_name: str, result: Any) -> List[str]:
         """Extract file paths from tool results that look like produced artifacts."""
+        if tool_name == "terminal_session":
+            if not isinstance(result, dict):
+                return []
+            verification_state = str(result.get("verification_state") or "").strip().lower()
+            if verification_state != "verified_success":
+                return []
+            explicit_paths = result.get("artifact_paths")
+            if isinstance(explicit_paths, list):
+                cleaned: List[str] = []
+                for item in explicit_paths:
+                    if isinstance(item, str) and item.strip() and not self._is_internal_artifact_path(item):
+                        cleaned.append(item.strip())
+                return list(dict.fromkeys(cleaned))
+            return []
         text = str(result) if result is not None else ""
         if not text:
             return []
@@ -1833,6 +1943,7 @@ Respond with ONLY a JSON object:
                 self.on_artifact,
                 {
                     "path": path,
+                    "display_name": path.rsplit("/", 1)[-1] if "/" in path else path,
                     "extension": ext,
                     "source_tool": tool_name,
                     "iteration": iteration,
@@ -2326,16 +2437,16 @@ Respond with ONLY a JSON object:
                 "Params: {\"accession\": \"NC_001416.1\"} or "
                 "{\"accessions\": [\"NC_001416.1\", \"NC_001417.1\"], "
                 "\"database\": \"nuccore|protein\", \"format\": \"fasta\"}. "
-                "Do not use claude_code as fallback when sequence_fetch fails."
+                "Do not use code_executor as fallback when sequence_fetch fails."
             ),
-            "claude_code": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. Params: {\"task\": \"description\"}",
+            "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. Params: {\"task\": \"description\"}",
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. For broad comparisons, prefer focused parallel subqueries with Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\"]}.",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
             "document_reader": (
                 "Read local documents (.docx, .pdf, .txt, .md). For .csv/.tsv, this tool "
                 "returns a built-in preview (headers + sample rows) — use it for quick inspection; "
-                "for aggregation, row counts on huge files, or plots use claude_code. "
+                "for aggregation, row counts on huge files, or plots use code_executor. "
                 "Params: {\"operation\": \"read_any|read_pdf|read_text\", \"file_path\": \"/abs/path\"}"
             ),
             "vision_reader": "Read PDFs and images using vision model. Use for visual OCR/figures/equations, not for DOCX. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\"}",
@@ -2451,8 +2562,8 @@ IMPORTANT: data must end with \\n to execute the command.""",
                 "\"context_paths\": [\"/path/to/refs.bib\", \"/path/to/data.csv\"], "
                 "\"analysis_path\": \"/path/to/analysis_results\"}. "
                 "IMPORTANT: For ANY paper/manuscript writing task (sections, drafts, revisions, assembly), "
-                "ALWAYS use manuscript_writer instead of claude_code. "
-                "claude_code should NEVER be used to write paper content directly."
+                "ALWAYS use manuscript_writer instead of code_executor. "
+                "code_executor should NEVER be used to write paper content directly."
             ),
             "literature_pipeline": (
                 "Collect a literature evidence pack from PubMed/PMC. "
@@ -2557,7 +2668,7 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 1. Call bio_tools(..., operation="help") and inspect required parameters.
 2. Retry bio_tools with corrected parameters and verified absolute paths.
 3. If still failing, run targeted web_search for operation/parameter mapping.
-4. If still failing for reasons other than input parsing/conversion, use claude_code for minimal shell-level diagnostics.
+4. If still failing for reasons other than input parsing/conversion, use code_executor for minimal shell-level diagnostics.
 Try at least 3 different recovery attempts before reporting failure.
 
 === PLAN CREATION RULE ===
@@ -3036,6 +3147,13 @@ When ready to answer:
                 + "\n"
             )
 
+        focus_instruction = ""
+        if self._is_brief_execute_followup():
+            focus_instruction = (
+                "7) This is a short execution follow-up. Focus on the current task outcome and latest successful tool result.\n"
+                "8) Do NOT recap prior project milestones, historical progress tables, or next-step menus unless the user explicitly asked for them.\n"
+            )
+
         prompt = (
             f"User question:\n{uq[:2000]}\n\n"
             f"Below are excerpts from tool outputs collected during {n} reasoning step(s). "
@@ -3050,6 +3168,7 @@ When ready to answer:
             "4) Use clear structure (headings, bullet points) for readability.\n"
             "5) Do NOT say 'I could not find an answer' if there is ANY useful information — present what was found.\n"
             "6) Do not invent dates or claims absent from the excerpts.\n"
+            f"{focus_instruction}"
             f"{PROFESSIONAL_STYLE_INSTRUCTION}"
         )
 
@@ -3128,6 +3247,11 @@ When ready to answer:
                     "- 不要引导用户去查看、粘贴 `.env` 来「验证 PhageScope」；除非用户明确问本地部署密钥。"
                     "连通性应以 `phagescope` 工具（如 ping）为准；勿臆造 `PHAGESCOPE_API_TOKEN` 等变量名。"
                 )
+                if self._is_brief_execute_followup():
+                    instruction += (
+                        "\n- 这是一次简短的执行跟进。优先汇报当前任务结果或最新工具结果。"
+                        "\n- 不要回顾先前项目里程碑、旧测试轮次、阶段性总结或“下一步建议”，除非用户明确要求。"
+                    )
             else:
                 instruction = (
                     "You are a Deep Thinking AI assistant. The user asked a question and the system "
@@ -3150,6 +3274,11 @@ When ready to answer:
                     "ask about local secrets; use phagescope tool (e.g. ping). This codebase only documents optional env "
                     "`PHAGESCOPE_BASE_URL` and `PHAGESCOPE_SSL_VERIFY`, not a `PHAGESCOPE_API_TOKEN` variable."
                 )
+                if self._is_brief_execute_followup():
+                    instruction += (
+                        "\n- This is a short execution follow-up. Prioritize the current task outcome or latest tool result."
+                        "\n- Do not recap prior project milestones, older test rounds, progress summaries, or next-step menus unless the user explicitly asked."
+                    )
 
             prompt = (
                 f"{instruction}\n\n"

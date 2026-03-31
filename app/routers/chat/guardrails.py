@@ -198,6 +198,12 @@ def reply_promises_execution(reply_text: str) -> bool:
         "starting now",
         "immediately",
         "next",
+        "我现在开始",
+        "我这就开始",
+        "我开始",
+        "马上开始",
+        "稍等我去跑一下",
+        "正在生成",
     )
     action_tokens = (
         "run",
@@ -205,6 +211,12 @@ def reply_promises_execution(reply_text: str) -> bool:
         "start",
         "draft",
         "write",
+        "执行",
+        "处理",
+        "生成",
+        "跑",
+        "运行",
+        "开始",
     )
     return any(token in lowered for token in promise_tokens) and any(
         token in lowered for token in action_tokens
@@ -317,12 +329,12 @@ def should_force_plan_first(
     long_request = len(text) >= 80
 
     actions = list(tool_actions or [])
-    has_claude_action = any(action.name == "claude_code" for action in actions)
+    has_claude_action = any(action.name == "code_executor" for action in actions)
     has_heavy_tool_mix = len(actions) >= 2
 
     claude_task_texts: List[str] = []
     for action in actions:
-        if action.name != "claude_code":
+        if action.name != "code_executor":
             continue
         params = action.parameters or {}
         task_text = str(params.get("task") or "").strip().lower()

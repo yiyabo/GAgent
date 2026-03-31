@@ -10,7 +10,7 @@ from .file_operations import file_operations_tool
 from .internal_api import internal_api_tool
 from .graph_rag import graph_rag_tool
 from .web_search import web_search_tool
-from .claude_code import claude_code_tool
+from .code_executor import code_executor_tool
 from .document_reader import document_reader_tool
 from .vision_reader import vision_reader_tool
 from .paper_replication import paper_replication_tool
@@ -31,7 +31,7 @@ __all__ = [
     "database_query_tool",
     "internal_api_tool",
     "graph_rag_tool",
-    "claude_code_tool",
+    "code_executor_tool",
     "document_reader_tool",
     "vision_reader_tool",
     "paper_replication_tool",
