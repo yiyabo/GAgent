@@ -170,6 +170,48 @@ def test_bound_plan_request_with_explicit_new_language_creates_new_plan() -> Non
     assert decision.plan_request_mode == "create_new"
 
 
+def test_bound_plan_review_request_requires_review_operation() -> None:
+    decision = resolve_request_routing(
+        message="/think 你审核一下这个任务看看如何",
+        plan_id=67,
+        current_task_id=2,
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.capability_floor == "execute"
+    assert decision.requires_structured_plan is True
+    assert decision.plan_request_mode == "update_bound"
+    assert decision.requires_plan_review is True
+    assert decision.requires_plan_optimize is False
+    assert "intent_plan_review_request" in decision.route_reason_codes
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert profile.requires_plan_review is True
+    assert profile.requires_plan_optimize is False
+    assert "plan_operation" in profile.available_tools
+
+
+def test_bound_plan_review_and_optimize_request_requires_both_operations() -> None:
+    decision = resolve_request_routing(
+        message="/think 你先审核一下这个计划，然后帮我优化一下",
+        plan_id=67,
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.capability_floor == "execute"
+    assert decision.requires_structured_plan is True
+    assert decision.plan_request_mode == "update_bound"
+    assert decision.requires_plan_review is True
+    assert decision.requires_plan_optimize is True
+    assert "intent_plan_review_request" in decision.route_reason_codes
+    assert "intent_plan_optimize_request" in decision.route_reason_codes
+
+
 def test_english_followup_another_one_does_not_trigger_plan_mode() -> None:
     decision = resolve_request_routing(message="show me another one")
 

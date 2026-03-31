@@ -263,6 +263,94 @@ _PLAN_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
+_PLAN_REVIEW_PHRASES = (
+    "review this plan",
+    "review the plan",
+    "audit this plan",
+    "audit the plan",
+    "evaluate this plan",
+    "evaluate the plan",
+    "score this plan",
+    "score the plan",
+    "review this task",
+    "audit this task",
+    "evaluate this task",
+    "score this task",
+    "plan rubric",
+    "rubric score",
+    "review这个计划",
+    "review这个任务",
+    "review一下这个计划",
+    "review一下这个任务",
+    "审核这个计划",
+    "审核这个任务",
+    "审核一下这个计划",
+    "审核一下这个任务",
+    "评估这个计划",
+    "评估这个任务",
+    "评估一下这个计划",
+    "评估一下这个任务",
+    "给这个计划打分",
+    "给这个任务打分",
+    "给这个计划评分",
+    "给这个任务评分",
+    "rubric",
+)
+
+_PLAN_REVIEW_MARKERS = (
+    "review",
+    "audit",
+    "evaluate",
+    "score",
+    "rubric",
+    "审核",
+    "评估",
+    "评分",
+    "打分",
+)
+
+_PLAN_OPTIMIZE_PHRASES = (
+    "optimize this plan",
+    "optimize the plan",
+    "improve this plan",
+    "improve the plan",
+    "refine this plan",
+    "refine the plan",
+    "优化这个计划",
+    "优化这个任务",
+    "优化一下这个计划",
+    "优化一下这个任务",
+    "改进这个计划",
+    "改进这个任务",
+    "完善这个计划",
+    "完善这个任务",
+    "优化plan",
+    "优化一下plan",
+)
+
+_PLAN_OPTIMIZE_MARKERS = (
+    "optimize",
+    "optimise",
+    "improve",
+    "refine",
+    "优化",
+    "改进",
+    "完善",
+)
+
+_PLAN_TARGET_MARKERS = (
+    "plan",
+    "计划",
+    "task",
+    "任务",
+    "当前计划",
+    "当前任务",
+    "这个计划",
+    "这个任务",
+    "该计划",
+    "该任务",
+)
+
 # NOTE: All phrases MUST be lowercase — used with _contains_any_lowered().
 _PLAN_NEW_REQUEST_PHRASES = (
     "new plan",
@@ -703,6 +791,8 @@ class RequestRoutingDecision:
     brevity_hint: bool
     requires_structured_plan: bool = False
     plan_request_mode: Optional[PlanRequestMode] = None
+    requires_plan_review: bool = False
+    requires_plan_optimize: bool = False
 
     @property
     def use_deep_think(self) -> bool:
@@ -721,6 +811,8 @@ class RequestRoutingDecision:
             "brevity_hint": self.brevity_hint,
             "requires_structured_plan": self.requires_structured_plan,
             "plan_request_mode": self.plan_request_mode,
+            "requires_plan_review": self.requires_plan_review,
+            "requires_plan_optimize": self.requires_plan_optimize,
         }
         if self.thinking_visibility == "progress":
             payload["progress_mode"] = "compact"
@@ -739,6 +831,8 @@ class RequestTierProfile:
     simple_channel_allowed: bool
     requires_structured_plan: bool = False
     plan_request_mode: Optional[PlanRequestMode] = None
+    requires_plan_review: bool = False
+    requires_plan_optimize: bool = False
 
     def prompt_metadata(self) -> Dict[str, Any]:
         return {
@@ -752,6 +846,8 @@ class RequestTierProfile:
             "simple_channel_allowed": self.simple_channel_allowed,
             "requires_structured_plan": self.requires_structured_plan,
             "plan_request_mode": self.plan_request_mode,
+            "requires_plan_review": self.requires_plan_review,
+            "requires_plan_optimize": self.requires_plan_optimize,
         }
 
 
@@ -820,11 +916,25 @@ def resolve_request_routing(
     )
     simple_channel_allowed = (not manual) and capability_floor == "plain_chat"
     context_plan_id = (context or {}).get("plan_id")
+    context_task_id = (context or {}).get("current_task_id")
     effective_plan_bound = plan_id is not None or context_plan_id is not None
+    effective_task_bound = current_task_id is not None or context_task_id is not None
+    requires_plan_review = _has_explicit_plan_review_request(
+        effective_user_message,
+        plan_bound=effective_plan_bound,
+        task_bound=effective_task_bound,
+    )
+    requires_plan_optimize = _has_explicit_plan_optimize_request(
+        effective_user_message,
+        plan_bound=effective_plan_bound,
+        task_bound=effective_task_bound,
+    )
     plan_request_mode = _resolve_plan_request_mode(
         effective_user_message,
         plan_bound=effective_plan_bound,
     )
+    if plan_request_mode is None and effective_plan_bound and (requires_plan_review or requires_plan_optimize):
+        plan_request_mode = "update_bound"
     requires_structured_plan = plan_request_mode is not None
 
     if manual:
@@ -845,6 +955,8 @@ def resolve_request_routing(
             brevity_hint=brevity_hint,
             requires_structured_plan=requires_structured_plan,
             plan_request_mode=plan_request_mode,
+            requires_plan_review=requires_plan_review,
+            requires_plan_optimize=requires_plan_optimize,
         )
     if simple_channel_allowed:
         return RequestRoutingDecision(
@@ -861,6 +973,8 @@ def resolve_request_routing(
             brevity_hint=brevity_hint,
             requires_structured_plan=requires_structured_plan,
             plan_request_mode=plan_request_mode,
+            requires_plan_review=requires_plan_review,
+            requires_plan_optimize=requires_plan_optimize,
         )
     return RequestRoutingDecision(
         request_tier=request_tier,
@@ -876,6 +990,8 @@ def resolve_request_routing(
         brevity_hint=brevity_hint,
         requires_structured_plan=requires_structured_plan,
         plan_request_mode=plan_request_mode,
+        requires_plan_review=requires_plan_review,
+        requires_plan_optimize=requires_plan_optimize,
     )
 
 
@@ -1156,6 +1272,8 @@ def build_request_tier_profile(
         simple_channel_allowed=decision.simple_channel_allowed,
         requires_structured_plan=decision.requires_structured_plan,
         plan_request_mode=decision.plan_request_mode,
+        requires_plan_review=decision.requires_plan_review,
+        requires_plan_optimize=decision.requires_plan_optimize,
     )
     if decision.request_tier == "light":
         return RequestTierProfile(
@@ -1242,6 +1360,38 @@ def _resolve_plan_request_mode(
     if plan_bound:
         return "update_bound"
     return "create"
+
+
+def _has_explicit_plan_review_request(
+    text: str,
+    *,
+    plan_bound: bool,
+    task_bound: bool,
+) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered or not (plan_bound or task_bound):
+        return False
+    if _contains_any_lowered(lowered, _PLAN_REVIEW_PHRASES):
+        return True
+    if not _contains_any(lowered, _PLAN_REVIEW_MARKERS):
+        return False
+    return _contains_any(lowered, _PLAN_TARGET_MARKERS)
+
+
+def _has_explicit_plan_optimize_request(
+    text: str,
+    *,
+    plan_bound: bool,
+    task_bound: bool,
+) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered or not (plan_bound or task_bound):
+        return False
+    if _contains_any_lowered(lowered, _PLAN_OPTIMIZE_PHRASES):
+        return True
+    if not _contains_any(lowered, _PLAN_OPTIMIZE_MARKERS):
+        return False
+    return _contains_any(lowered, _PLAN_TARGET_MARKERS)
 
 
 def _has_recent_image_artifacts(context: Optional[Mapping[str, Any]]) -> bool:
@@ -1430,6 +1580,16 @@ def resolve_intent_type(
     mutation_context_ok = has_subject_context or has_local_subject_continuity
     task_bound = current_task_id is not None or context_dict.get("current_task_id") is not None
     plan_bound = plan_id is not None or context_dict.get("plan_id") is not None
+    has_plan_review_request = _has_explicit_plan_review_request(
+        text,
+        plan_bound=plan_bound,
+        task_bound=task_bound,
+    )
+    has_plan_optimize_request = _has_explicit_plan_optimize_request(
+        text,
+        plan_bound=plan_bound,
+        task_bound=task_bound,
+    )
     has_followthrough_cue = _contains_any(lowered, _FOLLOWTHROUGH_PHRASES)
     explicit_path = _extract_explicit_path(text)
 
@@ -1463,6 +1623,13 @@ def resolve_intent_type(
 
     if has_plan_request:
         reasons.append("intent_plan_request")
+        return "execute_task", reasons
+
+    if has_plan_review_request or has_plan_optimize_request:
+        if has_plan_review_request:
+            reasons.append("intent_plan_review_request")
+        if has_plan_optimize_request:
+            reasons.append("intent_plan_optimize_request")
         return "execute_task", reasons
 
     if has_execute_keyword or task_bound or (plan_bound and has_followthrough_cue) or followthrough_implies_execute:
