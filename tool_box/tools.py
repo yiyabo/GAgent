@@ -104,7 +104,7 @@ class ToolRegistry:
         return list(self.categories.keys())
 
     def search_tools(self, query: str) -> List[ToolDefinition]:
-        """Search tools by name, description, or tags"""
+        """Search tools by name, description, tags, or search_hint"""
         query_lower = query.lower()
         results = []
 
@@ -113,6 +113,7 @@ class ToolRegistry:
                 query_lower in tool.name.lower()
                 or query_lower in tool.description.lower()
                 or any(query_lower in tag.lower() for tag in tool.tags)
+                or (tool.search_hint and query_lower in tool.search_hint.lower())
             ):
                 results.append(tool)
 
@@ -144,6 +145,7 @@ class ToolRegistry:
             "is_read_only": tool.is_read_only,
             "is_concurrent_safe": tool.is_concurrent_safe,
             "is_destructive": tool.is_destructive,
+            "search_hint": tool.search_hint,
         }
 
 
