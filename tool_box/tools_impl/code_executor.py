@@ -675,6 +675,7 @@ async def _execute_task_locally(
     data_dir: Optional[str] = None,
     extra_dirs: Optional[Sequence[str]] = None,
     tool_context: Optional[Any] = None,
+    auto_fix: bool = True,
 ) -> Dict[str, Any]:
     """Execute a task using the unified local code execution backend.
 
@@ -732,6 +733,7 @@ async def _execute_task_locally(
         llm_service=get_llm_service(),
         work_dir=work_dir,
         data_dir=data_dir,
+        auto_fix=auto_fix,
     )
 
     if outcome.success:
@@ -750,6 +752,9 @@ async def _execute_task_locally(
         "result": outcome.stdout if outcome.success else outcome.stderr,
         "generated_code": outcome.code,
         "error_category": outcome.error_category,
+        "fix_guidance": outcome.fix_guidance,
+        "stdout_file": outcome.stdout_file,
+        "stderr_file": outcome.stderr_file,
     }
 
     # Auto-submit visualization files to Deliverables (explicit mode compatible).
@@ -781,6 +786,7 @@ async def code_executor_handler(
     on_stdout: Optional[Callable[[str], Awaitable[None]]] = None,
     on_stderr: Optional[Callable[[str], Awaitable[None]]] = None,
     tool_context: Optional[Any] = None,
+    auto_fix: bool = True,
 ) -> Dict[str, Any]:
     """
     Execute a task using Claude Code (official CLI) with local file access.
@@ -976,6 +982,7 @@ async def code_executor_handler(
                 data_dir=local_data_dir,
                 extra_dirs=allowed_dirs,
                 tool_context=tool_context,
+                auto_fix=auto_fix,
             )
             produced_files = _collect_run_artifacts(
                 run_dir=task_work_dir,

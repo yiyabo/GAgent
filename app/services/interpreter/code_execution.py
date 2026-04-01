@@ -45,6 +45,51 @@ class CodeExecutionOutcome:
     visualization_purpose: Optional[str] = None
     visualization_analysis: Optional[str] = None
     error_category: Optional[str] = None
+    fix_guidance: Optional[str] = None
+    stdout_file: Optional[str] = None
+    stderr_file: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Output truncation
+# ---------------------------------------------------------------------------
+
+_OUTPUT_TRUNCATION_THRESHOLD = 4000  # ~1000 tokens
+
+
+def _truncate_large_output(
+    text: str,
+    *,
+    work_dir: str,
+    filename: str,
+    head_lines: int = 30,
+    tail_lines: int = 30,
+) -> tuple[str, Optional[str]]:
+    """If *text* exceeds threshold, write full content to file and return a preview.
+
+    Returns (possibly_truncated_text, file_path_or_None).
+    """
+    if len(text) <= _OUTPUT_TRUNCATION_THRESHOLD:
+        return text, None
+
+    file_path = os.path.join(work_dir, filename)
+    try:
+        with open(file_path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError as exc:
+        logger.warning("Failed to write large output to %s: %s", file_path, exc)
+        return text, None
+
+    lines = text.splitlines()
+    total = len(lines)
+    if total <= head_lines + tail_lines:
+        return text, file_path
+
+    head = "\n".join(lines[:head_lines])
+    tail = "\n".join(lines[-tail_lines:])
+    omitted = total - head_lines - tail_lines
+    preview = f"{head}\n\n[... {omitted} lines omitted, full output: {file_path} ...]\n\n{tail}"
+    return preview, file_path
 
 
 # ---------------------------------------------------------------------------
@@ -129,14 +174,19 @@ async def execute_code_locally(
     code_filename: str = "task_code.py",
     max_attempts: int = 3,
     timeout: int = 120,
+    auto_fix: bool = True,
 ) -> CodeExecutionOutcome:
-    """Unified local code execution with LLM-based error recovery.
+    """Unified local code execution with optional LLM-based error recovery.
 
     1. LLM generates Python code from *task_description*.
     2. Code is written to ``{work_dir}/{code_filename}`` (persistent).
     3. Subprocess executes the file.
-    4. On failure the error is classified, a targeted hint is injected,
-       and the LLM generates a fix. Steps 2-4 repeat up to *max_attempts*.
+    4. On failure the error is classified:
+       - ``auto_fix=True`` (default): a targeted hint is injected and the
+         LLM generates a fix. Steps 2-4 repeat up to *max_attempts*.
+       - ``auto_fix=False``: the error, generated code, and fix guidance
+         are returned immediately so the calling agent can decide the
+         next step.
     """
     effective_data_dir = data_dir or work_dir
 
@@ -192,8 +242,18 @@ async def execute_code_locally(
     )
 
     error_category: Optional[str] = None
+    fix_guidance: Optional[str] = None
 
-    while exec_result.status != "success" and attempt < max_attempts:
+    if not auto_fix and exec_result.status != "success":
+        error_category = classify_error(exec_result.error, exec_result.exit_code)
+        fix_guidance = _FIX_HINTS.get(error_category, "")
+        if error_category == "missing_package":
+            match = _MISSING_PKG_RE.search(exec_result.error)
+            if match:
+                pkg = match.group(1).split(".")[0]
+                fix_guidance = _FIX_HINTS["missing_package"].format(pkg=pkg)
+
+    while auto_fix and exec_result.status != "success" and attempt < max_attempts:
         attempt += 1
         error_category = classify_error(exec_result.error, exec_result.exit_code)
         logger.info(
@@ -239,13 +299,23 @@ async def execute_code_locally(
     success = exec_result.status == "success"
     if not success and error_category is None:
         error_category = classify_error(exec_result.error, exec_result.exit_code)
+        if fix_guidance is None:
+            fix_guidance = _FIX_HINTS.get(error_category, "")
+
+    # Truncate large outputs and write full content to files
+    stdout_text, stdout_file = _truncate_large_output(
+        exec_result.output, work_dir=work_dir, filename="full_stdout.txt",
+    )
+    stderr_text, stderr_file = _truncate_large_output(
+        exec_result.error, work_dir=work_dir, filename="full_stderr.txt",
+    )
 
     return CodeExecutionOutcome(
         success=success,
         code=last_code,
         description=code_response.description or f"Task: {task_title}",
-        stdout=exec_result.output,
-        stderr=exec_result.error,
+        stdout=stdout_text,
+        stderr=stderr_text,
         exit_code=exec_result.exit_code,
         attempts=attempt,
         code_file=code_file,
@@ -254,6 +324,9 @@ async def execute_code_locally(
         visualization_purpose=code_response.visualization_purpose,
         visualization_analysis=code_response.visualization_analysis if viz_files else None,
         error_category=error_category,
+        fix_guidance=fix_guidance,
+        stdout_file=stdout_file,
+        stderr_file=stderr_file,
     )
 
 

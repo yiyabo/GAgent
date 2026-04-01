@@ -347,3 +347,21 @@ class ToolPermissionEngine:
 | GAgent Agent 循环 | `app/services/deep_think_agent.py` | 当前 think loop |
 | GAgent 工具执行 | `app/services/execution/tool_executor.py` | 当前串行执行 |
 | GAgent 上下文 | `app/services/context/context_budget.py` | 当前字符截断 |
+
+---
+
+## Phase 6：code_executor 透明化（✅ 已完成）
+
+### 问题
+code_executor 是黑箱：内部调 LLM 生成代码 → 执行 → 失败则再调 LLM 修复 → 最多 3 次。Agent 只看到最终结果。
+
+### 解决方案
+- `auto_fix` 参数控制重试行为：`True`（plan executor 路径，自动重试）/ `False`（DeepThink 路径，透明返回）
+- 失败时返回 `generated_code` + `error_category` + `fix_guidance`，agent 自己决定下一步
+- 输出截断：>4000 字符写文件 + 返回首尾预览，避免上下文爆炸
+
+### 数据适用性检查（待做）
+LLM 在运行 bio tools 或 code_executor 前应验证输入格式是否匹配工具预期。例如用短肽 FASTA 跑 CheckV（病毒基因组工具）虽然不报错，但结果无意义。可在 system prompt 中加入指导。
+
+### 远期方向：细粒度工具拆分
+参考 Claude Code 的 BashTool + FileWriteTool + FileEditTool 模式，将 code_executor 拆分为独立的 bash_tool、file_write_tool、file_edit_tool，让 LLM 直接控制每一步。当前 auto_fix=False 是迈向这个方向的第一步。
