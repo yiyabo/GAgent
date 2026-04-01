@@ -16,12 +16,18 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from .coder import CodeGenerator, CodeTaskResponse
+from .docker_interpreter import DockerCodeInterpreter
 from .local_interpreter import CodeExecutionResult, LocalCodeInterpreter
 from .metadata import DatasetMetadata
+from .prompts.coder_prompt import (
+    _DOCKER_EXTRA_AVAILABLE_LIBRARIES,
+    build_coder_system_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
 _IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".svg", ".pdf"})
+_DEFAULT_DOCKER_IMAGE = "gagent-python-runtime:latest"
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +54,8 @@ class CodeExecutionOutcome:
     fix_guidance: Optional[str] = None
     stdout_file: Optional[str] = None
     stderr_file: Optional[str] = None
+    execution_backend: str = "local"
+    runtime_failure: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +133,17 @@ def _extract_missing_package(stderr: str) -> Optional[str]:
     return None
 
 
+def _normalize_execution_backend(value: Optional[str]) -> str:
+    raw = str(value or "local").strip().lower()
+    if raw in {"local", "docker"}:
+        return raw
+    return "local"
+
+
+def _runtime_error_category(execution_backend: str) -> str:
+    return f"{execution_backend}_runtime_error"
+
+
 # ---------------------------------------------------------------------------
 # Fix-strategy hints (injected into the LLM prompt)
 # ---------------------------------------------------------------------------
@@ -175,6 +194,10 @@ async def execute_code_locally(
     max_attempts: int = 3,
     timeout: int = 120,
     auto_fix: bool = True,
+    execution_backend: str = "local",
+    docker_image: Optional[str] = None,
+    readable_dirs: Sequence[str] = (),
+    writable_dirs: Sequence[str] = (),
 ) -> CodeExecutionOutcome:
     """Unified local code execution with optional LLM-based error recovery.
 
@@ -194,8 +217,17 @@ async def execute_code_locally(
     results_dir = Path(work_dir) / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
 
+    normalized_backend = _normalize_execution_backend(execution_backend)
+    generator = CodeGenerator(
+        llm_service=llm_service,
+        system_prompt=build_coder_system_prompt(
+            extra_libraries=_DOCKER_EXTRA_AVAILABLE_LIBRARIES
+            if normalized_backend == "docker"
+            else (),
+        ),
+    )
+
     # ---- Code generation ----
-    generator = CodeGenerator(llm_service=llm_service)
     try:
         code_response: CodeTaskResponse = await asyncio.to_thread(
             generator.generate,
@@ -220,11 +252,22 @@ async def execute_code_locally(
         )
 
     # ---- Interpreter + preamble ----
-    interpreter = LocalCodeInterpreter(
-        timeout=timeout,
-        work_dir=work_dir,
-        data_dir=effective_data_dir,
-    )
+    if normalized_backend == "docker":
+        interpreter = DockerCodeInterpreter(
+            image=str(docker_image or _DEFAULT_DOCKER_IMAGE).strip() or _DEFAULT_DOCKER_IMAGE,
+            timeout=timeout,
+            auto_pull=False,
+            work_dir=work_dir,
+            data_dir=effective_data_dir,
+            extra_read_dirs=readable_dirs,
+            extra_write_dirs=writable_dirs,
+        )
+    else:
+        interpreter = LocalCodeInterpreter(
+            timeout=timeout,
+            work_dir=work_dir,
+            data_dir=effective_data_dir,
+        )
     preamble = interpreter.build_preamble()
     code_file = str(Path(work_dir) / code_filename)
 
@@ -237,23 +280,36 @@ async def execute_code_locally(
         interpreter.run_file, code_file,
     )
     logger.info(
-        "Local execution attempt %d/%d: status=%s exit_code=%d",
-        attempt, max_attempts, exec_result.status, exec_result.exit_code,
+        "%s execution attempt %d/%d: status=%s exit_code=%d runtime_failure=%s",
+        normalized_backend,
+        attempt,
+        max_attempts,
+        exec_result.status,
+        exec_result.exit_code,
+        exec_result.runtime_failure,
     )
 
     error_category: Optional[str] = None
     fix_guidance: Optional[str] = None
 
     if not auto_fix and exec_result.status != "success":
-        error_category = classify_error(exec_result.error, exec_result.exit_code)
-        fix_guidance = _FIX_HINTS.get(error_category, "")
-        if error_category == "missing_package":
-            match = _MISSING_PKG_RE.search(exec_result.error)
-            if match:
-                pkg = match.group(1).split(".")[0]
-                fix_guidance = _FIX_HINTS["missing_package"].format(pkg=pkg)
+        if exec_result.runtime_failure:
+            error_category = _runtime_error_category(normalized_backend)
+        else:
+            error_category = classify_error(exec_result.error, exec_result.exit_code)
+            fix_guidance = _FIX_HINTS.get(error_category, "")
+            if error_category == "missing_package":
+                match = _MISSING_PKG_RE.search(exec_result.error)
+                if match:
+                    pkg = match.group(1).split(".")[0]
+                    fix_guidance = _FIX_HINTS["missing_package"].format(pkg=pkg)
 
-    while auto_fix and exec_result.status != "success" and attempt < max_attempts:
+    while (
+        auto_fix
+        and exec_result.status != "success"
+        and not exec_result.runtime_failure
+        and attempt < max_attempts
+    ):
         attempt += 1
         error_category = classify_error(exec_result.error, exec_result.exit_code)
         logger.info(
@@ -284,8 +340,21 @@ async def execute_code_locally(
 
         exec_result = await asyncio.to_thread(interpreter.run_file, code_file)
         logger.info(
-            "Local execution attempt %d/%d: status=%s exit_code=%d code_file=%s",
-            attempt, max_attempts, exec_result.status, exec_result.exit_code, code_file,
+            "%s execution attempt %d/%d: status=%s exit_code=%d runtime_failure=%s code_file=%s",
+            normalized_backend,
+            attempt,
+            max_attempts,
+            exec_result.status,
+            exec_result.exit_code,
+            exec_result.runtime_failure,
+            code_file,
+        )
+
+    if exec_result.runtime_failure and exec_result.status != "success":
+        logger.warning(
+            "Skipping auto-fix retries because %s runtime failed: %s",
+            normalized_backend,
+            exec_result.error,
         )
 
     # ---- Detect visualisation artifacts ----
@@ -298,9 +367,12 @@ async def execute_code_locally(
 
     success = exec_result.status == "success"
     if not success and error_category is None:
-        error_category = classify_error(exec_result.error, exec_result.exit_code)
-        if fix_guidance is None:
-            fix_guidance = _FIX_HINTS.get(error_category, "")
+        if exec_result.runtime_failure:
+            error_category = _runtime_error_category(normalized_backend)
+        else:
+            error_category = classify_error(exec_result.error, exec_result.exit_code)
+            if fix_guidance is None:
+                fix_guidance = _FIX_HINTS.get(error_category, "")
 
     # Truncate large outputs and write full content to files
     stdout_text, stdout_file = _truncate_large_output(
@@ -327,6 +399,8 @@ async def execute_code_locally(
         fix_guidance=fix_guidance,
         stdout_file=stdout_file,
         stderr_file=stderr_file,
+        execution_backend=normalized_backend,
+        runtime_failure=exec_result.runtime_failure,
     )
 
 

@@ -25,6 +25,7 @@ class CodeExecutionResult:
     output: str  # Standard output.
     error: str  # Standard error or system error message.
     exit_code: int
+    runtime_failure: bool = False
 
 
 class LocalCodeInterpreter:
@@ -133,7 +134,7 @@ class LocalCodeInterpreter:
                 status="timeout",
                 output="",
                 error=f"Execution timed out after {self.timeout} seconds.",
-                exit_code=-1
+                exit_code=-1,
             )
         except Exception as e:
             logger.exception(f"Local code execution error: {e}")
@@ -141,7 +142,8 @@ class LocalCodeInterpreter:
                 status="error",
                 output="",
                 error=str(e),
-                exit_code=-1
+                exit_code=-1,
+                runtime_failure=True,
             )
         finally:
             if script_path and os.path.exists(script_path):
@@ -198,6 +200,7 @@ class LocalCodeInterpreter:
             logger.exception("File execution error: %s", e)
             return CodeExecutionResult(
                 status="error", output="", error=str(e), exit_code=-1,
+                runtime_failure=True,
             )
 
     def build_preamble(self) -> str:

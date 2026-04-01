@@ -60,16 +60,18 @@ class CodeTaskResponse(BaseModel):
 class CodeGenerator:
     """Generate and repair Python analysis code with LLM prompts."""
 
-    def __init__(self, llm_service=None):
+    def __init__(self, llm_service=None, system_prompt: Optional[str] = None):
         """
         Args:
             llm_service: Optional LLM service implementation providing `chat()`.
+            system_prompt: Optional override for the code-generation system prompt.
         """
         if llm_service:
             self.llm = llm_service
         else:
             from app.services.llm.llm_service import get_llm_service
             self.llm = get_llm_service()
+        self.system_prompt = system_prompt or CODER_SYSTEM_PROMPT
 
     def _format_columns_for_metadata(self, metadata: DatasetMetadata) -> str:
         """Format a compact column summary for prompt context."""
@@ -128,7 +130,7 @@ class CodeGenerator:
             task_description=task_description
         )
 
-        full_prompt = f"{CODER_SYSTEM_PROMPT}\n\n{user_prompt}"
+        full_prompt = f"{self.system_prompt}\n\n{user_prompt}"
 
         response_text = self.llm.chat(prompt=full_prompt)
         return CodeTaskResponse.parse_from_llm_output(response_text)
@@ -174,7 +176,7 @@ class CodeGenerator:
                 error=current_error
             )
 
-            full_prompt = f"{CODER_SYSTEM_PROMPT}\n\n{user_prompt}"
+            full_prompt = f"{self.system_prompt}\n\n{user_prompt}"
 
             try:
                 response_text = self.llm.chat(prompt=full_prompt)

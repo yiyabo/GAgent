@@ -212,6 +212,41 @@ def test_bound_plan_review_and_optimize_request_requires_both_operations() -> No
     assert "intent_plan_optimize_request" in decision.route_reason_codes
 
 
+def test_bound_plan_update_language_requires_optimize_operation() -> None:
+    decision = resolve_request_routing(
+        message="/think 感觉还不错，但是你貌似没有去更新plan，更新一下吧",
+        plan_id=68,
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.capability_floor == "tools"
+    assert decision.requires_structured_plan is True
+    assert decision.plan_request_mode == "update_bound"
+    assert decision.requires_plan_review is False
+    assert decision.requires_plan_optimize is True
+    assert "intent_plan_optimize_request" in decision.route_reason_codes
+
+
+def test_bound_plan_status_update_language_does_not_require_optimize_operation() -> None:
+    decision = resolve_request_routing(
+        message="/think 请给我更新一下这个计划的状态",
+        plan_id=68,
+    )
+
+    assert decision.requires_plan_optimize is False
+    assert "intent_plan_optimize_request" not in decision.route_reason_codes
+
+
+def test_bound_plan_progress_followup_does_not_require_optimize_operation() -> None:
+    decision = resolve_request_routing(
+        message="update me on the plan",
+        plan_id=68,
+    )
+
+    assert decision.requires_plan_optimize is False
+    assert "intent_plan_optimize_request" not in decision.route_reason_codes
+
+
 def test_english_followup_another_one_does_not_trigger_plan_mode() -> None:
     decision = resolve_request_routing(message="show me another one")
 

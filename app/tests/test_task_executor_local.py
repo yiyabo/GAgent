@@ -14,6 +14,7 @@ from app.services.interpreter.code_execution import (
     CodeExecutionOutcome,
     execute_code_locally,
 )
+from app.services.interpreter.prompts.coder_prompt import build_coder_system_prompt
 
 # Module where execute_code_locally's internals live (for monkeypatching).
 _CE_MOD = "app.services.interpreter.code_execution"
@@ -297,6 +298,147 @@ def test_fix_hint_injected_for_missing_package(make_executor, monkeypatch):
     error_sent = captured_fix_kwargs.get("error", "")
     assert "pip" in error_sent
     assert "seaborn" in error_sent
+
+
+# ---------------------------------------------------------------------------
+# Unified execution backend selection
+# ---------------------------------------------------------------------------
+
+def test_execute_code_locally_defaults_to_local_backend(tmp_path: Path, monkeypatch):
+    fake_code_resp = CodeTaskResponse(code="print('ok')", description="local default")
+    local_init = {}
+
+    class FakeLocalInterpreter:
+        def __init__(self, **kwargs):
+            local_init.update(kwargs)
+
+        def build_preamble(self):
+            return ""
+
+        def run_file(self, code_file):
+            return CodeExecutionResult(status="success", output="ok\n", error="", exit_code=0)
+
+    class UnexpectedDockerInterpreter:
+        def __init__(self, **_kwargs):
+            raise AssertionError("Docker interpreter should not be used by default")
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter", FakeLocalInterpreter)
+    monkeypatch.setattr(f"{_CE_MOD}.DockerCodeInterpreter", UnexpectedDockerInterpreter)
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="local",
+            task_description="default backend",
+            work_dir=str(tmp_path),
+        )
+    )
+
+    assert outcome.success is True
+    assert outcome.execution_backend == "local"
+    assert local_init["work_dir"] == str(tmp_path)
+
+
+def test_execute_code_locally_uses_docker_backend_when_requested(tmp_path: Path, monkeypatch):
+    fake_code_resp = CodeTaskResponse(code="print('ok')", description="docker backend")
+    docker_init = {}
+    readable_dir = tmp_path / "readable"
+    readable_dir.mkdir()
+
+    class UnexpectedLocalInterpreter:
+        def __init__(self, **_kwargs):
+            raise AssertionError("Local interpreter should not be used for docker backend")
+
+    class FakeDockerInterpreter:
+        def __init__(self, **kwargs):
+            docker_init.update(kwargs)
+
+        def build_preamble(self):
+            return ""
+
+        def run_file(self, code_file):
+            return CodeExecutionResult(status="success", output="ok\n", error="", exit_code=0)
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter", UnexpectedLocalInterpreter)
+    monkeypatch.setattr(f"{_CE_MOD}.DockerCodeInterpreter", FakeDockerInterpreter)
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="docker",
+            task_description="docker backend",
+            work_dir=str(tmp_path),
+            execution_backend="docker",
+            docker_image="custom:image",
+            readable_dirs=[str(readable_dir)],
+        )
+    )
+
+    assert outcome.success is True
+    assert outcome.execution_backend == "docker"
+    assert docker_init["image"] == "custom:image"
+    assert docker_init["extra_read_dirs"] == [str(readable_dir)]
+
+
+def test_execute_code_locally_stops_retrying_on_docker_runtime_failure(tmp_path: Path, monkeypatch):
+    fake_code_resp = CodeTaskResponse(code="print('ok')", description="docker runtime fail")
+
+    class FakeDockerInterpreter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def build_preamble(self):
+            return ""
+
+        def run_file(self, code_file):
+            return CodeExecutionResult(
+                status="error",
+                output="",
+                error="Docker image not found: missing:image",
+                exit_code=-1,
+                runtime_failure=True,
+            )
+
+    def _unexpected_fix(self, **_kwargs):
+        raise AssertionError("Runtime failures must not trigger auto-fix retries")
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.fix_code", _unexpected_fix)
+    monkeypatch.setattr(f"{_CE_MOD}.DockerCodeInterpreter", FakeDockerInterpreter)
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="docker",
+            task_description="runtime failure",
+            work_dir=str(tmp_path),
+            execution_backend="docker",
+            docker_image="missing:image",
+        )
+    )
+
+    assert outcome.success is False
+    assert outcome.execution_backend == "docker"
+    assert outcome.runtime_failure is True
+    assert outcome.error_category == "docker_runtime_error"
+    assert outcome.attempts == 1
+
+
+def test_build_coder_system_prompt_keeps_default_local_library_set() -> None:
+    prompt = build_coder_system_prompt()
+    assert "`pandas` - Data manipulation and analysis" in prompt
+    assert "`scanpy`" not in prompt
+    assert "`scrublet`" not in prompt
+
+
+def test_build_coder_system_prompt_can_include_docker_only_libraries() -> None:
+    prompt = build_coder_system_prompt(
+        extra_libraries=[
+            ("scanpy", "Single-cell analysis workflows"),
+            ("scrublet", "Doublet detection for single-cell data"),
+        ]
+    )
+    assert "`scanpy` - Single-cell analysis workflows" in prompt
+    assert "`scrublet` - Doublet detection for single-cell data" in prompt
 
 
 # ---------------------------------------------------------------------------

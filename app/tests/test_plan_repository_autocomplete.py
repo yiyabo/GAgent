@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,14 @@ def _make_tasks_conn() -> sqlite3.Connection:
 def _make_plan_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE plan_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
     conn.execute(
         """
         CREATE TABLE tasks (
@@ -71,6 +80,7 @@ def _insert_task(
     position: int,
     path: str,
     depth: int,
+    instruction: str | None = None,
 ) -> None:
     conn.execute(
         """
@@ -79,9 +89,9 @@ def _insert_task(
             metadata, execution_result, context_combined, context_sections,
             context_meta, context_updated_at, created_at, updated_at
         )
-        VALUES (?, ?, 'pending', NULL, ?, ?, ?, ?, '{}', NULL, NULL, '[]', '{}', '', '', '')
+        VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, '{}', NULL, NULL, '[]', '{}', '', '', '')
         """,
-        (task_id, name, parent_id, position, path, depth),
+        (task_id, name, instruction, parent_id, position, path, depth),
     )
 
 
@@ -200,3 +210,79 @@ def test_apply_changes_atomically_rolls_back_on_invalid_change(
         (1, "Root", None),
         (2, "A", 1),
     ]
+
+
+def test_apply_changes_atomically_updates_plan_description_and_root_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.sqlite"
+    conn = _make_plan_db(plan_path)
+    conn.execute(
+        "INSERT INTO plan_meta (key, value) VALUES (?, ?)",
+        ("description", "Original description"),
+    )
+    _insert_task(
+        conn,
+        task_id=1,
+        name="Root",
+        parent_id=None,
+        position=0,
+        path="/1",
+        depth=0,
+        instruction="Original description",
+    )
+    _insert_task(conn, task_id=2, name="A", parent_id=1, position=0, path="/1/2", depth=1)
+    conn.commit()
+    conn.close()
+
+    main_db = sqlite3.connect(":memory:")
+    main_db.row_factory = sqlite3.Row
+    main_db.execute(
+        """
+        CREATE TABLE plans (
+            id INTEGER PRIMARY KEY,
+            description TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+    main_db.execute(
+        "INSERT INTO plans (id, description, updated_at) VALUES (?, ?, ?)",
+        (7, "Original description", ""),
+    )
+    main_db.commit()
+
+    @contextmanager
+    def _fake_get_db():
+        try:
+            yield main_db
+            main_db.commit()
+        except Exception:
+            main_db.rollback()
+            raise
+
+    repo = PlanRepository()
+    monkeypatch.setattr(plan_repository_module, "get_plan_db_path", lambda _plan_id: plan_path)
+    monkeypatch.setattr(plan_repository_module, "get_db", _fake_get_db)
+    monkeypatch.setattr(repo, "_touch_plan", lambda _plan_id: None)
+
+    applied = repo.apply_changes_atomically(
+        7,
+        [{"action": "update_description", "description": "Revised plan rationale"}],
+    )
+
+    assert applied == [{"action": "update_description", "updated_fields": ["description"]}]
+
+    check = sqlite3.connect(plan_path)
+    check.row_factory = sqlite3.Row
+    root = check.execute("SELECT instruction FROM tasks WHERE id=?", (1,)).fetchone()
+    meta = check.execute("SELECT value FROM plan_meta WHERE key='description'").fetchone()
+    check.close()
+
+    plan_row = main_db.execute("SELECT description FROM plans WHERE id=?", (7,)).fetchone()
+    main_db.close()
+
+    assert root["instruction"] == "Revised plan rationale"
+    assert meta["value"] == "Revised plan rationale"
+    assert plan_row["description"] == "Revised plan rationale"

@@ -15,6 +15,8 @@ from tool_box.tools_impl.code_executor import (
     _is_path_within,
     _normalize_csv_values,
     _promote_task_results_to_session_root,
+    _resolve_code_executor_docker_image,
+    _resolve_code_executor_local_runtime,
     _resolve_cli_retry_policy,
     _resolve_auth_mode,
     _resolve_allowed_tools,
@@ -82,6 +84,33 @@ def test_resolve_allowed_tools_enforces_strict_allowlist() -> None:
 
 def test_resolve_allowed_tools_uses_default_when_missing() -> None:
     assert _resolve_allowed_tools(None) == list(_DEFAULT_ALLOWED_TOOL_NAMES)
+
+
+def test_resolve_code_executor_local_runtime_defaults_to_docker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODE_EXECUTOR_LOCAL_RUNTIME", raising=False)
+    assert _resolve_code_executor_local_runtime() == "docker"
+
+
+def test_resolve_code_executor_local_runtime_accepts_host_and_rejects_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODE_EXECUTOR_LOCAL_RUNTIME", "host")
+    assert _resolve_code_executor_local_runtime() == "host"
+    monkeypatch.setenv("CODE_EXECUTOR_LOCAL_RUNTIME", "local")
+    assert _resolve_code_executor_local_runtime() == "host"
+    monkeypatch.setenv("CODE_EXECUTOR_LOCAL_RUNTIME", "invalid")
+    assert _resolve_code_executor_local_runtime() == "docker"
+
+
+def test_resolve_code_executor_docker_image_defaults_and_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODE_EXECUTOR_DOCKER_IMAGE", raising=False)
+    assert _resolve_code_executor_docker_image() == "gagent-python-runtime:latest"
+    monkeypatch.setenv("CODE_EXECUTOR_DOCKER_IMAGE", "custom:image")
+    assert _resolve_code_executor_docker_image() == "custom:image"
 
 
 def test_validate_scope_contract_requires_plan_and_task_when_enabled() -> None:
@@ -315,6 +344,8 @@ def test_local_backend_returns_promoted_artifact_paths(
             "exit_code": 0,
             "code_file": str(Path(work_dir) / "task_code.py"),
             "result": "generated plot.png",
+            "execution_mode": "code_executor_docker",
+            "docker_image_effective": "gagent-python-runtime:latest",
         }
 
     monkeypatch.setattr(code_executor_module, "_execute_task_locally", _fake_local)
@@ -330,6 +361,8 @@ def test_local_backend_returns_promoted_artifact_paths(
 
     assert result["success"] is True
     assert result["task_directory"] == "plan1_task2"
+    assert result["execution_mode"] == "code_executor_docker"
+    assert result["docker_image_effective"] == "gagent-python-runtime:latest"
     assert "results/plot.png" in result["artifact_paths"]
     assert any(path.endswith("plot.png") for path in result["produced_files"])
     session_dir = (tmp_path / "runtime" / "session_adhoc").resolve()
