@@ -31,7 +31,9 @@ WORKDIR /opt/code-executor
 
 COPY docker/code_executor/requirements.txt /tmp/code-executor-requirements.txt
 
-RUN python -m pip install --upgrade pip setuptools wheel && \
-    python -m pip install -r /tmp/code-executor-requirements.txt
+RUN python -m pip install --upgrade pip setuptools wheel \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn && \
+    python -m pip install -r /tmp/code-executor-requirements.txt \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
 
 WORKDIR /workspace
