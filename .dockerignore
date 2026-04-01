@@ -1,0 +1,5 @@
+*
+!docker/
+!docker/code_executor/
+!docker/code_executor/Dockerfile
+!docker/code_executor/requirements.txt

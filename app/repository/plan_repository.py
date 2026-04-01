@@ -365,6 +365,7 @@ class PlanRepository:
         applied: List[Dict[str, Any]] = []
         with plan_db_connection(get_plan_db_path(plan_id)) as conn:
             self._ensure_task_columns(conn, plan_id)
+            pending_description: Optional[str] = None
             for idx, change in enumerate(changes, start=1):
                 if not isinstance(change, dict):
                     raise ValueError(f"Change #{idx} must be an object")
@@ -409,6 +410,28 @@ class PlanRepository:
                     )
                     continue
 
+                if action == "update_description":
+                    description = str(change.get("description") or "").strip()
+                    if not description:
+                        raise ValueError(
+                            f"Change #{idx} update_description requires description"
+                        )
+                    root_id = self._default_root_task_id(conn)
+                    if root_id is not None:
+                        conn.execute(
+                            "UPDATE tasks SET instruction=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                            (description, root_id),
+                        )
+                    self._upsert_plan_meta(conn, "description", description)
+                    pending_description = description
+                    applied.append(
+                        {
+                            "action": "update_description",
+                            "updated_fields": ["description"],
+                        }
+                    )
+                    continue
+
                 if action == "delete_task":
                     task_id = change.get("task_id")
                     if task_id is None:
@@ -447,6 +470,19 @@ class PlanRepository:
                     continue
 
                 raise ValueError(f"Change #{idx} has unknown action: {action or '<missing>'}")
+
+            if pending_description is not None:
+                with get_db() as metadata_conn:
+                    updated = metadata_conn.execute(
+                        """
+                        UPDATE plans
+                        SET description=?, updated_at=CURRENT_TIMESTAMP
+                        WHERE id=?
+                        """,
+                        (pending_description, plan_id),
+                    ).rowcount
+                if updated == 0:
+                    raise ValueError(f"Plan {plan_id} not found")
 
         if applied:
             self._touch_plan(plan_id)
@@ -847,6 +883,16 @@ class PlanRepository:
             "SELECT id FROM tasks WHERE parent_id IS NULL ORDER BY position ASC, id ASC LIMIT 1"
         ).fetchone()
         return int(row["id"]) if row else None
+
+    def _upsert_plan_meta(self, conn, key: str, value: Optional[str]) -> None:
+        conn.execute(
+            """
+            INSERT INTO plan_meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """,
+            (key, value),
+        )
 
     def _shift_positions(self, conn, parent_id: Optional[int], start_position: int) -> None:
         if start_position < 0:

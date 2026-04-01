@@ -324,6 +324,30 @@ def test_structured_plan_review_and_optimize_requirement_requires_both_ops() -> 
     assert "优化" in outcome["message"]
 
 
+def test_structured_plan_optimize_requirement_rejects_zero_applied_changes() -> None:
+    agent = _build_plan_agent(
+        {
+            "requires_structured_plan": True,
+            "plan_request_mode": "update_bound",
+            "requires_plan_optimize": True,
+            "current_plan_id": 42,
+            "current_plan_title": "Plan 42",
+        }
+    )
+    step = ThinkingStep(
+        iteration=1,
+        thought="",
+        action=json.dumps({"tool": "plan_operation", "params": {"operation": "optimize", "plan_id": 42}}),
+        action_result='[plan_operation] {"success": true, "tool": "plan_operation", "result": {"success": true, "operation": "optimize", "plan_id": 42, "plan_title": "Plan 42", "applied_changes": 0, "failed_changes": 0, "message": "Applied 0 changes, 0 failed. No real plan updates were applied."}, "error": null}',
+        self_correction=None,
+    )
+
+    outcome = agent._summarize_structured_plan_outcome([step], user_query="更新一下这个plan")
+    assert outcome["state"] == "failed"
+    assert outcome["satisfied"] is False
+    assert "优化" in outcome["message"]
+
+
 def test_structured_plan_outcome_marks_text_only_when_tool_never_called() -> None:
     agent = _build_plan_agent(
         {

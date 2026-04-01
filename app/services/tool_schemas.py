@@ -800,7 +800,9 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 "Plan creation and optimization tool. Operations: create, review, optimize, get. "
                 "Use create for new structured plans, then prefer review to persist rubric metadata. "
                 "Use get/review/optimize for bound plans. "
-                "Research with web_search first only when latest external evidence materially affects the plan."
+                "Research with web_search first only when latest external evidence materially affects the plan. "
+                "For optimize, use concrete change objects such as add_task, update_task, update_description, "
+                "delete_task, or reorder_task; keep update_task fields at the top level."
             ),
             "parameters": {
                 "type": "object",
