@@ -309,6 +309,9 @@ _PLAN_REVIEW_MARKERS = (
 _PLAN_OPTIMIZE_PHRASES = (
     "optimize this plan",
     "optimize the plan",
+    "update this plan",
+    "update the plan",
+    "update plan",
     "improve this plan",
     "improve the plan",
     "refine this plan",
@@ -321,18 +324,26 @@ _PLAN_OPTIMIZE_PHRASES = (
     "改进这个任务",
     "完善这个计划",
     "完善这个任务",
+    "更新这个计划",
+    "更新这个任务",
+    "更新一下这个计划",
+    "更新一下这个任务",
     "优化plan",
     "优化一下plan",
+    "更新plan",
+    "更新一下plan",
 )
 
 _PLAN_OPTIMIZE_MARKERS = (
     "optimize",
     "optimise",
+    "update",
     "improve",
     "refine",
     "优化",
     "改进",
     "完善",
+    "更新",
 )
 
 _PLAN_TARGET_MARKERS = (
@@ -346,6 +357,21 @@ _PLAN_TARGET_MARKERS = (
     "这个任务",
     "该计划",
     "该任务",
+)
+
+_PLAN_STATUS_QUERY_PHRASES = (
+    "update me on",
+    "give me an update on",
+    "status update",
+    "progress update",
+)
+
+_PLAN_STATUS_QUERY_MARKERS = (
+    "status",
+    "progress",
+    "状态",
+    "进度",
+    "汇报",
 )
 
 # NOTE: All phrases MUST be lowercase — used with _contains_any_lowered().
@@ -1357,11 +1383,23 @@ def _has_explicit_plan_optimize_request(
     lowered = str(text or "").strip().lower()
     if not lowered or not (plan_bound or task_bound):
         return False
+    if _looks_like_plan_status_query(lowered):
+        return False
     if _contains_any_lowered(lowered, _PLAN_OPTIMIZE_PHRASES):
         return True
     if not _contains_any(lowered, _PLAN_OPTIMIZE_MARKERS):
         return False
     return _contains_any(lowered, _PLAN_TARGET_MARKERS)
+
+
+def _looks_like_plan_status_query(lowered: str) -> bool:
+    if not lowered or not _contains_any(lowered, _PLAN_TARGET_MARKERS):
+        return False
+    if _contains_any_lowered(lowered, _PLAN_STATUS_QUERY_PHRASES):
+        return True
+    if not _contains_any(lowered, ("update", "更新")):
+        return False
+    return _contains_any(lowered, _PLAN_STATUS_QUERY_MARKERS)
 
 
 def _has_recent_image_artifacts(context: Optional[Mapping[str, Any]]) -> bool:
@@ -1593,6 +1631,10 @@ def resolve_intent_type(
 
     if has_plan_request:
         reasons.append("intent_plan_request")
+        if has_plan_review_request:
+            reasons.append("intent_plan_review_request")
+        if has_plan_optimize_request:
+            reasons.append("intent_plan_optimize_request")
         return "execute_task", reasons
 
     if has_plan_review_request or has_plan_optimize_request:

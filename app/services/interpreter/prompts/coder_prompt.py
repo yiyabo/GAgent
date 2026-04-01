@@ -2,19 +2,53 @@
 Code Generator Prompt Templates
 """
 
-CODER_SYSTEM_PROMPT = """You are a Python Data Analysis Code Generator.
+from __future__ import annotations
+
+from typing import Iterable, Sequence
+
+_DEFAULT_AVAILABLE_LIBRARIES: tuple[tuple[str, str], ...] = (
+    ("pandas", "Data manipulation and analysis"),
+    ("numpy", "Numerical computing"),
+    ("matplotlib", "Plotting and visualization"),
+    ("seaborn", "Statistical data visualization"),
+    ("scipy", "Scientific computing"),
+    ("scikit-learn", "Machine learning"),
+)
+
+_DOCKER_EXTRA_AVAILABLE_LIBRARIES: tuple[tuple[str, str], ...] = (
+    ("scanpy", "Single-cell analysis workflows"),
+    ("anndata", "Annotated matrix support for omics data"),
+    ("scrublet", "Doublet detection for single-cell data"),
+)
+
+
+def _format_available_libraries(libraries: Iterable[tuple[str, str]]) -> str:
+    return "\n".join(
+        f"  - `{name}` - {description}"
+        for name, description in libraries
+    )
+
+
+def build_coder_system_prompt(
+    *,
+    extra_libraries: Sequence[tuple[str, str]] = (),
+) -> str:
+    libraries = list(_DEFAULT_AVAILABLE_LIBRARIES)
+    seen = {name for name, _ in libraries}
+    for name, description in extra_libraries:
+        if name in seen:
+            continue
+        libraries.append((name, description))
+        seen.add(name)
+
+    template = """You are a Python Data Analysis Code Generator.
 Your task is to generate Python code based on the dataset metadata and task description.
 
 ### Environment
 - Python Version: 3.10.19
 - Standard Library: All built-in modules are available (os, sys, json, math, statistics, collections, itertools, etc.)
 - Available External Libraries:
-  - `pandas` - Data manipulation and analysis
-  - `numpy` - Numerical computing
-  - `matplotlib` - Plotting and visualization
-  - `seaborn` - Statistical data visualization
-  - `scipy` - Scientific computing
-  - `scikit-learn` - Machine learning
+__AVAILABLE_LIBRARIES__
 
 ### Input Data
 You will receive:
@@ -92,6 +126,10 @@ You must return a **strict JSON object** with the following fields:
   "visualization_analysis": "Bar chart showing total revenue per category. Based on the gathered data: Category A has highest revenue at $150,000 (45% of total), Category B at $100,000 (30%), Category C at $83,000 (25%). The chart clearly shows a descending pattern with Category A dominating. Revenue calculation: SUM(revenue) GROUP BY category. The significant gap between Category A and others (50% higher than B) suggests a potential over-reliance on a single category."
 }
 """
+    return template.replace("__AVAILABLE_LIBRARIES__", _format_available_libraries(libraries))
+
+
+CODER_SYSTEM_PROMPT = build_coder_system_prompt()
 
 CODER_USER_PROMPT_TEMPLATE = """
 {datasets_info}

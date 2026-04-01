@@ -223,6 +223,8 @@ _HARD_ALLOWED_TOOL_MAP = {name.lower(): name for name in _HARD_ALLOWED_TOOL_NAME
 _DEFAULT_SETTING_SOURCES = "project,local"
 _DEFAULT_API_SETTING_SOURCES = "project"
 _DEFAULT_AUTH_MODE = "api_env"
+_DEFAULT_CODE_EXECUTOR_LOCAL_RUNTIME = "docker"
+_DEFAULT_CODE_EXECUTOR_DOCKER_IMAGE = "gagent-python-runtime:latest"
 _SUPPORTED_SETTING_SOURCES = {"user", "project", "local"}
 _SUPPORTED_AUTH_MODES = {"claude_login", "api_env"}
 _DEFAULT_API_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic"
@@ -248,6 +250,20 @@ _CLAUDE_ENV_ALIAS_FOR_API_MODE: Sequence[tuple[str, str]] = (
     ("CLAUDE_CODE_API_MODEL", "ANTHROPIC_MODEL"),
     ("CLAUDE_CODE_SMALL_FAST_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"),
 )
+
+
+def _resolve_code_executor_local_runtime(value: Optional[str] = None) -> str:
+    raw = str(value or os.getenv("CODE_EXECUTOR_LOCAL_RUNTIME") or _DEFAULT_CODE_EXECUTOR_LOCAL_RUNTIME).strip().lower()
+    if raw == "local":
+        return "host"
+    if raw in {"docker", "host"}:
+        return raw
+    return _DEFAULT_CODE_EXECUTOR_LOCAL_RUNTIME
+
+
+def _resolve_code_executor_docker_image(value: Optional[str] = None) -> str:
+    raw = str(value or os.getenv("CODE_EXECUTOR_DOCKER_IMAGE") or _DEFAULT_CODE_EXECUTOR_DOCKER_IMAGE).strip()
+    return raw or _DEFAULT_CODE_EXECUTOR_DOCKER_IMAGE
 
 
 def _resolve_allowed_tools(value: Any) -> List[str]:
@@ -685,13 +701,20 @@ async def _execute_task_locally(
     from app.services.interpreter.code_execution import execute_code_locally
     from app.services.llm.llm_service import get_llm_service
 
-    logger.info("[CODE_EXECUTOR_LOCAL] Using local execution backend for task")
+    runtime_mode = _resolve_code_executor_local_runtime()
+    execution_backend = "docker" if runtime_mode == "docker" else "local"
+    docker_image = _resolve_code_executor_docker_image() if execution_backend == "docker" else None
+
+    logger.info(
+        "[CODE_EXECUTOR_LOCAL] Using %s runtime backend for task",
+        runtime_mode,
+    )
 
     async def _report(stage: str, message: str, **extra: Any) -> None:
         if tool_context is not None and tool_context.on_progress:
             await tool_context.on_progress({"stage": stage, "message": message, **extra})
 
-    await _report("started", "Generating code for task")
+    await _report("started", f"Generating code for task ({runtime_mode} runtime)")
 
     if not work_dir:
         import tempfile
@@ -725,7 +748,17 @@ async def _execute_task_locally(
             + "\n".join(f"- {path}" for path in readable_dirs)
         )
 
-    await _report("running", "Executing generated code")
+    writable_dirs: List[str] = []
+    try:
+        work_dir_path = Path(work_dir).resolve()
+        for directory in readable_dirs:
+            candidate = Path(directory).resolve()
+            if _is_path_within(work_dir_path, candidate):
+                writable_dirs.append(str(candidate))
+    except Exception:
+        writable_dirs = []
+
+    await _report("running", f"Executing generated code via {runtime_mode} runtime")
     outcome = await execute_code_locally(
         task_title="Code execution task",
         task_description=task_desc,
@@ -734,6 +767,10 @@ async def _execute_task_locally(
         work_dir=work_dir,
         data_dir=data_dir,
         auto_fix=auto_fix,
+        execution_backend=execution_backend,
+        docker_image=docker_image,
+        readable_dirs=readable_dirs,
+        writable_dirs=writable_dirs,
     )
 
     if outcome.success:
@@ -755,7 +792,15 @@ async def _execute_task_locally(
         "fix_guidance": outcome.fix_guidance,
         "stdout_file": outcome.stdout_file,
         "stderr_file": outcome.stderr_file,
+        "execution_mode": f"code_executor_{runtime_mode}",
+        "docker_image_effective": docker_image,
+        "runtime_failure": outcome.runtime_failure,
     }
+    if not outcome.success:
+        if outcome.runtime_failure:
+            result["error"] = str(outcome.stderr or "").strip() or f"{runtime_mode.capitalize()} runtime failed."
+        else:
+            result["error"] = str(outcome.stderr or "").strip() or "Code execution failed."
 
     # Auto-submit visualization files to Deliverables (explicit mode compatible).
     if outcome.success and outcome.visualization_files:
@@ -1011,7 +1056,7 @@ async def code_executor_handler(
                 "stdout": str(local_result.get("stdout") or ""),
                 "stderr": str(local_result.get("stderr") or ""),
                 "exit_code": local_result.get("exit_code", -1),
-                "execution_mode": "code_executor_local",
+                "execution_mode": str(local_result.get("execution_mode") or "code_executor_host"),
                 "working_directory": str(task_work_dir),
                 "log_path": str(log_path) if log_path else None,
                 "debug_log_path": None,
@@ -1023,6 +1068,10 @@ async def code_executor_handler(
                 "produced_files_count": len(produced_files),
                 "artifact_paths": session_artifact_paths,
             }
+            if "docker_image_effective" in local_result:
+                result_payload["docker_image_effective"] = local_result.get("docker_image_effective")
+            if "runtime_failure" in local_result:
+                result_payload["runtime_failure"] = bool(local_result.get("runtime_failure"))
             code_file = str(local_result.get("code_file") or "").strip()
             if code_file:
                 result_payload["code_file"] = code_file
