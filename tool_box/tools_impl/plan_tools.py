@@ -20,13 +20,14 @@ async def plan_operation_handler(
     tasks: Optional[List[Dict[str, Any]]] = None,
     plan_id: Optional[int] = None,
     changes: Optional[List[Dict[str, Any]]] = None,
+    tool_context: Optional[Any] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """
     Plan operation tool handler for DeepThink Agent.
-    
+
     Supports creating plans, reviewing them for issues, and optimizing based on feedback.
-    
+
     Args:
         operation: Operation type - "create", "review", "optimize", "get"
         title: Plan title (for create)
@@ -34,10 +35,31 @@ async def plan_operation_handler(
         tasks: List of task definitions [{name, instruction, dependencies?}] (for create)
         plan_id: Plan ID (for review, optimize, get)
         changes: List of changes to apply [{task_id, action, ...}] (for optimize)
-        
+        tool_context: Execution context with session/plan binding info
+
     Returns:
         Dict containing operation result
     """
+    # Session-plan isolation: if the session is bound to a plan, only allow
+    # operations on that plan (except create, which creates a new one).
+    if operation != "create" and plan_id is not None and tool_context is not None:
+        bound_plan_id = getattr(tool_context, "plan_id", None)
+        if bound_plan_id is not None and plan_id != bound_plan_id:
+            logger.warning(
+                "[PLAN_OP] Blocked cross-plan access: requested plan_id=%s but session bound to plan_id=%s",
+                plan_id, bound_plan_id,
+            )
+            return {
+                "success": False,
+                "error": (
+                    f"Cannot access plan {plan_id}: this session is bound to plan {bound_plan_id}. "
+                    f"Use plan_id={bound_plan_id} or start a new session for a different plan."
+                ),
+                "operation": operation,
+                "requested_plan_id": plan_id,
+                "bound_plan_id": bound_plan_id,
+            }
+
     try:
         if operation == "create":
             return await _create_plan(title, description, tasks)
@@ -391,6 +413,10 @@ def _detect_circular_dependencies(nodes: Dict[int, Any]) -> List[List[int]]:
 _OPTIMIZE_ACTION_ALIASES: Dict[str, str] = {
     "rename": "update_task",
     "update": "update_task",
+    "update_description": "update_description",
+    "change_description": "update_description",
+    "modify_description": "update_description",
+    "update_plan_description": "update_description",
     "edit": "update_task",
     "change": "update_task",
     "modify": "update_task",
@@ -410,24 +436,36 @@ _OPTIMIZE_ACTION_ALIASES: Dict[str, str] = {
     "move_task": "reorder_task",
 }
 
-_OPTIMIZE_VALID_ACTIONS = frozenset({"add_task", "update_task", "delete_task", "reorder_task"})
+_OPTIMIZE_VALID_ACTIONS = frozenset(
+    {"add_task", "update_task", "update_description", "delete_task", "reorder_task"}
+)
 
 
 def _normalize_optimize_change(change: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize an optimize change dict so that common LLM format variations are accepted."""
     change = dict(change)
 
-    # Flatten nested "updates" / "fields" dicts into top-level keys.
-    for nested_key in ("updates", "fields"):
+    # Flatten nested update payloads into top-level keys.
+    for nested_key in ("updates", "fields", "updated_fields"):
         nested = change.pop(nested_key, None)
         if isinstance(nested, dict):
             for k, v in nested.items():
                 change.setdefault(k, v)
 
-    # Accept "new_name" / "value" as aliases for "name".
-    for alias in ("new_name", "value"):
-        if alias in change and "name" not in change:
-            change["name"] = change.pop(alias)
+    # Accept common aliases emitted by older prompts / models.
+    alias_map = {
+        "new_name": "name",
+        "value": "name",
+        "task_name": "name",
+        "task_title": "name",
+        "new_instruction": "instruction",
+        "task_instruction": "instruction",
+        "new_description": "description",
+        "plan_description": "description",
+    }
+    for alias, canonical in alias_map.items():
+        if alias in change and canonical not in change:
+            change[canonical] = change.pop(alias)
 
     # Resolve action from "action", "type", or "change_type" fields.
     raw_action = change.get("action") or change.get("type") or change.get("change_type")
@@ -443,16 +481,33 @@ def _normalize_optimize_change(change: Dict[str, Any]) -> Dict[str, Any]:
         has_task_id = change.get("task_id") is not None
         has_update_fields = any(k in change for k in ("name", "instruction", "dependencies"))
         has_new_position = change.get("new_position") is not None
+        has_plan_description = change.get("description") is not None
 
         if has_task_id and has_new_position:
             action = "reorder_task"
         elif has_task_id and has_update_fields:
             action = "update_task"
+        elif not has_task_id and has_plan_description and "name" not in change:
+            action = "update_description"
         elif not has_task_id and "name" in change:
             action = "add_task"
 
     change["action"] = action
     return change
+
+
+def _apply_plan_description_update(repo: Any, plan_id: int, description: str) -> None:
+    """Persist plan.description and keep the synthetic ROOT task instruction in sync."""
+    plan_tree = repo.get_plan_tree(plan_id)
+    plan_tree.description = description
+
+    for node in plan_tree.nodes.values():
+        if node.parent_id is None:
+            node.instruction = description
+            break
+
+    plan_tree.rebuild_adjacency()
+    repo.upsert_plan_tree(plan_tree, note="optimize_plan_description")
 
 
 async def _optimize_plan(
@@ -465,6 +520,7 @@ async def _optimize_plan(
     Supported change actions:
     - add_task: {action: "add_task", name, instruction, parent_id?, dependencies?}
     - update_task: {action: "update_task", task_id, name?, instruction?, dependencies?}
+    - update_description: {action: "update_description", description}
     - delete_task: {action: "delete_task", task_id}
     - reorder_task: {action: "reorder_task", task_id, new_position}
     
@@ -498,6 +554,15 @@ async def _optimize_plan(
             
             try:
                 if action == "add_task":
+                    task_name = str(change.get("name") or "").strip()
+                    task_instruction = str(change.get("instruction") or "").strip()
+                    if not task_name:
+                        failed_changes.append({"change": change, "error": "name required for add_task"})
+                        continue
+                    if not task_instruction:
+                        failed_changes.append({"change": change, "error": "instruction required for add_task"})
+                        continue
+
                     # Find parent_id (default to root)
                     parent_id = change.get("parent_id")
                     if parent_id is None:
@@ -509,9 +574,9 @@ async def _optimize_plan(
                     
                     node = repo.create_task(
                         plan_id,
-                        name=change.get("name", "New Task"),
+                        name=task_name,
                         status="pending",
-                        instruction=change.get("instruction"),
+                        instruction=task_instruction,
                         parent_id=parent_id,
                         dependencies=change.get("dependencies"),
                     )
@@ -542,6 +607,26 @@ async def _optimize_plan(
                             "task_id": task_id,
                             "updated_fields": list(update_kwargs.keys()),
                         })
+                    else:
+                        failed_changes.append({
+                            "change": change,
+                            "error": (
+                                "No supported update fields provided for update_task. "
+                                "Use top-level name/instruction/dependencies or nested updated_fields."
+                            ),
+                        })
+
+                elif action == "update_description":
+                    new_description = str(change.get("description") or "").strip()
+                    if not new_description:
+                        failed_changes.append({"change": change, "error": "description required for update_description"})
+                        continue
+
+                    _apply_plan_description_update(repo, plan_id, new_description)
+                    applied_changes.append({
+                        "action": "update_description",
+                        "updated_fields": ["description"],
+                    })
                     
                 elif action == "delete_task":
                     task_id = change.get("task_id")
@@ -574,7 +659,7 @@ async def _optimize_plan(
                         "change": change,
                         "error": (
                             f"Unknown action: {action}. "
-                            f"Valid actions: add_task, update_task, delete_task, reorder_task. "
+                            f"Valid actions: add_task, update_task, update_description, delete_task, reorder_task. "
                             f'Example: {{"action": "update_task", "task_id": 4, "name": "New Name"}}'
                         ),
                     })
@@ -588,8 +673,16 @@ async def _optimize_plan(
         # Refresh plan tree
         plan_tree = repo.get_plan_tree(plan_id)
         
+        if not applied_changes and not failed_changes:
+            failed_changes.append(
+                {
+                    "change": None,
+                    "error": "No valid optimize changes were applied.",
+                }
+            )
+
         return {
-            "success": len(failed_changes) == 0,
+            "success": len(failed_changes) == 0 and len(applied_changes) > 0,
             "operation": "optimize",
             "plan_id": plan_id,
             "applied_changes": len(applied_changes),
@@ -599,7 +692,14 @@ async def _optimize_plan(
                 "failed": failed_changes,
             },
             "current_task_count": len(plan_tree.nodes),
-            "message": f"Applied {len(applied_changes)} changes, {len(failed_changes)} failed. Use review to check the result.",
+            "message": (
+                f"Applied {len(applied_changes)} changes, {len(failed_changes)} failed. "
+                + (
+                    "Use review to check the result."
+                    if applied_changes
+                    else "No real plan updates were applied."
+                )
+            ),
         }
         
     except Exception as e:
@@ -688,7 +788,7 @@ Supports creating plans, reviewing them for issues, and optimizing based on feed
 Use this tool to create well-structured plans with iterative improvement.
 
 WORKFLOW for Plan Creation:
-1. First use web_search to research relevant technologies/methods
+1. Use web_search first only when current external evidence or best practices materially affect the plan
 2. Create initial plan with 'create' operation
 3. Use 'review' to check dependencies and granularity
 4. If issues found, use 'optimize' to fix them
@@ -696,9 +796,14 @@ WORKFLOW for Plan Creation:
 
 OPTIMIZE CHANGE FORMAT (each change MUST have an "action" field):
 - update_task: {"action": "update_task", "task_id": 4, "name": "New Name", "instruction": "New details"}
+- update_description: {"action": "update_description", "description": "New plan summary"}
 - add_task: {"action": "add_task", "name": "Task Name", "instruction": "Details", "parent_id": 1}
 - delete_task: {"action": "delete_task", "task_id": 5}
-- reorder_task: {"action": "reorder_task", "task_id": 3, "new_position": 1}""",
+- reorder_task: {"action": "reorder_task", "task_id": 3, "new_position": 1}
+
+Legacy compatibility:
+- Nested `updated_fields` / `updates` / `fields` payloads are accepted and flattened.
+- `task_name` / `task_instruction` aliases are accepted for add_task/update_task.""",
     "category": "planning",
     "parameters_schema": {
         "type": "object",
@@ -745,11 +850,18 @@ OPTIMIZE CHANGE FORMAT (each change MUST have an "action" field):
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["add_task", "update_task", "delete_task", "reorder_task"],
+                            "enum": [
+                                "add_task",
+                                "update_task",
+                                "update_description",
+                                "delete_task",
+                                "reorder_task",
+                            ],
                         },
                         "task_id": {"type": "integer"},
                         "name": {"type": "string"},
                         "instruction": {"type": "string"},
+                        "description": {"type": "string"},
                         "parent_id": {"type": "integer"},
                         "dependencies": {"type": "array", "items": {"type": "integer"}},
                         "new_position": {"type": "integer"},
