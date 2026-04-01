@@ -15,22 +15,11 @@ PROFESSIONAL_STYLE_INSTRUCTION = (
 
 
 def sanitize_professional_response_text(text: str | None) -> str:
-    """Remove decorative emoji prefixes while preserving the main text content."""
-    raw = str(text or "")
-    if not raw.strip():
-        return raw
+    """Pass-through: emoji filtering is now handled at the prompt level only.
 
-    cleaned_lines = []
-    for line in raw.splitlines():
-        match = _MARKDOWN_PREFIX_RE.match(line)
-        if not match:
-            cleaned_lines.append(line)
-            continue
-        prefix, remainder = match.groups()
-        stripped_remainder = _LEADING_EMOJI_RE.sub("", remainder).lstrip()
-        cleaned_lines.append(f"{prefix}{stripped_remainder}".rstrip())
-
-    cleaned = "\n".join(cleaned_lines)
-    cleaned = _EMOJI_ONLY_LINE_RE.sub("", cleaned)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip()
+    Previously this function stripped decorative emoji prefixes and
+    emoji-only lines.  That was overly aggressive — the LLM prompt
+    already instructs a professional tone, so post-processing removal
+    is no longer needed.
+    """
+    return str(text or "").strip()
