@@ -1,6 +1,6 @@
 import { ChatActionSummary, PlanSyncEventDetail, PlanSyncEventType } from '@/types';
 
-const PLAN_CREATION_ACTIONS = new Set(['create_plan', 'clone_plan', 'import_plan']);
+const PLAN_CREATION_ACTIONS = new Set(['create_plan', 'clone_plan', 'import_plan', 'create']);
 const PLAN_DELETION_ACTIONS = new Set(['delete_plan', 'archive_plan']);
 const PLAN_UPDATE_ACTIONS = new Set([
   'update_plan',
@@ -8,6 +8,11 @@ const PLAN_UPDATE_ACTIONS = new Set([
   'update_plan_metadata',
   'set_plan_metadata',
   'assign_plan',
+  'optimize_plan',
+  'review_plan',
+  'optimize',   // DeepThink path: parameters.operation
+  'review',     // DeepThink path: parameters.operation
+  'get',        // Plan refresh also triggers cache invalidation
 ]);
 const TASK_MUTATION_ACTIONS = new Set([
   'create_task',
@@ -214,14 +219,23 @@ export const derivePlanSyncEventsFromActions = (
     }
 
     let eventType: PlanSyncEventType | null = null;
-    if (kind === 'plan_operation') {
-      if (PLAN_CREATION_ACTIONS.has(name)) {
+    // plan_operation actions arrive via two paths:
+    //   1. kind='plan_operation', name='create_plan' (direct SSE)
+    //   2. kind='tool_operation', name='plan_operation', parameters.operation='create' (DeepThink)
+    // Normalize to a single effectiveName for matching.
+    const isPlanOp = kind === 'plan_operation'
+      || (kind === 'tool_operation' && name === 'plan_operation');
+    const effectiveName = isPlanOp && kind === 'tool_operation'
+      ? normalizeActionName(action?.parameters?.operation ?? action?.details?.operation)
+      : name;
+    if (isPlanOp) {
+      if (PLAN_CREATION_ACTIONS.has(effectiveName)) {
         eventType = 'plan_created';
-      } else if (PLAN_DELETION_ACTIONS.has(name)) {
+      } else if (PLAN_DELETION_ACTIONS.has(effectiveName)) {
         eventType = 'plan_deleted';
-      } else if (PLAN_UPDATE_ACTIONS.has(name)) {
+      } else if (PLAN_UPDATE_ACTIONS.has(effectiveName)) {
         eventType = 'plan_updated';
-      } else if (TASK_AFFECTING_PLAN_ACTIONS.has(name)) {
+      } else if (TASK_AFFECTING_PLAN_ACTIONS.has(effectiveName)) {
         eventType = 'task_changed';
       }
     } else if (kind === 'task_operation') {
