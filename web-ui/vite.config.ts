@@ -101,6 +101,17 @@ export default defineConfig(({ mode }) => {
       host: devServerHost,
       port: devServerPort,
       strictPort: true,
+      watch: {
+        // Exclude large data directories from fs watching to avoid ENOSPC
+        ignored: [
+          '**/phagescope/**',
+          '**/runtime/**',
+          '**/results/**',
+          '**/data/**',
+          '**/log/**',
+          '**/.git/**',
+        ],
+      },
       proxy: {
         '/api': {
           target: apiBaseUrl,
