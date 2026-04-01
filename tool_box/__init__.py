@@ -14,6 +14,7 @@ from .cache import (
     get_memory_cache,
     get_persistent_cache,
 )
+from .context import ToolContext
 from .client import MCPToolBoxClient
 from .integration import (
     ToolBoxIntegration,
@@ -36,6 +37,7 @@ __all__ = [
     "ToolBoxIntegration",
     "ToolBoxLLMIntegration",
     "SmartToolRouter",
+    "ToolContext",
     # Integration functions
     "initialize_toolbox",
     "list_available_tools",

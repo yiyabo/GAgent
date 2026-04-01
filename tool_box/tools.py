@@ -14,7 +14,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ToolDefinition:
-    """Tool definition with metadata"""
+    """Tool definition with metadata.
+
+    Core fields (required):
+        name, description, category, parameters_schema, handler
+
+    Orchestration metadata (optional, backward-compatible defaults):
+        is_read_only       — tool never mutates external state (e.g. web_search, grep)
+        is_concurrent_safe — safe to run in parallel with other concurrent-safe tools
+        is_destructive     — tool may delete data, send emails, etc.
+        search_hint        — extra keywords for semantic tool selection
+
+    All new fields default to conservative values so existing tool dicts
+    continue to work without modification.
+    """
 
     name: str
     description: str
@@ -25,6 +38,12 @@ class ToolDefinition:
     author: str = "ToolBox"
     tags: List[str] = field(default_factory=list)
     examples: List[str] = field(default_factory=list)
+
+    # --- orchestration metadata (Phase 1.1) ---
+    is_read_only: bool = False
+    is_concurrent_safe: bool = False
+    is_destructive: bool = False
+    search_hint: str = ""
 
 
 class ToolRegistry:
@@ -122,6 +141,9 @@ class ToolRegistry:
             "tags": tool.tags,
             "examples": tool.examples,
             "parameters_schema": tool.parameters_schema,
+            "is_read_only": tool.is_read_only,
+            "is_concurrent_safe": tool.is_concurrent_safe,
+            "is_destructive": tool.is_destructive,
         }
 
 
@@ -144,6 +166,11 @@ def register_tool(
     author: str = "ToolBox",
     tags: Optional[List[str]] = None,
     examples: Optional[List[str]] = None,
+    # --- orchestration metadata (Phase 1.1) ---
+    is_read_only: bool = False,
+    is_concurrent_safe: bool = False,
+    is_destructive: bool = False,
+    search_hint: str = "",
 ) -> None:
     """Convenience function to register a tool"""
     tool_def = ToolDefinition(
@@ -156,6 +183,10 @@ def register_tool(
         author=author,
         tags=tags or [],
         examples=examples or [],
+        is_read_only=is_read_only,
+        is_concurrent_safe=is_concurrent_safe,
+        is_destructive=is_destructive,
+        search_hint=search_hint,
     )
 
     _tool_registry.register_tool(tool_def)

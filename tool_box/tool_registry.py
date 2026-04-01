@@ -38,6 +38,89 @@ from .bio_tools import bio_tools_tool
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Orchestration metadata for tools.
+# Keys match ToolDefinition fields added in Phase 1.1.
+# Only tools that differ from the conservative defaults need entries here;
+# tools not listed get is_read_only=False, is_concurrent_safe=False, etc.
+# ---------------------------------------------------------------------------
+_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
+    # --- read-only & concurrent-safe: pure information retrieval ---
+    "web_search": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "search web internet query google perplexity",
+    },
+    "literature_pipeline": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "paper literature pubmed scholar citation",
+    },
+    "document_reader": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "read pdf docx document parse extract",
+    },
+    "vision_reader": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "image screenshot ocr visual analyze picture",
+    },
+    "graph_rag": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "knowledge graph rag entity relation",
+    },
+    "sequence_fetch": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "ncbi genbank sequence fasta accession fetch",
+    },
+    "database_query": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "sql database query select table",
+    },
+    "deeppl": {
+        "is_concurrent_safe": True,
+        "search_hint": "phage lifestyle prediction temperate lytic",
+    },
+    # --- read-only but NOT concurrent-safe (heavyweight / stateful) ---
+    "result_interpreter": {
+        "is_read_only": True,
+        "search_hint": "interpret analyze result data summary",
+    },
+    # --- mutating tools (default: not concurrent-safe) ---
+    "file_operations": {
+        "search_hint": "file read write copy move delete list",
+    },
+    "phagescope": {
+        "search_hint": "phage bacteriophage annotation pipeline submit",
+    },
+    "bio_tools": {
+        "search_hint": "bioinformatics blast assembly alignment annotation",
+    },
+    "code_executor": {
+        "search_hint": "python code execute run script data analysis plot",
+    },
+    "terminal_session": {
+        "is_destructive": True,
+        "search_hint": "ssh terminal shell remote command server",
+    },
+    "manuscript_writer": {
+        "search_hint": "manuscript paper write draft nature science",
+    },
+    "review_pack_writer": {
+        "search_hint": "review response rebuttal referee comment",
+    },
+    "plan_operation": {
+        "search_hint": "plan create review optimize task decompose",
+    },
+    "deliverable_submit": {
+        "search_hint": "deliverable artifact submit publish output",
+    },
+}
+
 # Standard tools follow the common schema:
 #   name, description, category, parameters_schema, handler, tags?, examples?
 _STANDARD_TOOLS: List[Dict[str, Any]] = [
@@ -81,29 +164,39 @@ _CUSTOM_TOOLS: List[Dict[str, Any]] = [
 ]
 
 
+def _extract_registration_kwargs(tool_def: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract keyword arguments for register_tool() from a tool definition dict.
+
+    Orchestration metadata is merged from three sources (highest priority last):
+    1. Conservative defaults (all False / empty)
+    2. ``_TOOL_METADATA`` lookup by tool name
+    3. Inline keys in the tool_def dict itself
+    """
+    name = tool_def["name"]
+    meta = _TOOL_METADATA.get(name, {})
+    return {
+        "name": name,
+        "description": tool_def["description"],
+        "category": tool_def["category"],
+        "parameters_schema": tool_def["parameters_schema"],
+        "handler": tool_def["handler"],
+        "tags": tool_def.get("tags", []),
+        "examples": tool_def.get("examples", []),
+        # orchestration metadata — inline > _TOOL_METADATA > default
+        "is_read_only": tool_def.get("is_read_only", meta.get("is_read_only", False)),
+        "is_concurrent_safe": tool_def.get("is_concurrent_safe", meta.get("is_concurrent_safe", False)),
+        "is_destructive": tool_def.get("is_destructive", meta.get("is_destructive", False)),
+        "search_hint": tool_def.get("search_hint", meta.get("search_hint", "")),
+    }
+
+
 def register_all_tools() -> None:
     """Register every built-in tool from the declarative definitions."""
     for tool_def in _STANDARD_TOOLS:
-        register_tool(
-            name=tool_def["name"],
-            description=tool_def["description"],
-            category=tool_def["category"],
-            parameters_schema=tool_def["parameters_schema"],
-            handler=tool_def["handler"],
-            tags=tool_def.get("tags", []),
-            examples=tool_def.get("examples", []),
-        )
+        register_tool(**_extract_registration_kwargs(tool_def))
 
     for tool_def in _CUSTOM_TOOLS:
-        register_tool(
-            name=tool_def["name"],
-            description=tool_def["description"],
-            category=tool_def["category"],
-            parameters_schema=tool_def["parameters_schema"],
-            handler=tool_def["handler"],
-            tags=tool_def.get("tags", []),
-            examples=tool_def.get("examples", []),
-        )
+        register_tool(**_extract_registration_kwargs(tool_def))
 
     logger.info(
         "Registered %d built-in tools",

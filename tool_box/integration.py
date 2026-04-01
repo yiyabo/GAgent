@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from .call_utils import prepare_handler_kwargs
 from .client import MCPToolBoxClient
+from .context import ToolContext
 from .tools import get_tool_registry
 from .tool_registry import register_all_tools
 
@@ -65,18 +66,32 @@ class ToolBoxIntegration:
             for tool in tools
         ]
 
-    async def call_tool(self, registered_tool_name: str, **kwargs) -> Any:
-        """Call a tool by name
-        
+    async def call_tool(
+        self,
+        registered_tool_name: str,
+        *,
+        tool_context: Optional[ToolContext] = None,
+        **kwargs,
+    ) -> Any:
+        """Call a tool by name.
+
         Args:
-            registered_tool_name: Name of the tool as registered in the registry
-            **kwargs: Parameters to pass to the tool handler
+            registered_tool_name: Name of the tool as registered in the registry.
+            tool_context: Optional structured execution context.  If the
+                handler declares a ``tool_context`` parameter it will receive
+                this object; otherwise ``prepare_handler_kwargs`` drops it.
+            **kwargs: Parameters to pass to the tool handler.
         """
         registry = get_tool_registry()
         tool_def = registry.get_tool(registered_tool_name)
 
         if not tool_def:
             raise ValueError(f"Tool '{registered_tool_name}' not found")
+
+        # Inject tool_context into kwargs so prepare_handler_kwargs can
+        # deliver it to handlers that declare the parameter.
+        if tool_context is not None:
+            kwargs["tool_context"] = tool_context
 
         safe_kwargs = prepare_handler_kwargs(tool_def.handler, kwargs)
         return await tool_def.handler(**safe_kwargs)
@@ -124,14 +139,20 @@ async def list_available_tools() -> List[Dict[str, Any]]:
 
 
 async def execute_tool(registered_tool_name: str, **kwargs) -> Any:
-    """Execute a tool with given parameters
-    
+    """Execute a tool with given parameters.
+
     Args:
-        registered_tool_name: Name of the tool as registered (e.g., 'bio_tools', 'vision_reader')
-        **kwargs: Parameters to pass to the tool handler
+        registered_tool_name: Name of the tool as registered (e.g., 'bio_tools', 'vision_reader').
+        **kwargs: Parameters to pass to the tool handler.
+            May include ``tool_context=ToolContext(...)`` which is forwarded
+            to handlers that declare the parameter.
     """
     integration = await get_toolbox_integration()
-    return await integration.call_tool(registered_tool_name, **kwargs)
+    # Pop tool_context so it's passed as a dedicated kwarg to call_tool
+    tool_context = kwargs.pop("tool_context", None)
+    return await integration.call_tool(
+        registered_tool_name, tool_context=tool_context, **kwargs
+    )
 
 
 async def search_available_tools(query: str) -> List[Dict[str, Any]]:

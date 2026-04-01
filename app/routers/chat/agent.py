@@ -1893,6 +1893,23 @@ class StructuredChatAgent:
                 status="completed",
             )
 
+        async def on_tool_progress(tool_name: str, data: Dict[str, Any]) -> None:
+            message = str(data.get("message") or "").strip()
+            stage = str(data.get("stage") or "running").strip()
+            if not message:
+                return
+            status = "completed" if stage == "completed" else "active"
+            await _emit_progress_status(
+                phase="gathering",
+                label=_truncate_progress_text(message, 72),
+                details=_normalize_progress_text(
+                    str(data.get("detail") or "")
+                ) or None,
+                iteration=active_tool_iteration,
+                tool=tool_name,
+                status=status,
+            )
+
         async def relay_job_events() -> None:
             if deep_think_job_queue is None:
                 return
@@ -2589,6 +2606,7 @@ class StructuredChatAgent:
                     "on_final_delta": on_final_delta,
                     "on_tool_start": on_tool_start,
                     "on_tool_result": on_tool_result,
+                    "on_tool_progress": on_tool_progress,
                     "on_artifact": on_artifact,
                     "enable_thinking": self._resolve_thinking_enabled(),
                     "thinking_budget": route_profile.thinking_budget,
