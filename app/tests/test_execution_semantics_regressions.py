@@ -274,20 +274,14 @@ def test_optional_file_read_failure_remains_failed(
     assert result.get("success") is False
 
 
-def test_local_inspect_blocks_code_executor_before_execution(
+def test_tools_floor_allows_code_executor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """With the simplified 2-mode routing, code_executor is available at 'tools' floor."""
     agent = _build_minimal_agent()
     agent.session_id = None
     agent.extra_context = {
-        "capability_floor": "local_inspect",
-        "active_subject": {
-            "kind": "workspace",
-            "canonical_ref": "/tmp/demo",
-            "display_ref": "/tmp/demo",
-            "verification_state": "unresolved",
-            "salience": 5,
-        },
+        "capability_floor": "tools", "intent_type": "local_inspect",
     }
 
     monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
@@ -304,9 +298,7 @@ def test_local_inspect_blocks_code_executor_before_execution(
         agent, action, "code_executor", {"task": "inspect"},
     )
 
-    assert guard_result is not None
-    assert guard_result.success is False
-    assert guard_result.details["error"] == "tool_not_available"
+    assert guard_result is None  # No block — code_executor is allowed
 
 
 def test_local_read_blocks_file_operations_write(
@@ -314,7 +306,7 @@ def test_local_read_blocks_file_operations_write(
 ) -> None:
     agent = _build_minimal_agent()
     agent.session_id = None
-    agent.extra_context = {"capability_floor": "local_read"}
+    agent.extra_context = {"capability_floor": "tools", "intent_type": "local_read"}
 
     action = LLMAction(
         kind="tool_operation",
@@ -362,7 +354,8 @@ def test_grounded_local_answer_overrides_unverified_success_claim() -> None:
         agent,
         "我已经读取了目录内容，并看到了 result.json 和 preview.json。",
         SimpleNamespace(
-            capability_floor="local_inspect",
+            capability_floor="tools",
+            intent_type="local_inspect",
             effective_user_message="都有哪些数据在里面哇",
         ),
     )
@@ -378,7 +371,7 @@ def test_local_tool_path_alias_is_normalized_to_active_subject(
     agent.session_id = None
     canonical_ref = str((Path.cwd() / "data/demo").resolve())
     agent.extra_context = {
-        "capability_floor": "local_inspect",
+        "capability_floor": "tools", "intent_type": "local_inspect",
         "active_subject": {
             "kind": "workspace",
             "canonical_ref": canonical_ref,

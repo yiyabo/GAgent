@@ -26,10 +26,7 @@ IntentType = Literal[
 ]
 CapabilityFloor = Literal[
     "plain_chat",
-    "local_read",
-    "local_inspect",
-    "research",
-    "execute",
+    "tools",
 ]
 SubjectKind = Literal["none", "file", "directory", "workspace"]
 
@@ -718,61 +715,37 @@ _REFERENTIAL_CUES = (
     "this one",
 )
 
+# All tools available when capability_floor == "tools".
+# Inspired by Claude Code: the LLM sees every tool and decides which to use.
+_ALL_TOOLS: List[str] = [
+    "file_operations",
+    "document_reader",
+    "vision_reader",
+    "result_interpreter",
+    "web_search",
+    "graph_rag",
+    "literature_pipeline",
+    "review_pack_writer",
+    "manuscript_writer",
+    "sequence_fetch",
+    "bio_tools",
+    "deeppl",
+    "phagescope",
+    "code_executor",
+    "plan_operation",
+    "deliverable_submit",
+    "terminal_session",
+    "verify_task",
+]
+
 _SUCCESSOR_TOOLSET: Dict[CapabilityFloor, List[str]] = {
     "plain_chat": [],
-    "local_read": [
-        "file_operations",
-        "document_reader",
-        "vision_reader",
-    ],
-    "local_inspect": [
-        "file_operations",
-        "document_reader",
-        "vision_reader",
-        "result_interpreter",
-    ],
-    "research": [
-        "file_operations",
-        "document_reader",
-        "vision_reader",
-        "web_search",
-        "graph_rag",
-        "literature_pipeline",
-        "review_pack_writer",
-        "manuscript_writer",
-        "sequence_fetch",
-        "bio_tools",
-        "deeppl",
-        "phagescope",
-    ],
-    "execute": [
-        "file_operations",
-        "document_reader",
-        "vision_reader",
-        "result_interpreter",
-        "web_search",
-        "graph_rag",
-        "literature_pipeline",
-        "review_pack_writer",
-        "manuscript_writer",
-        "sequence_fetch",
-        "bio_tools",
-        "deeppl",
-        "phagescope",
-        "code_executor",
-        "plan_operation",
-        "deliverable_submit",
-        "terminal_session",
-        "verify_task",
-    ],
+    "tools": list(_ALL_TOOLS),
 }
 
 _CAPABILITY_ORDER: Dict[CapabilityFloor, int] = {
     "plain_chat": 0,
-    "local_read": 1,
-    "local_inspect": 2,
-    "research": 3,
-    "execute": 4,
+    "tools": 1,
 }
 
 
@@ -1120,17 +1093,14 @@ def determine_capability_floor(
     *,
     intent_type: IntentType,
 ) -> tuple[CapabilityFloor, List[str]]:
-    if intent_type == "local_read":
-        return "local_read", ["capability_local_read"]
-    if intent_type == "local_inspect":
-        return "local_inspect", ["capability_local_inspect"]
-    if intent_type == "local_mutation":
-        return "execute", ["capability_local_mutation", "capability_execute"]
-    if intent_type == "research":
-        return "research", ["capability_research"]
-    if intent_type == "execute_task":
-        return "execute", ["capability_execute"]
-    return "plain_chat", []
+    """Binary capability: chat (no tools) vs tools (all tools).
+
+    The LLM itself decides which tools to use — no dynamic filtering.
+    IntentType is preserved for prompt engineering and request_tier control.
+    """
+    if intent_type == "chat":
+        return "plain_chat", []
+    return "tools", [f"capability_{intent_type}"]
 
 
 def resolve_subject_resolution(

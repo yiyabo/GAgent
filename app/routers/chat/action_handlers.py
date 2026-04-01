@@ -743,7 +743,7 @@ def _enforce_capability_guard(
     tool_name: str,
     params: Dict[str, Any],
 ) -> Optional[AgentStep]:
-    capability_floor = str((getattr(agent, "extra_context", {}) or {}).get("capability_floor") or "execute").strip()
+    capability_floor = str((getattr(agent, "extra_context", {}) or {}).get("capability_floor") or "tools").strip()
     allowed_tools = set(allowed_tools_for_capability_floor(capability_floor)) if capability_floor else set()
     if capability_floor and tool_name not in allowed_tools:
         return _capability_guard_failure(
@@ -758,7 +758,10 @@ def _enforce_capability_guard(
             error_code="tool_not_available",
         )
 
-    if tool_name == "file_operations" and capability_floor in {"local_read", "local_inspect", "research"}:
+    # File mutation guard: use intent_type (not capability_floor) to decide
+    # whether mutating file ops are allowed.
+    intent_type = str((getattr(agent, "extra_context", {}) or {}).get("intent_type") or "").strip().lower()
+    if tool_name == "file_operations" and intent_type in {"local_read", "local_inspect", "research"}:
         operation = str(params.get("operation") or "").strip().lower()
         if operation in _MUTATING_FILE_OPERATIONS:
             return _capability_guard_failure(
@@ -768,7 +771,7 @@ def _enforce_capability_guard(
                 params=params,
                 message=(
                     f"file_operations {operation} requires execute capability; "
-                    f"current capability floor is '{capability_floor}'."
+                    f"current intent_type is '{intent_type}'."
                 ),
                 error_code="operation_not_permitted",
             )
@@ -780,7 +783,7 @@ def _enforce_capability_guard(
                 params=params,
                 message=(
                     f"file_operations {operation} is not allowed under "
-                    f"'{capability_floor}'."
+                    f"intent_type '{intent_type}'."
                 ),
                 error_code="operation_not_permitted",
             )
