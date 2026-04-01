@@ -116,11 +116,11 @@ class TestExecuteWithConcurrency:
         assert elapsed >= 0.18, f"Expected sequential execution, but took {elapsed:.2f}s"
 
     @pytest.mark.asyncio
-    async def test_mixed_batch_safe_first_then_unsafe(self):
-        """Safe tools run in parallel, then unsafe tools run sequentially."""
+    async def test_mixed_batch_preserves_order_segments(self):
+        """Order-preserving segmentation: [safe, unsafe, safe] runs as 3 segments."""
         execution_order = []
 
-        async def make_factory(name, delay, safe):
+        def make_factory(name, delay):
             async def _f():
                 execution_order.append(f"start:{name}")
                 await asyncio.sleep(delay)
@@ -129,20 +129,54 @@ class TestExecuteWithConcurrency:
             return _f
 
         calls = [
-            PendingToolCall(0, "web_search", await make_factory("web_search", 0.05, True), True),
-            PendingToolCall(1, "code_exec", await make_factory("code_exec", 0.05, False), False),
-            PendingToolCall(2, "grep", await make_factory("grep", 0.05, True), True),
+            PendingToolCall(0, "web_search", make_factory("web_search", 0.05), True),
+            PendingToolCall(1, "code_exec", make_factory("code_exec", 0.05), False),
+            PendingToolCall(2, "grep", make_factory("grep", 0.05), True),
         ]
         results = await execute_with_concurrency(calls)
 
         assert len(results) == 3
-        # Safe tools (web_search, grep) should start before code_exec ends
-        ws_start = execution_order.index("start:web_search")
-        grep_start = execution_order.index("start:grep")
+        # web_search (safe, segment 1) must FINISH before code_exec (unsafe, segment 2) STARTS
+        ws_end = execution_order.index("end:web_search")
         code_start = execution_order.index("start:code_exec")
-        # Both safe tools should start before the unsafe one
-        assert ws_start < code_start
-        assert grep_start < code_start
+        assert ws_end < code_start, f"safe segment must complete before unsafe: {execution_order}"
+
+        # code_exec (unsafe, segment 2) must FINISH before grep (safe, segment 3) STARTS
+        code_end = execution_order.index("end:code_exec")
+        grep_start = execution_order.index("start:grep")
+        assert code_end < grep_start, f"unsafe must complete before next safe segment: {execution_order}"
+
+    @pytest.mark.asyncio
+    async def test_consecutive_safe_tools_run_in_parallel(self):
+        """Two consecutive safe tools in same segment run in parallel."""
+        execution_order = []
+
+        def make_factory(name, delay):
+            async def _f():
+                execution_order.append(f"start:{name}")
+                await asyncio.sleep(delay)
+                execution_order.append(f"end:{name}")
+                return {"tool": name, "success": True}
+            return _f
+
+        calls = [
+            PendingToolCall(0, "search_a", make_factory("search_a", 0.1), True),
+            PendingToolCall(1, "search_b", make_factory("search_b", 0.1), True),
+            PendingToolCall(2, "code_exec", make_factory("code_exec", 0.05), False),
+        ]
+        t0 = time.monotonic()
+        results = await execute_with_concurrency(calls)
+        elapsed = time.monotonic() - t0
+
+        assert len(results) == 3
+        # search_a and search_b should run in parallel (~0.1s), then code_exec (~0.05s)
+        # Total should be ~0.15s, not ~0.25s
+        assert elapsed < 0.22, f"Expected parallel safe segment, took {elapsed:.2f}s"
+        # Both searches start before either ends (parallel proof)
+        a_start = execution_order.index("start:search_a")
+        b_start = execution_order.index("start:search_b")
+        a_end = execution_order.index("end:search_a")
+        assert b_start < a_end, "search_b should start before search_a ends (parallel)"
 
     @pytest.mark.asyncio
     async def test_results_returned_in_original_order(self):

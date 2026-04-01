@@ -1,10 +1,10 @@
-"""AsyncToolExecutor — concurrent-safe tool execution with safety classification.
+"""AsyncToolExecutor — concurrent-safe tool execution with order-preserving segmentation.
 
-Splits tool calls into two buckets based on ``ToolDefinition.is_concurrent_safe``:
-- **Concurrent-safe** tools (web_search, grep, etc.) run in parallel via asyncio.gather
-- **Non-safe** tools (code_executor, phagescope, etc.) run sequentially after safe tools
-
-Results are returned in the original submission order regardless of completion order.
+Walks through tool calls in original index order and groups consecutive
+concurrent-safe calls for parallel execution.  When a non-safe call is
+encountered, the preceding safe batch is awaited first, then the unsafe
+call runs alone.  This preserves causal dependencies within a single
+LLM turn (e.g. write-then-read sequences).
 
 Phase 2.1 of the architecture evolution (see docs/architecture-evolution.md).
 """
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -30,79 +30,85 @@ class PendingToolCall:
     result: Optional[Dict[str, Any]] = None
 
 
+async def _run_one(call: PendingToolCall) -> None:
+    """Execute a single PendingToolCall and store its result."""
+    try:
+        call.result = await call.coroutine_factory()
+    except Exception as exc:
+        logger.warning(
+            "[AsyncToolExecutor] Tool %s raised: %s", call.tool_name, exc,
+        )
+        call.result = {
+            "success": False,
+            "error": str(exc),
+            "summary": f"{call.tool_name} failed: {exc}",
+        }
+
+
 async def execute_with_concurrency(
     calls: List[PendingToolCall],
 ) -> List[Dict[str, Any]]:
-    """Execute tool calls with concurrency control.
+    """Execute tool calls with order-preserving concurrency.
 
-    Concurrent-safe calls run in parallel; non-safe calls run sequentially
-    after all safe calls complete.  Results are returned in the original
-    ``index`` order.
+    Walks through *calls* in index order and segments them into runs of
+    consecutive concurrent-safe tools.  Each safe run executes in parallel;
+    each unsafe call executes alone after the preceding batch completes.
 
-    Args:
-        calls: List of PendingToolCall objects.  Each must have a
-            ``coroutine_factory`` that returns a fresh awaitable on each
-            invocation (do NOT pass an already-awaited coroutine).
+    Example ordering for ``[safe, safe, unsafe, safe]``::
 
-    Returns:
-        List of result dicts, sorted by ``index``.
+        asyncio.gather(safe_0, safe_1)   # parallel batch
+        await unsafe_2                    # sequential
+        await safe_3                      # single item, no gather overhead
+
+    Results are returned in the original ``index`` order.
     """
     if not calls:
         return []
 
-    # Single call — skip classification overhead
     if len(calls) == 1:
-        calls[0].result = await calls[0].coroutine_factory()
+        await _run_one(calls[0])
         return [calls[0].result]
 
-    safe = [c for c in calls if c.is_concurrent_safe]
-    unsafe = [c for c in calls if not c.is_concurrent_safe]
+    # Segment into consecutive runs: [(is_safe, [call, ...]), ...]
+    segments: List[tuple[bool, List[PendingToolCall]]] = []
+    for call in calls:
+        if segments and segments[-1][0] == call.is_concurrent_safe:
+            segments[-1][1].append(call)
+        else:
+            segments.append((call.is_concurrent_safe, [call]))
 
-    if safe:
-        logger.debug(
-            "[AsyncToolExecutor] Running %d concurrent-safe tool(s) in parallel: %s",
-            len(safe),
-            [c.tool_name for c in safe],
-        )
-        results = await asyncio.gather(
-            *[c.coroutine_factory() for c in safe],
-            return_exceptions=True,
-        )
-        for call, result in zip(safe, results):
-            if isinstance(result, BaseException):
-                logger.warning(
-                    "[AsyncToolExecutor] Concurrent tool %s raised: %s",
-                    call.tool_name,
-                    result,
-                )
-                call.result = {
-                    "success": False,
-                    "error": str(result),
-                    "summary": f"{call.tool_name} failed: {result}",
-                }
-            else:
-                call.result = result
-
-    for call in unsafe:
-        logger.debug(
-            "[AsyncToolExecutor] Running non-concurrent tool sequentially: %s",
-            call.tool_name,
-        )
-        try:
-            call.result = await call.coroutine_factory()
-        except Exception as exc:
-            logger.warning(
-                "[AsyncToolExecutor] Sequential tool %s raised: %s",
-                call.tool_name,
-                exc,
+    for is_safe, segment in segments:
+        if is_safe and len(segment) > 1:
+            logger.debug(
+                "[AsyncToolExecutor] Running %d concurrent-safe tool(s) in parallel: %s",
+                len(segment),
+                [c.tool_name for c in segment],
             )
-            call.result = {
-                "success": False,
-                "error": str(exc),
-                "summary": f"{call.tool_name} failed: {exc}",
-            }
+            results = await asyncio.gather(
+                *[c.coroutine_factory() for c in segment],
+                return_exceptions=True,
+            )
+            for call, result in zip(segment, results):
+                if isinstance(result, BaseException):
+                    logger.warning(
+                        "[AsyncToolExecutor] Concurrent tool %s raised: %s",
+                        call.tool_name, result,
+                    )
+                    call.result = {
+                        "success": False,
+                        "error": str(result),
+                        "summary": f"{call.tool_name} failed: {result}",
+                    }
+                else:
+                    call.result = result
+        else:
+            for call in segment:
+                logger.debug(
+                    "[AsyncToolExecutor] Running tool sequentially: %s",
+                    call.tool_name,
+                )
+                await _run_one(call)
 
-    # Return in original submission order
     calls.sort(key=lambda c: c.index)
     return [c.result for c in calls]
 
@@ -111,10 +117,9 @@ def classify_tool_concurrency(tool_name: str) -> bool:
     """Check if a tool is marked as concurrent-safe in the registry.
 
     Falls back to False (sequential) if the tool is not registered or
-    has no metadata.  Uses a lazy import to avoid circular dependency
-    (deep_think_agent → async_tool_executor → tool_box → deep_think_agent).
+    has no metadata.
     """
-    from tool_box.tools import get_tool_registry  # lazy to break circular import
+    from tool_box.tools import get_tool_registry
 
     registry = get_tool_registry()
     tool_def = registry.get_tool(tool_name)
