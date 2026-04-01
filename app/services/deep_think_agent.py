@@ -417,6 +417,7 @@ class DeepThinkAgent:
         on_reasoning_delta: Optional[Callable[[int, str], Any]] = None,
         steer_drain: Optional[Callable[[], List[str]]] = None,
         on_steer_ack: Optional[Callable[[str, int], Any]] = None,
+        on_tool_progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
         request_profile: Optional[Dict[str, Any]] = None,
     ):
         self.llm_client = llm_client
@@ -436,6 +437,7 @@ class DeepThinkAgent:
         self.on_reasoning_delta = on_reasoning_delta
         self.steer_drain = steer_drain
         self.on_steer_ack = on_steer_ack
+        self.on_tool_progress = on_tool_progress
         self.request_profile = dict(request_profile or {})
         self._pause_event = asyncio.Event()
         self._pause_event.set()
@@ -1387,6 +1389,17 @@ class DeepThinkAgent:
         context: Optional[Dict[str, Any]] = None,
         task_context: Optional[TaskExecutionContext] = None,
     ) -> DeepThinkResult:
+        from app.services.execution.async_tool_executor import (
+            PendingToolCall,
+            classify_tool_concurrency,
+            execute_with_concurrency,
+        )
+
+        from app.services.context.context_manager import (
+            ContextWindowManager,
+            build_summarization_prompt,
+        )
+
         context = dict(context or {})
         thinking_steps: List[ThinkingStep] = []
         tools_used: List[str] = []
@@ -1397,6 +1410,14 @@ class DeepThinkAgent:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_query},
         ]
+
+        llm_model = getattr(self.llm_client, "model", "") or ""
+        ctx_mgr = ContextWindowManager(model=llm_model)
+
+        async def _summarize_for_compaction(text: str) -> str:
+            prompt = build_summarization_prompt(text)
+            result = await self.llm_client.chat_async(prompt)
+            return str(result or "").strip()
 
         iteration = 0
         final_answer = ""
@@ -1429,6 +1450,10 @@ class DeepThinkAgent:
                         await self._safe_generic_callback(
                             self.on_steer_ack, steer_text, iteration + 1
                         )
+
+            messages = await ctx_mgr.compact_if_needed(
+                messages, summarizer=_summarize_for_compaction,
+            )
 
             iteration += 1
             current_step = ThinkingStep(
@@ -1505,18 +1530,18 @@ class DeepThinkAgent:
                     if self.on_thinking:
                         await self._safe_callback(current_step)
 
-                    tool_results = await asyncio.gather(
-                        *[
-                            self._execute_native_tool_call(tc=tc, iteration=iteration, index=idx)
-                            for idx, tc in enumerate(executable_calls)
-                        ]
-                    )
-                    tool_results.sort(
-                        key=lambda item: (
-                            item.get("index", 0),
-                            str(item.get("tool_call_id") or ""),
-                        )
-                    )
+                    pending = []
+                    for idx, tc in enumerate(executable_calls):
+                        name = str(getattr(tc, "name", "") or "")
+                        pending.append(PendingToolCall(
+                            index=idx,
+                            tool_name=name,
+                            coroutine_factory=lambda _tc=tc, _idx=idx: self._execute_native_tool_call(
+                                tc=_tc, iteration=iteration, index=_idx,
+                            ),
+                            is_concurrent_safe=classify_tool_concurrency(name),
+                        ))
+                    tool_results = await execute_with_concurrency(pending)
 
                     for item in tool_results:
                         tool_name = str(item.get("tool_name") or "")
@@ -2464,10 +2489,20 @@ Respond with ONLY a JSON object:
         iteration: int,
         index: int,
     ) -> Dict[str, Any]:
+        from tool_box.context import ToolContext
+
         tool_name = str(getattr(tc, "name", "") or "")
         tool_params = getattr(tc, "arguments", {}) or {}
         tool_call_id = str(getattr(tc, "id", "") or f"native_{iteration}_{index}")
         timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(tool_name, self.tool_timeout)
+
+        async def _progress_bridge(data: Dict[str, Any]) -> None:
+            if self.on_tool_progress:
+                await self._safe_generic_callback(
+                    self.on_tool_progress, tool_name, data,
+                )
+
+        tool_ctx = ToolContext(on_progress=_progress_bridge)
 
         if self.on_tool_start and tool_name:
             await self._safe_generic_callback(self.on_tool_start, tool_name, tool_params)
@@ -2491,12 +2526,13 @@ Respond with ONLY a JSON object:
                 "evidence": [],
             }
 
+        params_with_ctx = {**tool_params, "tool_context": tool_ctx}
         attempt = 0
         while True:
             attempt += 1
             try:
                 tool_result = await asyncio.wait_for(
-                    self.tool_executor(tool_name, tool_params),
+                    self.tool_executor(tool_name, params_with_ctx),
                     timeout=timeout,
                 )
                 callback_success, callback_error = self._normalize_tool_callback_outcome(tool_result)

@@ -72,6 +72,17 @@ class UnifiedToolExecutor:
         if on_tool_start:
             await self._safe_callback(on_tool_start, tool_name, dict(safe_params))
 
+        from tool_box.context import ToolContext  # lazy to avoid circular import
+
+        tool_ctx = ToolContext(
+            session_id=context.session_id,
+            plan_id=context.plan_id,
+            task_id=context.task_id,
+            task_name=context.task_name,
+            job_id=context.current_job_id,
+            capability_floor=context.capability_floor or "execute",
+        )
+
         timeout = int(self.TOOL_TIMEOUTS.get(tool_name, self._default_timeout))
         if tool_name == "phagescope":
             act = str(safe_params.get("action") or "").strip().lower()
@@ -81,7 +92,7 @@ class UnifiedToolExecutor:
             from tool_box import execute_tool
 
             result = await asyncio.wait_for(
-                execute_tool(tool_name, **safe_params),
+                execute_tool(tool_name, tool_context=tool_ctx, **safe_params),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
