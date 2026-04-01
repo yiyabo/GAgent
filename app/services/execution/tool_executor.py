@@ -27,7 +27,7 @@ class ToolExecutionContext:
     current_job_id: Optional[str] = None
     channel: str = "plan_executor"
     mode: str = "task_execution"
-    capability_floor: str = "execute"
+    capability_floor: str = "tools"
     on_stdout: Optional[Callable[[str], Awaitable[None]]] = None
     on_stderr: Optional[Callable[[str], Awaitable[None]]] = None
 
@@ -257,17 +257,9 @@ class UnifiedToolExecutor:
                     safe_params["action"] = legacy_op.strip()
             safe_params.pop("operation", None)
 
-        capability_floor = str(context.capability_floor or "execute").strip().lower()
-        if tool_name == "file_operations" and capability_floor in {"local_read", "local_inspect", "research"}:
-            operation = str(safe_params.get("operation") or "").strip().lower()
-            if operation in _MUTATING_FILE_OPERATIONS:
-                raise ValueError(
-                    f"file_operations {operation} requires execute capability; current capability_floor={capability_floor}"
-                )
-            if operation and operation not in _READ_ONLY_FILE_OPERATIONS:
-                raise ValueError(
-                    f"file_operations {operation} is not allowed under capability_floor={capability_floor}"
-                )
+        # File mutation guard is enforced in action_handlers._enforce_capability_guard
+        # (keyed on intent_type). This path (UnifiedToolExecutor) is only used by
+        # plan execution which always runs with full "tools" capability.
 
         return safe_params
 
