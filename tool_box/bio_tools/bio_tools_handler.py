@@ -1144,7 +1144,11 @@ async def _execute_remote_bio_tool(
     params: Optional[Dict[str, Any]],
     timeout: Optional[int],
     remote_config: RemoteExecutionConfig,
+    report: Optional[Callable] = None,
 ) -> Dict[str, Any]:
+    async def _progress(stage: str, message: str) -> None:
+        if report:
+            await report(stage, message)
     missing = remote_config.missing_required()
     if missing:
         return {
@@ -1227,6 +1231,8 @@ async def _execute_remote_bio_tool(
             "error": mk_result.get("stderr") or mk_result.get("error") or "Failed to create remote run directory",
         }
 
+    if uploads:
+        await _progress("running", f"Uploading {len(uploads)} file(s) to remote server")
     upload_result = await upload_files(remote_config, auth, uploads)
     failed_upload = next((item for item in upload_result if not item.get("success")), None)
     if failed_upload:
@@ -1257,6 +1263,7 @@ async def _execute_remote_bio_tool(
     )
     docker_cmd = shlex.join(docker_args)
 
+    await _progress("running", f"Executing {tool_name} {operation} via Docker on remote")
     command_result = await execute_remote_command(
         remote_config,
         auth,
@@ -1264,6 +1271,7 @@ async def _execute_remote_bio_tool(
         timeout=timeout,
     )
 
+    await _progress("running", "Downloading results from remote server")
     sync_result = await download_remote_run_dir(
         remote_config,
         auth,
@@ -1306,12 +1314,18 @@ async def _execute_bio_tool_once(
     params: Optional[Dict[str, Any]],
     timeout: Optional[int],
     log_callback: Optional[Callable[[str, str], None]] = None,
+    tool_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
+    async def _report(stage: str, message: str) -> None:
+        if tool_context is not None and tool_context.on_progress:
+            await tool_context.on_progress({"stage": stage, "message": message})
+
     remote_config = RemoteExecutionConfig.from_env()
     requested_mode = _normalize_execution_mode(os.getenv("BIO_TOOLS_EXECUTION_MODE"))
     execution_mode = _effective_execution_mode(remote_config)
 
     if execution_mode == "remote":
+        await _report("started", f"Connecting to {remote_config.host} for {tool_name} {operation}")
         remote_result = await _execute_remote_bio_tool(
             tool_name=tool_name,
             operation=operation,
@@ -1320,8 +1334,12 @@ async def _execute_bio_tool_once(
             params=params,
             timeout=timeout,
             remote_config=remote_config,
+            report=_report,
         )
-        if requested_mode == "auto" and not remote_result.get("success"):
+        if remote_result.get("success"):
+            await _report("completed", f"{tool_name} {operation} completed successfully")
+        elif requested_mode == "auto":
+            await _report("running", "Remote failed, falling back to local execution")
             local_result = await _execute_local_bio_tool(
                 tool_name=tool_name,
                 operation=operation,
@@ -1335,10 +1353,17 @@ async def _execute_bio_tool_once(
             local_result["remote_fallback_error"] = remote_result.get(
                 "error", "remote execution failed"
             )
+            if local_result.get("success"):
+                await _report("completed", f"{tool_name} {operation} completed (local fallback)")
+            else:
+                await _report("failed", f"{tool_name} {operation} failed")
             return local_result
+        else:
+            await _report("failed", f"{tool_name} {operation} failed: {remote_result.get('error', 'unknown')}")
         return remote_result
 
-    return await _execute_local_bio_tool(
+    await _report("started", f"Executing {tool_name} {operation} locally via Docker")
+    local_result = await _execute_local_bio_tool(
         tool_name=tool_name,
         operation=operation,
         input_file=input_file,
@@ -1347,6 +1372,11 @@ async def _execute_bio_tool_once(
         timeout=timeout,
         log_callback=log_callback,
     )
+    if local_result.get("success"):
+        await _report("completed", f"{tool_name} {operation} completed successfully")
+    else:
+        await _report("failed", f"{tool_name} {operation} failed")
+    return local_result
 
 
 def _get_plan_job_manager() -> Any:
@@ -1591,6 +1621,7 @@ async def bio_tools_handler(
     background: Optional[bool] = None,
     job_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    tool_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     
@@ -1766,6 +1797,7 @@ async def bio_tools_handler(
                 output_file=output_file,
                 params=validated_params,
                 timeout=effective_timeout,
+                tool_context=tool_context,
             )
 
         if input_origin:
