@@ -196,7 +196,7 @@ _RUNTIME_CONTEXT_KEYS = (
     "last_subject_action_class",
     "recent_image_artifacts",
 )
-_LOCAL_CAPABILITY_FLOORS = {"local_read", "local_inspect"}
+_LOCAL_INTENT_TYPES = {"local_read", "local_inspect"}
 _BRIEF_EXECUTE_INTENT_TYPES = {
     "execute_task",
     "local_mutation",
@@ -712,7 +712,7 @@ def _apply_grounded_local_answer(
 ) -> str:
     intent_type = str(getattr(routing_decision, "intent_type", "") or "").strip().lower()
     if (
-        routing_decision.capability_floor not in _LOCAL_CAPABILITY_FLOORS
+        intent_type not in _LOCAL_INTENT_TYPES
         and intent_type != "local_mutation"
     ):
         return str(answer or "").strip()
