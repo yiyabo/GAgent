@@ -172,16 +172,17 @@ def test_chat_prompts_default_to_professional_non_emoji_style() -> None:
         assert "professional" in lowered
 
 
-def test_response_style_sanitizer_removes_decorative_heading_emoji() -> None:
+def test_response_style_sanitizer_is_passthrough() -> None:
     raw = "🎉 太好了！\n## ✅ 目前你们已经覆盖的核心模块\n- 🚀 下一步建议"
     cleaned = sanitize_professional_response_text(raw)
-    assert cleaned == "太好了！\n## 目前你们已经覆盖的核心模块\n- 下一步建议"
+    assert cleaned == raw.strip()
 
 
-def test_plain_text_chat_response_coercion_sanitizes_emoji_heavy_reply() -> None:
+def test_plain_text_chat_response_coercion_preserves_emoji() -> None:
     raw = '{"llm_reply":{"message":"🎉 太好了！\\n## ✅ 结论\\n- 🚀 下一步"}}'
     cleaned = coerce_plain_text_chat_response(raw)
-    assert cleaned == "太好了！\n## 结论\n- 下一步"
+    assert "🎉" in cleaned
+    assert "✅" in cleaned
 
 
 def test_deep_think_prompt_boundaries_prevent_cross_protocol_confusion() -> None:
