@@ -674,6 +674,7 @@ async def _execute_task_locally(
     work_dir: Optional[str] = None,
     data_dir: Optional[str] = None,
     extra_dirs: Optional[Sequence[str]] = None,
+    tool_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Execute a task using the unified local code execution backend.
 
@@ -684,6 +685,12 @@ async def _execute_task_locally(
     from app.services.llm.llm_service import get_llm_service
 
     logger.info("[CODE_EXECUTOR_LOCAL] Using local execution backend for task")
+
+    async def _report(stage: str, message: str, **extra: Any) -> None:
+        if tool_context is not None and tool_context.on_progress:
+            await tool_context.on_progress({"stage": stage, "message": message, **extra})
+
+    await _report("started", "Generating code for task")
 
     if not work_dir:
         import tempfile
@@ -717,6 +724,7 @@ async def _execute_task_locally(
             + "\n".join(f"- {path}" for path in readable_dirs)
         )
 
+    await _report("running", "Executing generated code")
     outcome = await execute_code_locally(
         task_title="Code execution task",
         task_description=task_desc,
@@ -725,6 +733,11 @@ async def _execute_task_locally(
         work_dir=work_dir,
         data_dir=data_dir,
     )
+
+    if outcome.success:
+        await _report("completed", "Code execution succeeded")
+    else:
+        await _report("failed", f"Execution failed: {outcome.error_category or 'unknown'}")
 
     result: Dict[str, Any] = {
         "success": outcome.success,
@@ -767,6 +780,7 @@ async def code_executor_handler(
     require_task_context: bool = True,
     on_stdout: Optional[Callable[[str], Awaitable[None]]] = None,
     on_stderr: Optional[Callable[[str], Awaitable[None]]] = None,
+    tool_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Execute a task using Claude Code (official CLI) with local file access.
@@ -961,6 +975,7 @@ async def code_executor_handler(
                 work_dir=str(task_work_dir),
                 data_dir=local_data_dir,
                 extra_dirs=allowed_dirs,
+                tool_context=tool_context,
             )
             produced_files = _collect_run_artifacts(
                 run_dir=task_work_dir,
