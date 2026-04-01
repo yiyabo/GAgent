@@ -98,14 +98,14 @@ def test_manual_deepthink_search_request_routes_to_research_with_tools() -> None
         default_max_iterations=64,
     )
     assert "web_search" in profile.available_tools
-    assert "deliverable_submit" not in profile.available_tools
+    assert "deliverable_submit" in profile.available_tools
 
 
 def test_manual_deepthink_mixed_plan_request_routes_to_execute_with_plan_tool() -> None:
     decision = resolve_request_routing(message="/think 很好啊，那你针对于这个，制作一个plan来看看吧")
 
     assert decision.intent_type == "execute_task"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
     assert decision.request_tier == "execute"
     assert decision.request_route_mode == "manual_deepthink"
     assert "intent_plan_request" in decision.route_reason_codes
@@ -129,7 +129,7 @@ def test_manual_deepthink_research_then_plan_request_still_routes_to_execute() -
     )
 
     assert decision.intent_type == "execute_task"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
     assert decision.request_tier == "execute"
     assert decision.request_route_mode == "manual_deepthink"
     assert "intent_plan_request" in decision.route_reason_codes
@@ -153,7 +153,7 @@ def test_bound_plan_request_defaults_to_updating_current_plan() -> None:
     )
 
     assert decision.intent_type == "execute_task"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
     assert decision.requires_structured_plan is True
     assert decision.plan_request_mode == "update_bound"
 
@@ -165,7 +165,7 @@ def test_bound_plan_request_with_explicit_new_language_creates_new_plan() -> Non
     )
 
     assert decision.intent_type == "execute_task"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
     assert decision.requires_structured_plan is True
     assert decision.plan_request_mode == "create_new"
 
@@ -178,7 +178,7 @@ def test_bound_plan_review_request_requires_review_operation() -> None:
     )
 
     assert decision.intent_type == "execute_task"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
     assert decision.requires_structured_plan is True
     assert decision.plan_request_mode == "update_bound"
     assert decision.requires_plan_review is True
@@ -203,7 +203,7 @@ def test_bound_plan_review_and_optimize_request_requires_both_operations() -> No
     )
 
     assert decision.intent_type == "execute_task"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
     assert decision.requires_structured_plan is True
     assert decision.plan_request_mode == "update_bound"
     assert decision.requires_plan_review is True
@@ -241,7 +241,7 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
 
     assert decision.request_tier == "light"
     assert decision.request_route_mode == "auto_deepthink"
-    assert decision.capability_floor == "local_inspect"
+    assert decision.capability_floor == "tools"
     assert decision.subject_resolution["source"] == "inherited"
     assert decision.simple_channel_allowed is False
 
@@ -253,8 +253,8 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
     )
     assert "file_operations" in profile.available_tools
     assert "result_interpreter" in profile.available_tools
-    assert "code_executor" not in profile.available_tools
-    assert "deliverable_submit" not in profile.available_tools
+    assert "code_executor" in profile.available_tools
+    assert "deliverable_submit" in profile.available_tools
     assert profile.max_iterations == 2
 
 
@@ -279,7 +279,7 @@ def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
 
     assert decision.request_tier == "light"
     assert decision.request_route_mode == "manual_deepthink"
-    assert decision.capability_floor == "local_inspect"
+    assert decision.capability_floor == "tools"
     assert decision.simple_channel_allowed is False
 
     profile = build_request_tier_profile(
@@ -290,7 +290,7 @@ def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
     )
     assert "file_operations" in profile.available_tools
     assert "result_interpreter" in profile.available_tools
-    assert "code_executor" not in profile.available_tools
+    assert "code_executor" in profile.available_tools
     assert profile.max_iterations == 3
 
 
@@ -314,7 +314,7 @@ def test_phagescope_remote_verify_elevates_to_research_with_phagescope_tool() ->
     )
 
     assert decision.intent_type == "research"
-    assert decision.capability_floor == "research"
+    assert decision.capability_floor == "tools"
     assert "intent_phagescope_remote_verify" in decision.route_reason_codes
     assert decision.request_tier == "research"
     assert decision.request_route_mode == "auto_deepthink"
@@ -338,7 +338,7 @@ def test_phagescope_task_download_outputs_elevates_to_research_without_anchor() 
     )
     assert decision.intent_type == "research"
     assert "intent_phagescope_task_result" in decision.route_reason_codes
-    assert decision.capability_floor == "research"
+    assert decision.capability_floor == "tools"
     profile = build_request_tier_profile(
         decision,
         default_thinking_budget=10000,
@@ -411,14 +411,14 @@ def test_inherited_subject_data_inquiry_does_not_include_phagescope_without_remo
         ],
     )
 
-    assert decision.capability_floor == "local_inspect"
+    assert decision.capability_floor == "tools"
     profile = build_request_tier_profile(
         decision,
         default_thinking_budget=10000,
         simple_thinking_budget=2000,
         default_max_iterations=64,
     )
-    assert "phagescope" not in profile.available_tools
+    assert "phagescope" in profile.available_tools
 
 
 def test_explicit_absolute_path_matches_existing_relative_subject_identity() -> None:
@@ -470,7 +470,7 @@ def test_local_mutation_followup_routes_to_execute_with_inherited_subject() -> N
     assert decision.intent_type == "local_mutation"
     assert decision.request_tier == "execute"
     assert decision.request_route_mode == "auto_deepthink"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
     assert decision.simple_channel_allowed is False
     assert decision.subject_resolution["source"] == "inherited"
 
@@ -494,7 +494,7 @@ def test_reunzip_short_followup_routes_without_active_subject_in_context() -> No
         ],
     )
     assert decision.intent_type == "local_mutation"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
     assert decision.simple_channel_allowed is False
 
 
@@ -525,7 +525,7 @@ def test_archive_followups_promote_to_local_mutation() -> None:
             ],
         )
         assert decision.intent_type == "local_mutation"
-        assert decision.capability_floor == "execute"
+        assert decision.capability_floor == "tools"
         assert decision.simple_channel_allowed is False
 
 
@@ -636,7 +636,7 @@ def test_start_task_followup_routes_to_execute_instead_of_plain_chat() -> None:
     )
 
     assert decision.intent_type == "execute_task"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
     assert decision.request_route_mode == "auto_deepthink"
     assert decision.request_tier == "execute"
 
@@ -656,7 +656,7 @@ def test_existing_image_display_routes_to_local_read_when_recent_images_exist() 
     )
 
     assert decision.intent_type == "local_read"
-    assert decision.capability_floor == "local_read"
+    assert decision.capability_floor == "tools"
     assert decision.request_route_mode == "auto_deepthink"
     assert "intent_show_existing_image" in decision.route_reason_codes
 
@@ -676,7 +676,7 @@ def test_existing_image_display_with_repair_context_still_routes_to_local_read()
     )
 
     assert decision.intent_type == "local_read"
-    assert decision.capability_floor == "local_read"
+    assert decision.capability_floor == "tools"
     assert decision.request_tier == "light"
     assert "intent_show_existing_image" in decision.route_reason_codes
 
@@ -696,7 +696,7 @@ def test_explicit_execution_still_overrides_existing_image_display() -> None:
     )
 
     assert decision.intent_type == "execute_task"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
 
 
 def test_image_regeneration_followup_routes_to_execute() -> None:
@@ -714,7 +714,7 @@ def test_image_regeneration_followup_routes_to_execute() -> None:
     )
 
     assert decision.intent_type == "execute_task"
-    assert decision.capability_floor == "execute"
+    assert decision.capability_floor == "tools"
     assert decision.request_route_mode == "auto_deepthink"
 
 
