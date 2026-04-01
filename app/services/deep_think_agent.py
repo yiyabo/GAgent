@@ -2527,6 +2527,8 @@ Respond with ONLY a JSON object:
             }
 
         params_with_ctx = {**tool_params, "tool_context": tool_ctx}
+        if tool_name == "code_executor":
+            params_with_ctx["auto_fix"] = False
         attempt = 0
         while True:
             attempt += 1

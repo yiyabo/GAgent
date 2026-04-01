@@ -208,9 +208,10 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "function": {
             "name": "code_executor",
             "description": (
-                "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools "
-                "cannot handle the task. For standard bioinformatics tasks, ALWAYS try "
-                "bio_tools first."
+                "Execute Python code for data analysis, visualization, or computation. "
+                "Errors are returned transparently with fix guidance — you can inspect "
+                "the generated code and error, then retry with a revised task description. "
+                "For standard bioinformatics tasks, prefer bio_tools first."
             ),
             "parameters": {
                 "type": "object",
