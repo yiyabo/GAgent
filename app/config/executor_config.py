@@ -28,7 +28,7 @@ class ExecutorSettings:
     skill_selection_mode: str = "hybrid"
     skill_max_per_task: int = 3
     skill_trace_enabled: bool = True
-    code_execution_backend: str = "claude_code"  # "local" | "claude_code"
+    code_execution_backend: str = "local"  # "local" | "claude_code"
 
 
 @lru_cache(maxsize=1)
