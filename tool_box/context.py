@@ -40,7 +40,7 @@ class ToolContext:
     # --- environment ---
     work_dir: str = ""
     data_dir: str = ""
-    capability_floor: str = "execute"
+    capability_floor: str = "tools"
 
     # --- orchestration state ---
     tool_history: List[Dict[str, Any]] = field(default_factory=list)

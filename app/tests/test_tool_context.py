@@ -44,7 +44,7 @@ class TestToolContextDefaults:
         assert ctx.plan_id is None
         assert ctx.task_id is None
         assert ctx.work_dir == ""
-        assert ctx.capability_floor == "execute"
+        assert ctx.capability_floor == "tools"
         assert ctx.tool_history == []
         assert ctx.abort_event is None
         assert ctx.on_progress is None

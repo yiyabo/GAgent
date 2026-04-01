@@ -414,12 +414,13 @@ def test_local_tool_path_alias_is_normalized_to_active_subject(
     assert agent.extra_context["last_failure_state"]["subject_ref"] == canonical_ref
 
 
-def test_local_inspect_blocks_terminal_session_before_execution(
+def test_tools_floor_allows_terminal_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """With 2-mode routing, terminal_session is available at 'tools' floor."""
     agent = _build_minimal_agent()
     agent.session_id = None
-    agent.extra_context = {"capability_floor": "local_inspect"}
+    agent.extra_context = {"capability_floor": "tools", "intent_type": "local_inspect"}
 
     monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
     monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
@@ -435,9 +436,7 @@ def test_local_inspect_blocks_terminal_session_before_execution(
         agent, action, "terminal_session", {"operation": "write", "data": "unzip demo.zip\n"},
     )
 
-    assert guard_result is not None
-    assert guard_result.success is False
-    assert guard_result.details["error"] == "tool_not_available"
+    assert guard_result is None  # No block — terminal_session is allowed
 
 
 def test_grounded_local_mutation_failure_overrides_plain_success_claim() -> None:
