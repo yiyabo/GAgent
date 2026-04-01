@@ -543,13 +543,14 @@ class DeepThinkAgent:
             payload = entry.get("payload")
             if not isinstance(payload, dict):
                 continue
+            inner = cls._unwrap_tool_result(payload)
             success, error = cls._normalize_tool_callback_outcome(payload)
             outcomes.append(
                 {
                     "tool": entry.get("tool"),
                     "success": success,
                     "error": error or payload.get("error"),
-                    "summary": payload.get("summary"),
+                    "summary": payload.get("summary") or inner.get("summary") or inner.get("message"),
                 }
             )
         return outcomes
@@ -696,13 +697,30 @@ class DeepThinkAgent:
                 plan_title = str(rp.get("plan_title") or rp.get("title") or "").strip()
                 error = str(rp.get("error") or "").strip()
                 if not error:
-                    error = str(payload.get("error") or payload.get("summary") or "").strip()
+                    error = str(
+                        payload.get("error")
+                        or payload.get("summary")
+                        or (rp.get("message") if not success else "")
+                        or ""
+                    ).strip()
+                applied_changes = rp.get("applied_changes")
+                failed_changes = rp.get("failed_changes")
+                try:
+                    applied_changes = int(applied_changes) if applied_changes is not None else None
+                except (TypeError, ValueError):
+                    applied_changes = None
+                try:
+                    failed_changes = int(failed_changes) if failed_changes is not None else None
+                except (TypeError, ValueError):
+                    failed_changes = None
                 events.append(
                     {
                         "success": success,
                         "operation": operation or None,
                         "plan_id": plan_id,
                         "plan_title": plan_title or None,
+                        "applied_changes": applied_changes,
+                        "failed_changes": failed_changes,
                         "error": error or None,
                     }
                 )
@@ -791,6 +809,8 @@ class DeepThinkAgent:
                 if not event.get("success"):
                     continue
                 operation = str(event.get("operation") or "").strip().lower()
+                if operation == "optimize" and int(event.get("applied_changes") or 0) <= 0:
+                    continue
                 if operation not in required_update_ops:
                     continue
                 event_plan_id = event.get("plan_id") or bound_plan_id
@@ -889,6 +909,8 @@ class DeepThinkAgent:
                 continue
             if event.get("operation") not in allowed_update_ops:
                 continue
+            if event.get("operation") == "optimize" and int(event.get("applied_changes") or 0) <= 0:
+                continue
             event_plan_id = event.get("plan_id") or bound_plan_id
             if bound_plan_id is not None and event_plan_id is not None and event_plan_id != bound_plan_id:
                 continue
@@ -970,6 +992,8 @@ class DeepThinkAgent:
                 )
             if current_plan_id is not None:
                 lines.append(f"- The bound plan_id is {current_plan_id}. Do not create a new plan unless the user explicitly asked for a new one.")
+                lines.append(f"- IMPORTANT: Only use plan_id={current_plan_id} in plan_operation calls. Other plan IDs will be rejected.")
+                lines.append("- If the chat history mentions other plans from previous conversations, ignore them — focus only on the currently bound plan.")
         lines.append(
             "- If plan_operation fails or is never called, your final answer must clearly state that no structured plan was created or updated."
         )
@@ -1106,6 +1130,13 @@ class DeepThinkAgent:
             "- For questions involving data, files, remote services, or verifiable facts, use tools to obtain ground truth — never fabricate results.",
             "- If a tool call fails, report the failure honestly; do not invent tool-like certainty.",
         ]
+        current_plan_id = self._current_plan_id()
+        if current_plan_id is not None:
+            lines.append(
+                f"- This session is bound to plan {current_plan_id}. "
+                "When calling plan_operation, ALWAYS use this plan_id. "
+                "Ignore references to other plans in the chat history."
+            )
         if intent_type == "local_mutation":
             lines.append(
                 "- This request is a local filesystem mutation. Do the change directly instead of telling the user to run commands manually."
@@ -2502,7 +2533,11 @@ Respond with ONLY a JSON object:
                     self.on_tool_progress, tool_name, data,
                 )
 
-        tool_ctx = ToolContext(on_progress=_progress_bridge)
+        tool_ctx = ToolContext(
+            on_progress=_progress_bridge,
+            plan_id=self._current_plan_id(),
+            session_id=str(self.request_profile.get("session_id") or "").strip() or None,
+        )
 
         if self.on_tool_start and tool_name:
             await self._safe_generic_callback(self.on_tool_start, tool_name, tool_params)
@@ -3078,7 +3113,7 @@ Use this for data exploration, statistical analysis, and visualization tasks on 
 Operations:
 - create: Create a new plan with tasks. Params: {"operation": "create", "title": "Plan Title", "description": "Goal", "tasks": [{"name": "Task 1", "instruction": "Details...", "dependencies": ["Task 0"]}]}
 - review: Review plan quality and structure. Returns BOTH: (1) structural health_score and (2) a strict research-plan rubric_score with detailed breakdown. Params: {"operation": "review", "plan_id": 123}
-- optimize: Apply changes to improve the plan. Params: {"operation": "optimize", "plan_id": 123, "changes": [{"action": "add_task|update_task|delete_task", ...}]}
+- optimize: Apply changes to improve the plan. Params: {"operation": "optimize", "plan_id": 123, "changes": [{"action": "add_task|update_task|update_description|delete_task|reorder_task", ...}]}
 - get: Get plan details. Params: {"operation": "get", "plan_id": 123}
 
 WORKFLOW for Plan Creation:
@@ -3089,7 +3124,10 @@ WORKFLOW for Plan Creation:
 5. Use 'optimize' only when review or user feedback gives you concrete changes to apply
 6. Report the real plan result to the user with plan_id and rubric status when available
 
-IMPORTANT: When creating plans, ensure each task has clear, actionable instructions!""",
+IMPORTANT:
+- When creating plans, ensure each task has clear, actionable instructions.
+- For optimize/update_task, put editable fields at the top level (name/instruction/dependencies). Do not send only nested updated_fields values.
+- If the user asks to update the plan description or rationale summary, use action='update_description' with a top-level description field.""",
             "terminal_session": """Interactive terminal (PTY shell) for running commands directly.
 
 Operations:
