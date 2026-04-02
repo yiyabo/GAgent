@@ -89,6 +89,8 @@ def _should_auto_sync_task_status(tool_name: str, params: Optional[Dict[str, Any
     execution. Treating these probe failures as task failures makes the plan UI
     flip to red even when a later code execution succeeds.
     """
+    if tool_name == "document_reader":
+        return False
     if tool_name != "file_operations" or not isinstance(params, dict):
         return True
 
