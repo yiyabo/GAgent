@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 
 from app.routers import chat_routes
+from app.routers.chat.agent import _build_deep_think_task_context
 from app.routers.chat_routes import StructuredChatAgent
 from app.services.llm.structured_response import LLMAction
 from app.services.plans.plan_models import PlanNode, PlanTree
@@ -194,6 +195,40 @@ def test_sync_task_status_skips_for_read_only_file_operations() -> None:
 
     assert repo.updated == []
     assert repo.cascaded == []
+
+
+def test_build_deep_think_task_context_uses_bound_atomic_task() -> None:
+    leaf = PlanNode(
+        id=30,
+        plan_id=49,
+        name="subtask",
+        instruction="Run the integration analysis for task 30.",
+        parent_id=1,
+        status="pending",
+    )
+    tree = PlanTree(
+        id=49,
+        title="Plan 49",
+        nodes={
+            1: PlanNode(id=1, plan_id=49, name="Root", status="pending"),
+            30: leaf,
+        },
+        adjacency={None: [1], 1: [30], 30: []},
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=_RepoStub(tree))
+    agent.plan_tree = tree
+    agent.extra_context = {"current_task_id": 30}
+
+    task_context = _build_deep_think_task_context(
+        agent,
+        user_message="continue task 30",
+    )
+
+    assert task_context is not None
+    assert task_context.task_id == 30
+    assert task_context.task_instruction == "Run the integration analysis for task 30."
+    assert task_context.plan_outline == "Plan 49"
 
 
 def test_sync_task_status_marks_failed_when_verification_fails(tmp_path) -> None:
