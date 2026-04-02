@@ -197,6 +197,25 @@ def test_sync_task_status_skips_for_read_only_file_operations() -> None:
     assert repo.cascaded == []
 
 
+def test_sync_task_status_skips_for_document_reader() -> None:
+    repo = _RepoTaskSyncStub()
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 1}
+    agent._dirty = False
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="document_reader",
+        success=False,
+        summary="File not found",
+        message="File not found",
+        params={"file_path": "/tmp/missing.pdf"},
+    )
+
+    assert repo.updated == []
+    assert repo.cascaded == []
+
+
 def test_build_deep_think_task_context_uses_bound_atomic_task() -> None:
     leaf = PlanNode(
         id=30,
