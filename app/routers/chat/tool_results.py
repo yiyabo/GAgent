@@ -757,13 +757,20 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
 
         uploaded = result.get("uploaded_files") or []
         file_info = f" (with {len(uploaded)} file(s))" if uploaded else ""
+        path_candidates = result.get("produced_files") or result.get("artifact_paths") or []
+        path_info = ""
+        if isinstance(path_candidates, list) and path_candidates:
+            preview = ", ".join(str(item) for item in path_candidates[:3] if str(item).strip())
+            if preview:
+                suffix = ", ..." if len(path_candidates) > 3 else ""
+                path_info = f" Files: {preview}{suffix}."
 
         stdout_text = result.get("stdout") or result.get("output") or ""
         if stdout_text.strip():
             snippet = stdout_text.strip()
-            return f"code_executor{file_info} succeeded. Output: {snippet}"
+            return f"code_executor{file_info} succeeded.{path_info} Output: {snippet}"
 
-        return f"code_executor{file_info} succeeded."
+        return f"code_executor{file_info} succeeded.{path_info}"
 
     if tool_name == "deeppl":
         action = result.get("action") or "deeppl"

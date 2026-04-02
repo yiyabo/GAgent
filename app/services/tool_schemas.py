@@ -802,7 +802,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 "Use get/review/optimize for bound plans. "
                 "Research with web_search first only when latest external evidence materially affects the plan. "
                 "For optimize, use concrete change objects such as add_task, update_task, update_description, "
-                "delete_task, or reorder_task; keep update_task fields at the top level."
+                "delete_task, or reorder_task; keep update_task fields at the top level. "
+                "Do not use this tool to mark the currently executing task completed or failed; current-task status is auto-synced from tool execution."
             ),
             "parameters": {
                 "type": "object",
