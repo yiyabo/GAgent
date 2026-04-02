@@ -110,6 +110,7 @@ def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_prio
         assert "do NOT use plan_operation or task_operation just to mark that task completed/failed" in prompt
         assert "report BLOCKED_DEPENDENCY clearly" in prompt
         assert "Do not convert an integration/analysis task into full upstream preprocessing" in prompt
+        assert "prefer canonical data-directory paths over same-named session-root `results/` copies" in prompt
         assert "do not assume `adata.var['mt']` already exists" in prompt
         assert "fewer than 2 valid samples means the preconditions are not met" in prompt
 

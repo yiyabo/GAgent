@@ -3,8 +3,12 @@ import json
 import pytest  # pylint: disable=import-error  # type: ignore[import-unresolved]
 from pathlib import Path
 
-from app.routers.chat.code_executor_helpers import compose_code_executor_atomic_task_prompt
-from app.services.plans.plan_models import PlanNode
+from app.routers.chat.code_executor_helpers import (
+    collect_completed_task_outputs,
+    compose_code_executor_atomic_task_prompt,
+    extract_task_artifact_paths,
+)
+from app.services.plans.plan_models import PlanNode, PlanTree
 from tool_box.tools_impl import code_executor as code_executor_module
 from tool_box.tools_impl.code_executor import (
     _DEFAULT_ALLOWED_TOOL_NAMES,
@@ -16,6 +20,7 @@ from tool_box.tools_impl.code_executor import (
     _extract_readable_error,
     _is_path_within,
     _normalize_csv_values,
+    _prune_stale_session_root_results,
     _promote_task_results_to_session_root,
     _resolve_code_executor_docker_image,
     _resolve_code_executor_local_runtime,
@@ -70,6 +75,8 @@ def test_compose_code_executor_atomic_task_prompt_includes_canonical_path_rules(
     assert "Do NOT assume prerequisite files live in the current run directory" in prompt
     assert "prefer the canonical absolute path" in prompt
     assert "prefer explicit absolute deliverable paths from previous steps" in prompt
+    assert "flat files directly under a session root `results/` directory" in prompt
+    assert "Ignore zero-byte or non-parseable session-temp duplicates" in prompt
 
 
 def test_build_cli_failure_error_includes_exit_and_stream_excerpts() -> None:
@@ -311,12 +318,17 @@ def test_promote_task_results_to_session_root_copies_into_session_results(tmp_pa
     (run_dir / "results" / "nested" / "other.png").write_bytes(b"png2")
 
     rels = _promote_task_results_to_session_root(session_dir=session_dir, task_work_dir=run_dir)
-    assert set(rels) == {"results/line.png", "results/nested/other.png"}
-    assert (session_dir / "results" / "line.png").read_bytes() == b"png1"
-    assert (session_dir / "results" / "nested" / "other.png").read_bytes() == b"png2"
+    assert set(rels) == {
+        "results/task_a/run_1/line.png",
+        "results/task_a/run_1/nested/other.png",
+    }
+    assert (session_dir / "results" / "task_a" / "run_1" / "line.png").read_bytes() == b"png1"
+    assert (
+        session_dir / "results" / "task_a" / "run_1" / "nested" / "other.png"
+    ).read_bytes() == b"png2"
 
 
-def test_promote_task_results_to_session_root_overwrites_stable_paths(tmp_path: Path) -> None:
+def test_promote_task_results_to_session_root_keeps_runs_isolated(tmp_path: Path) -> None:
     session_dir = tmp_path / "s"
     run_a = tmp_path / "s" / "t" / "run_a"
     run_b = tmp_path / "s" / "t" / "run_b"
@@ -326,7 +338,75 @@ def test_promote_task_results_to_session_root_overwrites_stable_paths(tmp_path: 
     _promote_task_results_to_session_root(session_dir=session_dir, task_work_dir=run_a)
     (run_b / "results" / "plot.png").write_bytes(b"v2")
     _promote_task_results_to_session_root(session_dir=session_dir, task_work_dir=run_b)
-    assert (session_dir / "results" / "plot.png").read_bytes() == b"v2"
+    assert (session_dir / "results" / "t" / "run_a" / "plot.png").read_bytes() == b"v1"
+    assert (session_dir / "results" / "t" / "run_b" / "plot.png").read_bytes() == b"v2"
+
+
+def test_prune_stale_session_root_results_removes_only_flat_empty_files(tmp_path: Path) -> None:
+    session_dir = tmp_path / "session_x"
+    results_dir = session_dir / "results"
+    nested_dir = results_dir / "task2" / "run_1"
+    nested_dir.mkdir(parents=True)
+    (results_dir / "metadata.csv").write_text("", encoding="utf-8")
+    (results_dir / "qc_summary.csv").write_text("ok\n", encoding="utf-8")
+    (nested_dir / "metadata.csv").write_text("sample_id\nx\n", encoding="utf-8")
+
+    removed = _prune_stale_session_root_results(session_dir=session_dir)
+
+    assert removed == ["results/metadata.csv"]
+    assert not (results_dir / "metadata.csv").exists()
+    assert (results_dir / "qc_summary.csv").exists()
+    assert (nested_dir / "metadata.csv").exists()
+
+
+def test_extract_task_artifact_paths_prefers_absolute_and_skips_stale_flat_metadata(
+    tmp_path: Path,
+) -> None:
+    session_dir = tmp_path / "runtime" / "session_x"
+    stale_metadata = session_dir / "results" / "metadata.csv"
+    stale_metadata.parent.mkdir(parents=True)
+    stale_metadata.write_text("", encoding="utf-8")
+    payload = {
+        "produced_files": [
+            "/tmp/run/results/filtered_cancer1.h5ad",
+            str(stale_metadata),
+        ],
+        "artifact_paths": [
+            "results/task3/run_1/filtered_cancer1.h5ad",
+            "results/metadata.csv",
+        ],
+    }
+
+    extracted = extract_task_artifact_paths(payload)
+
+    assert "/tmp/run/results/filtered_cancer1.h5ad" in extracted
+    assert str(stale_metadata) not in extracted
+    assert "results/metadata.csv" not in extracted
+
+
+def test_collect_completed_task_outputs_includes_artifact_paths() -> None:
+    node_2 = PlanNode(
+        id=2,
+        plan_id=68,
+        name="QC",
+        status="completed",
+        execution_result=json.dumps(
+            {
+                "content": "QC completed",
+                "produced_files": [
+                    "/home/zczhao/GAgent/runtime/session_x/plan68_task3/run_1/results/filtered_cancer1.h5ad"
+                ],
+            }
+        ),
+    )
+    node_4 = PlanNode(id=4, plan_id=68, name="Integration", status="running")
+    tree = PlanTree(id=68, title="Plan", nodes={2: node_2, 4: node_4}, adjacency={None: [2, 4]})
+
+    summary = collect_completed_task_outputs(tree, current_task_id=4)
+
+    assert "Task [2] QC" in summary
+    assert "Artifact paths:" in summary
+    assert "/home/zczhao/GAgent/runtime/session_x/plan68_task3/run_1/results/filtered_cancer1.h5ad" in summary
 
 
 def test_local_backend_enforces_scope_contract_before_execution(
@@ -385,7 +465,9 @@ def test_local_backend_returns_promoted_artifact_paths(
     assert result["task_directory"] == "plan1_task2"
     assert result["execution_mode"] == "code_executor_docker"
     assert result["docker_image_effective"] == "gagent-python-runtime:latest"
-    assert "results/plot.png" in result["artifact_paths"]
+    promoted = result["artifact_paths"][0]
+    assert promoted.startswith("results/plan1_task2/run_")
+    assert promoted.endswith("/plot.png")
     assert any(path.endswith("plot.png") for path in result["produced_files"])
     session_dir = (tmp_path / "runtime" / "session_adhoc").resolve()
-    assert (session_dir / "results" / "plot.png").read_bytes() == b"png"
+    assert (session_dir / promoted).read_bytes() == b"png"
