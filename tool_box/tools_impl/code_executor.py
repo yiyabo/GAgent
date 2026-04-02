@@ -796,9 +796,10 @@ async def _execute_task_locally(
         "exit_code": outcome.exit_code,
         "task_directory_full": work_dir,
         "code_file": outcome.code_file,
-        "result": outcome.stdout if outcome.success else outcome.stderr,
+        "result": outcome.stdout if outcome.success else (outcome.error_summary or outcome.stderr),
         "generated_code": outcome.code,
         "error_category": outcome.error_category,
+        "error_summary": outcome.error_summary,
         "fix_guidance": outcome.fix_guidance,
         "stdout_file": outcome.stdout_file,
         "stderr_file": outcome.stderr_file,
@@ -808,9 +809,17 @@ async def _execute_task_locally(
     }
     if not outcome.success:
         if outcome.runtime_failure:
-            result["error"] = str(outcome.stderr or "").strip() or f"{runtime_mode.capitalize()} runtime failed."
+            result["error"] = (
+                str(outcome.error_summary or "").strip()
+                or str(outcome.stderr or "").strip()
+                or f"{runtime_mode.capitalize()} runtime failed."
+            )
         else:
-            result["error"] = str(outcome.stderr or "").strip() or "Code execution failed."
+            result["error"] = (
+                str(outcome.error_summary or "").strip()
+                or str(outcome.stderr or "").strip()
+                or "Code execution failed."
+            )
 
     # Auto-submit visualization files to Deliverables (explicit mode compatible).
     if outcome.success and outcome.visualization_files:

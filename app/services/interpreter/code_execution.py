@@ -52,6 +52,7 @@ class CodeExecutionOutcome:
     visualization_purpose: Optional[str] = None
     visualization_analysis: Optional[str] = None
     error_category: Optional[str] = None
+    error_summary: Optional[str] = None
     fix_guidance: Optional[str] = None
     stdout_file: Optional[str] = None
     stderr_file: Optional[str] = None
@@ -114,6 +115,10 @@ _WARNING_HEADER_RE = re.compile(
 )
 _EXCEPTION_LINE_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):"
+)
+_STDOUT_ERROR_HINT_RE = re.compile(
+    r"\b(?:error|failed|missing required input|not found|cannot proceed|blocked_dependency)\b",
+    re.IGNORECASE,
 )
 
 
@@ -188,11 +193,18 @@ def classify_error(stderr: str, exit_code: int) -> str:
     if not actionable_error_text and warning_text:
         return "non_fatal_warning_noise"
     error_text = actionable_error_text or str(stderr or "")
+    lowered = error_text.lower()
     if "SyntaxError" in error_text or "IndentationError" in error_text:
         return "syntax_error"
     if _MISSING_PKG_RE.search(error_text):
         return "missing_package"
-    if "FileNotFoundError" in error_text or "PermissionError" in error_text:
+    if (
+        "FileNotFoundError" in error_text
+        or "PermissionError" in error_text
+        or "not found" in lowered
+        or "missing required input file" in lowered
+        or "missing required input files" in lowered
+    ):
         return "file_access"
     if "MemoryError" in error_text:
         return "resource_limit"
@@ -219,6 +231,52 @@ def _analyze_execution_error(stderr: str, exit_code: int) -> ErrorAnalysis:
         summary_text=summary_text,
         warning_only=category == "non_fatal_warning_noise",
     )
+
+
+def _extract_actionable_stdout_failure(stdout: str) -> str:
+    raw = str(stdout or "").strip()
+    if not raw:
+        return ""
+    lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    for idx, line in enumerate(lines):
+        if line.strip().startswith("Traceback (most recent call last):"):
+            return "\n".join(lines[idx:]).strip()
+
+    marker_indices = [
+        idx for idx, line in enumerate(lines)
+        if _STDOUT_ERROR_HINT_RE.search(line.strip())
+    ]
+    if not marker_indices:
+        return ""
+
+    start = marker_indices[-1]
+    while start > 0 and len(lines[start - 1]) < 160:
+        previous = lines[start - 1].strip()
+        if _STDOUT_ERROR_HINT_RE.search(previous):
+            start -= 1
+            continue
+        break
+    return "\n".join(lines[start:]).strip()
+
+
+def _analyze_execution_failure(stderr: str, stdout: str, exit_code: int) -> ErrorAnalysis:
+    stderr_analysis = _analyze_execution_error(stderr, exit_code)
+    stdout_error = _extract_actionable_stdout_failure(stdout)
+    if stdout_error and (stderr_analysis.warning_only or not stderr_analysis.actionable_error_text.strip()):
+        stdout_category = classify_error(stdout_error, exit_code)
+        if stdout_category == "non_fatal_warning_noise":
+            stdout_category = "runtime_error"
+        return ErrorAnalysis(
+            category=stdout_category,
+            actionable_error_text=stdout_error,
+            warning_text=stderr_analysis.warning_text,
+            summary_text=stdout_error,
+            warning_only=False,
+        )
+    return stderr_analysis
 
 
 def _normalize_execution_backend(value: Optional[str]) -> str:
@@ -389,7 +447,11 @@ async def execute_code_locally(
         if exec_result.runtime_failure:
             error_category = _runtime_error_category(normalized_backend)
         else:
-            error_analysis = _analyze_execution_error(exec_result.error, exec_result.exit_code)
+            error_analysis = _analyze_execution_failure(
+                exec_result.error,
+                exec_result.output,
+                exec_result.exit_code,
+            )
             error_category = error_analysis.category
             fix_guidance = _FIX_HINTS.get(error_category, "")
             if error_category == "missing_package":
@@ -404,7 +466,11 @@ async def execute_code_locally(
         and not exec_result.runtime_failure
         and attempt < max_attempts
     ):
-        error_analysis = _analyze_execution_error(exec_result.error, exec_result.exit_code)
+        error_analysis = _analyze_execution_failure(
+            exec_result.error,
+            exec_result.output,
+            exec_result.exit_code,
+        )
         error_category = error_analysis.category
         if error_analysis.warning_only:
             logger.warning(
@@ -471,8 +537,9 @@ async def execute_code_locally(
         if exec_result.runtime_failure:
             error_category = _runtime_error_category(normalized_backend)
         else:
-            error_analysis = error_analysis or _analyze_execution_error(
+            error_analysis = error_analysis or _analyze_execution_failure(
                 exec_result.error,
+                exec_result.output,
                 exec_result.exit_code,
             )
             error_category = error_analysis.category
@@ -505,6 +572,12 @@ async def execute_code_locally(
         visualization_purpose=code_response.visualization_purpose,
         visualization_analysis=code_response.visualization_analysis if viz_files else None,
         error_category=error_category,
+        error_summary=(
+            (error_analysis.summary_text if error_analysis else None)
+            or str(exec_result.error or "").strip()
+            or _extract_actionable_stdout_failure(exec_result.output)
+            or None
+        ),
         fix_guidance=fix_guidance,
         stdout_file=stdout_file,
         stderr_file=stderr_file,
