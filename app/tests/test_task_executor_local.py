@@ -873,3 +873,53 @@ def test_skill_context_content_is_injected(make_executor, monkeypatch):
 
     assert "Use seqkit for quick FASTA diagnostics." in hints
     assert trace["selected_skill_ids"] == ["bio-tools-router"]
+
+
+# ---------------------------------------------------------------------------
+# blocked_dependency pattern matching — regression tests for the filtering
+# gap that caused Task 4 to burn 27 retries (April 2026 incident).
+# ---------------------------------------------------------------------------
+
+class TestBlockedDependencyPatternMatching:
+    """Verify that common upstream-dependency error messages are classified
+    as ``blocked_dependency`` rather than ``runtime_error``."""
+
+    def test_fewer_than_2_valid_filtered_samples(self):
+        """The exact message that triggered the April 2026 incident."""
+        stderr = (
+            "ERROR: Fewer than 2 valid filtered samples found. "
+            "Cannot proceed with integration."
+        )
+        assert classify_error(stderr, 1) == "blocked_dependency"
+
+    def test_missing_filtered_data_for_sample(self):
+        stderr = (
+            "ERROR: Missing filtered data for sample cancer2\n"
+            "ERROR: Missing filtered data for sample cancer3"
+        )
+        assert classify_error(stderr, 1) == "blocked_dependency"
+
+    def test_requires_output_from_task(self):
+        stderr = (
+            "This task requires the output from Task 3 (cell filtering and QC) "
+            "to be available."
+        )
+        assert classify_error(stderr, 1) == "blocked_dependency"
+
+    def test_ensure_task_completed(self):
+        stderr = "Please ensure Task 3 has been completed successfully before running this task."
+        assert classify_error(stderr, 1) == "blocked_dependency"
+
+    def test_cannot_proceed_with_integration(self):
+        stderr = "Cannot proceed with integration."
+        assert classify_error(stderr, 1) == "blocked_dependency"
+
+    def test_fewer_than_n_valid_regex(self):
+        """Parameterised count: 'fewer than 5 valid ...' should also match."""
+        stderr = "fewer than 5 valid filtered samples after QC"
+        assert classify_error(stderr, 1) == "blocked_dependency"
+
+    def test_original_pattern_still_works(self):
+        """The original hardcoded pattern must not regress."""
+        stderr = "BLOCKED_DEPENDENCY: fewer than 2 valid samples available."
+        assert classify_error(stderr, 1) == "blocked_dependency"

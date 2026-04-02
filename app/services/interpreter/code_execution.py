@@ -148,14 +148,25 @@ _BLOCKED_DEPENDENCY_PATTERNS = (
     "upstream outputs",
     "prerequisite not met",
     "prerequisites not met",
-    "fewer than 2 valid samples",
-    "need at least 2 valid samples",
-    "requires at least 2 valid samples",
+    "fewer than 2 valid",
+    "need at least 2 valid",
+    "requires at least 2 valid",
+    "cannot proceed with integration",
+    "missing filtered data for sample",
     "前置条件不满足",
     "依赖缺失",
     "缺少上游",
     "缺少前置",
     "上游产物",
+)
+
+# Regex patterns for parameterised dependency-blocker messages that simple
+# substring matching cannot cover (e.g. "fewer than 5 valid filtered samples").
+_BLOCKED_DEPENDENCY_REGEXES: tuple[re.Pattern, ...] = (
+    re.compile(r"fewer than \d+ valid", re.IGNORECASE),
+    re.compile(r"missing (?:filtered )?data for sample", re.IGNORECASE),
+    re.compile(r"requires? the output from task", re.IGNORECASE),
+    re.compile(r"ensure task \d+ has been completed", re.IGNORECASE),
 )
 
 
@@ -176,7 +187,9 @@ def _looks_like_blocked_dependency(error_text: str) -> bool:
     lowered = str(error_text or "").strip().lower()
     if not lowered:
         return False
-    return any(token in lowered for token in _BLOCKED_DEPENDENCY_PATTERNS)
+    if any(token in lowered for token in _BLOCKED_DEPENDENCY_PATTERNS):
+        return True
+    return any(rx.search(lowered) for rx in _BLOCKED_DEPENDENCY_REGEXES)
 
 
 def _split_leading_warning_text(stderr: str) -> tuple[str, str]:
