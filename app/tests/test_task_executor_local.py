@@ -484,6 +484,56 @@ def test_execute_code_locally_does_not_retry_on_warning_only_failure(tmp_path: P
     assert outcome.attempts == 1
 
 
+def test_execute_code_locally_uses_stdout_error_when_stderr_is_warning_only(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_code_resp = CodeTaskResponse(code="print('ok')", description="stdout error")
+
+    class FakeLocalInterpreter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def build_preamble(self):
+            return ""
+
+        def run_file(self, code_file):
+            return CodeExecutionResult(
+                status="failed",
+                output=(
+                    "ERROR: Missing required input files: ['filtered_cancer1.h5ad', 'metadata.csv']\n"
+                    "This task cannot proceed without the filtered single-cell objects from upstream QC step.\n"
+                ),
+                error=(
+                    "/usr/local/lib/python3.10/site-packages/louvain/__init__.py:54: "
+                    "UserWarning: pkg_resources is deprecated as an API.\n"
+                    "  from pkg_resources import get_distribution\n"
+                ),
+                exit_code=1,
+            )
+
+    def _unexpected_fix(self, **_kwargs):
+        raise AssertionError("stdout-derived actionable failures should not use fix_code when auto_fix=False")
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.fix_code", _unexpected_fix)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter", FakeLocalInterpreter)
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="stdout error",
+            task_description="respect stdout errors",
+            work_dir=str(tmp_path),
+            auto_fix=False,
+        )
+    )
+
+    assert outcome.success is False
+    assert outcome.error_category == "file_access"
+    assert "Missing required input files" in str(outcome.error_summary or "")
+    assert "pkg_resources is deprecated" not in str(outcome.error_summary or "")
+
+
 def test_execute_code_locally_fix_prompt_uses_real_error_after_warning_noise(
     tmp_path: Path,
     monkeypatch,
@@ -535,6 +585,62 @@ def test_execute_code_locally_fix_prompt_uses_real_error_after_warning_noise(
     assert outcome.success is True
     error_sent = captured_fix_kwargs.get("error", "")
     assert "ModuleNotFoundError" in error_sent
+    assert "pkg_resources is deprecated" not in error_sent
+
+
+def test_execute_code_locally_fix_prompt_uses_stdout_failure_when_stderr_is_warning_only(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_code_resp = CodeTaskResponse(code="print('ok')", description="stdout failure")
+    fixed_resp = CodeTaskResponse(code="print('fixed')", description="fixed")
+    captured_fix_kwargs = {}
+    call_count = {"exec": 0}
+
+    class FakeLocalInterpreter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def build_preamble(self):
+            return ""
+
+        def run_file(self, code_file):
+            call_count["exec"] += 1
+            if call_count["exec"] == 1:
+                return CodeExecutionResult(
+                    status="failed",
+                    output=(
+                        "ERROR: metadata.csv not found. Cannot proceed with integration.\n"
+                        "Use the canonical metadata path instead of the temp run directory.\n"
+                    ),
+                    error=(
+                        "/usr/local/lib/python3.10/site-packages/louvain/__init__.py:54: "
+                        "UserWarning: pkg_resources is deprecated as an API.\n"
+                        "  from pkg_resources import get_distribution\n"
+                    ),
+                    exit_code=1,
+                )
+            return CodeExecutionResult(status="success", output="fixed\n", error="", exit_code=0)
+
+    def _capture_fix(self, **kwargs):
+        captured_fix_kwargs.update(kwargs)
+        return fixed_resp
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.fix_code", _capture_fix)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter", FakeLocalInterpreter)
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="stdout then fix",
+            task_description="use canonical metadata path",
+            work_dir=str(tmp_path),
+        )
+    )
+
+    assert outcome.success is True
+    error_sent = captured_fix_kwargs.get("error", "")
+    assert "metadata.csv not found" in error_sent
     assert "pkg_resources is deprecated" not in error_sent
 
 

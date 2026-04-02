@@ -3,6 +3,8 @@ import json
 import pytest  # pylint: disable=import-error  # type: ignore[import-unresolved]
 from pathlib import Path
 
+from app.routers.chat.code_executor_helpers import compose_code_executor_atomic_task_prompt
+from app.services.plans.plan_models import PlanNode
 from tool_box.tools_impl import code_executor as code_executor_module
 from tool_box.tools_impl.code_executor import (
     _DEFAULT_ALLOWED_TOOL_NAMES,
@@ -48,6 +50,26 @@ def test_detect_scope_blocked_reads_marker_from_stdout_and_json() -> None:
         "result": "STATUS: BLOCKED_SCOPE\nREASON: NEED_ATOMIC_TASK\nDETAIL: task is not atomic"
     }
     assert _detect_scope_blocked("", output_data) == "task is not atomic"
+
+
+def test_compose_code_executor_atomic_task_prompt_includes_canonical_path_rules() -> None:
+    prompt = compose_code_executor_atomic_task_prompt(
+        task_node=PlanNode(
+            id=4,
+            plan_id=68,
+            name="样本间整合与标准化",
+            instruction="Integrate filtered h5ad files using Harmony.",
+        ),
+        original_task="继续执行 task 4",
+        data_context=(
+            "- Task [2] metadata: /home/zczhao/GAgent/data/ovarian_cancer_scRNA/metadata.csv\n"
+            "- Task [3] filtered_cancer1: /home/zczhao/GAgent/runtime/session_x/results/filtered_cancer1.h5ad"
+        ),
+    )
+
+    assert "Do NOT assume prerequisite files live in the current run directory" in prompt
+    assert "prefer the canonical absolute path" in prompt
+    assert "prefer explicit absolute deliverable paths from previous steps" in prompt
 
 
 def test_build_cli_failure_error_includes_exit_and_stream_excerpts() -> None:
