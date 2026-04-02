@@ -21,6 +21,7 @@ from .local_interpreter import CodeExecutionResult, LocalCodeInterpreter
 from .metadata import DatasetMetadata
 from .prompts.coder_prompt import (
     _DOCKER_EXTRA_AVAILABLE_LIBRARIES,
+    _DOCKER_EXTRA_SYSTEM_TOOLS,
     build_coder_system_prompt,
 )
 
@@ -222,6 +223,9 @@ async def execute_code_locally(
         llm_service=llm_service,
         system_prompt=build_coder_system_prompt(
             extra_libraries=_DOCKER_EXTRA_AVAILABLE_LIBRARIES
+            if normalized_backend == "docker"
+            else (),
+            extra_system_tools=_DOCKER_EXTRA_SYSTEM_TOOLS
             if normalized_backend == "docker"
             else (),
         ),
