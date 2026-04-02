@@ -42,6 +42,7 @@ from app.services.deep_think_agent import (
     build_user_visible_step,
     detect_reasoning_language,
     DeepThinkAgent,
+    TaskExecutionContext,
     ThinkingStep,
     DeepThinkResult,
     summarize_tool_step_display,
@@ -93,6 +94,52 @@ def _should_auto_sync_task_status(tool_name: str, params: Optional[Dict[str, Any
 
     operation = str(params.get("operation") or "").strip().lower()
     return operation not in _READ_ONLY_FILE_OPERATIONS
+
+
+def _build_deep_think_task_context(
+    agent: "StructuredChatAgent",
+    *,
+    user_message: str,
+) -> Optional[TaskExecutionContext]:
+    raw_task_id = getattr(agent, "extra_context", {}).get("current_task_id")
+    try:
+        task_id = int(raw_task_id) if raw_task_id is not None else None
+    except (TypeError, ValueError):
+        task_id = None
+    plan_id = getattr(getattr(agent, "plan_session", None), "plan_id", None)
+    if task_id is None or plan_id is None:
+        return None
+
+    tree = getattr(agent, "plan_tree", None)
+    if tree is None or not getattr(tree, "has_node", lambda *_: False)(task_id):
+        try:
+            tree = agent.plan_session.repo.get_plan_tree(plan_id)
+        except Exception:
+            return None
+    if tree is None or not getattr(tree, "has_node", lambda *_: False)(task_id):
+        return None
+
+    try:
+        node = tree.get_node(task_id)
+    except Exception:
+        return None
+
+    task_name = ""
+    try:
+        task_name = str(node.display_name()).strip()
+    except Exception:
+        task_name = str(getattr(node, "name", "") or "").strip()
+    task_instruction = str(getattr(node, "instruction", "") or "").strip() or str(user_message or "").strip()
+    context_summary = str(getattr(node, "context_combined", "") or "").strip() or None
+    context_sections = list(getattr(node, "context_sections", []) or [])
+    return TaskExecutionContext(
+        task_id=task_id,
+        task_name=task_name or None,
+        task_instruction=task_instruction or None,
+        plan_outline=str(getattr(tree, "title", "") or "").strip() or None,
+        context_summary=context_summary,
+        context_sections=context_sections,
+    )
 
 
 from .action_execution import (
@@ -2647,6 +2694,7 @@ class StructuredChatAgent:
                         **routing_decision.metadata(),
                         "current_plan_id": self.plan_session.plan_id,
                         "current_plan_title": plan_tree.title if plan_tree else None,
+                        "current_task_id": self.extra_context.get("current_task_id"),
                     }
                 dt_agent = dt_agent_cls(**dt_agent_kwargs)
 
@@ -2690,9 +2738,17 @@ class StructuredChatAgent:
                 )
                 if continuation_summary:
                     think_context["continuation_summary"] = continuation_summary
+                deep_think_task_context = _build_deep_think_task_context(
+                    self,
+                    user_message=effective_user_message,
+                )
 
                 # Run think
-                result = await dt_agent.think(effective_user_message, think_context)
+                result = await dt_agent.think(
+                    effective_user_message,
+                    think_context,
+                    task_context=deep_think_task_context,
+                )
                 if cancel_event is not None and cancel_event.is_set():
                     if deep_think_job_created and deep_think_job_id:
                         plan_decomposition_jobs.mark_failure(
