@@ -10,6 +10,7 @@ from app.llm import NativeStreamResult, NativeToolCall
 from app.services.deep_think_agent import (
     DeepThinkAgent,
     DeepThinkProtocolError,
+    TaskExecutionContext,
     ThinkingStep,
     is_process_only_answer,
 )
@@ -49,6 +50,26 @@ class _NativeDummyLLM:
 
     async def stream_chat_with_tools_async(self, **kwargs):  # type: ignore[override]
         _ = kwargs
+        if self._index >= len(self._responses):
+            raise RuntimeError("No more native mock responses")
+        value = self._responses[self._index]
+        self._index += 1
+        return value
+
+    async def chat_async(self, **kwargs):  # type: ignore[override]
+        _ = kwargs
+        return "DeepThink native summary"
+
+
+class _RecordingNativeLLM:
+    def __init__(self, responses: list[NativeStreamResult]) -> None:
+        self._responses = responses
+        self._index = 0
+        self.calls: list[list[dict]] = []
+
+    async def stream_chat_with_tools_async(self, **kwargs):  # type: ignore[override]
+        messages = kwargs.get("messages") or []
+        self.calls.append(list(messages))
         if self._index >= len(self._responses):
             raise RuntimeError("No more native mock responses")
         value = self._responses[self._index]
@@ -228,6 +249,68 @@ def test_native_multi_tool_calls_execute_concurrently_and_append_results() -> No
     assert set(started) == {"file_operations", "web_search"}
     assert result.total_iterations >= 2
     assert result.thinking_steps
+
+
+def test_native_execute_task_probe_only_cycle_injects_followthrough_nudge() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Need to inspect first",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task4"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="All set",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={"answer": "done", "confidence": 0.9},
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(_name: str, _params: dict):
+        return {"success": True, "summary": "listed /tmp/task4"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=3,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 4,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请继续执行 task 4",
+            task_context=TaskExecutionContext(
+                task_id=4,
+                task_name="样本间整合与标准化",
+                task_instruction="继续执行 task 4 的整合分析，不要只做目录探查。",
+            ),
+        )
+    )
+
+    assert result.final_answer == "done"
+    assert len(llm.calls) >= 2
+    second_call_messages = llm.calls[1]
+    assert any(
+        "不要继续做目录清点式" in str(message.get("content") or "")
+        for message in second_call_messages
+        if isinstance(message, dict)
+    )
 
 
 def test_structured_plan_outcome_detects_created_plan() -> None:
