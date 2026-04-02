@@ -57,6 +57,13 @@ def test_structured_action_catalog_includes_deliverable_submit() -> None:
     assert "DELIVERABLES_INGEST_MODE" in line
 
 
+def test_structured_action_catalog_forbids_plan_status_mutation_via_plan_operation() -> None:
+    prompts = prompt_manager.get_category("structured_agent")
+    base_actions = prompts["action_catalog"]["base_actions"]
+    note = next(line for line in base_actions if line.strip().startswith("NOTE:"))
+    assert "Do not call plan_operation/task_operation just to mark the current task completed or failed" in note
+
+
 def test_unbound_rules_use_auto_create_plan_without_confirmation_language() -> None:
     prompts = prompt_manager.get_category("structured_agent")
     unbound_actions = prompts["action_catalog"]["plan_actions"]["unbound"]
@@ -100,6 +107,7 @@ def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_prio
         assert "ALWAYS try bio_tools first before code_executor" in prompt
         assert "Never use code_executor as fallback for sequence_fetch failures." in prompt
         assert "Never use code_executor as fallback for bio_tools input-conversion/parsing failures." in prompt
+        assert "do NOT use plan_operation or task_operation just to mark that task completed/failed" in prompt
 
     assert "PROTOCOL BOUNDARY (NATIVE TOOL CALLING)" in native_prompt
     assert "PROTOCOL BOUNDARY (LEGACY JSON)" in legacy_prompt

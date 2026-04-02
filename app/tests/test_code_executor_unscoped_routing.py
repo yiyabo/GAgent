@@ -177,6 +177,25 @@ def test_sync_task_status_runs_for_scoped_code_executor() -> None:
     assert len(repo.cascaded) == 1
 
 
+def test_sync_task_status_skips_for_read_only_file_operations() -> None:
+    repo = _RepoTaskSyncStub()
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 1}
+    agent._dirty = False
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="file_operations",
+        success=False,
+        summary="Directory not found",
+        message="Directory not found",
+        params={"operation": "list", "path": "/tmp/missing"},
+    )
+
+    assert repo.updated == []
+    assert repo.cascaded == []
+
+
 def test_sync_task_status_marks_failed_when_verification_fails(tmp_path) -> None:
     missing_path = tmp_path / "missing.txt"
     tree = PlanTree(
