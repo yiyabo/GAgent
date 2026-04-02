@@ -692,6 +692,7 @@ async def _execute_task_locally(
     extra_dirs: Optional[Sequence[str]] = None,
     tool_context: Optional[Any] = None,
     auto_fix: bool = True,
+    session_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute a task using the unified local code execution backend.
 
@@ -731,6 +732,15 @@ async def _execute_task_locally(
         f"Working directory: {work_dir}\n"
         f"Save outputs to: {results_dir}"
     )
+    if session_dir:
+        session_results = os.path.join(session_dir, "results")
+        if os.path.isdir(session_results):
+            prior_files = os.listdir(session_results)
+            if prior_files:
+                task_desc += (
+                    f"\nPrior session outputs (from earlier tasks): {session_results}\n"
+                    f"Files: {', '.join(sorted(prior_files)[:20])}"
+                )
     if data_dir:
         task_desc += f"\nPrimary data directory: {data_dir}"
 
@@ -1028,6 +1038,7 @@ async def code_executor_handler(
                 extra_dirs=allowed_dirs,
                 tool_context=tool_context,
                 auto_fix=auto_fix,
+                session_dir=str(session_dir),
             )
             produced_files = _collect_run_artifacts(
                 run_dir=task_work_dir,
