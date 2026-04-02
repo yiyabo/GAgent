@@ -8,12 +8,25 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
+from urllib.parse import urlparse
 from typing import Dict, Optional, Sequence
 
 from .local_interpreter import CodeExecutionResult
 
 logger = logging.getLogger(__name__)
+
+_PROXY_ENV_NAMES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+)
 
 try:
     import docker
@@ -101,14 +114,52 @@ class DockerCodeInterpreter:
 
     def _build_env(self) -> dict:
         data_dir = self.data_dir or self.work_dir
-        return {
+        cache_root = os.path.join(self.work_dir, ".code_executor_cache")
+        env = {
             "DATA_DIR": data_dir,
             "WORKSPACE": self.work_dir,
             "DATA": data_dir,
+            "HOME": cache_root,
+            "XDG_CACHE_HOME": os.path.join(cache_root, "xdg"),
+            "MPLCONFIGDIR": os.path.join(cache_root, "matplotlib"),
+            "NUMBA_CACHE_DIR": os.path.join(cache_root, "numba"),
         }
+        for name in _PROXY_ENV_NAMES:
+            value = os.environ.get(name)
+            if value:
+                env[name] = value
+        return env
+
+    @staticmethod
+    def _proxy_targets_loopback(value: str) -> bool:
+        parsed = urlparse(value)
+        host = parsed.hostname
+        if not host and "://" not in value:
+            host = urlparse(f"http://{value}").hostname
+        return host in {"127.0.0.1", "localhost", "::1"}
+
+    def _should_use_host_network(self, environment: dict) -> bool:
+        if not sys.platform.startswith("linux"):
+            return False
+        return any(
+            self._proxy_targets_loopback(environment[name])
+            for name in (
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            )
+            if environment.get(name)
+        )
 
     def build_preamble(self) -> str:
         """Return the path-setup preamble for scripts executed in Docker."""
+        cache_root = os.path.join(self.work_dir, ".code_executor_cache")
+        xdg_cache = os.path.join(cache_root, "xdg")
+        mpl_cache = os.path.join(cache_root, "matplotlib")
+        numba_cache = os.path.join(cache_root, "numba")
         return f'''# Auto-injected path setup
 import os
 
@@ -118,9 +169,22 @@ os.environ["DATA_DIR"] = "{self.data_dir or self.work_dir}"
 
 _DATA_PATH = "{self.data_dir or self.work_dir}"
 _WORKSPACE_PATH = "{self.work_dir}"
+_CACHE_ROOT = "{cache_root}"
+_XDG_CACHE_PATH = "{xdg_cache}"
+_MATPLOTLIB_CACHE_PATH = "{mpl_cache}"
+_NUMBA_CACHE_PATH = "{numba_cache}"
 
 os.environ["WORKSPACE"] = _WORKSPACE_PATH
 os.environ["DATA"] = _DATA_PATH
+os.environ["HOME"] = _CACHE_ROOT
+os.environ["XDG_CACHE_HOME"] = _XDG_CACHE_PATH
+os.environ["MPLCONFIGDIR"] = _MATPLOTLIB_CACHE_PATH
+os.environ["NUMBA_CACHE_DIR"] = _NUMBA_CACHE_PATH
+
+os.makedirs(_CACHE_ROOT, exist_ok=True)
+os.makedirs(_XDG_CACHE_PATH, exist_ok=True)
+os.makedirs(_MATPLOTLIB_CACHE_PATH, exist_ok=True)
+os.makedirs(_NUMBA_CACHE_PATH, exist_ok=True)
 
 '''
 
@@ -166,9 +230,16 @@ os.environ["DATA"] = _DATA_PATH
 
     @staticmethod
     def _resolve_container_user() -> Optional[str]:
-        # Run as root inside container for full read/write/pip-install access.
-        # Container is ephemeral (--rm), so root is safe — no host escape risk.
-        return None
+        if os.name != "posix":
+            return None
+        try:
+            uid = os.getuid()
+            gid = os.getgid()
+        except AttributeError:
+            return None
+        if uid < 0 or gid < 0:
+            return None
+        return f"{uid}:{gid}"
 
     def _ensure_runtime_available(self) -> Optional[CodeExecutionResult]:
         if not self.client:
@@ -230,6 +301,7 @@ os.environ["DATA"] = _DATA_PATH
         try:
             volumes = self._build_volume_mounts()
             user = self._resolve_container_user()
+            environment = self._build_env()
             logger.info(
                 "Docker mounts for %s: %s",
                 self.image,
@@ -240,12 +312,15 @@ os.environ["DATA"] = _DATA_PATH
                 "image": self.image,
                 "command": list(command),
                 "detach": True,
-                "network_disabled": False,
                 "mem_limit": "8g",
                 "volumes": volumes,
                 "working_dir": self.work_dir,
-                "environment": self._build_env(),
+                "environment": environment,
             }
+            if self._should_use_host_network(environment):
+                run_kwargs["network_mode"] = "host"
+            else:
+                run_kwargs["network_disabled"] = False
             if user:
                 run_kwargs["user"] = user
 
