@@ -108,6 +108,24 @@ def test_sanitize_code_executor_rewrites_legacy_http_400_config_hint() -> None:
     assert "ANTHROPIC_API_KEY" not in sanitized["error"]
 
 
+def test_summarize_code_executor_mentions_generated_files() -> None:
+    summary = summarize_tool_result(
+        "code_executor",
+        {
+            "success": True,
+            "produced_files": [
+                "/tmp/run/results/integrated_data.h5ad",
+                "/tmp/run/results/qc_summary.csv",
+            ],
+            "stdout": "Integration completed successfully.",
+        },
+    )
+
+    assert "code_executor succeeded." in summary
+    assert "/tmp/run/results/integrated_data.h5ad" in summary
+    assert "Integration completed successfully." in summary
+
+
 def test_append_recent_tool_result_keeps_image_anchors_when_summary_only() -> None:
     extra_context = {}
     sanitized = {

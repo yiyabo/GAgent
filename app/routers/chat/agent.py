@@ -51,6 +51,7 @@ from tool_box import execute_tool
 
 _DEEP_THINK_MAX_ITER_DEFAULT = 64
 _DEEP_THINK_MAX_ITER_CAP = 128
+_READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
 
 
 def _resolve_deep_think_max_iterations() -> int:
@@ -78,6 +79,20 @@ def _code_executor_job_stream_loggers(job_id: str) -> Tuple[Any, Any]:
         plan_decomposition_jobs.append_log(job_id, "stderr", line, {})
 
     return on_stdout, on_stderr
+
+
+def _should_auto_sync_task_status(tool_name: str, params: Optional[Dict[str, Any]]) -> bool:
+    """Skip task-status auto-sync for exploratory tool calls.
+
+    Read-only file inspection is often used as a precursor to the real task
+    execution. Treating these probe failures as task failures makes the plan UI
+    flip to red even when a later code execution succeeds.
+    """
+    if tool_name != "file_operations" or not isinstance(params, dict):
+        return True
+
+    operation = str(params.get("operation") or "").strip().lower()
+    return operation not in _READ_ONLY_FILE_OPERATIONS
 
 
 from .action_execution import (
@@ -1225,6 +1240,13 @@ class StructuredChatAgent:
         ):
             logger.info(
                 "[TASK_SYNC] Skipping task status sync for unscoped code_executor execution"
+            )
+            return
+
+        if not _should_auto_sync_task_status(tool_name, params):
+            logger.info(
+                "[TASK_SYNC] Skipping task status sync for exploratory %s execution",
+                tool_name,
             )
             return
 

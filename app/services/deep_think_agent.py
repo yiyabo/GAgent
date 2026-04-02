@@ -1181,6 +1181,7 @@ class DeepThinkAgent:
             "- For status polling tools, if state is unchanged across several checks, stop active polling and summarize current status.\n"
             "- If the user explicitly asks for a plan or task breakdown and plan_operation is available, use plan_operation to create or update a structured plan instead of replying with a prose-only pseudo-plan.\n"
             "- For plan creation, research is optional. Use web_search first only when latest evidence or external best practices materially affect the plan; otherwise create or update the plan directly from current context.\n"
+            "- When executing a currently bound plan task, do NOT use plan_operation or task_operation just to mark that task completed/failed. Tool execution auto-sync already handles current task status; use plan_operation/task_operation only for structural plan edits.\n"
             "- For web_search: cite verifiable sources. When stating time-sensitive or factual claims, include URLs from the tool JSON "
             "`results` list (title/url) in your final answer. If `results` is empty and the tool response has no URLs, say sources were "
             "not returned and avoid presenting specific claims as independently verified.\n"
@@ -3127,7 +3128,8 @@ WORKFLOW for Plan Creation:
 IMPORTANT:
 - When creating plans, ensure each task has clear, actionable instructions.
 - For optimize/update_task, put editable fields at the top level (name/instruction/dependencies). Do not send only nested updated_fields values.
-- If the user asks to update the plan description or rationale summary, use action='update_description' with a top-level description field.""",
+- If the user asks to update the plan description or rationale summary, use action='update_description' with a top-level description field.
+- Do NOT use this tool to mark the currently executing task completed/failed. Current task status is auto-synced from tool execution; use this tool only for structural plan changes.""",
             "terminal_session": """Interactive terminal (PTY shell) for running commands directly.
 
 Operations:

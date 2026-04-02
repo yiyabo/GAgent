@@ -612,7 +612,9 @@ async def _optimize_plan(
                             "change": change,
                             "error": (
                                 "No supported update fields provided for update_task. "
-                                "Use top-level name/instruction/dependencies or nested updated_fields."
+                                "Use top-level name/instruction/dependencies or nested updated_fields. "
+                                "Do not use plan_operation optimize/update_task to mark the currently executing task completed/failed; "
+                                "current task status is auto-synced from tool execution."
                             ),
                         })
 
