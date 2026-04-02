@@ -433,12 +433,27 @@ def test_build_coder_system_prompt_keeps_default_local_library_set() -> None:
 def test_build_coder_system_prompt_can_include_docker_only_libraries() -> None:
     prompt = build_coder_system_prompt(
         extra_libraries=[
+            ("gseapy", "Gene set enrichment analysis workflows"),
             ("scanpy", "Single-cell analysis workflows"),
+            ("harmonypy", "Harmony batch correction and integration"),
+            ("bbknn", "Batch-balanced nearest neighbors integration"),
+            ("dask", "Distributed and out-of-core array computation"),
             ("scrublet", "Doublet detection for single-cell data"),
-        ]
+        ],
+        extra_system_tools=[
+            ("samtools", "SAM/BAM/CRAM processing and statistics"),
+            ("bedtools", "Genomic interval intersection and arithmetic"),
+        ],
     )
+    assert "`gseapy` - Gene set enrichment analysis workflows" in prompt
     assert "`scanpy` - Single-cell analysis workflows" in prompt
+    assert "`harmonypy` - Harmony batch correction and integration" in prompt
+    assert "`bbknn` - Batch-balanced nearest neighbors integration" in prompt
+    assert "`dask` - Distributed and out-of-core array computation" in prompt
     assert "`scrublet` - Doublet detection for single-cell data" in prompt
+    assert "`samtools` - SAM/BAM/CRAM processing and statistics" in prompt
+    assert "`bedtools` - Genomic interval intersection and arithmetic" in prompt
+    assert "invoke it through `subprocess.run(...)`" in prompt
 
 
 # ---------------------------------------------------------------------------
