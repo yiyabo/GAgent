@@ -150,6 +150,8 @@ def extract_task_id_from_text(text: str) -> Optional[int]:
         return None
     patterns = [
         r"(?:task[_\s-]?id|task)\s*[#:=]?\s*(\d+)",
+        r"任务\s*[#:=：]?\s*(\d+)",
+        r"第\s*(\d+)\s*(?:个)?任务",
         r"#(\d+)",
     ]
     for pattern in patterns:

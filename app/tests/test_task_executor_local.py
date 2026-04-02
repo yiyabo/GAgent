@@ -86,6 +86,11 @@ def test_classify_error_runtime():
     assert classify_error("ValueError: bad value", 1) == "runtime_error"
 
 
+def test_classify_error_blocked_dependency():
+    stderr = "BLOCKED_DEPENDENCY: fewer than 2 valid samples available. Cannot proceed with integration."
+    assert classify_error(stderr, 1) == "blocked_dependency"
+
+
 def test_classify_error_ignores_leading_warning_noise():
     stderr = (
         "/usr/local/lib/python3.10/site-packages/louvain/__init__.py:54: "
@@ -103,6 +108,51 @@ def test_classify_error_warning_only_noise():
         "  from pkg_resources import get_distribution\n"
     )
     assert classify_error(stderr, 1) == "non_fatal_warning_noise"
+
+
+def test_execute_code_locally_skips_auto_fix_for_blocked_dependency(tmp_path: Path, monkeypatch):
+    fake_code_resp = CodeTaskResponse(code="print('hello')", description="blocked")
+    warning_only_stderr = (
+        "/usr/local/lib/python3.10/site-packages/louvain/__init__.py:54: "
+        "UserWarning: pkg_resources is deprecated as an API.\n"
+        "  from pkg_resources import get_distribution\n"
+    )
+    failed_exec_result = CodeExecutionResult(
+        status="failed",
+        output="ERROR: Fewer than 2 valid samples available. Cannot proceed with integration.\n",
+        error=warning_only_stderr,
+        exit_code=1,
+    )
+
+    monkeypatch.setattr(
+        f"{_CE_MOD}.CodeGenerator.generate",
+        lambda self, **kw: fake_code_resp,
+    )
+    monkeypatch.setattr(
+        f"{_CE_MOD}.LocalCodeInterpreter.run_file",
+        lambda self, code_file: failed_exec_result,
+    )
+
+    def _unexpected_fix(*args, **kwargs):
+        raise AssertionError("auto-fix should not run for blocked dependencies")
+
+    monkeypatch.setattr(f"{_CE_MOD}._ask_llm_to_fix", _unexpected_fix)
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="integration",
+            task_description="attempt integration",
+            work_dir=str(tmp_path),
+            llm_service=MagicMock(),
+            auto_fix=True,
+            max_attempts=3,
+        )
+    )
+
+    assert outcome.success is False
+    assert outcome.attempts == 1
+    assert outcome.error_category == "blocked_dependency"
+    assert "Fewer than 2 valid samples" in (outcome.error_summary or "")
 
 
 # ---------------------------------------------------------------------------
