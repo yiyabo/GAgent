@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_EXPLORATORY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
+
 
 # ---------------------------------------------------------------------------
 # Async guardrails
@@ -401,7 +403,10 @@ def apply_task_execution_followthrough_guardrail(
     if not guardrail_enabled:
         return structured
 
-    if structured.actions:
+    actions_are_exploratory = _actions_are_only_exploratory_file_operations(
+        structured.actions
+    )
+    if structured.actions and not actions_are_exploratory:
         return structured
 
     user_message = str(agent._current_user_message or "").strip()
@@ -448,6 +453,16 @@ def apply_task_execution_followthrough_guardrail(
     if target_task_id is None:
         return structured
 
+    if actions_are_exploratory:
+        logger.info(
+            "[CHAT][GUARDRAIL][FOLLOWTHROUGH] replaced exploratory file_operations with rerun_task for task_id=%s",
+            target_task_id,
+        )
+    else:
+        logger.info(
+            "[CHAT][GUARDRAIL][FOLLOWTHROUGH] injected rerun_task for task_id=%s",
+            target_task_id,
+        )
     structured.actions = [
         LLMAction(
             kind="task_operation",
@@ -458,6 +473,20 @@ def apply_task_execution_followthrough_guardrail(
         )
     ]
     return structured
+
+
+def _actions_are_only_exploratory_file_operations(
+    actions: list[LLMAction],
+) -> bool:
+    if not actions:
+        return False
+    for action in actions:
+        if action.kind != "tool_operation" or action.name != "file_operations":
+            return False
+        operation = str((action.parameters or {}).get("operation") or "").strip().lower()
+        if operation not in _EXPLORATORY_FILE_OPERATIONS:
+            return False
+    return True
 
 
 def resolve_followthrough_target_task_id(

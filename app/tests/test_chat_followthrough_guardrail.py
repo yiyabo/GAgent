@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app.routers.chat_routes import StructuredChatAgent
-from app.services.llm.structured_response import LLMReply, LLMStructuredResponse
+from app.services.llm.structured_response import LLMAction, LLMReply, LLMStructuredResponse
 
 
 class _FakeNode:
@@ -30,13 +30,21 @@ class _FakeTree:
         return list(self._children.get(node_id, []))
 
 
-def _build_agent(*, tree: _FakeTree, user_message: str, current_task_id: int | None = None) -> StructuredChatAgent:
+def _build_agent(
+    *,
+    tree: _FakeTree,
+    user_message: str,
+    current_task_id: int | None = None,
+    followthrough_guardrail_enabled: bool = False,
+) -> StructuredChatAgent:
     agent = StructuredChatAgent.__new__(StructuredChatAgent)
     agent.plan_session = SimpleNamespace(
         plan_id=34,
         repo=SimpleNamespace(get_plan_tree=lambda _plan_id: tree),
     )
     agent.extra_context = {}
+    if followthrough_guardrail_enabled:
+        agent.extra_context["followthrough_guardrail_enabled"] = True
     if current_task_id is not None:
         agent.extra_context["current_task_id"] = current_task_id
     agent._current_user_message = user_message
@@ -102,3 +110,75 @@ def test_followthrough_guardrail_keeps_status_query_without_execution_intent() -
     patched = agent._apply_task_execution_followthrough_guardrail(structured)
 
     assert patched.actions == []
+
+
+def test_followthrough_guardrail_replaces_exploratory_file_operations_when_enabled() -> None:
+    tree = _FakeTree(
+        nodes={
+            23: _FakeNode(23, "(Introduction)", status="pending"),
+        },
+        children={},
+    )
+    agent = _build_agent(
+        tree=tree,
+        user_message="continue task 23 now",
+        current_task_id=23,
+        followthrough_guardrail_enabled=True,
+    )
+    structured = LLMStructuredResponse(
+        llm_reply=LLMReply(message="I will inspect the outputs first."),
+        actions=[
+            LLMAction(
+                kind="tool_operation",
+                name="file_operations",
+                parameters={"operation": "list", "path": "/tmp/results"},
+                order=1,
+            )
+        ],
+    )
+
+    patched = agent._apply_task_execution_followthrough_guardrail(structured)
+
+    assert len(patched.actions) == 1
+    action = patched.actions[0]
+    assert action.kind == "task_operation"
+    assert action.name == "rerun_task"
+    assert action.parameters == {"task_id": 23}
+
+
+def test_followthrough_guardrail_keeps_non_exploratory_actions_when_enabled() -> None:
+    tree = _FakeTree(
+        nodes={
+            23: _FakeNode(23, "(Introduction)", status="pending"),
+        },
+        children={},
+    )
+    agent = _build_agent(
+        tree=tree,
+        user_message="continue task 23 now",
+        current_task_id=23,
+        followthrough_guardrail_enabled=True,
+    )
+    structured = LLMStructuredResponse(
+        llm_reply=LLMReply(message="I will write the output now."),
+        actions=[
+            LLMAction(
+                kind="tool_operation",
+                name="file_operations",
+                parameters={
+                    "operation": "write",
+                    "path": "/tmp/results.txt",
+                    "content": "done",
+                },
+                order=1,
+            )
+        ],
+    )
+
+    patched = agent._apply_task_execution_followthrough_guardrail(structured)
+
+    assert len(patched.actions) == 1
+    action = patched.actions[0]
+    assert action.kind == "tool_operation"
+    assert action.name == "file_operations"
+    assert action.parameters["operation"] == "write"
