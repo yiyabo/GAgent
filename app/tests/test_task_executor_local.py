@@ -86,6 +86,25 @@ def test_classify_error_runtime():
     assert classify_error("ValueError: bad value", 1) == "runtime_error"
 
 
+def test_classify_error_ignores_leading_warning_noise():
+    stderr = (
+        "/usr/local/lib/python3.10/site-packages/louvain/__init__.py:54: "
+        "UserWarning: pkg_resources is deprecated as an API.\n"
+        "  from pkg_resources import get_distribution\n"
+        "ModuleNotFoundError: No module named 'seaborn'\n"
+    )
+    assert classify_error(stderr, 1) == "missing_package"
+
+
+def test_classify_error_warning_only_noise():
+    stderr = (
+        "/usr/local/lib/python3.10/site-packages/louvain/__init__.py:54: "
+        "UserWarning: pkg_resources is deprecated as an API.\n"
+        "  from pkg_resources import get_distribution\n"
+    )
+    assert classify_error(stderr, 1) == "non_fatal_warning_noise"
+
+
 # ---------------------------------------------------------------------------
 # Local execution: success path (via unified execute_code_locally)
 # ---------------------------------------------------------------------------
@@ -423,6 +442,102 @@ def test_execute_code_locally_stops_retrying_on_docker_runtime_failure(tmp_path:
     assert outcome.attempts == 1
 
 
+def test_execute_code_locally_does_not_retry_on_warning_only_failure(tmp_path: Path, monkeypatch):
+    fake_code_resp = CodeTaskResponse(code="print('ok')", description="warning only")
+
+    class FakeLocalInterpreter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def build_preamble(self):
+            return ""
+
+        def run_file(self, code_file):
+            return CodeExecutionResult(
+                status="failed",
+                output="",
+                error=(
+                    "/usr/local/lib/python3.10/site-packages/louvain/__init__.py:54: "
+                    "UserWarning: pkg_resources is deprecated as an API.\n"
+                    "  from pkg_resources import get_distribution\n"
+                ),
+                exit_code=1,
+            )
+
+    def _unexpected_fix(self, **_kwargs):
+        raise AssertionError("Warning-only noise must not trigger auto-fix")
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.fix_code", _unexpected_fix)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter", FakeLocalInterpreter)
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="warning noise",
+            task_description="do not retry",
+            work_dir=str(tmp_path),
+        )
+    )
+
+    assert outcome.success is False
+    assert outcome.error_category == "non_fatal_warning_noise"
+    assert outcome.attempts == 1
+
+
+def test_execute_code_locally_fix_prompt_uses_real_error_after_warning_noise(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_code_resp = CodeTaskResponse(code="import seaborn", description="warning then import error")
+    fixed_resp = CodeTaskResponse(code="print('fixed')", description="fixed")
+    captured_fix_kwargs = {}
+    call_count = {"exec": 0}
+
+    class FakeLocalInterpreter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def build_preamble(self):
+            return ""
+
+        def run_file(self, code_file):
+            call_count["exec"] += 1
+            if call_count["exec"] == 1:
+                return CodeExecutionResult(
+                    status="failed",
+                    output="",
+                    error=(
+                        "/usr/local/lib/python3.10/site-packages/louvain/__init__.py:54: "
+                        "UserWarning: pkg_resources is deprecated as an API.\n"
+                        "  from pkg_resources import get_distribution\n"
+                        "ModuleNotFoundError: No module named 'seaborn'\n"
+                    ),
+                    exit_code=1,
+                )
+            return CodeExecutionResult(status="success", output="fixed\n", error="", exit_code=0)
+
+    def _capture_fix(self, **kwargs):
+        captured_fix_kwargs.update(kwargs)
+        return fixed_resp
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.fix_code", _capture_fix)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter", FakeLocalInterpreter)
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="warning then error",
+            task_description="use seaborn",
+            work_dir=str(tmp_path),
+        )
+    )
+
+    assert outcome.success is True
+    error_sent = captured_fix_kwargs.get("error", "")
+    assert "ModuleNotFoundError" in error_sent
+    assert "pkg_resources is deprecated" not in error_sent
+
+
 def test_build_coder_system_prompt_keeps_default_local_library_set() -> None:
     prompt = build_coder_system_prompt()
     assert "`pandas` - Data manipulation and analysis" in prompt
@@ -454,6 +569,20 @@ def test_build_coder_system_prompt_can_include_docker_only_libraries() -> None:
     assert "`samtools` - SAM/BAM/CRAM processing and statistics" in prompt
     assert "`bedtools` - Genomic interval intersection and arithmetic" in prompt
     assert "invoke it through `subprocess.run(...)`" in prompt
+
+
+def test_build_coder_system_prompt_includes_scRNA_dependency_guardrails() -> None:
+    prompt = build_coder_system_prompt(
+        extra_libraries=[
+            ("scanpy", "Single-cell analysis workflows"),
+            ("scrublet", "Doublet detection for single-cell data"),
+        ],
+    )
+
+    assert "do NOT silently rewrite the task into a different upstream workflow" in prompt
+    assert "Do NOT assume `adata.var['mt']` already exists" in prompt
+    assert "fewer than 2 valid samples remain" in prompt
+    assert "Only write `results/integrated_data.h5ad` when integration actually ran successfully" in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -216,6 +216,44 @@ def test_sync_task_status_skips_for_document_reader() -> None:
     assert repo.cascaded == []
 
 
+def test_sync_task_status_skips_for_vision_reader() -> None:
+    repo = _RepoTaskSyncStub()
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 1}
+    agent._dirty = False
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="vision_reader",
+        success=False,
+        summary="OCR failed",
+        message="OCR failed",
+        params={"operation": "read_image", "file_path": "/tmp/missing.png"},
+    )
+
+    assert repo.updated == []
+    assert repo.cascaded == []
+
+
+def test_sync_task_status_skips_for_result_interpreter() -> None:
+    repo = _RepoTaskSyncStub()
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 1}
+    agent._dirty = False
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="result_interpreter",
+        success=False,
+        summary="No result files found",
+        message="No result files found",
+        params={"operation": "metadata", "file_path": "/tmp/missing.csv"},
+    )
+
+    assert repo.updated == []
+    assert repo.cascaded == []
+
+
 def test_build_deep_think_task_context_uses_bound_atomic_task() -> None:
     leaf = PlanNode(
         id=30,
@@ -248,6 +286,57 @@ def test_build_deep_think_task_context_uses_bound_atomic_task() -> None:
     assert task_context.task_id == 30
     assert task_context.task_instruction == "Run the integration analysis for task 30."
     assert task_context.plan_outline == "Plan 49"
+
+
+def test_build_deep_think_task_context_includes_dependency_outputs() -> None:
+    dependency = PlanNode(
+        id=10,
+        plan_id=49,
+        name="QC filtering",
+        instruction="Produce filtered h5ad outputs.",
+        status="completed",
+        execution_result=json.dumps(
+            {
+                "status": "completed",
+                "content": "filtered_cancer1.h5ad generated",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    leaf = PlanNode(
+        id=30,
+        plan_id=49,
+        name="subtask",
+        instruction="Run the integration analysis for task 30.",
+        parent_id=1,
+        status="pending",
+        dependencies=[10],
+    )
+    tree = PlanTree(
+        id=49,
+        title="Plan 49",
+        nodes={
+            1: PlanNode(id=1, plan_id=49, name="Root", status="pending"),
+            10: dependency,
+            30: leaf,
+        },
+        adjacency={None: [1], 1: [10, 30], 10: [], 30: []},
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=_RepoStub(tree))
+    agent.plan_tree = tree
+    agent.extra_context = {"current_task_id": 30}
+
+    task_context = _build_deep_think_task_context(
+        agent,
+        user_message="continue task 30",
+    )
+
+    assert task_context is not None
+    assert task_context.dependency_outputs
+    assert task_context.dependency_outputs[0]["task_id"] == 10
+    assert "filtered_cancer1.h5ad" in task_context.dependency_outputs[0]["execution_result"]
+    assert "Completed task outputs:" in str(task_context.context_summary or "")
 
 
 def test_sync_task_status_marks_failed_when_verification_fails(tmp_path) -> None:

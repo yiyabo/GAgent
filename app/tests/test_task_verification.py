@@ -36,7 +36,7 @@ class _LLMStub:
         return self._response
 
 
-def test_task_verifier_generates_basic_checks_from_artifact_paths(tmp_path):
+def test_task_verifier_skips_auto_verification_without_explicit_criteria(tmp_path):
     artifact = tmp_path / "report.txt"
     artifact.write_text("hello\n", encoding="utf-8")
     node = PlanNode(id=1, plan_id=1, name="Generate report", metadata={})
@@ -54,9 +54,9 @@ def test_task_verifier_generates_basic_checks_from_artifact_paths(tmp_path):
 
     assert finalization.final_status == "completed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "passed"
-    assert finalization.verification["generated"] is True
-    assert finalization.verification["checks_total"] == 2
+    assert finalization.verification["status"] == "skipped"
+    assert finalization.verification["generated"] is False
+    assert finalization.verification["checks_total"] == 0
 
 
 def test_task_verifier_fails_blocking_acceptance_criteria(tmp_path):
@@ -222,8 +222,9 @@ def test_verify_task_route_rechecks_existing_output(tmp_path, monkeypatch):
     }
     repo = _RepoStub(tree)
     monkeypatch.setattr(plan_routes, "_plan_repo", repo)
+    monkeypatch.setattr(plan_routes, "_load_authorized_plan_tree", lambda plan_id, request: tree)
 
-    response = plan_routes.verify_task_result(22, plan_id=55)
+    response = plan_routes.verify_task_result(22, request=None, plan_id=55)
 
     assert response.success is True
     assert response.result.status == "completed"

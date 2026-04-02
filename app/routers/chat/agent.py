@@ -53,6 +53,7 @@ from tool_box import execute_tool
 _DEEP_THINK_MAX_ITER_DEFAULT = 64
 _DEEP_THINK_MAX_ITER_CAP = 128
 _READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
+_OBSERVATION_ONLY_TOOLS = {"document_reader", "vision_reader", "result_interpreter"}
 
 
 def _resolve_deep_think_max_iterations() -> int:
@@ -89,7 +90,7 @@ def _should_auto_sync_task_status(tool_name: str, params: Optional[Dict[str, Any
     execution. Treating these probe failures as task failures makes the plan UI
     flip to red even when a later code execution succeeds.
     """
-    if tool_name == "document_reader":
+    if tool_name in _OBSERVATION_ONLY_TOOLS:
         return False
     if tool_name != "file_operations" or not isinstance(params, dict):
         return True
@@ -134,10 +135,42 @@ def _build_deep_think_task_context(
     task_instruction = str(getattr(node, "instruction", "") or "").strip() or str(user_message or "").strip()
     context_summary = str(getattr(node, "context_combined", "") or "").strip() or None
     context_sections = list(getattr(node, "context_sections", []) or [])
+    dependency_outputs: List[Dict[str, Any]] = []
+    raw_dependencies = getattr(node, "dependencies", []) or []
+    for dep_id in raw_dependencies[:6]:
+        try:
+            dep_id_int = int(dep_id)
+        except (TypeError, ValueError):
+            continue
+        if not tree.has_node(dep_id_int):
+            continue
+        dep_node = tree.get_node(dep_id_int)
+        dep_status = str(getattr(dep_node, "status", "") or "").strip().lower()
+        result_text = str(getattr(dep_node, "execution_result", "") or "").strip()
+        if len(result_text) > 500:
+            result_text = result_text[:500].rstrip() + "..."
+        dependency_outputs.append(
+            {
+                "task_id": dep_id_int,
+                "task_name": str(dep_node.display_name()).strip(),
+                "status": dep_status,
+                "execution_result": result_text,
+            }
+        )
+
+    completed_outputs_summary = ""
+    try:
+        completed_outputs_summary = _collect_completed_task_outputs_fn(tree, task_id) or ""
+    except Exception:
+        completed_outputs_summary = ""
+    if completed_outputs_summary:
+        addition = f"Completed task outputs:\n{completed_outputs_summary}"
+        context_summary = f"{context_summary}\n\n{addition}" if context_summary else addition
     return TaskExecutionContext(
         task_id=task_id,
         task_name=task_name or None,
         task_instruction=task_instruction or None,
+        dependency_outputs=dependency_outputs,
         plan_outline=str(getattr(tree, "title", "") or "").strip() or None,
         context_summary=context_summary,
         context_sections=context_sections,
@@ -167,6 +200,7 @@ from .action_handlers import (
 )
 from .code_executor_helpers import (
     compose_code_executor_atomic_task_prompt as _compose_code_executor_atomic_task_prompt_fn,
+    collect_completed_task_outputs as _collect_completed_task_outputs_fn,
     normalize_csv_arg as _normalize_csv_arg_fn,
     resolve_action_placeholders as _resolve_action_placeholders_fn,
     resolve_code_executor_task_context as _resolve_code_executor_task_context_fn,
