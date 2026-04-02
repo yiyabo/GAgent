@@ -78,6 +78,7 @@ _INTERNAL_TOOL_OUTPUT_RE = re.compile(
 )
 # Native tool steps often prefix JSON: "[file_operations] {...}"
 _TOOL_RESULT_PREFIX_RE = re.compile(r"^\[[^\]]*]\s*")
+_EXPLORATORY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
 
 
 @dataclass
@@ -513,6 +514,78 @@ class DeepThinkAgent:
             "local_read",
             "local_inspect",
         }
+
+    def _is_execute_task_request(self) -> bool:
+        return (
+            self._request_tier() == "execute"
+            and str(self.request_profile.get("intent_type") or "").strip().lower() == "execute_task"
+        )
+
+    def _has_bound_task_context(self, task_context: Optional[TaskExecutionContext]) -> bool:
+        if task_context and (
+            task_context.task_id is not None or str(task_context.task_instruction or "").strip()
+        ):
+            return True
+        return self._coerce_positive_int(self.request_profile.get("current_task_id")) is not None
+
+    @staticmethod
+    def _is_exploratory_file_operation_call(tool_result: Dict[str, Any]) -> bool:
+        if str(tool_result.get("tool_name") or "").strip().lower() != "file_operations":
+            return False
+        params = tool_result.get("tool_params")
+        if not isinstance(params, dict):
+            return False
+        operation = str(params.get("operation") or "").strip().lower()
+        return operation in _EXPLORATORY_FILE_OPERATIONS
+
+    def _is_probe_only_execution_cycle(
+        self,
+        tool_results: List[Dict[str, Any]],
+        *,
+        task_context: Optional[TaskExecutionContext],
+    ) -> bool:
+        if not tool_results:
+            return False
+        if not self._is_execute_task_request() or not self._has_bound_task_context(task_context):
+            return False
+        return all(self._is_exploratory_file_operation_call(item) for item in tool_results)
+
+    def _build_probe_only_followthrough_nudge(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        user_query: str,
+    ) -> str:
+        language = detect_reasoning_language(user_query)
+        task_bits: List[str] = []
+        if task_context:
+            if task_context.task_id is not None:
+                task_bits.append(f"Task ID={task_context.task_id}")
+            if task_context.task_name:
+                task_bits.append(f"Task Name={task_context.task_name}")
+            if task_context.task_instruction:
+                task_bits.append(
+                    f"Task Instruction={self._clip_reference_text(task_context.task_instruction, limit=400)}"
+                )
+        task_hint = "\n".join(task_bits)
+        zh = (
+            "这是一个已绑定任务的执行请求。你刚才只做了只读目录/文件探查。\n"
+            "下一步不要继续做目录清点式 `file_operations` 探查。\n"
+            "请直接推进任务执行：优先调用真正的执行工具（如 `code_executor` 或该任务对应的分析工具）。\n"
+            "如果确实还缺一个关键文件，最多再读取一个直接相关的具体文件，然后立刻执行。\n"
+            "不要以“继续探查目录”“需要先看看结构”为理由结束本轮。"
+        )
+        en = (
+            "This is a bound task execution request and you only performed read-only file probing.\n"
+            "Do not continue with directory-inventory style `file_operations` checks on the next step.\n"
+            "Advance the task now by calling a real execution tool such as `code_executor` or the task-specific analysis tool.\n"
+            "If exactly one critical file still must be inspected, read that specific file once and then execute immediately.\n"
+            "Do not end this run with another directory-probing report."
+        )
+        base = _localized_text(language, zh, en)
+        if task_hint:
+            return f"{base}\n{task_hint}"
+        return base
 
     def _is_valid_final_answer(self, text: str, *, user_query: str) -> bool:
         cleaned = sanitize_professional_response_text(str(text or "").strip())
@@ -1653,6 +1726,23 @@ class DeepThinkAgent:
                         if self.on_final_delta and final_answer:
                             await self._stream_final_answer(final_answer)
                         break
+
+                    if self._is_probe_only_execution_cycle(
+                        tool_results,
+                        task_context=task_context,
+                    ):
+                        nudge = self._build_probe_only_followthrough_nudge(
+                            task_context=task_context,
+                            user_query=user_query,
+                        )
+                        messages.append({"role": "user", "content": nudge})
+                        logger.info(
+                            "[DEEP_THINK_NATIVE] Injected execute followthrough nudge after probe-only file_operations cycle at iteration=%s",
+                            iteration,
+                        )
+                        current_step.self_correction = (
+                            "Detected probe-only file exploration during a bound execute_task request; injected a followthrough nudge."
+                        )
 
                     current_step.status = "analyzing"
                     if self.on_thinking:
