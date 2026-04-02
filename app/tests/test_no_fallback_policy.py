@@ -340,7 +340,7 @@ class _DeepThinkPlanCreateProbe(_DeepThinkProbeBase):
         )
         self._tool_executor = tool_executor
 
-    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+    async def think(self, user_query: str, context: dict | None = None, task_context=None) -> DeepThinkResult:
         _ = (user_query, context)
         await self._tool_executor(
             "plan_operation",
@@ -397,7 +397,7 @@ class _DeepThinkToolResultProtocolProbe(_DeepThinkProbeBase):
         )
         self._tool_executor = tool_executor
 
-    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+    async def think(self, user_query: str, context: dict | None = None, task_context=None) -> DeepThinkResult:
         _ = (user_query, context)
         tool_result = await self._tool_executor("web_search", {"query": "strict protocol"})
         return DeepThinkResult(
@@ -441,7 +441,7 @@ class _DeepThinkBioFailThenClaudeProbe(_DeepThinkProbeBase):
         )
         self._tool_executor = tool_executor
 
-    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+    async def think(self, user_query: str, context: dict | None = None, task_context=None) -> DeepThinkResult:
         _ = (user_query, context)
         bio_result = await self._tool_executor(
             "bio_tools",
@@ -495,7 +495,7 @@ class _DeepThinkBioRecoverThenClaudeProbe(_DeepThinkProbeBase):
         )
         self._tool_executor = tool_executor
 
-    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+    async def think(self, user_query: str, context: dict | None = None, task_context=None) -> DeepThinkResult:
         _ = (user_query, context)
         first_bio_result = await self._tool_executor(
             "bio_tools",
@@ -562,7 +562,7 @@ class _DeepThinkBioSuccessThenClaudeProbe(_DeepThinkProbeBase):
         )
         self._tool_executor = tool_executor
 
-    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+    async def think(self, user_query: str, context: dict | None = None, task_context=None) -> DeepThinkResult:
         _ = (user_query, context)
         bio_result = await self._tool_executor(
             "bio_tools",
@@ -616,7 +616,7 @@ class _DeepThinkSequenceFetchFailThenClaudeProbe(_DeepThinkProbeBase):
         )
         self._tool_executor = tool_executor
 
-    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+    async def think(self, user_query: str, context: dict | None = None, task_context=None) -> DeepThinkResult:
         _ = (user_query, context)
         fetch_result = await self._tool_executor(
             "sequence_fetch",
@@ -670,7 +670,7 @@ class _DeepThinkSequenceRecoverThenClaudeProbe(_DeepThinkProbeBase):
         )
         self._tool_executor = tool_executor
 
-    async def think(self, user_query: str, context: dict | None = None) -> DeepThinkResult:
+    async def think(self, user_query: str, context: dict | None = None, task_context=None) -> DeepThinkResult:
         _ = (user_query, context)
         first_fetch = await self._tool_executor(
             "sequence_fetch",
