@@ -79,6 +79,8 @@ _INTERNAL_TOOL_OUTPUT_RE = re.compile(
 # Native tool steps often prefix JSON: "[file_operations] {...}"
 _TOOL_RESULT_PREFIX_RE = re.compile(r"^\[[^\]]*]\s*")
 _EXPLORATORY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
+_READ_ONLY_DOCUMENT_OPERATIONS = {"read_any", "read_pdf", "read_text"}
+_READ_ONLY_VISION_OPERATIONS = {"read_pdf", "read_image", "ocr_page"}
 
 
 @dataclass
@@ -538,6 +540,24 @@ class DeepThinkAgent:
         operation = str(params.get("operation") or "").strip().lower()
         return operation in _EXPLORATORY_FILE_OPERATIONS
 
+    @staticmethod
+    def _is_observation_only_tool_call(tool_result: Dict[str, Any]) -> bool:
+        tool_name = str(tool_result.get("tool_name") or "").strip().lower()
+        params = tool_result.get("tool_params")
+        if tool_name == "file_operations":
+            return DeepThinkAgent._is_exploratory_file_operation_call(tool_result)
+        if tool_name == "document_reader":
+            if not isinstance(params, dict):
+                return True
+            operation = str(params.get("operation") or "").strip().lower()
+            return not operation or operation in _READ_ONLY_DOCUMENT_OPERATIONS
+        if tool_name == "vision_reader":
+            if not isinstance(params, dict):
+                return True
+            operation = str(params.get("operation") or "").strip().lower()
+            return not operation or operation in _READ_ONLY_VISION_OPERATIONS
+        return False
+
     def _is_probe_only_execution_cycle(
         self,
         tool_results: List[Dict[str, Any]],
@@ -548,13 +568,14 @@ class DeepThinkAgent:
             return False
         if not self._is_execute_task_request() or not self._has_bound_task_context(task_context):
             return False
-        return all(self._is_exploratory_file_operation_call(item) for item in tool_results)
+        return all(self._is_observation_only_tool_call(item) for item in tool_results)
 
     def _build_probe_only_followthrough_nudge(
         self,
         *,
         task_context: Optional[TaskExecutionContext],
         user_query: str,
+        stage: int = 1,
     ) -> str:
         language = detect_reasoning_language(user_query)
         task_bits: List[str] = []
@@ -568,24 +589,114 @@ class DeepThinkAgent:
                     f"Task Instruction={self._clip_reference_text(task_context.task_instruction, limit=400)}"
                 )
         task_hint = "\n".join(task_bits)
-        zh = (
-            "这是一个已绑定任务的执行请求。你刚才只做了只读目录/文件探查。\n"
-            "下一步不要继续做目录清点式 `file_operations` 探查。\n"
-            "请直接推进任务执行：优先调用真正的执行工具（如 `code_executor` 或该任务对应的分析工具）。\n"
-            "如果确实还缺一个关键文件，最多再读取一个直接相关的具体文件，然后立刻执行。\n"
-            "不要以“继续探查目录”“需要先看看结构”为理由结束本轮。"
-        )
-        en = (
-            "This is a bound task execution request and you only performed read-only file probing.\n"
-            "Do not continue with directory-inventory style `file_operations` checks on the next step.\n"
-            "Advance the task now by calling a real execution tool such as `code_executor` or the task-specific analysis tool.\n"
-            "If exactly one critical file still must be inspected, read that specific file once and then execute immediately.\n"
-            "Do not end this run with another directory-probing report."
-        )
+        if stage >= 2:
+            zh = (
+                "这是连续第 2 次只做观察型探查而没有真正执行任务。\n"
+                "下一步必须二选一：\n"
+                "1. 立即调用真正的执行工具（如 `code_executor` 或任务对应的分析工具）；\n"
+                "2. 若缺少上游交付物或关键输入，直接给出 `BLOCKED_DEPENDENCY` 结论，明确说明缺什么、为什么当前 task 不能继续。\n"
+                "不要继续做目录清点、文档浏览或结果浏览式探查。\n"
+                "不要把当前 task 偷偷改写成前序任务或全量预处理，除非 task 指令明确授权补跑前置步骤。"
+            )
+            en = (
+                "This is the second consecutive observation-only probe without actually executing the bound task.\n"
+                "Your next step MUST do exactly one of the following:\n"
+                "1. Call a real execution tool such as `code_executor` or the task-specific analysis tool immediately.\n"
+                "2. If required upstream deliverables or key inputs are missing, return a `BLOCKED_DEPENDENCY` conclusion that states what is missing and why the current task cannot proceed.\n"
+                "Do not continue with directory inventory, document browsing, or result-browsing probes.\n"
+                "Do not silently rewrite the current task into an upstream preprocessing task unless the task instruction explicitly authorizes backfilling the prerequisite work."
+            )
+        else:
+            zh = (
+                "这是一个已绑定任务的执行请求。你刚才只做了只读目录/文件探查。\n"
+                "下一步不要继续做目录清点式 `file_operations` 或只读文档探查。\n"
+                "请直接推进任务执行：优先调用真正的执行工具（如 `code_executor` 或该任务对应的分析工具）。\n"
+                "如果确实还缺一个关键文件，最多再读取一个直接相关的具体文件，然后立刻执行。\n"
+                "不要以“继续探查目录”“需要先看看结构”为理由结束本轮。"
+            )
+            en = (
+                "This is a bound task execution request and you only performed observation-only probing.\n"
+                "Do not continue with directory-inventory style `file_operations` checks or read-only document probing on the next step.\n"
+                "Advance the task now by calling a real execution tool such as `code_executor` or the task-specific analysis tool.\n"
+                "If exactly one critical file still must be inspected, read that specific file once and then execute immediately.\n"
+                "Do not end this run with another directory-probing report."
+            )
         base = _localized_text(language, zh, en)
         if task_hint:
             return f"{base}\n{task_hint}"
         return base
+
+    def _build_blocked_dependency_answer(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        user_query: str,
+        tool_results: List[Dict[str, Any]],
+    ) -> str:
+        language = detect_reasoning_language(user_query)
+        task_label = ""
+        if task_context:
+            if task_context.task_name and task_context.task_id is not None:
+                task_label = f"Task {task_context.task_id} ({task_context.task_name})"
+            elif task_context.task_name:
+                task_label = task_context.task_name
+            elif task_context.task_id is not None:
+                task_label = f"Task {task_context.task_id}"
+
+        clues: List[str] = []
+        for item in tool_results:
+            payload = item.get("tool_result")
+            if isinstance(payload, dict):
+                summary = str(payload.get("summary") or payload.get("error") or "").strip()
+                if summary:
+                    clues.append(summary)
+            result_text = str(item.get("tool_result_text") or "").strip()
+            if result_text and not clues:
+                clues.append(result_text)
+            if len(clues) >= 2:
+                break
+        clue_text = "\n".join(f"- {self._clip_reference_text(clue, limit=220)}" for clue in clues[:2])
+
+        zh_header = "BLOCKED_DEPENDENCY: 当前绑定任务缺少继续执行所需的上游交付物或关键输入。"
+        en_header = "BLOCKED_DEPENDENCY: The bound task is missing required upstream deliverables or key inputs."
+        if task_label:
+            zh_header = f"BLOCKED_DEPENDENCY: {task_label} 缺少继续执行所需的上游交付物或关键输入。"
+            en_header = f"BLOCKED_DEPENDENCY: {task_label} is missing required upstream deliverables or key inputs."
+
+        zh = (
+            f"{zh_header}\n"
+            "我已经停止继续做只读探查，因为继续浏览目录/文档不会推进这个 task。\n"
+            "按照当前执行边界，本轮不会把它自动改写成前序任务或全量预处理。请先补齐依赖产物，或在任务说明里明确授权补跑前置步骤后再继续。"
+        )
+        en = (
+            f"{en_header}\n"
+            "I stopped the repeated read-only probing because more directory or document browsing will not advance this task.\n"
+            "Under the current execution boundary, this run will not silently rewrite the task into an upstream preprocessing step. Provide the missing prerequisite outputs, or explicitly authorize backfilling the prerequisite work in the task instruction before retrying."
+        )
+        base = _localized_text(language, zh, en)
+        if clue_text:
+            return f"{base}\nObserved clues:\n{clue_text}"
+        return base
+
+    @staticmethod
+    def _looks_like_blocked_dependency_answer(text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        return any(
+            token in lowered
+            for token in (
+                "blocked_dependency",
+                "blocked dependency",
+                "missing upstream",
+                "missing prerequisite",
+                "cannot proceed",
+                "依赖缺失",
+                "前置条件不满足",
+                "当前 task 不能继续",
+                "阻塞",
+            )
+        )
 
     def _is_valid_final_answer(self, text: str, *, user_query: str) -> bool:
         cleaned = sanitize_professional_response_text(str(text or "").strip())
@@ -1189,6 +1300,9 @@ class DeepThinkAgent:
                 "- Use file/code/task tools as needed.\n"
                 "- Keep the tone professional and execution-focused; avoid decorative emojis or cheerleading.\n"
                 "- Use web_search only to fill a concrete factual gap that blocks execution quality.\n"
+                "- For a bound execute_task request, observation-only probing is only a short precursor. After one observation-only cycle, move to real execution or report BLOCKED_DEPENDENCY.\n"
+                "- Do not silently rewrite the current task into an upstream preprocessing task just because prerequisite deliverables are missing.\n"
+                "- For single-cell integration tasks, fewer than 2 valid upstream samples means the preconditions are not met; do not claim integration succeeded.\n"
                 + execute_focus_note
             )
         return ""
@@ -1255,6 +1369,11 @@ class DeepThinkAgent:
             "- If the user explicitly asks for a plan or task breakdown and plan_operation is available, use plan_operation to create or update a structured plan instead of replying with a prose-only pseudo-plan.\n"
             "- For plan creation, research is optional. Use web_search first only when latest evidence or external best practices materially affect the plan; otherwise create or update the plan directly from current context.\n"
             "- When executing a currently bound plan task, do NOT use plan_operation or task_operation just to mark that task completed/failed. Tool execution auto-sync already handles current task status; use plan_operation/task_operation only for structural plan edits.\n"
+            "- When executing a currently bound plan task, observation-only tools (read-only file_operations, document_reader, vision_reader) may clarify one concrete uncertainty, but they are not task completion. Do not loop on probe-only exploration.\n"
+            "- If the current bound task depends on upstream deliverables that are missing, report BLOCKED_DEPENDENCY clearly instead of silently switching to a different upstream task.\n"
+            "- Do not convert an integration/analysis task into full upstream preprocessing unless the task instruction explicitly authorizes backfilling prerequisites.\n"
+            "- For single-cell workflows, do not assume `adata.var['mt']` already exists. If mitochondrial flags are needed, derive them from gene_symbols, feature_name, or var_names.\n"
+            "- For single-cell integration, fewer than 2 valid samples means the preconditions are not met; do not claim batch integration succeeded or emit placeholder success artifacts.\n"
             "- For web_search: cite verifiable sources. When stating time-sensitive or factual claims, include URLs from the tool JSON "
             "`results` list (title/url) in your final answer. If `results` is empty and the tool response has no URLs, say sources were "
             "not returned and avoid presenting specific claims as independently verified.\n"
@@ -1530,6 +1649,7 @@ class DeepThinkAgent:
         confidence = 0.0
         last_tool_cycle_signature: Optional[str] = None
         identical_tool_cycle_count = 0
+        probe_only_execution_cycles = 0
 
         logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
 
@@ -1727,22 +1847,46 @@ class DeepThinkAgent:
                             await self._stream_final_answer(final_answer)
                         break
 
-                    if self._is_probe_only_execution_cycle(
-                        tool_results,
-                        task_context=task_context,
-                    ):
+                    if self._is_probe_only_execution_cycle(tool_results, task_context=task_context):
+                        probe_only_execution_cycles += 1
+                        if probe_only_execution_cycles >= 3:
+                            current_step.status = "done"
+                            current_step.self_correction = (
+                                "Stopped repeated observation-only probing and returned a blocked-dependency conclusion."
+                            )
+                            if self.on_thinking:
+                                await self._safe_callback(current_step)
+                            final_answer = self._build_blocked_dependency_answer(
+                                task_context=task_context,
+                                user_query=user_query,
+                                tool_results=tool_results,
+                            )
+                            confidence = max(confidence, 0.8)
+                            logger.warning(
+                                "[DEEP_THINK_NATIVE] Stopped after %s consecutive probe-only execution cycles at iteration=%s",
+                                probe_only_execution_cycles,
+                                iteration,
+                            )
+                            if self.on_final_delta and final_answer:
+                                await self._stream_final_answer(final_answer)
+                            break
+
                         nudge = self._build_probe_only_followthrough_nudge(
                             task_context=task_context,
                             user_query=user_query,
+                            stage=probe_only_execution_cycles,
                         )
                         messages.append({"role": "user", "content": nudge})
                         logger.info(
-                            "[DEEP_THINK_NATIVE] Injected execute followthrough nudge after probe-only file_operations cycle at iteration=%s",
+                            "[DEEP_THINK_NATIVE] Injected execute followthrough nudge after probe-only cycle=%s at iteration=%s",
+                            probe_only_execution_cycles,
                             iteration,
                         )
                         current_step.self_correction = (
-                            "Detected probe-only file exploration during a bound execute_task request; injected a followthrough nudge."
+                            "Detected observation-only exploration during a bound execute_task request; injected a followthrough nudge."
                         )
+                    else:
+                        probe_only_execution_cycles = 0
 
                     current_step.status = "analyzing"
                     if self.on_thinking:
@@ -1758,6 +1902,26 @@ class DeepThinkAgent:
                         confidence = 0.8
                     current_step.status = "done"
                     current_step.finished_at = datetime.now()
+                    if (
+                        probe_only_execution_cycles > 0
+                        and self._is_execute_task_request()
+                        and self._has_bound_task_context(task_context)
+                        and not self._looks_like_blocked_dependency_answer(candidate_answer)
+                    ):
+                        current_step.self_correction = (
+                            "Rejected a conclusion after observation-only probing and replaced it with a blocked-dependency answer."
+                        )
+                        final_answer = self._build_blocked_dependency_answer(
+                            task_context=task_context,
+                            user_query=user_query,
+                            tool_results=[],
+                        )
+                        if self.on_final_delta and final_answer:
+                            await self._stream_final_answer(final_answer)
+                        thinking_steps.append(current_step)
+                        if self.on_thinking:
+                            await self._safe_callback(current_step)
+                        break
                     if not self._is_valid_final_answer(candidate_answer, user_query=user_query):
                         current_step.self_correction = (
                             "Discarded a process-only conclusion and switching to fallback synthesis."
@@ -3114,14 +3278,15 @@ Respond with ONLY a JSON object:
             "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. Params: {\"task\": \"description\"}",
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. For broad comparisons, prefer focused parallel subqueries with Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\"]}.",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
-            "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
+            "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. For a bound execute_task request, read/list/exists/info are inspection-only and do not count as task completion. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
             "document_reader": (
                 "Read local documents (.docx, .pdf, .txt, .md). For .csv/.tsv, this tool "
                 "returns a built-in preview (headers + sample rows) — use it for quick inspection; "
                 "for aggregation, row counts on huge files, or plots use code_executor. "
+                "For a bound execute_task request, this is an inspection tool, not a substitute for actually executing the task. "
                 "Params: {\"operation\": \"read_any|read_pdf|read_text\", \"file_path\": \"/abs/path\"}"
             ),
-            "vision_reader": "Read PDFs and images using vision model. Use for visual OCR/figures/equations, not for DOCX. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\"}",
+            "vision_reader": "Read PDFs and images using vision model. Use for visual OCR/figures/equations, not for DOCX. For a bound execute_task request, this is inspection-only and should not replace the actual execution tool. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\"}",
             "bio_tools": (
                 "PREFERRED for bioinformatics: Execute Docker-based tools for FASTA/FASTQ/sequence analysis. "
                 "Example: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/absolute/path/to/file.fasta\"}. "

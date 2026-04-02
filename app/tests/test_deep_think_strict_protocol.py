@@ -303,7 +303,7 @@ def test_native_execute_task_probe_only_cycle_injects_followthrough_nudge() -> N
         )
     )
 
-    assert result.final_answer == "done"
+    assert "BLOCKED_DEPENDENCY" in result.final_answer
     assert len(llm.calls) >= 2
     second_call_messages = llm.calls[1]
     assert any(
@@ -311,6 +311,146 @@ def test_native_execute_task_probe_only_cycle_injects_followthrough_nudge() -> N
         for message in second_call_messages
         if isinstance(message, dict)
     )
+
+
+def test_native_execute_task_second_probe_cycle_requires_execute_or_blocked_dependency() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Need to inspect first",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task4"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Read the note",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="document_reader",
+                        arguments={"operation": "read_text", "file_path": "/tmp/task4/README.txt"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="All set",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={"answer": "BLOCKED_DEPENDENCY: missing filtered inputs", "confidence": 0.9},
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(_name: str, _params: dict):
+        return {"success": True, "summary": "inspected task inputs"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "document_reader", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 4,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请继续执行 task 4",
+            task_context=TaskExecutionContext(
+                task_id=4,
+                task_name="样本间整合与标准化",
+                task_instruction="继续执行 task 4 的整合分析，不要只做目录探查。",
+            ),
+        )
+    )
+
+    assert "BLOCKED_DEPENDENCY" in result.final_answer
+    assert len(llm.calls) >= 3
+    third_call_messages = llm.calls[2]
+    assert any(
+        "BLOCKED_DEPENDENCY" in str(message.get("content") or "")
+        and "二选一" in str(message.get("content") or "")
+        for message in third_call_messages
+        if isinstance(message, dict)
+    )
+
+
+def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Inspect files",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task4"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Inspect notes",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="document_reader",
+                        arguments={"operation": "read_text", "file_path": "/tmp/task4/README.txt"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Inspect figure",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc3",
+                        name="vision_reader",
+                        arguments={"operation": "read_image", "file_path": "/tmp/task4/summary.png"},
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(_name: str, _params: dict):
+        return {"success": True, "summary": "still missing prerequisites"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "document_reader", "vision_reader", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 4,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请继续执行 task 4",
+            task_context=TaskExecutionContext(
+                task_id=4,
+                task_name="样本间整合与标准化",
+                task_instruction="继续执行 task 4 的整合分析，不要只做目录探查。",
+            ),
+        )
+    )
+
+    assert "BLOCKED_DEPENDENCY" in result.final_answer
+    assert "上游交付物" in result.final_answer or "上游" in result.final_answer
+    assert len(llm.calls) == 3
 
 
 def test_structured_plan_outcome_detects_created_plan() -> None:

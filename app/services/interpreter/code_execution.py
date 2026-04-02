@@ -108,19 +108,93 @@ def _truncate_large_output(
 _MISSING_PKG_RE = re.compile(
     r"(?:ModuleNotFoundError|ImportError).*No module named ['\"](\S+?)['\"]",
 )
+_WARNING_HEADER_RE = re.compile(
+    r"(?:^|:\s*)(?:UserWarning|DeprecationWarning|FutureWarning|RuntimeWarning|"
+    r"PendingDeprecationWarning|ImportWarning|SyntaxWarning|ResourceWarning)\s*:",
+)
+_EXCEPTION_LINE_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):"
+)
+
+
+@dataclass(frozen=True)
+class ErrorAnalysis:
+    category: str
+    actionable_error_text: str
+    warning_text: str
+    summary_text: str
+    warning_only: bool = False
+
+
+def _is_warning_header_line(line: str) -> bool:
+    return bool(_WARNING_HEADER_RE.search(str(line or "").strip()))
+
+
+def _split_leading_warning_text(stderr: str) -> tuple[str, str]:
+    raw = str(stderr or "")
+    if not raw.strip():
+        return "", ""
+
+    lines = raw.splitlines()
+    idx = 0
+    warning_lines: List[str] = []
+
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+
+    while idx < len(lines):
+        line = lines[idx]
+        stripped = line.strip()
+        if not _is_warning_header_line(stripped):
+            break
+
+        warning_lines.append(line)
+        idx += 1
+        while idx < len(lines):
+            candidate = lines[idx]
+            candidate_stripped = candidate.strip()
+            if not candidate_stripped:
+                warning_lines.append(candidate)
+                idx += 1
+                continue
+            if _is_warning_header_line(candidate_stripped):
+                break
+            if candidate_stripped.startswith("Traceback (most recent call last):"):
+                break
+            if candidate_stripped.startswith("During handling of the above exception"):
+                break
+            if _EXCEPTION_LINE_RE.match(candidate_stripped):
+                break
+            if candidate.startswith((" ", "\t")) or candidate_stripped.startswith("^"):
+                warning_lines.append(candidate)
+                idx += 1
+                continue
+            break
+
+        while idx < len(lines) and not lines[idx].strip():
+            warning_lines.append(lines[idx])
+            idx += 1
+
+    warning_text = "\n".join(warning_lines).strip()
+    actionable_error_text = "\n".join(lines[idx:]).strip()
+    return warning_text, actionable_error_text
 
 
 def classify_error(stderr: str, exit_code: int) -> str:
     """Classify subprocess stderr into an actionable error category."""
     if exit_code == -1:
         return "timeout"
-    if "SyntaxError" in stderr or "IndentationError" in stderr:
+    warning_text, actionable_error_text = _split_leading_warning_text(stderr)
+    if not actionable_error_text and warning_text:
+        return "non_fatal_warning_noise"
+    error_text = actionable_error_text or str(stderr or "")
+    if "SyntaxError" in error_text or "IndentationError" in error_text:
         return "syntax_error"
-    if _MISSING_PKG_RE.search(stderr):
+    if _MISSING_PKG_RE.search(error_text):
         return "missing_package"
-    if "FileNotFoundError" in stderr or "PermissionError" in stderr:
+    if "FileNotFoundError" in error_text or "PermissionError" in error_text:
         return "file_access"
-    if "MemoryError" in stderr:
+    if "MemoryError" in error_text:
         return "resource_limit"
     return "runtime_error"
 
@@ -132,6 +206,19 @@ def _extract_missing_package(stderr: str) -> Optional[str]:
         pkg = m.group(1).split(".")[0]
         return pkg
     return None
+
+
+def _analyze_execution_error(stderr: str, exit_code: int) -> ErrorAnalysis:
+    warning_text, actionable_error_text = _split_leading_warning_text(stderr)
+    category = classify_error(stderr, exit_code)
+    summary_text = actionable_error_text or warning_text or str(stderr or "").strip()
+    return ErrorAnalysis(
+        category=category,
+        actionable_error_text=actionable_error_text or summary_text,
+        warning_text=warning_text,
+        summary_text=summary_text,
+        warning_only=category == "non_fatal_warning_noise",
+    )
 
 
 def _normalize_execution_backend(value: Optional[str]) -> str:
@@ -176,6 +263,7 @@ _FIX_HINTS = {
         "use generators or iterators."
     ),
     "runtime_error": "",  # generic, no extra hint
+    "non_fatal_warning_noise": "",
 }
 
 
@@ -295,15 +383,17 @@ async def execute_code_locally(
 
     error_category: Optional[str] = None
     fix_guidance: Optional[str] = None
+    error_analysis: Optional[ErrorAnalysis] = None
 
     if not auto_fix and exec_result.status != "success":
         if exec_result.runtime_failure:
             error_category = _runtime_error_category(normalized_backend)
         else:
-            error_category = classify_error(exec_result.error, exec_result.exit_code)
+            error_analysis = _analyze_execution_error(exec_result.error, exec_result.exit_code)
+            error_category = error_analysis.category
             fix_guidance = _FIX_HINTS.get(error_category, "")
             if error_category == "missing_package":
-                match = _MISSING_PKG_RE.search(exec_result.error)
+                match = _MISSING_PKG_RE.search(error_analysis.actionable_error_text)
                 if match:
                     pkg = match.group(1).split(".")[0]
                     fix_guidance = _FIX_HINTS["missing_package"].format(pkg=pkg)
@@ -314,11 +404,18 @@ async def execute_code_locally(
         and not exec_result.runtime_failure
         and attempt < max_attempts
     ):
+        error_analysis = _analyze_execution_error(exec_result.error, exec_result.exit_code)
+        error_category = error_analysis.category
+        if error_analysis.warning_only:
+            logger.warning(
+                "Skipping auto-fix because stderr only contains warning noise: %.200s",
+                error_analysis.summary_text,
+            )
+            break
         attempt += 1
-        error_category = classify_error(exec_result.error, exec_result.exit_code)
         logger.info(
             "Code execution failed (attempt %d), category=%s, fixing. Error: %.200s",
-            attempt - 1, error_category, exec_result.error,
+            attempt - 1, error_category, error_analysis.summary_text,
         )
 
         try:
@@ -328,7 +425,7 @@ async def execute_code_locally(
                 task_title=task_title,
                 task_description=task_description,
                 code=preamble + last_code,
-                error=exec_result.error,
+                error=error_analysis.actionable_error_text,
                 error_category=error_category,
             )
         except Exception as e:
@@ -374,9 +471,17 @@ async def execute_code_locally(
         if exec_result.runtime_failure:
             error_category = _runtime_error_category(normalized_backend)
         else:
-            error_category = classify_error(exec_result.error, exec_result.exit_code)
+            error_analysis = error_analysis or _analyze_execution_error(
+                exec_result.error,
+                exec_result.exit_code,
+            )
+            error_category = error_analysis.category
             if fix_guidance is None:
                 fix_guidance = _FIX_HINTS.get(error_category, "")
+            if error_category == "missing_package":
+                pkg = _extract_missing_package(error_analysis.actionable_error_text)
+                if pkg:
+                    fix_guidance = _FIX_HINTS["missing_package"].format(pkg=pkg)
 
     # Truncate large outputs and write full content to files
     stdout_text, stdout_file = _truncate_large_output(

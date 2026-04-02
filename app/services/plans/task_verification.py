@@ -94,9 +94,6 @@ class TaskVerificationService:
         explicit_criteria = self._explicit_acceptance_criteria(node)
         generated = False
         effective_criteria = explicit_criteria
-        if not self._has_checks(explicit_criteria) and local_artifact_paths:
-            effective_criteria = self._build_generated_criteria(local_artifact_paths)
-            generated = True
 
         if not self._has_checks(effective_criteria):
             verification = self._build_verification_record(

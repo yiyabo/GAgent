@@ -155,6 +155,17 @@ When multiple datasets are provided:
   - The DATA_DIR environment variable or task description will specify the exact data location.
 - **Output files location**: All generated files MUST be saved to `results/` directory.
 
+### Bound Task Dependency Rules
+- If the task depends on upstream intermediate files or deliverables and they are missing, do NOT silently rewrite the task into a different upstream workflow unless the task description explicitly authorizes that fallback.
+- Instead, print a clear blocked-dependency report describing which prerequisite inputs are missing and why the current task cannot proceed yet.
+- Do NOT generate placeholder "success" summaries or fake output artifacts for work that did not actually complete.
+
+### Single-Cell / Bioinformatics Robustness Rules
+- Do NOT assume `adata.var['mt']` already exists. If mitochondrial flags are needed, derive them from `adata.var['gene_symbols']`, `adata.var['feature_name']`, or `adata.var_names`, and support both `MT-` and `mt-` prefixes.
+- When sample-level preprocessing is part of the task, record how many samples succeeded and why any samples failed.
+- If fewer than 2 valid samples remain, do NOT run Harmony, batch correction, ASW scoring, or write a fake integrated object.
+- Only write `results/integrated_data.h5ad` when integration actually ran successfully.
+
 ### Output Requirement
 You must return a **strict JSON object** with the following fields:
 

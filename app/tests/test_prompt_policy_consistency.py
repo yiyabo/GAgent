@@ -108,6 +108,10 @@ def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_prio
         assert "Never use code_executor as fallback for sequence_fetch failures." in prompt
         assert "Never use code_executor as fallback for bio_tools input-conversion/parsing failures." in prompt
         assert "do NOT use plan_operation or task_operation just to mark that task completed/failed" in prompt
+        assert "report BLOCKED_DEPENDENCY clearly" in prompt
+        assert "Do not convert an integration/analysis task into full upstream preprocessing" in prompt
+        assert "do not assume `adata.var['mt']` already exists" in prompt
+        assert "fewer than 2 valid samples means the preconditions are not met" in prompt
 
     assert "PROTOCOL BOUNDARY (NATIVE TOOL CALLING)" in native_prompt
     assert "PROTOCOL BOUNDARY (LEGACY JSON)" in legacy_prompt
@@ -299,6 +303,25 @@ def test_execute_tier_prompt_warns_against_progress_recaps_for_brief_followups()
         assert "Do not recap prior project milestones" in prompt
         assert "Do not append next-step menus" in prompt
         assert "continue from that anchor instead of restarting broad workspace discovery" in prompt
+
+
+def test_execute_tier_prompt_enforces_execute_or_blocked_dependency() -> None:
+    agent = DeepThinkAgent(
+        llm_client=SimpleNamespace(),
+        available_tools=["file_operations", "document_reader", "code_executor"],
+        tool_executor=_noop_tool_executor,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+        },
+    )
+
+    native_prompt = agent._build_native_system_prompt()
+    legacy_prompt = agent._build_system_prompt()
+
+    for prompt in (native_prompt, legacy_prompt):
+        assert "After one observation-only cycle, move to real execution or report BLOCKED_DEPENDENCY" in prompt
+        assert "Do not silently rewrite the current task into an upstream preprocessing task" in prompt
 
 
 def test_brief_execute_continuation_summary_extracts_path_anchors_from_older_history() -> None:
