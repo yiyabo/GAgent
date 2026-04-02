@@ -473,6 +473,55 @@ def _resolve_runtime_session_dir(session_id: Optional[str]) -> Path:
 # Skip absurdly large binaries when mirroring into session-level results/ (artifact URLs).
 _MAX_SESSION_PROMOTE_FILE_BYTES = 250 * 1024 * 1024
 _MAX_SESSION_PROMOTE_FILES = 500
+_MAX_STALE_SESSION_ROOT_FILE_BYTES = 1
+
+
+def _prune_stale_session_root_results(
+    *,
+    session_dir: Path,
+    max_bytes: int = _MAX_STALE_SESSION_ROOT_FILE_BYTES,
+) -> List[str]:
+    """Delete legacy flat session-root files that are effectively empty.
+
+    Historical runs copied every ``<run>/results/*`` file directly into
+    ``<session>/results/``. Empty placeholder files in that flat namespace can
+    later shadow canonical source inputs with the same basename. Only prune
+    direct children and only when they are effectively empty to avoid touching
+    meaningful task outputs.
+    """
+    session_resolved = session_dir.resolve()
+    results_root = (session_resolved / "results").resolve()
+    if not results_root.is_dir() or not _is_path_within(results_root, session_resolved):
+        return []
+
+    removed: List[str] = []
+    for path in sorted(results_root.iterdir()):
+        if not path.is_file():
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > max_bytes:
+            continue
+        try:
+            relative = str(path.relative_to(session_resolved)).replace("\\", "/")
+        except ValueError:
+            continue
+        try:
+            path.unlink()
+        except OSError as exc:
+            logger.warning("Failed to remove stale session-root artifact %s: %s", path, exc)
+            continue
+        removed.append(relative)
+
+    if removed:
+        logger.info(
+            "Pruned %s stale flat session-root artifact(s): %s",
+            len(removed),
+            removed,
+        )
+    return removed
 
 
 def _promote_task_results_to_session_root(
@@ -482,10 +531,13 @@ def _promote_task_results_to_session_root(
     max_files: int = _MAX_SESSION_PROMOTE_FILES,
 ) -> List[str]:
     """
-    Copy everything under ``<run>/results/`` into ``<session>/results/`` so that
-    Markdown like ``![](results/plot.png)`` resolves via GET .../artifacts/.../file?path=results/plot.png.
+    Copy everything under ``<run>/results/`` into a task/run-scoped namespace
+    under ``<session>/results/``.
 
-    Claude Code cwd is an isolated ``run_<id>/`` tree; without this step outputs only exist under nested paths.
+    Claude Code cwd is an isolated ``run_<id>/`` tree; without this step outputs
+    only exist under nested paths. We keep that nesting in the promoted session
+    tree to avoid flat-name collisions like ``metadata.csv`` shadowing a
+    canonical source file for later tasks.
     """
     session_resolved = session_dir.resolve()
     task_resolved = task_work_dir.resolve()
@@ -493,7 +545,12 @@ def _promote_task_results_to_session_root(
     if not src_results.is_dir() or not _is_path_within(src_results, task_resolved):
         return []
 
-    dst_root = (session_resolved / "results").resolve()
+    try:
+        task_scope_rel = task_resolved.relative_to(session_resolved)
+    except ValueError:
+        task_scope_rel = Path(task_resolved.parent.name) / task_resolved.name
+
+    dst_root = (session_resolved / "results" / task_scope_rel).resolve()
     if not _is_path_within(dst_root, session_resolved):
         return []
 
@@ -540,9 +597,10 @@ def _promote_task_results_to_session_root(
 
     if promoted:
         logger.info(
-            "Promoted %s file(s) from %s/results/ to session results/ for artifact URLs",
+            "Promoted %s file(s) from %s/results/ to session results/%s for artifact URLs",
             len(promoted),
             task_resolved.name,
+            str(task_scope_rel).replace("\\", "/"),
         )
     return promoted
 
@@ -921,6 +979,7 @@ async def code_executor_handler(
                 "error": f"Invalid session_id: {exc}",
                 "task": task,
             }
+        _prune_stale_session_root_results(session_dir=session_dir)
 
         # Keep a stable per-task root and isolate each execution by run_<timestamp>.
         run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f") + f"_{uuid4().hex[:8]}"

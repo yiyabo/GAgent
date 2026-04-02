@@ -686,6 +686,7 @@ def test_build_coder_system_prompt_includes_scRNA_dependency_guardrails() -> Non
     )
 
     assert "do NOT silently rewrite the task into a different upstream workflow" in prompt
+    assert "prefer canonical absolute paths from the data directory" in prompt
     assert "Do NOT assume `adata.var['mt']` already exists" in prompt
     assert "fewer than 2 valid samples remain" in prompt
     assert "Only write `results/integrated_data.h5ad` when integration actually ran successfully" in prompt

@@ -4,8 +4,10 @@ AMEM experience summarization, prompt composition, and placeholder resolution.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
@@ -74,7 +76,7 @@ def collect_completed_task_outputs(
     current_task_id: int,
     max_chars: int = 4000,
 ) -> str:
-    """Gather execution_result snippets from completed sibling/predecessor tasks."""
+    """Gather compact completed-task summaries plus explicit artifact paths."""
     if plan_tree is None or not hasattr(plan_tree, "nodes"):
         return ""
     parts: List[str] = []
@@ -91,12 +93,144 @@ def collect_completed_task_outputs(
         snippet = result_text[:500]
         if len(result_text) > 500:
             snippet += "..."
-        entry = f"- Task [{node.id}] {node.display_name()}: {snippet}"
+        entry_lines = [f"- Task [{node.id}] {node.display_name()}: {snippet}"]
+        artifact_paths = extract_task_artifact_paths(node)
+        if artifact_paths:
+            joined = "; ".join(artifact_paths[:4])
+            if len(artifact_paths) > 4:
+                joined += "; ..."
+            entry_lines.append(f"  Artifact paths: {joined}")
+        entry = "\n".join(entry_lines)
         if used + len(entry) > max_chars:
             break
         parts.append(entry)
         used += len(entry)
     return "\n".join(parts)
+
+
+def _coerce_execution_payload(value: Any) -> Optional[Dict[str, Any]]:
+    payload = value
+    if hasattr(value, "execution_result"):
+        payload = getattr(value, "execution_result")
+    if isinstance(payload, str):
+        raw = payload.strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _collect_candidate_artifact_paths(payload: Any, *, max_paths: int = 20) -> List[str]:
+    found: List[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        found.append(text)
+
+    def _visit(value: Any, key: Optional[str] = None) -> None:
+        if len(found) >= max_paths:
+            return
+        if isinstance(value, dict):
+            for item_key, item_value in value.items():
+                lowered = str(item_key or "").strip().lower()
+                if lowered in {"artifact_paths", "produced_files"} and isinstance(
+                    item_value, (list, tuple, set)
+                ):
+                    for item in item_value:
+                        _add(item)
+                    continue
+                if lowered in {"manifest_path", "preview_path", "report_path"}:
+                    _add(item_value)
+                    continue
+                if isinstance(item_value, (dict, list, tuple, set)):
+                    _visit(item_value, key=lowered)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _visit(item, key=key)
+
+    _visit(payload)
+    return found[:max_paths]
+
+
+def _is_flat_session_results_path(path: str) -> bool:
+    normalized = str(path or "").strip().replace("\\", "/")
+    if "/runtime/" not in normalized or "/results/" not in normalized:
+        return False
+    prefix, _, suffix = normalized.partition("/results/")
+    if "/session_" not in prefix:
+        return False
+    if not suffix:
+        return False
+    return "/" not in suffix.strip("/")
+
+
+def _is_stale_flat_session_results_path(path: str) -> bool:
+    if not _is_flat_session_results_path(path):
+        return False
+    candidate = Path(str(path))
+    try:
+        return candidate.is_file() and candidate.stat().st_size <= 1
+    except OSError:
+        return False
+
+
+def _is_flat_relative_results_alias(path: str) -> bool:
+    normalized = str(path or "").strip().replace("\\", "/")
+    if not normalized.startswith("results/"):
+        return False
+    suffix = normalized[len("results/") :].strip("/")
+    return bool(suffix) and "/" not in suffix
+
+
+def extract_task_artifact_paths(
+    execution_result: Any,
+    *,
+    max_paths: int = 8,
+) -> List[str]:
+    payload = _coerce_execution_payload(execution_result)
+    if payload is None:
+        return []
+
+    raw_paths = _collect_candidate_artifact_paths(payload, max_paths=max_paths * 3)
+    absolute: List[str] = []
+    relative: List[str] = []
+    for item in raw_paths:
+        text = str(item).strip()
+        if (
+            not text
+            or _is_stale_flat_session_results_path(text)
+            or _is_flat_relative_results_alias(text)
+        ):
+            continue
+        if text.startswith("/"):
+            absolute.append(text)
+        else:
+            relative.append(text)
+
+    ordered: List[str] = []
+    seen: set[str] = set()
+    for bucket in (absolute, relative):
+        for item in bucket:
+            if item in seen:
+                continue
+            seen.add(item)
+            ordered.append(item)
+            if len(ordered) >= max_paths:
+                return ordered
+    return ordered
 
 
 def resolve_code_executor_task_context(agent: Any) -> Tuple[Optional["PlanNode"], Optional[str]]:
@@ -263,6 +397,9 @@ def compose_code_executor_atomic_task_prompt(
         "- For immutable source inputs such as metadata tables or raw datasets, prefer the canonical absolute path from the task description or primary data directory over session-temp duplicates.",
         "- For upstream derived artifacts, prefer explicit absolute deliverable paths from previous steps or session results; do not reconstruct them heuristically.",
         "- If a session-temp copy conflicts with a canonical source file, prefer the canonical source for raw inputs and the explicit upstream deliverable path for derived outputs.",
+        "- Treat flat files directly under a session root `results/` directory as convenience copies only; they may be stale and are not canonical raw inputs.",
+        "- Ignore zero-byte or non-parseable session-temp duplicates when a canonical source path exists elsewhere.",
+        "- For integration or aggregation tasks, if the explicit upstream artifact list is incomplete, report a blocked dependency instead of searching the session root for same-named replacements.",
         "- If this task still needs decomposition or broader planning, STOP and output exactly:",
         "  STATUS: BLOCKED_SCOPE",
         "  REASON: NEED_ATOMIC_TASK",

@@ -1302,6 +1302,7 @@ class DeepThinkAgent:
                 "- Use web_search only to fill a concrete factual gap that blocks execution quality.\n"
                 "- For a bound execute_task request, observation-only probing is only a short precursor. After one observation-only cycle, move to real execution or report BLOCKED_DEPENDENCY.\n"
                 "- Do not silently rewrite the current task into an upstream preprocessing task just because prerequisite deliverables are missing.\n"
+                "- For immutable source inputs, prefer canonical data-directory paths over same-named session-root `results/` copies, especially when the session copy is empty or malformed.\n"
                 "- For single-cell integration tasks, fewer than 2 valid upstream samples means the preconditions are not met; do not claim integration succeeded.\n"
                 + execute_focus_note
             )
@@ -1372,6 +1373,7 @@ class DeepThinkAgent:
             "- When executing a currently bound plan task, observation-only tools (read-only file_operations, document_reader, vision_reader) may clarify one concrete uncertainty, but they are not task completion. Do not loop on probe-only exploration.\n"
             "- If the current bound task depends on upstream deliverables that are missing, report BLOCKED_DEPENDENCY clearly instead of silently switching to a different upstream task.\n"
             "- Do not convert an integration/analysis task into full upstream preprocessing unless the task instruction explicitly authorizes backfilling prerequisites.\n"
+            "- For immutable source inputs, prefer canonical data-directory paths over same-named session-root `results/` copies; ignore empty or malformed session duplicates.\n"
             "- For single-cell workflows, do not assume `adata.var['mt']` already exists. If mitochondrial flags are needed, derive them from gene_symbols, feature_name, or var_names.\n"
             "- For single-cell integration, fewer than 2 valid samples means the preconditions are not met; do not claim batch integration succeeded or emit placeholder success artifacts.\n"
             "- For web_search: cite verifiable sources. When stating time-sensitive or factual claims, include URLs from the tool JSON "

@@ -149,12 +149,18 @@ def _build_deep_think_task_context(
         result_text = str(getattr(dep_node, "execution_result", "") or "").strip()
         if len(result_text) > 500:
             result_text = result_text[:500].rstrip() + "..."
+        artifact_paths: List[str] = []
+        try:
+            artifact_paths = _extract_task_artifact_paths_fn(dep_node)
+        except Exception:
+            artifact_paths = []
         dependency_outputs.append(
             {
                 "task_id": dep_id_int,
                 "task_name": str(dep_node.display_name()).strip(),
                 "status": dep_status,
                 "execution_result": result_text,
+                "artifact_paths": artifact_paths,
             }
         )
 
@@ -201,6 +207,7 @@ from .action_handlers import (
 from .code_executor_helpers import (
     compose_code_executor_atomic_task_prompt as _compose_code_executor_atomic_task_prompt_fn,
     collect_completed_task_outputs as _collect_completed_task_outputs_fn,
+    extract_task_artifact_paths as _extract_task_artifact_paths_fn,
     normalize_csv_arg as _normalize_csv_arg_fn,
     resolve_action_placeholders as _resolve_action_placeholders_fn,
     resolve_code_executor_task_context as _resolve_code_executor_task_context_fn,
