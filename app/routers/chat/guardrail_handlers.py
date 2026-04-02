@@ -36,6 +36,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EXPLORATORY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
+_FOLLOWTHROUGH_EXECUTE_TOKENS = (
+    "run",
+    "execute",
+    "start",
+    "continue",
+    "retry",
+    "rerun",
+    "resume",
+    "执行",
+    "继续",
+    "重试",
+    "重新执行",
+    "开始",
+    "跑",
+    "运行",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -418,16 +434,14 @@ def apply_task_execution_followthrough_guardrail(
         reply_text = structured.llm_reply.message.strip()
 
     lowered_user = user_message.lower()
-    execute_tokens = (
-        "run",
-        "execute",
-        "start",
-        "continue",
-        "retry",
-        "rerun",
-        "resume",
+    request_tier = str(agent.extra_context.get("request_tier") or "").strip().lower()
+    intent_type = str(agent.extra_context.get("intent_type") or "").strip().lower()
+    routed_execute_intent = (
+        request_tier == "execute" or intent_type == "execute_task"
     )
-    user_requests_execution = any(token in lowered_user for token in execute_tokens)
+    user_requests_execution = routed_execute_intent or any(
+        token in lowered_user for token in _FOLLOWTHROUGH_EXECUTE_TOKENS
+    )
     reply_promises = reply_promises_execution(reply_text)
 
     # For pure status queries, do not inject rerun unless reply explicitly promises execution.

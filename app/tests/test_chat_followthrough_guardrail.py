@@ -36,6 +36,8 @@ def _build_agent(
     user_message: str,
     current_task_id: int | None = None,
     followthrough_guardrail_enabled: bool = False,
+    request_tier: str | None = None,
+    intent_type: str | None = None,
 ) -> StructuredChatAgent:
     agent = StructuredChatAgent.__new__(StructuredChatAgent)
     agent.plan_session = SimpleNamespace(
@@ -45,6 +47,10 @@ def _build_agent(
     agent.extra_context = {}
     if followthrough_guardrail_enabled:
         agent.extra_context["followthrough_guardrail_enabled"] = True
+    if request_tier is not None:
+        agent.extra_context["request_tier"] = request_tier
+    if intent_type is not None:
+        agent.extra_context["intent_type"] = intent_type
     if current_task_id is not None:
         agent.extra_context["current_task_id"] = current_task_id
     agent._current_user_message = user_message
@@ -121,9 +127,11 @@ def test_followthrough_guardrail_replaces_exploratory_file_operations_when_enabl
     )
     agent = _build_agent(
         tree=tree,
-        user_message="continue task 23 now",
+        user_message="请继续执行当前任务",
         current_task_id=23,
         followthrough_guardrail_enabled=True,
+        request_tier="execute",
+        intent_type="execute_task",
     )
     structured = LLMStructuredResponse(
         llm_reply=LLMReply(message="I will inspect the outputs first."),
