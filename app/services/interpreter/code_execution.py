@@ -8,12 +8,14 @@ so there is a single implementation of the generate → run → fix loop.
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import logging
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from .coder import CodeGenerator, CodeTaskResponse
 from .docker_interpreter import DockerCodeInterpreter
@@ -58,6 +60,19 @@ class CodeExecutionOutcome:
     stderr_file: Optional[str] = None
     execution_backend: str = "local"
     runtime_failure: bool = False
+
+
+@dataclass
+class CodeExecutionSpec:
+    """Structured task contract passed into unified code execution."""
+
+    plan_id: Optional[int] = None
+    task_id: Optional[int] = None
+    task_name: Optional[str] = None
+    task_instruction: Optional[str] = None
+    acceptance_criteria: Optional[Dict[str, Any]] = None
+    dependency_outputs: List[Dict[str, Any]] = field(default_factory=list)
+    dependency_artifact_paths: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +396,7 @@ async def execute_code_locally(
     docker_image: Optional[str] = None,
     readable_dirs: Sequence[str] = (),
     writable_dirs: Sequence[str] = (),
+    execution_spec: Optional[CodeExecutionSpec] = None,
 ) -> CodeExecutionOutcome:
     """Unified local code execution with optional LLM-based error recovery.
 
@@ -399,6 +415,35 @@ async def execute_code_locally(
     # Ensure output directories exist.
     results_dir = Path(work_dir) / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- Apply explicit execution contract and optional batch profiling ----
+    contracted_description = _append_execution_contract(
+        task_description,
+        execution_spec=execution_spec,
+    )
+    enhanced_description = contracted_description
+    if (
+        execution_spec is not None
+        and data_dir
+        and Path(data_dir).exists()
+        and _spec_requests_batch_profile(execution_spec)
+    ):
+        try:
+            from app.services.interpreter.code_generation_enhancer import CodeGenerationEnhancer
+
+            enhancer = CodeGenerationEnhancer()
+            enhanced_description = await enhancer.enhance_task_description(
+                task_description=contracted_description,
+                data_dir=data_dir,
+                require_batch_processing=True,
+            )
+            logger.info(
+                "Task description enhanced with explicit batch contract for task %s",
+                execution_spec.task_id,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to enhance task description: {e}")
+            enhanced_description = contracted_description
 
     normalized_backend = _normalize_execution_backend(execution_backend)
     generator = CodeGenerator(
@@ -419,7 +464,7 @@ async def execute_code_locally(
             generator.generate,
             metadata_list=list(metadata_list),
             task_title=task_title,
-            task_description=task_description,
+            task_description=enhanced_description,  # Use enhanced description
         )
     except Exception as e:
         logger.error("Code generation failed: %s", e)
@@ -592,6 +637,28 @@ async def execute_code_locally(
                 if pkg:
                     fix_guidance = _FIX_HINTS["missing_package"].format(pkg=pkg)
 
+    post_execution_error_summary: Optional[str] = None
+    if success and execution_spec is not None and execution_spec.acceptance_criteria:
+        try:
+            finalization = _verify_execution_against_contract(
+                execution_spec=execution_spec,
+                work_dir=work_dir,
+            )
+            verification = finalization.verification or {}
+            if finalization.final_status == "failed":
+                success = False
+                error_category = "acceptance_criteria_failed"
+                post_execution_error_summary = _summarize_verification_failures(verification)
+                fix_guidance = _format_verification_guidance(verification)
+                error_analysis = None
+                logger.warning(
+                    "Explicit acceptance-criteria verification failed for task %s: %s",
+                    execution_spec.task_id,
+                    post_execution_error_summary,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to verify explicit acceptance criteria: {e}")
+
     # Truncate large outputs and write full content to files
     stdout_text, stdout_file = _truncate_large_output(
         exec_result.output, work_dir=work_dir, filename="full_stdout.txt",
@@ -615,7 +682,8 @@ async def execute_code_locally(
         visualization_analysis=code_response.visualization_analysis if viz_files else None,
         error_category=error_category,
         error_summary=(
-            (error_analysis.summary_text if error_analysis else None)
+            post_execution_error_summary
+            or (error_analysis.summary_text if error_analysis else None)
             or str(exec_result.error or "").strip()
             or _extract_actionable_stdout_failure(exec_result.output)
             or None
@@ -631,6 +699,182 @@ async def execute_code_locally(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _append_execution_contract(
+    task_description: str,
+    *,
+    execution_spec: Optional[CodeExecutionSpec],
+) -> str:
+    if execution_spec is None:
+        return task_description
+
+    lines: List[str] = [task_description.strip(), "", "## Structured Execution Contract"]
+    if execution_spec.task_id is not None:
+        lines.append(f"- Task ID: {execution_spec.task_id}")
+    if execution_spec.task_name:
+        lines.append(f"- Task Name: {execution_spec.task_name}")
+
+    if execution_spec.dependency_outputs:
+        lines.append("- Upstream dependencies:")
+        for dep in execution_spec.dependency_outputs[:6]:
+            dep_name = str(dep.get("task_name") or dep.get("task_id") or "unknown").strip()
+            dep_status = str(dep.get("status") or "unknown").strip()
+            artifact_paths = dep.get("artifact_paths") if isinstance(dep, dict) else []
+            if isinstance(artifact_paths, list) and artifact_paths:
+                joined = "; ".join(str(item).strip() for item in artifact_paths[:4] if str(item).strip())
+                if len(artifact_paths) > 4:
+                    joined += "; ..."
+                lines.append(f"  - {dep_name} [{dep_status}] -> {joined}")
+            else:
+                lines.append(f"  - {dep_name} [{dep_status}]")
+
+    formatted_checks = _format_acceptance_checks(execution_spec.acceptance_criteria)
+    if formatted_checks:
+        lines.append("- Deterministic acceptance criteria (authoritative):")
+        lines.extend(f"  - {item}" for item in formatted_checks)
+
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def _format_acceptance_checks(criteria: Optional[Dict[str, Any]]) -> List[str]:
+    if not isinstance(criteria, dict):
+        return []
+    checks = criteria.get("checks")
+    if not isinstance(checks, list):
+        return []
+
+    formatted: List[str] = []
+    for raw_check in checks[:12]:
+        if not isinstance(raw_check, dict):
+            continue
+        check_type = str(raw_check.get("type") or "").strip()
+        if check_type == "file_exists":
+            formatted.append(f"file must exist: {raw_check.get('path')}")
+        elif check_type == "file_nonempty":
+            formatted.append(f"file must be non-empty: {raw_check.get('path')}")
+        elif check_type == "glob_count_at_least":
+            formatted.append(
+                f"at least {raw_check.get('min_count')} matches for glob: {raw_check.get('glob')}"
+            )
+        elif check_type == "text_contains":
+            formatted.append(
+                f"text file {raw_check.get('path')} must contain: {raw_check.get('pattern')}"
+            )
+        elif check_type == "json_field_equals":
+            formatted.append(
+                f"json {raw_check.get('path')} field {raw_check.get('key_path')} must equal {raw_check.get('expected')}"
+            )
+        elif check_type == "json_field_at_least":
+            formatted.append(
+                f"json {raw_check.get('path')} field {raw_check.get('key_path')} must be >= {raw_check.get('min_value')}"
+            )
+        else:
+            formatted.append(json.dumps(raw_check, ensure_ascii=False))
+    return formatted
+
+
+def _spec_requests_batch_profile(execution_spec: CodeExecutionSpec) -> bool:
+    criteria = execution_spec.acceptance_criteria
+    checks = criteria.get("checks") if isinstance(criteria, dict) else None
+    if not isinstance(checks, list):
+        return False
+    for raw_check in checks:
+        if not isinstance(raw_check, dict):
+            continue
+        if str(raw_check.get("type") or "").strip() != "glob_count_at_least":
+            continue
+        try:
+            min_count = int(raw_check.get("min_count") or 0)
+        except (TypeError, ValueError):
+            min_count = 0
+        if min_count > 1:
+            return True
+    return False
+
+
+def _collect_contract_artifact_paths(work_dir: str) -> List[str]:
+    collected: List[str] = []
+    seen: set[str] = set()
+    for subdir in ("results", "data", "docs"):
+        root = Path(work_dir) / subdir
+        if not root.exists():
+            continue
+        for candidate in root.rglob("*"):
+            if not candidate.is_file():
+                continue
+            text = str(candidate.resolve())
+            if text in seen:
+                continue
+            seen.add(text)
+            collected.append(text)
+    return collected
+
+
+def _verify_execution_against_contract(
+    *,
+    execution_spec: CodeExecutionSpec,
+    work_dir: str,
+):
+    from app.services.plans.plan_models import PlanNode
+    from app.services.plans.task_verification import TaskVerificationService
+
+    criteria = copy.deepcopy(execution_spec.acceptance_criteria) or {}
+    criteria.setdefault("blocking", True)
+    criteria.setdefault("base_dir", work_dir)
+
+    node = PlanNode(
+        id=int(execution_spec.task_id or 0),
+        plan_id=int(execution_spec.plan_id or 0),
+        name=execution_spec.task_name or "Code execution task",
+        instruction=execution_spec.task_instruction,
+        metadata={"acceptance_criteria": criteria},
+    )
+    payload = {
+        "status": "completed",
+        "artifact_paths": _collect_contract_artifact_paths(work_dir),
+        "metadata": {},
+    }
+    verifier = TaskVerificationService()
+    return verifier.finalize_payload(
+        node,
+        payload,
+        execution_status="completed",
+        trigger="auto",
+    )
+
+
+def _summarize_verification_failures(verification: Dict[str, Any]) -> str:
+    failures = verification.get("failures")
+    if not isinstance(failures, list) or not failures:
+        return "Deterministic acceptance criteria failed."
+    snippets: List[str] = []
+    for failure in failures[:3]:
+        if not isinstance(failure, dict):
+            continue
+        failure_type = str(failure.get("type") or "check").strip()
+        message = str(failure.get("message") or "").strip()
+        if message:
+            snippets.append(f"{failure_type}: {message}")
+        else:
+            snippets.append(failure_type)
+    return "; ".join(snippets) if snippets else "Deterministic acceptance criteria failed."
+
+
+def _format_verification_guidance(verification: Dict[str, Any]) -> str:
+    failures = verification.get("failures")
+    if not isinstance(failures, list) or not failures:
+        return "Inspect the deterministic acceptance criteria and regenerate the missing outputs."
+    bullets: List[str] = []
+    for failure in failures[:3]:
+        if not isinstance(failure, dict):
+            continue
+        message = str(failure.get("message") or "").strip()
+        if message:
+            bullets.append(message)
+    if not bullets:
+        return "Inspect the deterministic acceptance criteria and regenerate the missing outputs."
+    return "Acceptance criteria failed: " + "; ".join(bullets)
+
 
 def _write_code_file(code_file: str, preamble: str, code: str) -> None:
     with open(code_file, "w", encoding="utf-8") as fh:

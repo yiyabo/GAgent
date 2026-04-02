@@ -742,6 +742,115 @@ Directory name:"""
         return f"task_{task_hash}"
 
 
+_COMPLETED_TASK_STATUSES = {"completed", "done", "success"}
+
+
+def _extract_acceptance_criteria_from_node(node: Any) -> Optional[Dict[str, Any]]:
+    metadata = getattr(node, "metadata", None)
+    if isinstance(metadata, dict):
+        criteria = metadata.get("acceptance_criteria")
+        if isinstance(criteria, dict):
+            return json.loads(json.dumps(criteria, ensure_ascii=False))
+
+    raw_execution_result = getattr(node, "execution_result", None)
+    if isinstance(raw_execution_result, str):
+        try:
+            raw_execution_result = json.loads(raw_execution_result)
+        except (TypeError, json.JSONDecodeError):
+            raw_execution_result = None
+    if isinstance(raw_execution_result, dict):
+        payload_meta = raw_execution_result.get("metadata")
+        if isinstance(payload_meta, dict):
+            criteria = payload_meta.get("acceptance_criteria")
+            if isinstance(criteria, dict):
+                return json.loads(json.dumps(criteria, ensure_ascii=False))
+    return None
+
+
+def _build_execution_spec(plan_id: Optional[int], task_id: Optional[int]) -> Optional[Dict[str, Any]]:
+    if plan_id is None or task_id is None:
+        return None
+
+    try:
+        from app.routers.chat.code_executor_helpers import extract_task_artifact_paths
+        from app.routers.chat.services import plan_repository
+    except Exception as exc:
+        logger.warning("Failed to load plan-aware execution context: %s", exc)
+        return None
+
+    try:
+        tree = plan_repository.get_plan_tree(int(plan_id))
+    except Exception as exc:
+        logger.warning("Failed to load plan tree %s for code executor: %s", plan_id, exc)
+        return None
+
+    if not tree.has_node(int(task_id)):
+        return None
+
+    node = tree.get_node(int(task_id))
+    dependency_outputs: List[Dict[str, Any]] = []
+    dependency_artifact_paths: List[str] = []
+    dependency_blockers: List[Dict[str, Any]] = []
+    seen_paths: set[str] = set()
+
+    for dep_id in list(getattr(node, "dependencies", []) or []):
+        try:
+            dep_id_int = int(dep_id)
+        except (TypeError, ValueError):
+            continue
+        if not tree.has_node(dep_id_int):
+            continue
+        dep_node = tree.get_node(dep_id_int)
+        dep_status = str(getattr(dep_node, "status", "") or "").strip().lower()
+        dep_artifacts = extract_task_artifact_paths(dep_node)
+        for path in dep_artifacts:
+            text = str(path or "").strip()
+            if not text or text in seen_paths:
+                continue
+            seen_paths.add(text)
+            dependency_artifact_paths.append(text)
+        dep_entry = {
+            "task_id": dep_id_int,
+            "task_name": str(dep_node.display_name()).strip(),
+            "status": dep_status,
+            "artifact_paths": dep_artifacts,
+            "execution_result": str(getattr(dep_node, "execution_result", "") or "").strip(),
+        }
+        dependency_outputs.append(dep_entry)
+        if dep_status not in _COMPLETED_TASK_STATUSES:
+            dependency_blockers.append(dep_entry)
+
+    return {
+        "plan_id": int(plan_id),
+        "task_id": int(task_id),
+        "task_name": str(node.display_name()).strip(),
+        "task_instruction": str(getattr(node, "instruction", "") or "").strip(),
+        "acceptance_criteria": _extract_acceptance_criteria_from_node(node),
+        "dependency_outputs": dependency_outputs,
+        "dependency_artifact_paths": dependency_artifact_paths,
+        "dependency_blockers": dependency_blockers,
+    }
+
+
+def _summarize_dependency_blockers(execution_spec: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(execution_spec, dict):
+        return None
+    blockers = execution_spec.get("dependency_blockers")
+    if not isinstance(blockers, list) or not blockers:
+        return None
+
+    details: List[str] = []
+    for blocker in blockers[:4]:
+        if not isinstance(blocker, dict):
+            continue
+        name = str(blocker.get("task_name") or blocker.get("task_id") or "unknown").strip()
+        status = str(blocker.get("status") or "unknown").strip()
+        details.append(f"{name} [{status}]")
+    if not details:
+        return "Blocked by incomplete upstream dependencies."
+    return "Blocked by incomplete upstream dependencies: " + ", ".join(details)
+
+
 async def _execute_task_locally(
     task: str,
     *,
@@ -751,13 +860,14 @@ async def _execute_task_locally(
     tool_context: Optional[Any] = None,
     auto_fix: bool = True,
     session_dir: Optional[str] = None,
+    execution_spec: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Execute a task using the unified local code execution backend.
 
     Delegates to ``execute_code_locally()`` which handles code generation,
     file-persistent execution, error classification, and LLM-based fixing.
     """
-    from app.services.interpreter.code_execution import execute_code_locally
+    from app.services.interpreter.code_execution import CodeExecutionSpec, execute_code_locally
     from app.services.llm.llm_service import get_llm_service
 
     runtime_mode = _resolve_code_executor_local_runtime()
@@ -783,6 +893,23 @@ async def _execute_task_locally(
 
     os.makedirs(work_dir, exist_ok=True)
 
+    blocked_reason = _summarize_dependency_blockers(execution_spec)
+    if blocked_reason:
+        await _report("failed", blocked_reason, error_category="blocked_dependency")
+        return {
+            "success": False,
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 1,
+            "result": blocked_reason,
+            "error": blocked_reason,
+            "error_category": "blocked_dependency",
+            "error_summary": blocked_reason,
+            "execution_mode": f"code_executor_{runtime_mode}",
+            "docker_image_effective": docker_image,
+            "runtime_failure": False,
+        }
+
     # Build task description with directory context.
     results_dir = os.path.join(work_dir, "results")
     task_desc = (
@@ -801,6 +928,12 @@ async def _execute_task_locally(
                 )
     if data_dir:
         task_desc += f"\nPrimary data directory: {data_dir}"
+    if execution_spec and execution_spec.get("dependency_artifact_paths"):
+        dependency_paths = execution_spec.get("dependency_artifact_paths") or []
+        task_desc += (
+            "\nExplicit upstream artifact paths (ABSOLUTE, authoritative):\n"
+            + "\n".join(f"- {path}" for path in dependency_paths[:20])
+        )
 
     readable_dirs: List[str] = []
     seen_dirs: set = set()
@@ -827,6 +960,17 @@ async def _execute_task_locally(
         writable_dirs = []
 
     await _report("running", f"Executing generated code via {runtime_mode} runtime")
+    structured_spec = None
+    if execution_spec:
+        structured_spec = CodeExecutionSpec(
+            plan_id=execution_spec.get("plan_id"),
+            task_id=execution_spec.get("task_id"),
+            task_name=execution_spec.get("task_name"),
+            task_instruction=execution_spec.get("task_instruction"),
+            acceptance_criteria=execution_spec.get("acceptance_criteria"),
+            dependency_outputs=list(execution_spec.get("dependency_outputs") or []),
+            dependency_artifact_paths=list(execution_spec.get("dependency_artifact_paths") or []),
+        )
     outcome = await execute_code_locally(
         task_title="Code execution task",
         task_description=task_desc,
@@ -839,6 +983,7 @@ async def _execute_task_locally(
         docker_image=docker_image,
         readable_dirs=readable_dirs,
         writable_dirs=writable_dirs,
+        execution_spec=structured_spec,
     )
 
     if outcome.success:
@@ -1098,6 +1243,8 @@ async def code_executor_handler(
         elif not resolved_add_dirs and default_data_dir.exists():
             local_data_dir = str(default_data_dir)
 
+        execution_spec = _build_execution_spec(resolved_plan_id, resolved_task_id)
+
         if use_local_backend:
             local_result = await _execute_task_locally(
                 task=task,
@@ -1107,6 +1254,7 @@ async def code_executor_handler(
                 tool_context=tool_context,
                 auto_fix=auto_fix,
                 session_dir=str(session_dir),
+                execution_spec=execution_spec,
             )
             produced_files = _collect_run_artifacts(
                 run_dir=task_work_dir,

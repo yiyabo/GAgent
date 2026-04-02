@@ -11,6 +11,7 @@ from app.services.interpreter.local_interpreter import CodeExecutionResult
 from app.services.interpreter.coder import CodeTaskResponse
 from app.services.interpreter.code_execution import (
     classify_error,
+    CodeExecutionSpec,
     CodeExecutionOutcome,
     execute_code_locally,
 )
@@ -153,6 +154,100 @@ def test_execute_code_locally_skips_auto_fix_for_blocked_dependency(tmp_path: Pa
     assert outcome.attempts == 1
     assert outcome.error_category == "blocked_dependency"
     assert "Fewer than 2 valid samples" in (outcome.error_summary or "")
+
+
+def test_execute_code_locally_verifies_explicit_acceptance_criteria(tmp_path: Path, monkeypatch):
+    fake_code_resp = CodeTaskResponse(code="print('qc done')", description="qc")
+
+    def _mock_run_file(self, code_file):
+        results_dir = Path(tmp_path) / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "filtered_cancer1.h5ad").write_text("ok", encoding="utf-8")
+        return CodeExecutionResult(
+            status="success",
+            output="qc done\n",
+            error="",
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter.run_file", _mock_run_file)
+
+    spec = CodeExecutionSpec(
+        plan_id=68,
+        task_id=3,
+        task_name="QC",
+        task_instruction="Generate filtered sample outputs",
+        acceptance_criteria={
+            "blocking": True,
+            "checks": [
+                {
+                    "type": "glob_count_at_least",
+                    "glob": "results/filtered_*.h5ad",
+                    "min_count": 2,
+                }
+            ],
+        },
+    )
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="task 3",
+            task_description="run qc",
+            work_dir=str(tmp_path),
+            llm_service=MagicMock(),
+            execution_spec=spec,
+        )
+    )
+
+    assert outcome.success is False
+    assert outcome.error_category == "acceptance_criteria_failed"
+    assert "expected at least 2" in (outcome.error_summary or "")
+
+
+def test_execute_code_locally_accepts_single_artifact_contract(tmp_path: Path, monkeypatch):
+    fake_code_resp = CodeTaskResponse(code="print('integration done')", description="integration")
+
+    def _mock_run_file(self, code_file):
+        results_dir = Path(tmp_path) / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "integrated_data.h5ad").write_text("merged", encoding="utf-8")
+        return CodeExecutionResult(
+            status="success",
+            output="integration done\n",
+            error="",
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter.run_file", _mock_run_file)
+
+    spec = CodeExecutionSpec(
+        plan_id=68,
+        task_id=4,
+        task_name="Integration",
+        task_instruction="Integrate filtered samples",
+        acceptance_criteria={
+            "blocking": True,
+            "checks": [
+                {"type": "file_exists", "path": "results/integrated_data.h5ad"},
+                {"type": "file_nonempty", "path": "results/integrated_data.h5ad"},
+            ],
+        },
+    )
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="task 4",
+            task_description="integrate samples",
+            work_dir=str(tmp_path),
+            llm_service=MagicMock(),
+            execution_spec=spec,
+        )
+    )
+
+    assert outcome.success is True
+    assert outcome.error_category is None
 
 
 # ---------------------------------------------------------------------------
