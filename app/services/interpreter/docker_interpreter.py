@@ -166,10 +166,9 @@ os.environ["DATA"] = _DATA_PATH
 
     @staticmethod
     def _resolve_container_user() -> Optional[str]:
-        try:
-            return f"{os.getuid()}:{os.getgid()}"
-        except AttributeError:
-            return None
+        # Run as root inside container for full read/write/pip-install access.
+        # Container is ephemeral (--rm), so root is safe — no host escape risk.
+        return None
 
     def _ensure_runtime_available(self) -> Optional[CodeExecutionResult]:
         if not self.client:
@@ -242,7 +241,7 @@ os.environ["DATA"] = _DATA_PATH
                 "command": list(command),
                 "detach": True,
                 "network_disabled": False,
-                "mem_limit": "512m",
+                "mem_limit": "8g",
                 "volumes": volumes,
                 "working_dir": self.work_dir,
                 "environment": self._build_env(),
