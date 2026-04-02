@@ -8,7 +8,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NUMBA_CACHE_DIR=/tmp/numba_cache \
     NUMBA_DISABLE_JIT=0
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/*.sources 2>/dev/null; \
+    sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list 2>/dev/null; \
+    apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     g++ \
