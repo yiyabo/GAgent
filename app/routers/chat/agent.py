@@ -1371,6 +1371,11 @@ class StructuredChatAgent:
                     value = extra_metadata.get(key)
                     if value is not None:
                         payload_metadata[key] = value
+            # Propagate error_category from tool result so that downstream
+            # logic (e.g. upstream-fallback in guardrail_handlers) can inspect
+            # *why* a task failed without re-parsing free-text error messages.
+            if isinstance(result, dict) and result.get("error_category"):
+                payload_metadata["error_category"] = result["error_category"]
             artifact_paths = verifier.collect_artifact_paths(
                 {"result": result, "params": params or {}, "metadata": payload_metadata}
             )

@@ -7,6 +7,7 @@ The class retains a thin one-line delegate that forwards ``self``.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 import re
@@ -607,7 +608,81 @@ def first_executable_atomic_descendant(
             continue
         node = tree.get_node(node_id)
         if is_task_executable_status(node.status):
+            # When a task failed due to upstream dependency issues,
+            # redirect to the incomplete upstream task instead.
+            upstream = _find_blocked_upstream(tree, node)
+            if upstream is not None:
+                logger.info(
+                    "[UPSTREAM_FALLBACK] Task %s blocked by upstream %s — "
+                    "redirecting execution to upstream dependency",
+                    node.id, upstream,
+                )
+                return upstream
             return node.id
+    return None
+
+
+# -- Blocked-upstream detection helpers --
+
+_UPSTREAM_BLOCKER_SIGNALS = (
+    "blocked_dependency",
+    "fewer than",
+    "missing filtered data",
+    "requires the output from task",
+    "ensure task",
+    "上游产物不完整",
+)
+
+
+def _execution_result_indicates_blocked_upstream(node: "PlanNode") -> bool:
+    """Return True if the node's last execution result suggests upstream data is missing."""
+    if node.status != "failed":
+        return False
+    raw = str(getattr(node, "execution_result", "") or "")
+    if not raw:
+        return False
+    # Fast path: check structured error_category stored in JSON metadata.
+    try:
+        parsed = json.loads(raw) if raw.strip().startswith("{") else {}
+        meta = parsed.get("metadata") or {}
+        if meta.get("error_category") == "blocked_dependency":
+            return True
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    # Fallback: substring scan on the raw text.
+    lowered = raw.lower()
+    return any(sig in lowered for sig in _UPSTREAM_BLOCKER_SIGNALS)
+
+
+def _find_blocked_upstream(
+    tree: "PlanTree",
+    node: "PlanNode",
+) -> Optional[int]:
+    """If *node* failed because of an incomplete upstream dependency,
+    return the id of that upstream task so execution can be redirected there.
+
+    Only returns an upstream task if:
+    - the failed node's execution_result contains a blocker signal, AND
+    - an upstream dependency is marked "completed" but is an atomic leaf task
+      (i.e. it can be re-run).
+    """
+    if not _execution_result_indicates_blocked_upstream(node):
+        return None
+    for dep_id in getattr(node, "dependencies", None) or []:
+        try:
+            dep_id_int = int(dep_id)
+        except (TypeError, ValueError):
+            continue
+        if not tree.has_node(dep_id_int):
+            continue
+        dep_node = tree.get_node(dep_id_int)
+        # Only redirect to leaf (atomic) tasks that are "completed" but
+        # whose outputs were evidently insufficient.
+        if tree.children_ids(dep_id_int):
+            continue  # composite — skip
+        dep_status = str(getattr(dep_node, "status", "") or "").strip().lower()
+        if dep_status in ("completed", "done", "success"):
+            return dep_id_int
     return None
 
 

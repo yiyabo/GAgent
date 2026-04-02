@@ -503,3 +503,121 @@ def test_execute_task_locally_blocks_before_generation_on_incomplete_dependency(
     assert result["success"] is False
     assert result["error_category"] == "blocked_dependency"
     assert "QC [failed]" in result["error_summary"]
+
+
+# ---------------------------------------------------------------------------
+# Upstream-fallback in first_executable_atomic_descendant
+# ---------------------------------------------------------------------------
+
+from app.routers.chat.guardrail_handlers import (
+    first_executable_atomic_descendant,
+    _execution_result_indicates_blocked_upstream,
+    _find_blocked_upstream,
+)
+
+
+def _make_tree(nodes_data: list[dict]) -> PlanTree:
+    """Build a minimal PlanTree from a list of node dicts."""
+    nodes = {}
+    adjacency: dict = {None: []}
+    for nd in nodes_data:
+        node = PlanNode(
+            id=nd["id"],
+            plan_id=1,
+            name=nd.get("name", f"Task {nd['id']}"),
+            status=nd.get("status", "pending"),
+            parent_id=nd.get("parent_id"),
+            dependencies=nd.get("dependencies", []),
+            execution_result=nd.get("execution_result"),
+        )
+        nodes[node.id] = node
+        parent = node.parent_id
+        adjacency.setdefault(parent, [])
+        adjacency[parent].append(node.id)
+    return PlanTree(id=1, title="test", nodes=nodes, adjacency=adjacency)
+
+
+class TestUpstreamFallback:
+    """Verify that first_executable_atomic_descendant redirects to the
+    incomplete upstream task when the downstream task failed due to a
+    blocked_dependency error."""
+
+    def test_redirects_to_upstream_when_blocked_dependency(self):
+        tree = _make_tree([
+            {"id": 1, "name": "Root", "parent_id": None},
+            {"id": 3, "name": "Cell filtering", "status": "completed", "parent_id": 1},
+            {
+                "id": 4,
+                "name": "Integration",
+                "status": "failed",
+                "parent_id": 1,
+                "dependencies": [3],
+                "execution_result": json.dumps({
+                    "status": "failed",
+                    "content": "blocked_dependency: fewer than 2 valid filtered samples",
+                    "metadata": {"error_category": "blocked_dependency"},
+                }),
+            },
+        ])
+        result = first_executable_atomic_descendant(tree, 1)
+        # Should redirect to task 3 (upstream), not task 4
+        assert result == 3
+
+    def test_no_redirect_when_normal_failure(self):
+        tree = _make_tree([
+            {"id": 1, "name": "Root", "parent_id": None},
+            {"id": 3, "name": "Cell filtering", "status": "completed", "parent_id": 1},
+            {
+                "id": 4,
+                "name": "Integration",
+                "status": "failed",
+                "parent_id": 1,
+                "dependencies": [3],
+                "execution_result": json.dumps({
+                    "status": "failed",
+                    "content": "SyntaxError: invalid syntax",
+                    "metadata": {"error_category": "syntax_error"},
+                }),
+            },
+        ])
+        result = first_executable_atomic_descendant(tree, 1)
+        # Normal failure — no redirect, return task 4 itself
+        assert result == 4
+
+    def test_no_redirect_when_upstream_not_completed(self):
+        tree = _make_tree([
+            {"id": 1, "name": "Root", "parent_id": None},
+            {"id": 3, "name": "Cell filtering", "status": "failed", "parent_id": 1},
+            {
+                "id": 4,
+                "name": "Integration",
+                "status": "failed",
+                "parent_id": 1,
+                "dependencies": [3],
+                "execution_result": json.dumps({
+                    "status": "failed",
+                    "content": "blocked_dependency",
+                    "metadata": {"error_category": "blocked_dependency"},
+                }),
+            },
+        ])
+        result = first_executable_atomic_descendant(tree, 1)
+        # Task 3 is already "failed" (executable), BFS finds it first
+        assert result == 3
+
+    def test_fallback_text_scan_when_no_structured_category(self):
+        """When error_category is not in metadata, fall back to text matching."""
+        tree = _make_tree([
+            {"id": 1, "name": "Root", "parent_id": None},
+            {"id": 3, "name": "Cell filtering", "status": "completed", "parent_id": 1},
+            {
+                "id": 4,
+                "name": "Integration",
+                "status": "failed",
+                "parent_id": 1,
+                "dependencies": [3],
+                "execution_result": "fewer than 2 valid filtered samples found",
+            },
+        ])
+        result = first_executable_atomic_descendant(tree, 1)
+        assert result == 3
