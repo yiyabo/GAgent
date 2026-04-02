@@ -858,6 +858,16 @@ def test_english_followthrough_plus_action_routes_to_execute() -> None:
     assert intent == "execute_task"
 
 
+def test_task_bound_status_followup_no_longer_forces_execute() -> None:
+    decision = resolve_request_routing(
+        message="目前什么情况？",
+        current_task_id=4,
+    )
+
+    assert decision.intent_type == "chat"
+    assert decision.request_tier != "execute"
+
+
 def test_english_chat_continuation_stays_chat() -> None:
     intent, _ = resolve_intent_type(message="keep explaining the concept")
     assert intent == "chat"

@@ -1087,7 +1087,7 @@ def classify_request_tier(
         reasons.append("intent_research")
         return "research", reasons, is_brief_followup
 
-    if has_attachments or task_bound or (has_execute_keyword and not prioritize_image_display):
+    if has_attachments or (has_execute_keyword and not prioritize_image_display):
         return "execute", reasons, is_brief_followup
 
     if plan_bound and (
@@ -1644,7 +1644,7 @@ def resolve_intent_type(
             reasons.append("intent_plan_optimize_request")
         return "execute_task", reasons
 
-    if has_execute_keyword or task_bound or (plan_bound and has_followthrough_cue) or followthrough_implies_execute:
+    if has_execute_keyword or (plan_bound and has_followthrough_cue) or followthrough_implies_execute:
         reasons.append("intent_execute_task")
         if followthrough_implies_execute and not has_execute_keyword:
             reasons.append("execution_keyword")

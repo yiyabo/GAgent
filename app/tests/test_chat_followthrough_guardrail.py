@@ -100,6 +100,30 @@ def test_followthrough_guardrail_uses_atomic_descendant_for_composite_current_ta
     assert patched.actions == []
 
 
+def test_followthrough_target_prefers_explicit_chinese_task_reference_over_stale_current_task() -> None:
+    tree = _FakeTree(
+        nodes={
+            1: _FakeNode(1, "root", status="pending"),
+            3: _FakeNode(3, "Task 3", status="pending"),
+            4: _FakeNode(4, "Task 4", status="pending"),
+        },
+        children={1: [3, 4]},
+    )
+    agent = _build_agent(
+        tree=tree,
+        user_message="可以的，那你开始完成任务3吧，补齐之前的一些问题",
+        current_task_id=1,
+    )
+
+    target = agent._resolve_followthrough_target_task_id(
+        tree=tree,
+        user_message=agent._current_user_message,
+        reply_text="我现在开始执行。",
+    )
+
+    assert target == 3
+
+
 def test_followthrough_guardrail_keeps_status_query_without_execution_intent() -> None:
     tree = _FakeTree(
         nodes={

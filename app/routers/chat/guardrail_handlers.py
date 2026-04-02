@@ -511,12 +511,15 @@ def resolve_followthrough_target_task_id(
     reply_text: str,
 ) -> Optional[int]:
     explicit_task_id = extract_task_id_from_text(user_message)
-    if explicit_task_id is not None and tree.has_node(explicit_task_id):
+    if explicit_task_id is not None:
+        if not tree.has_node(explicit_task_id):
+            return None
         if not tree.children_ids(explicit_task_id):
             return explicit_task_id
         descendant = first_executable_atomic_descendant(tree, explicit_task_id)
         if descendant is not None:
             return descendant
+        return None
 
     raw_current_task_id = agent.extra_context.get("current_task_id")
     try:

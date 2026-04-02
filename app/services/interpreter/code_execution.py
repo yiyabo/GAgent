@@ -120,6 +120,28 @@ _STDOUT_ERROR_HINT_RE = re.compile(
     r"\b(?:error|failed|missing required input|not found|cannot proceed|blocked_dependency)\b",
     re.IGNORECASE,
 )
+_BLOCKED_DEPENDENCY_PATTERNS = (
+    "blocked_dependency",
+    "dependency missing",
+    "missing upstream",
+    "missing prerequisite",
+    "missing prerequisites",
+    "upstream deliverable",
+    "upstream artifact",
+    "upstream artifacts",
+    "upstream output",
+    "upstream outputs",
+    "prerequisite not met",
+    "prerequisites not met",
+    "fewer than 2 valid samples",
+    "need at least 2 valid samples",
+    "requires at least 2 valid samples",
+    "前置条件不满足",
+    "依赖缺失",
+    "缺少上游",
+    "缺少前置",
+    "上游产物",
+)
 
 
 @dataclass(frozen=True)
@@ -133,6 +155,13 @@ class ErrorAnalysis:
 
 def _is_warning_header_line(line: str) -> bool:
     return bool(_WARNING_HEADER_RE.search(str(line or "").strip()))
+
+
+def _looks_like_blocked_dependency(error_text: str) -> bool:
+    lowered = str(error_text or "").strip().lower()
+    if not lowered:
+        return False
+    return any(token in lowered for token in _BLOCKED_DEPENDENCY_PATTERNS)
 
 
 def _split_leading_warning_text(stderr: str) -> tuple[str, str]:
@@ -208,6 +237,8 @@ def classify_error(stderr: str, exit_code: int) -> str:
         return "file_access"
     if "MemoryError" in error_text:
         return "resource_limit"
+    if _looks_like_blocked_dependency(error_text):
+        return "blocked_dependency"
     return "runtime_error"
 
 
@@ -319,6 +350,11 @@ _FIX_HINTS = {
         "The code ran out of memory. Reduce memory usage: "
         "process data in chunks, avoid loading everything at once, "
         "use generators or iterators."
+    ),
+    "blocked_dependency": (
+        "The failure is a deterministic prerequisite or dependency blocker. "
+        "Do NOT guess alternative paths or rewrite the task into upstream work. "
+        "Report the missing prerequisite clearly and stop."
     ),
     "runtime_error": "",  # generic, no extra hint
     "non_fatal_warning_noise": "",
@@ -475,6 +511,12 @@ async def execute_code_locally(
         if error_analysis.warning_only:
             logger.warning(
                 "Skipping auto-fix because stderr only contains warning noise: %.200s",
+                error_analysis.summary_text,
+            )
+            break
+        if error_category == "blocked_dependency":
+            logger.info(
+                "Skipping auto-fix because execution hit a blocked dependency: %.200s",
                 error_analysis.summary_text,
             )
             break
