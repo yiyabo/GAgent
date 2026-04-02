@@ -29,6 +29,7 @@ from tool_box.tools_impl.code_executor import (
     _resolve_allowed_tools,
     _resolve_setting_sources,
     _sanitize_task_dir_component,
+    _execute_task_locally,
     _validate_api_mode_config,
     _validate_scope_contract,
 )
@@ -471,3 +472,34 @@ def test_local_backend_returns_promoted_artifact_paths(
     assert any(path.endswith("plot.png") for path in result["produced_files"])
     session_dir = (tmp_path / "runtime" / "session_adhoc").resolve()
     assert (session_dir / promoted).read_bytes() == b"png"
+
+
+def test_execute_task_locally_blocks_before_generation_on_incomplete_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def _unexpected_execute(**_kwargs):
+        raise AssertionError("execute_code_locally should not run when dependencies are incomplete")
+
+    monkeypatch.setattr(
+        "app.services.interpreter.code_execution.execute_code_locally",
+        _unexpected_execute,
+    )
+
+    result = asyncio.run(
+        _execute_task_locally(
+            task="run integration",
+            work_dir=str(tmp_path),
+            execution_spec={
+                "task_id": 4,
+                "task_name": "Integration",
+                "dependency_blockers": [
+                    {"task_id": 3, "task_name": "QC", "status": "failed"}
+                ],
+            },
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_category"] == "blocked_dependency"
+    assert "QC [failed]" in result["error_summary"]
