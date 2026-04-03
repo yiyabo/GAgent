@@ -490,11 +490,16 @@ def _build_qwen_code_command(
         f"4. Return a summary of actual outputs produced."
         f"{allowed_dirs_info}"
     )
+    try:
+        from app.config.executor_config import get_executor_settings as _get_settings
+        _max_turns = str(_get_settings().qc_max_session_turns)
+    except Exception:
+        _max_turns = "50"
     cmd: List[str] = [
         "qwen",
         "-p", enhanced_task,
         "-o", output_format,
-        "--max-session-turns", "50",
+        "--max-session-turns", _max_turns,
         "--approval-mode", "yolo",
         "--auth-type", "openai",
     ]
@@ -1069,6 +1074,11 @@ async def _execute_task_locally(
             dependency_outputs=list(execution_spec.get("dependency_outputs") or []),
             dependency_artifact_paths=list(execution_spec.get("dependency_artifact_paths") or []),
         )
+    try:
+        from app.config.executor_config import get_executor_settings as _get_exec_settings
+        _exec_timeout = _get_exec_settings().code_execution_timeout
+    except Exception:
+        _exec_timeout = 120
     outcome = await execute_code_locally(
         task_title="Code execution task",
         task_description=task_desc,
@@ -1077,6 +1087,7 @@ async def _execute_task_locally(
         work_dir=work_dir,
         data_dir=data_dir,
         auto_fix=auto_fix,
+        timeout=_exec_timeout,
         execution_backend=execution_backend,
         docker_image=docker_image,
         readable_dirs=readable_dirs,
