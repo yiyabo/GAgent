@@ -3154,6 +3154,18 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
                 "status": finalization.final_status,
                 "verification": verification,
                 "payload": finalization.payload,
+                # "result" key required by _normalize_deep_think_tool_result so
+                # the DeepThink tool-wrapper uses the correct success flag.
+                "result": {
+                    "success": verification_success,
+                    "task_id": task_id,
+                    "plan_id": tree.id,
+                    "verification_status": verification_status,
+                    "checks_passed": checks_passed,
+                    "checks_total": checks_total,
+                    "final_status": finalization.final_status,
+                    "summary": message,
+                },
             },
         )
 
