@@ -621,3 +621,96 @@ class TestUpstreamFallback:
         ])
         result = first_executable_atomic_descendant(tree, 1)
         assert result == 3
+
+
+# ---------------------------------------------------------------------------
+# Qwen Code CLI helpers
+# ---------------------------------------------------------------------------
+
+from tool_box.tools_impl.code_executor import (
+    _build_qwen_code_subprocess_env,
+    _build_qwen_code_command,
+    _validate_qwen_code_config,
+)
+
+
+class TestQwenCodeCLI:
+    """Tests for the Qwen Code CLI command and env builders."""
+
+    def test_build_qwen_code_command_basic(self):
+        cmd = _build_qwen_code_command(
+            task="print hello",
+            work_dir="/tmp/test",
+            file_prefix="run_001",
+            output_format="json",
+            allowed_tools=["Bash", "Read", "Write"],
+            allowed_dirs=["/data"],
+            model="qwen3.5-plus",
+            debug=False,
+            allowed_dirs_info="",
+        )
+        assert cmd[0] == "qwen"
+        assert "-p" in cmd
+        assert "-o" in cmd
+        assert cmd[cmd.index("-o") + 1] == "json"
+        assert "--max-session-turns" in cmd
+        assert "--approval-mode" in cmd
+        assert cmd[cmd.index("--approval-mode") + 1] == "yolo"
+        assert "--auth-type" in cmd
+        assert cmd[cmd.index("--auth-type") + 1] == "openai"
+        assert "-m" in cmd
+        assert cmd[cmd.index("-m") + 1] == "qwen3.5-plus"
+        assert "--add-dir" in cmd
+
+    def test_build_qwen_code_command_tools_as_array(self):
+        """QC --allowed-tools must be space-separated (array), not comma-joined."""
+        cmd = _build_qwen_code_command(
+            task="test",
+            work_dir="/tmp",
+            file_prefix="run",
+            output_format="text",
+            allowed_tools=["Bash", "Edit", "Grep"],
+            allowed_dirs=[],
+            model=None,
+            debug=False,
+            allowed_dirs_info="",
+        )
+        idx = cmd.index("--allowed-tools")
+        # The three tools should follow as separate elements, not comma-joined.
+        assert cmd[idx + 1] == "Bash"
+        assert cmd[idx + 2] == "Edit"
+        assert cmd[idx + 3] == "Grep"
+        # Model flag should NOT appear when model is None.
+        assert "-m" not in cmd
+
+    def test_build_qwen_code_command_debug_flag(self):
+        cmd = _build_qwen_code_command(
+            task="x", work_dir="/tmp", file_prefix="r",
+            output_format="json", allowed_tools=[], allowed_dirs=[],
+            model=None, debug=True, allowed_dirs_info="",
+        )
+        assert "-d" in cmd
+
+    def test_build_qwen_code_subprocess_env_sets_openai_vars(self, monkeypatch):
+        monkeypatch.setenv("QWEN_API_KEY", "sk-test-key-123")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        env = _build_qwen_code_subprocess_env()
+        assert env["OPENAI_API_KEY"] == "sk-test-key-123"
+        assert "dashscope" in env["OPENAI_BASE_URL"]
+
+    def test_build_qwen_code_subprocess_env_removes_anthropic_vars(self, monkeypatch):
+        monkeypatch.setenv("QWEN_API_KEY", "sk-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "should-be-removed")
+        monkeypatch.setenv("CLAUDECODE", "1")
+        env = _build_qwen_code_subprocess_env()
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "CLAUDECODE" not in env
+
+    def test_validate_qwen_code_config_passes_with_key(self):
+        assert _validate_qwen_code_config({"OPENAI_API_KEY": "sk-test"}) is None
+
+    def test_validate_qwen_code_config_fails_without_key(self):
+        result = _validate_qwen_code_config({})
+        assert result is not None
+        assert "QWEN_API_KEY" in result
