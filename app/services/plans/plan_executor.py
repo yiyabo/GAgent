@@ -653,8 +653,10 @@ class PlanExecutor:
                 summary.failed_task_ids,
                 summary.skipped_task_ids,
             ):
-                while task_id in bucket:
+                try:
                     bucket.remove(task_id)
+                except ValueError:
+                    pass
 
         def _collect_artifacts(task_id: int, exec_result: ExecutionResult) -> None:
             try:
@@ -1969,7 +1971,6 @@ class PlanExecutor:
                 "artifact_paths": registry_paths[:40],
                 "deliverable_manifest": None,
                 "published_modules": [],
-                "source": "artifact_registry",
             }
 
         # --- Priority 2: parse from execution_result ---
@@ -1998,7 +1999,6 @@ class PlanExecutor:
             "artifact_paths": artifact_paths[:40],
             "deliverable_manifest": manifest_path,
             "published_modules": deliverables.get("published_modules") if isinstance(deliverables.get("published_modules"), list) else [],
-            "source": "execution_result",
         }
 
     def _generate_plan_summary(
