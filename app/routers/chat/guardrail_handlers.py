@@ -654,12 +654,16 @@ def resolve_explicit_task_scope_target(
             if not tree.has_node(dep_id_int):
                 continue
             dep_node = tree.get_node(dep_id_int)
-            # Cascade-completed deps have no real outputs either — treat them as
-            # "not yet done" in the scope so they get scheduled first.
-            dep_is_executable = is_task_executable_status(dep_node.status) or (
+            # dep_needs_resolution: True when the dep still needs to produce real
+            # outputs — either it's pending/failed/skipped in the normal sense, or
+            # it was cascade-completed (no real outputs yet) and the caller asked
+            # for cascade reruns.  This is intentionally broader than
+            # is_task_executable_status: we ask "does this dep still owe outputs?"
+            # rather than "is it in a runnable status?".
+            dep_needs_resolution = is_task_executable_status(dep_node.status) or (
                 allow_cascade_rerun and _is_cascade_completed(dep_node)
             )
-            if not dep_is_executable:
+            if not dep_needs_resolution:
                 continue
             if dep_id_int in scope_ids:
                 unmet_in_scope = True
@@ -679,9 +683,18 @@ def classify_explicit_scope_none_reason(
     """Classify *why* resolve_explicit_task_scope_target returned None.
 
     Returns:
-      "all_completed"  — every reachable leaf node is already completed/done
-      "blocked_deps"   — at least one executable leaf is blocked by deps
+      "all_completed"  — every reachable leaf is genuinely completed (not cascade)
+      "blocked_deps"   — at least one leaf is pending/blocked, OR all leaves are
+                         cascade-completed (which means they were blocked by deps
+                         even after allow_cascade_rerun — user should be told to
+                         resolve upstream tasks first, not "already done")
       "empty"          — no valid task IDs found in the tree
+
+    Note: cascade-completed leaves are intentionally NOT classified as
+    "all_completed".  resolve_explicit_task_scope_target(allow_cascade_rerun=True)
+    already handles the un-blocked cascade case by returning a valid task id.
+    When we reach this function for cascade leaves it means they were blocked by
+    unmet out-of-scope dependencies — "blocked_deps" is the right bucket.
     """
     valid_ids: List[int] = []
     for raw_id in explicit_task_ids:
@@ -720,6 +733,11 @@ def classify_explicit_scope_none_reason(
         node = tree.get_node(leaf_id)
         status = str(getattr(node, "status", "") or "").strip().lower()
         if status not in ("completed", "done", "success"):
+            return "blocked_deps"
+        # Cascade-completed tasks were never truly executed; if they ended up
+        # here (scope resolver still returned None) they must have unmet upstream
+        # deps — report as blocked, not done.
+        if _is_cascade_completed(node):
             return "blocked_deps"
 
     return "all_completed"
