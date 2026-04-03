@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +38,48 @@ def _log_job(level: str, message: str, metadata: Optional[Dict[str, Any]] = None
 
 if TYPE_CHECKING:  # pragma: no cover
     from ...repository.plan_repository import PlanRepository
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_PATH_LIKE_RE = re.compile(r"(/[a-zA-Z0-9_./-]{8,})")
+
+
+def _extract_paths_from_execution_result(raw: str, max_paths: int = 40) -> List[str]:
+    """Extract absolute file paths from an execution result string."""
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw) if raw.strip().startswith("{") else {}
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+
+    paths: List[str] = []
+    seen: set = set()
+
+    # Structured fields first
+    for key in ("artifact_paths", "produced_files", "session_artifact_paths"):
+        items = payload.get(key) if isinstance(payload, dict) else None
+        if isinstance(items, list):
+            for p in items:
+                text = str(p).strip()
+                if text.startswith("/") and text not in seen:
+                    seen.add(text)
+                    paths.append(text)
+
+    # Regex fallback on raw text
+    if len(paths) < max_paths:
+        for m in _PATH_LIKE_RE.finditer(raw):
+            p = m.group(1)
+            if p not in seen:
+                seen.add(p)
+                paths.append(p)
+            if len(paths) >= max_paths:
+                break
+
+    return paths[:max_paths]
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +182,9 @@ class ExecutionConfig:
     session_context: Optional[Dict[str, Any]] = None
     enforce_dependencies: bool = True
     paper_mode: bool = False
+    force_rerun: bool = False
+    auto_recovery: bool = False
+    max_recovery_attempts: int = 2
     enable_skills: bool = True
     skill_budget_chars: int = 6000
     skill_selection_mode: str = "hybrid"
@@ -157,6 +203,9 @@ class ExecutionConfig:
             max_tasks=settings.max_tasks,
             enforce_dependencies=getattr(settings, "enforce_dependencies", True),
             paper_mode=bool(getattr(settings, "paper_mode", False)),
+            force_rerun=getattr(settings, "force_rerun", False),
+            auto_recovery=getattr(settings, "auto_recovery", False),
+            max_recovery_attempts=max(1, getattr(settings, "max_recovery_attempts", 2)),
             enable_skills=settings.enable_skills,
             skill_budget_chars=settings.skill_budget_chars,
             skill_selection_mode=settings.skill_selection_mode,
@@ -588,7 +637,39 @@ class PlanExecutor:
         if cfg.enable_skills:
             self._preselect_skills_for_plan(tree, cfg)
 
-        for node in order:
+        # Layer 2: Artifact registry — accumulates output paths across tasks
+        # so that downstream tasks can reference upstream outputs directly.
+        artifact_registry: Dict[int, List[str]] = {}
+        if cfg.session_context is None:
+            cfg.session_context = {}
+        cfg.session_context["_artifact_registry"] = artifact_registry
+
+        # Layer 3: Recovery attempt tracker per task
+        recovery_attempts: Dict[int, int] = {}
+
+        total_tasks = len(order)
+        for idx, node in enumerate(order):
+            # --- Layer 1: skip already-completed tasks (resume support) ---
+            node_status = (node.status or "").strip().lower()
+            if node_status in ("completed", "done") and not cfg.force_rerun:
+                summary.executed_task_ids.append(node.id)
+                _log_job("info", "Skipping already-completed task.", {
+                    "plan_id": plan_id, "task_id": node.id,
+                    "task_name": node.display_name(),
+                })
+                continue
+
+            # --- Layer 1: progress event ---
+            completed_count = len(summary.executed_task_ids)
+            _log_job("info", "Plan execution progress.", {
+                "plan_id": plan_id,
+                "current_task": node.id,
+                "task_name": node.display_name(),
+                "completed": completed_count,
+                "total": total_tasks,
+                "progress_pct": round(completed_count / total_tasks * 100) if total_tasks else 0,
+            })
+
             start = time.time()
             _log_job(
                 "info",
@@ -621,11 +702,67 @@ class PlanExecutor:
 
             if result.status == "completed":
                 summary.executed_task_ids.append(node.id)
+                # Layer 2: collect artifacts into registry
+                try:
+                    raw_payload = result.raw_response or result.content or ""
+                    paths = _extract_paths_from_execution_result(raw_payload)
+                    if paths:
+                        artifact_registry[node.id] = paths
+                except Exception:
+                    pass
             elif result.status == "skipped":
                 summary.skipped_task_ids.append(node.id)
             else:
                 summary.failed_task_ids.append(node.id)
-                if cfg.dependency_throttle:
+
+                # --- Layer 3: automatic failure recovery ---
+                recovered = False
+                if cfg.auto_recovery and recovery_attempts.get(node.id, 0) < cfg.max_recovery_attempts:
+                    try:
+                        from app.services.plans.failure_recovery import (
+                            FailureAnalyzer, RECOVERABLE, FailureCategory,
+                        )
+                        result_text = result.content or ""
+                        result_meta = {}
+                        try:
+                            import json as _json
+                            parsed = _json.loads(result_text) if result_text.strip().startswith("{") else {}
+                            result_meta = parsed.get("metadata", {}) if isinstance(parsed, dict) else {}
+                        except Exception:
+                            pass
+                        category = FailureAnalyzer().classify(result_text, result_meta)
+                        if category in RECOVERABLE:
+                            recovery_attempts[node.id] = recovery_attempts.get(node.id, 0) + 1
+                            _log_job("warning", f"Task failed ({category.value}), attempting recovery.", {
+                                "task_id": node.id,
+                                "attempt": recovery_attempts[node.id],
+                                "max_attempts": cfg.max_recovery_attempts,
+                            })
+                            if category == FailureCategory.UPSTREAM_INCOMPLETE:
+                                # Re-run incomplete upstream dependencies first
+                                for dep_id in (node.dependencies or []):
+                                    if not tree.has_node(dep_id):
+                                        continue
+                                    dep = tree.get_node(dep_id)
+                                    dep_st = (dep.status or "").strip().lower()
+                                    if dep_st in ("completed", "done"):
+                                        dep.status = "pending"
+                                        dep_result = self._run_task(plan_id, dep, tree, cfg)
+                                        if dep_result.status == "completed":
+                                            tree.nodes[dep_id] = dep
+                            # Retry the current task
+                            node.status = "pending"
+                            retry_result = self._run_task(plan_id, node, tree, cfg)
+                            if retry_result.status == "completed":
+                                summary.failed_task_ids.remove(node.id)
+                                summary.executed_task_ids.append(node.id)
+                                recovered = True
+                    except ImportError:
+                        logger.debug("failure_recovery module not available, skipping auto-recovery")
+                    except Exception as rec_err:
+                        logger.warning("Auto-recovery failed for task %s: %s", node.id, rec_err)
+
+                if not recovered and cfg.dependency_throttle:
                     logger.warning(
                         "Stopping execution for plan %s due to failure on task %s",
                         plan_id,
@@ -633,7 +770,7 @@ class PlanExecutor:
                     )
                     _log_job(
                         "warning",
-                        "Plan execution stopped early because a task failed.",
+                        "Plan execution stopped: unrecoverable failure.",
                         {"plan_id": plan_id, "failed_task_id": node.id},
                     )
                     break
@@ -1388,7 +1525,7 @@ class PlanExecutor:
                 "deliverable_submit",
             ],
             tool_executor=_tool_wrapper,
-            max_iterations=12,
+            max_iterations=getattr(self._settings, "deep_think_max_iterations", 12),
             tool_timeout=UnifiedToolExecutor.DEFAULT_TIMEOUT_SECONDS,
             on_thinking=on_thinking,
             on_thinking_delta=on_thinking_delta,

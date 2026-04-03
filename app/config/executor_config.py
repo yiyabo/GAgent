@@ -29,6 +29,14 @@ class ExecutorSettings:
     skill_max_per_task: int = 3
     skill_trace_enabled: bool = True
     code_execution_backend: str = "local"  # "local" | "qwen_code" | "claude_code"
+    # --- Layer 4: configurable limits ---
+    deep_think_max_iterations: int = 12
+    qc_max_session_turns: int = 50
+    code_execution_timeout: int = 120
+    # --- Layer 1/3: auto-execution and recovery ---
+    force_rerun: bool = False
+    auto_recovery: bool = False
+    max_recovery_attempts: int = 2
 
 
 @lru_cache(maxsize=1)
@@ -128,6 +136,20 @@ def get_executor_settings() -> ExecutorSettings:
             "CODE_EXECUTION_BACKEND",
             defaults.code_execution_backend,
             {"local", "qwen_code", "claude_code"},
+        ),
+        deep_think_max_iterations=max(
+            1, min(50, _env_int("DEEP_THINK_MAX_ITERATIONS", defaults.deep_think_max_iterations))
+        ),
+        qc_max_session_turns=max(
+            10, min(500, _env_int("QC_MAX_SESSION_TURNS", defaults.qc_max_session_turns))
+        ),
+        code_execution_timeout=max(
+            30, min(3600, _env_int("CODE_EXECUTION_TIMEOUT", defaults.code_execution_timeout))
+        ),
+        force_rerun=_env_bool("PLAN_EXECUTOR_FORCE_RERUN", defaults.force_rerun),
+        auto_recovery=_env_bool("PLAN_EXECUTOR_AUTO_RECOVERY", defaults.auto_recovery),
+        max_recovery_attempts=max(
+            1, min(5, _env_int("PLAN_EXECUTOR_MAX_RECOVERY", defaults.max_recovery_attempts))
         ),
     )
 
