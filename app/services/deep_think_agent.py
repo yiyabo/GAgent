@@ -1946,13 +1946,13 @@ class DeepThinkAgent:
                     current_step.status = "done"
                     current_step.finished_at = datetime.now()
                     if (
-                        probe_only_execution_cycles > 0
+                        probe_only_execution_cycles >= 2
                         and self._is_execute_task_request()
                         and self._has_bound_task_context(task_context)
                         and not self._looks_like_blocked_dependency_answer(candidate_answer)
                     ):
                         current_step.self_correction = (
-                            "Rejected a conclusion after observation-only probing and replaced it with a blocked-dependency answer."
+                            "Rejected a conclusion after repeated observation-only probing and replaced it with a blocked-dependency answer."
                         )
                         final_answer = self._build_blocked_dependency_answer(
                             task_context=task_context,
