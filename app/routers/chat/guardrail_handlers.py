@@ -514,11 +514,15 @@ def resolve_followthrough_target_task_id(
 ) -> Optional[int]:
     explicit_scope_ids = agent.extra_context.get("explicit_task_ids")
     if isinstance(explicit_scope_ids, list) and explicit_scope_ids:
-        return resolve_explicit_task_scope_target(tree, explicit_scope_ids)
+        return resolve_explicit_task_scope_target(
+            tree, explicit_scope_ids, allow_cascade_rerun=True
+        )
 
     explicit_task_ids = extract_task_ids_from_text(user_message)
     if explicit_task_ids:
-        return resolve_explicit_task_scope_target(tree, explicit_task_ids)
+        return resolve_explicit_task_scope_target(
+            tree, explicit_task_ids, allow_cascade_rerun=True
+        )
 
     explicit_task_id = extract_task_id_from_text(user_message)
     if explicit_task_id is not None:
@@ -562,9 +566,27 @@ def resolve_followthrough_target_task_id(
     return None
 
 
+_CASCADE_COMPLETION_MARKER = "completed as part of parent task"
+
+
+def _is_cascade_completed(node: Any) -> bool:
+    """Return True if the node was marked 'completed' via a parent-cascade rather
+    than genuine individual execution.  Such tasks have never produced real
+    outputs and should be treated as re-executable when the user explicitly
+    requests them.
+    """
+    status = str(getattr(node, "status", "") or "").strip().lower()
+    if status not in ("completed", "done", "success"):
+        return False
+    result = str(getattr(node, "execution_result", "") or "").strip().lower()
+    return _CASCADE_COMPLETION_MARKER in result
+
+
 def resolve_explicit_task_scope_target(
     tree: "PlanTree",
     explicit_task_ids: List[int],
+    *,
+    allow_cascade_rerun: bool = False,
 ) -> Optional[int]:
     ordered_ids: List[int] = []
     seen: set[int] = set()
@@ -615,8 +637,12 @@ def resolve_explicit_task_scope_target(
         node = tree.get_node(task_id)
         if tree.children_ids(task_id):
             continue
-        if not is_task_executable_status(node.status):
-            continue
+        executable = is_task_executable_status(node.status)
+        if not executable:
+            # Allow re-execution when the task was only cascade-completed (no real
+            # outputs) and the caller has explicitly requested this task.
+            if not (allow_cascade_rerun and _is_cascade_completed(node)):
+                continue
 
         unmet_in_scope = False
         unmet_out_of_scope = False
@@ -628,7 +654,12 @@ def resolve_explicit_task_scope_target(
             if not tree.has_node(dep_id_int):
                 continue
             dep_node = tree.get_node(dep_id_int)
-            if not is_task_executable_status(dep_node.status):
+            # Cascade-completed deps have no real outputs either — treat them as
+            # "not yet done" in the scope so they get scheduled first.
+            dep_is_executable = is_task_executable_status(dep_node.status) or (
+                allow_cascade_rerun and _is_cascade_completed(dep_node)
+            )
+            if not dep_is_executable:
                 continue
             if dep_id_int in scope_ids:
                 unmet_in_scope = True
@@ -639,6 +670,59 @@ def resolve_explicit_task_scope_target(
         return task_id
 
     return None
+
+
+def classify_explicit_scope_none_reason(
+    tree: "PlanTree",
+    explicit_task_ids: List[int],
+) -> str:
+    """Classify *why* resolve_explicit_task_scope_target returned None.
+
+    Returns:
+      "all_completed"  — every reachable leaf node is already completed/done
+      "blocked_deps"   — at least one executable leaf is blocked by deps
+      "empty"          — no valid task IDs found in the tree
+    """
+    valid_ids: List[int] = []
+    for raw_id in explicit_task_ids:
+        try:
+            tid = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if tree.has_node(tid):
+            valid_ids.append(tid)
+
+    if not valid_ids:
+        return "empty"
+
+    # Expand composite tasks to their atomic leaves.
+    leaf_ids: List[int] = []
+    for task_id in valid_ids:
+        children = tree.children_ids(task_id)
+        if not children:
+            leaf_ids.append(task_id)
+        else:
+            queue = list(children)
+            while queue:
+                child_id = queue.pop(0)
+                if not tree.has_node(child_id):
+                    continue
+                sub_children = tree.children_ids(child_id)
+                if sub_children:
+                    queue.extend(sub_children)
+                else:
+                    leaf_ids.append(child_id)
+
+    if not leaf_ids:
+        return "empty"
+
+    for leaf_id in leaf_ids:
+        node = tree.get_node(leaf_id)
+        status = str(getattr(node, "status", "") or "").strip().lower()
+        if status not in ("completed", "done", "success"):
+            return "blocked_deps"
+
+    return "all_completed"
 
 
 def apply_completion_claim_guardrail(
