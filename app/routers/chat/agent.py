@@ -2136,7 +2136,24 @@ class StructuredChatAgent:
                     result_payload = details.get("result")
                     if isinstance(result_payload, dict):
                         result: Dict[str, Any] = dict(result_payload)
+                    elif result_payload is None:
+                        # "result" key absent from details — common for task_operation
+                        # handlers (e.g. verify_task) that return AgentStep without a
+                        # raw result dict.  Synthesise from step.success / step.message
+                        # instead of hardcoding success=False.
+                        message_text = _safe_text(step.message, limit=600) or ""
+                        result = {
+                            "success": bool(step.success),
+                            "tool": tool_name,
+                            "summary": message_text,
+                            "parameters": dict(tool_params),
+                            "iteration": iteration,
+                        }
+                        if not step.success:
+                            detail_error = _safe_text(details.get("error"), limit=600)
+                            result["error"] = detail_error or message_text or "Tool execution failed."
                     else:
+                        # result_payload exists but is not a dict — genuinely malformed.
                         message_text = _safe_text(step.message, limit=600)
                         detail_error = _safe_text(details.get("error"), limit=600)
                         error_text = (
