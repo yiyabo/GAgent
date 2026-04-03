@@ -53,7 +53,18 @@ from tool_box import execute_tool
 _DEEP_THINK_MAX_ITER_DEFAULT = 64
 _DEEP_THINK_MAX_ITER_CAP = 128
 _READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
-_OBSERVATION_ONLY_TOOLS = {"document_reader", "vision_reader", "result_interpreter"}
+# Tools that only observe / retrieve information and must NOT trigger task-status
+# sync regardless of their success flag.  Adding web_search / graph_rag /
+# literature_pipeline here prevents a failed search from flipping a task to
+# "failed" before the actual execution tool (code_executor) has run.
+_OBSERVATION_ONLY_TOOLS = {
+    "document_reader",
+    "vision_reader",
+    "result_interpreter",
+    "web_search",
+    "graph_rag",
+    "literature_pipeline",
+}
 
 
 def _resolve_deep_think_max_iterations() -> int:
