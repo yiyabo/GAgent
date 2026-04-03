@@ -647,6 +647,41 @@ class PlanExecutor:
         # Layer 3: Recovery attempt tracker per task
         recovery_attempts: Dict[int, int] = {}
 
+        def _remove_task_from_status_buckets(task_id: int) -> None:
+            for bucket in (
+                summary.executed_task_ids,
+                summary.failed_task_ids,
+                summary.skipped_task_ids,
+            ):
+                while task_id in bucket:
+                    bucket.remove(task_id)
+
+        def _collect_artifacts(task_id: int, exec_result: ExecutionResult) -> None:
+            try:
+                raw_payload = exec_result.raw_response or exec_result.content or ""
+                paths = _extract_paths_from_execution_result(raw_payload)
+                if paths:
+                    artifact_registry[task_id] = paths
+            except Exception:
+                pass
+
+        def _record_final_result(exec_result: ExecutionResult, *, replace_existing: bool = False) -> None:
+            if replace_existing:
+                summary.results = [
+                    existing
+                    for existing in summary.results
+                    if existing.task_id != exec_result.task_id
+                ]
+            summary.results.append(exec_result)
+            _remove_task_from_status_buckets(exec_result.task_id)
+            if exec_result.status == "completed":
+                summary.executed_task_ids.append(exec_result.task_id)
+                _collect_artifacts(exec_result.task_id, exec_result)
+            elif exec_result.status == "skipped":
+                summary.skipped_task_ids.append(exec_result.task_id)
+            else:
+                summary.failed_task_ids.append(exec_result.task_id)
+
         total_tasks = len(order)
         for idx, node in enumerate(order):
             # --- Layer 1: skip already-completed tasks (resume support) ---
@@ -698,70 +733,128 @@ class PlanExecutor:
                 )
 
             result.duration_sec = (time.time() - start) if result.duration_sec is None else result.duration_sec
-            summary.results.append(result)
 
-            if result.status == "completed":
-                summary.executed_task_ids.append(node.id)
-                # Layer 2: collect artifacts into registry
+            # --- Layer 3: automatic recovery for failed AND skipped-by-dependency ---
+            # We attempt recovery BEFORE appending to summary so that the
+            # final summary.results reflects the true outcome.
+            needs_recovery = False
+            if result.status in ("failed", "skipped"):
+                needs_recovery = (
+                    cfg.auto_recovery
+                    and recovery_attempts.get(node.id, 0) < cfg.max_recovery_attempts
+                )
+
+            recovered = False
+            if needs_recovery:
                 try:
-                    raw_payload = result.raw_response or result.content or ""
-                    paths = _extract_paths_from_execution_result(raw_payload)
-                    if paths:
-                        artifact_registry[node.id] = paths
-                except Exception:
-                    pass
-            elif result.status == "skipped":
-                summary.skipped_task_ids.append(node.id)
-            else:
-                summary.failed_task_ids.append(node.id)
-
-                # --- Layer 3: automatic failure recovery ---
-                recovered = False
-                if cfg.auto_recovery and recovery_attempts.get(node.id, 0) < cfg.max_recovery_attempts:
-                    try:
-                        from app.services.plans.failure_recovery import (
-                            FailureAnalyzer, RECOVERABLE, FailureCategory,
-                        )
-                        result_text = result.content or ""
-                        result_meta = {}
-                        try:
-                            import json as _json
-                            parsed = _json.loads(result_text) if result_text.strip().startswith("{") else {}
-                            result_meta = parsed.get("metadata", {}) if isinstance(parsed, dict) else {}
-                        except Exception:
-                            pass
-                        category = FailureAnalyzer().classify(result_text, result_meta)
-                        if category in RECOVERABLE:
-                            recovery_attempts[node.id] = recovery_attempts.get(node.id, 0) + 1
-                            _log_job("warning", f"Task failed ({category.value}), attempting recovery.", {
-                                "task_id": node.id,
-                                "attempt": recovery_attempts[node.id],
-                                "max_attempts": cfg.max_recovery_attempts,
-                            })
-                            if category == FailureCategory.UPSTREAM_INCOMPLETE:
-                                # Re-run incomplete upstream dependencies first
-                                for dep_id in (node.dependencies or []):
-                                    if not tree.has_node(dep_id):
-                                        continue
-                                    dep = tree.get_node(dep_id)
-                                    dep_st = (dep.status or "").strip().lower()
-                                    if dep_st in ("completed", "done"):
-                                        dep.status = "pending"
-                                        dep_result = self._run_task(plan_id, dep, tree, cfg)
-                                        if dep_result.status == "completed":
-                                            tree.nodes[dep_id] = dep
-                            # Retry the current task
+                    from app.services.plans.failure_recovery import (
+                        FailureAnalyzer, RECOVERABLE, FailureCategory,
+                    )
+                    category = FailureAnalyzer().classify(
+                        result.content or "",
+                        {},
+                        result_status=result.status,
+                        result_metadata=result.metadata,
+                    )
+                    if category in RECOVERABLE:
+                        recovery_attempts[node.id] = recovery_attempts.get(node.id, 0) + 1
+                        _log_job("warning", f"Task {result.status} ({category.value}), attempting recovery.", {
+                            "task_id": node.id,
+                            "attempt": recovery_attempts[node.id],
+                            "max_attempts": cfg.max_recovery_attempts,
+                        })
+                        if category == FailureCategory.UPSTREAM_INCOMPLETE:
+                            # Re-run upstream dependencies first. If the task was
+                            # skipped by enforce_dependencies, only incomplete
+                            # deps need a rerun. If the task failed with a blocked
+                            # dependency despite completed upstream status, we may
+                            # need to regenerate completed dependency outputs too.
+                            incomplete_dep_ids = result.metadata.get("incomplete_dependencies") or []
+                            dep_ids_to_rerun = incomplete_dep_ids if incomplete_dep_ids else (node.dependencies or [])
+                            force_rerun_completed = not bool(
+                                result.metadata.get("blocked_by_dependencies")
+                            )
+                            dependency_recovery_failed_result: Optional[ExecutionResult] = None
+                            for dep_id in dep_ids_to_rerun:
+                                if not tree.has_node(dep_id):
+                                    continue
+                                dep = tree.get_node(dep_id)
+                                dep_st = (dep.status or "").strip().lower()
+                                if dep_st in ("completed", "done") and not force_rerun_completed:
+                                    continue
+                                dep.status = "pending"
+                                dep_result = self._run_task(plan_id, dep, tree, cfg)
+                                tree.nodes[dep_id] = dep
+                                _record_final_result(dep_result, replace_existing=True)
+                                if dep_result.status != "completed":
+                                    dependency_recovery_failed_result = dep_result
+                                    break
+                            if dependency_recovery_failed_result is not None:
+                                failed_dep_id = dependency_recovery_failed_result.task_id
+                                dep_status = dependency_recovery_failed_result.status
+                                dep_reason = (
+                                    dependency_recovery_failed_result.content
+                                    or "upstream dependency recovery failed"
+                                )
+                                result = ExecutionResult(
+                                    plan_id=plan_id,
+                                    task_id=node.id,
+                                    status="skipped",
+                                    content=(
+                                        f"Blocked by dependencies after recovery attempt: "
+                                        f"task #{failed_dep_id} ended with status={dep_status}. "
+                                        f"Latest upstream detail: {dep_reason}"
+                                    ),
+                                    notes=[
+                                        "Automatic recovery stopped because an upstream dependency rerun did not complete successfully."
+                                    ],
+                                    metadata={
+                                        "blocked_by_dependencies": True,
+                                        "incomplete_dependencies": [failed_dep_id],
+                                        "dependency_recovery_failed": True,
+                                        "failed_dependency_status": dep_status,
+                                        "failed_dependency_task_id": failed_dep_id,
+                                    },
+                                    attempts=result.attempts,
+                                )
+                                result.duration_sec = (time.time() - start)
+                            else:
+                                # Retry the current task only when all selected
+                                # dependency reruns finished successfully.
+                                node.status = "pending"
+                                retry_result = self._run_task(plan_id, node, tree, cfg)
+                                result = retry_result
+                                result.duration_sec = (time.time() - start)
+                                if retry_result.status == "completed":
+                                    recovered = True
+                        else:
                             node.status = "pending"
                             retry_result = self._run_task(plan_id, node, tree, cfg)
+                            result = retry_result
+                            result.duration_sec = (time.time() - start)
                             if retry_result.status == "completed":
-                                summary.failed_task_ids.remove(node.id)
-                                summary.executed_task_ids.append(node.id)
                                 recovered = True
-                    except ImportError:
-                        logger.debug("failure_recovery module not available, skipping auto-recovery")
-                    except Exception as rec_err:
-                        logger.warning("Auto-recovery failed for task %s: %s", node.id, rec_err)
+                except ImportError:
+                    logger.debug("failure_recovery module not available, skipping auto-recovery")
+                except Exception as rec_err:
+                    logger.warning("Auto-recovery failed for task %s: %s", node.id, rec_err)
 
+            _record_final_result(result, replace_existing=True)
+
+            if result.status == "skipped":
+                if not recovered and cfg.dependency_throttle and result.metadata.get("blocked_by_dependencies"):
+                    logger.warning(
+                        "Stopping execution for plan %s: task %s blocked by unresolved dependencies",
+                        plan_id,
+                        node.id,
+                    )
+                    _log_job(
+                        "warning",
+                        "Plan execution stopped: dependency blockage unresolvable.",
+                        {"plan_id": plan_id, "blocked_task_id": node.id},
+                    )
+                    break
+            elif result.status != "completed":
                 if not recovered and cfg.dependency_throttle:
                     logger.warning(
                         "Stopping execution for plan %s due to failure on task %s",
@@ -775,6 +868,7 @@ class PlanExecutor:
                     )
                     break
 
+            # Log the FINAL status (after potential recovery)
             level = (
                 "success"
                 if result.status == "completed"
@@ -789,6 +883,7 @@ class PlanExecutor:
                     "plan_id": plan_id,
                     "task_id": node.id,
                     "status": result.status,
+                    "recovered": recovered,
                     "duration_sec": result.duration_sec,
                 },
             )
@@ -1181,6 +1276,7 @@ class PlanExecutor:
         self,
         dependencies: List[PlanNode],
         paper_context_paths: Sequence[str],
+        artifact_registry: Optional[Dict[int, List[str]]] = None,
     ) -> List[str]:
         seen: set[str] = set()
         ordered: List[str] = []
@@ -1190,7 +1286,7 @@ class PlanExecutor:
                 seen.add(text)
                 ordered.append(text)
         for dep in dependencies:
-            artifact_context = self._dependency_artifact_context(dep)
+            artifact_context = self._dependency_artifact_context(dep, artifact_registry)
             artifact_paths = artifact_context.get("artifact_paths") or []
             if not isinstance(artifact_paths, list):
                 continue
@@ -1324,8 +1420,9 @@ class PlanExecutor:
             for item in raw_paper_context_paths:
                 if isinstance(item, str) and item.strip():
                     paper_context_paths.append(item.strip())
+        _artifact_registry = session_context.get("_artifact_registry")
         for dep in dependencies:
-            artifact_context = self._dependency_artifact_context(dep)
+            artifact_context = self._dependency_artifact_context(dep, _artifact_registry)
             artifact_paths = artifact_context.get("artifact_paths") or []
             if isinstance(artifact_paths, list):
                 for artifact_path in artifact_paths:
@@ -1348,6 +1445,7 @@ class PlanExecutor:
         dependency_paths = self._collect_dependency_paths(
             dependencies,
             paper_context_paths,
+            artifact_registry=_artifact_registry,
         )
 
         if paper_mode:
@@ -1859,7 +1957,22 @@ class PlanExecutor:
         _visit(payload)
         return found[:40]
 
-    def _dependency_artifact_context(self, dep: PlanNode) -> Dict[str, Any]:
+    def _dependency_artifact_context(
+        self,
+        dep: PlanNode,
+        artifact_registry: Optional[Dict[int, List[str]]] = None,
+    ) -> Dict[str, Any]:
+        # --- Priority 1: artifact_registry (accumulated across tasks) ---
+        registry_paths = (artifact_registry or {}).get(dep.id)
+        if isinstance(registry_paths, list) and registry_paths:
+            return {
+                "artifact_paths": registry_paths[:40],
+                "deliverable_manifest": None,
+                "published_modules": [],
+                "source": "artifact_registry",
+            }
+
+        # --- Priority 2: parse from execution_result ---
         if not dep.execution_result:
             return {"artifact_paths": [], "deliverable_manifest": None}
         payload: Any = dep.execution_result
@@ -1885,6 +1998,7 @@ class PlanExecutor:
             "artifact_paths": artifact_paths[:40],
             "deliverable_manifest": manifest_path,
             "published_modules": deliverables.get("published_modules") if isinstance(deliverables.get("published_modules"), list) else [],
+            "source": "execution_result",
         }
 
     def _generate_plan_summary(
