@@ -133,7 +133,7 @@ class TaskVerificationService:
         checks_passed = 0
         checks_executed = 0
         for raw_check in checks:
-            outcome = self._run_check(raw_check, base_dir=base_dir)
+            outcome = self._run_check(raw_check, base_dir=base_dir, artifact_paths=local_artifact_paths)
             if outcome is None:
                 # Defensive: _run_check should never return None, but if it
                 # does, treat it as an error rather than silently skipping.
@@ -263,6 +263,7 @@ class TaskVerificationService:
         Supported shorthand formats:
             - ``file_exists:<path>``
             - ``file_nonempty:<path>``
+            - ``glob_nonempty:<glob>``
             - ``glob_count_at_least:<glob>:<min_count>``
             - ``text_contains:<path>:<pattern>``
             - ``json_field_equals:<path>:<key_path>:<expected>``
@@ -282,6 +283,9 @@ class TaskVerificationService:
             if check_type in ("file_exists", "file_nonempty"):
                 if rest:
                     checks.append({"type": check_type, "path": rest})
+            elif check_type == "glob_nonempty":
+                if rest:
+                    checks.append({"type": check_type, "glob": rest})
             elif check_type == "glob_count_at_least":
                 segments = rest.rsplit(":", maxsplit=1)
                 if len(segments) == 2:
@@ -390,7 +394,7 @@ class TaskVerificationService:
                 return Path(candidate_dirs[0])
         return Path.cwd()
 
-    def _run_check(self, raw_check: Any, *, base_dir: Path) -> Optional[Dict[str, Any]]:
+    def _run_check(self, raw_check: Any, *, base_dir: Path, artifact_paths: Sequence[str] = ()) -> Optional[Dict[str, Any]]:
         if not isinstance(raw_check, dict):
             return {
                 "type": "invalid_check",
@@ -410,11 +414,35 @@ class TaskVerificationService:
             if check_type == "file_exists":
                 path = self._resolve_path(raw_check.get("path"), base_dir)
                 success = path.exists()
+                if not success and artifact_paths:
+                    fallback = self._fallback_artifact_match(path, artifact_paths)
+                    if fallback:
+                        path = fallback
+                        success = True
                 return self._check_result(check_type, success, path=path, message=None if success else "File does not exist.")
             if check_type == "file_nonempty":
                 path = self._resolve_path(raw_check.get("path"), base_dir)
                 success = path.exists() and path.is_file() and path.stat().st_size > 0
+                if not success and artifact_paths:
+                    fallback = self._fallback_artifact_match(path, artifact_paths)
+                    if fallback and fallback.exists() and fallback.is_file() and fallback.stat().st_size > 0:
+                        path = fallback
+                        success = True
                 return self._check_result(check_type, success, path=path, message=None if success else "File is missing or empty.")
+            if check_type == "glob_nonempty":
+                raw_glob = raw_check.get("glob")
+                if not raw_glob:
+                    return {"type": check_type, "success": False, "message": "Check is missing `glob`."}
+                pattern = self._resolve_glob(raw_glob, base_dir)
+                matched = glob.glob(pattern, recursive=True)
+                success = len(matched) > 0
+                return {
+                    "type": check_type,
+                    "success": success,
+                    "glob": pattern,
+                    "count": len(matched),
+                    "message": None if success else "No files matched glob pattern.",
+                }
             if check_type == "glob_count_at_least":
                 pattern = self._resolve_glob(raw_check.get("glob"), base_dir)
                 min_count = int(raw_check.get("min_count") or 0)
@@ -430,6 +458,10 @@ class TaskVerificationService:
             if check_type == "text_contains":
                 path = self._resolve_path(raw_check.get("path"), base_dir)
                 pattern = str(raw_check.get("pattern") or "")
+                if not path.exists() and artifact_paths:
+                    fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
+                    if fallback:
+                        path = fallback
                 if not path.exists():
                     raise FileNotFoundError(f"File does not exist: {path}")
                 text = path.read_text(encoding="utf-8", errors="ignore")
@@ -510,6 +542,63 @@ class TaskVerificationService:
         if os.path.isabs(text):
             return text
         return str((base_dir / text).resolve())
+
+    def _fallback_artifact_match(
+        self,
+        expected_path: Path,
+        artifact_paths: Sequence[str],
+        *,
+        lenient: bool = True,
+    ) -> Optional[Path]:
+        """When a path-based check fails, search known artifact paths for a match.
+
+        Search order (most specific → least specific):
+        1. Exact basename match  (e.g. ``deg_metadata.csv``)
+        2. Same file extension   (e.g. any ``.csv`` among artifacts)
+        3. *Any* existing artifact file (only when ``lenient=True``)
+
+        Pass 3 is intentionally broad: LLM-predicted filenames at plan-creation
+        time often differ from what ``code_executor`` actually writes.  If the
+        task produced *any* output file, that is strong evidence the work was
+        done; a mismatch in the predicted name should not block completion.
+        """
+        if not artifact_paths:
+            return None
+
+        expected_name = expected_path.name.lower()
+        expected_ext = expected_path.suffix.lower()
+
+        existing: List[Path] = []
+        basename_hit: Optional[Path] = None
+        ext_hit: Optional[Path] = None
+
+        for raw in artifact_paths:
+            ap = Path(raw)
+            if not ap.exists() or not ap.is_file():
+                continue
+            existing.append(ap)
+            if basename_hit is None and ap.name.lower() == expected_name:
+                basename_hit = ap
+            if ext_hit is None and expected_ext and ap.suffix.lower() == expected_ext:
+                ext_hit = ap
+
+        if basename_hit:
+            logger.info("[Verification] Fallback basename match: %s -> %s", expected_path, basename_hit)
+            return basename_hit
+        if ext_hit:
+            logger.info("[Verification] Fallback extension match: %s -> %s", expected_path, ext_hit)
+            return ext_hit
+        if lenient and existing:
+            logger.info(
+                "[Verification] Fallback lenient match: expected %s not found; "
+                "%d artifact(s) exist, using: %s",
+                expected_path,
+                len(existing),
+                existing[0],
+            )
+            return existing[0]
+
+        return None
 
     @staticmethod
     def _check_result(

@@ -303,9 +303,12 @@ def test_native_execute_task_probe_only_cycle_injects_followthrough_nudge() -> N
         )
     )
 
-    assert "BLOCKED_DEPENDENCY" in result.final_answer
+    # After the fix: a single probe-only cycle should NOT force BLOCKED_DEPENDENCY.
+    # The nudge is still injected, but the AI's real answer ("done") is accepted.
+    assert result.final_answer == "done"
     assert len(llm.calls) >= 2
     second_call_messages = llm.calls[1]
+    # The followthrough nudge should still be injected after the first probe cycle.
     assert any(
         "不要继续做目录清点式" in str(message.get("content") or "")
         for message in second_call_messages
