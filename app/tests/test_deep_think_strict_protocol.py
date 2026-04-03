@@ -453,6 +453,49 @@ def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -
     assert len(llm.calls) == 3
 
 
+def test_blocked_dependency_answer_prefers_structured_document_reader_summary() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_RecordingNativeLLM([]),
+        available_tools=["document_reader", "code_executor"],
+        tool_executor=lambda *_args, **_kwargs: None,
+    )
+
+    noisy_tool_result_text = json.dumps(
+        {
+            "success": True,
+            "tool": "document_reader",
+            "result": {
+                "tool": "document_reader",
+                "success": True,
+                "text": "{\"tool\":\"code_executor\",\"task\":\"[OUTER AGENT EXECUTION CONTRACT] ...\"}",
+                "summary": "Successfully read text file, extracted 2048 characters",
+            },
+            "error": None,
+        },
+        ensure_ascii=False,
+    )
+
+    answer = agent._build_blocked_dependency_answer(
+        task_context=TaskExecutionContext(
+            task_id=6,
+            task_name="2.2 细胞类型注释",
+            task_instruction="继续执行细胞类型注释",
+        ),
+        user_query="继续执行 task 6",
+        tool_results=[
+            {
+                "tool_name": "document_reader",
+                "tool_params": {"operation": "read_text"},
+                "tool_result_text": noisy_tool_result_text,
+            }
+        ],
+    )
+
+    assert "Observed clues:" in answer
+    assert "Successfully read text file, extracted 2048 characters" in answer
+    assert "[OUTER AGENT EXECUTION CONTRACT]" not in answer
+
+
 def test_structured_plan_outcome_detects_created_plan() -> None:
     agent = _build_plan_agent(
         {
