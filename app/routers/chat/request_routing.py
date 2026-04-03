@@ -957,24 +957,6 @@ def resolve_request_routing(
             requires_plan_review=requires_plan_review,
             requires_plan_optimize=requires_plan_optimize,
         )
-    if simple_channel_allowed:
-        return RequestRoutingDecision(
-            request_tier=request_tier,
-            request_route_mode="auto_simple",
-            route_reason_codes=combined_reasons,
-            manual_deep_think=False,
-            thinking_visibility="visible",
-            effective_user_message=effective_user_message,
-            intent_type=intent_type,
-            capability_floor=capability_floor,
-            simple_channel_allowed=simple_channel_allowed,
-            subject_resolution=subject_resolution,
-            brevity_hint=brevity_hint,
-            requires_structured_plan=requires_structured_plan,
-            plan_request_mode=plan_request_mode,
-            requires_plan_review=requires_plan_review,
-            requires_plan_optimize=requires_plan_optimize,
-        )
     return RequestRoutingDecision(
         request_tier=request_tier,
         request_route_mode="auto_deepthink",
@@ -1119,13 +1101,16 @@ def determine_capability_floor(
     *,
     intent_type: IntentType,
 ) -> tuple[CapabilityFloor, List[str]]:
-    """Binary capability: chat (no tools) vs tools (all tools).
+    """Always grant tool access — the LLM decides which tools to use.
 
-    The LLM itself decides which tools to use — no dynamic filtering.
+    Previously ``intent_type == "chat"`` mapped to ``plain_chat`` (no tools),
+    which caused the LLM to hallucinate or produce useless "pick an option"
+    text when the routing heuristics mis-classified a real task as chat.
+    Since the cost of having tools available but unused is zero, we now
+    unconditionally return ``"tools"``.
+
     IntentType is preserved for prompt engineering and request_tier control.
     """
-    if intent_type == "chat":
-        return "plain_chat", []
     return "tools", [f"capability_{intent_type}"]
 
 
@@ -1242,15 +1227,11 @@ def resolve_subject_resolution(
 
 
 def _max_iterations_light(decision: RequestRoutingDecision) -> int:
-    """Plain chat stays 1–2 steps; tool-backed floors need room for tool + synthesis."""
-    if decision.capability_floor == "plain_chat":
-        return 1 if not decision.manual_deep_think else 2
+    """Light requests: 2 steps normally, 3 with manual deep think."""
     return 2 if not decision.manual_deep_think else 3
 
 
 def _max_iterations_standard(decision: RequestRoutingDecision) -> int:
-    if decision.capability_floor == "plain_chat":
-        return 2 if decision.manual_deep_think else 1
     return 3 if decision.manual_deep_think else 2
 
 
