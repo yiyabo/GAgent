@@ -532,3 +532,200 @@ def test_override_criteria_persisted_in_execution_result(tmp_path):
     persisted = json.loads(last_update["execution_result"])
     assert "acceptance_criteria" in persisted["metadata"]
     assert len(persisted["metadata"]["acceptance_criteria"]["checks"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# glob_nonempty check type
+# ---------------------------------------------------------------------------
+
+def test_glob_nonempty_check_passes(tmp_path):
+    """glob_nonempty should pass when at least one file matches."""
+    subdir = tmp_path / "output"
+    subdir.mkdir()
+    (subdir / "result.png").write_bytes(b"\x89PNG fake")
+    (subdir / "result2.png").write_bytes(b"\x89PNG fake2")
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=1, plan_id=1, name="Glob nonempty pass",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "glob_nonempty", "glob": str(subdir / "*.png")}],
+            }
+        },
+    )
+    fin = verifier.finalize_payload(
+        node,
+        {"status": "completed", "content": "ok", "metadata": {}},
+        execution_status="completed",
+    )
+    assert fin.final_status == "completed"
+    assert fin.verification["status"] == "passed"
+
+
+def test_glob_nonempty_check_fails(tmp_path):
+    """glob_nonempty should fail when no files match."""
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=1, plan_id=1, name="Glob nonempty fail",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "glob_nonempty", "glob": str(empty_dir / "*.csv")}],
+            }
+        },
+    )
+    fin = verifier.finalize_payload(
+        node,
+        {"status": "completed", "content": "ok", "metadata": {}},
+        execution_status="completed",
+    )
+    assert fin.final_status == "failed"
+    assert fin.verification["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Artifact path fallback for file_exists / file_nonempty
+# ---------------------------------------------------------------------------
+
+def test_file_exists_fallback_basename_match(tmp_path):
+    """file_exists should pass via basename fallback when path is wrong but file exists in artifacts."""
+    run_dir = tmp_path / "results" / "plan1_task1" / "run_abc123"
+    run_dir.mkdir(parents=True)
+    actual_file = run_dir / "report.csv"
+    actual_file.write_text("col1,col2\n1,2\n", encoding="utf-8")
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=1, plan_id=1, name="Basename fallback",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    # Wrong path, but basename matches an artifact
+                    {"type": "file_exists", "path": "results/output/report.csv"},
+                ],
+            }
+        },
+    )
+    fin = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "ok",
+            "metadata": {"artifact_paths": [str(actual_file)]},
+        },
+        execution_status="completed",
+    )
+    assert fin.final_status == "completed"
+    assert fin.verification["status"] == "passed"
+
+
+def test_file_nonempty_fallback_extension_match(tmp_path):
+    """file_nonempty should pass via extension fallback when basename differs."""
+    run_dir = tmp_path / "run_xyz"
+    run_dir.mkdir()
+    actual_file = run_dir / "DotPlot.png"
+    actual_file.write_bytes(b"\x89PNG fake data here")
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=1, plan_id=1, name="Extension fallback",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    # Different filename, same extension
+                    {"type": "file_nonempty", "path": "figures/expression_plot.png"},
+                ],
+            }
+        },
+    )
+    fin = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "ok",
+            "metadata": {"artifact_paths": [str(actual_file)]},
+        },
+        execution_status="completed",
+    )
+    assert fin.final_status == "completed"
+    assert fin.verification["status"] == "passed"
+
+
+def test_file_exists_fallback_lenient_different_extension(tmp_path):
+    """file_exists should pass via lenient fallback when even extension differs (task produced output)."""
+    run_dir = tmp_path / "run_xyz"
+    run_dir.mkdir()
+    actual_file = run_dir / "DotPlot.png"
+    actual_file.write_bytes(b"\x89PNG fake data")
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=1, plan_id=1, name="Lenient fallback",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    # Criteria says PDF but task produced PNG
+                    {"type": "file_exists", "path": "results/figures/marker_plots.pdf"},
+                ],
+            }
+        },
+    )
+    fin = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "ok",
+            "metadata": {"artifact_paths": [str(actual_file)]},
+        },
+        execution_status="completed",
+    )
+    assert fin.final_status == "completed"
+    assert fin.verification["status"] == "passed"
+
+
+def test_file_exists_no_fallback_without_artifacts(tmp_path):
+    """file_exists should still fail when there are no artifacts to fall back on."""
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=1, plan_id=1, name="No artifacts",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": str(tmp_path / "nonexistent.csv")},
+                ],
+            }
+        },
+    )
+    fin = verifier.finalize_payload(
+        node,
+        {"status": "completed", "content": "ok", "metadata": {}},
+        execution_status="completed",
+    )
+    assert fin.final_status == "failed"
+    assert fin.verification["status"] == "failed"
+
+
+def test_parse_shorthand_glob_nonempty():
+    """parse_shorthand_criteria should support glob_nonempty format."""
+    criteria = TaskVerificationService.parse_shorthand_criteria([
+        "glob_nonempty:**/*.png",
+        "glob_nonempty:results/**/*.csv",
+    ])
+    assert len(criteria["checks"]) == 2
+    assert criteria["checks"][0] == {"type": "glob_nonempty", "glob": "**/*.png"}
+    assert criteria["checks"][1] == {"type": "glob_nonempty", "glob": "results/**/*.csv"}
