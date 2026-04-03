@@ -691,6 +691,47 @@ class TestQwenCodeCLI:
         )
         assert "-d" in cmd
 
+    def test_build_qwen_code_command_includes_bound_task_context(self):
+        cmd = _build_qwen_code_command(
+            task="继续执行这个任务",
+            work_dir="/tmp/test",
+            file_prefix="run_001",
+            output_format="json",
+            allowed_tools=["Bash", "Read", "Write"],
+            allowed_dirs=["/data"],
+            model="qwen3.5-plus",
+            debug=False,
+            allowed_dirs_info="",
+            execution_spec={
+                "task_id": 6,
+                "task_name": "样本间整合与标准化",
+                "task_instruction": "使用上游 filtered h5ad 执行整合分析并输出 integrated_data.h5ad",
+                "dependency_outputs": [
+                    {
+                        "task_id": 3,
+                        "task_name": "细胞过滤和质量控制",
+                        "status": "completed",
+                        "artifact_paths": [
+                            "/abs/filtered_cancer1.h5ad",
+                            "/abs/filtered_cancer2.h5ad",
+                        ],
+                    }
+                ],
+                "acceptance_criteria": {
+                    "checks": [
+                        {"type": "file_exists", "path": "results/integrated_data.h5ad"},
+                    ]
+                },
+            },
+        )
+        prompt_text = cmd[cmd.index("-p") + 1]
+        assert "[BOUND TASK CONTEXT]" in prompt_text
+        assert "Task ID: 6" in prompt_text
+        assert "Task Name: 样本间整合与标准化" in prompt_text
+        assert "Atomic task objective:" in prompt_text
+        assert "/abs/filtered_cancer1.h5ad" in prompt_text
+        assert "file must exist: results/integrated_data.h5ad" in prompt_text
+
     def test_build_qwen_code_subprocess_env_sets_openai_vars(self, monkeypatch):
         monkeypatch.setenv("QWEN_API_KEY", "sk-test-key-123")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)

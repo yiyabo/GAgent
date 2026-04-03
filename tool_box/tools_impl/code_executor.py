@@ -460,8 +460,10 @@ def _build_qwen_code_command(
     model: Optional[str],
     debug: bool,
     allowed_dirs_info: str,
+    execution_spec: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Build the ``qwen`` CLI command for non-interactive prompt execution."""
+    task_text = _build_cli_task_contract(task, execution_spec)
     enhanced_task = (
         f"[ATOMIC TASK]\n"
         f"Execute the task below as a single unit. Multi-step code execution "
@@ -485,7 +487,7 @@ def _build_qwen_code_command(
         f"Workspace: {work_dir}\n"
         f"Output dirs: results/ code/ data/ docs/\n"
         f"File prefix: {file_prefix}\n"
-        f"Task:\n{task}\n\n"
+        f"Task:\n{task_text}\n\n"
         f"Deliverables:\n"
         f"1. Write scripts under code/ only when needed.\n"
         f"2. Run them and save outputs under results/, data/, or docs/.\n"
@@ -551,6 +553,88 @@ def _resolve_cli_retry_policy() -> tuple[int, float]:
             base_delay_s = 5.0
 
     return max_retries, base_delay_s
+
+
+def _format_cli_acceptance_checks(criteria: Optional[Dict[str, Any]]) -> List[str]:
+    if not isinstance(criteria, dict):
+        return []
+    checks = criteria.get("checks")
+    if not isinstance(checks, list):
+        return []
+
+    formatted: List[str] = []
+    for raw_check in checks[:12]:
+        if not isinstance(raw_check, dict):
+            continue
+        check_type = str(raw_check.get("type") or "").strip()
+        if check_type == "file_exists":
+            formatted.append(f"file must exist: {raw_check.get('path')}")
+        elif check_type == "file_nonempty":
+            formatted.append(f"file must be non-empty: {raw_check.get('path')}")
+        elif check_type == "glob_count_at_least":
+            formatted.append(
+                f"at least {raw_check.get('min_count')} matches for glob: {raw_check.get('glob')}"
+            )
+        elif check_type == "text_contains":
+            formatted.append(
+                f"text file {raw_check.get('path')} must contain: {raw_check.get('pattern')}"
+            )
+        else:
+            formatted.append(json.dumps(raw_check, ensure_ascii=False))
+    return formatted
+
+
+def _build_cli_task_contract(
+    task: str,
+    execution_spec: Optional[Dict[str, Any]],
+) -> str:
+    task_text = str(task or "").strip()
+    if not isinstance(execution_spec, dict):
+        return task_text
+
+    lines: List[str] = ["[BOUND TASK CONTEXT]"]
+    task_id = execution_spec.get("task_id")
+    task_name = str(execution_spec.get("task_name") or "").strip()
+    task_instruction = str(execution_spec.get("task_instruction") or "").strip()
+    dependency_outputs = execution_spec.get("dependency_outputs")
+
+    if task_id is not None:
+        lines.append(f"Task ID: {task_id}")
+    if task_name:
+        lines.append(f"Task Name: {task_name}")
+
+    if task_instruction:
+        lines.extend(["", "Atomic task objective:", task_instruction])
+
+    if task_text and task_text != task_instruction:
+        lines.extend(["", "Requested execution action:", task_text])
+
+    if isinstance(dependency_outputs, list) and dependency_outputs:
+        lines.extend(["", "Upstream dependencies:"])
+        for dep in dependency_outputs[:6]:
+            if not isinstance(dep, dict):
+                continue
+            dep_name = str(dep.get("task_name") or dep.get("task_id") or "unknown").strip()
+            dep_status = str(dep.get("status") or "unknown").strip()
+            artifact_paths = dep.get("artifact_paths")
+            if isinstance(artifact_paths, list) and artifact_paths:
+                joined = "; ".join(
+                    str(item).strip() for item in artifact_paths[:4] if str(item).strip()
+                )
+                if len(artifact_paths) > 4:
+                    joined += "; ..."
+                lines.append(f"- {dep_name} [{dep_status}] -> {joined}")
+            else:
+                lines.append(f"- {dep_name} [{dep_status}]")
+
+    formatted_checks = _format_cli_acceptance_checks(
+        execution_spec.get("acceptance_criteria")
+    )
+    if formatted_checks:
+        lines.extend(["", "Deterministic acceptance criteria:"])
+        lines.extend(f"- {item}" for item in formatted_checks)
+
+    return "\n".join(lines).strip() or task_text
 
 
 def _validate_scope_contract(
@@ -1360,6 +1444,7 @@ async def code_executor_handler(
             local_data_dir = str(default_data_dir)
 
         execution_spec = _build_execution_spec(resolved_plan_id, resolved_task_id)
+        cli_task = _build_cli_task_contract(task, execution_spec)
 
         if use_local_backend:
             local_result = await _execute_task_locally(
@@ -1454,6 +1539,7 @@ async def code_executor_handler(
                 model=effective_model,
                 debug=debug_log_path is not None,
                 allowed_dirs_info=allowed_dirs_info,
+                execution_spec=execution_spec,
             )
             _cli_label = "Qwen Code"
             _diag_key = subprocess_env.get("OPENAI_API_KEY", "")
@@ -1494,7 +1580,7 @@ async def code_executor_handler(
                 f"Workspace: {task_work_dir}\n"
                 f"Output dirs: results/ code/ data/ docs/\n"
                 f"File prefix: {file_prefix}\n"
-                f"Task:\n{task}\n\n"
+                f"Task:\n{cli_task}\n\n"
                 f"Deliverables:\n"
                 f"1. Write scripts under code/ only when needed.\n"
                 f"2. Run them and save outputs under results/, data/, or docs/.\n"
