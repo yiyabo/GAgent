@@ -388,6 +388,35 @@ def test_backend_switch_to_code_executor(make_executor, monkeypatch):
     assert result.success is True
 
 
+def test_backend_switch_to_qwen_code(make_executor, monkeypatch):
+    """When CODE_EXECUTION_BACKEND=qwen_code, delegates to legacy CLI method (shared path)."""
+    executor = make_executor()
+
+    monkeypatch.setattr(
+        "app.services.interpreter.task_executer.get_executor_settings",
+        lambda: MagicMock(code_execution_backend="qwen_code"),
+    )
+
+    legacy_called = {"value": False}
+
+    async def mock_legacy(self, *a, **kw):
+        legacy_called["value"] = True
+        return TaskExecutionResult(
+            task_type=TaskType.CODE_REQUIRED, success=True,
+        )
+
+    monkeypatch.setattr(
+        TaskExecutor, "_execute_code_task_legacy_cli", mock_legacy,
+    )
+
+    result = _run(executor._execute_code_task(
+        task_title="test", task_description="use qwen code",
+    ))
+
+    assert legacy_called["value"] is True
+    assert result.success is True
+
+
 # ---------------------------------------------------------------------------
 # Persistent code file: verify file is written and retained
 # ---------------------------------------------------------------------------

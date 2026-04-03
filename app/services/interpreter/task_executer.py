@@ -330,7 +330,7 @@ class TaskExecutor:
         or Claude Code CLI based on the CODE_EXECUTION_BACKEND setting.
         """
         settings = get_executor_settings()
-        if settings.code_execution_backend == "claude_code":
+        if settings.code_execution_backend in ("claude_code", "qwen_code"):
             return await self._execute_code_task_legacy_cli(
                 task_title, task_description, subtask_results,
                 is_visualization, task_id, skill_hints,

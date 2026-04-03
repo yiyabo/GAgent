@@ -229,6 +229,7 @@ _SUPPORTED_SETTING_SOURCES = {"user", "project", "local"}
 _SUPPORTED_AUTH_MODES = {"claude_login", "api_env"}
 _DEFAULT_API_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic"
 _DEFAULT_API_MODEL = "qwen3.5-plus"
+_DEFAULT_QC_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE: Sequence[str] = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
@@ -410,6 +411,96 @@ def _validate_api_mode_config(env_map: Dict[str, str]) -> Optional[str]:
         "Claude Code API mode requires credentials. "
         "Set CLAUDE_CODE_API_KEY or QWEN_API_KEY."
     )
+
+
+# ---------------------------------------------------------------------------
+# Qwen Code CLI helpers
+# ---------------------------------------------------------------------------
+
+def _build_qwen_code_subprocess_env() -> Dict[str, str]:
+    """Build a subprocess environment for Qwen Code CLI.
+
+    Uses OpenAI-compatible auth pointing at dashscope.
+    """
+    env_map = dict(os.environ)
+    # Inject OpenAI-compatible credentials for QC.
+    qwen_key = str(os.getenv("QWEN_API_KEY", "")).strip()
+    if qwen_key:
+        env_map["OPENAI_API_KEY"] = qwen_key
+    env_map["OPENAI_BASE_URL"] = (
+        str(os.getenv("QWEN_CODE_BASE_URL", "")).strip()
+        or _DEFAULT_QC_BASE_URL
+    )
+    # Remove variables that might confuse QC.
+    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+                "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE"):
+        env_map.pop(key, None)
+    return env_map
+
+
+def _validate_qwen_code_config(env_map: Dict[str, str]) -> Optional[str]:
+    """Return an error string if QC env is missing credentials."""
+    api_key = str(env_map.get("OPENAI_API_KEY", "")).strip()
+    if api_key:
+        return None
+    return (
+        "Qwen Code requires credentials. "
+        "Set QWEN_API_KEY in the environment."
+    )
+
+
+def _build_qwen_code_command(
+    *,
+    task: str,
+    work_dir: str,
+    file_prefix: str,
+    output_format: str,
+    allowed_tools: List[str],
+    allowed_dirs: List[str],
+    model: Optional[str],
+    debug: bool,
+    allowed_dirs_info: str,
+) -> List[str]:
+    """Build the ``qwen`` CLI command for non-interactive prompt execution."""
+    enhanced_task = (
+        f"[ATOMIC TASK]\n"
+        f"Execute only the task below. Do not broaden scope or create extra tasks.\n"
+        f"If the request still needs planning or decomposition, output exactly:\n"
+        f"  {_BLOCK_SCOPE_STATUS}\n"
+        f"  {_BLOCK_SCOPE_REASON}\n"
+        f"  DETAIL: <one sentence>\n"
+        f"Use direct execution; skip standalone environment diagnostics "
+        f"unless an observed failure requires them.\n\n"
+        f"Workspace: {work_dir}\n"
+        f"Output dirs: results/ code/ data/ docs/\n"
+        f"File prefix: {file_prefix}\n"
+        f"Task:\n{task}\n\n"
+        f"Deliverables:\n"
+        f"1. Write scripts under code/ only when needed.\n"
+        f"2. Run them and save outputs under results/, data/, or docs/.\n"
+        f"3. Put publishable deliverable code under results/submission/ "
+        f"or results/deliverable/.\n"
+        f"4. Return a summary of actual outputs produced."
+        f"{allowed_dirs_info}"
+    )
+    cmd: List[str] = [
+        "qwen",
+        "-p", enhanced_task,
+        "-o", output_format,
+        "--max-session-turns", "50",
+        "--approval-mode", "yolo",
+        "--auth-type", "openai",
+    ]
+    if model:
+        cmd.extend(["-m", model])
+    if debug:
+        cmd.append("-d")
+    # QC --allowed-tools takes space-separated array (not comma-joined).
+    if allowed_tools:
+        cmd.extend(["--allowed-tools"] + list(allowed_tools))
+    for abs_path in allowed_dirs:
+        cmd.extend(["--add-dir", abs_path])
+    return cmd
 
 
 def _coerce_positive_int(value: Any, *, field_name: str) -> Optional[int]:
@@ -1078,9 +1169,12 @@ async def code_executor_handler(
         Dict containing execution results
     """
     use_local_backend = False
+    use_qwen_code_backend = False
     try:
         from app.config.executor_config import get_executor_settings
-        use_local_backend = get_executor_settings().code_execution_backend == "local"
+        _backend = get_executor_settings().code_execution_backend
+        use_local_backend = _backend == "local"
+        use_qwen_code_backend = _backend == "qwen_code"
     except Exception:
         use_local_backend = False
 
@@ -1313,90 +1407,109 @@ async def code_executor_handler(
                 )
             return result_payload
 
-        effective_auth_mode = _resolve_auth_mode(auth_mode)
-        subprocess_env = _build_code_executor_subprocess_env(effective_auth_mode)
-        if effective_auth_mode == "api_env":
-            api_mode_error = _validate_api_mode_config(subprocess_env)
-            if api_mode_error:
-                return {
-                    "success": False,
-                    "error": api_mode_error,
-                    "task": task,
-                }
-        effective_model = (
-            str(
-                model
-                or os.getenv("CLAUDE_CODE_MODEL", "")
-                or os.getenv("CLAUDE_CODE_API_MODEL", "")
-                or subprocess_env.get("ANTHROPIC_MODEL", "")
-            ).strip()
-            or None
-        )
-        effective_setting_sources = _resolve_setting_sources(
-            setting_sources,
-            auth_mode=effective_auth_mode,
-        )
+        # ---- Build CLI command and environment ----
+        if use_qwen_code_backend:
+            # Qwen Code path
+            subprocess_env = _build_qwen_code_subprocess_env()
+            qc_config_error = _validate_qwen_code_config(subprocess_env)
+            if qc_config_error:
+                return {"success": False, "error": qc_config_error, "task": task}
+            effective_model = (
+                str(
+                    model
+                    or os.getenv("QWEN_CODE_MODEL", "")
+                    or os.getenv("QWEN_MODEL", "")
+                ).strip()
+                or None
+            )
+            cmd = _build_qwen_code_command(
+                task=task,
+                work_dir=str(task_work_dir),
+                file_prefix=file_prefix,
+                output_format=output_format,
+                allowed_tools=normalized_allowed_tools,
+                allowed_dirs=allowed_dirs,
+                model=effective_model,
+                debug=debug_log_path is not None,
+                allowed_dirs_info=allowed_dirs_info,
+            )
+            _cli_label = "Qwen Code"
+            _diag_key = subprocess_env.get("OPENAI_API_KEY", "")
+            _diag_url = subprocess_env.get("OPENAI_BASE_URL", "")
+            logger.info(
+                "[CODE_EXECUTOR_DIAG] backend=qwen_code api_key_len=%d base_url=%s model=%s",
+                len(_diag_key), _diag_url, effective_model or "(default)",
+            )
+        else:
+            # Legacy Claude Code path
+            effective_auth_mode = _resolve_auth_mode(auth_mode)
+            subprocess_env = _build_code_executor_subprocess_env(effective_auth_mode)
+            if effective_auth_mode == "api_env":
+                api_mode_error = _validate_api_mode_config(subprocess_env)
+                if api_mode_error:
+                    return {"success": False, "error": api_mode_error, "task": task}
+            effective_model = (
+                str(
+                    model
+                    or os.getenv("CLAUDE_CODE_MODEL", "")
+                    or os.getenv("CLAUDE_CODE_API_MODEL", "")
+                    or subprocess_env.get("ANTHROPIC_MODEL", "")
+                ).strip()
+                or None
+            )
+            effective_setting_sources = _resolve_setting_sources(
+                setting_sources, auth_mode=effective_auth_mode,
+            )
+            enhanced_task = (
+                f"[ATOMIC TASK]\n"
+                f"Execute only the task below. Do not broaden scope or create extra tasks.\n"
+                f"If the request still needs planning or decomposition, output exactly:\n"
+                f"  {_BLOCK_SCOPE_STATUS}\n"
+                f"  {_BLOCK_SCOPE_REASON}\n"
+                f"  DETAIL: <one sentence>\n"
+                f"Use direct execution; skip standalone environment diagnostics "
+                f"unless an observed failure requires them.\n\n"
+                f"Workspace: {task_work_dir}\n"
+                f"Output dirs: results/ code/ data/ docs/\n"
+                f"File prefix: {file_prefix}\n"
+                f"Task:\n{task}\n\n"
+                f"Deliverables:\n"
+                f"1. Write scripts under code/ only when needed.\n"
+                f"2. Run them and save outputs under results/, data/, or docs/.\n"
+                f"3. Put publishable deliverable code under results/submission/ "
+                f"or results/deliverable/.\n"
+                f"4. Return a summary of actual outputs produced."
+                f"{allowed_dirs_info}"
+            )
+            cmd = [
+                'claude', '-p', enhanced_task,
+                '--output-format', output_format,
+                '--max-turns', '50',
+            ]
+            if debug_log_path is not None:
+                cmd.extend(['--debug-file', str(debug_log_path)])
+            if effective_model:
+                cmd.extend(['--model', effective_model])
+            if effective_setting_sources:
+                cmd.extend(['--setting-sources', effective_setting_sources])
+            cmd.extend(['--allowed-tools', ",".join(normalized_allowed_tools)])
+            for abs_path in allowed_dirs:
+                cmd.extend(['--add-dir', abs_path])
+            if skip_permissions:
+                cmd.append('--dangerously-skip-permissions')
+            _cli_label = "Claude Code"
+            _diag_key = subprocess_env.get("ANTHROPIC_API_KEY", "")
+            _diag_url = subprocess_env.get("ANTHROPIC_BASE_URL", "")
+            _diag_model = subprocess_env.get("ANTHROPIC_MODEL", "")
+            _diag_small_fast_model = subprocess_env.get("ANTHROPIC_SMALL_FAST_MODEL", "")
+            logger.info(
+                "[CODE_EXECUTOR_DIAG] backend=claude_code api_key_len=%d base_url=%s model=%s "
+                "small_fast_model=%s auth_mode=%s setting_sources=%s",
+                len(_diag_key), _diag_url, _diag_model, _diag_small_fast_model,
+                effective_auth_mode, effective_setting_sources,
+            )
 
-        enhanced_task = (
-            f"[ATOMIC TASK]\n"
-            f"Execute only the task below. Do not broaden scope or create extra tasks.\n"
-            f"If the request still needs planning or decomposition, output exactly:\n"
-            f"  {_BLOCK_SCOPE_STATUS}\n"
-            f"  {_BLOCK_SCOPE_REASON}\n"
-            f"  DETAIL: <one sentence>\n"
-            f"Use direct execution; skip standalone environment diagnostics unless an observed failure requires them.\n\n"
-            f"Workspace: {task_work_dir}\n"
-            f"Output dirs: results/ code/ data/ docs/\n"
-            f"File prefix: {file_prefix}\n"
-            f"Task:\n{task}\n\n"
-            f"Deliverables:\n"
-            f"1. Write scripts under code/ only when needed.\n"
-            f"2. Run them and save outputs under results/, data/, or docs/.\n"
-            f"3. Put publishable deliverable code under results/submission/ or results/deliverable/.\n"
-            f"4. Return a summary of actual outputs produced."
-            f"{allowed_dirs_info}"
-        )
-        
-        # Build command
-        cmd = [
-            'claude',
-            '-p',  # Print mode (non-interactive)
-            enhanced_task,
-            '--output-format', output_format,
-            '--max-turns', '50',  # Allow more turns for complex tasks
-        ]
-
-        if debug_log_path is not None:
-            cmd.extend(['--debug-file', str(debug_log_path)])
-
-        if effective_model:
-            cmd.extend(['--model', effective_model])
-        if effective_setting_sources:
-            cmd.extend(['--setting-sources', effective_setting_sources])
-        
-        # Enforce strict allowlist; never run Claude with unrestricted tool set.
-        cmd.extend(['--allowed-tools', ",".join(normalized_allowed_tools)])
-        
-        # Add directory access permissions (paths relative to project root)
-        for abs_path in allowed_dirs:
-            cmd.extend(['--add-dir', abs_path])
-        
-        # Skip permission checks (research environment)
-        if skip_permissions:
-            cmd.append('--dangerously-skip-permissions')
-        
-        logger.info(f"Executing Claude CLI in task workspace: {task_work_dir}")
-
-        # Diagnostic: log key env vars (redacted) to debug API connectivity issues.
-        _diag_key = subprocess_env.get("ANTHROPIC_API_KEY", "")
-        _diag_url = subprocess_env.get("ANTHROPIC_BASE_URL", "")
-        _diag_model = subprocess_env.get("ANTHROPIC_MODEL", "")
-        _diag_small_fast_model = subprocess_env.get("ANTHROPIC_SMALL_FAST_MODEL", "")
-        logger.info(
-            "[CODE_EXECUTOR_DIAG] api_key_len=%d base_url=%s model=%s small_fast_model=%s auth_mode=%s setting_sources=%s",
-            len(_diag_key), _diag_url, _diag_model, _diag_small_fast_model,
-            effective_auth_mode, effective_setting_sources,
-        )
+        logger.info("[CODE_EXECUTOR_CLI] Executing %s in: %s", _cli_label, task_work_dir)
 
         # Retry logic for transient provider / CLI failures.
         max_cli_retries, cli_retry_base_delay_s = _resolve_cli_retry_policy()
@@ -1575,17 +1688,17 @@ async def code_executor_handler(
         # Should not trigger since timeout=None, but kept as a safeguard
         return {
             "success": False,
-            "error": "Claude CLI execution was interrupted unexpectedly",
+            "error": "Code agent CLI execution was interrupted unexpectedly",
             "task": task,
         }
     except FileNotFoundError:
         return {
             "success": False,
-            "error": "Claude CLI not found. Please install it: npm install -g @anthropic-ai/claude-code",
+            "error": "Code agent CLI (claude/qwen) not found. Install claude-code or qwen-code.",
             "task": task,
         }
     except Exception as e:
-        logger.exception(f"Claude CLI execution failed: {e}")
+        logger.exception(f"Code agent CLI execution failed: {e}")
         return {
             "success": False,
             "error": str(e),
