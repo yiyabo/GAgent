@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 
+from .guardrail_handlers import resolve_explicit_task_scope_target
 from .session_helpers import _find_key_recursive
 
 if TYPE_CHECKING:
@@ -238,19 +239,29 @@ def resolve_code_executor_task_context(agent: Any) -> Tuple[Optional["PlanNode"]
     if plan_id is None:
         return None, "missing_plan_binding"
 
-    raw_task_id = agent.extra_context.get("current_task_id")
-    if raw_task_id is None:
-        return None, "missing_target_task"
-
-    try:
-        task_id = int(raw_task_id)
-    except (TypeError, ValueError):
-        return None, "invalid_target_task"
-
     try:
         tree = agent.plan_session.repo.get_plan_tree(plan_id)
     except Exception:
         return None, "plan_tree_unavailable"
+
+    explicit_task_ids = agent.extra_context.get("explicit_task_ids")
+    if isinstance(explicit_task_ids, list) and explicit_task_ids:
+        explicit_target = resolve_explicit_task_scope_target(tree, explicit_task_ids)
+        if explicit_target is None:
+            return None, "explicit_task_scope_blocked"
+        agent.extra_context["current_task_id"] = int(explicit_target)
+        agent.extra_context["task_id"] = int(explicit_target)
+        agent.extra_context["_current_task_source"] = "request"
+        task_id = explicit_target
+    else:
+        raw_task_id = agent.extra_context.get("current_task_id")
+        if raw_task_id is None:
+            return None, "missing_target_task"
+
+        try:
+            task_id = int(raw_task_id)
+        except (TypeError, ValueError):
+            return None, "invalid_target_task"
 
     if not tree.has_node(task_id):
         return None, "target_task_not_found"

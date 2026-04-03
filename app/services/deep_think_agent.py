@@ -133,6 +133,11 @@ class TaskExecutionContext:
     context_summary: Optional[str] = None
     context_sections: List[Dict[str, Any]] = field(default_factory=list)
     paper_context_paths: List[str] = field(default_factory=list)
+    # Explicit task selection: set when the user names specific task IDs in the message.
+    # When explicit_task_override=True the agent must only execute within the declared
+    # set and must NOT fall back to prose status summaries or plan-optimise suggestions.
+    explicit_task_ids: List[int] = field(default_factory=list)
+    explicit_task_override: bool = False
 
 
 def detect_reasoning_language(text: str) -> str:
@@ -2070,7 +2075,33 @@ class DeepThinkAgent:
             final_answer = ""
 
         # ---- Forced synthesis: one more LLM call with all evidence before falling back ----
-        if not final_answer and thinking_steps:
+        # Guard: only emit the "整集阻塞" blocker when the router has explicitly confirmed
+        # (via explicit_scope_all_blocked in context) that every task in the named set is
+        # unreachable.  Using explicit_task_override alone is insufficient — tools may have
+        # run successfully but the LLM simply didn't emit a final answer, in which case the
+        # normal forced-synthesis path is still appropriate.
+        _explicit_override = task_context is not None and bool(
+            getattr(task_context, "explicit_task_override", False)
+        )
+        _scope_all_blocked = bool((context or {}).get("explicit_scope_all_blocked"))
+        if not final_answer and _explicit_override and _scope_all_blocked:
+            _blocked_ids = list(getattr(task_context, "explicit_task_ids", None) or [])
+            _id_str = ", ".join(str(t) for t in _blocked_ids) if _blocked_ids else "the requested tasks"
+            final_answer = (
+                f"Tasks [{_id_str}] could not be executed in this turn: "
+                f"all tasks in the explicit set are blocked by unmet out-of-scope dependencies. "
+                f"Please check the dependency status of the listed tasks and retry "
+                f"after resolving any upstream blockers."
+            )
+            fallback_used = True
+            logger.info(
+                "[DEEP_THINK_NATIVE] explicit_scope_all_blocked: skipping forced synthesis, "
+                "emitting structured blocker for task_ids=%s",
+                _blocked_ids,
+            )
+            if self.on_final_delta:
+                await self._stream_final_answer(final_answer)
+        elif not final_answer and thinking_steps:
             logger.info("[DEEP_THINK_NATIVE] No final answer after %d iterations; attempting forced synthesis", iteration)
             final_answer = await self._forced_synthesis_from_steps(thinking_steps, user_query, messages)
             if final_answer:

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from app.services.llm.structured_response import LLMAction, LLMStructuredResponse
 
 from .guardrails import (
+    extract_task_ids_from_text,
     extract_review_topic,
     explicit_manuscript_request,
     extract_declared_absolute_paths,
@@ -511,6 +512,14 @@ def resolve_followthrough_target_task_id(
     user_message: str,
     reply_text: str,
 ) -> Optional[int]:
+    explicit_scope_ids = agent.extra_context.get("explicit_task_ids")
+    if isinstance(explicit_scope_ids, list) and explicit_scope_ids:
+        return resolve_explicit_task_scope_target(tree, explicit_scope_ids)
+
+    explicit_task_ids = extract_task_ids_from_text(user_message)
+    if explicit_task_ids:
+        return resolve_explicit_task_scope_target(tree, explicit_task_ids)
+
     explicit_task_id = extract_task_id_from_text(user_message)
     if explicit_task_id is not None:
         if not tree.has_node(explicit_task_id):
@@ -550,6 +559,85 @@ def resolve_followthrough_target_task_id(
             continue
         if is_task_executable_status(node.status):
             return node.id
+    return None
+
+
+def resolve_explicit_task_scope_target(
+    tree: "PlanTree",
+    explicit_task_ids: List[int],
+) -> Optional[int]:
+    ordered_ids: List[int] = []
+    seen: set[int] = set()
+    for raw_task_id in explicit_task_ids:
+        try:
+            task_id = int(raw_task_id)
+        except (TypeError, ValueError):
+            continue
+        if task_id <= 0 or task_id in seen or not tree.has_node(task_id):
+            continue
+        seen.add(task_id)
+        ordered_ids.append(task_id)
+
+    if not ordered_ids:
+        return None
+
+    explicit_leaf_ids = [
+        task_id for task_id in ordered_ids if not tree.children_ids(task_id)
+    ]
+    if explicit_leaf_ids:
+        ordered_ids = explicit_leaf_ids
+
+    scope_ids = set(ordered_ids)
+    ordered_with_deps: List[int] = []
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def _visit(task_id: int) -> None:
+        if task_id in visited or task_id in visiting or not tree.has_node(task_id):
+            return
+        visiting.add(task_id)
+        node = tree.get_node(task_id)
+        for dep_id in getattr(node, "dependencies", []) or []:
+            try:
+                dep_id_int = int(dep_id)
+            except (TypeError, ValueError):
+                continue
+            if dep_id_int in scope_ids:
+                _visit(dep_id_int)
+        visiting.remove(task_id)
+        visited.add(task_id)
+        ordered_with_deps.append(task_id)
+
+    for task_id in ordered_ids:
+        _visit(task_id)
+
+    for task_id in ordered_with_deps:
+        node = tree.get_node(task_id)
+        if tree.children_ids(task_id):
+            continue
+        if not is_task_executable_status(node.status):
+            continue
+
+        unmet_in_scope = False
+        unmet_out_of_scope = False
+        for dep_id in getattr(node, "dependencies", []) or []:
+            try:
+                dep_id_int = int(dep_id)
+            except (TypeError, ValueError):
+                continue
+            if not tree.has_node(dep_id_int):
+                continue
+            dep_node = tree.get_node(dep_id_int)
+            if not is_task_executable_status(dep_node.status):
+                continue
+            if dep_id_int in scope_ids:
+                unmet_in_scope = True
+            else:
+                unmet_out_of_scope = True
+        if unmet_out_of_scope or unmet_in_scope:
+            continue
+        return task_id
+
     return None
 
 
