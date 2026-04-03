@@ -645,14 +645,9 @@ class DeepThinkAgent:
 
         clues: List[str] = []
         for item in tool_results:
-            payload = item.get("tool_result")
-            if isinstance(payload, dict):
-                summary = str(payload.get("summary") or payload.get("error") or "").strip()
-                if summary:
-                    clues.append(summary)
-            result_text = str(item.get("tool_result_text") or "").strip()
-            if result_text and not clues:
-                clues.append(result_text)
+            clue = self._extract_blocked_dependency_clue(item)
+            if clue:
+                clues.append(clue)
             if len(clues) >= 2:
                 break
         clue_text = "\n".join(f"- {self._clip_reference_text(clue, limit=220)}" for clue in clues[:2])
@@ -677,6 +672,47 @@ class DeepThinkAgent:
         if clue_text:
             return f"{base}\nObserved clues:\n{clue_text}"
         return base
+
+    @classmethod
+    def _extract_blocked_dependency_clue(cls, item: Dict[str, Any]) -> str:
+        payload = item.get("tool_result")
+        clue = cls._summarize_tool_payload_for_clue(payload)
+        if clue:
+            return clue
+
+        result_text = str(item.get("tool_result_text") or "").strip()
+        if not result_text:
+            return ""
+        try:
+            parsed = json.loads(result_text)
+        except Exception:
+            parsed = None
+        clue = cls._summarize_tool_payload_for_clue(parsed)
+        if clue:
+            return clue
+
+        stripped = result_text.lstrip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            return ""
+        return result_text
+
+    @classmethod
+    def _summarize_tool_payload_for_clue(cls, payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+
+        for key in ("summary", "error", "message"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+
+        nested = payload.get("result")
+        if isinstance(nested, dict):
+            nested_summary = cls._summarize_tool_payload_for_clue(nested)
+            if nested_summary:
+                return nested_summary
+
+        return ""
 
     @staticmethod
     def _looks_like_blocked_dependency_answer(text: str) -> bool:
