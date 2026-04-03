@@ -145,9 +145,39 @@ def requests_abstract_only(user_message: str) -> bool:
     ) or any(token in text for token in ("只写 abstract", "只写摘要", "只做摘要", "仅摘要"))
 
 
-def extract_task_id_from_text(text: str) -> Optional[int]:
+def extract_task_ids_from_text(text: str) -> List[int]:
     if not text:
-        return None
+        return []
+
+    ordered_ids: List[int] = []
+    seen: set[int] = set()
+
+    def _append(raw: str) -> None:
+        try:
+            task_id = int(raw)
+        except (TypeError, ValueError):
+            return
+        if task_id <= 0 or task_id in seen:
+            return
+        seen.add(task_id)
+        ordered_ids.append(task_id)
+
+    multi_patterns = [
+        r"(?:任务|task|subtasks?|子任务)\s*[#:=：]?\s*((?:\d+\s*[/,，、]\s*)+\d+)",
+        r"(?<!\d)((?:\d+\s*[/,，、]\s*)+\d+)(?!\d)",
+    ]
+    for pattern in multi_patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            raw_group = str(match.group(1) or "").strip()
+            if not raw_group:
+                continue
+            for token in re.split(r"\s*[/,，、]\s*", raw_group):
+                if token:
+                    _append(token)
+
+    if ordered_ids:
+        return ordered_ids
+
     patterns = [
         r"(?:task[_\s-]?id|task)\s*[#:=]?\s*(\d+)",
         r"任务\s*[#:=：]?\s*(\d+)",
@@ -158,10 +188,16 @@ def extract_task_id_from_text(text: str) -> Optional[int]:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if not match:
             continue
-        try:
-            return int(match.group(1))
-        except (TypeError, ValueError):
-            continue
+        _append(str(match.group(1)))
+        if ordered_ids:
+            break
+    return ordered_ids
+
+
+def extract_task_id_from_text(text: str) -> Optional[int]:
+    task_ids = extract_task_ids_from_text(text)
+    if task_ids:
+        return task_ids[0]
     return None
 
 
