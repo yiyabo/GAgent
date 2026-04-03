@@ -603,11 +603,33 @@ def resolve_explicit_task_scope_target(
     if not ordered_ids:
         return None
 
-    explicit_leaf_ids = [
-        task_id for task_id in ordered_ids if not tree.children_ids(task_id)
-    ]
-    if explicit_leaf_ids:
-        ordered_ids = explicit_leaf_ids
+    # Expand any composite (non-leaf) explicit task to its atomic leaf
+    # descendants.  Previous code only filtered *already-leaf* IDs and skipped
+    # expansion entirely when every explicit ID was a composite task — meaning
+    # "execute task 6" always returned None when task 6 had children.
+    expanded_ids: List[int] = []
+    expanded_seen: set[int] = set()
+    for task_id in ordered_ids:
+        children = tree.children_ids(task_id)
+        if not children:
+            if task_id not in expanded_seen:
+                expanded_seen.add(task_id)
+                expanded_ids.append(task_id)
+        else:
+            queue = list(children)
+            while queue:
+                child_id = queue.pop(0)
+                if not tree.has_node(child_id):
+                    continue
+                child_children = tree.children_ids(child_id)
+                if child_children:
+                    queue.extend(child_children)
+                else:
+                    if child_id not in expanded_seen:
+                        expanded_seen.add(child_id)
+                        expanded_ids.append(child_id)
+    if expanded_ids:
+        ordered_ids = expanded_ids
 
     scope_ids = set(ordered_ids)
     ordered_with_deps: List[int] = []
