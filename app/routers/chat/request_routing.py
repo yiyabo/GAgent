@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 
+from .guardrails import extract_task_ids_from_text
 from .subject_identity import (
     build_subject_aliases,
     canonicalize_subject_ref,
@@ -788,6 +789,8 @@ class RequestRoutingDecision:
     simple_channel_allowed: bool
     subject_resolution: Dict[str, Any]
     brevity_hint: bool
+    explicit_task_ids: List[int]
+    explicit_task_override: bool
     requires_structured_plan: bool = False
     plan_request_mode: Optional[PlanRequestMode] = None
     requires_plan_review: bool = False
@@ -808,6 +811,8 @@ class RequestRoutingDecision:
             "simple_channel_allowed": self.simple_channel_allowed,
             "subject_resolution": dict(self.subject_resolution),
             "brevity_hint": self.brevity_hint,
+            "explicit_task_ids": list(self.explicit_task_ids),
+            "explicit_task_override": self.explicit_task_override,
             "requires_structured_plan": self.requires_structured_plan,
             "plan_request_mode": self.plan_request_mode,
             "requires_plan_review": self.requires_plan_review,
@@ -828,6 +833,8 @@ class RequestTierProfile:
     intent_type: IntentType
     capability_floor: CapabilityFloor
     simple_channel_allowed: bool
+    explicit_task_ids: List[int]
+    explicit_task_override: bool
     requires_structured_plan: bool = False
     plan_request_mode: Optional[PlanRequestMode] = None
     requires_plan_review: bool = False
@@ -843,6 +850,8 @@ class RequestTierProfile:
             "intent_type": self.intent_type,
             "capability_floor": self.capability_floor,
             "simple_channel_allowed": self.simple_channel_allowed,
+            "explicit_task_ids": list(self.explicit_task_ids),
+            "explicit_task_override": self.explicit_task_override,
             "requires_structured_plan": self.requires_structured_plan,
             "plan_request_mode": self.plan_request_mode,
             "requires_plan_review": self.requires_plan_review,
@@ -913,21 +922,29 @@ def resolve_request_routing(
     combined_reasons = list(
         dict.fromkeys(subject_reasons + intent_reasons + capability_reasons + reasons)
     )
+    explicit_task_ids = extract_task_ids_from_text(effective_user_message)
+    explicit_task_override = bool(explicit_task_ids)
+    if explicit_task_override:
+        combined_reasons.append("explicit_task_override")
     simple_channel_allowed = (not manual) and capability_floor == "plain_chat"
     context_plan_id = (context or {}).get("plan_id")
     context_task_id = (context or {}).get("current_task_id")
     effective_plan_bound = plan_id is not None or context_plan_id is not None
     effective_task_bound = current_task_id is not None or context_task_id is not None
-    requires_plan_review = _has_explicit_plan_review_request(
-        effective_user_message,
-        plan_bound=effective_plan_bound,
-        task_bound=effective_task_bound,
-    )
-    requires_plan_optimize = _has_explicit_plan_optimize_request(
-        effective_user_message,
-        plan_bound=effective_plan_bound,
-        task_bound=effective_task_bound,
-    )
+    if explicit_task_override:
+        requires_plan_review = False
+        requires_plan_optimize = False
+    else:
+        requires_plan_review = _has_explicit_plan_review_request(
+            effective_user_message,
+            plan_bound=effective_plan_bound,
+            task_bound=effective_task_bound,
+        )
+        requires_plan_optimize = _has_explicit_plan_optimize_request(
+            effective_user_message,
+            plan_bound=effective_plan_bound,
+            task_bound=effective_task_bound,
+        )
     plan_request_mode = _resolve_plan_request_mode(
         effective_user_message,
         plan_bound=effective_plan_bound,
@@ -952,6 +969,8 @@ def resolve_request_routing(
             simple_channel_allowed=simple_channel_allowed,
             subject_resolution=subject_resolution,
             brevity_hint=brevity_hint,
+            explicit_task_ids=explicit_task_ids,
+            explicit_task_override=explicit_task_override,
             requires_structured_plan=requires_structured_plan,
             plan_request_mode=plan_request_mode,
             requires_plan_review=requires_plan_review,
@@ -969,6 +988,8 @@ def resolve_request_routing(
         simple_channel_allowed=simple_channel_allowed,
         subject_resolution=subject_resolution,
         brevity_hint=brevity_hint,
+        explicit_task_ids=explicit_task_ids,
+        explicit_task_override=explicit_task_override,
         requires_structured_plan=requires_structured_plan,
         plan_request_mode=plan_request_mode,
         requires_plan_review=requires_plan_review,
@@ -1247,6 +1268,8 @@ def build_request_tier_profile(
         intent_type=decision.intent_type,
         capability_floor=decision.capability_floor,
         simple_channel_allowed=decision.simple_channel_allowed,
+        explicit_task_ids=list(decision.explicit_task_ids),
+        explicit_task_override=decision.explicit_task_override,
         requires_structured_plan=decision.requires_structured_plan,
         plan_request_mode=decision.plan_request_mode,
         requires_plan_review=decision.requires_plan_review,

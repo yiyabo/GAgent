@@ -180,6 +180,12 @@ def _build_deep_think_task_context(
         plan_outline=str(getattr(tree, "title", "") or "").strip() or None,
         context_summary=context_summary,
         context_sections=context_sections,
+        explicit_task_ids=[
+            int(item)
+            for item in (getattr(agent, "extra_context", {}) or {}).get("explicit_task_ids", []) or []
+            if str(item).strip().isdigit()
+        ],
+        explicit_task_override=bool((getattr(agent, "extra_context", {}) or {}).get("explicit_task_override")),
     )
 
 
@@ -225,6 +231,7 @@ from .guardrail_handlers import (
     first_executable_atomic_descendant as _first_executable_atomic_descendant_fn,
     infer_plan_seed_message as _infer_plan_seed_message_fn,
     match_atomic_task_by_keywords as _match_atomic_task_by_keywords_fn,
+    resolve_explicit_task_scope_target as _resolve_explicit_task_scope_target_fn,
     resolve_followthrough_target_task_id as _resolve_followthrough_target_task_id_fn,
 )
 from .guardrails import (
@@ -1232,6 +1239,11 @@ class StructuredChatAgent:
                 "plan_tree_unavailable": "Unable to load the current plan tree. Please retry after refreshing plan state.",
                 "target_task_not_found": "The selected task was not found in the current plan.",
                 "target_task_not_atomic": "code_executor can only execute atomic tasks. Please decompose this task and execute a leaf task.",
+                "explicit_task_scope_blocked": (
+                    "All tasks in the explicit set are currently blocked by unmet out-of-scope "
+                    "dependencies. Report this blocker directly with the specific task IDs — "
+                    "do NOT generate a status summary or plan optimisation suggestion."
+                ),
             }
             return AgentStep(
                 action=action,
@@ -2245,6 +2257,38 @@ class StructuredChatAgent:
                                 )
                                 return blocked_payload
 
+                        if name == "code_executor" and self.extra_context.get(
+                            "explicit_scope_all_blocked"
+                        ):
+                            blocked_ids = (
+                                self.extra_context.get("explicit_scope_blocked_task_ids") or []
+                            )
+                            id_list = (
+                                ", ".join(str(t) for t in blocked_ids)
+                                if blocked_ids
+                                else "the requested tasks"
+                            )
+                            summary = (
+                                f"Tasks [{id_list}] cannot be executed: all tasks in the "
+                                f"explicit set are blocked by unmet out-of-scope dependencies. "
+                                f"Do NOT generate a status summary or plan optimisation "
+                                f"suggestion — report this blocker with the specific task IDs."
+                            )
+                            logger.warning(
+                                "[DeepThink] Blocked code_executor: explicit scope all blocked "
+                                "for task_ids=%s",
+                                blocked_ids,
+                            )
+                            return {
+                                "success": False,
+                                "tool": "code_executor",
+                                "error": summary,
+                                "summary": summary,
+                                "blocked_reason": "explicit_task_scope_blocked",
+                                "blocked_task_ids": blocked_ids,
+                                "error_category": "blocked_dependency",
+                            }
+
                         if (
                             name == "code_executor"
                             and bio_failure_active
@@ -3230,6 +3274,8 @@ class StructuredChatAgent:
                 "simple_channel_allowed": routing_decision.simple_channel_allowed,
                 "subject_resolution": dict(routing_decision.subject_resolution),
                 "brevity_hint": routing_decision.brevity_hint,
+                "explicit_task_ids": list(routing_decision.explicit_task_ids),
+                "explicit_task_override": routing_decision.explicit_task_override,
                 "requires_structured_plan": routing_decision.requires_structured_plan,
                 "plan_request_mode": routing_decision.plan_request_mode,
                 "requires_plan_review": routing_decision.requires_plan_review,
@@ -3237,6 +3283,39 @@ class StructuredChatAgent:
                 "current_user_turn_index": _current_user_turn_index_from_history(self.history),
             }
         )
+        if routing_decision.explicit_task_override:
+            self.extra_context["_current_task_source"] = "request"
+            if self.plan_session.plan_id is not None:
+                try:
+                    tree = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id)
+                    target_task_id = _resolve_explicit_task_scope_target_fn(
+                        tree,
+                        list(routing_decision.explicit_task_ids),
+                    )
+                except Exception:
+                    target_task_id = None
+                if target_task_id is not None:
+                    self.extra_context["current_task_id"] = int(target_task_id)
+                    self.extra_context["task_id"] = int(target_task_id)
+                    # Clear any stale blocked flag from a previous turn
+                    self.extra_context.pop("explicit_scope_all_blocked", None)
+                    self.extra_context.pop("explicit_scope_blocked_task_ids", None)
+                else:
+                    # All tasks in the explicit set are currently unexecutable;
+                    # store a flag so tool_wrapper can short-circuit code_executor
+                    # and return a structured blocker instead of prose synthesis.
+                    self.extra_context["explicit_scope_all_blocked"] = True
+                    self.extra_context["explicit_scope_blocked_task_ids"] = list(
+                        routing_decision.explicit_task_ids
+                    )
+                    logger.info(
+                        "[CHAT][ROUTING][EXPLICIT_SCOPE] All tasks blocked; "
+                        "explicit_task_ids=%s plan_id=%s",
+                        list(routing_decision.explicit_task_ids),
+                        self.plan_session.plan_id,
+                    )
+        else:
+            self.extra_context.setdefault("_current_task_source", "session")
 
     async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
         self._current_user_message = user_message
