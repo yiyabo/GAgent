@@ -233,6 +233,7 @@ from .guardrail_handlers import (
     match_atomic_task_by_keywords as _match_atomic_task_by_keywords_fn,
     resolve_explicit_task_scope_target as _resolve_explicit_task_scope_target_fn,
     resolve_followthrough_target_task_id as _resolve_followthrough_target_task_id_fn,
+    classify_explicit_scope_none_reason as _classify_explicit_scope_none_reason_fn,
 )
 from .guardrails import (
     explicit_manuscript_request as _explicit_manuscript_request_fn,
@@ -2268,15 +2269,29 @@ class StructuredChatAgent:
                                 if blocked_ids
                                 else "the requested tasks"
                             )
-                            summary = (
-                                f"Tasks [{id_list}] cannot be executed: all tasks in the "
-                                f"explicit set are blocked by unmet out-of-scope dependencies. "
-                                f"Do NOT generate a status summary or plan optimisation "
-                                f"suggestion — report this blocker with the specific task IDs."
+                            block_reason = self.extra_context.get(
+                                "explicit_scope_block_reason", "blocked_deps"
                             )
+                            if block_reason == "all_completed":
+                                summary = (
+                                    f"Tasks [{id_list}] are already completed — "
+                                    f"no re-execution is needed. "
+                                    f"If you want to re-run them, please say so explicitly."
+                                )
+                                error_category = "already_completed"
+                            else:
+                                summary = (
+                                    f"Tasks [{id_list}] could not be executed in this turn: "
+                                    f"all tasks in the explicit set are blocked by unmet "
+                                    f"out-of-scope dependencies. "
+                                    f"Do NOT generate a status summary or plan optimisation "
+                                    f"suggestion — report this blocker with the specific task IDs."
+                                )
+                                error_category = "blocked_dependency"
                             logger.warning(
                                 "[DeepThink] Blocked code_executor: explicit scope all blocked "
-                                "for task_ids=%s",
+                                "reason=%s task_ids=%s",
+                                block_reason,
                                 blocked_ids,
                             )
                             return {
@@ -2286,7 +2301,7 @@ class StructuredChatAgent:
                                 "summary": summary,
                                 "blocked_reason": "explicit_task_scope_blocked",
                                 "blocked_task_ids": blocked_ids,
-                                "error_category": "blocked_dependency",
+                                "error_category": error_category,
                             }
 
                         if (
@@ -3291,6 +3306,7 @@ class StructuredChatAgent:
                     target_task_id = _resolve_explicit_task_scope_target_fn(
                         tree,
                         list(routing_decision.explicit_task_ids),
+                        allow_cascade_rerun=True,
                     )
                 except Exception:
                     target_task_id = None
@@ -3301,16 +3317,25 @@ class StructuredChatAgent:
                     self.extra_context.pop("explicit_scope_all_blocked", None)
                     self.extra_context.pop("explicit_scope_blocked_task_ids", None)
                 else:
-                    # All tasks in the explicit set are currently unexecutable;
-                    # store a flag so tool_wrapper can short-circuit code_executor
-                    # and return a structured blocker instead of prose synthesis.
+                    # All tasks in the explicit set are currently unexecutable.
+                    # Classify the reason so the user gets the right message:
+                    # "all_completed" → tasks already done;
+                    # "blocked_deps"  → genuine unmet out-of-scope dependency.
+                    try:
+                        block_reason = _classify_explicit_scope_none_reason_fn(
+                            tree, list(routing_decision.explicit_task_ids)
+                        )
+                    except Exception:
+                        block_reason = "blocked_deps"
                     self.extra_context["explicit_scope_all_blocked"] = True
                     self.extra_context["explicit_scope_blocked_task_ids"] = list(
                         routing_decision.explicit_task_ids
                     )
+                    self.extra_context["explicit_scope_block_reason"] = block_reason
                     logger.info(
-                        "[CHAT][ROUTING][EXPLICIT_SCOPE] All tasks blocked; "
-                        "explicit_task_ids=%s plan_id=%s",
+                        "[CHAT][ROUTING][EXPLICIT_SCOPE] All tasks unexecutable; "
+                        "reason=%s explicit_task_ids=%s plan_id=%s",
+                        block_reason,
                         list(routing_decision.explicit_task_ids),
                         self.plan_session.plan_id,
                     )
