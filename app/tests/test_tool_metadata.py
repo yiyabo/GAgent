@@ -113,6 +113,13 @@ _READ_ONLY_CONCURRENT_TOOLS = {
     "vision_reader",
     "graph_rag",
     "sequence_fetch",
+    # database_query intentionally NOT here: its "execute" operation runs
+    # INSERT/UPDATE/DELETE, so is_read_only=False is correct.
+}
+
+# Tools that MUST be concurrent-safe but NOT necessarily read-only
+# (e.g. they have mutating sub-operations but are thread-safe overall)
+_CONCURRENT_SAFE_TOOLS = {
     "database_query",
 }
 
@@ -144,6 +151,15 @@ class TestRegisteredToolMetadata:
         assert td is not None, f"{tool_name} not registered"
         assert td.is_read_only, f"{tool_name} should be is_read_only"
         assert td.is_concurrent_safe, f"{tool_name} should be is_concurrent_safe"
+        assert not td.is_destructive, f"{tool_name} should not be is_destructive"
+
+    @pytest.mark.parametrize("tool_name", sorted(_CONCURRENT_SAFE_TOOLS))
+    def test_concurrent_safe_not_read_only_tools(self, tool_name: str):
+        """These tools are concurrent-safe but NOT read-only (they have mutating ops)."""
+        td = get_tool_registry().get_tool(tool_name)
+        assert td is not None, f"{tool_name} not registered"
+        assert td.is_concurrent_safe, f"{tool_name} should be is_concurrent_safe"
+        assert not td.is_read_only, f"{tool_name} should NOT be is_read_only (has mutating sub-operations)"
         assert not td.is_destructive, f"{tool_name} should not be is_destructive"
 
     @pytest.mark.parametrize("tool_name", sorted(_NON_CONCURRENT_TOOLS))
