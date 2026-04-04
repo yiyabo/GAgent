@@ -250,6 +250,131 @@ def test_execute_code_locally_accepts_single_artifact_contract(tmp_path: Path, m
     assert outcome.error_category is None
 
 
+def test_execute_code_locally_repairs_contract_mismatch_once(tmp_path: Path, monkeypatch):
+    fake_code_resp = CodeTaskResponse(code="print('initial')", description="markers")
+    run_count = {"value": 0}
+
+    def _mock_run_file(self, code_file):
+        run_count["value"] += 1
+        results_dir = Path(tmp_path) / "results"
+        enrichment_dir = results_dir / "enrichment"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        enrichment_dir.mkdir(parents=True, exist_ok=True)
+        wrong_file = results_dir / "NK_cell_upregulated_genes.csv"
+        expected_file = enrichment_dir / "upregulated_genes.csv"
+        if run_count["value"] == 1:
+            wrong_file.write_text("gene,logFC\nA,1.0\n", encoding="utf-8")
+            if expected_file.exists():
+                expected_file.unlink()
+        else:
+            expected_file.write_text("gene,logFC\nA,1.0\n", encoding="utf-8")
+        return CodeExecutionResult(
+            status="success",
+            output="markers done\n",
+            error="",
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter.run_file", _mock_run_file)
+    async def _repair_contract(**kwargs):
+        return "print('repaired')"
+
+    monkeypatch.setattr(f"{_CE_MOD}._ask_llm_to_repair_contract", _repair_contract)
+
+    spec = CodeExecutionSpec(
+        plan_id=68,
+        task_id=34,
+        task_name="差异基因提取与分类",
+        task_instruction="按 plan 生成聚合后的上调基因文件",
+        acceptance_criteria={
+            "blocking": True,
+            "checks": [
+                {"type": "file_exists", "path": "results/enrichment/upregulated_genes.csv"},
+                {"type": "file_nonempty", "path": "results/enrichment/upregulated_genes.csv"},
+            ],
+        },
+    )
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="task 34",
+            task_description="extract differential genes",
+            work_dir=str(tmp_path),
+            llm_service=MagicMock(),
+            execution_spec=spec,
+            auto_fix=True,
+        )
+    )
+
+    assert outcome.success is True
+    assert outcome.execution_status == "completed"
+    assert outcome.verification_status == "passed"
+    assert outcome.failure_kind is None
+    assert outcome.repair_attempts == 1
+    assert outcome.error_category is None
+
+
+def test_execute_code_locally_fails_after_contract_repair_exhausted(tmp_path: Path, monkeypatch):
+    fake_code_resp = CodeTaskResponse(code="print('initial')", description="markers")
+
+    def _mock_run_file(self, code_file):
+        results_dir = Path(tmp_path) / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "NK_cell_upregulated_genes.csv").write_text(
+            "gene,logFC\nA,1.0\n",
+            encoding="utf-8",
+        )
+        return CodeExecutionResult(
+            status="success",
+            output="markers done\n",
+            error="",
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter.run_file", _mock_run_file)
+    async def _repair_contract(**kwargs):
+        return "print('repaired but still wrong')"
+
+    monkeypatch.setattr(f"{_CE_MOD}._ask_llm_to_repair_contract", _repair_contract)
+
+    spec = CodeExecutionSpec(
+        plan_id=68,
+        task_id=34,
+        task_name="差异基因提取与分类",
+        task_instruction="按 plan 生成聚合后的上调基因文件",
+        acceptance_criteria={
+            "blocking": True,
+            "checks": [
+                {"type": "file_exists", "path": "results/enrichment/upregulated_genes.csv"},
+            ],
+        },
+    )
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="task 34",
+            task_description="extract differential genes",
+            work_dir=str(tmp_path),
+            llm_service=MagicMock(),
+            execution_spec=spec,
+            auto_fix=True,
+        )
+    )
+
+    assert outcome.success is False
+    assert outcome.execution_status == "completed"
+    assert outcome.verification_status == "failed"
+    assert outcome.failure_kind == "contract_mismatch"
+    assert outcome.error_category == "acceptance_criteria_failed"
+    assert outcome.repair_attempts == 1
+    assert outcome.contract_diff is not None
+    assert outcome.contract_diff["missing_required_outputs"] == [
+        "results/enrichment/upregulated_genes.csv"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Local execution: success path (via unified execute_code_locally)
 # ---------------------------------------------------------------------------

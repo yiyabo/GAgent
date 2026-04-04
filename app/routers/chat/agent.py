@@ -1401,6 +1401,19 @@ class StructuredChatAgent:
             # *why* a task failed without re-parsing free-text error messages.
             if isinstance(result, dict) and result.get("error_category"):
                 payload_metadata["error_category"] = result["error_category"]
+            if isinstance(result, dict):
+                for key in (
+                    "execution_status",
+                    "verification_status",
+                    "failure_kind",
+                    "contract_diff",
+                    "repair_attempts",
+                    "plan_patch_suggestion",
+                    "session_artifact_paths",
+                ):
+                    value = result.get(key)
+                    if value is not None:
+                        payload_metadata[key] = value
             artifact_paths = verifier.collect_artifact_paths(
                 {"result": result, "params": params or {}, "metadata": payload_metadata}
             )
@@ -1415,7 +1428,11 @@ class StructuredChatAgent:
             finalization = verifier.finalize_payload(
                 node,
                 payload,
-                execution_status=new_status,
+                execution_status=(
+                    str(result.get("execution_status")).strip()
+                    if isinstance(result, dict) and result.get("execution_status") is not None
+                    else new_status
+                ),
                 trigger="auto",
             )
 

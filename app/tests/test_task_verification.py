@@ -87,6 +87,54 @@ def test_task_verifier_fails_blocking_acceptance_criteria(tmp_path):
     assert finalization.verification["failures"][0]["type"] == "file_exists"
 
 
+def test_task_verifier_records_contract_diff_for_mismatch(tmp_path):
+    actual = tmp_path / "results" / "NK_cell_upregulated_genes.csv"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("gene_symbol,logFC\nA,1.0\n", encoding="utf-8")
+    node = PlanNode(
+        id=34,
+        plan_id=68,
+        name="差异基因提取与分类",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "file_exists",
+                        "path": "results/enrichment/upregulated_genes.csv",
+                    }
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "done",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "run_directory": str(tmp_path),
+            },
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "failed"
+    assert metadata["execution_status"] == "completed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata["failure_kind"] == "contract_mismatch"
+    assert metadata["contract_diff"]["missing_required_outputs"] == [
+        "results/enrichment/upregulated_genes.csv"
+    ]
+    assert "results/NK_cell_upregulated_genes.csv" in metadata["contract_diff"]["unexpected_outputs"]
+    assert metadata["plan_patch_suggestion"]
+
+
 def test_task_verifier_pdb_residue_present_avoids_text_false_positive(tmp_path):
     valid = tmp_path / "valid_sec.pdb"
     valid.write_text(
@@ -628,8 +676,9 @@ def test_file_exists_fallback_basename_match(tmp_path):
     assert fin.verification["status"] == "passed"
 
 
-def test_file_nonempty_fallback_extension_match(tmp_path):
-    """file_nonempty should pass via extension fallback when basename differs."""
+def test_file_nonempty_does_not_pass_on_extension_only_match(tmp_path):
+    """Plan-first verification should not accept a different filename solely because
+    the produced artifact shares the same file extension."""
     run_dir = tmp_path / "run_xyz"
     run_dir.mkdir()
     actual_file = run_dir / "DotPlot.png"
@@ -658,8 +707,8 @@ def test_file_nonempty_fallback_extension_match(tmp_path):
         },
         execution_status="completed",
     )
-    assert fin.final_status == "completed"
-    assert fin.verification["status"] == "passed"
+    assert fin.final_status == "failed"
+    assert fin.verification["status"] == "failed"
 
 
 def test_file_exists_fallback_lenient_different_extension(tmp_path):
