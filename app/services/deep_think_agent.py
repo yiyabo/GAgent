@@ -1907,24 +1907,41 @@ class DeepThinkAgent:
 
                     if self._is_probe_only_execution_cycle(tool_results, task_context=task_context):
                         probe_only_execution_cycles += 1
-                        if probe_only_execution_cycles >= 3 and not had_real_execution_tool:
+                        if probe_only_execution_cycles >= 3:
+                            # Hard stop for infinite observation loops — always active regardless of
+                            # had_real_execution_tool. Without this, a post-execution AI that keeps
+                            # reading non-existent files would silently burn through max_iterations.
                             current_step.status = "done"
-                            current_step.self_correction = (
-                                "Stopped repeated observation-only probing and returned a blocked-dependency conclusion."
+                            if had_real_execution_tool:
+                                # Task was executed; post-execution probing exceeded limit.
+                                # Return whatever the AI last said rather than a BLOCKED answer.
+                                current_step.self_correction = (
+                                    "Stopped repeated post-execution observation-only probing."
+                                )
+                                if not final_answer:
+                                    final_answer = self._build_blocked_dependency_answer(
+                                        task_context=task_context,
+                                        user_query=user_query,
+                                        tool_results=tool_results,
+                                    )
+                            else:
+                                current_step.self_correction = (
+                                    "Stopped repeated observation-only probing and returned a blocked-dependency conclusion."
+                                )
+                                final_answer = self._build_blocked_dependency_answer(
+                                    task_context=task_context,
+                                    user_query=user_query,
+                                    tool_results=tool_results,
+                                )
+                            confidence = max(confidence, 0.8)
+                            logger.warning(
+                                "[DEEP_THINK_NATIVE] Stopped after %s consecutive probe-only execution cycles at iteration=%s had_real_execution_tool=%s",
+                                probe_only_execution_cycles,
+                                iteration,
+                                had_real_execution_tool,
                             )
                             if self.on_thinking:
                                 await self._safe_callback(current_step)
-                            final_answer = self._build_blocked_dependency_answer(
-                                task_context=task_context,
-                                user_query=user_query,
-                                tool_results=tool_results,
-                            )
-                            confidence = max(confidence, 0.8)
-                            logger.warning(
-                                "[DEEP_THINK_NATIVE] Stopped after %s consecutive probe-only execution cycles at iteration=%s",
-                                probe_only_execution_cycles,
-                                iteration,
-                            )
                             if self.on_final_delta and final_answer:
                                 await self._stream_final_answer(final_answer)
                             break

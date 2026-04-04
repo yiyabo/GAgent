@@ -8,12 +8,20 @@ Multi-agent coordination with tool integration and LLM capabilities.
 ## 1. Quick Commands
 
 ```bash
-# Backend (conda env: LLM, port 9000, auto-reload)
+# Full stack (recommended for server deploy or when you want both UI + API at once)
+./scripts/start_all.sh
+# - Runs scripts/stop_all.sh first, then scripts/sync_skills.sh, then health_check.sh
+# - Backend: invokes start_backend.sh (conda activate LLM; see that script). Sets BACKEND_RELOAD=false for stable prod-style runs.
+# - Frontend: cd web-ui && npm run dev (port 3001; proxies /api→:9000, /ws→ws://:9000)
+# - Logs: log/backend.log, log/frontend.log (PIDs in .pid files alongside)
+# - Optional slow service: START_AMEM=true ./scripts/start_all.sh  # also starts A-mem (embedding load)
+
+# Dev: backend only with hot-reload (conda env: LLM, port 9000)
 bash start_backend.sh
-# Or directly:
+# Or directly (same venv/interpreter you have active):
 python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload --reload-dir app --reload-dir tool_box
 
-# Frontend (port 3001, proxies /api→:9000, /ws→ws://:9000)
+# Frontend alone (port 3001, proxies /api→:9000, /ws→ws://:9000)
 cd web-ui && npm install && npm run dev
 
 # Tests
@@ -82,11 +90,13 @@ Router (app/routers/)  →  Service (app/services/)  →  Repository (app/reposi
 
 ### Chat request flow (最常用路径)
 1. `routes.py` receives message → creates `chat_run`
-2. `request_routing.py` classifies intent → determines `capability_floor`
-3. `agent.py` selects tools based on capability_floor
-4. `deep_think_agent.py` runs LLM with native tool calling
+2. `request_routing.py` classifies **intent** (`intent_type`) and **request tier** (`request_tier`: `light` / `standard` / `research` / `execute`), and sets **`capability_floor`**. The default path grants **`tools`** (full tool-capable DeepThink), not a no-tool “plain chat” mode.
+3. `agent.py` builds context (including bound plan/task when applicable) and invokes DeepThink with the routed profile.
+4. `deep_think_agent.py` runs the LLM with **native tool calling** (or structured path when configured).
 5. Tools executed via `tool_executor.py` → `tool_box/tools_impl/*.py`
 6. Response streamed back via SSE
+
+**Explicit task IDs:** If the user message contains numeric task references (e.g. “任务 13、14、15”), routing exposes `explicit_task_ids` / `explicit_task_override`; plan review/optimize heuristics are suppressed for that turn, and `code_executor` resolves the target via `resolve_explicit_task_scope_target` in `guardrail_handlers.py` / `code_executor_helpers.py`. See tests around `test_request_tier_routing` and code_executor guardrails when changing this.
 
 ### Plan execution flow
 1. `plan_operation` tool decomposes goal → task DAG
@@ -140,6 +150,14 @@ Tool categories: `information_retrieval`, `document_writing`, `file_management`,
 - **Error handling:** Custom exceptions in `app/errors/`, catch specific exceptions
 - **Async:** All service calls are async; use `await` consistently
 
+### Remote deployment server (GAgent)
+
+- **SSH:** `zczhao@119.147.24.196`
+- **仓库目录:** `~/GAgent`（即 `/home/zczhao/GAgent`）
+- **网络:** 仅在内网或指定网络下可直连；从本机执行 `ssh` 时需具备网络权限与 **本机已配置的认证方式**（密钥或交互式密码）。**勿将密码写入本仓库、规则文件或 `CLAUDE.md`。**
+- **标准更新与重启:** `cd ~/GAgent && git pull && ./scripts/start_all.sh`（脚本行为与 **§1 `./scripts/start_all.sh`** 一致：后端走 conda `LLM`、默认关 reload；遇本地未提交冲突可先对冲突路径 `git stash` 再拉取，见项目部署约定）
+- **日志:** `~/GAgent/log/`（如 `backend.log`、`frontend.log`）
+
 ---
 
 ## 7. Environment Variables (key groups)
@@ -162,20 +180,21 @@ Full list in `app/services/foundation/settings.py`. Key groups:
 ## 8. Danger Zones (修改前务必了解)
 
 ### request_routing.py — Intent classification (意图分类)
-- `resolve_intent_type()` determines if message is chat/research/execute
-- `determine_capability_floor()` maps intent → tool availability
-- **`plain_chat` floor = NO tools = LLM may hallucinate**
-- Always run `pytest app/tests/test_request_tier_routing.py -v` after changes
+- `resolve_intent_type()` classifies **intent** (e.g. chat vs research vs `execute_task`) for prompts and policies; it does **not** remove tools by itself.
+- `determine_capability_floor()` currently returns **`tools`** unconditionally so the model always **can** call tools (avoids mis-routed “chat” turns with **no** tools and hallucinated answers). `intent_type` is still used for wording and tiering.
+- **`request_tier`** is separate: `light` | `standard` | `research` | `execute` (not the string `plain_chat`).
+- **Explicit task numbers** in the user message set `explicit_task_ids` / `explicit_task_override` and can pin `code_executor` to a task within the named set; changing routing without tests can break bound execution and plan UX.
+- Always run `pytest app/tests/test_request_tier_routing.py -v` after changes.
 
 ### phagescope.py — PhageScope API payload format
 - API requires BOTH `phageid` (JSON array) AND `phageids` (semicolon-separated)
 - `modulelist` must be JSON **object** `{"quality": true}`, NOT array `["quality"]`
 - `_build_phage_payload()` handles derivation; don't bypass it
 
-### deep_think_agent.py — Capability floor → tool list
-- `capability_floor` from request_routing determines which tools agent can use
-- `_SUCCESSOR_TOOLSET` maps floor levels to tool sets
-- Wrong floor = agent without needed tools = fabricated results
+### deep_think_agent.py — Tools and bound tasks
+- Bound **execute_task** flows still attach **task context** (instruction, dependencies, artifacts); tool availability in the prompt may be further narrowed by internal toolsets for that mode.
+- Legacy **`_SUCCESSOR_TOOLSET` / `plain_chat`**-style mappings may still exist for compatibility; the default chat path uses **`tools`** floor. Do not assume “no tools” for a normal user message.
+- Wrong routing or missing task binding can still yield **fabricated** results if tools are not invoked — verify with logs (`tools_used`).
 
 ### .env — API keys
 - Contains all provider API keys — NEVER commit to git
@@ -220,7 +239,7 @@ fix: add paste/drag-drop upload to ChatMainArea
 
 ---
 
-## 12. Debugging Protocol（调试规范）
+## 11. Debugging Protocol（调试规范）
 
 **排查任何异常行为，第一步必须看 log，不要靠猜测。**
 
@@ -239,15 +258,15 @@ grep "phagescope\|POST\|HTTP" log/backend.log | tail -50  # 工具调用记录
 |------|----------------------|
 | AI 给出结果但疑似未调工具 | 是否有对应的 POST 请求记录，`tools_used` 字段是否为空 |
 | PhageScope 提交失败/返回错误 | 实际发出的 HTTP payload、response status、error message |
-| 意图路由异常（该用工具没用） | `capability_floor`、`request_tier`、`route_reason_codes` |
+| 意图路由异常（该用工具没用） | `capability_floor`（默认 `tools`）、`request_tier`、`route_reason_codes`、`explicit_task_override` |
 | 工具返回结果与预期不符 | 工具实际入参、HTTP 响应原文 |
 | 任务状态 Faileds | 服务端 job_id、module_status、module_log.error |
 
 ### 关键 log 字段说明
 
 ```
-capability_floor    → 决定 agent 可用工具集，plain_chat = 无工具 = 风险幻觉
-request_tier        → 请求分级：plain_chat / research / execute_task
+capability_floor    → 能力下限；默认路径为 tools（模型可调用工具集）
+request_tier        → 请求分级：light / standard / research / execute
 tools_used          → 本次实际调用的工具列表（空 = 未调工具）
 route_reason_codes  → 路由决策依据，排查意图分类错误的关键
 ```
@@ -258,12 +277,13 @@ route_reason_codes  → 路由决策依据，排查意图分类错误的关键
 
 ---
 
-## 11. Glossary (项目术语)
+## 12. Glossary (项目术语)
 
 | Term | Description |
 |------|-------------|
 | **DeepThink** | Extended thinking mode for complex reasoning (扩展思考模式) |
-| **capability_floor** | Minimum capability level determining available tools (能力下限，决定可用工具集) |
+| **capability_floor** | Capability lower bound for tool exposure; default path is **`tools`** (模型始终具备调用工具的能力边界，而非无工具闲聊) |
+| **explicit_task_ids** | Parsed from user message when they name task numbers; with **`explicit_task_override`** 可压过 plan review/optimize 启发式并约束 `code_executor` 目标 |
 | **PhageScope** | Bacteriophage analysis platform API at phageapi.deepomics.org (噬菌体分析平台) |
 | **Skill** | Configurable AI capability module, selected per task (可配置AI技能模块) |
 | **Plan** | Task decomposition into dependency DAG (任务分解为有依赖的子任务图) |
@@ -271,4 +291,4 @@ route_reason_codes  → 路由决策依据，排查意图分类错误的关键
 | **A-mem** | Agentic memory system for long-term knowledge (智能体长期记忆) |
 | **MCP** | Model Context Protocol for tool integration (模型上下文协议) |
 | **chat_run** | Single request-response cycle in a chat session (聊天中的单次请求响应周期) |
-| **request_tier** | Classification level: plain_chat / research / execute_task (请求分级) |
+| **request_tier** | `light` / `standard` / `research` / `execute` — workload / UX tier, separate from `intent_type` (请求分级) |
