@@ -663,7 +663,14 @@ def test_file_nonempty_fallback_extension_match(tmp_path):
 
 
 def test_file_exists_fallback_lenient_different_extension(tmp_path):
-    """file_exists should pass via lenient fallback when even extension differs (task produced output)."""
+    """file_exists should fail when extension doesn't match — lenient 'any file' fallback is removed.
+
+    Previously this test verified that *any* existing artifact would pass the
+    check even with a completely different extension (e.g. criteria says PDF but
+    task produced PNG).  That behaviour caused false-positive verification when a
+    task only produced partial output.  Now only basename or extension matches are
+    accepted as fallbacks.
+    """
     run_dir = tmp_path / "run_xyz"
     run_dir.mkdir()
     actual_file = run_dir / "DotPlot.png"
@@ -677,7 +684,7 @@ def test_file_exists_fallback_lenient_different_extension(tmp_path):
                 "category": "file_data",
                 "blocking": True,
                 "checks": [
-                    # Criteria says PDF but task produced PNG
+                    # Criteria says PDF but task produced PNG — different extension
                     {"type": "file_exists", "path": "results/figures/marker_plots.pdf"},
                 ],
             }
@@ -692,8 +699,8 @@ def test_file_exists_fallback_lenient_different_extension(tmp_path):
         },
         execution_status="completed",
     )
-    assert fin.final_status == "completed"
-    assert fin.verification["status"] == "passed"
+    assert fin.final_status == "failed"
+    assert fin.verification["status"] == "failed"
 
 
 def test_file_exists_no_fallback_without_artifacts(tmp_path):

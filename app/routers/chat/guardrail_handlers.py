@@ -698,6 +698,121 @@ def resolve_explicit_task_scope_target(
     return None
 
 
+def resolve_all_explicit_task_scope_targets(
+    tree: "PlanTree",
+    explicit_task_ids: List[int],
+    *,
+    allow_cascade_rerun: bool = False,
+) -> List[int]:
+    """Return ALL executable leaf tasks for composite task expansion.
+
+    Unlike ``resolve_explicit_task_scope_target`` (which returns only the first
+    executable leaf), this function returns every ready-to-execute leaf in
+    dependency order.  This enables the agent to execute all subtasks of a
+    composite task within a single session, e.g. when the user says "complete
+    task 8" and task 8 has children 19→20→21→22.
+
+    Returns an empty list when no executable tasks are found.
+    """
+    ordered_ids: List[int] = []
+    seen: set[int] = set()
+    for raw_task_id in explicit_task_ids:
+        try:
+            task_id = int(raw_task_id)
+        except (TypeError, ValueError):
+            continue
+        if task_id <= 0 or task_id in seen or not tree.has_node(task_id):
+            continue
+        seen.add(task_id)
+        ordered_ids.append(task_id)
+
+    if not ordered_ids:
+        return []
+
+    # Expand composites to leaves
+    expanded_ids: List[int] = []
+    expanded_seen: set[int] = set()
+    for task_id in ordered_ids:
+        children = tree.children_ids(task_id)
+        if not children:
+            if task_id not in expanded_seen:
+                expanded_seen.add(task_id)
+                expanded_ids.append(task_id)
+        else:
+            queue = list(children)
+            while queue:
+                child_id = queue.pop(0)
+                if not tree.has_node(child_id):
+                    continue
+                child_children = tree.children_ids(child_id)
+                if child_children:
+                    queue.extend(child_children)
+                else:
+                    if child_id not in expanded_seen:
+                        expanded_seen.add(child_id)
+                        expanded_ids.append(child_id)
+    if expanded_ids:
+        ordered_ids = expanded_ids
+
+    scope_ids = set(ordered_ids)
+    ordered_with_deps: List[int] = []
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def _visit(task_id: int) -> None:
+        if task_id in visited or task_id in visiting or not tree.has_node(task_id):
+            return
+        visiting.add(task_id)
+        node = tree.get_node(task_id)
+        for dep_id in getattr(node, "dependencies", []) or []:
+            try:
+                dep_id_int = int(dep_id)
+            except (TypeError, ValueError):
+                continue
+            if dep_id_int in scope_ids:
+                _visit(dep_id_int)
+        visiting.remove(task_id)
+        visited.add(task_id)
+        ordered_with_deps.append(task_id)
+
+    for task_id in ordered_ids:
+        _visit(task_id)
+
+    executable: List[int] = []
+    for task_id in ordered_with_deps:
+        node = tree.get_node(task_id)
+        if tree.children_ids(task_id):
+            continue
+        is_exec = is_task_executable_status(node.status)
+        if not is_exec:
+            if not (allow_cascade_rerun and _is_cascade_completed(node)):
+                continue
+
+        # Check that all out-of-scope deps are resolved
+        unmet_out_of_scope = False
+        for dep_id in getattr(node, "dependencies", []) or []:
+            try:
+                dep_id_int = int(dep_id)
+            except (TypeError, ValueError):
+                continue
+            if not tree.has_node(dep_id_int):
+                continue
+            if dep_id_int in scope_ids:
+                continue  # in-scope deps will be executed before this task
+            dep_node = tree.get_node(dep_id_int)
+            dep_needs_resolution = is_task_executable_status(dep_node.status) or (
+                allow_cascade_rerun and _is_cascade_completed(dep_node)
+            )
+            if dep_needs_resolution:
+                unmet_out_of_scope = True
+                break
+        if unmet_out_of_scope:
+            continue
+        executable.append(task_id)
+
+    return executable
+
+
 def classify_explicit_scope_none_reason(
     tree: "PlanTree",
     explicit_task_ids: List[int],
