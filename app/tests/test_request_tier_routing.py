@@ -829,3 +829,34 @@ def test_task_bound_status_followup_no_longer_forces_execute() -> None:
 def test_english_chat_continuation_stays_chat() -> None:
     intent, _ = resolve_intent_type(message="keep explaining the concept")
     assert intent == "chat"
+
+
+def test_explicit_task_id_elevates_chat_to_execute_task() -> None:
+    """When user mentions a specific task ID (e.g. '任务7') without an explicit
+    execute keyword, the intent should still be elevated to execute_task."""
+    # "任务7" contains no execute keyword → resolve_intent_type returns "chat"
+    intent, _ = resolve_intent_type(message="任务7")
+    assert intent == "chat"  # pre-elevation
+
+    # But resolve_request_routing should elevate to execute_task via explicit_task_override
+    decision = resolve_request_routing(message="任务7")
+    assert decision.intent_type == "execute_task"
+    assert decision.explicit_task_override is True
+    assert decision.explicit_task_ids == [7]
+    assert "explicit_task_override" in decision.route_reason_codes
+    assert "intent_execute_task" in decision.route_reason_codes
+
+
+def test_explicit_task_id_with_continue_elevates_to_execute() -> None:
+    """'继续做任务13、14' should route to execute_task."""
+    decision = resolve_request_routing(message="继续做任务13、14")
+    assert decision.intent_type == "execute_task"
+    assert decision.explicit_task_ids == [13, 14]
+    assert decision.request_tier in ("execute", "standard")
+
+
+def test_explicit_task_id_does_not_override_genuine_execute() -> None:
+    """When user already uses execute keyword + task ID, elevation is harmless."""
+    decision = resolve_request_routing(message="执行任务6")
+    assert decision.intent_type == "execute_task"
+    assert decision.explicit_task_ids == [6]
