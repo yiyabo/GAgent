@@ -896,6 +896,50 @@ def _collect_run_artifacts(
     return collected
 
 
+def _build_verification_artifact_paths(
+    *,
+    task_work_dir: Path,
+    subdirs: Sequence[str],
+    produced_files: Sequence[str],
+    session_artifact_paths: Sequence[str],
+    session_dir: Path,
+    max_items: int = 200,
+) -> List[str]:
+    """Return artifact hints that deterministic verification can trust.
+
+    Verification should resolve relative acceptance-criteria paths against the
+    real task run directory first, then use produced files as fallbacks.  The
+    promoted ``session/results/...`` copies are kept only as secondary hints for
+    UI/artifact discovery.
+    """
+    ordered: List[str] = []
+    seen: set[str] = set()
+
+    def _append(value: Optional[str]) -> None:
+        if not isinstance(value, str):
+            return
+        text = value.strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        ordered.append(text)
+
+    _append(str(task_work_dir.resolve()))
+    for name in subdirs:
+        root = (task_work_dir / str(name)).resolve()
+        if root.exists():
+            _append(str(root))
+    for path in produced_files:
+        _append(str(path))
+    for rel in session_artifact_paths:
+        try:
+            abs_path = (session_dir / str(rel)).resolve()
+        except Exception:
+            continue
+        _append(str(abs_path))
+    return ordered[:max_items]
+
+
 def _is_path_within(child: Path, parent: Path) -> bool:
     try:
         child.resolve().relative_to(parent.resolve())
@@ -1540,6 +1584,13 @@ async def code_executor_handler(
                 session_dir=session_dir,
                 task_work_dir=task_work_dir,
             )
+            verification_artifact_paths = _build_verification_artifact_paths(
+                task_work_dir=task_work_dir,
+                subdirs=task_subdirs,
+                produced_files=produced_files,
+                session_artifact_paths=session_artifact_paths,
+                session_dir=session_dir,
+            )
             success = bool(local_result.get("success", False))
             result_payload = {
                 "tool": "code_executor",
@@ -1569,7 +1620,8 @@ async def code_executor_handler(
                 "claude_auth_mode_effective": None,
                 "produced_files": produced_files,
                 "produced_files_count": len(produced_files),
-                "artifact_paths": session_artifact_paths,
+                "artifact_paths": verification_artifact_paths,
+                "session_artifact_paths": session_artifact_paths,
             }
             if "docker_image_effective" in local_result:
                 result_payload["docker_image_effective"] = local_result.get("docker_image_effective")
@@ -1826,6 +1878,13 @@ async def code_executor_handler(
             session_dir=session_dir,
             task_work_dir=task_work_dir,
         )
+        verification_artifact_paths = _build_verification_artifact_paths(
+            task_work_dir=task_work_dir,
+            subdirs=task_subdirs,
+            produced_files=produced_files,
+            session_artifact_paths=session_artifact_paths,
+            session_dir=session_dir,
+        )
 
         if log_file:
             try:
@@ -1863,7 +1922,8 @@ async def code_executor_handler(
             "cli_backend": "qwen_code" if use_qwen_code_backend else "claude_code",
             "produced_files": produced_files,
             "produced_files_count": len(produced_files),
-            "artifact_paths": session_artifact_paths,
+            "artifact_paths": verification_artifact_paths,
+            "session_artifact_paths": session_artifact_paths,
         }
         if not success and not blocked_detail:
             result_payload["error"] = _build_cli_failure_error(

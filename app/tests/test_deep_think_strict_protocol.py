@@ -1528,7 +1528,101 @@ def test_code_executor_still_sets_had_real_execution_tool() -> None:
         )
     )
 
-    # code_executor DID run, so the neutral message is appropriate
+    # code_executor DID run, so it should not degrade into BLOCKED_DEPENDENCY
     assert "BLOCKED_DEPENDENCY" not in result.final_answer
-    # Should contain the neutral post-execution message
-    assert "任务代码已执行完毕" in result.final_answer or "执行日志" in result.final_answer
+    # The fallback should still clearly communicate that execution completed.
+    assert "执行已完成" in result.final_answer or "finished execution" in result.final_answer
+
+
+def test_execute_task_filters_plan_operation_from_available_tools() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_RecordingNativeLLM([]),
+        available_tools=["plan_operation", "file_operations", "code_executor"],
+        tool_executor=lambda *_args, **_kwargs: None,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 34,
+        },
+    )
+
+    assert "plan_operation" not in agent.available_tools
+    assert "code_executor" in agent.available_tools
+
+
+def test_post_execution_probe_injects_summary_nudge() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Run task code",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "run task 34"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Check results directory",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/results"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Summarize outputs",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已完成任务 34，并生成差异基因结果文件。",
+                            "confidence": 0.92,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(name: str, _params: dict):
+        if name == "code_executor":
+            return {"success": True, "produced_files": ["/tmp/results/upregulated_genes.csv"]}
+        return {"success": True, "summary": "listed"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["plan_operation", "file_operations", "result_interpreter", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 34,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请执行任务 34",
+            task_context=TaskExecutionContext(
+                task_id=34,
+                task_name="差异基因提取与分类",
+                task_instruction="从差异表达结果中提取基因列表并分类。",
+            ),
+        )
+    )
+
+    assert result.final_answer == "已完成任务 34，并生成差异基因结果文件。"
+    assert len(llm.calls) >= 3
+    third_call_messages = llm.calls[2]
+    assert any(
+        "任务代码已经执行过" in str(msg.get("content", ""))
+        or "Task code has already executed" in str(msg.get("content", ""))
+        for msg in third_call_messages
+        if isinstance(msg, dict)
+    )
