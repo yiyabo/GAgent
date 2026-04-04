@@ -727,6 +727,49 @@ def test_file_exists_no_fallback_without_artifacts(tmp_path):
     assert fin.verification["status"] == "failed"
 
 
+def test_relative_checks_prefer_run_directory_over_tool_output_artifacts(tmp_path):
+    run_dir = tmp_path / "plan68_task34" / "run_abc123"
+    expected = run_dir / "results" / "enrichment" / "upregulated_genes.csv"
+    expected.parent.mkdir(parents=True)
+    expected.write_text("gene,score\nWFDC2,9.1\n", encoding="utf-8")
+
+    tool_output = tmp_path / "tool_outputs" / "job_123" / "result.json"
+    tool_output.parent.mkdir(parents=True)
+    tool_output.write_text("{}", encoding="utf-8")
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=34,
+        plan_id=68,
+        name="差异基因提取与分类",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "results/enrichment/upregulated_genes.csv"},
+                    {"type": "file_nonempty", "path": "results/enrichment/upregulated_genes.csv"},
+                ],
+            }
+        },
+    )
+
+    fin = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "run_directory": str(run_dir),
+            "artifact_paths": [str(tool_output)],
+            "metadata": {},
+        },
+        execution_status="completed",
+    )
+
+    assert fin.final_status == "completed"
+    assert fin.verification is not None
+    assert fin.verification["status"] == "passed"
+
+
 def test_parse_shorthand_glob_nonempty():
     """parse_shorthand_criteria should support glob_nonempty format."""
     criteria = TaskVerificationService.parse_shorthand_criteria([
