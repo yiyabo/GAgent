@@ -543,6 +543,20 @@ class DeepThinkAgent:
         operation = str(params.get("operation") or "").strip().lower()
         return operation in _EXPLORATORY_FILE_OPERATIONS
 
+    # Tools that actually execute code / external commands.  Only these
+    # should set ``had_real_execution_tool`` so that post-execution messages
+    # and nudge suppression are accurate.  Coordination tools like
+    # ``plan_operation`` and observation tools like ``file_operations`` are
+    # deliberately excluded.
+    _CODE_EXECUTION_TOOLS: set[str] = {
+        "code_executor",
+        "bio_tools",
+        "terminal_session",
+        "deeppl",
+        "phagescope",
+        "result_interpreter",
+    }
+
     @staticmethod
     def _is_observation_only_tool_call(tool_result: Dict[str, Any]) -> bool:
         """Check if a tool call is read-only / observation-only.
@@ -2045,7 +2059,18 @@ class DeepThinkAgent:
                             )
                     else:
                         probe_only_execution_cycles = 0
-                        had_real_execution_tool = True
+                        # Only mark had_real_execution_tool when a code-running
+                        # tool actually executed.  Coordination tools like
+                        # plan_operation still reset the probe counter (they ARE
+                        # a deliberate action, not passive observation) but must
+                        # NOT set the flag — otherwise the hard-stop emits a
+                        # misleading "task code executed" message when no code
+                        # was ever run.
+                        if any(
+                            item.get("tool_name", "") in self._CODE_EXECUTION_TOOLS
+                            for item in tool_results
+                        ):
+                            had_real_execution_tool = True
 
                         # --- Partial completion retry ---
                         partial_info = self._detect_partial_completion_in_tool_results(tool_results)
