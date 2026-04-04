@@ -564,7 +564,11 @@ def _build_qwen_code_command(
         f"2. Run them and save outputs under results/, data/, or docs/.\n"
         f"3. Put publishable deliverable code under results/submission/ "
         f"or results/deliverable/.\n"
-        f"4. Return a summary of actual outputs produced."
+        f"4. Return a summary of actual outputs produced.\n"
+        f"5. Progress Reporting: When processing multiple items in a loop, "
+        f"print progress after each item: print(f'Processed {{i+1}}/{{total}} items'). "
+        f"Print final summary: print(f'Completed {{done}}/{{total}} items'). "
+        f"Save results after each item, not only at the end."
         f"{allowed_dirs_info}"
     )
     try:

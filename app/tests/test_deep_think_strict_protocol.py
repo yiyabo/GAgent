@@ -1012,3 +1012,349 @@ def test_native_llm_failure_records_exception_type_in_step() -> None:
     assert result.thinking_steps
     assert result.thinking_steps[0].status == "error"
     assert result.thinking_steps[0].thought == "Error: ReadTimeout"
+
+
+# ---------------------------------------------------------------------------
+# Partial Completion Retry Tests
+# ---------------------------------------------------------------------------
+
+
+def _make_code_executor_partial_payload(ratio: str = "2/6", produced_files: list | None = None) -> dict:
+    """Build a code_executor tool result dict with partial completion flagged.
+
+    Returns the raw payload as the real code_executor handler would return it
+    (before deep_think wraps it in ``{"success": ..., "tool": ..., "result": <this>}``).
+    """
+    files = produced_files or [
+        "/tmp/task20/results/enrichment_Epithelial.csv",
+        "/tmp/task20/results/enrichment_Fibroblast.csv",
+    ]
+    return {
+        "success": True,
+        "produced_files": files,
+        "produced_files_count": len(files),
+        "task_directory_full": "/tmp/task20",
+        "partial_completion_suspected": True,
+        "partial_ratio": ratio,
+    }
+
+
+def _make_code_executor_full_payload(produced_files: list | None = None) -> dict:
+    """Build a code_executor tool result dict with NO partial completion.
+
+    Returns the raw payload as the real code_executor handler would return it.
+    """
+    files = produced_files or [
+        "/tmp/task20/results/enrichment_Epithelial.csv",
+        "/tmp/task20/results/enrichment_Fibroblast.csv",
+        "/tmp/task20/results/enrichment_Tcell.csv",
+        "/tmp/task20/results/enrichment_Bcell.csv",
+        "/tmp/task20/results/enrichment_Myeloid.csv",
+        "/tmp/task20/results/enrichment_Endothelial.csv",
+    ]
+    return {
+        "success": True,
+        "produced_files": files,
+        "produced_files_count": len(files),
+        "task_directory_full": "/tmp/task20",
+    }
+
+
+def test_detect_partial_completion_helper() -> None:
+    """Unit test for _detect_partial_completion_in_tool_results static method."""
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["code_executor"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+
+    # Positive case: partial completion detected
+    # Wrap as deep_think_agent does: {"success": ..., "tool": ..., "result": <raw_payload>}
+    partial_payload = _make_code_executor_partial_payload("2/6")
+    partial_results = [
+        {
+            "tool_name": "code_executor",
+            "tool_params": {"task": "enrichment"},
+            "tool_result_text": json.dumps({
+                "success": True,
+                "tool": "code_executor",
+                "result": partial_payload,
+                "error": None,
+            }, ensure_ascii=False),
+        }
+    ]
+    info = agent._detect_partial_completion_in_tool_results(partial_results)
+    assert info is not None
+    assert info["partial_ratio"] == "2/6"
+    assert len(info["produced_files"]) == 2
+    assert info["task_directory_full"] == "/tmp/task20"
+
+    # Negative case: full completion — no detection
+    full_payload = _make_code_executor_full_payload()
+    full_results = [
+        {
+            "tool_name": "code_executor",
+            "tool_params": {"task": "enrichment"},
+            "tool_result_text": json.dumps({
+                "success": True,
+                "tool": "code_executor",
+                "result": full_payload,
+                "error": None,
+            }, ensure_ascii=False),
+        }
+    ]
+    assert agent._detect_partial_completion_in_tool_results(full_results) is None
+
+    # Negative case: non-code_executor tool — ignored
+    other_results = [
+        {
+            "tool_name": "file_operations",
+            "tool_params": {"operation": "list"},
+            "tool_result_text": json.dumps({"success": True}),
+        }
+    ]
+    assert agent._detect_partial_completion_in_tool_results(other_results) is None
+
+    # Edge case: empty list
+    assert agent._detect_partial_completion_in_tool_results([]) is None
+
+
+def test_partial_completion_injects_retry_nudge() -> None:
+    """When code_executor returns partial completion, a retry nudge should be
+    injected, and the agent should call code_executor again."""
+    llm = _RecordingNativeLLM(
+        [
+            # Iteration 1: code_executor runs → partial result (2/6)
+            NativeStreamResult(
+                content="Running enrichment analysis",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "GO enrichment for all cell types"},
+                    )
+                ],
+            ),
+            # Iteration 2: after nudge, code_executor again → full result
+            NativeStreamResult(
+                content="Retrying remaining cell types",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="code_executor",
+                        arguments={"task": "GO enrichment for remaining 4 cell types"},
+                    )
+                ],
+            ),
+            # Iteration 3: submit final answer
+            NativeStreamResult(
+                content="All done",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已完成全部 6 种细胞类型的 GO 富集分析。",
+                            "confidence": 0.95,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    call_count = {"n": 0}
+
+    async def _tool_executor(name: str, _params: dict):
+        if name == "code_executor":
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # First call: partial
+                return _make_code_executor_partial_payload("2/6")
+            else:
+                # Second call: full
+                return _make_code_executor_full_payload()
+        return {"success": True, "summary": "ok"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=5,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 20,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请执行任务 20",
+            task_context=TaskExecutionContext(
+                task_id=20,
+                task_name="GO/KEGG富集分析",
+                task_instruction="对各细胞类型进行 GO/KEGG 功能富集分析。",
+            ),
+        )
+    )
+
+    # The final answer should be the agent's real answer, not BLOCKED_DEPENDENCY
+    assert "BLOCKED_DEPENDENCY" not in result.final_answer
+    assert "6" in result.final_answer or "富集" in result.final_answer
+    # code_executor was called twice
+    assert call_count["n"] == 2
+    # Check that a retry nudge was injected (present in messages sent to LLM)
+    # The second LLM call should have the nudge in its messages
+    assert len(llm.calls) >= 2
+    second_call_messages = llm.calls[1]
+    assert any(
+        "部分完成" in str(msg.get("content", "")) or "partial completion" in str(msg.get("content", "")).lower()
+        for msg in second_call_messages
+        if isinstance(msg, dict)
+    )
+
+
+def test_partial_completion_respects_max_retries() -> None:
+    """Every code_executor call returns partial → max 6 retry nudges then stops."""
+
+    # Build 8 iterations: each returns partial, to exceed _MAX_PARTIAL_RETRIES=6
+    responses = [
+        NativeStreamResult(
+            content=f"Running batch attempt {i+1}",
+            tool_calls=[
+                NativeToolCall(
+                    id=f"tc{i+1}",
+                    name="code_executor",
+                    arguments={"task": f"enrichment attempt {i+1}"},
+                )
+            ],
+        )
+        for i in range(8)
+    ]
+    llm = _RecordingNativeLLM(responses)
+
+    async def _tool_executor(name: str, _params: dict):
+        if name == "code_executor":
+            return _make_code_executor_partial_payload("2/6")
+        return {"success": True}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=10,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 20,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请执行任务 20",
+            task_context=TaskExecutionContext(
+                task_id=20,
+                task_name="GO/KEGG富集分析",
+                task_instruction="对各细胞类型进行 GO/KEGG 功能富集分析。",
+            ),
+        )
+    )
+
+    # Count actual nudge injections: each call's message list grows as nudges
+    # accumulate. Count how many calls have MORE nudge messages than the previous.
+    nudge_count = 0
+    prev_nudge_total = 0
+    for call_messages in llm.calls:
+        current_nudge_total = sum(
+            1
+            for msg in call_messages
+            if isinstance(msg, dict)
+            and ("部分完成" in str(msg.get("content", ""))
+                 or "partial completion" in str(msg.get("content", "")).lower())
+        )
+        if current_nudge_total > prev_nudge_total:
+            nudge_count += (current_nudge_total - prev_nudge_total)
+        prev_nudge_total = current_nudge_total
+
+    # Should inject at most 6 retry nudges (_MAX_PARTIAL_RETRIES)
+    assert nudge_count <= 6
+    # The agent should have iterated but eventually stopped (max_iterations or no more nudges)
+    assert result.total_iterations <= 10
+
+
+def test_full_completion_no_retry_nudge() -> None:
+    """When code_executor returns a full result (no partial), no retry nudge
+    should be injected."""
+    llm = _RecordingNativeLLM(
+        [
+            # Iteration 1: code_executor runs → full result
+            NativeStreamResult(
+                content="Running enrichment analysis",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "GO enrichment for all cell types"},
+                    )
+                ],
+            ),
+            # Iteration 2: submit final answer directly
+            NativeStreamResult(
+                content="All done",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已完成全部 6 种细胞类型的 GO 富集分析。",
+                            "confidence": 0.95,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(name: str, _params: dict):
+        if name == "code_executor":
+            return _make_code_executor_full_payload()
+        return {"success": True}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 20,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请执行任务 20",
+            task_context=TaskExecutionContext(
+                task_id=20,
+                task_name="GO/KEGG富集分析",
+                task_instruction="对各细胞类型进行 GO/KEGG 功能富集分析。",
+            ),
+        )
+    )
+
+    # No retry nudge should be injected
+    for call_messages in llm.calls:
+        for msg in call_messages:
+            if isinstance(msg, dict):
+                content = str(msg.get("content", ""))
+                assert "部分完成" not in content
+                assert "partial completion" not in content.lower()
+
+    # Final answer should be the real answer
+    assert "BLOCKED_DEPENDENCY" not in result.final_answer
+    assert "6" in result.final_answer or "富集" in result.final_answer
+    assert result.total_iterations == 2
