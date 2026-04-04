@@ -94,7 +94,11 @@ def _code_executor_job_stream_loggers(job_id: str) -> Tuple[Any, Any]:
     return on_stdout, on_stderr
 
 
-def _should_auto_sync_task_status(tool_name: str, params: Optional[Dict[str, Any]]) -> bool:
+def _should_auto_sync_task_status(
+    tool_name: str,
+    params: Optional[Dict[str, Any]],
+    result: Optional[Dict[str, Any]] = None,
+) -> bool:
     """Skip task-status auto-sync for exploratory tool calls.
 
     Read-only file inspection is often used as a precursor to the real task
@@ -103,6 +107,18 @@ def _should_auto_sync_task_status(tool_name: str, params: Optional[Dict[str, Any
     """
     if tool_name in _OBSERVATION_ONLY_TOOLS:
         return False
+    if tool_name == "terminal_session":
+        if not isinstance(params, dict):
+            return False
+        operation = str(params.get("operation") or "").strip().lower()
+        if operation != "write":
+            return False
+        verification_state = ""
+        if isinstance(result, dict):
+            verification_state = str(
+                result.get("verification_state") or ""
+            ).strip().lower()
+        return verification_state == "verified_success"
     if tool_name != "file_operations" or not isinstance(params, dict):
         return True
 
@@ -1358,7 +1374,11 @@ class StructuredChatAgent:
             )
             return
 
-        if not _should_auto_sync_task_status(tool_name, params):
+        if not _should_auto_sync_task_status(
+            tool_name,
+            params,
+            result if isinstance(result, dict) else None,
+        ):
             logger.info(
                 "[TASK_SYNC] Skipping task status sync for exploratory %s execution",
                 tool_name,

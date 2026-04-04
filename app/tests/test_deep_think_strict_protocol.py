@@ -773,6 +773,49 @@ def test_extract_evidence_ignores_unverified_terminal_session_echoed_paths() -> 
     assert file_refs == []
 
 
+def test_post_execution_probe_stop_answer_filters_outputs_to_current_task_scope() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    step = ThinkingStep(
+        iteration=1,
+        thought="",
+        action=None,
+        action_result=None,
+        self_correction=None,
+        evidence=[
+            {
+                "type": "file",
+                "title": "Generated file",
+                "ref": "/tmp/runtime/session/results/qc_summary.csv",
+                "snippet": "old session output",
+            },
+            {
+                "type": "file",
+                "title": "Generated file",
+                "ref": "/tmp/runtime/session/results/plan68_task34/run_1/results/upregulated_genes.csv",
+                "snippet": "task 34 output",
+            },
+        ],
+    )
+
+    answer = agent._build_post_execution_probe_stop_answer(
+        task_context=TaskExecutionContext(
+            task_id=35,
+            task_name="基因 ID 转换与标准化",
+        ),
+        user_query="请执行任务35",
+        steps=[step],
+    )
+
+    assert "qc_summary.csv" not in answer
+    assert "plan68_task34" not in answer
+    assert "当前 task 作用域内" in answer
+
+
 def test_process_only_answer_detection_flags_collection_preface() -> None:
     assert is_process_only_answer("我来帮您系统梳理热点方向。让我先收集最新的文献证据。")
     assert is_process_only_answer("Let me first gather the latest evidence and then summarize it.")
@@ -1516,6 +1559,92 @@ def test_code_executor_still_sets_had_real_execution_tool() -> None:
     assert "BLOCKED_DEPENDENCY" not in result.final_answer
     # The fallback should still clearly communicate that execution completed.
     assert "执行已完成" in result.final_answer or "finished execution" in result.final_answer
+
+
+def test_unverified_terminal_session_does_not_set_real_execution_flag() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Peek at plan",
+                tool_calls=[
+                    NativeToolCall(
+                        id="ts1",
+                        name="terminal_session",
+                        arguments={"operation": "write", "data": "cat plan_68.json\n"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="List outputs",
+                tool_calls=[
+                    NativeToolCall(
+                        id="fo1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/results"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Read summary",
+                tool_calls=[
+                    NativeToolCall(
+                        id="dr1",
+                        name="document_reader",
+                        arguments={"operation": "read_text", "file_path": "/tmp/results/out.txt"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="List outputs again",
+                tool_calls=[
+                    NativeToolCall(
+                        id="fo2",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/results"},
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(name: str, _params: dict):
+        if name == "terminal_session":
+            return {
+                "success": True,
+                "operation": "write",
+                "status": "completed",
+                "verification_state": "not_attempted",
+                "command_state": "unverified",
+                "output": "cat plan_68.json",
+            }
+        return {"success": True, "summary": "ok"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["terminal_session", "file_operations", "document_reader"],
+        tool_executor=_tool_executor,
+        max_iterations=5,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 35,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请执行任务 35",
+            task_context=TaskExecutionContext(
+                task_id=35,
+                task_name="基因 ID 转换与标准化",
+                task_instruction="将基因 SYMBOL 转换为 ENTREZID。",
+            ),
+        )
+    )
+
+    assert "代码执行已完成" not in result.final_answer
+    assert "finished execution" not in result.final_answer
+    assert "BLOCKED_DEPENDENCY" in result.final_answer
 
 
 def test_execute_task_filters_plan_operation_from_available_tools() -> None:

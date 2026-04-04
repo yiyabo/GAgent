@@ -5,6 +5,23 @@ Multi-agent coordination with tool integration and LLM capabilities.
 
 ---
 
+## 0. Network Proxy (Git Push 必须设置)
+
+执行 `git push` 前必须先设置代理：
+
+```bash
+export https_proxy=http://127.0.0.1:7897
+export http_proxy=http://127.0.0.1:7897
+export all_proxy=socks5://127.0.0.1:7897
+```
+
+或一行：
+```bash
+export https_proxy=http://127.0.0.1:7897;export http_proxy=http://127.0.0.1:7897;export all_proxy=socks5://127.0.0.1:7897
+```
+
+---
+
 ## 1. Quick Commands
 
 ```bash

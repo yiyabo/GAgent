@@ -833,8 +833,15 @@ class DeepThinkAgent:
         seen: set[str] = set()
         for step in reversed(list(steps)):
             for evidence in reversed(step.evidence or []):
+                evidence_type = str((evidence or {}).get("type") or "").strip().lower()
+                if evidence_type != "file":
+                    continue
                 ref = str((evidence or {}).get("ref") or "").strip()
-                if not ref or ref in seen:
+                if (
+                    not ref
+                    or ref in seen
+                    or not self._is_task_scoped_output_ref(ref, task_context)
+                ):
                     continue
                 seen.add(ref)
                 observed_outputs.append(ref)
@@ -860,6 +867,8 @@ class DeepThinkAgent:
             if observed_outputs:
                 lines.append("最近已观察到的输出包括：")
                 lines.extend(f"- {item}" for item in observed_outputs)
+            elif task_label:
+                lines.append("未在当前 task 作用域内观察到稳定输出文件。")
             lines.append("请基于这些已有输出继续查看结果，或重新发起一次“仅总结结果”的请求。")
             return "\n".join(lines)
 
@@ -871,6 +880,8 @@ class DeepThinkAgent:
         if observed_outputs:
             lines.append("Recently observed outputs include:")
             lines.extend(f"- {item}" for item in observed_outputs)
+        elif task_label:
+            lines.append("No stable outputs were observed inside the current task scope.")
         lines.append("Use these outputs directly, or retry with a summary-only follow-up.")
         return "\n".join(lines)
 
@@ -943,6 +954,72 @@ class DeepThinkAgent:
         if stripped.startswith("{") or stripped.startswith("["):
             return ""
         return result_text
+
+    @classmethod
+    def _extract_tool_result_payload(cls, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        payload = item.get("tool_result")
+        if isinstance(payload, dict):
+            return payload
+
+        raw_text = item.get("tool_result_text")
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            return None
+
+        try:
+            parsed = json.loads(raw_text)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+        if isinstance(parsed, dict) and isinstance(parsed.get("result"), dict):
+            return parsed["result"]
+        return parsed if isinstance(parsed, dict) else None
+
+    @classmethod
+    def _tool_counts_as_real_execution(cls, item: Dict[str, Any]) -> bool:
+        tool_name = str(item.get("tool_name") or "").strip().lower()
+        if tool_name not in cls._CODE_EXECUTION_TOOLS:
+            return False
+        if tool_name != "terminal_session":
+            return True
+
+        payload = cls._extract_tool_result_payload(item)
+        if not isinstance(payload, dict):
+            return False
+
+        params = item.get("tool_params")
+        operation = str(
+            payload.get("operation")
+            or (params.get("operation") if isinstance(params, dict) else "")
+            or ""
+        ).strip().lower()
+        if operation != "write":
+            return False
+
+        verification_state = str(payload.get("verification_state") or "").strip().lower()
+        return verification_state == "verified_success"
+
+    @classmethod
+    def _is_task_scoped_output_ref(
+        cls,
+        ref: str,
+        task_context: Optional[TaskExecutionContext],
+    ) -> bool:
+        normalized = "/" + str(ref or "").strip().replace("\\", "/").lstrip("/")
+        if not normalized or normalized == "/" or cls._is_internal_artifact_path(normalized):
+            return False
+        if not task_context or task_context.task_id is None:
+            return True
+        try:
+            task_id = int(task_context.task_id)
+        except (TypeError, ValueError):
+            return True
+        return bool(
+            re.search(
+                rf"/(?:results/)?plan\d+_task{task_id}(?:/|$)",
+                normalized,
+                re.IGNORECASE,
+            )
+        )
 
     @classmethod
     def _summarize_tool_payload_for_clue(cls, payload: Any) -> str:
@@ -2193,10 +2270,7 @@ class DeepThinkAgent:
                         # NOT set the flag — otherwise the hard-stop emits a
                         # misleading "task code executed" message when no code
                         # was ever run.
-                        if any(
-                            item.get("tool_name", "") in self._CODE_EXECUTION_TOOLS
-                            for item in tool_results
-                        ):
+                        if any(self._tool_counts_as_real_execution(item) for item in tool_results):
                             had_real_execution_tool = True
 
                         # --- Partial completion retry ---
@@ -3172,6 +3246,7 @@ Respond with ONLY a JSON object:
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name,
                 "tool_params": tool_params,
+                "tool_result": error_payload,
                 "tool_result_text": tool_result_text,
                 "evidence": [],
             }
@@ -3235,6 +3310,7 @@ Respond with ONLY a JSON object:
                     "tool_call_id": tool_call_id,
                     "tool_name": tool_name,
                     "tool_params": tool_params,
+                    "tool_result": tool_result,
                     "tool_result_text": tool_result_text,
                     "evidence": evidence,
                 }
@@ -3270,6 +3346,7 @@ Respond with ONLY a JSON object:
                     "tool_call_id": tool_call_id,
                     "tool_name": tool_name,
                     "tool_params": tool_params,
+                    "tool_result": timeout_payload,
                     "tool_result_text": json.dumps(timeout_payload, ensure_ascii=False),
                     "evidence": [],
                 }
@@ -3311,6 +3388,7 @@ Respond with ONLY a JSON object:
                     "tool_call_id": tool_call_id,
                     "tool_name": tool_name,
                     "tool_params": tool_params,
+                    "tool_result": failure_payload,
                     "tool_result_text": json.dumps(failure_payload, ensure_ascii=False),
                     "evidence": [],
                 }
