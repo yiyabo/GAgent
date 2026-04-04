@@ -2112,7 +2112,8 @@ class DeepThinkAgent:
 
                     if self._is_probe_only_execution_cycle(tool_results, task_context=task_context):
                         probe_only_execution_cycles += 1
-                        if probe_only_execution_cycles >= 3:
+                        probe_limit = 2 if had_real_execution_tool else 3
+                        if probe_only_execution_cycles >= probe_limit:
                             # Hard stop for infinite observation loops — always active regardless of
                             # had_real_execution_tool. Without this, a post-execution AI that keeps
                             # reading non-existent files would silently burn through max_iterations.

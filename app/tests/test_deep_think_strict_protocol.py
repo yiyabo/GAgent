@@ -456,12 +456,10 @@ def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -
     assert len(llm.calls) == 3
 
 
-def test_probe_only_blocked_skipped_after_real_execution_tool() -> None:
-    """After code_executor runs successfully, subsequent observation-only cycles
-    should NOT trigger forced BLOCKED_DEPENDENCY override.
-    This reproduces the Task 17 bug: code_executor succeeded, but the AI then
-    did 2+ observation-only cycles (document_reader/file_operations), and
-    the system forcibly replaced the final answer with BLOCKED_DEPENDENCY."""
+def test_probe_only_after_real_execution_tool_stops_with_neutral_summary() -> None:
+    """After a real execution tool runs, at most one observation-only verification
+    cycle is allowed. A second probe-only cycle should stop with a neutral
+    post-execution summary instead of BLOCKED_DEPENDENCY."""
     llm = _RecordingNativeLLM(
         [
             # Iteration 1: observation-only (file_operations list)
@@ -508,20 +506,6 @@ def test_probe_only_blocked_skipped_after_real_execution_tool() -> None:
                     )
                 ],
             ),
-            # Iteration 5: AI submits real answer (NOT blocked)
-            NativeStreamResult(
-                content="Task completed successfully",
-                tool_calls=[
-                    NativeToolCall(
-                        id="final1",
-                        name="submit_final_answer",
-                        arguments={
-                            "answer": "任务 17 已完成差异表达分析，输出 9 个文件到 results/ 目录。",
-                            "confidence": 0.9,
-                        },
-                    )
-                ],
-            ),
         ]
     )
 
@@ -551,12 +535,12 @@ def test_probe_only_blocked_skipped_after_real_execution_tool() -> None:
         )
     )
 
-    # The AI's real answer should be preserved — NOT overwritten with BLOCKED_DEPENDENCY
+    # The system should stop the repeated post-execution probing without
+    # rewriting the outcome into BLOCKED_DEPENDENCY.
     assert "BLOCKED_DEPENDENCY" not in result.final_answer
     assert "任务 17" in result.final_answer or "差异表达" in result.final_answer
-    # code_executor was called, so had_real_execution_tool should be True,
-    # preventing forced BLOCKED_DEPENDENCY despite 2+ post-execution probe cycles
-    assert result.confidence >= 0.9
+    assert "观察循环" in result.final_answer or "验证" in result.final_answer
+    assert result.confidence >= 0.8
 
 
 def test_blocked_dependency_answer_prefers_structured_document_reader_summary() -> None:
