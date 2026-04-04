@@ -577,6 +577,96 @@ class DeepThinkAgent:
 
         return False
 
+    @staticmethod
+    def _detect_partial_completion_in_tool_results(
+        tool_results: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Scan tool_results for a code_executor call that flagged partial completion.
+
+        Returns a dict with keys ``partial_ratio``, ``produced_files``,
+        ``task_directory_full`` when partial completion is detected; otherwise
+        ``None``.
+        """
+        for item in tool_results:
+            if item.get("tool_name") != "code_executor":
+                continue
+            raw_text = item.get("tool_result_text") or ""
+            try:
+                payload = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
+            except (json.JSONDecodeError, TypeError):
+                continue
+            # The payload might be nested: {"success": ..., "result": {actual_payload}}
+            inner = payload
+            if isinstance(payload, dict) and "result" in payload and isinstance(payload["result"], dict):
+                inner = payload["result"]
+            if not isinstance(inner, dict):
+                continue
+            if inner.get("partial_completion_suspected"):
+                return {
+                    "partial_ratio": inner.get("partial_ratio"),
+                    "produced_files": inner.get("produced_files", []),
+                    "task_directory_full": inner.get("task_directory_full", ""),
+                }
+        return None
+
+    def _build_partial_completion_retry_nudge(
+        self,
+        partial_info: Dict[str, Any],
+        *,
+        task_context: Optional["TaskExecutionContext"],
+        user_query: str,
+        retry_count: int,
+    ) -> str:
+        """Build a bilingual nudge instructing the agent to retry remaining items.
+
+        Follows the same pattern as ``_build_probe_only_followthrough_nudge``.
+        """
+        language = detect_reasoning_language(user_query)
+        ratio = partial_info.get("partial_ratio", "?/?")
+        produced = partial_info.get("produced_files", [])
+        task_dir = partial_info.get("task_directory_full", "")
+
+        produced_hint = ""
+        if produced:
+            # Show at most 15 file basenames to keep the nudge compact
+            names = [p.rsplit("/", 1)[-1] if "/" in p else p for p in produced[:15]]
+            produced_hint = ", ".join(names)
+            if len(produced) > 15:
+                produced_hint += f" … ({len(produced)} total)"
+
+        task_bits: List[str] = []
+        if task_context:
+            if task_context.task_id is not None:
+                task_bits.append(f"Task ID={task_context.task_id}")
+            if task_context.task_name:
+                task_bits.append(f"Task Name={task_context.task_name}")
+        task_label = " | ".join(task_bits) if task_bits else ""
+
+        zh = (
+            f"⚠️ 上一次 code_executor 执行检测到 **部分完成**：仅处理了 {ratio} 项。\n"
+            f"（已生成文件: {produced_hint or '无'}）\n"
+            f"这是第 {retry_count} 次重试提示。请按以下步骤操作：\n"
+            f"1. 检查 results/ 目录，确认哪些项已经完成（从已有输出文件推断）。\n"
+            f"2. 再次调用 `code_executor`，**仅处理尚未完成的剩余项**。\n"
+            f"3. 新结果 **追加** 到 results/ 目录，不要覆盖已有文件。\n"
+            f"4. 在所有项处理完成之前，**不要提交最终答案**。\n"
+        )
+        en = (
+            f"⚠️ The previous code_executor run detected **partial completion**: only {ratio} items were processed.\n"
+            f"(Produced files so far: {produced_hint or 'none'})\n"
+            f"This is retry nudge #{retry_count}. Follow these steps:\n"
+            f"1. Check the results/ directory to determine which items are already done (infer from existing output files).\n"
+            f"2. Call `code_executor` again for ONLY the remaining unfinished items.\n"
+            f"3. Append new results to results/ — do NOT overwrite existing files.\n"
+            f"4. Do NOT submit a final answer until ALL items have been processed.\n"
+        )
+        base = _localized_text(language, zh, en)
+        if task_dir:
+            base += f"\nWork directory: {task_dir}"
+        if task_label:
+            base += f"\n{task_label}"
+        return base
+
     def _is_probe_only_execution_cycle(
         self,
         tool_results: List[Dict[str, Any]],
@@ -1708,6 +1798,8 @@ class DeepThinkAgent:
         identical_tool_cycle_count = 0
         probe_only_execution_cycles = 0
         had_real_execution_tool = False
+        partial_completion_retry_count = 0
+        _MAX_PARTIAL_RETRIES = 6
 
         logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
 
@@ -1954,6 +2046,28 @@ class DeepThinkAgent:
                     else:
                         probe_only_execution_cycles = 0
                         had_real_execution_tool = True
+
+                        # --- Partial completion retry ---
+                        partial_info = self._detect_partial_completion_in_tool_results(tool_results)
+                        if partial_info and partial_completion_retry_count < _MAX_PARTIAL_RETRIES:
+                            partial_completion_retry_count += 1
+                            nudge = self._build_partial_completion_retry_nudge(
+                                partial_info,
+                                task_context=task_context,
+                                user_query=user_query,
+                                retry_count=partial_completion_retry_count,
+                            )
+                            messages.append({"role": "user", "content": nudge})
+                            logger.info(
+                                "[DEEP_THINK_NATIVE] Partial completion retry nudge: ratio=%s retry=%d iter=%d",
+                                partial_info.get("partial_ratio"),
+                                partial_completion_retry_count,
+                                iteration,
+                            )
+                            current_step.self_correction = (
+                                f"Detected partial completion ({partial_info.get('partial_ratio', '?/?')}); "
+                                f"injected retry nudge #{partial_completion_retry_count}."
+                            )
 
                     current_step.status = "analyzing"
                     if self.on_thinking:
