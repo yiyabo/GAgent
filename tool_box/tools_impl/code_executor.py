@@ -10,6 +10,7 @@ import subprocess
 import json
 import hashlib
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -141,7 +142,6 @@ def _extract_readable_error(stderr: str) -> str:
     )
     if is_minified_js:
         # Try to extract HTTP status hint from the minified code context.
-        import re
         status_match = re.search(r'status[>=]+\s*(\d{3})', joined)
         if status_match:
             status_code = status_match.group(1)
@@ -186,6 +186,77 @@ def _build_cli_failure_error(*, return_code: Optional[int], stderr: str, stdout:
     if not parts:
         return "Claude CLI execution failed (success=false)."
     return f"Claude CLI execution failed: {'; '.join(parts)}"
+
+
+_PARTIAL_COMPLETION_PATTERNS: List[re.Pattern] = [
+    re.compile(r"(?:processed|completed|finished|done)\s+(\d+)\s*(?:of|/)\s*(\d+)", re.IGNORECASE),
+    re.compile(r"(\d+)\s*/\s*(\d+)\s+(?:cell\s*types?|samples?|items?|files?|tasks?)", re.IGNORECASE),
+]
+
+_WARNING_LINE_PATTERNS: List[re.Pattern] = [
+    re.compile(r"(?:^|\s)(?:warning|warn)\s*[:：]", re.IGNORECASE),
+    re.compile(r"(?:^|\s)error\s*[:：]", re.IGNORECASE),
+    re.compile(r"(?:^|\s)(?:skipping|skipped)\s", re.IGNORECASE),
+    re.compile(r"(?:^|\s)failed\s+to\s+(?:process|load|read|write|open|parse)", re.IGNORECASE),
+    re.compile(r"Traceback\s*\(most\s+recent\s+call\s+last\)", re.IGNORECASE),
+]
+
+
+def _detect_partial_completion(
+    stdout: str,
+    stderr: str,
+    produced_files: List[str],
+    *,
+    success: bool,
+) -> Dict[str, Any]:
+    """Scan execution output for signs of incomplete processing.
+
+    Returns a dict with:
+      - ``warnings``: list of warning-like lines found in output
+      - ``partial_completion_suspected``: True if patterns suggest partial work
+      - ``partial_ratio``: e.g. "2/6" if a progress pattern was found
+    """
+    warnings: List[str] = []
+    partial_ratio: Optional[str] = None
+    partial_suspected = False
+
+    combined = (stdout or "") + "\n" + (stderr or "")
+    lines = [ln.strip() for ln in combined.splitlines() if ln.strip()]
+
+    for line in lines:
+        for pat in _WARNING_LINE_PATTERNS:
+            if pat.search(line):
+                compact = line[:200]
+                if compact not in warnings:
+                    warnings.append(compact)
+                break
+
+    if success:
+        for pat in _PARTIAL_COMPLETION_PATTERNS:
+            m = pat.search(combined)
+            if m:
+                done_count = int(m.group(1))
+                total_count = int(m.group(2))
+                if 0 < done_count < total_count:
+                    partial_ratio = f"{done_count}/{total_count}"
+                    partial_suspected = True
+                    break
+
+    if success and not produced_files:
+        partial_suspected = True
+
+    # Cap warnings to avoid payload bloat
+    warnings = warnings[:20]
+
+    result: Dict[str, Any] = {}
+    if warnings:
+        result["output_warnings"] = warnings
+    if partial_suspected:
+        result["partial_completion_suspected"] = True
+    if partial_ratio:
+        result["partial_ratio"] = partial_ratio
+    return result
+
 
 # Project root directory
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -1512,6 +1583,17 @@ async def code_executor_handler(
                     or str(local_result.get("stderr") or "").strip()
                     or "Local code execution failed."
                 )
+
+            # Detect partial completion signals
+            local_completion_info = _detect_partial_completion(
+                str(local_result.get("stdout") or ""),
+                str(local_result.get("stderr") or ""),
+                produced_files,
+                success=success,
+            )
+            if local_completion_info:
+                result_payload.update(local_completion_info)
+
             return result_payload
 
         # ---- Build CLI command and environment ----
@@ -1789,6 +1871,21 @@ async def code_executor_handler(
             result_payload["blocked_by_scope_guardrail"] = True
             result_payload["blocked_reason"] = blocked_detail
             result_payload["error"] = f"Blocked by scope guardrail: {blocked_detail}"
+
+        # Detect partial completion signals even when exit_code==0
+        completion_info = _detect_partial_completion(
+            stdout, stderr, produced_files, success=success,
+        )
+        if completion_info:
+            result_payload.update(completion_info)
+            if completion_info.get("partial_completion_suspected"):
+                logger.warning(
+                    "[CODE_EXECUTOR] Partial completion suspected: ratio=%s warnings=%d files=%d",
+                    completion_info.get("partial_ratio", "N/A"),
+                    len(completion_info.get("output_warnings", [])),
+                    len(produced_files),
+                )
+
         return result_payload
         
     except subprocess.TimeoutExpired:
