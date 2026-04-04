@@ -1831,38 +1831,12 @@ class DeepThinkAgent:
                         if tool_name and tool_name not in tools_used:
                             tools_used.append(tool_name)
 
-                    assistant_msg: Dict[str, Any] = {"role": "assistant", "content": result.content or ""}
-                    assistant_msg["tool_calls"] = [
-                        {
-                            "id": item["tool_call_id"],
-                            "type": "function",
-                            "function": {
-                                "name": item["tool_name"],
-                                "arguments": json.dumps(item.get("tool_params") or {}, ensure_ascii=False),
-                            },
-                        }
-                        for item in tool_results
-                    ]
-                    messages.append(assistant_msg)
-                    for item in tool_results:
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": item["tool_call_id"],
-                                "content": item["tool_result_text"],
-                            }
-                        )
-
-                    per_tool_text = [
-                        f"[{item['tool_name']}] {item['tool_result_text']}"
-                        for item in tool_results
-                    ]
-                    current_step.action_result = "\n\n".join(per_tool_text)
-                    merged_evidence: List[Dict[str, str]] = []
-                    for item in tool_results:
-                        merged_evidence.extend(item.get("evidence") or [])
-                    current_step.evidence = merged_evidence
-                    current_step.finished_at = datetime.now()
+                    self._append_tool_cycle_messages(
+                        messages=messages,
+                        tool_results=tool_results,
+                        assistant_content=result.content or "",
+                        current_step=current_step,
+                    )
 
                     tool_cycle_signature = self._build_tool_cycle_signature(tool_results)
                     if tool_cycle_signature and tool_cycle_signature == last_tool_cycle_signature:
@@ -3140,11 +3114,62 @@ Respond with ONLY a JSON object:
     @staticmethod
     def _build_tool_callback_summary(result: Any) -> str:
         if isinstance(result, dict):
+            parts: List[str] = []
             if "summary" in result:
-                return str(result["summary"])[:600]
-            if "error" in result and result.get("error"):
-                return str(result.get("error"))[:600]
+                parts.append(str(result["summary"])[:500])
+            elif "error" in result and result.get("error"):
+                parts.append(str(result.get("error"))[:500])
+            # Surface partial completion signals so LLM is aware
+            if result.get("partial_completion_suspected"):
+                ratio = result.get("partial_ratio", "unknown")
+                parts.append(f"⚠️ PARTIAL COMPLETION SUSPECTED (ratio: {ratio}). Verify all expected outputs exist.")
+            output_warnings = result.get("output_warnings")
+            if isinstance(output_warnings, list) and output_warnings:
+                parts.append(f"⚠️ {len(output_warnings)} warning(s) in output: {output_warnings[0][:150]}")
+            if parts:
+                return "; ".join(parts)[:600]
         return str(result)[:600]
+
+    @staticmethod
+    def _append_tool_cycle_messages(
+        *,
+        messages: List[Dict[str, Any]],
+        tool_results: List[Dict[str, Any]],
+        assistant_content: str,
+        current_step: "ThinkingStep",
+    ) -> None:
+        """Build assistant + tool messages from a tool execution cycle and update the step."""
+        assistant_msg: Dict[str, Any] = {"role": "assistant", "content": assistant_content}
+        assistant_msg["tool_calls"] = [
+            {
+                "id": item["tool_call_id"],
+                "type": "function",
+                "function": {
+                    "name": item["tool_name"],
+                    "arguments": json.dumps(item.get("tool_params") or {}, ensure_ascii=False),
+                },
+            }
+            for item in tool_results
+        ]
+        messages.append(assistant_msg)
+        for item in tool_results:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": item["tool_call_id"],
+                    "content": item["tool_result_text"],
+                }
+            )
+        per_tool_text = [
+            f"[{item['tool_name']}] {item['tool_result_text']}"
+            for item in tool_results
+        ]
+        current_step.action_result = "\n\n".join(per_tool_text)
+        merged_evidence: List[Dict[str, str]] = []
+        for item in tool_results:
+            merged_evidence.extend(item.get("evidence") or [])
+        current_step.evidence = merged_evidence
+        current_step.finished_at = datetime.now()
 
     @staticmethod
     def _contains_tool(tool_results: List[Dict[str, Any]], tool_name: str) -> bool:
