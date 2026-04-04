@@ -79,8 +79,6 @@ _INTERNAL_TOOL_OUTPUT_RE = re.compile(
 # Native tool steps often prefix JSON: "[file_operations] {...}"
 _TOOL_RESULT_PREFIX_RE = re.compile(r"^\[[^\]]*]\s*")
 _EXPLORATORY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
-_READ_ONLY_DOCUMENT_OPERATIONS = {"read_any", "read_pdf", "read_text"}
-_READ_ONLY_VISION_OPERATIONS = {"read_pdf", "read_image", "ocr_page"}
 
 
 @dataclass
@@ -547,20 +545,36 @@ class DeepThinkAgent:
 
     @staticmethod
     def _is_observation_only_tool_call(tool_result: Dict[str, Any]) -> bool:
+        """Check if a tool call is read-only / observation-only.
+
+        Uses the tool registry's ``is_read_only`` metadata as the primary
+        signal, falling back to the declarative ``_TOOL_METADATA`` dict when
+        tools are not yet registered (e.g. in unit tests).  ``file_operations``
+        gets special operation-level handling since it mixes read and write ops.
+        """
         tool_name = str(tool_result.get("tool_name") or "").strip().lower()
-        params = tool_result.get("tool_params")
+
+        # file_operations is NOT read-only at the tool level (it can write/delete),
+        # but specific operations like read/list/exists/info are observation-only.
         if tool_name == "file_operations":
             return DeepThinkAgent._is_exploratory_file_operation_call(tool_result)
-        if tool_name == "document_reader":
-            if not isinstance(params, dict):
-                return True
-            operation = str(params.get("operation") or "").strip().lower()
-            return not operation or operation in _READ_ONLY_DOCUMENT_OPERATIONS
-        if tool_name == "vision_reader":
-            if not isinstance(params, dict):
-                return True
-            operation = str(params.get("operation") or "").strip().lower()
-            return not operation or operation in _READ_ONLY_VISION_OPERATIONS
+
+        # Primary: consult the live tool registry.
+        # Lazy import to avoid circular dependency:
+        #   deep_think_agent → tool_box → plan_executor → deep_think_agent
+        from tool_box.tools import get_tool_registry
+        registry = get_tool_registry()
+        tool_def = registry.get_tool(tool_name)
+        if tool_def is not None:
+            return tool_def.is_read_only
+
+        # Fallback: consult the declarative metadata dict (covers test
+        # environments where register_all_tools() hasn't been called).
+        from tool_box.tool_registry import _TOOL_METADATA
+        meta = _TOOL_METADATA.get(tool_name)
+        if meta is not None:
+            return meta.get("is_read_only", False)
+
         return False
 
     def _is_probe_only_execution_cycle(
@@ -1693,6 +1707,7 @@ class DeepThinkAgent:
         last_tool_cycle_signature: Optional[str] = None
         identical_tool_cycle_count = 0
         probe_only_execution_cycles = 0
+        had_real_execution_tool = False
 
         logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
 
@@ -1892,7 +1907,7 @@ class DeepThinkAgent:
 
                     if self._is_probe_only_execution_cycle(tool_results, task_context=task_context):
                         probe_only_execution_cycles += 1
-                        if probe_only_execution_cycles >= 3:
+                        if probe_only_execution_cycles >= 3 and not had_real_execution_tool:
                             current_step.status = "done"
                             current_step.self_correction = (
                                 "Stopped repeated observation-only probing and returned a blocked-dependency conclusion."
@@ -1914,22 +1929,30 @@ class DeepThinkAgent:
                                 await self._stream_final_answer(final_answer)
                             break
 
-                        nudge = self._build_probe_only_followthrough_nudge(
-                            task_context=task_context,
-                            user_query=user_query,
-                            stage=probe_only_execution_cycles,
-                        )
-                        messages.append({"role": "user", "content": nudge})
-                        logger.info(
-                            "[DEEP_THINK_NATIVE] Injected execute followthrough nudge after probe-only cycle=%s at iteration=%s",
-                            probe_only_execution_cycles,
-                            iteration,
-                        )
-                        current_step.self_correction = (
-                            "Detected observation-only exploration during a bound execute_task request; injected a followthrough nudge."
-                        )
+                        if not had_real_execution_tool:
+                            nudge = self._build_probe_only_followthrough_nudge(
+                                task_context=task_context,
+                                user_query=user_query,
+                                stage=probe_only_execution_cycles,
+                            )
+                            messages.append({"role": "user", "content": nudge})
+                            logger.info(
+                                "[DEEP_THINK_NATIVE] Injected execute followthrough nudge after probe-only cycle=%s at iteration=%s",
+                                probe_only_execution_cycles,
+                                iteration,
+                            )
+                            current_step.self_correction = (
+                                "Detected observation-only exploration during a bound execute_task request; injected a followthrough nudge."
+                            )
+                        else:
+                            logger.info(
+                                "[DEEP_THINK_NATIVE] Skipping probe-only nudge/block: had_real_execution_tool=True, probe_cycles=%s iter=%s",
+                                probe_only_execution_cycles,
+                                iteration,
+                            )
                     else:
                         probe_only_execution_cycles = 0
+                        had_real_execution_tool = True
 
                     current_step.status = "analyzing"
                     if self.on_thinking:
@@ -1947,6 +1970,7 @@ class DeepThinkAgent:
                     current_step.finished_at = datetime.now()
                     if (
                         probe_only_execution_cycles >= 2
+                        and not had_real_execution_tool
                         and self._is_execute_task_request()
                         and self._has_bound_task_context(task_context)
                         and not self._looks_like_blocked_dependency_answer(candidate_answer)
