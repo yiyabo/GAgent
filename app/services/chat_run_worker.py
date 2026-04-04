@@ -19,6 +19,146 @@ logger = logging.getLogger(__name__)
 _CASCADE_MAX_TASKS = 50
 
 
+async def _run_explicit_task_execution(
+    agent,
+    executor,
+    plan_id: int,
+    *,
+    run_id: str,
+    cancel_ev,
+    emitter: ChatRunEmitter,
+) -> None:
+    """Execute all tasks in the explicit scope via plan_executor directly.
+
+    This bypasses the chat DeepThink agent (process_unified_stream) which
+    tends to probe instead of execute.  The plan_executor's internal
+    DeepThink is more focused and reliably calls code_executor.
+    """
+    from app.services.plans.plan_executor import ExecutionConfig
+
+    _ctx = getattr(agent, "extra_context", None) or {}
+    first_task = _ctx.get("current_task_id")
+    pending = list(_ctx.get("pending_scope_task_ids") or [])
+    all_task_ids = [int(first_task)] + [int(t) for t in pending]
+
+    logger.info(
+        "[EXPLICIT_EXEC] run=%s plan=%d tasks=%s",
+        run_id,
+        plan_id,
+        all_task_ids,
+    )
+
+    session_ctx = {
+        "session_id": getattr(agent, "session_id", None),
+        "chat_history": getattr(agent, "history", []),
+        "paper_mode": False,
+    }
+    exec_config = ExecutionConfig(session_context=session_ctx)
+    completed_ids = []
+    failed_id = None
+
+    for idx, task_id in enumerate(all_task_ids):
+        if cancel_ev.is_set():
+            break
+
+        remaining = len(all_task_ids) - idx - 1
+        logger.info(
+            "[EXPLICIT_EXEC] run=%s task=%d (%d/%d) remaining=%d",
+            run_id,
+            task_id,
+            idx + 1,
+            len(all_task_ids),
+            remaining,
+        )
+
+        try:
+            await emitter.emit(
+                {
+                    "type": "progress_status",
+                    "phase": "gathering",
+                    "label": f"Executing task {task_id} "
+                    f"({idx + 1}/{len(all_task_ids)})",
+                    "status": "active",
+                }
+            )
+        except Exception:
+            pass
+
+        # Check if task is already completed (skip it)
+        try:
+            repo = agent.plan_session.repo
+            tree = repo.get_plan_tree(plan_id)
+            if tree.has_node(task_id):
+                node = tree.get_node(task_id)
+                status = (node.status or "").strip().lower()
+                if status in ("completed", "done"):
+                    logger.info(
+                        "[EXPLICIT_EXEC] Task %d already completed, skipping",
+                        task_id,
+                    )
+                    completed_ids.append(task_id)
+                    continue
+        except Exception:
+            pass
+
+        try:
+            exec_result = await asyncio.to_thread(
+                executor.execute_task,
+                plan_id,
+                task_id,
+                config=exec_config,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[EXPLICIT_EXEC] Task %d exception: %s", task_id, exc
+            )
+            failed_id = task_id
+            break
+
+        task_status = (exec_result.status or "").strip().lower()
+        logger.info(
+            "[EXPLICIT_EXEC] Task %d finished status=%s",
+            task_id,
+            task_status,
+        )
+
+        if task_status in ("completed", "done", "success"):
+            completed_ids.append(task_id)
+        elif task_status == "skipped":
+            logger.info(
+                "[EXPLICIT_EXEC] Task %d skipped (deps not met), continuing",
+                task_id,
+            )
+        else:
+            failed_id = task_id
+            break
+
+    # Emit summary
+    summary = (
+        f"Executed {len(completed_ids)}/{len(all_task_ids)} tasks. "
+        f"Completed: {completed_ids}."
+    )
+    if failed_id:
+        summary += f" Failed at task {failed_id}."
+
+    logger.info("[EXPLICIT_EXEC] %s run=%s", summary, run_id)
+
+    try:
+        await emitter.emit(
+            {
+                "type": "final",
+                "content": summary,
+                "metadata": {
+                    "completed_task_ids": completed_ids,
+                    "failed_task_id": failed_id,
+                    "total_tasks": len(all_task_ids),
+                },
+            }
+        )
+    except Exception:
+        pass
+
+
 async def _run_cascade(
     agent,
     executor,
@@ -155,38 +295,38 @@ async def execute_chat_run(run_id: str) -> None:
         )
         agent._current_user_message = message_to_send
 
-        async for _chunk in agent.process_unified_stream(
-            message_to_send,
-            run_id=run_id,
-            cancel_event=cancel_ev,
-            event_sink=emitter.emit,
-            steer_drain=lambda: hub.drain_steer_messages(run_id),
-        ):
-            pass
-
-        # ── Task Cascade Auto-Continue ──────────────────────────
-        # When a composite task ("执行任务8") expanded to multiple leaf
-        # tasks, execute them sequentially after the first one finishes.
+        # ── Detect explicit task execution ──────────────────────
+        # When user says "执行任务8", bypass the chat DeepThink agent and
+        # use plan_executor.execute_task() directly.  The plan executor has
+        # a more focused DeepThink that reliably calls code_executor.
         _ctx = getattr(agent, "extra_context", None) or {}
-        pending = _ctx.get("pending_scope_task_ids")
-        plan_id = getattr(
+        _explicit = _ctx.get("explicit_task_override")
+        _first_task = _ctx.get("current_task_id")
+        _plan_id = getattr(
             getattr(agent, "plan_session", None), "plan_id", None
         )
-        executor = getattr(agent, "plan_executor", None)
+        _executor = getattr(agent, "plan_executor", None)
 
-        if (
-            executor is not None
-            and plan_id is not None
-            and not cancel_ev.is_set()
-            and isinstance(pending, list)
-            and len(pending) > 0
-        ):
-            await _run_cascade(
-                agent, executor, plan_id, pending,
+        if _explicit and _first_task and _plan_id and _executor:
+            # Direct execution path: use plan_executor for ALL tasks
+            await _run_explicit_task_execution(
+                agent,
+                _executor,
+                _plan_id,
                 run_id=run_id,
                 cancel_ev=cancel_ev,
                 emitter=emitter,
             )
+        else:
+            # Normal chat streaming path
+            async for _chunk in agent.process_unified_stream(
+                message_to_send,
+                run_id=run_id,
+                cancel_event=cancel_ev,
+                event_sink=emitter.emit,
+                steer_drain=lambda: hub.drain_steer_messages(run_id),
+            ):
+                pass
 
         if cancel_ev.is_set():
             mark_chat_run_finished(run_id, "cancelled", error="cancelled")
