@@ -568,11 +568,11 @@ class DeepThinkAgent:
         if tool_def is not None:
             return tool_def.is_read_only
 
-        # Fallback: consult the declarative metadata dict (covers test
-        # environments where register_all_tools() hasn't been called).
-        from tool_box.tool_registry import _TOOL_METADATA
-        meta = _TOOL_METADATA.get(tool_name)
-        if meta is not None:
+        # Fallback: consult the declarative metadata dict via the public API
+        # (covers test environments where register_all_tools() hasn't been called).
+        from tool_box.tool_registry import get_tool_orchestration_metadata
+        meta = get_tool_orchestration_metadata(tool_name)
+        if meta:
             return meta.get("is_read_only", False)
 
         return False
@@ -1888,16 +1888,26 @@ class DeepThinkAgent:
                             current_step.status = "done"
                             if had_real_execution_tool:
                                 # Task was executed; post-execution probing exceeded limit.
-                                # Return whatever the AI last said rather than a BLOCKED answer.
+                                # Do NOT return BLOCKED_DEPENDENCY — we know the task ran.
+                                # The AI never submitted submit_final_answer, so final_answer
+                                # is likely empty here.  Return a neutral completion notice.
                                 current_step.self_correction = (
                                     "Stopped repeated post-execution observation-only probing."
                                 )
                                 if not final_answer:
-                                    final_answer = self._build_blocked_dependency_answer(
-                                        task_context=task_context,
-                                        user_query=user_query,
-                                        tool_results=tool_results,
-                                    )
+                                    language = detect_reasoning_language(user_query)
+                                    if language == "zh":
+                                        final_answer = (
+                                            "任务代码已执行完毕，但 AI 在后续验证阶段陷入反复观察循环，"
+                                            "无法生成最终汇报。请检查上方的执行日志确认任务输出。"
+                                        )
+                                    else:
+                                        final_answer = (
+                                            "Task code executed successfully, but the AI entered a "
+                                            "repeated observation loop during post-execution verification "
+                                            "and could not produce a final summary. "
+                                            "Please review the execution logs above for task output."
+                                        )
                             else:
                                 current_step.self_correction = (
                                     "Stopped repeated observation-only probing and returned a blocked-dependency conclusion."
