@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import csv
 import fnmatch
 import glob
 import json
@@ -48,6 +49,12 @@ _PATH_KEYS = {
     "artifact_paths",
 }
 _PDB_LINE_RECORDS = {"HET", "HETNAM", "HETATM", "ATOM", "MODRES", "LINK"}
+_INTERNAL_ARTIFACT_FILENAMES = {"result.json", "manifest.json", "preview.json"}
+_INTERNAL_TOOL_OUTPUT_RE = re.compile(
+    r"(?:^|/)tool_outputs/job_[^/]+/step_\d+_[^/]+(?:/.*)?$",
+    re.IGNORECASE,
+)
+_TABULAR_ROW_COUNT_KEYS = {"row_count", "rows", "record_count"}
 
 
 @dataclass
@@ -573,13 +580,20 @@ class TaskVerificationService:
                 return self._check_result(check_type, success, path=path, message=None if success else f"Pattern not found: {pattern}")
             if check_type in {"json_field_equals", "json_field_at_least"}:
                 path = self._resolve_path(raw_check.get("path"), base_dir)
-                key_path = str(raw_check.get("key_path") or "").strip()
+                key_path = self._coerce_json_key_path(raw_check)
+                if not path.exists() and artifact_paths:
+                    fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
+                    if fallback:
+                        path = fallback
                 if not path.exists():
                     raise FileNotFoundError(f"JSON file does not exist: {path}")
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                actual = self._get_json_value(payload, key_path)
+                if self._looks_like_tabular_row_count_check(path, key_path):
+                    actual = self._read_tabular_row_count(path)
+                else:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    actual = self._get_json_value(payload, key_path)
                 if check_type == "json_field_equals":
-                    expected = raw_check.get("expected")
+                    expected = self._coerce_json_expected(raw_check)
                     # Smart type coercion: if expected is a string but actual is
                     # numeric/bool, try parsing expected to match the JSON type.
                     success = actual == expected
@@ -591,7 +605,7 @@ class TaskVerificationService:
                             pass
                     message = None if success else f"Expected {expected!r}, got {actual!r}."
                 else:
-                    min_value = raw_check.get("min_value")
+                    min_value = self._coerce_json_min_value(raw_check)
                     if min_value is None:
                         raise ValueError("json_field_at_least check is missing `min_value`.")
                     actual_num = float(actual)
@@ -684,6 +698,40 @@ class TaskVerificationService:
             return basename_hit
 
         return None
+
+    @staticmethod
+    def _coerce_json_key_path(raw_check: Dict[str, Any]) -> str:
+        return str(raw_check.get("key_path") or raw_check.get("field") or "").strip()
+
+    @staticmethod
+    def _coerce_json_expected(raw_check: Dict[str, Any]) -> Any:
+        if raw_check.get("expected") is not None:
+            return raw_check.get("expected")
+        return raw_check.get("value")
+
+    @staticmethod
+    def _coerce_json_min_value(raw_check: Dict[str, Any]) -> Any:
+        if raw_check.get("min_value") is not None:
+            return raw_check.get("min_value")
+        return raw_check.get("value")
+
+    @staticmethod
+    def _looks_like_tabular_row_count_check(path: Path, key_path: str) -> bool:
+        return (
+            path.suffix.lower() in {".csv", ".tsv"}
+            and str(key_path or "").strip().lower() in _TABULAR_ROW_COUNT_KEYS
+        )
+
+    @staticmethod
+    def _read_tabular_row_count(path: Path) -> int:
+        delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
+        with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+            reader = csv.reader(handle, delimiter=delimiter)
+            try:
+                next(reader)
+            except StopIteration:
+                return 0
+            return sum(1 for row in reader if any(str(cell).strip() for cell in row))
 
     @staticmethod
     def _check_result(
@@ -906,7 +954,12 @@ class TaskVerificationService:
             if not isinstance(value, str):
                 return
             text = value.strip()
-            if not text or text in seen or not self._is_local_path(text):
+            if (
+                not text
+                or text in seen
+                or not self._is_local_path(text)
+                or self._is_internal_artifact_path(text)
+            ):
                 return
             seen.add(text)
             found.append(text)
@@ -937,6 +990,19 @@ class TaskVerificationService:
         if len(found) > 40:
             logger.debug("Artifact paths truncated: %d -> 40", len(found))
         return found[:40]
+
+    @staticmethod
+    def _is_internal_artifact_path(value: str) -> bool:
+        normalized = "/" + str(value or "").strip().replace("\\", "/").lstrip("/")
+        if not normalized or normalized == "/":
+            return False
+        lowered = normalized.lower()
+        basename = lowered.rsplit("/", 1)[-1]
+        if basename in _INTERNAL_ARTIFACT_FILENAMES and "/tool_outputs/" in lowered:
+            return True
+        if lowered.endswith("/deliverables/manifest_latest.json"):
+            return True
+        return bool(_INTERNAL_TOOL_OUTPUT_RE.search(lowered))
 
     @staticmethod
     def _is_local_path(value: str) -> bool:

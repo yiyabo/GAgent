@@ -868,12 +868,24 @@ def _format_acceptance_checks(criteria: Optional[Dict[str, Any]]) -> List[str]:
                 f"text file {raw_check.get('path')} must contain: {raw_check.get('pattern')}"
             )
         elif check_type == "json_field_equals":
+            key_path = raw_check.get("key_path") or raw_check.get("field")
+            expected = (
+                raw_check.get("expected")
+                if raw_check.get("expected") is not None
+                else raw_check.get("value")
+            )
             formatted.append(
-                f"json {raw_check.get('path')} field {raw_check.get('key_path')} must equal {raw_check.get('expected')}"
+                f"json {raw_check.get('path')} field {key_path} must equal {expected}"
             )
         elif check_type == "json_field_at_least":
+            key_path = raw_check.get("key_path") or raw_check.get("field")
+            min_value = (
+                raw_check.get("min_value")
+                if raw_check.get("min_value") is not None
+                else raw_check.get("value")
+            )
             formatted.append(
-                f"json {raw_check.get('path')} field {raw_check.get('key_path')} must be >= {raw_check.get('min_value')}"
+                f"json {raw_check.get('path')} field {key_path} must be >= {min_value}"
             )
         else:
             formatted.append(json.dumps(raw_check, ensure_ascii=False))

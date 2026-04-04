@@ -582,6 +582,86 @@ def test_override_criteria_persisted_in_execution_result(tmp_path):
     assert len(persisted["metadata"]["acceptance_criteria"]["checks"]) == 1
 
 
+def test_task_verifier_filters_internal_tool_output_paths(tmp_path):
+    internal_step = tmp_path / "tool_outputs" / "job_dt_x" / "step_1_terminal_session_abc"
+    internal_step.mkdir(parents=True, exist_ok=True)
+    (internal_step / "result.json").write_text("{}", encoding="utf-8")
+    task_dir = tmp_path / "plan68_task35" / "run_1"
+    output_file = task_dir / "results" / "enrichment" / "gene_id_mapping.csv"
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text("gene,entrez\nA,1\n", encoding="utf-8")
+
+    node = PlanNode(
+        id=35,
+        plan_id=68,
+        name="Task 35",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "file_exists", "path": "results/enrichment/gene_id_mapping.csv"}],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "done",
+            "task_directory_full": str(task_dir),
+            "metadata": {
+                "storage": {
+                    "output_dir": str(internal_step),
+                    "result_path": str(internal_step / "result.json"),
+                }
+            },
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    assert all("/tool_outputs/" not in path for path in finalization.artifact_paths)
+
+
+def test_json_field_at_least_supports_legacy_csv_row_count_keys(tmp_path):
+    csv_path = tmp_path / "gene_id_mapping.csv"
+    csv_path.write_text(
+        "gene,entrez\nA,1\nB,2\nC,3\n",
+        encoding="utf-8",
+    )
+    node = PlanNode(
+        id=35,
+        plan_id=68,
+        name="Task 35",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "json_field_at_least",
+                        "path": str(csv_path),
+                        "field": "row_count",
+                        "value": 3,
+                    }
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "content": "done", "metadata": {}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    assert finalization.verification["status"] == "passed"
+
+
 # ---------------------------------------------------------------------------
 # glob_nonempty check type
 # ---------------------------------------------------------------------------
