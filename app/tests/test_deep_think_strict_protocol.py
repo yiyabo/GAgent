@@ -1358,3 +1358,177 @@ def test_full_completion_no_retry_nudge() -> None:
     assert "BLOCKED_DEPENDENCY" not in result.final_answer
     assert "6" in result.final_answer or "富集" in result.final_answer
     assert result.total_iterations == 2
+
+
+def test_plan_operation_does_not_set_had_real_execution_tool() -> None:
+    """When the AI calls plan_operation (coordination) + file_operations (observation)
+    but never code_executor, the system should NOT emit '任务代码已执行完毕'.
+    Instead it should produce a BLOCKED_DEPENDENCY since no code was executed.
+
+    This reproduces the bug: plan_operation was incorrectly treated as a 'real
+    execution tool', causing had_real_execution_tool=True even though no code ran.
+    """
+    llm = _RecordingNativeLLM(
+        [
+            # Iteration 1: plan_operation (coordination, NOT code execution)
+            NativeStreamResult(
+                content="Updating plan info",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="plan_operation",
+                        arguments={"operation": "get", "plan_id": 68},
+                    )
+                ],
+            ),
+            # Iteration 2: file_operations (observation)
+            NativeStreamResult(
+                content="Checking results directory",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task34/results"},
+                    )
+                ],
+            ),
+            # Iteration 3: file_operations (observation)
+            NativeStreamResult(
+                content="Checking again",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc3",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task34/results"},
+                    )
+                ],
+            ),
+            # Iteration 4: file_operations (observation) — would trigger hard stop
+            NativeStreamResult(
+                content="Still checking",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc4",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task34/results"},
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(_name: str, _params: dict):
+        return {"success": True, "summary": "ok"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["plan_operation", "file_operations", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=5,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 34,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请执行任务 8",
+            task_context=TaskExecutionContext(
+                task_id=34,
+                task_name="差异基因提取与分类",
+                task_instruction="从差异表达结果中提取基因列表并分类。",
+            ),
+        )
+    )
+
+    # Key assertion: should NOT say "任务代码已执行完毕" since no code ran
+    assert "任务代码已执行完毕" not in result.final_answer
+    assert "Task code executed" not in result.final_answer
+    # Should produce BLOCKED_DEPENDENCY (the correct behavior when no code ran)
+    assert "BLOCKED_DEPENDENCY" in result.final_answer
+
+
+def test_code_executor_still_sets_had_real_execution_tool() -> None:
+    """When code_executor actually runs, the flag should still be True and the
+    neutral message should appear if the AI then enters a probe loop."""
+    llm = _RecordingNativeLLM(
+        [
+            # Iteration 1: code_executor (REAL execution)
+            NativeStreamResult(
+                content="Running code",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "extract DE genes"},
+                    )
+                ],
+            ),
+            # Iterations 2-4: observation loop
+            NativeStreamResult(
+                content="Checking output 1",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/results"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Checking output 2",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc3",
+                        name="document_reader",
+                        arguments={"operation": "read_text", "file_path": "/tmp/results/out.txt"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Checking output 3",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc4",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/results"},
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(name: str, _params: dict):
+        if name == "code_executor":
+            return {"success": True, "produced_files": ["/tmp/results/de_genes.csv"]}
+        return {"success": True, "summary": "ok"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "document_reader", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=5,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 34,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请执行任务 34",
+            task_context=TaskExecutionContext(
+                task_id=34,
+                task_name="差异基因提取与分类",
+                task_instruction="从差异表达结果中提取基因列表并分类。",
+            ),
+        )
+    )
+
+    # code_executor DID run, so the neutral message is appropriate
+    assert "BLOCKED_DEPENDENCY" not in result.final_answer
+    # Should contain the neutral post-execution message
+    assert "任务代码已执行完毕" in result.final_answer or "执行日志" in result.final_answer
