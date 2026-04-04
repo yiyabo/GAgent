@@ -196,11 +196,19 @@ class PlanRepository:
         self._touch_plan(plan_id)
         return node
 
+    _CASCADE_COMPLETION_MARKER = "completed as part of parent task"
+
     def _maybe_autocomplete_ancestors(self, conn, task_id: int) -> int:
         """Mark ancestor nodes as completed if all their direct children are completed/skipped.
 
         This is a lightweight roll-up to keep root/group tasks in sync when only leaf tasks are executed
         via tools (e.g. code_executor) without explicitly executing the parent nodes themselves.
+
+        Important: children that were only "cascade-completed" (marked completed
+        as part of a parent/sibling without ever running code themselves) are NOT
+        counted as genuinely completed.  This prevents the scenario where one
+        leaf completes, its siblings are cascade-marked, and then the parent
+        auto-completes — effectively skipping the sibling tasks.
         """
 
         def _child_is_completed_like(status_value: Any, execution_result_value: Any) -> bool:
@@ -210,6 +218,10 @@ class PlanRepository:
                 else "pending"
             )
             if status_norm == "completed":
+                # Reject cascade-completed tasks: they were never actually executed.
+                result_str = str(execution_result_value or "").strip().lower()
+                if self._CASCADE_COMPLETION_MARKER in result_str:
+                    return False
                 return True
             if status_norm != "skipped":
                 return False
@@ -289,11 +301,15 @@ class PlanRepository:
         execution_result: Optional[str] = None,
     ) -> int:
         """
-        Update all descendant task statuses under a given task.
+        Update descendant task statuses under a given task.
 
         When a root or intermediate task reaches a terminal status, this method
         propagates the same status to its descendants and returns the number of
         updated rows.
+
+        Descendants that already have a genuine (non-cascade) execution_result
+        are skipped — they were individually executed and their real results
+        must not be overwritten by a cascade marker.
         """
         with plan_db_connection(get_plan_db_path(plan_id)) as conn:
             self._ensure_task_columns(conn, plan_id)
@@ -306,11 +322,18 @@ class PlanRepository:
             path = row["path"] or f"/{task_id}"
 
             if execution_result is not None:
+                # Only cascade to descendants that:
+                # 1. Don't already have the target status, AND
+                # 2. Don't already have a genuine execution result
+                #    (i.e. execution_result is NULL or is itself a cascade marker)
                 updated = conn.execute(
                     """
                     UPDATE tasks 
                     SET status=?, execution_result=?, updated_at=CURRENT_TIMESTAMP 
-                    WHERE path LIKE ? AND status != ?
+                    WHERE path LIKE ?
+                      AND status != ?
+                      AND (execution_result IS NULL
+                           OR LOWER(execution_result) LIKE '%completed as part of parent task%')
                     """,
                     (status, execution_result, f"{path}/%", status),
                 ).rowcount
@@ -319,7 +342,10 @@ class PlanRepository:
                     """
                     UPDATE tasks 
                     SET status=?, updated_at=CURRENT_TIMESTAMP 
-                    WHERE path LIKE ? AND status != ?
+                    WHERE path LIKE ?
+                      AND status != ?
+                      AND (execution_result IS NULL
+                           OR LOWER(execution_result) LIKE '%completed as part of parent task%')
                     """,
                     (status, f"{path}/%", status),
                 ).rowcount
