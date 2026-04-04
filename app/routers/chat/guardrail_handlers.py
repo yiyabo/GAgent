@@ -616,14 +616,21 @@ def resolve_explicit_task_scope_target(
                 expanded_seen.add(task_id)
                 expanded_ids.append(task_id)
         else:
-            queue = list(children)
-            while queue:
-                child_id = queue.pop(0)
+            # Use DFS (stack) instead of BFS so that deep subtrees are fully
+            # traversed before sibling subtrees.  This ensures that a
+            # direct-child leaf (e.g. "3.2.4 visualization", depth=2) is NOT
+            # selected ahead of grandchild pipeline tasks (e.g. tasks 34-44,
+            # depth=3) that must logically run first.  With BFS the direct
+            # child is appended to expanded_ids first and wrongly becomes
+            # "current".
+            stack = list(reversed(children))  # reversed so pop() yields original order
+            while stack:
+                child_id = stack.pop()
                 if not tree.has_node(child_id):
                     continue
                 child_children = tree.children_ids(child_id)
                 if child_children:
-                    queue.extend(child_children)
+                    stack.extend(list(reversed(child_children)))
                 else:
                     if child_id not in expanded_seen:
                         expanded_seen.add(child_id)
@@ -729,7 +736,7 @@ def resolve_all_explicit_task_scope_targets(
     if not ordered_ids:
         return []
 
-    # Expand composites to leaves
+    # Expand composites to leaves (DFS so subtree order is preserved)
     expanded_ids: List[int] = []
     expanded_seen: set[int] = set()
     for task_id in ordered_ids:
@@ -739,14 +746,16 @@ def resolve_all_explicit_task_scope_targets(
                 expanded_seen.add(task_id)
                 expanded_ids.append(task_id)
         else:
-            queue = list(children)
-            while queue:
-                child_id = queue.pop(0)
+            # DFS: go deep into first child before sibling children so that
+            # deeper pipeline tasks are not overtaken by shallower leaves.
+            stack = list(reversed(children))
+            while stack:
+                child_id = stack.pop()
                 if not tree.has_node(child_id):
                     continue
                 child_children = tree.children_ids(child_id)
                 if child_children:
-                    queue.extend(child_children)
+                    stack.extend(list(reversed(child_children)))
                 else:
                     if child_id not in expanded_seen:
                         expanded_seen.add(child_id)
