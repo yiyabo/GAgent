@@ -254,6 +254,55 @@ def test_sync_task_status_skips_for_result_interpreter() -> None:
     assert repo.cascaded == []
 
 
+def test_sync_task_status_skips_for_unverified_terminal_session_write() -> None:
+    repo = _RepoTaskSyncStub()
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 1}
+    agent._dirty = False
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="terminal_session",
+        success=True,
+        summary="command dispatched",
+        message="command dispatched",
+        params={"operation": "write", "data": "cat plan.json\n"},
+        result={
+            "operation": "write",
+            "status": "completed",
+            "verification_state": "not_attempted",
+        },
+    )
+
+    assert repo.updated == []
+    assert repo.cascaded == []
+
+
+def test_sync_task_status_runs_for_verified_terminal_session_write() -> None:
+    repo = _RepoTaskSyncStub()
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 1}
+    agent._dirty = False
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="terminal_session",
+        success=True,
+        summary="verified mutation",
+        message="verified mutation",
+        params={"operation": "write", "data": "touch done.txt\n"},
+        result={
+            "operation": "write",
+            "status": "completed",
+            "verification_state": "verified_success",
+            "artifact_paths": ["/tmp/run/results/done.txt"],
+        },
+    )
+
+    assert len(repo.updated) == 1
+    assert len(repo.cascaded) == 1
+
+
 def test_build_deep_think_task_context_uses_bound_atomic_task() -> None:
     leaf = PlanNode(
         id=30,
