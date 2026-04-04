@@ -77,7 +77,9 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "search_hint": "ncbi genbank sequence fasta accession fetch",
     },
     "database_query": {
-        "is_read_only": True,
+        # NOT is_read_only=True: the "execute" operation runs INSERT/UPDATE/DELETE SQL.
+        # Marking the whole tool as read-only would misclassify execute calls as
+        # observation-only in execute_task probe-loop detection.
         "is_concurrent_safe": True,
         "search_hint": "sql database query select table",
     },
@@ -87,7 +89,9 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     },
     # --- read-only but NOT concurrent-safe (heavyweight / stateful) ---
     "result_interpreter": {
-        "is_read_only": True,
+        # NOT is_read_only=True: the "execute" operation actually runs generated code.
+        # Marking the whole tool as read-only would misclassify execute calls as
+        # observation-only in execute_task probe-loop detection.
         "search_hint": "interpret analyze result data summary",
     },
     # --- mutating tools (default: not concurrent-safe) ---
@@ -120,6 +124,17 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "search_hint": "deliverable artifact submit publish output",
     },
 }
+
+def get_tool_orchestration_metadata(tool_name: str) -> Dict[str, Any]:
+    """Return orchestration metadata for *tool_name* from the declarative registry.
+
+    This is the public API for accessing ``_TOOL_METADATA`` from outside this
+    module (e.g. in ``deep_think_agent.py`` when the live tool registry is not
+    yet populated, such as during unit tests).  Returns an empty dict for
+    unknown tools.
+    """
+    return _TOOL_METADATA.get(tool_name, {})
+
 
 # Standard tools follow the common schema:
 #   name, description, category, parameters_schema, handler, tags?, examples?
