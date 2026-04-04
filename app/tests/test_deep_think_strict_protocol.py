@@ -456,6 +456,109 @@ def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -
     assert len(llm.calls) == 3
 
 
+def test_probe_only_blocked_skipped_after_real_execution_tool() -> None:
+    """After code_executor runs successfully, subsequent observation-only cycles
+    should NOT trigger forced BLOCKED_DEPENDENCY override.
+    This reproduces the Task 17 bug: code_executor succeeded, but the AI then
+    did 2+ observation-only cycles (document_reader/file_operations), and
+    the system forcibly replaced the final answer with BLOCKED_DEPENDENCY."""
+    llm = _RecordingNativeLLM(
+        [
+            # Iteration 1: observation-only (file_operations list)
+            NativeStreamResult(
+                content="Inspecting workspace",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task17"},
+                    )
+                ],
+            ),
+            # Iteration 2: REAL execution tool (code_executor)
+            NativeStreamResult(
+                content="Running analysis code",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="code_executor",
+                        arguments={"code": "print('analysis done')", "language": "python"},
+                    )
+                ],
+            ),
+            # Iteration 3: observation-only (document_reader)
+            NativeStreamResult(
+                content="Checking output",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc3",
+                        name="document_reader",
+                        arguments={"operation": "read_text", "file_path": "/tmp/task17/summary.md"},
+                    )
+                ],
+            ),
+            # Iteration 4: observation-only (file_operations)
+            NativeStreamResult(
+                content="Listing outputs",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc4",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task17/results"},
+                    )
+                ],
+            ),
+            # Iteration 5: AI submits real answer (NOT blocked)
+            NativeStreamResult(
+                content="Task completed successfully",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "任务 17 已完成差异表达分析，输出 9 个文件到 results/ 目录。",
+                            "confidence": 0.9,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(_name: str, _params: dict):
+        return {"success": True, "summary": "executed successfully"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "document_reader", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=6,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 17,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请执行任务 17",
+            task_context=TaskExecutionContext(
+                task_id=17,
+                task_name="差异表达分析",
+                task_instruction="对各细胞类型进行差异表达基因分析。",
+            ),
+        )
+    )
+
+    # The AI's real answer should be preserved — NOT overwritten with BLOCKED_DEPENDENCY
+    assert "BLOCKED_DEPENDENCY" not in result.final_answer
+    assert "任务 17" in result.final_answer or "差异表达" in result.final_answer
+    # code_executor was called, so had_real_execution_tool should be True,
+    # preventing forced BLOCKED_DEPENDENCY despite 2+ post-execution probe cycles
+    assert result.confidence >= 0.9
+
+
 def test_blocked_dependency_answer_prefers_structured_document_reader_summary() -> None:
     agent = DeepThinkAgent(
         llm_client=_RecordingNativeLLM([]),
