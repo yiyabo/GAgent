@@ -60,6 +60,12 @@ class CodeExecutionOutcome:
     stderr_file: Optional[str] = None
     execution_backend: str = "local"
     runtime_failure: bool = False
+    execution_status: str = "failed"
+    verification_status: Optional[str] = None
+    failure_kind: Optional[str] = None
+    contract_diff: Optional[Dict[str, Any]] = None
+    repair_attempts: int = 0
+    plan_patch_suggestion: Optional[str] = None
 
 
 @dataclass
@@ -345,6 +351,9 @@ def _normalize_execution_backend(value: Optional[str]) -> str:
     return "local"
 
 
+_MAX_CONTRACT_REPAIR_ATTEMPTS = 1
+
+
 def _runtime_error_category(execution_backend: str) -> str:
     return f"{execution_backend}_runtime_error"
 
@@ -383,6 +392,10 @@ _FIX_HINTS = {
         "The failure is a deterministic prerequisite or dependency blocker. "
         "Do NOT guess alternative paths or rewrite the task into upstream work. "
         "Report the missing prerequisite clearly and stop."
+    ),
+    "acceptance_criteria_failed": (
+        "The code executed, but the authoritative task contract was not satisfied. "
+        "Do NOT change task scope or methods. Preserve useful extra outputs, but generate the missing required deliverables exactly at the expected paths."
     ),
     "runtime_error": "",  # generic, no extra hint
     "non_fatal_warning_noise": "",
@@ -536,6 +549,12 @@ async def execute_code_locally(
     error_category: Optional[str] = None
     fix_guidance: Optional[str] = None
     error_analysis: Optional[ErrorAnalysis] = None
+    execution_status = "completed" if exec_result.status == "success" else "failed"
+    verification_status: Optional[str] = None
+    failure_kind: Optional[str] = None
+    contract_diff: Optional[Dict[str, Any]] = None
+    repair_attempts = 0
+    plan_patch_suggestion: Optional[str] = None
 
     if not auto_fix and exec_result.status != "success":
         if exec_result.runtime_failure:
@@ -657,18 +676,85 @@ async def execute_code_locally(
                 execution_spec=execution_spec,
                 work_dir=work_dir,
             )
-            verification = finalization.verification or {}
+            verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
+                _extract_verification_state(finalization)
+            )
             if finalization.final_status == "failed":
-                success = False
                 error_category = "acceptance_criteria_failed"
                 post_execution_error_summary = _summarize_verification_failures(verification)
                 fix_guidance = _format_verification_guidance(verification)
                 error_analysis = None
-                logger.warning(
-                    "Explicit acceptance-criteria verification failed for task %s: %s",
-                    execution_spec.task_id,
-                    post_execution_error_summary,
-                )
+                if auto_fix and repair_attempts < _MAX_CONTRACT_REPAIR_ATTEMPTS:
+                    repair_attempts += 1
+                    repaired_code = await _ask_llm_to_repair_contract(
+                        generator=generator,
+                        metadata_list=list(metadata_list),
+                        task_title=task_title,
+                        task_description=enhanced_description,
+                        code=preamble + last_code,
+                        verification=verification,
+                        contract_diff=contract_diff or {},
+                    )
+                    if repaired_code and repaired_code.strip():
+                        last_code = repaired_code
+                        _write_code_file(code_file, preamble, last_code)
+                        exec_result = await asyncio.to_thread(interpreter.run_file, code_file)
+                        execution_status = "completed" if exec_result.status == "success" else "failed"
+                        attempt += 1
+                        logger.info(
+                            "%s contract-repair attempt %d/%d: status=%s exit_code=%d runtime_failure=%s",
+                            normalized_backend,
+                            repair_attempts,
+                            _MAX_CONTRACT_REPAIR_ATTEMPTS,
+                            exec_result.status,
+                            exec_result.exit_code,
+                            exec_result.runtime_failure,
+                        )
+                        success = exec_result.status == "success"
+                        if success:
+                            finalization = _verify_execution_against_contract(
+                                execution_spec=execution_spec,
+                                work_dir=work_dir,
+                            )
+                            verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
+                                _extract_verification_state(finalization)
+                            )
+                            if finalization.final_status == "failed":
+                                success = False
+                                error_category = "acceptance_criteria_failed"
+                                post_execution_error_summary = _summarize_verification_failures(verification)
+                                fix_guidance = _format_verification_guidance(verification)
+                            else:
+                                success = True
+                                error_category = None
+                                post_execution_error_summary = None
+                                fix_guidance = None
+                        else:
+                            verification_status = "not_run"
+                            failure_kind = "execution_failed"
+                            contract_diff = None
+                            plan_patch_suggestion = None
+                            if exec_result.runtime_failure:
+                                error_category = _runtime_error_category(normalized_backend)
+                            else:
+                                error_analysis = _analyze_execution_failure(
+                                    exec_result.error,
+                                    exec_result.output,
+                                    exec_result.exit_code,
+                                )
+                                error_category = error_analysis.category
+                                post_execution_error_summary = error_analysis.summary_text
+                                fix_guidance = _FIX_HINTS.get(error_category, "")
+                    else:
+                        success = False
+                else:
+                    success = False
+                if not success and error_category == "acceptance_criteria_failed":
+                    logger.warning(
+                        "Explicit acceptance-criteria verification failed for task %s: %s",
+                        execution_spec.task_id,
+                        post_execution_error_summary,
+                    )
         except Exception as e:
             logger.warning(f"Failed to verify explicit acceptance criteria: {e}")
 
@@ -706,6 +792,12 @@ async def execute_code_locally(
         stderr_file=stderr_file,
         execution_backend=normalized_backend,
         runtime_failure=exec_result.runtime_failure,
+        execution_status=execution_status,
+        verification_status=verification_status,
+        failure_kind=failure_kind,
+        contract_diff=contract_diff,
+        repair_attempts=repair_attempts,
+        plan_patch_suggestion=plan_patch_suggestion,
     )
 
 
@@ -745,6 +837,8 @@ def _append_execution_contract(
     if formatted_checks:
         lines.append("- Deterministic acceptance criteria (authoritative):")
         lines.extend(f"  - {item}" for item in formatted_checks)
+        lines.append("- The plan contract is authoritative: required deliverables must be produced exactly as specified.")
+        lines.append("- Extra outputs are allowed, but they do NOT replace missing required deliverables.")
 
     return "\n".join(line for line in lines if line is not None).strip()
 
@@ -856,6 +950,27 @@ def _verify_execution_against_contract(
     )
 
 
+def _extract_verification_state(
+    finalization,
+) -> tuple[Dict[str, Any], Optional[str], Optional[str], Optional[Dict[str, Any]], Optional[str]]:
+    verification = finalization.verification or {}
+    payload_meta = finalization.payload.get("metadata") if isinstance(finalization.payload, dict) else {}
+    if not isinstance(payload_meta, dict):
+        payload_meta = {}
+    verification_status = str(
+        payload_meta.get("verification_status") or verification.get("status") or ""
+    ).strip() or None
+    failure_kind = str(payload_meta.get("failure_kind") or "").strip() or None
+    contract_diff = payload_meta.get("contract_diff")
+    if not isinstance(contract_diff, dict):
+        alt = verification.get("contract_diff")
+        contract_diff = alt if isinstance(alt, dict) else None
+    plan_patch_suggestion = str(
+        payload_meta.get("plan_patch_suggestion") or verification.get("plan_patch_suggestion") or ""
+    ).strip() or None
+    return verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion
+
+
 def _summarize_verification_failures(verification: Dict[str, Any]) -> str:
     failures = verification.get("failures")
     if not isinstance(failures, list) or not failures:
@@ -887,6 +1002,77 @@ def _format_verification_guidance(verification: Dict[str, Any]) -> str:
     if not bullets:
         return "Inspect the deterministic acceptance criteria and regenerate the missing outputs."
     return "Acceptance criteria failed: " + "; ".join(bullets)
+
+
+def _format_contract_diff(contract_diff: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(contract_diff, dict):
+        return ""
+
+    def _join(key: str, limit: int = 6) -> str:
+        values = contract_diff.get(key)
+        if not isinstance(values, list) or not values:
+            return ""
+        cleaned = [str(item).strip() for item in values if str(item).strip()]
+        if not cleaned:
+            return ""
+        if len(cleaned) > limit:
+            cleaned = cleaned[:limit] + ["..."]
+        return ", ".join(cleaned)
+
+    lines: List[str] = []
+    expected = _join("expected_deliverables")
+    missing = _join("missing_required_outputs")
+    wrong = _join("wrong_format_outputs")
+    unexpected = _join("unexpected_outputs")
+    actual = _join("actual_outputs")
+    if expected:
+        lines.append(f"Expected deliverables: {expected}")
+    if missing:
+        lines.append(f"Missing required outputs: {missing}")
+    if wrong:
+        lines.append(f"Wrong-format outputs: {wrong}")
+    if unexpected:
+        lines.append(f"Unexpected extra outputs: {unexpected}")
+    if actual:
+        lines.append(f"Actual outputs observed: {actual}")
+    return "\n".join(lines)
+
+
+async def _ask_llm_to_repair_contract(
+    *,
+    generator: CodeGenerator,
+    metadata_list: list,
+    task_title: str,
+    task_description: str,
+    code: str,
+    verification: Dict[str, Any],
+    contract_diff: Dict[str, Any],
+) -> Optional[str]:
+    guidance = _format_verification_guidance(verification)
+    contract_text = _format_contract_diff(contract_diff)
+    error = (
+        "The code executed successfully, but it did NOT satisfy the authoritative task contract.\n"
+        "Repair the code so that all required deliverables are produced exactly at the expected paths/patterns.\n"
+        "Do NOT change task scope, scientific method, thresholds, or upstream/downstream responsibilities.\n"
+        "Keep useful extra outputs if you want, but they do not count as replacements for missing required outputs.\n"
+    )
+    if contract_text:
+        error += "\n## Contract mismatch\n" + contract_text + "\n"
+    if guidance:
+        error += "\n## Repair guidance\n" + guidance + "\n"
+    code_response: CodeTaskResponse = await asyncio.to_thread(
+        generator.fix_code,
+        metadata_list=metadata_list,
+        task_title=task_title,
+        task_description=task_description,
+        code=code,
+        error=error,
+        max_retries=1,
+    )
+    fixed = code_response.code
+    if fixed and fixed.strip():
+        return fixed
+    return None
 
 
 def _write_code_file(code_file: str, preamble: str, code: str) -> None:

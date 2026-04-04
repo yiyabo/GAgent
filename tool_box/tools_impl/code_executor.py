@@ -545,6 +545,9 @@ def _build_qwen_code_command(
         f"upstream tasks first. Do NOT silently fabricate or fix upstream "
         f"outputs yourself — unless the task instruction explicitly "
         f"authorizes you to produce them.\n"
+        f"The plan/task contract is authoritative. Required deliverables must "
+        f"be produced exactly at the specified paths/patterns. Extra outputs "
+        f"are allowed, but they do NOT replace missing required outputs.\n"
         f"Only output BLOCKED_SCOPE if the request is fundamentally outside "
         f"the scope of code execution (e.g. 'plan the entire project' or "
         f"'manage my calendar').\n"
@@ -708,8 +711,70 @@ def _build_cli_task_contract(
     if formatted_checks:
         lines.extend(["", "Deterministic acceptance criteria:"])
         lines.extend(f"- {item}" for item in formatted_checks)
+        lines.extend([
+            "- The plan contract is authoritative: required deliverables must match these criteria exactly.",
+            "- Extra outputs are allowed, but they do NOT substitute for missing required outputs.",
+        ])
 
     return "\n".join(lines).strip() or task_text
+
+
+def _format_contract_diff_for_cli(contract_diff: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(contract_diff, dict):
+        return ""
+
+    def _join(key: str, limit: int = 6) -> str:
+        values = contract_diff.get(key)
+        if not isinstance(values, list) or not values:
+            return ""
+        cleaned = [str(item).strip() for item in values if str(item).strip()]
+        if not cleaned:
+            return ""
+        if len(cleaned) > limit:
+            cleaned = cleaned[:limit] + ["..."]
+        return ", ".join(cleaned)
+
+    lines: List[str] = []
+    for label, key in (
+        ("Expected deliverables", "expected_deliverables"),
+        ("Missing required outputs", "missing_required_outputs"),
+        ("Wrong-format outputs", "wrong_format_outputs"),
+        ("Unexpected extra outputs", "unexpected_outputs"),
+        ("Actual outputs observed", "actual_outputs"),
+    ):
+        joined = _join(key)
+        if joined:
+            lines.append(f"- {label}: {joined}")
+    return "\n".join(lines)
+
+
+def _build_cli_contract_repair_task(
+    task: str,
+    execution_spec: Optional[Dict[str, Any]],
+    *,
+    contract_diff: Optional[Dict[str, Any]],
+    guidance: str,
+) -> str:
+    lines: List[str] = [
+        "[STRICT CONTRACT REPAIR]",
+        "The previous execution ran, but the required deliverables did not match the authoritative task contract.",
+        "Do NOT change task scope, task meaning, methods, thresholds, or upstream/downstream responsibilities.",
+        "Preserve useful extra outputs if you want, but they do NOT replace missing required outputs.",
+        "Regenerate or supplement outputs so that the required deliverables exist exactly at the expected paths/patterns.",
+    ]
+    contract_text = _format_contract_diff_for_cli(contract_diff)
+    if contract_text:
+        lines.extend(["", "Contract mismatch:", contract_text])
+    if guidance:
+        lines.extend(["", "Verification guidance:", guidance.strip()])
+    if task:
+        lines.extend(["", "Original execution request:", str(task).strip()])
+    if execution_spec:
+        lines.extend([
+            "",
+            "Use the bound task context below as the single source of truth. Do not patch the plan.",
+        ])
+    return "\n".join(lines).strip()
 
 
 def _validate_scope_contract(
@@ -1320,6 +1385,12 @@ async def _execute_task_locally(
         "error_category": outcome.error_category,
         "error_summary": outcome.error_summary,
         "fix_guidance": outcome.fix_guidance,
+        "execution_status": outcome.execution_status,
+        "verification_status": outcome.verification_status,
+        "failure_kind": outcome.failure_kind,
+        "contract_diff": outcome.contract_diff,
+        "repair_attempts": outcome.repair_attempts,
+        "plan_patch_suggestion": outcome.plan_patch_suggestion,
         "stdout_file": outcome.stdout_file,
         "stderr_file": outcome.stderr_file,
         "execution_mode": f"code_executor_{runtime_mode}",
@@ -1627,6 +1698,16 @@ async def code_executor_handler(
                 result_payload["docker_image_effective"] = local_result.get("docker_image_effective")
             if "runtime_failure" in local_result:
                 result_payload["runtime_failure"] = bool(local_result.get("runtime_failure"))
+            for key in (
+                "execution_status",
+                "verification_status",
+                "failure_kind",
+                "contract_diff",
+                "repair_attempts",
+                "plan_patch_suggestion",
+            ):
+                if key in local_result and local_result.get(key) is not None:
+                    result_payload[key] = local_result.get(key)
             code_file = str(local_result.get("code_file") or "").strip()
             if code_file:
                 result_payload["code_file"] = code_file
@@ -1667,18 +1748,20 @@ async def code_executor_handler(
                 ).strip()
                 or None
             )
-            cmd = _build_qwen_code_command(
-                task=task,
-                work_dir=str(task_work_dir),
-                file_prefix=file_prefix,
-                output_format=output_format,
-                allowed_tools=normalized_allowed_tools,
-                allowed_dirs=allowed_dirs,
-                model=effective_model,
-                debug=debug_log_path is not None,
-                allowed_dirs_info=allowed_dirs_info,
-                execution_spec=execution_spec,
-            )
+            def _rebuild_cli_command(task_override: str) -> List[str]:
+                return _build_qwen_code_command(
+                    task=task_override,
+                    work_dir=str(task_work_dir),
+                    file_prefix=file_prefix,
+                    output_format=output_format,
+                    allowed_tools=normalized_allowed_tools,
+                    allowed_dirs=allowed_dirs,
+                    model=effective_model,
+                    debug=debug_log_path is not None,
+                    allowed_dirs_info=allowed_dirs_info,
+                    execution_spec=execution_spec,
+                )
+            cmd = _rebuild_cli_command(task)
             _cli_label = "Qwen Code"
             _diag_key = subprocess_env.get("OPENAI_API_KEY", "")
             _diag_url = subprocess_env.get("OPENAI_BASE_URL", "")
@@ -1727,22 +1810,47 @@ async def code_executor_handler(
                 f"4. Return a summary of actual outputs produced."
                 f"{allowed_dirs_info}"
             )
-            cmd = [
-                'claude', '-p', enhanced_task,
-                '--output-format', output_format,
-                '--max-turns', '50',
-            ]
-            if debug_log_path is not None:
-                cmd.extend(['--debug-file', str(debug_log_path)])
-            if effective_model:
-                cmd.extend(['--model', effective_model])
-            if effective_setting_sources:
-                cmd.extend(['--setting-sources', effective_setting_sources])
-            cmd.extend(['--allowed-tools', ",".join(normalized_allowed_tools)])
-            for abs_path in allowed_dirs:
-                cmd.extend(['--add-dir', abs_path])
-            if skip_permissions:
-                cmd.append('--dangerously-skip-permissions')
+            def _rebuild_cli_command(task_override: str) -> List[str]:
+                cli_task_override = _build_cli_task_contract(task_override, execution_spec)
+                enhanced_task_override = (
+                    f"[ATOMIC TASK]\n"
+                    f"Execute only the task below. Do not broaden scope or create extra tasks.\n"
+                    f"If the request still needs planning or decomposition, output exactly:\n"
+                    f"  {_BLOCK_SCOPE_STATUS}\n"
+                    f"  {_BLOCK_SCOPE_REASON}\n"
+                    f"  DETAIL: <one sentence>\n"
+                    f"Use direct execution; skip standalone environment diagnostics "
+                    f"unless an observed failure requires them.\n\n"
+                    f"Workspace: {task_work_dir}\n"
+                    f"Output dirs: results/ code/ data/ docs/\n"
+                    f"File prefix: {file_prefix}\n"
+                    f"Task:\n{cli_task_override}\n\n"
+                    f"Deliverables:\n"
+                    f"1. Write scripts under code/ only when needed.\n"
+                    f"2. Run them and save outputs under results/, data/, or docs/.\n"
+                    f"3. Put publishable deliverable code under results/submission/ "
+                    f"or results/deliverable/.\n"
+                    f"4. Return a summary of actual outputs produced."
+                    f"{allowed_dirs_info}"
+                )
+                rebuilt = [
+                    'claude', '-p', enhanced_task_override,
+                    '--output-format', output_format,
+                    '--max-turns', '50',
+                ]
+                if debug_log_path is not None:
+                    rebuilt.extend(['--debug-file', str(debug_log_path)])
+                if effective_model:
+                    rebuilt.extend(['--model', effective_model])
+                if effective_setting_sources:
+                    rebuilt.extend(['--setting-sources', effective_setting_sources])
+                rebuilt.extend(['--allowed-tools', ",".join(normalized_allowed_tools)])
+                for abs_path in allowed_dirs:
+                    rebuilt.extend(['--add-dir', abs_path])
+                if skip_permissions:
+                    rebuilt.append('--dangerously-skip-permissions')
+                return rebuilt
+            cmd = _rebuild_cli_command(task)
             _cli_label = "Claude Code"
             _diag_key = subprocess_env.get("ANTHROPIC_API_KEY", "")
             _diag_url = subprocess_env.get("ANTHROPIC_BASE_URL", "")
@@ -1787,87 +1895,89 @@ async def code_executor_handler(
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
         return_code = -1
+        async def _run_cli_with_retry(command: List[str]) -> tuple[int, str, str, Optional[Dict[str, Any]]]:
+            local_stdout_lines: list[str] = []
+            local_stderr_lines: list[str] = []
+            local_return_code = -1
 
-        for _attempt in range(1, max_cli_retries + 2):
-            stdout_lines.clear()
-            stderr_lines.clear()
+            for _attempt in range(1, max_cli_retries + 2):
+                local_stdout_lines.clear()
+                local_stderr_lines.clear()
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(task_work_dir),
-                env=subprocess_env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            stdout_task = asyncio.create_task(
-                _read_stream(process.stdout, stdout_lines, on_stdout, "stdout")
-            )
-            stderr_task = asyncio.create_task(
-                _read_stream(process.stderr, stderr_lines, on_stderr, "stderr")
-            )
-
-            try:
-                await asyncio.wait([stdout_task, stderr_task])
-                return_code = await process.wait()
-            except (asyncio.CancelledError, Exception) as _wait_exc:
-                try:
-                    process.kill()
-                    await process.wait()
-                except Exception:
-                    pass
-                if isinstance(_wait_exc, asyncio.CancelledError):
-                    raise
-                raise
-
-            if return_code == 0:
-                break  # Success — no retry needed.
-
-            # Check if this is a retryable failure (CLI crash, not a scope block).
-            _stderr_preview = " ".join(stderr_lines)[:500]
-            _is_scope_block = _detect_scope_blocked(
-                "\n".join(stdout_lines), None,
-            )
-            if _is_scope_block:
-                logger.info("[CODE_EXECUTOR_RETRY] Scope block detected, not retrying.")
-                break
-
-            if _attempt <= max_cli_retries:
-                retry_delay_s = min(cli_retry_base_delay_s * (2 ** (_attempt - 1)), 30.0)
-                logger.warning(
-                    "[CODE_EXECUTOR_RETRY] CLI failed (attempt %d/%d, exit=%d). "
-                    "Retrying in %.1fs... stderr_hint=%s",
-                    _attempt, max_cli_retries + 1, return_code,
-                    retry_delay_s, _extract_readable_error("\n".join(stderr_lines))[:200],
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    cwd=str(task_work_dir),
+                    env=subprocess_env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-                if log_file:
+
+                stdout_task = asyncio.create_task(
+                    _read_stream(process.stdout, local_stdout_lines, on_stdout, "stdout")
+                )
+                stderr_task = asyncio.create_task(
+                    _read_stream(process.stderr, local_stderr_lines, on_stderr, "stderr")
+                )
+
+                try:
+                    await asyncio.wait([stdout_task, stderr_task])
+                    local_return_code = await process.wait()
+                except (asyncio.CancelledError, Exception) as _wait_exc:
                     try:
-                        log_file.write(
-                            f"[{datetime.utcnow().isoformat()}Z] Retry {_attempt}/{max_cli_retries} "
-                            f"after exit={return_code}, waiting {retry_delay_s:.1f}s\n"
-                        )
-                        log_file.flush()
+                        process.kill()
+                        await process.wait()
                     except Exception:
                         pass
-                await asyncio.sleep(retry_delay_s)
-            else:
-                logger.error(
-                    "[CODE_EXECUTOR_RETRY] CLI failed after %d attempts (exit=%d).",
-                    _attempt, return_code,
-                )
+                    if isinstance(_wait_exc, asyncio.CancelledError):
+                        raise
+                    raise
+
+                if local_return_code == 0:
+                    break
+
+                _is_scope_block = _detect_scope_blocked("\n".join(local_stdout_lines), None)
+                if _is_scope_block:
+                    logger.info("[CODE_EXECUTOR_RETRY] Scope block detected, not retrying.")
+                    break
+
+                if _attempt <= max_cli_retries:
+                    retry_delay_s = min(cli_retry_base_delay_s * (2 ** (_attempt - 1)), 30.0)
+                    logger.warning(
+                        "[CODE_EXECUTOR_RETRY] CLI failed (attempt %d/%d, exit=%d). "
+                        "Retrying in %.1fs... stderr_hint=%s",
+                        _attempt, max_cli_retries + 1, local_return_code,
+                        retry_delay_s, _extract_readable_error("\n".join(local_stderr_lines))[:200],
+                    )
+                    if log_file:
+                        try:
+                            log_file.write(
+                                f"[{datetime.utcnow().isoformat()}Z] Retry {_attempt}/{max_cli_retries} "
+                                f"after exit={local_return_code}, waiting {retry_delay_s:.1f}s\n"
+                            )
+                            log_file.flush()
+                        except Exception:
+                            pass
+                    await asyncio.sleep(retry_delay_s)
+                else:
+                    logger.error(
+                        "[CODE_EXECUTOR_RETRY] CLI failed after %d attempts (exit=%d).",
+                        _attempt, local_return_code,
+                    )
+
+            local_stdout = "\n".join(local_stdout_lines)
+            local_stderr = "\n".join(local_stderr_lines)
+            local_output_data = None
+            if output_format == "json" and local_stdout:
+                try:
+                    local_output_data = json.loads(local_stdout)
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse JSON output, using raw text")
+                    local_output_data = {"raw_output": local_stdout}
+            return local_return_code, local_stdout, local_stderr, local_output_data
+
+        return_code, stdout, stderr, output_data = await _run_cli_with_retry(cmd)
 
         success = return_code == 0
-        stdout = "\n".join(stdout_lines)
-        stderr = "\n".join(stderr_lines)
-        
-        # Parse output
-        output_data = None
-        if output_format == "json" and stdout:
-            try:
-                output_data = json.loads(stdout)
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse JSON output, using raw text")
-                output_data = {"raw_output": stdout}
 
         blocked_detail = _detect_scope_blocked(stdout, output_data)
         if blocked_detail:
@@ -1885,6 +1995,105 @@ async def code_executor_handler(
             session_artifact_paths=session_artifact_paths,
             session_dir=session_dir,
         )
+        execution_status = "completed" if return_code == 0 else "failed"
+        verification_status: Optional[str] = None
+        failure_kind: Optional[str] = None
+        contract_diff: Optional[Dict[str, Any]] = None
+        repair_attempts = 0
+        plan_patch_suggestion: Optional[str] = None
+        contract_error_summary: Optional[str] = None
+        contract_fix_guidance: Optional[str] = None
+
+        if success and execution_spec and execution_spec.get("acceptance_criteria"):
+            try:
+                from app.services.interpreter.code_execution import (
+                    CodeExecutionSpec,
+                    _extract_verification_state,
+                    _format_verification_guidance,
+                    _summarize_verification_failures,
+                    _verify_execution_against_contract,
+                )
+
+                finalization = _verify_execution_against_contract(
+                    execution_spec=CodeExecutionSpec(
+                        plan_id=execution_spec.get("plan_id"),
+                        task_id=execution_spec.get("task_id"),
+                        task_name=execution_spec.get("task_name"),
+                        task_instruction=execution_spec.get("task_instruction"),
+                        acceptance_criteria=execution_spec.get("acceptance_criteria"),
+                        dependency_outputs=list(execution_spec.get("dependency_outputs") or []),
+                        dependency_artifact_paths=list(execution_spec.get("dependency_artifact_paths") or []),
+                    ),
+                    work_dir=str(task_work_dir),
+                )
+                verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
+                    _extract_verification_state(finalization)
+                )
+                if finalization.final_status == "failed" and auto_fix:
+                    repair_attempts = 1
+                    contract_error_summary = _summarize_verification_failures(verification)
+                    contract_fix_guidance = _format_verification_guidance(verification)
+                    repair_task = _build_cli_contract_repair_task(
+                        task,
+                        execution_spec,
+                        contract_diff=contract_diff,
+                        guidance=contract_fix_guidance,
+                    )
+                    repair_cmd = _rebuild_cli_command(repair_task)
+                    return_code, stdout, stderr, output_data = await _run_cli_with_retry(repair_cmd)
+                    success = return_code == 0
+                    execution_status = "completed" if return_code == 0 else "failed"
+                    blocked_detail = _detect_scope_blocked(stdout, output_data)
+                    if blocked_detail:
+                        success = False
+                    produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
+                    session_artifact_paths = _promote_task_results_to_session_root(
+                        session_dir=session_dir,
+                        task_work_dir=task_work_dir,
+                    )
+                    verification_artifact_paths = _build_verification_artifact_paths(
+                        task_work_dir=task_work_dir,
+                        subdirs=task_subdirs,
+                        produced_files=produced_files,
+                        session_artifact_paths=session_artifact_paths,
+                        session_dir=session_dir,
+                    )
+                    if success:
+                        finalization = _verify_execution_against_contract(
+                            execution_spec=CodeExecutionSpec(
+                                plan_id=execution_spec.get("plan_id"),
+                                task_id=execution_spec.get("task_id"),
+                                task_name=execution_spec.get("task_name"),
+                                task_instruction=execution_spec.get("task_instruction"),
+                                acceptance_criteria=execution_spec.get("acceptance_criteria"),
+                                dependency_outputs=list(execution_spec.get("dependency_outputs") or []),
+                                dependency_artifact_paths=list(execution_spec.get("dependency_artifact_paths") or []),
+                            ),
+                            work_dir=str(task_work_dir),
+                        )
+                        verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
+                            _extract_verification_state(finalization)
+                        )
+                        if finalization.final_status == "failed":
+                            success = False
+                            contract_error_summary = _summarize_verification_failures(verification)
+                            contract_fix_guidance = _format_verification_guidance(verification)
+                    else:
+                        verification_status = "not_run"
+                        failure_kind = "execution_failed"
+                        contract_diff = None
+                        plan_patch_suggestion = None
+                        contract_error_summary = None
+                        contract_fix_guidance = None
+                    if not success and not blocked_detail and contract_error_summary is None and verification_status == "failed":
+                        contract_error_summary = _summarize_verification_failures(verification)
+                        contract_fix_guidance = _format_verification_guidance(verification)
+                elif finalization.final_status == "failed":
+                    success = False
+                    contract_error_summary = _summarize_verification_failures(verification)
+                    contract_fix_guidance = _format_verification_guidance(verification)
+            except Exception as contract_exc:
+                logger.warning("CLI contract verification failed unexpectedly: %s", contract_exc)
 
         if log_file:
             try:
@@ -1924,8 +2133,21 @@ async def code_executor_handler(
             "produced_files_count": len(produced_files),
             "artifact_paths": verification_artifact_paths,
             "session_artifact_paths": session_artifact_paths,
+            "execution_status": execution_status,
+            "verification_status": verification_status,
+            "failure_kind": failure_kind,
+            "contract_diff": contract_diff,
+            "repair_attempts": repair_attempts,
+            "plan_patch_suggestion": plan_patch_suggestion,
         }
-        if not success and not blocked_detail:
+        if contract_error_summary:
+            result_payload["error_category"] = "acceptance_criteria_failed"
+            result_payload["error_summary"] = contract_error_summary
+            if contract_fix_guidance:
+                result_payload["fix_guidance"] = contract_fix_guidance
+        if contract_error_summary and not blocked_detail:
+            result_payload["error"] = contract_error_summary
+        elif not success and not blocked_detail:
             result_payload["error"] = _build_cli_failure_error(
                 return_code=return_code,
                 stderr=stderr,

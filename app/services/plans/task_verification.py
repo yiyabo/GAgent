@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import fnmatch
 import glob
 import json
 import logging
@@ -83,11 +84,21 @@ class TaskVerificationService:
         normalized_payload = self._coerce_payload(payload, fallback_status=normalized_execution_status)
         metadata = dict(normalized_payload.get("metadata") or {})
         metadata["execution_status"] = normalized_execution_status
+        metadata["repair_attempts"] = self._coerce_repair_attempts(metadata.get("repair_attempts"))
+        metadata["verification_status"] = "not_run"
+        metadata.pop("failure_kind", None)
+        metadata.pop("contract_diff", None)
+        metadata.pop("plan_patch_suggestion", None)
 
         artifact_paths = self._extract_artifact_paths(normalized_payload)
         local_artifact_paths = [path for path in artifact_paths if self._is_local_path(path)]
 
         if normalized_execution_status not in _COMPLETED_LIKE:
+            metadata["failure_kind"] = self._derive_failure_kind(
+                execution_status=normalized_execution_status,
+                verification_status="not_run",
+                payload_metadata=metadata,
+            )
             normalized_payload["status"] = normalized_execution_status
             normalized_payload["metadata"] = metadata
             return VerificationFinalization(
@@ -114,6 +125,7 @@ class TaskVerificationService:
                 artifact_paths=local_artifact_paths,
             )
             metadata["verification"] = verification
+            metadata["verification_status"] = "skipped"
             # When manually triggered, skipping verification should NOT
             # silently mark the task as completed — the user explicitly asked
             # for verification, so preserve the current execution status and
@@ -173,6 +185,21 @@ class TaskVerificationService:
             failures=failures,
             artifact_paths=local_artifact_paths,
         )
+        metadata["verification_status"] = verification_status
+        if failures:
+            contract_diff = self._build_contract_diff(
+                criteria=effective_criteria,
+                failures=failures,
+                artifact_paths=local_artifact_paths,
+                base_dir=base_dir,
+            )
+            metadata["contract_diff"] = contract_diff
+            metadata["failure_kind"] = "contract_mismatch"
+            verification["contract_diff"] = copy.deepcopy(contract_diff)
+            plan_patch_suggestion = self._build_plan_patch_suggestion(contract_diff)
+            if plan_patch_suggestion:
+                metadata["plan_patch_suggestion"] = plan_patch_suggestion
+                verification["plan_patch_suggestion"] = plan_patch_suggestion
         metadata["verification"] = verification
         normalized_payload["metadata"] = metadata
         normalized_payload["status"] = "failed" if failures and blocking else "completed"
@@ -631,22 +658,19 @@ class TaskVerificationService:
 
         Search order (most specific → least specific):
         1. Exact basename match  (e.g. ``deg_metadata.csv``)
-        2. Same file extension   (e.g. any ``.csv`` among artifacts)
 
         The ``lenient`` parameter is accepted for API compatibility but the
-        previous "any existing file" fallback has been removed.  That fallback
-        caused false-positive verification: a task that produced *some* output
-        (e.g. 2/6 expected CSVs) would pass verification as long as any single
-        artifact existed, hiding incomplete execution.
+        previous "any existing file" and "same extension" fallbacks have been
+        removed. Those fallbacks caused false-positive verification: a task that
+        produced *some* output (or merely another CSV) could pass plan
+        verification despite missing the required deliverable path.
         """
         if not artifact_paths:
             return None
 
         expected_name = expected_path.name.lower()
-        expected_ext = expected_path.suffix.lower()
 
         basename_hit: Optional[Path] = None
-        ext_hit: Optional[Path] = None
 
         for raw in artifact_paths:
             ap = Path(raw)
@@ -654,15 +678,10 @@ class TaskVerificationService:
                 continue
             if basename_hit is None and ap.name.lower() == expected_name:
                 basename_hit = ap
-            if ext_hit is None and expected_ext and ap.suffix.lower() == expected_ext:
-                ext_hit = ap
 
         if basename_hit:
             logger.info("[Verification] Fallback basename match: %s -> %s", expected_path, basename_hit)
             return basename_hit
-        if ext_hit:
-            logger.info("[Verification] Fallback extension match: %s -> %s", expected_path, ext_hit)
-            return ext_hit
 
         return None
 
@@ -710,6 +729,174 @@ class TaskVerificationService:
                 "artifact_paths": list(artifact_paths),
             },
         }
+
+    @staticmethod
+    def _coerce_repair_attempts(value: Any) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, parsed)
+
+    def _derive_failure_kind(
+        self,
+        *,
+        execution_status: str,
+        verification_status: str,
+        payload_metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        metadata = payload_metadata if isinstance(payload_metadata, dict) else {}
+        if bool(metadata.get("blocked_by_dependencies")):
+            return "blocked_dependency"
+        if execution_status not in _COMPLETED_LIKE:
+            return "execution_failed"
+        if verification_status == "failed":
+            return "contract_mismatch"
+        return None
+
+    def _build_contract_diff(
+        self,
+        *,
+        criteria: Optional[Dict[str, Any]],
+        failures: Sequence[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+        base_dir: Path,
+    ) -> Dict[str, List[str]]:
+        expected_deliverables = self._expected_deliverables(criteria)
+        actual_outputs = self._actual_outputs(artifact_paths, base_dir=base_dir)
+        missing_required_outputs = self._missing_required_outputs(
+            criteria,
+            failures,
+            base_dir=base_dir,
+        )
+        unexpected_outputs = [
+            output for output in actual_outputs
+            if not self._output_matches_expected(output, expected_deliverables)
+        ]
+        missing_suffixes = {
+            Path(item).suffix.lower()
+            for item in missing_required_outputs
+            if Path(str(item)).suffix
+        }
+        wrong_format_outputs = [
+            output
+            for output in unexpected_outputs
+            if Path(output).suffix.lower() in missing_suffixes
+        ]
+        return {
+            "expected_deliverables": expected_deliverables,
+            "actual_outputs": actual_outputs,
+            "missing_required_outputs": missing_required_outputs,
+            "wrong_format_outputs": wrong_format_outputs,
+            "unexpected_outputs": unexpected_outputs,
+        }
+
+    def _expected_deliverables(self, criteria: Optional[Dict[str, Any]]) -> List[str]:
+        if not isinstance(criteria, dict):
+            return []
+        expected: List[str] = []
+        seen: set[str] = set()
+        for raw_check in criteria.get("checks") or []:
+            if not isinstance(raw_check, dict):
+                continue
+            check_type = str(raw_check.get("type") or "").strip()
+            if check_type in {"file_exists", "file_nonempty", "text_contains", "json_field_equals", "json_field_at_least"}:
+                text = str(raw_check.get("path") or "").strip()
+            elif check_type == "glob_count_at_least":
+                text = str(raw_check.get("glob") or "").strip()
+            else:
+                text = ""
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            expected.append(text)
+        return expected
+
+    def _actual_outputs(self, artifact_paths: Sequence[str], *, base_dir: Path) -> List[str]:
+        outputs: List[str] = []
+        seen: set[str] = set()
+        for raw in artifact_paths:
+            path = Path(str(raw)).expanduser()
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                rel = str(path.resolve().relative_to(base_dir.resolve()))
+            except Exception:
+                rel = str(path.resolve())
+            if rel in seen:
+                continue
+            seen.add(rel)
+            outputs.append(rel)
+        return outputs[:80]
+
+    def _missing_required_outputs(
+        self,
+        criteria: Optional[Dict[str, Any]],
+        failures: Sequence[Dict[str, Any]],
+        *,
+        base_dir: Path,
+    ) -> List[str]:
+        if not isinstance(criteria, dict):
+            return []
+        failed_targets: List[str] = []
+        seen: set[str] = set()
+        failed_signatures = set()
+        for item in failures:
+            if not isinstance(item, dict):
+                continue
+            failed_signatures.add((
+                str(item.get("type") or "").strip(),
+                str(item.get("path") or item.get("glob") or "").strip(),
+            ))
+        for raw_check in criteria.get("checks") or []:
+            if not isinstance(raw_check, dict):
+                continue
+            check_type = str(raw_check.get("type") or "").strip()
+            if check_type in {"file_exists", "file_nonempty", "text_contains", "json_field_equals", "json_field_at_least"}:
+                candidate = str(raw_check.get("path") or "").strip()
+                resolved = str(self._resolve_path(candidate, base_dir)) if candidate else ""
+            elif check_type == "glob_count_at_least":
+                candidate = str(raw_check.get("glob") or "").strip()
+                resolved = str(self._resolve_glob(candidate, base_dir)) if candidate else ""
+            else:
+                candidate = ""
+                resolved = ""
+            if not candidate:
+                continue
+            if (
+                (check_type, candidate) not in failed_signatures
+                and (check_type, resolved) not in failed_signatures
+            ) or candidate in seen:
+                continue
+            seen.add(candidate)
+            failed_targets.append(candidate)
+        return failed_targets
+
+    @staticmethod
+    def _output_matches_expected(output: str, expected_deliverables: Sequence[str]) -> bool:
+        for expected in expected_deliverables:
+            text = str(expected or "").strip()
+            if not text:
+                continue
+            if any(token in text for token in ("*", "?", "[")):
+                if fnmatch.fnmatch(output, text):
+                    return True
+            elif output == text:
+                return True
+        return False
+
+    @staticmethod
+    def _build_plan_patch_suggestion(contract_diff: Dict[str, List[str]]) -> Optional[str]:
+        missing = list(contract_diff.get("missing_required_outputs") or [])
+        unexpected = list(contract_diff.get("unexpected_outputs") or [])
+        wrong_format = list(contract_diff.get("wrong_format_outputs") or [])
+        if not missing or not (unexpected or wrong_format):
+            return None
+        return (
+            "Execution produced stable artifacts that do not match the current "
+            "plan contract. Review acceptance_criteria and required deliverables "
+            "before changing the plan."
+        )
 
     def _extract_artifact_paths(self, payload: Any) -> List[str]:
         found: List[str] = []
