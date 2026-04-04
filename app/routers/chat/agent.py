@@ -243,6 +243,7 @@ from .guardrail_handlers import (
     infer_plan_seed_message as _infer_plan_seed_message_fn,
     match_atomic_task_by_keywords as _match_atomic_task_by_keywords_fn,
     resolve_explicit_task_scope_target as _resolve_explicit_task_scope_target_fn,
+    resolve_all_explicit_task_scope_targets as _resolve_all_explicit_task_scope_targets_fn,
     resolve_followthrough_target_task_id as _resolve_followthrough_target_task_id_fn,
     classify_explicit_scope_none_reason as _classify_explicit_scope_none_reason_fn,
 )
@@ -1444,6 +1445,24 @@ class StructuredChatAgent:
                         "[TASK_SYNC] Cascade updated %d descendant tasks to %s",
                         descendants_updated,
                         new_status,
+                    )
+
+                # Advance to the next pending task in composite scope.
+                # When "complete task 8" expanded to [19,20,21,22] and we just
+                # finished 19, automatically move current_task_id to 20 so the
+                # agent continues executing the next subtask.
+                pending_ids = self.extra_context.get("pending_scope_task_ids")
+                if pending_ids and isinstance(pending_ids, list) and len(pending_ids) > 0:
+                    next_task_id = pending_ids.pop(0)
+                    self.extra_context["current_task_id"] = next_task_id
+                    self.extra_context["task_id"] = next_task_id
+                    self.extra_context["pending_scope_task_ids"] = pending_ids
+                    logger.info(
+                        "[TASK_SYNC] Advancing to next composite subtask: "
+                        "completed=%s next=%s remaining=%s",
+                        task_id_int,
+                        next_task_id,
+                        pending_ids,
                     )
 
             self._dirty = True
@@ -3338,9 +3357,34 @@ class StructuredChatAgent:
                     )
                 except Exception:
                     target_task_id = None
+
+                # Resolve ALL executable leaves for composite task expansion.
+                # This allows the agent to know about pending sibling tasks and
+                # continue executing them after the first one completes.
+                try:
+                    all_targets = _resolve_all_explicit_task_scope_targets_fn(
+                        tree,
+                        list(routing_decision.explicit_task_ids),
+                        allow_cascade_rerun=True,
+                    )
+                except Exception:
+                    all_targets = []
+
                 if target_task_id is not None:
                     self.extra_context["current_task_id"] = int(target_task_id)
                     self.extra_context["task_id"] = int(target_task_id)
+                    # Store remaining tasks so the agent can continue after
+                    # the first task completes (composite task support).
+                    remaining = [t for t in all_targets if t != target_task_id]
+                    if remaining:
+                        self.extra_context["pending_scope_task_ids"] = remaining
+                        logger.info(
+                            "[CHAT][ROUTING][EXPLICIT_SCOPE] Composite expansion: "
+                            "current=%s pending=%s plan_id=%s",
+                            target_task_id,
+                            remaining,
+                            self.plan_session.plan_id,
+                        )
                     # Clear any stale blocked flag from a previous turn
                     self.extra_context.pop("explicit_scope_all_blocked", None)
                     self.extra_context.pop("explicit_scope_blocked_task_ids", None)

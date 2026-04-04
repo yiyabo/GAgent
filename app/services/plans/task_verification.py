@@ -555,12 +555,12 @@ class TaskVerificationService:
         Search order (most specific → least specific):
         1. Exact basename match  (e.g. ``deg_metadata.csv``)
         2. Same file extension   (e.g. any ``.csv`` among artifacts)
-        3. *Any* existing artifact file (only when ``lenient=True``)
 
-        Pass 3 is intentionally broad: LLM-predicted filenames at plan-creation
-        time often differ from what ``code_executor`` actually writes.  If the
-        task produced *any* output file, that is strong evidence the work was
-        done; a mismatch in the predicted name should not block completion.
+        The ``lenient`` parameter is accepted for API compatibility but the
+        previous "any existing file" fallback has been removed.  That fallback
+        caused false-positive verification: a task that produced *some* output
+        (e.g. 2/6 expected CSVs) would pass verification as long as any single
+        artifact existed, hiding incomplete execution.
         """
         if not artifact_paths:
             return None
@@ -568,7 +568,6 @@ class TaskVerificationService:
         expected_name = expected_path.name.lower()
         expected_ext = expected_path.suffix.lower()
 
-        existing: List[Path] = []
         basename_hit: Optional[Path] = None
         ext_hit: Optional[Path] = None
 
@@ -576,7 +575,6 @@ class TaskVerificationService:
             ap = Path(raw)
             if not ap.exists() or not ap.is_file():
                 continue
-            existing.append(ap)
             if basename_hit is None and ap.name.lower() == expected_name:
                 basename_hit = ap
             if ext_hit is None and expected_ext and ap.suffix.lower() == expected_ext:
@@ -588,15 +586,6 @@ class TaskVerificationService:
         if ext_hit:
             logger.info("[Verification] Fallback extension match: %s -> %s", expected_path, ext_hit)
             return ext_hit
-        if lenient and existing:
-            logger.info(
-                "[Verification] Fallback lenient match: expected %s not found; "
-                "%d artifact(s) exist, using: %s",
-                expected_path,
-                len(existing),
-                existing[0],
-            )
-            return existing[0]
 
         return None
 
