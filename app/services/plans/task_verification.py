@@ -33,6 +33,13 @@ _PATH_KEYS = {
     "manifest_path",
     "result_path",
     "preview_path",
+    "run_directory",
+    "working_directory",
+    "task_directory_full",
+    "task_root_directory",
+    "results_directory",
+    "work_dir",
+    "run_dir",
     "references_bib",
     "evidence_md",
     "library_jsonl",
@@ -126,7 +133,11 @@ class TaskVerificationService:
                 artifact_paths=local_artifact_paths,
             )
 
-        base_dir = self._resolve_base_dir(effective_criteria, local_artifact_paths)
+        base_dir = self._resolve_base_dir(
+            effective_criteria,
+            local_artifact_paths,
+            payload=normalized_payload,
+        )
         blocking = bool(effective_criteria.get("blocking", True))
         failures: List[Dict[str, Any]] = []
         checks = effective_criteria.get("checks") or []
@@ -372,11 +383,23 @@ class TaskVerificationService:
         self,
         criteria: Optional[Dict[str, Any]],
         artifact_paths: Sequence[str],
+        *,
+        payload: Optional[Dict[str, Any]] = None,
     ) -> Path:
         if isinstance(criteria, dict):
             raw_base_dir = criteria.get("base_dir")
             if isinstance(raw_base_dir, str) and raw_base_dir.strip():
                 return Path(raw_base_dir).expanduser()
+
+        # For relative acceptance-criteria paths like ``results/foo.csv``, the
+        # correct base is the task run/work directory rather than whichever
+        # artifact path happened to be extracted first.  CLI backends often
+        # expose verification artifacts via ``tool_outputs/...`` while the real
+        # deliverables live under ``<run>/results``.
+        if self._criteria_uses_relative_paths(criteria):
+            for candidate in self._payload_base_dir_candidates(payload):
+                if candidate.exists() and candidate.is_dir():
+                    return candidate
 
         candidate_dirs: List[str] = []
         for raw_path in artifact_paths:
@@ -393,6 +416,60 @@ class TaskVerificationService:
             except Exception:
                 return Path(candidate_dirs[0])
         return Path.cwd()
+
+    @staticmethod
+    def _criteria_uses_relative_paths(criteria: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(criteria, dict):
+            return False
+        for raw_check in criteria.get("checks") or []:
+            if not isinstance(raw_check, dict):
+                continue
+            raw_path = raw_check.get("path")
+            if isinstance(raw_path, str) and raw_path.strip():
+                path = Path(raw_path.strip()).expanduser()
+                if not path.is_absolute():
+                    return True
+        return False
+
+    @staticmethod
+    def _payload_base_dir_candidates(payload: Optional[Dict[str, Any]]) -> List[Path]:
+        if not isinstance(payload, dict):
+            return []
+
+        ordered_keys = (
+            "run_directory",
+            "working_directory",
+            "task_directory_full",
+            "task_root_directory",
+            "results_directory",
+            "work_dir",
+            "run_dir",
+        )
+        candidates: List[Path] = []
+        seen: set[str] = set()
+
+        def _append(value: Any) -> None:
+            if not isinstance(value, str):
+                return
+            text = value.strip()
+            if not text:
+                return
+            path = Path(text).expanduser()
+            key = str(path)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(path)
+
+        for key in ordered_keys:
+            _append(payload.get(key))
+
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ordered_keys:
+                _append(metadata.get(key))
+
+        return candidates
 
     def _run_check(self, raw_check: Any, *, base_dir: Path, artifact_paths: Sequence[str] = ()) -> Optional[Dict[str, Any]]:
         if not isinstance(raw_check, dict):

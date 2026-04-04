@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
@@ -427,7 +427,8 @@ class DeepThinkAgent:
         request_profile: Optional[Dict[str, Any]] = None,
     ):
         self.llm_client = llm_client
-        self.available_tools = available_tools
+        self.request_profile = dict(request_profile or {})
+        self.available_tools = self._sanitize_available_tools(list(available_tools or []))
         self.tool_executor = tool_executor
         self.max_iterations = max_iterations
         self.tool_timeout = tool_timeout
@@ -444,7 +445,6 @@ class DeepThinkAgent:
         self.steer_drain = steer_drain
         self.on_steer_ack = on_steer_ack
         self.on_tool_progress = on_tool_progress
-        self.request_profile = dict(request_profile or {})
         self._pause_event = asyncio.Event()
         self._pause_event.set()
         self._skip_current_step = False
@@ -462,6 +462,26 @@ class DeepThinkAgent:
         return hasattr(self.llm_client, "stream_chat_with_tools_async") and callable(
             getattr(self.llm_client, "stream_chat_with_tools_async")
         )
+
+    def _sanitize_available_tools(self, available_tools: List[str]) -> List[str]:
+        ordered: List[str] = []
+        seen: set[str] = set()
+        for tool in available_tools:
+            name = str(tool or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            ordered.append(name)
+
+        if (
+            self._request_tier() == "execute"
+            and str(self.request_profile.get("intent_type") or "").strip().lower() == "execute_task"
+            and not self._requires_structured_plan()
+            and not self._required_bound_plan_operations()
+        ):
+            ordered = [tool for tool in ordered if str(tool).strip().lower() != "plan_operation"]
+
+        return ordered
 
     def _request_tier(self) -> str:
         return str(self.request_profile.get("request_tier") or "").strip().lower()
@@ -748,6 +768,111 @@ class DeepThinkAgent:
         if task_hint:
             return f"{base}\n{task_hint}"
         return base
+
+    def _build_post_execution_summary_nudge(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        user_query: str,
+        stage: int = 1,
+    ) -> str:
+        language = detect_reasoning_language(user_query)
+        task_bits: List[str] = []
+        if task_context:
+            if task_context.task_id is not None:
+                task_bits.append(f"Task ID={task_context.task_id}")
+            if task_context.task_name:
+                task_bits.append(f"Task Name={task_context.task_name}")
+        task_hint = "\n".join(task_bits)
+        can_interpret = any(
+            str(tool).strip().lower() == "result_interpreter" for tool in self.available_tools
+        )
+        if stage >= 2:
+            zh = (
+                "任务代码已经执行过，当前进入了连续第 2 次只读观察。\n"
+                "下一步不要再调用 `file_operations`、`document_reader` 或 `plan_operation`。\n"
+                "请立即二选一：\n"
+                "1. 基于现有结果直接 `submit_final_answer`，总结关键输出、主要文件和结论；\n"
+                f"2. {'调用 `result_interpreter` 解释已有结果后立刻提交最终答案；' if can_interpret else '如果确实还缺一条结论，就基于现有证据直接给出最终答案；'}\n"
+                "不要继续做目录浏览、文件点读或计划编辑。"
+            )
+            en = (
+                "Task code has already executed and this is the second consecutive read-only post-execution probe.\n"
+                "Do not call `file_operations`, `document_reader`, or `plan_operation` again.\n"
+                "Your next step must do exactly one of the following:\n"
+                "1. Call `submit_final_answer` now with the key outputs, major files, and conclusions.\n"
+                f"2. {'Call `result_interpreter` on the existing outputs and then immediately submit the final answer.' if can_interpret else 'Use the evidence already gathered and submit the final answer now.'}\n"
+                "Do not continue browsing directories, peeking at files, or editing the plan."
+            )
+        else:
+            zh = (
+                "任务代码已经执行过。当前这一步只是只读观察，不能再作为继续探索的理由。\n"
+                "下一步请停止目录/文件浏览，直接收尾："
+                f"{'优先调用 `result_interpreter` 解释已有结果，然后立刻 `submit_final_answer`。' if can_interpret else '直接 `submit_final_answer`，总结主要输出和结论。'}\n"
+                "不要再调用 `plan_operation`。"
+            )
+            en = (
+                "Task code has already executed. This step is only read-only observation and should not start another exploration loop.\n"
+                f"On the next step, stop browsing files and wrap up directly: {'use `result_interpreter` on the existing outputs, then immediately `submit_final_answer`.' if can_interpret else 'call `submit_final_answer` now with the main outputs and conclusions.'}\n"
+                "Do not call `plan_operation` again."
+            )
+        base = _localized_text(language, zh, en)
+        if task_hint:
+            return f"{base}\n{task_hint}"
+        return base
+
+    def _build_post_execution_probe_stop_answer(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        user_query: str,
+        steps: Sequence[ThinkingStep],
+    ) -> str:
+        language = detect_reasoning_language(user_query)
+        observed_outputs: List[str] = []
+        seen: set[str] = set()
+        for step in reversed(list(steps)):
+            for evidence in reversed(step.evidence or []):
+                ref = str((evidence or {}).get("ref") or "").strip()
+                if not ref or ref in seen:
+                    continue
+                seen.add(ref)
+                observed_outputs.append(ref)
+                if len(observed_outputs) >= 6:
+                    break
+            if len(observed_outputs) >= 6:
+                break
+
+        task_label = ""
+        if task_context and task_context.task_id is not None:
+            task_label = f"Task {task_context.task_id}"
+            if task_context.task_name:
+                task_label += f" ({task_context.task_name})"
+        elif task_context and task_context.task_name:
+            task_label = task_context.task_name
+
+        if language == "zh":
+            lines = []
+            if task_label:
+                lines.append(f"{task_label} 的代码执行已完成，但后续验证陷入重复观察循环，已自动停止继续探查。")
+            else:
+                lines.append("任务代码执行已完成，但后续验证陷入重复观察循环，已自动停止继续探查。")
+            if observed_outputs:
+                lines.append("最近已观察到的输出包括：")
+                lines.extend(f"- {item}" for item in observed_outputs)
+            lines.append("请基于这些已有输出继续查看结果，或重新发起一次“仅总结结果”的请求。")
+            return "\n".join(lines)
+
+        lines = []
+        if task_label:
+            lines.append(f"{task_label} finished execution, but post-execution verification entered a repeated observation loop and was stopped automatically.")
+        else:
+            lines.append("Task code finished execution, but post-execution verification entered a repeated observation loop and was stopped automatically.")
+        if observed_outputs:
+            lines.append("Recently observed outputs include:")
+            lines.extend(f"- {item}" for item in observed_outputs)
+        lines.append("Use these outputs directly, or retry with a summary-only follow-up.")
+        return "\n".join(lines)
 
     def _build_blocked_dependency_answer(
         self,
@@ -2001,19 +2126,11 @@ class DeepThinkAgent:
                                     "Stopped repeated post-execution observation-only probing."
                                 )
                                 if not final_answer:
-                                    language = detect_reasoning_language(user_query)
-                                    if language == "zh":
-                                        final_answer = (
-                                            "任务代码已执行完毕，但 AI 在后续验证阶段陷入反复观察循环，"
-                                            "无法生成最终汇报。请检查上方的执行日志确认任务输出。"
-                                        )
-                                    else:
-                                        final_answer = (
-                                            "Task code executed successfully, but the AI entered a "
-                                            "repeated observation loop during post-execution verification "
-                                            "and could not produce a final summary. "
-                                            "Please review the execution logs above for task output."
-                                        )
+                                    final_answer = self._build_post_execution_probe_stop_answer(
+                                        task_context=task_context,
+                                        user_query=user_query,
+                                        steps=[*thinking_steps, current_step],
+                                    )
                             else:
                                 current_step.self_correction = (
                                     "Stopped repeated observation-only probing and returned a blocked-dependency conclusion."
@@ -2052,10 +2169,19 @@ class DeepThinkAgent:
                                 "Detected observation-only exploration during a bound execute_task request; injected a followthrough nudge."
                             )
                         else:
+                            nudge = self._build_post_execution_summary_nudge(
+                                task_context=task_context,
+                                user_query=user_query,
+                                stage=probe_only_execution_cycles,
+                            )
+                            messages.append({"role": "user", "content": nudge})
                             logger.info(
-                                "[DEEP_THINK_NATIVE] Skipping probe-only nudge/block: had_real_execution_tool=True, probe_cycles=%s iter=%s",
+                                "[DEEP_THINK_NATIVE] Injected post-execution summary nudge after probe-only cycle=%s at iteration=%s",
                                 probe_only_execution_cycles,
                                 iteration,
+                            )
+                            current_step.self_correction = (
+                                "Detected post-execution observation-only probing; injected a summary nudge."
                             )
                     else:
                         probe_only_execution_cycles = 0

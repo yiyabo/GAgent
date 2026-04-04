@@ -466,9 +466,10 @@ def test_local_backend_returns_promoted_artifact_paths(
     assert result["task_directory"] == "plan1_task2"
     assert result["execution_mode"] == "code_executor_docker"
     assert result["docker_image_effective"] == "gagent-python-runtime:latest"
-    promoted = result["artifact_paths"][0]
+    promoted = result["session_artifact_paths"][0]
     assert promoted.startswith("results/plan1_task2/run_")
     assert promoted.endswith("/plot.png")
+    assert any(str(path).endswith("/results/plot.png") or str(path).endswith("plot.png") for path in result["artifact_paths"])
     assert any(path.endswith("plot.png") for path in result["produced_files"])
     session_dir = (tmp_path / "runtime" / "session_adhoc").resolve()
     assert (session_dir / promoted).read_bytes() == b"png"
