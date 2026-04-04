@@ -22,7 +22,7 @@ from app.repository.chat_action_runs import (
 )
 from app.repository.plan_storage import append_action_log_entry, record_decomposition_job, record_phagescope_tracking
 from app.services.deep_think_agent import DeepThinkAgent
-from app.services.llm.structured_response import LLMAction, LLMStructuredResponse
+from app.services.llm.structured_response import LLMAction, LLMReply, LLMStructuredResponse
 from app.services.plans.decomposition_jobs import (
     get_current_job,
     plan_decomposition_jobs,
@@ -94,6 +94,20 @@ _AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
     "result_interpreter",
     "terminal_session",
 ]
+
+# ── Task Cascade Auto-Continue ──────────────────────────────────
+# Maximum number of additional tasks the cascade loop will execute
+# within a single background action run.
+_CASCADE_MAX_TASKS = 50
+
+
+def _is_single_rerun_task_action(structured: LLMStructuredResponse) -> bool:
+    """True when *structured* contains exactly one blocking ``rerun_task``."""
+    actions = structured.sorted_actions()
+    if len(actions) != 1:
+        return False
+    a = actions[0]
+    return a.kind == "task_operation" and a.name == "rerun_task" and a.blocking
 
 
 def _truthy(value: Any, default: bool = False) -> bool:
@@ -1387,6 +1401,122 @@ async def _execute_action_run(run_id: str) -> None:
                 exc,
             )
             return
+
+        # ── Task Cascade Auto-Continue ──────────────────────────
+        # When a composite task ("执行任务8") expanded to multiple leaf
+        # tasks [34, 35, 36, …], execute them sequentially in this
+        # background run without requiring additional user messages.
+        cascade_count = 0
+        _agent_ctx = getattr(agent, "extra_context", None) or {}
+        pending = _agent_ctx.get("pending_scope_task_ids") if isinstance(_agent_ctx, dict) else None
+        if (
+            result.success
+            and _is_single_rerun_task_action(structured)
+            and isinstance(pending, list)
+            and len(pending) > 0
+        ):
+            cascade_all_steps = list(result.steps)
+            cascade_all_errors = list(result.errors or [])
+
+            while (
+                cascade_count < _CASCADE_MAX_TASKS
+                and result.success
+                and isinstance(pending, list)
+                and len(pending) > 0
+            ):
+                cascade_count += 1
+                next_task_id = pending.pop(0)
+
+                # Update agent context so task binding is correct.
+                _agent_ctx["current_task_id"] = next_task_id
+                _agent_ctx["task_id"] = next_task_id
+                _agent_ctx["pending_scope_task_ids"] = pending
+
+                remaining_count = len(pending)
+                logger.info(
+                    "[CASCADE] iter=%d next_task=%s remaining=%d run=%s",
+                    cascade_count,
+                    next_task_id,
+                    remaining_count,
+                    run_id,
+                )
+                plan_decomposition_jobs.append_log(
+                    job.job_id,
+                    "info",
+                    f"[CASCADE] Auto-continuing to task {next_task_id} "
+                    f"({remaining_count} remaining).",
+                    {
+                        "cascade_iteration": cascade_count,
+                        "next_task_id": next_task_id,
+                        "remaining_ids": list(pending),
+                    },
+                )
+
+                cascade_structured = LLMStructuredResponse(
+                    llm_reply=LLMReply(
+                        message=f"Auto-cascade: executing task {next_task_id}",
+                    ),
+                    actions=[
+                        LLMAction(
+                            kind="task_operation",
+                            name="rerun_task",
+                            parameters={"task_id": int(next_task_id)},
+                            order=1,
+                            blocking=True,
+                        )
+                    ],
+                )
+
+                try:
+                    result = await agent.execute_structured(cascade_structured)
+                except Exception as exc:
+                    logger.exception(
+                        "[CASCADE] Task %s raised exception: %s",
+                        next_task_id,
+                        exc,
+                    )
+                    cascade_all_errors.append(
+                        f"[CASCADE] Task {next_task_id} exception: {exc}"
+                    )
+                    from .models import AgentResult
+                    result = AgentResult(
+                        reply=f"Cascade stopped: task {next_task_id} raised {exc}",
+                        steps=[],
+                        suggestions=[],
+                        primary_intent=None,
+                        success=False,
+                        errors=[str(exc)],
+                    )
+                    break
+
+                cascade_all_steps.extend(result.steps)
+                cascade_all_errors.extend(result.errors or [])
+
+                # Re-read pending (plan tree may have changed)
+                pending = _agent_ctx.get("pending_scope_task_ids")
+
+            # Rebuild merged result covering all cascade iterations.
+            overall_success = all(s.success for s in cascade_all_steps)
+            result = result.model_copy(
+                update={
+                    "steps": cascade_all_steps,
+                    "errors": cascade_all_errors,
+                    "success": overall_success,
+                },
+            )
+            plan_decomposition_jobs.append_log(
+                job.job_id,
+                "info",
+                f"[CASCADE] Completed {cascade_count} additional tasks. "
+                f"Total steps: {len(cascade_all_steps)}. "
+                f"Overall success: {overall_success}.",
+                {
+                    "cascade_total": cascade_count,
+                    "total_steps": len(cascade_all_steps),
+                    "overall_success": overall_success,
+                },
+            )
+        # ── End Task Cascade ────────────────────────────────────
 
         result_dict = result.model_dump()
         effective_success = bool(result.success)
