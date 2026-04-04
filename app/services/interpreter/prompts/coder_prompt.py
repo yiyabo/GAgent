@@ -167,6 +167,12 @@ When multiple datasets are provided:
 - If fewer than 2 valid samples remain, do NOT run Harmony, batch correction, ASW scoring, or write a fake integrated object.
 - Only write `results/integrated_data.h5ad` when integration actually ran successfully.
 
+### Progress Reporting (Required for Batch Operations)
+- When processing multiple items in a loop (cell types, samples, genes, files, etc.), print progress after each item completes: `print(f"Processed {i+1}/{total} items")`
+- Print a final summary line: `print(f"Completed {done}/{total} items")`
+- If an individual item fails, print the error (e.g. `print(f"Error processing item {name}: {e}")`) and continue to the next item — do NOT abort the entire batch.
+- Save results incrementally (after each item), not all at the end. This way partial progress is preserved even if the process is interrupted.
+
 ### Output Requirement
 You must return a **strict JSON object** with the following fields:
 
