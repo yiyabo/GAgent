@@ -926,6 +926,32 @@ def resolve_request_routing(
     explicit_task_override = bool(explicit_task_ids)
     if explicit_task_override:
         combined_reasons.append("explicit_task_override")
+        # ── Intent elevation ──────────────────────────────────────────
+        # When the user references specific task IDs (e.g. "任务 7",
+        # "task 13, 14, 15") in a plan-bound session, they almost
+        # certainly intend to *execute* those tasks, not just chat about
+        # them.  If the intent classifier returned a weaker intent
+        # (chat / local_read / etc.) because no explicit execute keyword
+        # was present, elevate to execute_task so the agent receives
+        # the correct system prompt and request tier.
+        if intent_type in ("chat", "local_read", "local_inspect"):
+            intent_type = "execute_task"
+            combined_reasons.append("intent_execute_task")
+            combined_reasons.append("intent_execution")
+            # Re-derive capability & tier to match the elevated intent
+            capability_floor, _cap_reasons = determine_capability_floor(
+                intent_type=intent_type,
+            )
+            request_tier, _tier_reasons, brevity_hint = classify_request_tier(
+                message=effective_user_message,
+                history=history,
+                context=context,
+                plan_id=plan_id,
+                current_task_id=current_task_id,
+                intent_type=intent_type,
+            )
+            combined_reasons.extend(_cap_reasons)
+            combined_reasons.extend(_tier_reasons)
     simple_channel_allowed = (not manual) and capability_floor == "plain_chat"
     context_plan_id = (context or {}).get("plan_id")
     context_task_id = (context or {}).get("current_task_id")
