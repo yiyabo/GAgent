@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
 from app.services.llm.structured_response import LLMAction, LLMStructuredResponse
+from app.services.plans.acceptance_criteria import derive_expected_deliverables
 from app.services.plans.plan_models import PlanNode, PlanTree
 from app.services.plans.plan_session import PlanSession
 from app.repository.plan_repository import PlanRepository
@@ -79,6 +80,7 @@ from .terminal_mutation_verify import (
     prepare_local_mutation_terminal_write,
     verify_local_mutation_terminal_write,
 )
+from .code_executor_helpers import extract_task_artifact_paths
 from .tool_results import (
     sanitize_tool_result,
     summarize_tool_result,
@@ -124,6 +126,139 @@ _LOCAL_SUBJECT_TOOLS = {
     "code_executor",
     "terminal_session",
 }
+
+
+def _append_unique_text(target: List[str], seen: set[str], value: Any, *, limit: int = 20) -> None:
+    text = str(value or "").strip()
+    if not text or text in seen:
+        return
+    seen.add(text)
+    target.append(text)
+    if len(target) > limit:
+        del target[limit:]
+
+
+def _resolve_bound_task_tree_and_node(agent: Any) -> Tuple[Optional[PlanTree], Optional[PlanNode]]:
+    current_task_id = (getattr(agent, "extra_context", {}) or {}).get("current_task_id")
+    plan_id = getattr(getattr(agent, "plan_session", None), "plan_id", None)
+    if current_task_id is None or plan_id is None:
+        return None, None
+
+    try:
+        task_id = int(current_task_id)
+    except (TypeError, ValueError):
+        return None, None
+
+    tree = getattr(agent, "plan_tree", None)
+    if tree is None or not getattr(tree, "has_node", lambda *_: False)(task_id):
+        try:
+            tree = agent.plan_session.repo.get_plan_tree(plan_id)
+        except Exception:
+            return None, None
+
+    if tree is None or not getattr(tree, "has_node", lambda *_: False)(task_id):
+        return None, None
+
+    try:
+        return tree, tree.get_node(task_id)
+    except Exception:
+        return None, None
+
+
+def _align_manuscript_writer_params_with_bound_task(agent: Any, params: Dict[str, Any]) -> Dict[str, Any]:
+    tree, node = _resolve_bound_task_tree_and_node(agent)
+    if node is None:
+        return params
+
+    aligned = dict(params)
+    metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
+    paper_mode = bool(
+        metadata.get("paper_mode")
+        or metadata.get("paper_section")
+        or metadata.get("paper_role")
+        or metadata.get("paper_context_paths")
+    )
+
+    context_paths = aligned.get("context_paths") or []
+    if isinstance(context_paths, str):
+        context_paths = [context_paths]
+    if not isinstance(context_paths, list):
+        context_paths = []
+
+    merged_context_paths: List[str] = []
+    seen_paths: set[str] = set()
+    for item in context_paths:
+        _append_unique_text(merged_context_paths, seen_paths, item)
+
+    raw_paper_context_paths = metadata.get("paper_context_paths")
+    if isinstance(raw_paper_context_paths, list):
+        for item in raw_paper_context_paths:
+            _append_unique_text(merged_context_paths, seen_paths, item)
+
+    for dep_id in (getattr(node, "dependencies", []) or [])[:6]:
+        try:
+            dep_id_int = int(dep_id)
+        except (TypeError, ValueError):
+            continue
+        if tree is None or not tree.has_node(dep_id_int):
+            continue
+        dep_node = tree.get_node(dep_id_int)
+        for artifact_path in extract_task_artifact_paths(dep_node):
+            _append_unique_text(merged_context_paths, seen_paths, artifact_path)
+
+    if merged_context_paths:
+        aligned["context_paths"] = merged_context_paths
+
+    expected_outputs = [
+        str(item).replace("\\", "/").lstrip("./")
+        for item in derive_expected_deliverables(
+            metadata.get("acceptance_criteria") if isinstance(metadata, dict) else None,
+            include_globs=False,
+            relative_only=True,
+        )
+        if str(item).strip() and Path(str(item).strip()).suffix
+    ]
+    if len(expected_outputs) == 1:
+        canonical_output = expected_outputs[0]
+        if paper_mode and not canonical_output.startswith("manuscript/"):
+            canonical_output = f"manuscript/{canonical_output}"
+        aligned["output_path"] = canonical_output
+
+    paper_section = str(metadata.get("paper_section") or "").strip().lower()
+    if paper_section and not aligned.get("sections"):
+        aligned["sections"] = [paper_section]
+
+    task_text = str(aligned.get("task") or "").strip()
+    grounding_requirements: List[str] = []
+    if paper_section:
+        grounding_requirements.append(f"Focus only on the {paper_section} section.")
+    if paper_mode:
+        grounding_requirements.append(
+            "Use exact method names, pipeline labels, and file-grounded facts from the provided evidence. "
+            "Do not substitute alternative algorithms or generic defaults."
+        )
+    if merged_context_paths:
+        evidence_names = [
+            Path(str(item)).name
+            for item in merged_context_paths
+            if Path(str(item)).name
+        ][:6]
+        if evidence_names:
+            grounding_requirements.append(
+                "Ground the draft in these evidence files when relevant: "
+                + ", ".join(evidence_names)
+                + "."
+            )
+    if len(expected_outputs) == 1 and aligned.get("output_path"):
+        grounding_requirements.append(
+            f"Write the final deliverable to exactly: {aligned['output_path']}."
+        )
+    if task_text and grounding_requirements:
+        aligned["task"] = task_text + "\n\nBound task requirements:\n- " + "\n- ".join(
+            grounding_requirements
+        )
+
+    return aligned
 
 
 # ---------------------------------------------------------------------------
@@ -1661,6 +1796,8 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         keep_workspace = raw_action_params.get("keep_workspace")
         if isinstance(keep_workspace, bool):
             params["keep_workspace"] = keep_workspace
+
+        params = _align_manuscript_writer_params_with_bound_task(agent, params)
 
         if agent.session_id:
             params["session_id"] = agent.session_id

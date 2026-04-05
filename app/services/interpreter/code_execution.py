@@ -17,6 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from app.services.plans.acceptance_criteria import (
+    derive_relative_output_dirs,
+    resolve_glob_min_count,
+    resolve_glob_pattern,
+)
+
 from .coder import CodeGenerator, CodeTaskResponse
 from .docker_interpreter import DockerCodeInterpreter
 from .local_interpreter import CodeExecutionResult, LocalCodeInterpreter
@@ -860,8 +866,10 @@ def _format_acceptance_checks(criteria: Optional[Dict[str, Any]]) -> List[str]:
         elif check_type == "file_nonempty":
             formatted.append(f"file must be non-empty: {raw_check.get('path')}")
         elif check_type == "glob_count_at_least":
+            pattern = resolve_glob_pattern(raw_check)
+            min_count = resolve_glob_min_count(raw_check)
             formatted.append(
-                f"at least {raw_check.get('min_count')} matches for glob: {raw_check.get('glob')}"
+                f"at least {min_count} matches for glob: {pattern}"
             )
         elif check_type == "text_contains":
             formatted.append(
@@ -902,16 +910,18 @@ def _spec_requests_batch_profile(execution_spec: CodeExecutionSpec) -> bool:
             continue
         if str(raw_check.get("type") or "").strip() != "glob_count_at_least":
             continue
-        try:
-            min_count = int(raw_check.get("min_count") or 0)
-        except (TypeError, ValueError):
-            min_count = 0
+        min_count = resolve_glob_min_count(raw_check)
         if min_count > 1:
             return True
     return False
 
 
-def _collect_contract_artifact_paths(work_dir: str) -> List[str]:
+def _collect_contract_artifact_paths(
+    work_dir: str,
+    *,
+    acceptance_criteria: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    del acceptance_criteria
     collected: List[str] = []
     seen: set[str] = set()
     for subdir in ("results", "data", "docs"):
@@ -927,6 +937,62 @@ def _collect_contract_artifact_paths(work_dir: str) -> List[str]:
             seen.add(text)
             collected.append(text)
     return collected
+
+
+def _collect_guidance_artifact_paths(
+    work_dir: str,
+    *,
+    acceptance_criteria: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    collected: List[str] = []
+    seen: set[str] = set()
+    for subdir in derive_relative_output_dirs(
+        acceptance_criteria,
+        default_dirs=("results", "code", "data", "docs"),
+    ):
+        root = Path(work_dir) / subdir
+        if not root.exists():
+            continue
+        for candidate in root.rglob("*"):
+            if not candidate.is_file():
+                continue
+            text = str(candidate.resolve())
+            if text in seen:
+                continue
+            seen.add(text)
+            collected.append(text)
+    return collected
+
+
+def _find_same_name_artifact_candidates(
+    expected_path: str,
+    artifact_paths: Sequence[str],
+    *,
+    limit: int = 3,
+) -> List[str]:
+    expected_text = str(expected_path or "").strip()
+    expected_name = Path(expected_text).name.lower()
+    if not expected_name:
+        return []
+
+    matches: List[str] = []
+    seen: set[str] = set()
+    for raw_path in artifact_paths:
+        candidate_text = str(raw_path or "").strip()
+        if not candidate_text or candidate_text == expected_text:
+            continue
+        candidate = Path(candidate_text)
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        if candidate.name.lower() != expected_name:
+            continue
+        if candidate_text in seen:
+            continue
+        seen.add(candidate_text)
+        matches.append(candidate_text)
+        if len(matches) >= limit:
+            break
+    return matches
 
 
 def _verify_execution_against_contract(
@@ -950,8 +1016,16 @@ def _verify_execution_against_contract(
     )
     payload = {
         "status": "completed",
-        "artifact_paths": _collect_contract_artifact_paths(work_dir),
-        "metadata": {},
+        "artifact_paths": _collect_contract_artifact_paths(
+            work_dir,
+            acceptance_criteria=criteria,
+        ),
+        "metadata": {
+            "guidance_artifact_paths": _collect_guidance_artifact_paths(
+                work_dir,
+                acceptance_criteria=criteria,
+            )
+        },
     }
     verifier = TaskVerificationService()
     return verifier.finalize_payload(
@@ -969,6 +1043,13 @@ def _extract_verification_state(
     payload_meta = finalization.payload.get("metadata") if isinstance(finalization.payload, dict) else {}
     if not isinstance(payload_meta, dict):
         payload_meta = {}
+    guidance_paths = payload_meta.get("guidance_artifact_paths")
+    if isinstance(guidance_paths, list):
+        evidence = verification.get("evidence")
+        if not isinstance(evidence, dict):
+            evidence = {}
+            verification["evidence"] = evidence
+        evidence["guidance_artifact_paths"] = guidance_paths
     verification_status = str(
         payload_meta.get("verification_status") or verification.get("status") or ""
     ).strip() or None
@@ -993,10 +1074,22 @@ def _summarize_verification_failures(verification: Dict[str, Any]) -> str:
             continue
         failure_type = str(failure.get("type") or "check").strip()
         message = str(failure.get("message") or "").strip()
+        path = str(failure.get("path") or "").strip()
+        expected_glob = str(failure.get("glob") or "").strip()
         if message:
-            snippets.append(f"{failure_type}: {message}")
+            if path:
+                snippets.append(f"{failure_type}: {path} ({message})")
+            elif expected_glob:
+                snippets.append(f"{failure_type}: {expected_glob} ({message})")
+            else:
+                snippets.append(f"{failure_type}: {message}")
         else:
-            snippets.append(failure_type)
+            if path:
+                snippets.append(f"{failure_type}: {path}")
+            elif expected_glob:
+                snippets.append(f"{failure_type}: {expected_glob}")
+            else:
+                snippets.append(failure_type)
     return "; ".join(snippets) if snippets else "Deterministic acceptance criteria failed."
 
 
@@ -1004,13 +1097,44 @@ def _format_verification_guidance(verification: Dict[str, Any]) -> str:
     failures = verification.get("failures")
     if not isinstance(failures, list) or not failures:
         return "Inspect the deterministic acceptance criteria and regenerate the missing outputs."
+    evidence = verification.get("evidence")
+    artifact_paths = []
+    if isinstance(evidence, dict):
+        guidance_paths = evidence.get("guidance_artifact_paths")
+        if isinstance(guidance_paths, list) and guidance_paths:
+            artifact_paths = guidance_paths
+        else:
+            candidate_paths = evidence.get("artifact_paths")
+            if isinstance(candidate_paths, list):
+                artifact_paths = candidate_paths
+    if not isinstance(artifact_paths, list):
+        artifact_paths = []
     bullets: List[str] = []
     for failure in failures[:3]:
         if not isinstance(failure, dict):
             continue
+        failure_type = str(failure.get("type") or "check").strip()
         message = str(failure.get("message") or "").strip()
+        path = str(failure.get("path") or "").strip()
+        expected_glob = str(failure.get("glob") or "").strip()
+        if path:
+            detail = message or "Required file check failed."
+            line = f"{detail} Expected path: {path}."
+            same_name_hits = _find_same_name_artifact_candidates(path, artifact_paths)
+            if same_name_hits:
+                line += (
+                    " Found same filename at: "
+                    + "; ".join(same_name_hits)
+                    + ". Move or copy the valid file to the expected path instead of leaving it elsewhere."
+                )
+            bullets.append(line)
+            continue
+        if expected_glob:
+            detail = message or "Required glob did not match enough outputs."
+            bullets.append(f"{detail} Expected glob: {expected_glob}.")
+            continue
         if message:
-            bullets.append(message)
+            bullets.append(f"{failure_type}: {message}")
     if not bullets:
         return "Inspect the deterministic acceptance criteria and regenerate the missing outputs."
     return "Acceptance criteria failed: " + "; ".join(bullets)

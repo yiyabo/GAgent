@@ -14,9 +14,14 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Awaitable, Sequence
+from typing import Any, AsyncIterator, Dict, List, Optional, Callable, Awaitable, Sequence
 import asyncio
 from uuid import uuid4
+from app.services.plans.acceptance_criteria import (
+    derive_relative_output_dirs,
+    resolve_glob_min_count,
+    resolve_glob_pattern,
+)
 from app.services.plans.decomposition_jobs import get_current_job, log_job_event
 from app.services.session_paths import get_runtime_root, get_runtime_session_dir
 
@@ -24,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _BLOCK_SCOPE_STATUS = "STATUS: BLOCKED_SCOPE"
 _BLOCK_SCOPE_REASON = "REASON: NEED_ATOMIC_TASK"
+_DEFAULT_TASK_SUBDIRECTORIES = ("results", "code", "data", "docs")
 
 
 def _get_available_skills() -> List[str]:
@@ -102,6 +108,31 @@ def _detect_scope_blocked(stdout: str, output_data: Optional[Dict[str, Any]]) ->
     return None
 
 
+def _derive_task_subdirectories(
+    execution_spec: Optional[Dict[str, Any]],
+) -> List[str]:
+    criteria = execution_spec.get("acceptance_criteria") if isinstance(execution_spec, dict) else None
+    return derive_relative_output_dirs(
+        criteria,
+        default_dirs=_DEFAULT_TASK_SUBDIRECTORIES,
+    )
+
+
+def _format_task_subdirectories(subdirs: Sequence[str]) -> str:
+    return " ".join(f"{name}/" for name in subdirs)
+
+
+def _format_directory_choices(subdirs: Sequence[str]) -> str:
+    items = [f"{name}/" for name in subdirs if name]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} or {items[1]}"
+    return f"{', '.join(items[:-1])}, or {items[-1]}"
+
+
 def _compact_cli_text(value: Optional[str], *, limit: int = 320) -> str:
     text = " ".join((value or "").split()).strip()
     if not text:
@@ -109,6 +140,35 @@ def _compact_cli_text(value: Optional[str], *, limit: int = 320) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)] + "..."
+
+
+async def _iter_stream_lines_unbounded(
+    stream: asyncio.StreamReader,
+    *,
+    chunk_size: int = 65536,
+) -> AsyncIterator[str]:
+    """Yield decoded lines without relying on StreamReader.readline limits."""
+
+    pending = ""
+    while True:
+        chunk = await stream.read(chunk_size)
+        if not chunk:
+            break
+        pending += chunk.decode(errors="replace")
+        while True:
+            newline_index = pending.find("\n")
+            if newline_index < 0:
+                break
+            line = pending[:newline_index]
+            if line.endswith("\r"):
+                line = line[:-1]
+            yield line
+            pending = pending[newline_index + 1 :]
+
+    if pending:
+        if pending.endswith("\r"):
+            pending = pending[:-1]
+        yield pending
 
 
 def _extract_readable_error(stderr: str) -> str:
@@ -531,27 +591,36 @@ def _build_qwen_code_command(
     model: Optional[str],
     debug: bool,
     allowed_dirs_info: str,
+    task_subdirs: Sequence[str] = _DEFAULT_TASK_SUBDIRECTORIES,
     execution_spec: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Build the ``qwen`` CLI command for non-interactive prompt execution."""
     task_text = _build_cli_task_contract(task, execution_spec)
+    writable_dirs = [name for name in task_subdirs if str(name).strip().lower() != "code"]
     enhanced_task = (
         f"[ATOMIC TASK]\n"
         f"Execute the task below as a single unit. Multi-step code execution "
         f"within the task (read data → process → save results → plot) is "
         f"expected and normal — do NOT report that as needing decomposition.\n"
-        f"If upstream data or dependencies are missing or incomplete, report "
-        f"BLOCKED_DEPENDENCY so the orchestration layer can re-run the "
-        f"upstream tasks first. Do NOT silently fabricate or fix upstream "
-        f"outputs yourself — unless the task instruction explicitly "
-        f"authorizes you to produce them.\n"
+        f"If upstream data or dependencies are missing, unreadable, or schema-"
+        f"incompatible, report BLOCKED_DEPENDENCY so the orchestration layer "
+        f"can re-run the upstream tasks first.\n"
+        f"If an upstream artifact exists and is readable but contains zero rows "
+        f"or no significant hits, treat that as a valid zero-result outcome for "
+        f"downstream aggregation, visualization, and export tasks. Continue and "
+        f"produce empty-but-valid outputs at the required paths (for example "
+        f"empty tables, serialized empty objects, placeholder figures, and a "
+        f"short summary that explicitly documents zero findings). Do NOT "
+        f"fabricate positive signals.\n"
+        f"Do NOT silently fabricate or fix upstream outputs yourself — unless "
+        f"the task instruction explicitly authorizes you to produce them.\n"
         f"The plan/task contract is authoritative. Required deliverables must "
         f"be produced exactly at the specified paths/patterns. Extra outputs "
         f"are allowed, but they do NOT replace missing required outputs.\n"
         f"Only output BLOCKED_SCOPE if the request is fundamentally outside "
         f"the scope of code execution (e.g. 'plan the entire project' or "
         f"'manage my calendar').\n"
-        f"If blocked by missing dependencies, output exactly:\n"
+        f"If blocked by missing, unreadable, or schema-incompatible dependencies, output exactly:\n"
         f"  STATUS: BLOCKED_DEPENDENCY\n"
         f"  DETAIL: <which upstream task/data is missing>\n"
         f"If truly out of scope, output exactly:\n"
@@ -559,12 +628,12 @@ def _build_qwen_code_command(
         f"  {_BLOCK_SCOPE_REASON}\n"
         f"  DETAIL: <one sentence>\n\n"
         f"Workspace: {work_dir}\n"
-        f"Output dirs: results/ code/ data/ docs/\n"
+        f"Output dirs: {_format_task_subdirectories(task_subdirs)}\n"
         f"File prefix: {file_prefix}\n"
         f"Task:\n{task_text}\n\n"
         f"Deliverables:\n"
         f"1. Write scripts under code/ only when needed.\n"
-        f"2. Run them and save outputs under results/, data/, or docs/.\n"
+        f"2. Run them and save outputs under {_format_directory_choices(writable_dirs)}.\n"
         f"3. Put publishable deliverable code under results/submission/ "
         f"or results/deliverable/.\n"
         f"4. Return a summary of actual outputs produced.\n"
@@ -650,8 +719,10 @@ def _format_cli_acceptance_checks(criteria: Optional[Dict[str, Any]]) -> List[st
         elif check_type == "file_nonempty":
             formatted.append(f"file must be non-empty: {raw_check.get('path')}")
         elif check_type == "glob_count_at_least":
+            pattern = resolve_glob_pattern(raw_check)
+            min_count = resolve_glob_min_count(raw_check)
             formatted.append(
-                f"at least {raw_check.get('min_count')} matches for glob: {raw_check.get('glob')}"
+                f"at least {min_count} matches for glob: {pattern}"
             )
         elif check_type == "text_contains":
             formatted.append(
@@ -1529,6 +1600,8 @@ async def code_executor_handler(
                 task_dir_name = f"plan{resolved_plan_id}_{task_dir_name}"
             task_dir_base = task_dir_name
 
+        execution_spec = _build_execution_spec(resolved_plan_id, resolved_task_id)
+
         task_root_dir = session_dir / task_dir_base
         task_root_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1536,7 +1609,7 @@ async def code_executor_handler(
         task_work_dir = task_root_dir / run_dir_name
         task_work_dir.mkdir(parents=True, exist_ok=True)
 
-        task_subdirs = ["results", "code", "data", "docs"]
+        task_subdirs = _derive_task_subdirectories(execution_spec)
         for subdir in task_subdirs:
             (task_work_dir / subdir).mkdir(parents=True, exist_ok=True)
 
@@ -1633,7 +1706,6 @@ async def code_executor_handler(
         elif not resolved_add_dirs and default_data_dir.exists():
             local_data_dir = str(default_data_dir)
 
-        execution_spec = _build_execution_spec(resolved_plan_id, resolved_task_id)
         cli_task = _build_cli_task_contract(task, execution_spec)
 
         if use_local_backend:
@@ -1759,6 +1831,7 @@ async def code_executor_handler(
                     model=effective_model,
                     debug=debug_log_path is not None,
                     allowed_dirs_info=allowed_dirs_info,
+                    task_subdirs=task_subdirs,
                     execution_spec=execution_spec,
                 )
             cmd = _rebuild_cli_command(task)
@@ -1789,6 +1862,9 @@ async def code_executor_handler(
             effective_setting_sources = _resolve_setting_sources(
                 setting_sources, auth_mode=effective_auth_mode,
             )
+            writable_task_subdirs = [
+                name for name in task_subdirs if str(name).strip().lower() != "code"
+            ]
             enhanced_task = (
                 f"[ATOMIC TASK]\n"
                 f"Execute only the task below. Do not broaden scope or create extra tasks.\n"
@@ -1799,12 +1875,12 @@ async def code_executor_handler(
                 f"Use direct execution; skip standalone environment diagnostics "
                 f"unless an observed failure requires them.\n\n"
                 f"Workspace: {task_work_dir}\n"
-                f"Output dirs: results/ code/ data/ docs/\n"
+                f"Output dirs: {_format_task_subdirectories(task_subdirs)}\n"
                 f"File prefix: {file_prefix}\n"
                 f"Task:\n{cli_task}\n\n"
                 f"Deliverables:\n"
                 f"1. Write scripts under code/ only when needed.\n"
-                f"2. Run them and save outputs under results/, data/, or docs/.\n"
+                f"2. Run them and save outputs under {_format_directory_choices(writable_task_subdirs)}.\n"
                 f"3. Put publishable deliverable code under results/submission/ "
                 f"or results/deliverable/.\n"
                 f"4. Return a summary of actual outputs produced."
@@ -1822,12 +1898,12 @@ async def code_executor_handler(
                     f"Use direct execution; skip standalone environment diagnostics "
                     f"unless an observed failure requires them.\n\n"
                     f"Workspace: {task_work_dir}\n"
-                    f"Output dirs: results/ code/ data/ docs/\n"
+                    f"Output dirs: {_format_task_subdirectories(task_subdirs)}\n"
                     f"File prefix: {file_prefix}\n"
                     f"Task:\n{cli_task_override}\n\n"
                     f"Deliverables:\n"
                     f"1. Write scripts under code/ only when needed.\n"
-                    f"2. Run them and save outputs under results/, data/, or docs/.\n"
+                    f"2. Run them and save outputs under {_format_directory_choices(writable_task_subdirs)}.\n"
                     f"3. Put publishable deliverable code under results/submission/ "
                     f"or results/deliverable/.\n"
                     f"4. Return a summary of actual outputs produced."
@@ -1869,11 +1945,7 @@ async def code_executor_handler(
         max_cli_retries, cli_retry_base_delay_s = _resolve_cli_retry_policy()
 
         async def _read_stream(stream, lines, callback, stream_name: str):
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-                decoded_line = line.decode(errors="replace").rstrip()
+            async for decoded_line in _iter_stream_lines_unbounded(stream):
                 lines.append(decoded_line)
                 formatted_line = f"[{stream_name}] {decoded_line}" if decoded_line else f"[{stream_name}]"
                 if log_file:
@@ -1920,7 +1992,7 @@ async def code_executor_handler(
                 )
 
                 try:
-                    await asyncio.wait([stdout_task, stderr_task])
+                    await asyncio.gather(stdout_task, stderr_task)
                     local_return_code = await process.wait()
                 except (asyncio.CancelledError, Exception) as _wait_exc:
                     try:

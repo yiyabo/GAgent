@@ -301,6 +301,51 @@ class TestResolveAllExplicitTaskScopeTargets:
         result = resolve_all(tree, [19])
         assert result == [19]
 
+    def test_auto_dependency_closure_includes_unfinished_prerequisites(self):
+        from app.routers.chat.guardrail_handlers import (
+            resolve_all_explicit_task_scope_targets,
+            resolve_explicit_task_scope_target,
+        )
+
+        tree, _ = self._make_tree()
+        result = resolve_all_explicit_task_scope_targets(
+            tree,
+            [21],
+            auto_include_dependency_closure=True,
+        )
+        target = resolve_explicit_task_scope_target(
+            tree,
+            [21],
+            auto_include_dependency_closure=True,
+        )
+
+        assert result == [19, 20, 21]
+        assert target == 19
+
+    def test_auto_dependency_closure_skips_completed_prerequisites(self):
+        from app.routers.chat.guardrail_handlers import (
+            resolve_all_explicit_task_scope_targets,
+            resolve_explicit_task_scope_target,
+        )
+
+        tree, _ = self._make_tree()
+        tree.get_node(19).status = "completed"
+        tree.get_node(19).execution_result = '{"result": "ok"}'
+
+        result = resolve_all_explicit_task_scope_targets(
+            tree,
+            [21],
+            auto_include_dependency_closure=True,
+        )
+        target = resolve_explicit_task_scope_target(
+            tree,
+            [21],
+            auto_include_dependency_closure=True,
+        )
+
+        assert result == [20, 21]
+        assert target == 20
+
 
 # ===========================================================================
 # 4. _fallback_artifact_match: no lenient "any file"

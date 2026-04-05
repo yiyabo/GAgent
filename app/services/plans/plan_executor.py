@@ -45,6 +45,15 @@ if TYPE_CHECKING:  # pragma: no cover
 # ---------------------------------------------------------------------------
 
 _PATH_LIKE_RE = re.compile(r"(/[a-zA-Z0-9_./-]{8,})")
+_INTERNAL_ARTIFACT_FILENAMES = {"result.json", "manifest.json", "preview.json"}
+_INTERNAL_TOOL_OUTPUT_RE = re.compile(
+    r"(?:^|/)tool_outputs/job_[^/]+/step_\d+_[^/]+(?:/.*)?$",
+    re.IGNORECASE,
+)
+_NON_DELIVERABLE_WORKSPACE_RE = re.compile(
+    r"/plan\d+_task\d+/run_[^/]+(?:/(?:results|code|data|docs))?$",
+    re.IGNORECASE,
+)
 
 
 def _extract_paths_from_execution_result(raw: str, max_paths: int = 40) -> List[str]:
@@ -1417,6 +1426,7 @@ class PlanExecutor:
         user_query = (node.instruction or node.display_name() or f"Execute task #{node.id}").strip()
         dep_outputs: List[Dict[str, Any]] = []
         paper_context_paths: List[str] = []
+        tool_result_context: Dict[str, Any] = {"artifact_paths": [], "session_artifact_paths": []}
         raw_paper_context_paths = node_metadata.get("paper_context_paths")
         if isinstance(raw_paper_context_paths, list):
             for item in raw_paper_context_paths:
@@ -1577,6 +1587,31 @@ class PlanExecutor:
             )
 
         async def on_tool_result(tool: str, payload: Dict[str, Any]) -> None:
+            extracted_context = self._extract_tool_result_context(payload)
+            if extracted_context:
+                for key in ("artifact_paths", "session_artifact_paths"):
+                    values = extracted_context.get(key)
+                    if not isinstance(values, list):
+                        continue
+                    existing = tool_result_context.setdefault(key, [])
+                    if not isinstance(existing, list):
+                        existing = []
+                        tool_result_context[key] = existing
+                    for item in values:
+                        if isinstance(item, str) and item not in existing:
+                            existing.append(item)
+                for key in (
+                    "run_directory",
+                    "working_directory",
+                    "task_directory_full",
+                    "task_root_directory",
+                    "results_directory",
+                    "work_dir",
+                    "run_dir",
+                ):
+                    value = extracted_context.get(key)
+                    if isinstance(value, str) and value.strip() and not tool_result_context.get(key):
+                        tool_result_context[key] = value.strip()
             _log_job(
                 "info" if payload.get("success") else "error",
                 f"DeepThink tool finished: {tool}",
@@ -1679,6 +1714,26 @@ class PlanExecutor:
                     },
                 },
             }
+            for key in (
+                "run_directory",
+                "working_directory",
+                "task_directory_full",
+                "task_root_directory",
+                "results_directory",
+                "work_dir",
+                "run_dir",
+            ):
+                value = tool_result_context.get(key)
+                if isinstance(value, str) and value.strip():
+                    payload[key] = value.strip()
+            artifact_paths = tool_result_context.get("artifact_paths")
+            if isinstance(artifact_paths, list) and artifact_paths:
+                payload["artifact_paths"] = artifact_paths[:40]
+                payload["metadata"]["artifact_paths"] = artifact_paths[:40]
+            session_artifact_paths = tool_result_context.get("session_artifact_paths")
+            if isinstance(session_artifact_paths, list) and session_artifact_paths:
+                payload["session_artifact_paths"] = session_artifact_paths[:40]
+                payload["metadata"]["session_artifact_paths"] = session_artifact_paths[:40]
             finalization, raw_response = self._finalize_task_execution(
                 plan_id,
                 node,
@@ -1897,7 +1952,25 @@ class PlanExecutor:
         return deps
 
     @staticmethod
-    def _extract_path_like_values(payload: Any) -> List[str]:
+    def _is_internal_artifact_path(value: str) -> bool:
+        normalized = "/" + str(value or "").strip().replace("\\", "/").lstrip("/")
+        if not normalized or normalized == "/":
+            return False
+        lowered = normalized.lower()
+        basename = lowered.rsplit("/", 1)[-1]
+        if basename in _INTERNAL_ARTIFACT_FILENAMES and "/tool_outputs/" in lowered:
+            return True
+        return bool(_INTERNAL_TOOL_OUTPUT_RE.search(lowered))
+
+    @staticmethod
+    def _is_non_deliverable_workspace_path(value: str) -> bool:
+        normalized = "/" + str(value or "").strip().replace("\\", "/").lstrip("/")
+        if not normalized or normalized == "/":
+            return False
+        return bool(_NON_DELIVERABLE_WORKSPACE_RE.search(normalized))
+
+    @classmethod
+    def _extract_path_like_values(cls, payload: Any) -> List[str]:
         if payload is None:
             return []
         path_keys = {
@@ -1920,6 +1993,9 @@ class PlanExecutor:
             "evidence_md",
             "library_jsonl",
             "pdf_dir",
+            "artifact_paths",
+            "produced_files",
+            "session_artifact_paths",
         }
         found: List[str] = []
         seen: set[str] = set()
@@ -1934,6 +2010,8 @@ class PlanExecutor:
                 return
             if "/" not in text and "." not in text:
                 return
+            if cls._is_internal_artifact_path(text) or cls._is_non_deliverable_workspace_path(text):
+                return
             seen.add(text)
             found.append(text)
 
@@ -1943,8 +2021,17 @@ class PlanExecutor:
             if isinstance(value, dict):
                 for item_key, item_value in value.items():
                     lowered = str(item_key).strip().lower()
-                    if lowered in path_keys or lowered.endswith("_path") or lowered.endswith("_file") or lowered.endswith("_dir"):
-                        _add(item_value)
+                    if lowered in {"artifact_paths", "produced_files", "session_artifact_paths"} and isinstance(
+                        item_value, (list, tuple, set)
+                    ):
+                        for item in item_value:
+                            _add(item)
+                    elif lowered in path_keys or lowered.endswith("_path") or lowered.endswith("_file") or lowered.endswith("_dir"):
+                        if isinstance(item_value, (list, tuple, set)):
+                            for item in item_value:
+                                _add(item)
+                        else:
+                            _add(item_value)
                     if isinstance(item_value, (dict, list, tuple, set)):
                         _visit(item_value, key=lowered)
                 return
@@ -1958,6 +2045,61 @@ class PlanExecutor:
 
         _visit(payload)
         return found[:40]
+
+    @classmethod
+    def _extract_tool_result_context(cls, payload: Any) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            return {}
+
+        extracted: Dict[str, Any] = {}
+        artifact_paths = cls._extract_path_like_values(result)
+        if artifact_paths:
+            extracted["artifact_paths"] = artifact_paths[:40]
+
+        session_artifact_paths = result.get("session_artifact_paths")
+        if isinstance(session_artifact_paths, list):
+            cleaned_session_paths: List[str] = []
+            for item in session_artifact_paths:
+                text = str(item or "").strip()
+                if not text or cls._is_internal_artifact_path(text) or cls._is_non_deliverable_workspace_path(text):
+                    continue
+                if text not in cleaned_session_paths:
+                    cleaned_session_paths.append(text)
+            if cleaned_session_paths:
+                extracted["session_artifact_paths"] = cleaned_session_paths[:40]
+
+        for key in (
+            "run_directory",
+            "working_directory",
+            "task_directory_full",
+            "task_root_directory",
+            "results_directory",
+            "work_dir",
+            "run_dir",
+        ):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                extracted[key] = value.strip()
+
+        metadata = result.get("metadata")
+        if isinstance(metadata, dict):
+            for key in (
+                "run_directory",
+                "working_directory",
+                "task_directory_full",
+                "task_root_directory",
+                "results_directory",
+                "work_dir",
+                "run_dir",
+            ):
+                value = metadata.get(key)
+                if isinstance(value, str) and value.strip() and key not in extracted:
+                    extracted[key] = value.strip()
+
+        return extracted
 
     def _dependency_artifact_context(
         self,

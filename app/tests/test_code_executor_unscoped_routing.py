@@ -303,6 +303,82 @@ def test_sync_task_status_runs_for_verified_terminal_session_write() -> None:
     assert len(repo.cascaded) == 1
 
 
+def test_sync_task_status_preserves_run_directory_for_relative_checks(tmp_path) -> None:
+    run_dir = tmp_path / "runtime" / "session_x" / "plan68_task63" / "run_abc123"
+    figures_dir = run_dir / "figures_raw"
+    figures_dir.mkdir(parents=True)
+    for index in range(20):
+        (figures_dir / f"figure_{index}.png").write_bytes(b"png")
+    (figures_dir / "figure_inventory.log").write_text("ok\n", encoding="utf-8")
+
+    promoted_result = (
+        tmp_path
+        / "runtime"
+        / "session_x"
+        / "results"
+        / "plan68_task63"
+        / "run_abc123"
+        / "results"
+        / "figure_collection_summary.json"
+    )
+    promoted_result.parent.mkdir(parents=True)
+    promoted_result.write_text("{}", encoding="utf-8")
+
+    task = PlanNode(
+        id=63,
+        plan_id=49,
+        name="图表收集与初步审查",
+        status="pending",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "glob_count_at_least", "path": "figures_raw/*", "count": 20},
+                    {"type": "file_nonempty", "path": "figures_raw/figure_inventory.log"},
+                ],
+            }
+        },
+    )
+    tree = PlanTree(
+        id=49,
+        title="Plan 49",
+        nodes={63: task},
+        adjacency={None: [63], 63: []},
+    )
+    repo = _RepoTaskSyncWithTreeStub(tree)
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 63}
+    agent._dirty = False
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="code_executor",
+        success=True,
+        summary="ok",
+        message="ok",
+        params={"require_task_context": True},
+        result={
+            "execution_status": "completed",
+            "run_directory": str(run_dir),
+            "working_directory": str(run_dir),
+            "task_directory_full": str(run_dir),
+            "task_root_directory": str(run_dir.parent),
+            "artifact_paths": [
+                str(run_dir),
+                str(promoted_result),
+            ],
+        },
+    )
+
+    assert len(repo.updated) == 1
+    _, _, status, execution_result = repo.updated[0]
+    payload = json.loads(execution_result)
+    assert status == "completed"
+    assert payload["metadata"]["run_directory"] == str(run_dir)
+    assert payload["metadata"]["verification_status"] == "passed"
+
+
 def test_build_deep_think_task_context_uses_bound_atomic_task() -> None:
     leaf = PlanNode(
         id=30,

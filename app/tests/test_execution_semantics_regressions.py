@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from app.routers.chat.agent import _apply_grounded_local_answer
 from app.routers.chat import action_handlers as action_handlers_module
 from app.routers.chat import session_helpers as session_helpers_module
 from app.routers.chat.session_helpers import _extract_taskid_from_result
+from app.services.plans.plan_models import PlanNode, PlanTree
 from app.services.deliverables.publisher import PublishReport
 from app.services.llm.structured_response import (
     LLMAction,
@@ -853,6 +855,107 @@ def test_literature_pipeline_forwards_session_id_from_agent(
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
     assert kwargs.get("session_id") == "test-session"
+
+
+def test_manuscript_writer_aligns_output_path_with_bound_task_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+
+    dep_node = PlanNode(
+        id=4,
+        plan_id=68,
+        name="整合分析",
+        status="completed",
+        execution_result=json.dumps(
+            {
+                "status": "completed",
+                "artifact_paths": [
+                    "/tmp/results/harmony_integration_umap.png",
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    task_node = PlanNode(
+        id=66,
+        plan_id=68,
+        name="数据来源与预处理方法描述",
+        status="pending",
+        dependencies=[4],
+        metadata={
+            "paper_mode": True,
+            "paper_section": "method",
+            "paper_context_paths": ["/tmp/paper/qc_summary.csv"],
+            "acceptance_criteria": {
+                "category": "paper",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_nonempty", "path": "methods/data_preprocessing.md"},
+                ],
+            },
+        },
+    )
+    tree = PlanTree(
+        id=68,
+        title="Plan 68",
+        nodes={4: dep_node, 66: task_node},
+        adjacency={None: [4, 66], 4: [], 66: []},
+    )
+
+    class _Repo:
+        def get_plan_tree(self, plan_id: int) -> PlanTree:
+            assert plan_id == 68
+            return tree
+
+    agent.plan_session = SimpleNamespace(plan_id=68, repo=_Repo())
+    agent.plan_tree = tree
+    agent.extra_context = {"current_task_id": 66}
+    agent._sync_task_status_after_tool_execution = lambda **_kwargs: None
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+    monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        captured["name"] = name
+        captured["kwargs"] = kwargs
+        return {
+            "success": True,
+            "tool": "manuscript_writer",
+            "output_path": kwargs.get("output_path"),
+            "analysis_path": "runtime/session_demo/manuscript/methods/data_preprocessing.md.analysis.md",
+        }
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(action_handlers_module, "execute_tool", _fake_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="manuscript_writer",
+        parameters={
+            "task": "Write the data preprocessing methods subsection.",
+            "output_path": "/tmp/wrong/data_source_preprocessing.md",
+            "context_paths": [],
+        },
+        order=1,
+    )
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is True
+    assert captured["name"] == "manuscript_writer"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("output_path") == "manuscript/methods/data_preprocessing.md"
+    assert kwargs.get("sections") == ["method"]
+    assert "/tmp/paper/qc_summary.csv" in kwargs.get("context_paths", [])
+    assert "/tmp/results/harmony_integration_umap.png" in kwargs.get("context_paths", [])
+    assert "harmony_integration_umap.png" in kwargs.get("task", "")
+    assert "Do not substitute alternative algorithms" in kwargs.get("task", "")
+    assert "manuscript/methods/data_preprocessing.md" in kwargs.get("task", "")
 
 
 def test_deliverable_submit_forwards_session_id_and_uses_publish_summary(
