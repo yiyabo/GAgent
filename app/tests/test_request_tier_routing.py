@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.routers.chat.agent import StructuredChatAgent
+from app.routers.chat.guardrails import extract_task_ids_from_text
 from app.routers.chat.request_routing import (
     build_request_tier_profile,
     resolve_intent_type,
@@ -855,8 +856,52 @@ def test_explicit_task_id_with_continue_elevates_to_execute() -> None:
     assert decision.request_tier in ("execute", "standard")
 
 
+def test_explicit_task_override_execute_profile_gets_more_iterations() -> None:
+    decision = resolve_request_routing(message="执行任务9")
+    assert decision.request_tier == "execute"
+    assert decision.explicit_task_override is True
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert profile.max_iterations == 16
+
+
 def test_explicit_task_id_does_not_override_genuine_execute() -> None:
     """When user already uses execute keyword + task ID, elevation is harmless."""
     decision = resolve_request_routing(message="执行任务6")
     assert decision.intent_type == "execute_task"
     assert decision.explicit_task_ids == [6]
+
+
+def test_extract_task_ids_ignores_negated_mentions_and_keeps_positive_targets() -> None:
+    message = (
+        "不要执行 Task 1、Task 8 或 Task 38。"
+        "现在只执行计划 68 的 Task 39；若 Task 39 完成，再继续 Task 40。"
+        "禁止重跑 Task 35、36、37、38。"
+    )
+
+    assert extract_task_ids_from_text(message) == [39, 40]
+
+    decision = resolve_request_routing(message=message)
+    assert decision.intent_type == "execute_task"
+    assert decision.explicit_task_ids == [39, 40]
+
+
+def test_extract_task_ids_ignores_completed_and_artifact_references() -> None:
+    message = (
+        "不要执行 Task 1、Task 8 或 Task 38。Task 38 已完成。"
+        "现在只执行计划 68 的 Task 39；若 Task 39 完成，再继续 Task 40。"
+        "禁止重跑 Task 35、36、37、38。"
+        "如果判断依赖缺失，请先读取当前计划状态并使用 Task 38 的现有产物，"
+        "不要把请求回退成 Task 1 或 Task 38 的 BLOCKED_DEPENDENCY。"
+    )
+
+    assert extract_task_ids_from_text(message) == [39, 40]
+
+    decision = resolve_request_routing(message=message)
+    assert decision.intent_type == "execute_task"
+    assert decision.explicit_task_ids == [39, 40]

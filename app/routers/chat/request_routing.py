@@ -1282,6 +1282,19 @@ def _max_iterations_standard(decision: RequestRoutingDecision) -> int:
     return 3 if decision.manual_deep_think else 2
 
 
+def _max_iterations_execute(
+    decision: RequestRoutingDecision,
+    *,
+    default_max_iterations: int,
+) -> int:
+    execute_cap = 6
+    if decision.explicit_task_override:
+        # Explicit task execution often needs to traverse a bound subtask chain,
+        # so a 6-step cap is too easy to exhaust before followthrough can occur.
+        execute_cap = 16
+    return max(3, min(default_max_iterations, execute_cap))
+
+
 def build_request_tier_profile(
     decision: RequestRoutingDecision,
     *,
@@ -1326,11 +1339,13 @@ def build_request_tier_profile(
             output_bias="evidence_backed",
             **common,
         )
-    execute_cap = min(default_max_iterations, 6)
     return RequestTierProfile(
         request_tier="execute",
         thinking_budget=max(200, min(default_thinking_budget, 7000)),
-        max_iterations=max(3, execute_cap),
+        max_iterations=_max_iterations_execute(
+            decision,
+            default_max_iterations=default_max_iterations,
+        ),
         output_bias="task_completion",
         **common,
     )

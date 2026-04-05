@@ -162,34 +162,96 @@ def _build_deep_think_task_context(
     task_instruction = str(getattr(node, "instruction", "") or "").strip() or str(user_message or "").strip()
     context_summary = str(getattr(node, "context_combined", "") or "").strip() or None
     context_sections = list(getattr(node, "context_sections", []) or [])
+    def _build_task_output_entry(source_node: Any, source_task_id: int, *, relationship: str) -> Optional[Dict[str, Any]]:
+        dep_status = str(getattr(source_node, "status", "") or "").strip().lower()
+        result_text = str(getattr(source_node, "execution_result", "") or "").strip()
+        if len(result_text) > 500:
+            result_text = result_text[:500].rstrip() + "..."
+        artifact_paths: List[str] = []
+        try:
+            artifact_paths = _extract_task_artifact_paths_fn(source_node)
+        except Exception:
+            artifact_paths = []
+        if not artifact_paths and not result_text:
+            return None
+        return {
+            "task_id": source_task_id,
+            "task_name": str(source_node.display_name()).strip(),
+            "status": dep_status,
+            "execution_result": result_text,
+            "artifact_paths": artifact_paths,
+            "relationship": relationship,
+        }
+
+    def _expand_explicit_scope_leaf_ids() -> List[int]:
+        raw_explicit = (getattr(agent, "extra_context", {}) or {}).get("explicit_task_ids", []) or []
+        ordered: List[int] = []
+        seen: set[int] = set()
+
+        def _visit(task_id_to_visit: int) -> None:
+            if task_id_to_visit in seen or not tree.has_node(task_id_to_visit):
+                return
+            children = tree.children_ids(task_id_to_visit)
+            if not children:
+                seen.add(task_id_to_visit)
+                ordered.append(task_id_to_visit)
+                return
+            seen.add(task_id_to_visit)
+            for child_id in children:
+                _visit(child_id)
+
+        for raw_task_id in raw_explicit:
+            try:
+                explicit_task_id = int(raw_task_id)
+            except (TypeError, ValueError):
+                continue
+            _visit(explicit_task_id)
+        return ordered
+
     dependency_outputs: List[Dict[str, Any]] = []
+    seen_dependency_ids: set[int] = set()
+
+    if bool((getattr(agent, "extra_context", {}) or {}).get("explicit_task_override")):
+        ordered_scope_leaf_ids = _expand_explicit_scope_leaf_ids()
+        if task_id in ordered_scope_leaf_ids:
+            current_index = ordered_scope_leaf_ids.index(task_id)
+            for prior_task_id in reversed(ordered_scope_leaf_ids[:current_index]):
+                if len(dependency_outputs) >= 3:
+                    break
+                if not tree.has_node(prior_task_id):
+                    continue
+                prior_node = tree.get_node(prior_task_id)
+                prior_status = str(getattr(prior_node, "status", "") or "").strip().lower()
+                if prior_status not in {"completed", "done", "success"}:
+                    continue
+                prior_entry = _build_task_output_entry(
+                    prior_node,
+                    prior_task_id,
+                    relationship="preceding_scope_task",
+                )
+                if prior_entry is None:
+                    continue
+                dependency_outputs.append(prior_entry)
+                seen_dependency_ids.add(prior_task_id)
+
     raw_dependencies = getattr(node, "dependencies", []) or []
     for dep_id in raw_dependencies[:6]:
         try:
             dep_id_int = int(dep_id)
         except (TypeError, ValueError):
             continue
-        if not tree.has_node(dep_id_int):
+        if dep_id_int in seen_dependency_ids or not tree.has_node(dep_id_int):
             continue
         dep_node = tree.get_node(dep_id_int)
-        dep_status = str(getattr(dep_node, "status", "") or "").strip().lower()
-        result_text = str(getattr(dep_node, "execution_result", "") or "").strip()
-        if len(result_text) > 500:
-            result_text = result_text[:500].rstrip() + "..."
-        artifact_paths: List[str] = []
-        try:
-            artifact_paths = _extract_task_artifact_paths_fn(dep_node)
-        except Exception:
-            artifact_paths = []
-        dependency_outputs.append(
-            {
-                "task_id": dep_id_int,
-                "task_name": str(dep_node.display_name()).strip(),
-                "status": dep_status,
-                "execution_result": result_text,
-                "artifact_paths": artifact_paths,
-            }
+        dep_entry = _build_task_output_entry(
+            dep_node,
+            dep_id_int,
+            relationship="declared_dependency",
         )
+        if dep_entry is None:
+            continue
+        dependency_outputs.append(dep_entry)
+        seen_dependency_ids.add(dep_id_int)
 
     completed_outputs_summary = ""
     try:
@@ -214,6 +276,41 @@ def _build_deep_think_task_context(
         ],
         explicit_task_override=bool((getattr(agent, "extra_context", {}) or {}).get("explicit_task_override")),
     )
+
+
+def _refresh_deep_think_runtime_context(
+    agent: "StructuredChatAgent",
+    *,
+    dt_agent: Any = None,
+    task_context: Optional[TaskExecutionContext],
+    user_message: str,
+) -> None:
+    current_task_id = (getattr(agent, "extra_context", {}) or {}).get("current_task_id")
+    pending_scope_task_ids = (getattr(agent, "extra_context", {}) or {}).get("pending_scope_task_ids")
+    if dt_agent is not None and isinstance(getattr(dt_agent, "request_profile", None), dict):
+        dt_agent.request_profile["current_task_id"] = current_task_id
+        if isinstance(pending_scope_task_ids, list):
+            dt_agent.request_profile["pending_scope_task_ids"] = list(pending_scope_task_ids)
+
+    if task_context is None:
+        return
+
+    refreshed = _build_deep_think_task_context(agent, user_message=user_message)
+    if refreshed is None:
+        return
+
+    task_context.task_id = refreshed.task_id
+    task_context.task_name = refreshed.task_name
+    task_context.task_instruction = refreshed.task_instruction
+    task_context.dependency_outputs = list(refreshed.dependency_outputs)
+    task_context.plan_outline = refreshed.plan_outline
+    task_context.constraints = list(refreshed.constraints)
+    task_context.skill_context = refreshed.skill_context
+    task_context.context_summary = refreshed.context_summary
+    task_context.context_sections = list(refreshed.context_sections)
+    task_context.paper_context_paths = list(refreshed.paper_context_paths)
+    task_context.explicit_task_ids = list(refreshed.explicit_task_ids)
+    task_context.explicit_task_override = refreshed.explicit_task_override
 
 
 from .action_execution import (
@@ -1092,6 +1189,54 @@ class StructuredChatAgent:
         structured = self._apply_task_execution_followthrough_guardrail(structured)
         return self._apply_completion_claim_guardrail(structured)
 
+    def _build_deterministic_execute_task_structured(self) -> Optional[LLMStructuredResponse]:
+        request_tier = str(self.extra_context.get("request_tier") or "").strip().lower()
+        intent_type = str(self.extra_context.get("intent_type") or "").strip().lower()
+        if request_tier != "execute" or intent_type != "execute_task":
+            return None
+        if not bool(self.extra_context.get("explicit_task_override")):
+            return None
+        if self.plan_session.plan_id is None:
+            return None
+        if bool(self.extra_context.get("requires_structured_plan")):
+            return None
+        if bool(self.extra_context.get("explicit_scope_all_blocked")):
+            return None
+
+        raw_task_id = self.extra_context.get("current_task_id")
+        try:
+            task_id = int(raw_task_id) if raw_task_id is not None else None
+        except (TypeError, ValueError):
+            task_id = None
+        if task_id is None or task_id <= 0:
+            return None
+
+        pending_ids = self.extra_context.get("pending_scope_task_ids")
+        logger.info(
+            "[CHAT][ROUTING][EXEC_SHORTCUT] Using deterministic rerun_task "
+            "current=%s pending=%s plan_id=%s",
+            task_id,
+            list(pending_ids) if isinstance(pending_ids, list) else [],
+            self.plan_session.plan_id,
+        )
+        return LLMStructuredResponse.model_validate(
+            {
+                "llm_reply": {
+                    "message": f"Deterministic execute-task shortcut: task {task_id}."
+                },
+                "actions": [
+                    {
+                        "kind": "task_operation",
+                        "name": "rerun_task",
+                        "parameters": {"task_id": int(task_id)},
+                        "order": 1,
+                        "blocking": True,
+                        "metadata": {"origin": "explicit_execute_shortcut"},
+                    }
+                ],
+            }
+        )
+
     # -----------------------------------------------------------------------
     # Guardrail predicates (static) – extracted to chat/guardrails.py
     # -----------------------------------------------------------------------
@@ -1430,6 +1575,11 @@ class StructuredChatAgent:
                     "repair_attempts",
                     "plan_patch_suggestion",
                     "session_artifact_paths",
+                    "run_directory",
+                    "working_directory",
+                    "task_directory_full",
+                    "task_root_directory",
+                    "results_directory",
                 ):
                     value = result.get(key)
                     if value is not None:
@@ -2317,6 +2467,9 @@ class StructuredChatAgent:
                         payload["sequence_fetch_block_context"] = block_context
                     return payload
 
+                dt_agent: Any = None
+                deep_think_task_context: Optional[TaskExecutionContext] = None
+
                 # Wrapper for tool execution with plan_operation binding
                 async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
                     nonlocal deep_think_tool_order, deep_think_bg_category
@@ -2608,6 +2761,12 @@ class StructuredChatAgent:
                                         track_exc,
                                     )
 
+                        _refresh_deep_think_runtime_context(
+                            self,
+                            dt_agent=dt_agent,
+                            task_context=deep_think_task_context,
+                            user_message=effective_user_message,
+                        )
                         return result
 
                     # verify_task: route through task_operation handler
@@ -2886,6 +3045,9 @@ class StructuredChatAgent:
                         "current_plan_id": self.plan_session.plan_id,
                         "current_plan_title": plan_tree.title if plan_tree else None,
                         "current_task_id": self.extra_context.get("current_task_id"),
+                        "pending_scope_task_ids": list(
+                            self.extra_context.get("pending_scope_task_ids") or []
+                        ),
                     }
                 dt_agent = dt_agent_cls(**dt_agent_kwargs)
 
@@ -3391,6 +3553,7 @@ class StructuredChatAgent:
                         tree,
                         list(routing_decision.explicit_task_ids),
                         allow_cascade_rerun=True,
+                        auto_include_dependency_closure=True,
                     )
                 except Exception:
                     target_task_id = None
@@ -3403,6 +3566,7 @@ class StructuredChatAgent:
                         tree,
                         list(routing_decision.explicit_task_ids),
                         allow_cascade_rerun=True,
+                        auto_include_dependency_closure=True,
                     )
                 except Exception:
                     all_targets = []
@@ -3453,6 +3617,9 @@ class StructuredChatAgent:
 
     async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
         self._current_user_message = user_message
+        deterministic = self._build_deterministic_execute_task_structured()
+        if deterministic is not None:
+            return deterministic
         prompt = self._build_prompt(user_message)
         model_override = self.extra_context.get("default_base_model")
         raw = await self.llm_service.chat_async(

@@ -139,6 +139,18 @@ def _resolve_project_path(path_str: str) -> Path:
     return resolved
 
 
+def _resolve_session_scoped_project_path(path_str: str, session_dir: Optional[Path]) -> Path:
+    raw_path = Path(path_str).expanduser()
+    if raw_path.is_absolute():
+        return _resolve_project_path(str(raw_path))
+    if session_dir is not None:
+        resolved = (session_dir / raw_path).resolve()
+        if not _is_relative_to(resolved, session_dir):
+            raise ValueError(f"Path escapes session workspace: {path_str}")
+        return resolved
+    return _resolve_project_path(path_str)
+
+
 def _read_text_file(path: Path, max_bytes: int) -> str:
     if not path.exists():
         raise FileNotFoundError(f"Missing file: {path}")
@@ -1253,14 +1265,15 @@ async def manuscript_writer_handler(
 
     try:
         strict_gate = _env_enabled("MANUSCRIPT_STRICT_GATE", True)
-        output_file = _resolve_project_path(output_path)
         session_dir = _resolve_session_dir(session_id)
-        if session_dir and not _is_relative_to(output_file, session_dir):
-            output_file = session_dir / output_file.name
+        output_file = _resolve_session_scoped_project_path(output_path, session_dir)
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
         if analysis_path and str(analysis_path).strip():
-            analysis_file = _resolve_project_path(str(analysis_path).strip())
+            analysis_file = _resolve_session_scoped_project_path(
+                str(analysis_path).strip(),
+                session_dir,
+            )
         else:
             analysis_file = _default_analysis_path(output_file)
         analysis_file.parent.mkdir(parents=True, exist_ok=True)

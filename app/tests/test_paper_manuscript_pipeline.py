@@ -310,6 +310,49 @@ def test_manuscript_writer_respects_analysis_path(monkeypatch: pytest.MonkeyPatc
     assert "Analysis Memo" in analysis_file.read_text(encoding="utf-8")
 
 
+def test_manuscript_writer_scopes_relative_output_path_to_session_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
+    monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory())
+
+    bib_path = tmp_path / "ctx" / "references.bib"
+    bib_path.parent.mkdir(parents=True, exist_ok=True)
+    bib_path.write_text(
+        "@article{known1,\n"
+        "  title={Known Paper},\n"
+        "  author={Doe, Jane},\n"
+        "  year={2025}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Write the preprocessing methods section.",
+            output_path="manuscript/methods/data_preprocessing.md",
+            context_paths=["ctx/references.bib"],
+            sections=["method", "references"],
+            session_id="session_demo",
+            keep_workspace=True,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["output_path"] == "runtime/session_demo/manuscript/methods/data_preprocessing.md"
+
+    output_file = tmp_path / "runtime" / "session_demo" / "manuscript" / "methods" / "data_preprocessing.md"
+    assert output_file.exists()
+    assert output_file.read_text(encoding="utf-8").strip()
+
+
 def test_manuscript_writer_blocks_release_when_final_polish_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

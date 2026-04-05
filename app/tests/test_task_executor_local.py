@@ -13,6 +13,10 @@ from app.services.interpreter.code_execution import (
     classify_error,
     CodeExecutionSpec,
     CodeExecutionOutcome,
+    _collect_guidance_artifact_paths,
+    _format_acceptance_checks,
+    _format_verification_guidance,
+    _spec_requests_batch_profile,
     execute_code_locally,
 )
 from app.services.interpreter.prompts.coder_prompt import build_coder_system_prompt
@@ -373,6 +377,142 @@ def test_execute_code_locally_fails_after_contract_repair_exhausted(tmp_path: Pa
     assert outcome.contract_diff["missing_required_outputs"] == [
         "results/enrichment/upregulated_genes.csv"
     ]
+
+
+def test_collect_guidance_artifact_paths_includes_custom_acceptance_dirs(tmp_path: Path):
+    figures_dir = tmp_path / "manuscript" / "figures"
+    figures_dir.mkdir(parents=True)
+    legends = figures_dir / "Figure_Legends.docx"
+    legends.write_text("legend", encoding="utf-8")
+    pdf = figures_dir / "figure1.pdf"
+    pdf.write_text("pdf", encoding="utf-8")
+
+    collected = _collect_guidance_artifact_paths(
+        str(tmp_path),
+        acceptance_criteria={
+            "checks": [
+                {"type": "glob_count_at_least", "path": "manuscript/figures/*.pdf", "count": 1},
+                {"type": "file_nonempty", "path": "manuscript/figures/Figure_Legends.docx"},
+            ]
+        },
+    )
+
+    assert str(legends) in collected
+    assert str(pdf) in collected
+
+
+def test_format_verification_guidance_mentions_expected_path_and_same_name_candidate(tmp_path: Path):
+    misplaced = tmp_path / "manuscript" / "Figure_Legends.docx"
+    misplaced.parent.mkdir(parents=True)
+    misplaced.write_text("legend", encoding="utf-8")
+
+    guidance = _format_verification_guidance(
+        {
+            "failures": [
+                {
+                    "type": "file_nonempty",
+                    "path": str(tmp_path / "manuscript" / "figures" / "Figure_Legends.docx"),
+                    "message": "File is missing or empty.",
+                }
+            ],
+            "evidence": {"artifact_paths": [str(misplaced)]},
+        }
+    )
+
+    assert "Expected path" in guidance
+    assert str(tmp_path / "manuscript" / "figures" / "Figure_Legends.docx") in guidance
+    assert str(misplaced) in guidance
+    assert "Move or copy the valid file to the expected path" in guidance
+
+
+def test_execute_code_locally_reports_specific_guidance_for_misplaced_required_file(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_code_resp = CodeTaskResponse(code="print('exported')", description="export")
+
+    def _mock_run_file(self, code_file):
+        manuscript_dir = Path(tmp_path) / "manuscript"
+        figures_dir = manuscript_dir / "figures"
+        manuscript_dir.mkdir(parents=True, exist_ok=True)
+        figures_dir.mkdir(parents=True, exist_ok=True)
+        (manuscript_dir / "Figure_Legends.docx").write_text("legend", encoding="utf-8")
+        for index in range(10):
+            (figures_dir / f"figure_{index}.tiff").write_text("tiff", encoding="utf-8")
+            (figures_dir / f"figure_{index}.pdf").write_text("pdf", encoding="utf-8")
+        return CodeExecutionResult(
+            status="success",
+            output="export done\n",
+            error="",
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", lambda self, **kw: fake_code_resp)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter.run_file", _mock_run_file)
+
+    spec = CodeExecutionSpec(
+        plan_id=68,
+        task_id=65,
+        task_name="高分辨率导出与质量验证",
+        task_instruction="导出高分辨率图表并生成图例文档",
+        acceptance_criteria={
+            "blocking": True,
+            "checks": [
+                {"type": "glob_count_at_least", "path": "manuscript/figures/*.tiff", "count": 10},
+                {"type": "glob_count_at_least", "path": "manuscript/figures/*.pdf", "count": 10},
+                {"type": "file_nonempty", "path": "manuscript/figures/Figure_Legends.docx"},
+            ],
+        },
+    )
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="task 65",
+            task_description="export publication figures",
+            work_dir=str(tmp_path),
+            llm_service=MagicMock(),
+            execution_spec=spec,
+            auto_fix=False,
+        )
+    )
+
+    assert outcome.success is False
+    assert outcome.error_category == "acceptance_criteria_failed"
+    assert "manuscript/figures/Figure_Legends.docx" in (outcome.error_summary or "")
+    assert "manuscript/Figure_Legends.docx" in (outcome.fix_guidance or "")
+    assert "Move or copy the valid file to the expected path" in (outcome.fix_guidance or "")
+
+
+def test_format_acceptance_checks_supports_legacy_glob_count_shape():
+    formatted = _format_acceptance_checks({
+        "checks": [
+            {
+                "type": "glob_count_at_least",
+                "path": "output/4.1.2/significant_interactions.csv",
+                "count": 2,
+            }
+        ]
+    })
+
+    assert formatted == [
+        "at least 2 matches for glob: output/4.1.2/significant_interactions.csv"
+    ]
+
+
+def test_spec_requests_batch_profile_supports_legacy_glob_count_shape():
+    spec = CodeExecutionSpec(
+        acceptance_criteria={
+            "checks": [
+                {
+                    "type": "glob_count_at_least",
+                    "path": "output/batch/*.csv",
+                    "count": 3,
+                }
+            ]
+        }
+    )
+
+    assert _spec_requests_batch_profile(spec) is True
 
 
 # ---------------------------------------------------------------------------

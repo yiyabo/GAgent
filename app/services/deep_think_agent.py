@@ -7,7 +7,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from types import SimpleNamespace
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
@@ -553,6 +554,48 @@ class DeepThinkAgent:
             return True
         return self._coerce_positive_int(self.request_profile.get("current_task_id")) is not None
 
+    def _current_bound_task_id(
+        self,
+        task_context: Optional[TaskExecutionContext],
+    ) -> Optional[int]:
+        request_task_id = self._coerce_positive_int(self.request_profile.get("current_task_id"))
+        context_task_id = (
+            self._coerce_positive_int(task_context.task_id)
+            if task_context and task_context.task_id is not None
+            else None
+        )
+        if (
+            request_task_id is not None
+            and context_task_id is not None
+            and request_task_id != context_task_id
+            and self._explicit_task_override_active(task_context)
+        ):
+            return request_task_id
+        if context_task_id is not None:
+            return context_task_id
+        return request_task_id
+
+    def _explicit_task_override_active(
+        self,
+        task_context: Optional[TaskExecutionContext],
+    ) -> bool:
+        return bool(
+            getattr(task_context, "explicit_task_override", False)
+            if task_context is not None
+            else False
+        ) or bool(self.request_profile.get("explicit_task_override"))
+
+    def _pending_scope_task_ids(self) -> List[int]:
+        raw = self.request_profile.get("pending_scope_task_ids")
+        if not isinstance(raw, list):
+            return []
+        pending: List[int] = []
+        for item in raw:
+            parsed = self._coerce_positive_int(item)
+            if parsed is not None:
+                pending.append(parsed)
+        return pending
+
     @staticmethod
     def _is_exploratory_file_operation_call(tool_result: Dict[str, Any]) -> bool:
         if str(tool_result.get("tool_name") or "").strip().lower() != "file_operations":
@@ -713,6 +756,35 @@ class DeepThinkAgent:
             return False
         return all(self._is_observation_only_tool_call(item) for item in tool_results)
 
+    @staticmethod
+    def _is_verification_only_tool_result_cycle(
+        tool_results: Sequence[Dict[str, Any]],
+    ) -> bool:
+        if not tool_results:
+            return False
+        return all(
+            str(item.get("tool_name") or "").strip().lower() == "verify_task"
+            for item in tool_results
+        )
+
+    def _verification_only_cycle_replacement_task_id(
+        self,
+        executable_calls: Sequence[Any],
+        *,
+        task_context: Optional[TaskExecutionContext],
+        had_real_execution_tool: bool,
+    ) -> Optional[int]:
+        if had_real_execution_tool or not executable_calls:
+            return None
+        if not self._is_execute_task_request() or not self._has_bound_task_context(task_context):
+            return None
+        if not all(
+            str(getattr(call, "name", "") or "").strip().lower() == "verify_task"
+            for call in executable_calls
+        ):
+            return None
+        return self._current_bound_task_id(task_context)
+
     def _build_probe_only_followthrough_nudge(
         self,
         *,
@@ -732,23 +804,43 @@ class DeepThinkAgent:
                     f"Task Instruction={self._clip_reference_text(task_context.task_instruction, limit=400)}"
                 )
         task_hint = "\n".join(task_bits)
+        is_explicit_override = self._explicit_task_override_active(task_context)
         if stage >= 2:
-            zh = (
-                "这是连续第 2 次只做观察型探查而没有真正执行任务。\n"
-                "下一步必须二选一：\n"
-                "1. 立即调用真正的执行工具（如 `code_executor` 或任务对应的分析工具）；\n"
-                "2. 若缺少上游交付物或关键输入，直接给出 `BLOCKED_DEPENDENCY` 结论，明确说明缺什么、为什么当前 task 不能继续。\n"
-                "不要继续做目录清点、文档浏览或结果浏览式探查。\n"
-                "不要把当前 task 偷偷改写成前序任务或全量预处理，除非 task 指令明确授权补跑前置步骤。"
-            )
-            en = (
-                "This is the second consecutive observation-only probe without actually executing the bound task.\n"
-                "Your next step MUST do exactly one of the following:\n"
-                "1. Call a real execution tool such as `code_executor` or the task-specific analysis tool immediately.\n"
-                "2. If required upstream deliverables or key inputs are missing, return a `BLOCKED_DEPENDENCY` conclusion that states what is missing and why the current task cannot proceed.\n"
-                "Do not continue with directory inventory, document browsing, or result-browsing probes.\n"
-                "Do not silently rewrite the current task into an upstream preprocessing task unless the task instruction explicitly authorizes backfilling the prerequisite work."
-            )
+            if is_explicit_override:
+                # For explicit task override requests, do NOT suggest BLOCKED_DEPENDENCY.
+                # The user explicitly asked for this task — execute it, incorporating
+                # prerequisite work if needed.
+                zh = (
+                    "这是连续第 2 次只做观察型探查而没有真正执行任务。\n"
+                    "用户已明确要求执行这个任务，不允许返回 BLOCKED_DEPENDENCY。\n"
+                    "下一步必须立即调用真正的执行工具（如 `code_executor` 或任务对应的分析工具）。\n"
+                    "如果上游数据或前置产物不存在，请在本次执行中一并生成或补齐所需的前置数据。\n"
+                    "不要继续做目录清点、文档浏览或结果浏览式探查。"
+                )
+                en = (
+                    "This is the second consecutive observation-only probe without actually executing the bound task.\n"
+                    "The user explicitly requested this task execution — you MUST NOT return BLOCKED_DEPENDENCY.\n"
+                    "Your next step MUST call a real execution tool such as `code_executor` or the task-specific analysis tool immediately.\n"
+                    "If upstream data or prerequisite outputs are not available, incorporate the prerequisite processing steps within this execution.\n"
+                    "Do not continue with directory inventory, document browsing, or result-browsing probes."
+                )
+            else:
+                zh = (
+                    "这是连续第 2 次只做观察型探查而没有真正执行任务。\n"
+                    "下一步必须二选一：\n"
+                    "1. 立即调用真正的执行工具（如 `code_executor` 或任务对应的分析工具）；\n"
+                    "2. 若缺少上游交付物或关键输入，直接给出 `BLOCKED_DEPENDENCY` 结论，明确说明缺什么、为什么当前 task 不能继续。\n"
+                    "不要继续做目录清点、文档浏览或结果浏览式探查。\n"
+                    "不要把当前 task 偷偷改写成前序任务或全量预处理，除非 task 指令明确授权补跑前置步骤。"
+                )
+                en = (
+                    "This is the second consecutive observation-only probe without actually executing the bound task.\n"
+                    "Your next step MUST do exactly one of the following:\n"
+                    "1. Call a real execution tool such as `code_executor` or the task-specific analysis tool immediately.\n"
+                    "2. If required upstream deliverables or key inputs are missing, return a `BLOCKED_DEPENDENCY` conclusion that states what is missing and why the current task cannot proceed.\n"
+                    "Do not continue with directory inventory, document browsing, or result-browsing probes.\n"
+                    "Do not silently rewrite the current task into an upstream preprocessing task unless the task instruction explicitly authorizes backfilling the prerequisite work."
+                )
         else:
             zh = (
                 "这是一个已绑定任务的执行请求。你刚才只做了只读目录/文件探查。\n"
@@ -768,6 +860,121 @@ class DeepThinkAgent:
         if task_hint:
             return f"{base}\n{task_hint}"
         return base
+
+    def _task_context_upstream_artifact_paths(
+        self,
+        task_context: Optional[TaskExecutionContext],
+    ) -> List[str]:
+        if task_context is None:
+            return []
+        collected: List[str] = []
+        seen: set[str] = set()
+        for dep in list(getattr(task_context, "dependency_outputs", None) or [])[:6]:
+            if not isinstance(dep, dict):
+                continue
+            raw_paths = dep.get("artifact_paths")
+            if not isinstance(raw_paths, list):
+                continue
+            for raw in raw_paths:
+                path = str(raw or "").strip()
+                if not path or path in seen or self._is_internal_artifact_path(path):
+                    continue
+                seen.add(path)
+                collected.append(path)
+                if len(collected) >= 8:
+                    return collected
+        return collected
+
+    def _can_force_probe_followthrough_execution(
+        self,
+        task_context: Optional[TaskExecutionContext],
+    ) -> bool:
+        if not (
+            self._is_execute_task_request()
+            and self._has_bound_task_context(task_context)
+            and self._explicit_task_override_active(task_context)
+            and "code_executor" in self.available_tools
+        ):
+            return False
+        # When upstream artifact paths are available, always allow forced
+        # execution.  When they are NOT available but the user explicitly
+        # requested this task (explicit_task_override), still allow forced
+        # execution — the task instruction alone provides enough context, and
+        # the code_executor should incorporate any prerequisite work itself
+        # rather than reporting BLOCKED_DEPENDENCY to the user.
+        return True
+
+    def _build_forced_probe_followthrough_task(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        user_query: str,
+    ) -> str:
+        artifact_paths = self._task_context_upstream_artifact_paths(task_context)
+        task_label = "the current bound task"
+        task_instruction = str(user_query or "").strip()
+        if task_context is not None:
+            if task_context.task_id is not None:
+                task_label = f"Task {task_context.task_id}"
+            if task_context.task_name:
+                task_label = f"{task_label} ({task_context.task_name})"
+            if task_context.task_instruction:
+                task_instruction = str(task_context.task_instruction).strip()
+
+        lines = [
+            task_instruction or str(user_query or "").strip() or "Execute the current bound task.",
+            "",
+            "Execution followthrough requirement:",
+            f"- Continue {task_label} now with real execution via code_executor.",
+        ]
+        if artifact_paths:
+            lines.extend(
+                [
+                    "- Authoritative upstream deliverables are already available; do not stop with BLOCKED_DEPENDENCY before attempting execution.",
+                    "- Use the upstream artifact paths below directly instead of browsing more directories or documents.",
+                    "- Produce only the current task's outputs.",
+                    "",
+                    "Authoritative upstream artifact paths:",
+                    *[f"- {path}" for path in artifact_paths],
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "- Do NOT report BLOCKED_DEPENDENCY. The user explicitly requested this task execution.",
+                    "- If upstream data or prerequisite outputs are not directly available, incorporate the necessary preprocessing steps within this execution.",
+                    "- Use the task instruction above and any available session context to produce the required outputs.",
+                ]
+            )
+        return "\n".join(lines).strip()
+
+    async def _execute_forced_probe_followthrough(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        user_query: str,
+        iteration: int,
+        probe_only_execution_cycles: int,
+    ) -> Dict[str, Any]:
+        forced_task = self._build_forced_probe_followthrough_task(
+            task_context=task_context,
+            user_query=user_query,
+        )
+        logger.warning(
+            "[DEEP_THINK_NATIVE] Forcing code_executor after probe-only cycles=%s task_id=%s",
+            probe_only_execution_cycles,
+            getattr(task_context, "task_id", None),
+        )
+        forced_call = SimpleNamespace(
+            name="code_executor",
+            id=f"forced_probe_followthrough_{iteration}_{probe_only_execution_cycles}",
+            arguments={"task": forced_task},
+        )
+        return await self._execute_native_tool_call(
+            tc=forced_call,
+            iteration=iteration,
+            index=9999,
+        )
 
     def _build_post_execution_summary_nudge(
         self,
@@ -821,12 +1028,204 @@ class DeepThinkAgent:
             return f"{base}\n{task_hint}"
         return base
 
+    def _build_task_handoff_execution_nudge(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        user_query: str,
+        previous_task_id: int,
+        next_task_id: int,
+    ) -> str:
+        language = detect_reasoning_language(user_query)
+        task_bits: List[str] = [f"Task ID={next_task_id}"]
+        if task_context and task_context.task_name:
+            task_bits.append(f"Task Name={task_context.task_name}")
+        if task_context and task_context.task_instruction:
+            task_bits.append(
+                f"Task Instruction={self._clip_reference_text(task_context.task_instruction, limit=400)}"
+            )
+        task_hint = "\n".join(task_bits)
+        zh = (
+            f"Task {previous_task_id} 已经执行完成，当前绑定任务已自动推进到 Task {next_task_id}。\n"
+            "下一步不要继续总结上一个任务，也不要浏览旧目录或旧结果。\n"
+            "请立即执行当前绑定任务：优先调用真正的执行工具（如 `code_executor` 或该任务对应的分析工具）。\n"
+            "可以使用上一个任务已经生成的现有产物，但不要把请求回退成前一个任务的总结或 BLOCKED_DEPENDENCY。"
+        )
+        en = (
+            f"Task {previous_task_id} has finished and the bound task has automatically advanced to Task {next_task_id}.\n"
+            "Do not keep summarizing the previous task or browsing its old directories/results.\n"
+            "Execute the current bound task immediately using a real execution tool such as `code_executor` or the task-specific analysis tool.\n"
+            "You may use outputs already produced by the previous task, but do not fall back to a summary or BLOCKED_DEPENDENCY for the previous task."
+        )
+        base = _localized_text(language, zh, en)
+        if task_hint:
+            return f"{base}\n{task_hint}"
+        return base
+
+    def _can_force_handoff_followthrough_execution(
+        self,
+        task_context: Optional[TaskExecutionContext],
+        *,
+        next_task_id: Optional[int],
+    ) -> bool:
+        current_task_id = self._current_bound_task_id(task_context)
+        return (
+            self._is_execute_task_request()
+            and self._has_bound_task_context(task_context)
+            and self._explicit_task_override_active(task_context)
+            and "code_executor" in self.available_tools
+            and next_task_id is not None
+            and current_task_id == self._coerce_positive_int(next_task_id)
+        )
+
+    def _build_forced_handoff_followthrough_task(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        user_query: str,
+        previous_task_id: int,
+        next_task_id: int,
+    ) -> str:
+        artifact_paths = self._task_context_upstream_artifact_paths(task_context)
+        task_label = f"Task {next_task_id}"
+        task_instruction = str(user_query or "").strip()
+        if task_context is not None:
+            if task_context.task_name:
+                task_label = f"{task_label} ({task_context.task_name})"
+            if task_context.task_instruction:
+                task_instruction = str(task_context.task_instruction).strip()
+
+        lines = [
+            task_instruction or str(user_query or "").strip() or "Execute the current bound task.",
+            "",
+            "Task handoff followthrough requirement:",
+            f"- Task {previous_task_id} is already completed. Continue {task_label} now with real execution via code_executor.",
+            "- The current bound task is already known from plan context; do not ask for task definitions and do not infer blocking from a missing parent task directory name.",
+            "- Reuse authoritative upstream outputs directly when relevant instead of falling back to a prose status summary.",
+            "- Produce only the current bound task's outputs.",
+        ]
+        if artifact_paths:
+            lines.extend(
+                [
+                    "",
+                    "Authoritative upstream artifact paths:",
+                    *[f"- {path}" for path in artifact_paths],
+                ]
+            )
+        return "\n".join(lines).strip()
+
+    async def _execute_forced_handoff_followthrough(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        user_query: str,
+        iteration: int,
+        previous_task_id: int,
+        next_task_id: int,
+        reason: str,
+    ) -> Dict[str, Any]:
+        forced_task = self._build_forced_handoff_followthrough_task(
+            task_context=task_context,
+            user_query=user_query,
+            previous_task_id=previous_task_id,
+            next_task_id=next_task_id,
+        )
+        logger.warning(
+            "[DEEP_THINK_NATIVE] Forcing code_executor after task handoff previous=%s next=%s reason=%s iteration=%s",
+            previous_task_id,
+            next_task_id,
+            reason,
+            iteration,
+        )
+        forced_call = SimpleNamespace(
+            name="code_executor",
+            id=f"forced_handoff_followthrough_{iteration}_{next_task_id}_{reason}",
+            arguments={"task": forced_task},
+        )
+        return await self._execute_native_tool_call(
+            tc=forced_call,
+            iteration=iteration,
+            index=9998,
+        )
+
+    def _build_verified_execution_finalize_nudge(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        user_query: str,
+    ) -> str:
+        language = detect_reasoning_language(user_query)
+        task_bits: List[str] = []
+        if task_context and task_context.task_id is not None:
+            task_bits.append(f"Task ID={task_context.task_id}")
+        if task_context and task_context.task_name:
+            task_bits.append(f"Task Name={task_context.task_name}")
+        task_hint = "\n".join(task_bits)
+        zh = (
+            "当前绑定任务已经执行并验证通过，且当前显式任务链没有剩余待执行任务。\n"
+            "下一步不要再调用 `file_operations`、`document_reader`、`plan_operation`、`web_search` 或再次执行代码。\n"
+            "如果需要一句总结，可调用 `result_interpreter` 读取现有结果；否则请直接 `submit_final_answer`，总结最终状态、关键输出文件和结论。"
+        )
+        en = (
+            "The current bound task has already executed and passed verification, and there are no remaining tasks in the explicit task chain.\n"
+            "Do not call `file_operations`, `document_reader`, `plan_operation`, `web_search`, or run code again.\n"
+            "If one short synthesis step is still useful, call `result_interpreter` on the existing outputs; otherwise call `submit_final_answer` now with the final status, key output files, and conclusions."
+        )
+        base = _localized_text(language, zh, en)
+        if task_hint:
+            return f"{base}\n{task_hint}"
+        return base
+
+    def _should_force_verified_execution_finalization(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext],
+        tool_results: Sequence[Dict[str, Any]],
+        had_real_execution_tool: bool = False,
+    ) -> bool:
+        if not self._is_execute_task_request() or not self._has_bound_task_context(task_context):
+            return False
+        request_task_id = self._coerce_positive_int(self.request_profile.get("current_task_id"))
+        context_task_id = (
+            self._coerce_positive_int(task_context.task_id)
+            if task_context and task_context.task_id is not None
+            else None
+        )
+        if (
+            request_task_id is not None
+            and context_task_id is not None
+            and request_task_id != context_task_id
+            and self._explicit_task_override_active(task_context)
+        ):
+            return False
+        if self._pending_scope_task_ids():
+            return False
+        if self._tool_results_indicate_verified_success(tool_results):
+            if (
+                not had_real_execution_tool
+                and self._is_verification_only_tool_result_cycle(tool_results)
+            ):
+                return False
+            return True
+        if self._collect_task_scoped_output_refs_from_tool_results(
+            tool_results,
+            task_context=task_context,
+        ):
+            return True
+        if (
+            bool(self.request_profile.get("explicit_task_override"))
+            and any(self._tool_counts_as_real_execution(item) for item in tool_results)
+        ):
+            return bool(self._collect_output_refs_from_tool_results(tool_results))
+        return False
+
     def _build_post_execution_probe_stop_answer(
         self,
         *,
         task_context: Optional[TaskExecutionContext],
         user_query: str,
         steps: Sequence[ThinkingStep],
+        tool_results: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> str:
         language = detect_reasoning_language(user_query)
         observed_outputs: List[str] = []
@@ -850,6 +1249,17 @@ class DeepThinkAgent:
             if len(observed_outputs) >= 6:
                 break
 
+        for ref in self._collect_task_scoped_output_refs_from_tool_results(
+            tool_results or [],
+            task_context=task_context,
+        ):
+            if ref in seen:
+                continue
+            seen.add(ref)
+            observed_outputs.append(ref)
+            if len(observed_outputs) >= 6:
+                break
+
         task_label = ""
         if task_context and task_context.task_id is not None:
             task_label = f"Task {task_context.task_id}"
@@ -858,31 +1268,49 @@ class DeepThinkAgent:
         elif task_context and task_context.task_name:
             task_label = task_context.task_name
 
+        verified_success = self._tool_results_indicate_verified_success(tool_results or [])
+
         if language == "zh":
             lines = []
-            if task_label:
+            if verified_success:
+                if task_label:
+                    lines.append(f"{task_label} 的代码执行与验证实际上已完成，但模型在收尾总结阶段陷入重复只读观察，已自动停止继续探查。")
+                else:
+                    lines.append("任务代码执行与验证实际上已完成，但模型在收尾总结阶段陷入重复只读观察，已自动停止继续探查。")
+            elif task_label:
                 lines.append(f"{task_label} 的代码执行已完成，但后续验证陷入重复观察循环，已自动停止继续探查。")
             else:
                 lines.append("任务代码执行已完成，但后续验证陷入重复观察循环，已自动停止继续探查。")
             if observed_outputs:
-                lines.append("最近已观察到的输出包括：")
+                lines.append("已确认的稳定输出包括：" if verified_success else "最近已观察到的输出包括：")
                 lines.extend(f"- {item}" for item in observed_outputs)
             elif task_label:
                 lines.append("未在当前 task 作用域内观察到稳定输出文件。")
-            lines.append("请基于这些已有输出继续查看结果，或重新发起一次“仅总结结果”的请求。")
+            if verified_success:
+                lines.append("可直接基于这些结果继续后续任务，或重新发起一次“仅总结结果”的请求。")
+            else:
+                lines.append("请基于这些已有输出继续查看结果，或重新发起一次“仅总结结果”的请求。")
             return "\n".join(lines)
 
         lines = []
-        if task_label:
+        if verified_success:
+            if task_label:
+                lines.append(f"{task_label} actually finished execution and verification, but the model got stuck in repeated read-only post-execution summarization and was stopped automatically.")
+            else:
+                lines.append("Task execution and verification actually completed, but the model got stuck in repeated read-only post-execution summarization and was stopped automatically.")
+        elif task_label:
             lines.append(f"{task_label} finished execution, but post-execution verification entered a repeated observation loop and was stopped automatically.")
         else:
             lines.append("Task code finished execution, but post-execution verification entered a repeated observation loop and was stopped automatically.")
         if observed_outputs:
-            lines.append("Recently observed outputs include:")
+            lines.append("Confirmed stable outputs include:" if verified_success else "Recently observed outputs include:")
             lines.extend(f"- {item}" for item in observed_outputs)
         elif task_label:
             lines.append("No stable outputs were observed inside the current task scope.")
-        lines.append("Use these outputs directly, or retry with a summary-only follow-up.")
+        if verified_success:
+            lines.append("Use these outputs directly for the next task, or retry with a summary-only follow-up.")
+        else:
+            lines.append("Use these outputs directly, or retry with a summary-only follow-up.")
         return "\n".join(lines)
 
     def _build_blocked_dependency_answer(
@@ -999,6 +1427,101 @@ class DeepThinkAgent:
         return verification_state == "verified_success"
 
     @classmethod
+    def _iter_tool_payload_dicts(cls, payload: Any) -> Iterable[Dict[str, Any]]:
+        current = payload
+        visited: set[int] = set()
+        while isinstance(current, dict) and id(current) not in visited:
+            visited.add(id(current))
+            yield current
+            nested = current.get("result")
+            if not isinstance(nested, dict):
+                break
+            current = nested
+
+    @classmethod
+    def _tool_results_indicate_verified_success(cls, tool_results: Sequence[Dict[str, Any]]) -> bool:
+        for item in tool_results:
+            payload = item.get("tool_result")
+            for candidate in cls._iter_tool_payload_dicts(payload):
+                verification_state = str(candidate.get("verification_state") or "").strip().lower()
+                if verification_state == "verified_success":
+                    return True
+                verification_status = str(candidate.get("verification_status") or "").strip().lower()
+                if verification_status == "passed":
+                    return True
+                metadata = candidate.get("metadata")
+                if isinstance(metadata, dict):
+                    metadata_verification_status = str(metadata.get("verification_status") or "").strip().lower()
+                    if metadata_verification_status == "passed":
+                        return True
+                    verification = metadata.get("verification")
+                    if isinstance(verification, dict):
+                        verification_status = str(verification.get("status") or "").strip().lower()
+                        if verification_status == "passed":
+                            return True
+        return False
+
+    @classmethod
+    def _collect_task_scoped_output_refs_from_tool_results(
+        cls,
+        tool_results: Sequence[Dict[str, Any]],
+        *,
+        task_context: Optional[TaskExecutionContext],
+    ) -> List[str]:
+        collected: List[str] = []
+        seen: set[str] = set()
+        for item in tool_results:
+            payload = item.get("tool_result")
+            for candidate in cls._iter_tool_payload_dicts(payload):
+                for key in ("artifact_paths", "session_artifact_paths", "produced_files"):
+                    values = candidate.get(key)
+                    if not isinstance(values, list):
+                        continue
+                    for raw in values:
+                        ref = str(raw or "").strip()
+                        if (
+                            not ref
+                            or ref in seen
+                            or cls._is_internal_artifact_path(ref)
+                            or not cls._is_task_scoped_output_ref(ref, task_context)
+                        ):
+                            continue
+                        seen.add(ref)
+                        collected.append(ref)
+                        if len(collected) >= 8:
+                            return collected
+        return collected
+
+    @classmethod
+    def _collect_output_refs_from_tool_results(
+        cls,
+        tool_results: Sequence[Dict[str, Any]],
+    ) -> List[str]:
+        collected: List[str] = []
+        seen: set[str] = set()
+        for item in tool_results:
+            payload = item.get("tool_result")
+            for candidate in cls._iter_tool_payload_dicts(payload):
+                for key in ("artifact_paths", "session_artifact_paths", "produced_files"):
+                    values = candidate.get(key)
+                    if not isinstance(values, list):
+                        continue
+                    for raw in values:
+                        ref = str(raw or "").strip()
+                        normalized = "/" + ref.replace("\\", "/").lstrip("/") if ref else ""
+                        if (
+                            not normalized
+                            or normalized in seen
+                            or cls._is_internal_artifact_path(normalized)
+                        ):
+                            continue
+                        seen.add(normalized)
+                        collected.append(normalized)
+                        if len(collected) >= 8:
+                            return collected
+        return collected
+
+    @classmethod
     def _is_task_scoped_output_ref(
         cls,
         ref: str,
@@ -1057,6 +1580,51 @@ class DeepThinkAgent:
                 "当前 task 不能继续",
                 "阻塞",
             )
+        )
+
+    @staticmethod
+    def _looks_like_missing_task_definition_answer(text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        if "plan68_task" in lowered and any(
+            token in lowered
+            for token in ("未见到", "未看到", "没有", "missing", "not found", "not see", "not seen")
+        ):
+            return True
+        if any(
+            token in lowered
+            for token in (
+                "task definition",
+                "task details",
+                "task description",
+                "corresponding directory",
+                "任务定义",
+                "任务描述",
+                "具体内容",
+                "详细描述",
+                "对应的目录",
+            )
+        ):
+            if "task" in lowered or "任务" in lowered:
+                return True
+        if ("please provide" in lowered or "需要您提供" in lowered or "请提供" in lowered) and (
+            "task" in lowered or "任务" in lowered
+        ):
+            return True
+        return False
+
+    def _should_reject_missing_task_definition_answer(
+        self,
+        text: str,
+        *,
+        task_context: Optional[TaskExecutionContext],
+    ) -> bool:
+        return (
+            self._is_execute_task_request()
+            and self._has_bound_task_context(task_context)
+            and self._explicit_task_override_active(task_context)
+            and self._looks_like_missing_task_definition_answer(text)
         )
 
     def _is_valid_final_answer(self, text: str, *, user_query: str) -> bool:
@@ -2013,13 +2581,22 @@ class DeepThinkAgent:
         last_tool_cycle_signature: Optional[str] = None
         identical_tool_cycle_count = 0
         probe_only_execution_cycles = 0
+        forced_probe_followthrough_attempts = 0
+        forced_handoff_followthrough_attempts = 0
         had_real_execution_tool = False
         partial_completion_retry_count = 0
         _MAX_PARTIAL_RETRIES = 6
+        _MAX_HANDOFF_ITERATION_EXTENSIONS = 4
+        last_real_execution_tool_results: List[Dict[str, Any]] = []
+        force_verified_execution_finalization = False
+        pending_handoff_task_id: Optional[int] = None
+        pending_handoff_previous_task_id: Optional[int] = None
+        runtime_iteration_limit = self.max_iterations
+        handoff_iteration_extensions = 0
 
         logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
 
-        while iteration < self.max_iterations:
+        while iteration < runtime_iteration_limit:
             await self._pause_event.wait()
             if self.cancel_event and self.cancel_event.is_set():
                 logger.info("[DEEP_THINK_NATIVE] Cancelled by user")
@@ -2103,8 +2680,68 @@ class DeepThinkAgent:
                 tool_calls = list(result.tool_calls)
                 final_call = next((tc for tc in tool_calls if tc.name == "submit_final_answer"), None)
                 executable_calls = [tc for tc in tool_calls if tc.name != "submit_final_answer"]
+                replacement_task_id = self._verification_only_cycle_replacement_task_id(
+                    executable_calls,
+                    task_context=task_context,
+                    had_real_execution_tool=had_real_execution_tool,
+                )
+                if replacement_task_id is not None:
+                    template_call = executable_calls[0]
+                    executable_calls = [
+                        type(template_call)(
+                            id=str(getattr(template_call, "id", "") or f"native_{iteration}_rerun_task"),
+                            name="rerun_task",
+                            arguments={"task_id": replacement_task_id},
+                        )
+                    ]
+                    logger.info(
+                        "[DEEP_THINK_NATIVE] Replaced verify_task-only cycle with rerun_task for task_id=%s at iteration=%s",
+                        replacement_task_id,
+                        iteration,
+                    )
+                    current_step.self_correction = (
+                        f"Rejected verification-only follow-up for bound Task {replacement_task_id} and replaced it with rerun_task."
+                    )
+                if force_verified_execution_finalization and executable_calls:
+                    allowed_summary_calls = [
+                        tc
+                        for tc in executable_calls
+                        if str(getattr(tc, "name", "") or "").strip().lower() == "result_interpreter"
+                    ]
+                    skipped_names = [
+                        str(getattr(tc, "name", "") or "").strip() or "<unknown>"
+                        for tc in executable_calls
+                        if tc not in allowed_summary_calls
+                    ]
+                    if skipped_names:
+                        logger.info(
+                            "[DEEP_THINK_NATIVE] Skipping post-success exploratory tool calls: %s",
+                            ",".join(skipped_names),
+                        )
+                        current_step.self_correction = (
+                            "Skipped non-summary tool calls after verified task completion and forced finalization mode."
+                        )
+                        executable_calls = allowed_summary_calls
+                        if not executable_calls and final_call is None:
+                            current_step.status = "analyzing"
+                            current_step.finished_at = datetime.now()
+                            thinking_steps.append(current_step)
+                            if self.on_thinking:
+                                await self._safe_callback(current_step)
+                            messages.append({"role": "assistant", "content": result.content or ""})
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": self._build_verified_execution_finalize_nudge(
+                                        task_context=task_context,
+                                        user_query=user_query,
+                                    ),
+                                }
+                            )
+                            continue
 
                 if executable_calls:
+                    bound_task_before_cycle = self._current_bound_task_id(task_context)
                     action_payload = {
                         "tools": [
                             {
@@ -2187,9 +2824,49 @@ class DeepThinkAgent:
                             await self._stream_final_answer(final_answer)
                         break
 
-                    if self._is_probe_only_execution_cycle(tool_results, task_context=task_context):
+                    is_probe_only_cycle = self._is_probe_only_execution_cycle(
+                        tool_results,
+                        task_context=task_context,
+                    )
+                    if is_probe_only_cycle:
                         probe_only_execution_cycles += 1
                         probe_limit = 2 if had_real_execution_tool else 3
+                        if (
+                            not had_real_execution_tool
+                            and probe_only_execution_cycles >= 2
+                            and forced_probe_followthrough_attempts < 1
+                            and self._can_force_probe_followthrough_execution(task_context)
+                        ):
+                            forced_probe_followthrough_attempts += 1
+                            forced_result = await self._execute_forced_probe_followthrough(
+                                task_context=task_context,
+                                user_query=user_query,
+                                iteration=iteration,
+                                probe_only_execution_cycles=probe_only_execution_cycles,
+                            )
+                            forced_tool_name = str(forced_result.get("tool_name") or "")
+                            if forced_tool_name and forced_tool_name not in tools_used:
+                                tools_used.append(forced_tool_name)
+                            self._append_tool_cycle_messages(
+                                messages=messages,
+                                tool_results=[forced_result],
+                                assistant_content="",
+                                current_step=current_step,
+                            )
+                            tool_results = [forced_result]
+                            last_tool_cycle_signature = self._build_tool_cycle_signature(tool_results)
+                            identical_tool_cycle_count = 0
+                            is_probe_only_cycle = self._is_probe_only_execution_cycle(
+                                tool_results,
+                                task_context=task_context,
+                            )
+                            if not is_probe_only_cycle:
+                                probe_only_execution_cycles = 0
+                                current_step.self_correction = (
+                                    "Detected repeated observation-only probing despite available upstream artifacts; "
+                                    "forced code_executor execution."
+                                )
+                    if is_probe_only_cycle:
                         if probe_only_execution_cycles >= probe_limit:
                             # Hard stop for infinite observation loops — always active regardless of
                             # had_real_execution_tool. Without this, a post-execution AI that keeps
@@ -2208,16 +2885,35 @@ class DeepThinkAgent:
                                         task_context=task_context,
                                         user_query=user_query,
                                         steps=[*thinking_steps, current_step],
+                                        tool_results=last_real_execution_tool_results,
                                     )
                             else:
-                                current_step.self_correction = (
-                                    "Stopped repeated observation-only probing and returned a blocked-dependency conclusion."
-                                )
-                                final_answer = self._build_blocked_dependency_answer(
-                                    task_context=task_context,
-                                    user_query=user_query,
-                                    tool_results=tool_results,
-                                )
+                                if self._explicit_task_override_active(task_context):
+                                    # For explicit task override, do NOT return BLOCKED_DEPENDENCY.
+                                    # The user explicitly requested this task — give a neutral
+                                    # status instead of demanding manual prerequisite work.
+                                    current_step.self_correction = (
+                                        "Stopped observation-only probing for explicit task override; "
+                                        "returning execution status instead of blocked-dependency."
+                                    )
+                                    task_label = ""
+                                    if task_context and task_context.task_id is not None:
+                                        task_label = f"Task {task_context.task_id}"
+                                        if task_context.task_name:
+                                            task_label = f"{task_label} ({task_context.task_name})"
+                                    final_answer = (
+                                        f"{task_label or 'The bound task'} 的执行尝试未能产生预期输出。"
+                                        "已尝试自动执行但未成功完成，请检查任务指令和上游数据是否就绪，然后重试。"
+                                    )
+                                else:
+                                    current_step.self_correction = (
+                                        "Stopped repeated observation-only probing and returned a blocked-dependency conclusion."
+                                    )
+                                    final_answer = self._build_blocked_dependency_answer(
+                                        task_context=task_context,
+                                        user_query=user_query,
+                                        tool_results=tool_results,
+                                    )
                             confidence = max(confidence, 0.8)
                             logger.warning(
                                 "[DEEP_THINK_NATIVE] Stopped after %s consecutive probe-only execution cycles at iteration=%s had_real_execution_tool=%s",
@@ -2272,10 +2968,72 @@ class DeepThinkAgent:
                         # was ever run.
                         if any(self._tool_counts_as_real_execution(item) for item in tool_results):
                             had_real_execution_tool = True
+                            last_real_execution_tool_results = [
+                                item for item in tool_results if self._tool_counts_as_real_execution(item)
+                            ]
+                            executed_pending_handoff = (
+                                pending_handoff_task_id is not None
+                                and bound_task_before_cycle == pending_handoff_task_id
+                            )
+                            bound_task_after_cycle = self._current_bound_task_id(task_context)
+                            if (
+                                bound_task_before_cycle is not None
+                                and bound_task_after_cycle is not None
+                                and bound_task_after_cycle != bound_task_before_cycle
+                            ):
+                                pending_handoff_previous_task_id = bound_task_before_cycle
+                                pending_handoff_task_id = bound_task_after_cycle
+                                forced_handoff_followthrough_attempts = 0
+                                had_real_execution_tool = False
+                                last_real_execution_tool_results = []
+                                probe_only_execution_cycles = 0
+                                partial_completion_retry_count = 0
+                                messages.append(
+                                    {
+                                        "role": "user",
+                                        "content": self._build_task_handoff_execution_nudge(
+                                            task_context=task_context,
+                                            user_query=user_query,
+                                            previous_task_id=bound_task_before_cycle,
+                                            next_task_id=bound_task_after_cycle,
+                                        ),
+                                    }
+                                )
+                                if (
+                                    handoff_iteration_extensions < _MAX_HANDOFF_ITERATION_EXTENSIONS
+                                    and iteration >= runtime_iteration_limit - 1
+                                ):
+                                    runtime_iteration_limit += 1
+                                    handoff_iteration_extensions += 1
+                                    logger.info(
+                                        "[DEEP_THINK_NATIVE] Extended iteration budget after task handoff previous=%s next=%s new_limit=%s extension=%s",
+                                        bound_task_before_cycle,
+                                        bound_task_after_cycle,
+                                        runtime_iteration_limit,
+                                        handoff_iteration_extensions,
+                                    )
+                                logger.info(
+                                    "[DEEP_THINK_NATIVE] Detected task handoff from %s to %s at iteration=%s; injected execute-next-task nudge",
+                                    bound_task_before_cycle,
+                                    bound_task_after_cycle,
+                                    iteration,
+                                )
+                                current_step.self_correction = (
+                                    f"Detected task handoff from {bound_task_before_cycle} to "
+                                    f"{bound_task_after_cycle}; injected an execute-next-task nudge."
+                                )
+                            elif executed_pending_handoff:
+                                pending_handoff_task_id = None
+                                pending_handoff_previous_task_id = None
+                                forced_handoff_followthrough_attempts = 0
 
                         # --- Partial completion retry ---
                         partial_info = self._detect_partial_completion_in_tool_results(tool_results)
-                        if partial_info and partial_completion_retry_count < _MAX_PARTIAL_RETRIES:
+                        if (
+                            partial_info
+                            and partial_completion_retry_count < _MAX_PARTIAL_RETRIES
+                            and self._current_bound_task_id(task_context) == bound_task_before_cycle
+                        ):
                             partial_completion_retry_count += 1
                             nudge = self._build_partial_completion_retry_nudge(
                                 partial_info,
@@ -2293,6 +3051,29 @@ class DeepThinkAgent:
                             current_step.self_correction = (
                                 f"Detected partial completion ({partial_info.get('partial_ratio', '?/?')}); "
                                 f"injected retry nudge #{partial_completion_retry_count}."
+                            )
+                        elif self._should_force_verified_execution_finalization(
+                            task_context=task_context,
+                            tool_results=tool_results,
+                            had_real_execution_tool=had_real_execution_tool,
+                        ):
+                            force_verified_execution_finalization = True
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": self._build_verified_execution_finalize_nudge(
+                                        task_context=task_context,
+                                        user_query=user_query,
+                                    ),
+                                }
+                            )
+                            logger.info(
+                                "[DEEP_THINK_NATIVE] Entered verified-execution finalization mode at iteration=%s",
+                                iteration,
+                            )
+                            current_step.self_correction = (
+                                "Detected verified task completion with no remaining pending tasks; "
+                                "injected a finalization-only nudge."
                             )
 
                     current_step.status = "analyzing"
@@ -2315,6 +3096,12 @@ class DeepThinkAgent:
                         and self._is_execute_task_request()
                         and self._has_bound_task_context(task_context)
                         and not self._looks_like_blocked_dependency_answer(candidate_answer)
+                        # Do not replace with BLOCKED_DEPENDENCY when the user
+                        # explicitly requested this task — forced execution
+                        # should have run or the LLM's natural answer is
+                        # preferable to a generic "please provide prerequisites"
+                        # message that the user has already complained about.
+                        and not self._explicit_task_override_active(task_context)
                     ):
                         current_step.self_correction = (
                             "Rejected a conclusion after repeated observation-only probing and replaced it with a blocked-dependency answer."
@@ -2408,6 +3195,123 @@ class DeepThinkAgent:
                     if self.on_thinking:
                         await self._safe_callback(current_step)
                 else:
+                    if (
+                        pending_handoff_task_id is not None
+                        and pending_handoff_previous_task_id is not None
+                        and forced_handoff_followthrough_attempts < 1
+                        and self._can_force_handoff_followthrough_execution(
+                            task_context,
+                            next_task_id=pending_handoff_task_id,
+                        )
+                    ):
+                        forced_handoff_followthrough_attempts += 1
+                        prior_handoff_task_id = pending_handoff_task_id
+                        forced_result = await self._execute_forced_handoff_followthrough(
+                            task_context=task_context,
+                            user_query=user_query,
+                            iteration=iteration,
+                            previous_task_id=pending_handoff_previous_task_id,
+                            next_task_id=prior_handoff_task_id,
+                            reason="no_tool_after_handoff",
+                        )
+                        forced_tool_name = str(forced_result.get("tool_name") or "")
+                        if forced_tool_name and forced_tool_name not in tools_used:
+                            tools_used.append(forced_tool_name)
+                        current_step.action = json.dumps(
+                            {
+                                "tools": [
+                                    {
+                                        "tool": "code_executor",
+                                        "params": {"task": "[forced handoff followthrough]"},
+                                    }
+                                ]
+                            },
+                            ensure_ascii=False,
+                        )
+                        current_step.action_result = forced_result.get("tool_result_text")
+                        self._append_tool_cycle_messages(
+                            messages=messages,
+                            tool_results=[forced_result],
+                            assistant_content=result.content or "",
+                            current_step=current_step,
+                        )
+                        last_tool_cycle_signature = self._build_tool_cycle_signature([forced_result])
+                        identical_tool_cycle_count = 0
+                        probe_only_execution_cycles = 0
+                        bound_task_after_forced = self._current_bound_task_id(task_context)
+                        if self._tool_counts_as_real_execution(forced_result):
+                            had_real_execution_tool = True
+                            last_real_execution_tool_results = [forced_result]
+                        if (
+                            bound_task_after_forced is not None
+                            and bound_task_after_forced != prior_handoff_task_id
+                        ):
+                            pending_handoff_previous_task_id = prior_handoff_task_id
+                            pending_handoff_task_id = bound_task_after_forced
+                            forced_handoff_followthrough_attempts = 0
+                            had_real_execution_tool = False
+                            last_real_execution_tool_results = []
+                            partial_completion_retry_count = 0
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": self._build_task_handoff_execution_nudge(
+                                        task_context=task_context,
+                                        user_query=user_query,
+                                        previous_task_id=prior_handoff_task_id,
+                                        next_task_id=bound_task_after_forced,
+                                    ),
+                                }
+                            )
+                            if (
+                                handoff_iteration_extensions < _MAX_HANDOFF_ITERATION_EXTENSIONS
+                                and iteration >= runtime_iteration_limit - 1
+                            ):
+                                runtime_iteration_limit += 1
+                                handoff_iteration_extensions += 1
+                                logger.info(
+                                    "[DEEP_THINK_NATIVE] Extended iteration budget after forced handoff followthrough previous=%s next=%s new_limit=%s extension=%s",
+                                    prior_handoff_task_id,
+                                    bound_task_after_forced,
+                                    runtime_iteration_limit,
+                                    handoff_iteration_extensions,
+                                )
+                            current_step.self_correction = (
+                                f"Detected a no-tool response after handoff to Task {prior_handoff_task_id}; "
+                                f"forced code_executor execution and advanced again to Task {bound_task_after_forced}."
+                            )
+                        else:
+                            pending_handoff_task_id = None
+                            pending_handoff_previous_task_id = None
+                            current_step.self_correction = (
+                                f"Detected a no-tool response immediately after handoff to Task {prior_handoff_task_id}; "
+                                "forced code_executor execution instead of allowing generic fallback."
+                            )
+                            if self._should_force_verified_execution_finalization(
+                                task_context=task_context,
+                                tool_results=[forced_result],
+                                had_real_execution_tool=had_real_execution_tool,
+                            ):
+                                force_verified_execution_finalization = True
+                                messages.append(
+                                    {
+                                        "role": "user",
+                                        "content": self._build_verified_execution_finalize_nudge(
+                                            task_context=task_context,
+                                            user_query=user_query,
+                                        ),
+                                    }
+                                )
+                                logger.info(
+                                    "[DEEP_THINK_NATIVE] Entered verified-execution finalization mode after forced handoff followthrough at iteration=%s",
+                                    iteration,
+                                )
+                        current_step.status = "analyzing"
+                        current_step.finished_at = datetime.now()
+                        thinking_steps.append(current_step)
+                        if self.on_thinking:
+                            await self._safe_callback(current_step)
+                        continue
                     current_step.finished_at = datetime.now()
                     thinking_steps.append(current_step)
                     if self.on_thinking:
@@ -2420,7 +3324,7 @@ class DeepThinkAgent:
                 messages.append({"role": "user", "content": "Skip current branch and continue with the next reasoning step."})
 
             # Inject a strong nudge when nearing the iteration limit
-            if not final_answer and iteration >= self.max_iterations - 1:
+            if not final_answer and iteration >= runtime_iteration_limit - 1:
                 final_step_prompt = (
                     self._get_structured_plan_retry_prompt()
                     if self._requires_structured_plan()
@@ -2468,7 +3372,20 @@ class DeepThinkAgent:
                 await self._stream_final_answer(final_answer)
         elif not final_answer and thinking_steps:
             logger.info("[DEEP_THINK_NATIVE] No final answer after %d iterations; attempting forced synthesis", iteration)
-            final_answer = await self._forced_synthesis_from_steps(thinking_steps, user_query, messages)
+            final_answer = await self._forced_synthesis_from_steps(
+                thinking_steps,
+                user_query,
+                messages,
+                task_context=task_context,
+            )
+            if final_answer and self._should_reject_missing_task_definition_answer(
+                final_answer,
+                task_context=task_context,
+            ):
+                logger.warning(
+                    "[DEEP_THINK_NATIVE] Rejected forced synthesis that incorrectly asked for missing task definitions while a bound task context existed."
+                )
+                final_answer = ""
             if final_answer:
                 fallback_used = True
                 confidence = max(confidence, 0.5)
@@ -2477,7 +3394,11 @@ class DeepThinkAgent:
 
         if not final_answer:
             fallback_used = True
-            final_answer = await self._fallback_answer_from_steps(thinking_steps, user_query)
+            final_answer = await self._fallback_answer_from_steps(
+                thinking_steps,
+                user_query,
+                task_context=task_context,
+            )
             confidence = max(confidence, 0.3)
             if self.on_final_delta and final_answer:
                 await self._stream_final_answer(final_answer)
@@ -4402,6 +5323,56 @@ When ready to answer:
         parts.reverse()
         return "\n\n".join(parts)
 
+    def _build_bound_execute_task_fallback(
+        self,
+        steps: List[ThinkingStep],
+        *,
+        user_query: str,
+        task_context: Optional[TaskExecutionContext],
+    ) -> str:
+        if not (
+            self._is_execute_task_request()
+            and self._has_bound_task_context(task_context)
+            and self._explicit_task_override_active(task_context)
+        ):
+            return ""
+        language = detect_reasoning_language(user_query)
+        task_id = self._current_bound_task_id(task_context)
+        task_name = str(getattr(task_context, "task_name", "") or "").strip()
+        task_label = f"Task {task_id}" if task_id is not None else "the current bound task"
+        if task_name:
+            task_label = f"{task_label} ({task_name})"
+        counts = self._collect_tool_usage_counts(steps)
+        stats = self._format_tool_usage_counts(counts)
+        evidence = self._collect_evidence_snippets(
+            steps,
+            max_steps=8,
+            max_chars=1800,
+            per_snippet_max=500,
+        ).strip()
+        if language == "zh":
+            header = f"本轮已经进入已绑定任务执行链{f'（{stats}）' if stats else ''}，但系统在结束前没有成功提交正式最终答案。"
+            lines = [
+                header,
+                f"当前绑定任务：{task_label}。",
+                "这不表示缺少任务定义；当前任务上下文已经存在，后续应从当前绑定任务继续执行，而不是再要求用户补任务描述。",
+            ]
+            if evidence:
+                lines.extend(["", "已观察到的关键信息：", evidence])
+            return "\n".join(lines).strip()
+        header = (
+            f"This run stayed inside a bound execute-task chain{f' ({stats})' if stats else ''}, "
+            "but it ended before a formal final answer was submitted."
+        )
+        lines = [
+            header,
+            f"Current bound task: {task_label}.",
+            "This does not mean the task definition is missing; the task context is already bound and execution should continue from the current task instead of asking the user to provide task details again.",
+        ]
+        if evidence:
+            lines.extend(["", "Observed evidence:", evidence])
+        return "\n".join(lines).strip()
+
     def _build_structured_fallback(self, steps: List[ThinkingStep], user_query: str = "") -> str:
         """Last-resort fallback: include evidence excerpts rather than a generic 'no answer' message."""
         n = len(steps)
@@ -4462,6 +5433,7 @@ When ready to answer:
         user_query: str,
         evidence_snippets: str,
         steps: List[ThinkingStep],
+        task_context: Optional[TaskExecutionContext] = None,
         *,
         max_retries: int = 3,
         timeout: float = 45,
@@ -4492,6 +5464,18 @@ When ready to answer:
                 "7) This is a short execution follow-up. Focus on the current task outcome and latest successful tool result.\n"
                 "8) Do NOT recap prior project milestones, historical progress tables, or next-step menus unless the user explicitly asked for them.\n"
             )
+        bound_task_instruction = ""
+        if self._is_execute_task_request() and self._has_bound_task_context(task_context):
+            task_id = self._current_bound_task_id(task_context)
+            task_name = str(getattr(task_context, "task_name", "") or "").strip()
+            task_label = f"Task {task_id}" if task_id is not None else "the current bound task"
+            if task_name:
+                task_label = f"{task_label} ({task_name})"
+            bound_task_instruction = (
+                f"9) This request is already bound to {task_label}. "
+                "Do NOT ask the user to provide task definitions, task descriptions, or to confirm whether a parent plan68_task directory exists.\n"
+                "10) If execution stopped early, summarize the real bound-task state and the observed outputs instead of inventing a missing-task-definition blocker.\n"
+            )
 
         prompt = (
             f"User question:\n{uq[:2000]}\n\n"
@@ -4508,6 +5492,7 @@ When ready to answer:
             "5) Do NOT say 'I could not find an answer' if there is ANY useful information — present what was found.\n"
             "6) Do not invent dates or claims absent from the excerpts.\n"
             f"{focus_instruction}"
+            f"{bound_task_instruction}"
             f"{PROFESSIONAL_STYLE_INSTRUCTION}"
         )
 
@@ -4540,6 +5525,7 @@ When ready to answer:
         steps: List[ThinkingStep],
         user_query: str,
         messages: List[Dict[str, Any]],
+        task_context: Optional[TaskExecutionContext] = None,
     ) -> str:
         """Make one final LLM call with all context asking it to synthesize a complete answer.
 
@@ -4637,8 +5623,21 @@ When ready to answer:
             prompt = (
                 f"{instruction}\n\n"
                 f"User question: {uq[:2000]}\n\n"
-                f"=== EVIDENCE FROM TOOLS ===\n{evidence}\n\n"
             )
+            if self._is_execute_task_request() and self._has_bound_task_context(task_context):
+                task_id = self._current_bound_task_id(task_context)
+                task_name = str(getattr(task_context, "task_name", "") or "").strip()
+                task_instruction = str(getattr(task_context, "task_instruction", "") or "").strip()
+                task_label = f"Task {task_id}" if task_id is not None else "the current bound task"
+                if task_name:
+                    task_label = f"{task_label} ({task_name})"
+                prompt += (
+                    "=== BOUND TASK CONTEXT ===\n"
+                    f"Current bound task: {task_label}\n"
+                    f"Task instruction: {task_instruction[:600]}\n"
+                    "This task context is already authoritative. Do NOT ask the user to provide task definitions, task descriptions, or to confirm whether a parent plan68_task directory exists.\n\n"
+                )
+            prompt += f"=== EVIDENCE FROM TOOLS ===\n{evidence}\n\n"
             if thoughts_text:
                 prompt += f"=== REASONING PROCESS ===\n{thoughts_text}\n\n"
             prompt += "Please provide your complete answer now:"
@@ -4661,6 +5660,7 @@ When ready to answer:
         self,
         steps: List[ThinkingStep],
         user_query: str = "",
+        task_context: Optional[TaskExecutionContext] = None,
     ) -> str:
         language = detect_reasoning_language(user_query)
         if not steps:
@@ -4673,7 +5673,20 @@ When ready to answer:
         uq = (user_query or "").strip()
         if self._is_research_or_execute() and evidence.strip() and uq:
             try:
-                return await self._generate_fallback_from_evidence(uq, evidence, steps)
+                fallback_kwargs: Dict[str, Any] = {}
+                if task_context is not None:
+                    fallback_kwargs["task_context"] = task_context
+                generated = await self._generate_fallback_from_evidence(
+                    uq,
+                    evidence,
+                    steps,
+                    **fallback_kwargs,
+                )
+                if generated and not self._should_reject_missing_task_definition_answer(
+                    generated,
+                    task_context=task_context,
+                ):
+                    return generated
             except Exception:
                 logger.warning(
                     "DeepThink fallback synthesis from tool evidence failed; using structured fallback.",
@@ -4695,14 +5708,13 @@ When ready to answer:
                 )
                 or useful[-1].strip()
             )
-        if evidence.strip() and uq:
-            try:
-                return await self._generate_fallback_from_evidence(uq, evidence, steps)
-            except Exception:
-                logger.warning(
-                    "DeepThink fallback synthesis from tool evidence failed; using structured fallback.",
-                    exc_info=True,
-                )
+        bound_execute_fallback = self._build_bound_execute_task_fallback(
+            steps,
+            user_query=user_query,
+            task_context=task_context,
+        )
+        if bound_execute_fallback:
+            return bound_execute_fallback
         return self._build_structured_fallback(steps, user_query)
 
     async def _generate_summary(self, steps: List[ThinkingStep], user_query: str) -> str:
