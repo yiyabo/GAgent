@@ -29,6 +29,7 @@ from tool_box.tools_impl.code_executor import (
     _resolve_allowed_tools,
     _resolve_setting_sources,
     _sanitize_task_dir_component,
+    _iter_stream_lines_unbounded,
     _execute_task_locally,
     _validate_api_mode_config,
     _validate_scope_contract,
@@ -78,6 +79,9 @@ def test_compose_code_executor_atomic_task_prompt_includes_canonical_path_rules(
     assert "prefer explicit absolute deliverable paths from previous steps" in prompt
     assert "flat files directly under a session root `results/` directory" in prompt
     assert "Ignore zero-byte or non-parseable session-temp duplicates" in prompt
+    assert "zero-result outcome" in prompt
+    assert "empty-but-valid outputs at the required paths" in prompt
+    assert "Do NOT fabricate positive signals" in prompt
 
 
 def test_build_cli_failure_error_includes_exit_and_stream_excerpts() -> None:
@@ -105,6 +109,18 @@ def test_compact_cli_text_truncates_and_normalizes_whitespace() -> None:
     value = "line1\nline2\tline3   line4"
     compact = _compact_cli_text(value, limit=12)
     assert compact == "line1 lin..."
+
+
+def test_iter_stream_lines_unbounded_handles_very_long_lines() -> None:
+    async def _collect() -> list[str]:
+        reader = asyncio.StreamReader()
+        reader.feed_data(("x" * 70000 + "\nshort\ntrailing").encode())
+        reader.feed_eof()
+        return [line async for line in _iter_stream_lines_unbounded(reader)]
+
+    lines = asyncio.run(_collect())
+
+    assert lines == ["x" * 70000, "short", "trailing"]
 
 
 def test_resolve_allowed_tools_enforces_strict_allowlist() -> None:
@@ -385,6 +401,38 @@ def test_extract_task_artifact_paths_prefers_absolute_and_skips_stale_flat_metad
     assert "results/metadata.csv" not in extracted
 
 
+def test_extract_task_artifact_paths_prefers_deliverable_files_over_workspace_dirs() -> None:
+    payload = {
+        "artifact_paths": [
+            "/tmp/runtime/session_x/plan68_task37/run_1",
+            "/tmp/runtime/session_x/plan68_task37/run_1/results",
+            "/tmp/runtime/session_x/plan68_task37/run_1/code",
+            "/tmp/runtime/session_x/plan68_task37/run_1/data",
+            "/tmp/runtime/session_x/plan68_task37/run_1/docs",
+            "/tmp/runtime/session_x/plan68_task37/run_1/results/enrichment/background_formatted.csv",
+            "/tmp/runtime/session_x/plan68_task37/run_1/results/enrichment/data_quality_report.csv",
+            "/tmp/runtime/session_x/plan68_task37/run_1/results/enrichment/data_quality_report.txt",
+            "/tmp/runtime/session_x/plan68_task37/run_1/results/enrichment/enrichment_input_ready.RData",
+            "/tmp/runtime/session_x/plan68_task37/run_1/results/enrichment/gene_list_formatted.csv",
+            "/tmp/runtime/session_x/plan68_task37/run_1/results/enrichment/invalid_genes.csv",
+            "/tmp/runtime/session_x/plan68_task37/run_1/code/format_and_validate_input.R",
+        ],
+        "session_artifact_paths": [
+            "/tmp/runtime/session_x/results/plan68_task37/run_1/enrichment/enrichment_input_ready.RData",
+            "/tmp/runtime/session_x/results/plan68_task37/run_1/enrichment/gene_list_formatted.csv",
+        ],
+    }
+
+    extracted = extract_task_artifact_paths(payload)
+
+    assert "/tmp/runtime/session_x/results/plan68_task37/run_1/enrichment/enrichment_input_ready.RData" in extracted
+    assert "/tmp/runtime/session_x/results/plan68_task37/run_1/enrichment/gene_list_formatted.csv" in extracted
+    assert "/tmp/runtime/session_x/plan68_task37/run_1/results/enrichment/data_quality_report.txt" in extracted
+    assert "/tmp/runtime/session_x/plan68_task37/run_1" not in extracted
+    assert "/tmp/runtime/session_x/plan68_task37/run_1/results" not in extracted
+    assert "/tmp/runtime/session_x/plan68_task37/run_1/code" not in extracted
+    assert "/tmp/runtime/session_x/plan68_task37/run_1/code/format_and_validate_input.R" not in extracted
+
 def test_collect_completed_task_outputs_includes_artifact_paths() -> None:
     node_2 = PlanNode(
         id=2,
@@ -393,9 +441,9 @@ def test_collect_completed_task_outputs_includes_artifact_paths() -> None:
         status="completed",
         execution_result=json.dumps(
             {
-                "content": "QC completed",
+                "content": "QC completed. Files: /home/zczhao/GAgent/runtime/session_x/plan68_task3/run_1/results",
                 "produced_files": [
-                    "/home/zczhao/GAgent/runtime/session_x/plan68_task3/run_1/results/filtered_cancer1.h5ad"
+                    "/home/zczhao/GAgent/runtime/session_x/results/plan68_task3/run_1/filtered_cancer1.h5ad"
                 ],
             }
         ),
@@ -407,7 +455,8 @@ def test_collect_completed_task_outputs_includes_artifact_paths() -> None:
 
     assert "Task [2] QC" in summary
     assert "Artifact paths:" in summary
-    assert "/home/zczhao/GAgent/runtime/session_x/plan68_task3/run_1/results/filtered_cancer1.h5ad" in summary
+    assert "/home/zczhao/GAgent/runtime/session_x/results/plan68_task3/run_1/filtered_cancer1.h5ad" in summary
+    assert "/home/zczhao/GAgent/runtime/session_x/plan68_task3/run_1/results" not in summary
 
 
 def test_local_backend_enforces_scope_contract_before_execution(
@@ -473,6 +522,66 @@ def test_local_backend_returns_promoted_artifact_paths(
     assert any(path.endswith("plot.png") for path in result["produced_files"])
     session_dir = (tmp_path / "runtime" / "session_adhoc").resolve()
     assert (session_dir / promoted).read_bytes() == b"png"
+
+
+def test_local_backend_collects_custom_acceptance_output_dirs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(
+        code_executor_module,
+        "_build_execution_spec",
+        lambda plan_id, task_id: {
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "task_name": "图表收集与初步审查",
+            "task_instruction": "Collect figures into figures_raw.",
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "glob_count_at_least", "path": "figures_raw/*", "count": 2},
+                    {"type": "file_nonempty", "path": "figures_raw/figure_inventory.log"},
+                ],
+            },
+            "dependency_outputs": [],
+            "dependency_artifact_paths": [],
+        },
+    )
+
+    async def _fake_local(*, work_dir: str, **_kwargs):
+        figures_dir = Path(work_dir) / "figures_raw"
+        figures_dir.mkdir(parents=True, exist_ok=True)
+        (figures_dir / "figure_1.png").write_bytes(b"png")
+        (figures_dir / "figure_2.png").write_bytes(b"png")
+        (figures_dir / "figure_inventory.log").write_text("2 figures\n", encoding="utf-8")
+        return {
+            "success": True,
+            "stdout": "ok\n",
+            "stderr": "",
+            "exit_code": 0,
+            "code_file": str(Path(work_dir) / "task_code.py"),
+            "result": "collected figures",
+            "execution_mode": "code_executor_docker",
+            "docker_image_effective": "gagent-python-runtime:latest",
+        }
+
+    monkeypatch.setattr(code_executor_module, "_execute_task_locally", _fake_local)
+
+    result = asyncio.run(
+        code_executor_module.code_executor_handler(
+            task="collect figures",
+            plan_id=68,
+            task_id=63,
+            require_task_context=True,
+        )
+    )
+
+    assert result["success"] is True
+    assert "figures_raw" in result["task_subdirectories"]
+    assert any(path.endswith("figures_raw/figure_inventory.log") for path in result["produced_files"])
+    assert any(path.endswith("figures_raw/figure_inventory.log") for path in result["artifact_paths"])
 
 
 def test_execute_task_locally_blocks_before_generation_on_incomplete_dependency(
@@ -732,6 +841,38 @@ class TestQwenCodeCLI:
         assert "Atomic task objective:" in prompt_text
         assert "/abs/filtered_cancer1.h5ad" in prompt_text
         assert "file must exist: results/integrated_data.h5ad" in prompt_text
+        assert "zero-result outcome" in prompt_text
+        assert "empty-but-valid outputs at the required paths" in prompt_text
+        assert "Do NOT fabricate positive signals" in prompt_text
+
+    def test_build_qwen_code_command_formats_legacy_glob_count_shape(self):
+        cmd = _build_qwen_code_command(
+            task="继续执行这个任务",
+            work_dir="/tmp/test",
+            file_prefix="run_legacy",
+            output_format="json",
+            allowed_tools=["Bash", "Read", "Write"],
+            allowed_dirs=["/data"],
+            model="qwen3.5-plus",
+            debug=False,
+            allowed_dirs_info="",
+            execution_spec={
+                "task_id": 51,
+                "task_name": "CellChat 显著互作导出",
+                "task_instruction": "导出显著互作结果",
+                "acceptance_criteria": {
+                    "checks": [
+                        {
+                            "type": "glob_count_at_least",
+                            "path": "output/4.1.2/significant_interactions.csv",
+                            "count": 1,
+                        }
+                    ]
+                },
+            },
+        )
+        prompt_text = cmd[cmd.index("-p") + 1]
+        assert "at least 1 matches for glob: output/4.1.2/significant_interactions.csv" in prompt_text
 
     def test_build_qwen_code_subprocess_env_sets_openai_vars(self, monkeypatch):
         monkeypatch.setenv("QWEN_API_KEY", "sk-test-key-123")

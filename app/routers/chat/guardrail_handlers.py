@@ -424,7 +424,10 @@ def apply_task_execution_followthrough_guardrail(
     actions_are_exploratory = _actions_are_only_exploratory_file_operations(
         structured.actions
     )
-    if structured.actions and not actions_are_exploratory:
+    actions_are_verification_only = _actions_are_only_task_verification(
+        structured.actions
+    )
+    if structured.actions and not actions_are_exploratory and not actions_are_verification_only:
         return structured
 
     user_message = str(agent._current_user_message or "").strip()
@@ -474,6 +477,11 @@ def apply_task_execution_followthrough_guardrail(
             "[CHAT][GUARDRAIL][FOLLOWTHROUGH] replaced exploratory file_operations with rerun_task for task_id=%s",
             target_task_id,
         )
+    elif actions_are_verification_only:
+        logger.info(
+            "[CHAT][GUARDRAIL][FOLLOWTHROUGH] replaced verification-only actions with rerun_task for task_id=%s",
+            target_task_id,
+        )
     else:
         logger.info(
             "[CHAT][GUARDRAIL][FOLLOWTHROUGH] injected rerun_task for task_id=%s",
@@ -505,6 +513,17 @@ def _actions_are_only_exploratory_file_operations(
     return True
 
 
+def _actions_are_only_task_verification(
+    actions: list[LLMAction],
+) -> bool:
+    if not actions:
+        return False
+    for action in actions:
+        if action.kind != "task_operation" or action.name != "verify_task":
+            return False
+    return True
+
+
 def resolve_followthrough_target_task_id(
     agent: Any,
     *,
@@ -515,13 +534,19 @@ def resolve_followthrough_target_task_id(
     explicit_scope_ids = agent.extra_context.get("explicit_task_ids")
     if isinstance(explicit_scope_ids, list) and explicit_scope_ids:
         return resolve_explicit_task_scope_target(
-            tree, explicit_scope_ids, allow_cascade_rerun=True
+            tree,
+            explicit_scope_ids,
+            allow_cascade_rerun=True,
+            auto_include_dependency_closure=True,
         )
 
     explicit_task_ids = extract_task_ids_from_text(user_message)
     if explicit_task_ids:
         return resolve_explicit_task_scope_target(
-            tree, explicit_task_ids, allow_cascade_rerun=True
+            tree,
+            explicit_task_ids,
+            allow_cascade_rerun=True,
+            auto_include_dependency_closure=True,
         )
 
     explicit_task_id = extract_task_id_from_text(user_message)
@@ -582,11 +607,49 @@ def _is_cascade_completed(node: Any) -> bool:
     return _CASCADE_COMPLETION_MARKER in result
 
 
+def _expand_scope_with_dependency_closure(
+    tree: "PlanTree",
+    ordered_ids: List[int],
+    *,
+    allow_cascade_rerun: bool = False,
+) -> List[int]:
+    expanded: List[int] = []
+    seen: set[int] = set()
+    visiting: set[int] = set()
+
+    def _visit(task_id: int) -> None:
+        if task_id in seen or task_id in visiting or not tree.has_node(task_id):
+            return
+        visiting.add(task_id)
+        node = tree.get_node(task_id)
+        for dep_id in getattr(node, "dependencies", []) or []:
+            try:
+                dep_id_int = int(dep_id)
+            except (TypeError, ValueError):
+                continue
+            if not tree.has_node(dep_id_int):
+                continue
+            dep_node = tree.get_node(dep_id_int)
+            dep_needs_resolution = is_task_executable_status(dep_node.status) or (
+                allow_cascade_rerun and _is_cascade_completed(dep_node)
+            )
+            if dep_needs_resolution:
+                _visit(dep_id_int)
+        visiting.remove(task_id)
+        seen.add(task_id)
+        expanded.append(task_id)
+
+    for task_id in ordered_ids:
+        _visit(task_id)
+    return expanded or ordered_ids
+
+
 def resolve_explicit_task_scope_target(
     tree: "PlanTree",
     explicit_task_ids: List[int],
     *,
     allow_cascade_rerun: bool = False,
+    auto_include_dependency_closure: bool = False,
 ) -> Optional[int]:
     ordered_ids: List[int] = []
     seen: set[int] = set()
@@ -637,6 +700,12 @@ def resolve_explicit_task_scope_target(
                         expanded_ids.append(child_id)
     if expanded_ids:
         ordered_ids = expanded_ids
+    if auto_include_dependency_closure:
+        ordered_ids = _expand_scope_with_dependency_closure(
+            tree,
+            ordered_ids,
+            allow_cascade_rerun=allow_cascade_rerun,
+        )
 
     scope_ids = set(ordered_ids)
     ordered_with_deps: List[int] = []
@@ -710,6 +779,7 @@ def resolve_all_explicit_task_scope_targets(
     explicit_task_ids: List[int],
     *,
     allow_cascade_rerun: bool = False,
+    auto_include_dependency_closure: bool = False,
 ) -> List[int]:
     """Return ALL executable leaf tasks for composite task expansion.
 
@@ -762,6 +832,12 @@ def resolve_all_explicit_task_scope_targets(
                         expanded_ids.append(child_id)
     if expanded_ids:
         ordered_ids = expanded_ids
+    if auto_include_dependency_closure:
+        ordered_ids = _expand_scope_with_dependency_closure(
+            tree,
+            ordered_ids,
+            allow_cascade_rerun=allow_cascade_rerun,
+        )
 
     scope_ids = set(ordered_ids)
     ordered_with_deps: List[int] = []
@@ -893,12 +969,32 @@ def apply_completion_claim_guardrail(
     agent: Any,
     structured: LLMStructuredResponse,
 ) -> LLMStructuredResponse:
-    _ = agent
     if not structured.llm_reply or not isinstance(structured.llm_reply.message, str):
         return structured
     reply_text = structured.llm_reply.message
     if not looks_like_completion_claim(reply_text):
         return structured
+
+    current_task_id = (getattr(agent, "extra_context", {}) or {}).get("current_task_id")
+    plan_id = getattr(getattr(agent, "plan_session", None), "plan_id", None)
+    if current_task_id is not None and plan_id is not None:
+        try:
+            task_id = int(current_task_id)
+            tree = getattr(agent, "plan_tree", None)
+            if tree is None or not getattr(tree, "has_node", lambda *_: False)(task_id):
+                tree = agent.plan_session.repo.get_plan_tree(plan_id)
+            if tree is not None and tree.has_node(task_id):
+                node = tree.get_node(task_id)
+                task_status = str(getattr(node, "status", "") or "").strip().lower()
+                if task_status not in {"", "completed", "done", "success"}:
+                    structured.llm_reply.message = (
+                        f"The reply claimed task completion, but bound task [{task_id}] is currently "
+                        f"`{task_status}` in plan state. Do not report completion. State the real "
+                        "task status and blocker instead."
+                    )
+                    return structured
+        except Exception:
+            pass
 
     declared_paths = extract_declared_absolute_paths(reply_text)
     if not declared_paths:

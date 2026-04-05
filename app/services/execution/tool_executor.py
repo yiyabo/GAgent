@@ -214,6 +214,7 @@ class UnifiedToolExecutor:
         context: ToolExecutionContext,
     ) -> Dict[str, Any]:
         safe_params = dict(params or {})
+        safe_params.pop("tool_context", None)
 
         if tool_name == "code_executor":
             for key in (

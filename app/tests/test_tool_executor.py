@@ -108,3 +108,44 @@ def test_tool_executor_phagescope_normalizes_task_id_and_operation(monkeypatch) 
     assert kw.get("action") == "task_detail"
     assert "task_id" not in kw
     assert "operation" not in kw
+
+
+def test_tool_executor_replaces_preexisting_tool_context(monkeypatch) -> None:
+    captured: dict = {}
+
+    async def _fake_execute_tool(tool_name: str, **kwargs):
+        captured["tool_name"] = tool_name
+        captured["kwargs"] = dict(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(tool_box, "execute_tool", _fake_execute_tool)
+
+    executor = UnifiedToolExecutor()
+    ctx = ToolExecutionContext(
+        session_id="session_demo",
+        plan_id=68,
+        task_id=35,
+        task_name="Task 35",
+        current_job_id="job-1",
+    )
+
+    sentinel = object()
+    result = asyncio.run(
+        executor.execute(
+            "file_operations",
+            {
+                "operation": "list",
+                "path": "/tmp",
+                "tool_context": sentinel,
+            },
+            context=ctx,
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["tool_name"] == "file_operations"
+    tool_ctx = captured["kwargs"]["tool_context"]
+    assert tool_ctx is not sentinel
+    assert tool_ctx.session_id == "session_demo"
+    assert tool_ctx.plan_id == 68
+    assert tool_ctx.task_id == 35

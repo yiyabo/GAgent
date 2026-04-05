@@ -529,6 +529,105 @@ def test_glob_count_at_least_check(tmp_path):
     assert fin2.verification["failures"][0]["count"] == 5
 
 
+def test_glob_count_at_least_legacy_path_count_shape(tmp_path):
+    actual = tmp_path / "results" / "4.1.2"
+    actual.mkdir(parents=True)
+    (actual / "significant_interactions.csv").write_text("source,target\nA,B\n", encoding="utf-8")
+    verifier = TaskVerificationService()
+
+    node = PlanNode(
+        id=3,
+        plan_id=68,
+        name="CellChat 结果整理",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "file_exists",
+                        "path": "output/4.1.2/significant_interactions.csv",
+                    },
+                    {
+                        "type": "glob_count_at_least",
+                        "path": "output/4.1.2/significant_interactions.csv",
+                        "count": 1,
+                    }
+                ],
+            }
+        },
+    )
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "ok",
+            "metadata": {
+                "run_directory": str(tmp_path),
+                "artifact_paths": [str(actual / "significant_interactions.csv")],
+            },
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert finalization.verification["checks_passed"] == 2
+
+
+def test_glob_count_at_least_matches_relocated_artifact_paths(tmp_path):
+    relocated = tmp_path / "plan68_task56" / "run_abc" / "results" / "cellchat"
+    relocated.mkdir(parents=True)
+    (relocated / "visualization_summary.txt").write_text("ok\n", encoding="utf-8")
+    for name in ("circle_plot.pdf", "dotplot.pdf", "heatmap.pdf", "visualization_summary.pdf"):
+        (relocated / name).write_text("pdf\n", encoding="utf-8")
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=56,
+        plan_id=68,
+        name="CellChat visualization export",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "file_exists",
+                        "path": "results/cellchat/visualization_summary.txt",
+                    },
+                    {
+                        "type": "glob_count_at_least",
+                        "path": "results/cellchat/*.pdf",
+                        "count": 3,
+                    },
+                ],
+            }
+        },
+    )
+
+    artifact_paths = [str(path) for path in sorted(relocated.iterdir())]
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "ok",
+            "metadata": {
+                "run_directory": str(tmp_path),
+                "artifact_paths": artifact_paths,
+            },
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert finalization.verification["checks_passed"] == 2
+
+
 def test_is_local_path_filtering():
     """_is_local_path should reject URLs, plain text, and accept real paths."""
     verifier = TaskVerificationService()
@@ -890,6 +989,45 @@ def test_relative_checks_prefer_run_directory_over_tool_output_artifacts(tmp_pat
             "run_directory": str(run_dir),
             "artifact_paths": [str(tool_output)],
             "metadata": {},
+        },
+        execution_status="completed",
+    )
+
+    assert fin.final_status == "completed"
+    assert fin.verification is not None
+    assert fin.verification["status"] == "passed"
+
+
+def test_relative_checks_infer_manuscript_root_from_acceptance_output_dir(tmp_path):
+    manuscript_root = tmp_path / "runtime" / "session_x" / "manuscript"
+    expected = manuscript_root / "methods" / "data_preprocessing.md"
+    expected.parent.mkdir(parents=True)
+    expected.write_text("## Methods\nHarmony integration.\n", encoding="utf-8")
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=66,
+        plan_id=68,
+        name="数据来源与预处理方法描述",
+        metadata={
+            "acceptance_criteria": {
+                "category": "paper",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_nonempty", "path": "methods/data_preprocessing.md"},
+                ],
+            }
+        },
+    )
+
+    fin = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "methods draft written",
+            "metadata": {
+                "artifact_paths": [str(expected)],
+            },
         },
         execution_status="completed",
     )

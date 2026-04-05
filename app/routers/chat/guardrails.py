@@ -8,7 +8,7 @@ any instance state.  They are imported back into the class as
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from app.services.llm.structured_response import LLMAction
@@ -145,12 +145,70 @@ def requests_abstract_only(user_message: str) -> bool:
     ) or any(token in text for token in ("只写 abstract", "只写摘要", "只做摘要", "仅摘要"))
 
 
+_TASK_LABEL_PATTERN = r"(?:任务|task|subtasks?|子任务)"
+_TASK_SEPARATOR_PATTERN = r"(?:[/,，、]|和|及|以及|或|or|and)"
+_NEGATED_TASK_PREFIX_PATTERNS = (
+    r"(?:^|[\s,，、;；。.!?])(?:不要|别|勿|禁止|无需|不用|不必)(?:\s*(?:再|继续))?(?:\s*(?:执行|重跑|跑|做|处理|推进))?\s*$",
+    r"(?:^|[\s,，、;；。.!?])(?:不要|别|勿|禁止).*(?:回退成|改写成|当成|视为)\s*$",
+    r"(?:^|[\s,，、;；。.!?])(?:do\s+not|don't|dont|skip|avoid)(?:\s+(?:re-?run|run|execute|continue|do))?\s*$",
+)
+_COMPLETED_TASK_SUFFIX_PATTERNS = (
+    r"^(?:已|已经)?完成(?:了)?(?:[\s,，、;；。.!?]|$)",
+    r"^(?:已验证通过|验证通过|已通过验证)(?:[\s,，、;；。.!?]|$)",
+    r"^(?:already\s+completed|completed|verification\s+passed|verified)(?:[\s,，、;；。.!?]|$)",
+    r"^的(?:现有)?(?:产物|输出|结果|状态|交付物|依赖|文件|路径)",
+)
+
+
+def _spans_overlap(existing_spans: List[Tuple[int, int]], start: int, end: int) -> bool:
+    for span_start, span_end in existing_spans:
+        if start < span_end and end > span_start:
+            return True
+    return False
+
+
+def _task_reference_is_negated(text: str, start: int) -> bool:
+    window_start = max(0, start - 96)
+    context = re.sub(r"\s+", " ", text[window_start:start]).strip()
+    if not context:
+        return False
+    for pattern in _NEGATED_TASK_PREFIX_PATTERNS:
+        if re.search(pattern, context, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def _task_reference_is_completion_context(text: str, end: int) -> bool:
+    suffix = re.sub(r"\s+", " ", text[end : end + 48]).strip()
+    if not suffix:
+        return False
+    for pattern in _COMPLETED_TASK_SUFFIX_PATTERNS:
+        if re.search(pattern, suffix, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def _split_task_id_group(raw_group: str) -> List[str]:
+    if not raw_group:
+        return []
+    return [
+        token
+        for token in re.split(
+            rf"\s*{_TASK_SEPARATOR_PATTERN}\s*(?:{_TASK_LABEL_PATTERN}\s*[#:=：]?\s*)?",
+            raw_group,
+            flags=re.IGNORECASE,
+        )
+        if token
+    ]
+
+
 def extract_task_ids_from_text(text: str) -> List[int]:
     if not text:
         return []
 
     ordered_ids: List[int] = []
     seen: set[int] = set()
+    occupied_spans: List[tuple[int, int]] = []
 
     def _append(raw: str) -> None:
         try:
@@ -163,34 +221,39 @@ def extract_task_ids_from_text(text: str) -> List[int]:
         ordered_ids.append(task_id)
 
     multi_patterns = [
-        r"(?:任务|task|subtasks?|子任务)\s*[#:=：]?\s*((?:\d+\s*[/,，、]\s*)+\d+)",
-        r"(?<!\d)((?:\d+\s*[/,，、]\s*)+\d+)(?!\d)",
+        rf"{_TASK_LABEL_PATTERN}\s*[#:=：]?\s*(\d+(?:\s*{_TASK_SEPARATOR_PATTERN}\s*(?:{_TASK_LABEL_PATTERN}\s*[#:=：]?\s*)?\d+)+)",
+        rf"(?<!\d)((?:\d+\s*{_TASK_SEPARATOR_PATTERN}\s*)+\d+)(?!\d)",
     ]
     for pattern in multi_patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
             raw_group = str(match.group(1) or "").strip()
             if not raw_group:
                 continue
-            for token in re.split(r"\s*[/,，、]\s*", raw_group):
+            start, end = match.span()
+            if _spans_overlap(occupied_spans, start, end):
+                continue
+            occupied_spans.append((start, end))
+            if _task_reference_is_negated(text, start) or _task_reference_is_completion_context(text, end):
+                continue
+            for token in _split_task_id_group(raw_group):
                 if token:
                     _append(token)
 
-    if ordered_ids:
-        return ordered_ids
-
     patterns = [
-        r"(?:task[_\s-]?id|task)\s*[#:=]?\s*(\d+)",
+        rf"(?:task[_\s-]?id|{_TASK_LABEL_PATTERN})\s*[#:=：]?\s*(\d+)",
         r"任务\s*[#:=：]?\s*(\d+)",
         r"第\s*(\d+)\s*(?:个)?任务",
         r"#(\d+)",
     ]
     for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if not match:
-            continue
-        _append(str(match.group(1)))
-        if ordered_ids:
-            break
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            start, end = match.span()
+            if _spans_overlap(occupied_spans, start, end):
+                continue
+            occupied_spans.append((start, end))
+            if _task_reference_is_negated(text, start) or _task_reference_is_completion_context(text, end):
+                continue
+            _append(str(match.group(1)))
     return ordered_ids
 
 
@@ -270,6 +333,11 @@ def looks_like_completion_claim(reply_text: str) -> bool:
         "all required files",
         "files have been created",
         "generated successfully",
+        "已完成",
+        "执行完毕",
+        "已生成",
+        "已导出",
+        "准备就绪",
     )
     return any(token in lowered for token in claim_tokens)
 

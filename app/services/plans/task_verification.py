@@ -13,6 +13,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from .acceptance_criteria import (
+    derive_expected_deliverables,
+    derive_relative_output_dirs,
+    resolve_glob_min_count,
+    resolve_glob_pattern,
+)
 from .plan_models import PlanNode
 
 logger = logging.getLogger(__name__)
@@ -434,6 +440,9 @@ class TaskVerificationService:
             for candidate in self._payload_base_dir_candidates(payload):
                 if candidate.exists() and candidate.is_dir():
                     return candidate
+            inferred = self._infer_relative_output_base_dir(criteria, artifact_paths)
+            if inferred is not None:
+                return inferred
 
         candidate_dirs: List[str] = []
         for raw_path in artifact_paths:
@@ -505,6 +514,58 @@ class TaskVerificationService:
 
         return candidates
 
+    @staticmethod
+    def _infer_relative_output_base_dir(
+        criteria: Optional[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+    ) -> Optional[Path]:
+        relative_dirs = derive_relative_output_dirs(criteria)
+        if not relative_dirs or not artifact_paths:
+            return None
+
+        root_counts: Dict[str, int] = {}
+        root_paths: Dict[str, Path] = {}
+
+        for raw_path in artifact_paths:
+            raw_text = str(raw_path or "").strip()
+            if not raw_text:
+                continue
+            candidate_path = Path(raw_text).expanduser()
+            if candidate_path.exists() and candidate_path.is_file():
+                candidate_path = candidate_path.parent
+            elif candidate_path.suffix:
+                candidate_path = candidate_path.parent
+            try:
+                resolved = candidate_path.resolve()
+            except Exception:
+                resolved = candidate_path
+
+            parts = list(resolved.parts)
+            lowered_parts = [part.lower() for part in parts]
+            for relative_dir in relative_dirs:
+                token = str(relative_dir or "").strip().strip("/\\").lower()
+                if not token:
+                    continue
+                for index in range(len(lowered_parts) - 1, -1, -1):
+                    if lowered_parts[index] != token or index <= 0:
+                        continue
+                    root = Path(*parts[:index])
+                    if not root.exists() or not root.is_dir():
+                        continue
+                    key = str(root)
+                    root_paths[key] = root
+                    root_counts[key] = root_counts.get(key, 0) + 1
+                    break
+
+        if not root_counts:
+            return None
+
+        best_key = max(
+            root_counts,
+            key=lambda item: (root_counts[item], len(root_paths[item].parts)),
+        )
+        return root_paths[best_key]
+
     def _run_check(self, raw_check: Any, *, base_dir: Path, artifact_paths: Sequence[str] = ()) -> Optional[Dict[str, Any]]:
         if not isinstance(raw_check, dict):
             return {
@@ -541,7 +602,7 @@ class TaskVerificationService:
                         success = True
                 return self._check_result(check_type, success, path=path, message=None if success else "File is missing or empty.")
             if check_type == "glob_nonempty":
-                raw_glob = raw_check.get("glob")
+                raw_glob = resolve_glob_pattern(raw_check)
                 if not raw_glob:
                     return {"type": check_type, "success": False, "message": "Check is missing `glob`."}
                 pattern = self._resolve_glob(raw_glob, base_dir)
@@ -555,9 +616,24 @@ class TaskVerificationService:
                     "message": None if success else "No files matched glob pattern.",
                 }
             if check_type == "glob_count_at_least":
-                pattern = self._resolve_glob(raw_check.get("glob"), base_dir)
-                min_count = int(raw_check.get("min_count") or 0)
+                raw_glob = resolve_glob_pattern(raw_check)
+                pattern = self._resolve_glob(raw_glob, base_dir)
+                min_count = resolve_glob_min_count(raw_check)
                 matched = [item for item in glob.glob(pattern, recursive=True)]
+                if not matched and artifact_paths and raw_glob and not glob.has_magic(raw_glob):
+                    fallback = self._fallback_artifact_match(
+                        self._resolve_path(raw_glob, base_dir),
+                        artifact_paths,
+                    )
+                    if fallback:
+                        matched = [str(fallback)]
+                if not matched and artifact_paths and raw_glob and glob.has_magic(raw_glob):
+                    matched = self._fallback_artifact_glob_matches(
+                        raw_glob=raw_glob,
+                        resolved_glob=pattern,
+                        base_dir=base_dir,
+                        artifact_paths=artifact_paths,
+                    )
                 success = len(matched) >= min_count
                 return {
                     "type": check_type,
@@ -698,6 +774,88 @@ class TaskVerificationService:
             return basename_hit
 
         return None
+
+    def _fallback_artifact_glob_matches(
+        self,
+        *,
+        raw_glob: str,
+        resolved_glob: str,
+        base_dir: Path,
+        artifact_paths: Sequence[str],
+    ) -> List[str]:
+        if not artifact_paths:
+            return []
+
+        patterns: List[str] = []
+        seen_patterns: set[str] = set()
+
+        def _add_pattern(value: Any) -> None:
+            text = self._normalize_glob_text(value)
+            if not text or text in seen_patterns:
+                return
+            seen_patterns.add(text)
+            patterns.append(text)
+
+        _add_pattern(raw_glob)
+        _add_pattern(resolved_glob)
+        try:
+            _add_pattern(Path(resolved_glob).expanduser().resolve().relative_to(base_dir.resolve()))
+        except Exception:
+            pass
+
+        if not patterns:
+            return []
+
+        matched: List[str] = []
+        seen_matches: set[str] = set()
+        for raw in artifact_paths:
+            artifact = Path(str(raw)).expanduser()
+            if not artifact.exists() or not artifact.is_file():
+                continue
+            candidates = self._artifact_glob_match_candidates(artifact, base_dir=base_dir)
+            if any(fnmatch.fnmatch(candidate, pattern) for candidate in candidates for pattern in patterns):
+                artifact_text = str(artifact)
+                if artifact_text not in seen_matches:
+                    seen_matches.add(artifact_text)
+                    matched.append(artifact_text)
+        return matched
+
+    def _artifact_glob_match_candidates(self, artifact_path: Path, *, base_dir: Path) -> List[str]:
+        candidates: List[str] = []
+        seen: set[str] = set()
+
+        def _add_with_suffixes(value: Any) -> None:
+            text = self._normalize_glob_text(value)
+            if not text:
+                return
+            if text not in seen:
+                seen.add(text)
+                candidates.append(text)
+            suffix_source = text[1:] if text.startswith("/") else text
+            parts = [part for part in suffix_source.split("/") if part and part != "."]
+            for index in range(1, len(parts)):
+                suffix = "/".join(parts[index:])
+                if suffix not in seen:
+                    seen.add(suffix)
+                    candidates.append(suffix)
+
+        try:
+            resolved = artifact_path.resolve()
+        except Exception:
+            resolved = artifact_path
+        _add_with_suffixes(resolved)
+        try:
+            _add_with_suffixes(resolved.relative_to(base_dir.resolve()))
+        except Exception:
+            pass
+        return candidates
+
+    @staticmethod
+    def _normalize_glob_text(value: Any) -> str:
+        text = str(value or "").strip().replace("\\", "/")
+        while text.startswith("./"):
+            text = text[2:]
+        return text
 
     @staticmethod
     def _coerce_json_key_path(raw_check: Dict[str, Any]) -> str:
@@ -840,25 +998,7 @@ class TaskVerificationService:
         }
 
     def _expected_deliverables(self, criteria: Optional[Dict[str, Any]]) -> List[str]:
-        if not isinstance(criteria, dict):
-            return []
-        expected: List[str] = []
-        seen: set[str] = set()
-        for raw_check in criteria.get("checks") or []:
-            if not isinstance(raw_check, dict):
-                continue
-            check_type = str(raw_check.get("type") or "").strip()
-            if check_type in {"file_exists", "file_nonempty", "text_contains", "json_field_equals", "json_field_at_least"}:
-                text = str(raw_check.get("path") or "").strip()
-            elif check_type == "glob_count_at_least":
-                text = str(raw_check.get("glob") or "").strip()
-            else:
-                text = ""
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            expected.append(text)
-        return expected
+        return derive_expected_deliverables(criteria)
 
     def _actual_outputs(self, artifact_paths: Sequence[str], *, base_dir: Path) -> List[str]:
         outputs: List[str] = []
@@ -904,7 +1044,7 @@ class TaskVerificationService:
                 candidate = str(raw_check.get("path") or "").strip()
                 resolved = str(self._resolve_path(candidate, base_dir)) if candidate else ""
             elif check_type == "glob_count_at_least":
-                candidate = str(raw_check.get("glob") or "").strip()
+                candidate = str(resolve_glob_pattern(raw_check) or "").strip()
                 resolved = str(self._resolve_glob(candidate, base_dir)) if candidate else ""
             else:
                 candidate = ""
@@ -922,14 +1062,21 @@ class TaskVerificationService:
 
     @staticmethod
     def _output_matches_expected(output: str, expected_deliverables: Sequence[str]) -> bool:
+        normalized_output = TaskVerificationService._normalize_glob_text(output)
+        output_candidates = [normalized_output]
+        if normalized_output:
+            suffix_source = normalized_output[1:] if normalized_output.startswith("/") else normalized_output
+            parts = [part for part in suffix_source.split("/") if part and part != "."]
+            for index in range(1, len(parts)):
+                output_candidates.append("/".join(parts[index:]))
         for expected in expected_deliverables:
-            text = str(expected or "").strip()
+            text = TaskVerificationService._normalize_glob_text(expected)
             if not text:
                 continue
             if any(token in text for token in ("*", "?", "[")):
-                if fnmatch.fnmatch(output, text):
+                if any(fnmatch.fnmatch(candidate, text) for candidate in output_candidates):
                     return True
-            elif output == text:
+            elif normalized_output == text:
                 return True
         return False
 

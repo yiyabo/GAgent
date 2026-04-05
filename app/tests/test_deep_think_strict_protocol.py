@@ -456,6 +456,100 @@ def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -
     assert len(llm.calls) == 3
 
 
+def test_probe_only_with_available_upstream_outputs_forces_code_executor() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Inspect upstream outputs first",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task42/results"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Read the upstream summary",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="document_reader",
+                        arguments={"operation": "read_text", "file_path": "/tmp/task42/gsea_summary.json"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Summarize the export",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已完成任务 43，并导出了 GSEA 汇总表。",
+                            "confidence": 0.93,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    observed_calls: list[tuple[str, dict]] = []
+
+    async def _tool_executor(name: str, params: dict):
+        observed_calls.append((name, dict(params)))
+        if name == "code_executor":
+            return {
+                "success": True,
+                "produced_files": ["/tmp/task43/gsea_export.csv"],
+            }
+        return {"success": True, "summary": "inspected upstream artifacts"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "document_reader", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=5,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 43,
+            "explicit_task_override": True,
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "继续执行 task 43",
+            task_context=TaskExecutionContext(
+                task_id=43,
+                task_name="3.2.3.3 GSEA 结果处理与导出",
+                task_instruction="提取 GSEA 显著通路并导出汇总表。",
+                dependency_outputs=[
+                    {
+                        "task_id": 42,
+                        "task_name": "3.2.3.2 GSEA 分析执行",
+                        "status": "completed",
+                        "artifact_paths": [
+                            "/tmp/task42/gsea_results.rds",
+                            "/tmp/task42/gsea_summary.json",
+                        ],
+                    }
+                ],
+                explicit_task_ids=[8],
+                explicit_task_override=True,
+            ),
+        )
+    )
+
+    assert result.final_answer == "已完成任务 43，并导出了 GSEA 汇总表。"
+    assert "BLOCKED_DEPENDENCY" not in result.final_answer
+    code_exec_calls = [params for name, params in observed_calls if name == "code_executor"]
+    assert code_exec_calls
+    assert "/tmp/task42/gsea_summary.json" in code_exec_calls[0]["task"]
+
+
 def test_probe_only_after_real_execution_tool_stops_with_neutral_summary() -> None:
     """After a real execution tool runs, at most one observation-only verification
     cycle is allowed. A second probe-only cycle should stop with a neutral
@@ -814,6 +908,60 @@ def test_post_execution_probe_stop_answer_filters_outputs_to_current_task_scope(
     assert "qc_summary.csv" not in answer
     assert "plan68_task34" not in answer
     assert "当前 task 作用域内" in answer
+
+
+def test_post_execution_probe_stop_answer_reports_verified_completion_when_tool_passed() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["code_executor"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    step = ThinkingStep(
+        iteration=1,
+        thought="",
+        action=None,
+        action_result=None,
+        self_correction=None,
+        evidence=[
+            {
+                "type": "file",
+                "title": "Generated file",
+                "ref": "/tmp/runtime/session/results/plan68_task36/run_1/enrichment/background_genes.csv",
+                "snippet": "task 36 output",
+            },
+        ],
+    )
+
+    answer = agent._build_post_execution_probe_stop_answer(
+        task_context=TaskExecutionContext(
+            task_id=36,
+            task_name="背景基因集构建",
+        ),
+        user_query="执行任务36",
+        steps=[step],
+        tool_results=[
+            {
+                "tool_name": "code_executor",
+                "tool_result": {
+                    "success": True,
+                    "result": {
+                        "verification_status": "passed",
+                        "artifact_paths": [
+                            "/tmp/runtime/session/results/plan68_task36/run_1/enrichment/background_genes.csv",
+                        ],
+                        "metadata": {
+                            "verification": {"status": "passed"},
+                        },
+                    },
+                },
+            },
+        ],
+    )
+
+    assert "执行与验证实际上已完成" in answer
+    assert "background_genes.csv" in answer
+    assert "可直接基于这些结果继续后续任务" in answer
 
 
 def test_process_only_answer_detection_flags_collection_preface() -> None:
@@ -1739,3 +1887,647 @@ def test_post_execution_probe_injects_summary_nudge() -> None:
         for msg in third_call_messages
         if isinstance(msg, dict)
     )
+
+
+def test_verified_execution_finalization_skips_exploratory_tool_calls() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Run task 40",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "run task 40"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Inspect the old directory first",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/old-results"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Finalize",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已完成任务 40，并生成富集汇总结果。",
+                            "confidence": 0.94,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    executed_tools: list[str] = []
+
+    async def _tool_executor(name: str, _params: dict):
+        executed_tools.append(name)
+        if name == "code_executor":
+            return {
+                "success": True,
+                "verification_state": "verified_success",
+                "produced_files": ["/tmp/results/go_summary.csv", "/tmp/results/kegg_summary.csv"],
+            }
+        return {"success": True, "summary": "listed"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "result_interpreter", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 40,
+            "explicit_task_override": True,
+            "pending_scope_task_ids": [],
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请继续执行 task 40",
+            task_context=TaskExecutionContext(
+                task_id=40,
+                task_name="PPI 网络构建与关键模块识别",
+                task_instruction="执行 Task 40 并在完成后直接总结结果。",
+                explicit_task_ids=[39, 40],
+                explicit_task_override=True,
+            ),
+        )
+    )
+
+    assert result.final_answer == "已完成任务 40，并生成富集汇总结果。"
+    assert executed_tools == ["code_executor"]
+    assert len(llm.calls) >= 2
+    second_call_messages = llm.calls[1]
+    assert any(
+        "当前绑定任务已经执行并验证通过" in str(msg.get("content", ""))
+        or "already executed and passed verification" in str(msg.get("content", ""))
+        for msg in second_call_messages
+        if isinstance(msg, dict)
+    )
+
+
+def test_verified_execution_finalization_uses_task_outputs_when_verification_flag_missing() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Run task 41",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "run task 41"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Verify it again",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="verify_task",
+                        arguments={"task_id": 41},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Finalize",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已完成任务 41，并生成排序基因列表文件。",
+                            "confidence": 0.91,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    executed_tools: list[str] = []
+
+    async def _tool_executor(name: str, _params: dict):
+        executed_tools.append(name)
+        if name == "code_executor":
+            return {
+                "success": True,
+                "produced_files": ["/tmp/task41/results/gsea/ranked_gene_list.rnk"],
+            }
+        return {"success": False, "error": "verify should have been skipped"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["verify_task", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 41,
+            "explicit_task_override": True,
+            "pending_scope_task_ids": [],
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请执行 task 41",
+            task_context=TaskExecutionContext(
+                task_id=41,
+                task_name="基因排序列表构建",
+                task_instruction="生成 ranked gene list 并在完成后直接总结。",
+                explicit_task_ids=[41],
+                explicit_task_override=True,
+            ),
+        )
+    )
+
+    assert result.final_answer == "已完成任务 41，并生成排序基因列表文件。"
+    assert executed_tools == ["code_executor"]
+
+
+def test_explicit_override_no_blocked_dependency_when_upstream_artifacts_missing() -> None:
+    """When user explicitly requests a task but upstream artifact paths are empty,
+    the system should force code_executor instead of returning BLOCKED_DEPENDENCY."""
+    llm = _RecordingNativeLLM(
+        [
+            # Cycle 1: LLM probes with file_operations (observation-only)
+            NativeStreamResult(
+                content="Let me check available files",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/session/results"},
+                    )
+                ],
+            ),
+            # Cycle 2: LLM probes again (observation-only)
+            NativeStreamResult(
+                content="Let me check another directory",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/session/data"},
+                    )
+                ],
+            ),
+            # After forced code_executor, LLM submits final answer
+            NativeStreamResult(
+                content="Task completed",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已执行任务 67，方法部分已生成。",
+                            "confidence": 0.9,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    executed_tools: list[str] = []
+
+    async def _tool_executor(name: str, _params: dict):
+        executed_tools.append(name)
+        if name == "file_operations":
+            return {"files": [], "status": "success"}
+        if name == "code_executor":
+            return {
+                "status": "completed",
+                "success": True,
+                "produced_files": ["/tmp/session/manuscript/methods/cell_annotation.md"],
+            }
+        return {"success": True}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "code_executor", "submit_final_answer"],
+        tool_executor=_tool_executor,
+        max_iterations=8,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 67,
+            "explicit_task_override": True,
+            "pending_scope_task_ids": [],
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "重新执行任务31",
+            task_context=TaskExecutionContext(
+                task_id=67,
+                task_name="细胞注释与聚类分析方法",
+                task_instruction="撰写细胞注释与聚类分析方法部分",
+                # No dependency_outputs — upstream artifacts are missing
+                dependency_outputs=[],
+                explicit_task_ids=[31],
+                explicit_task_override=True,
+            ),
+        )
+    )
+
+    # Should NOT contain BLOCKED_DEPENDENCY
+    assert "BLOCKED_DEPENDENCY" not in (result.final_answer or "")
+    # code_executor should have been force-called
+    assert "code_executor" in executed_tools
+
+
+def test_execute_task_replaces_verify_only_cycle_with_rerun_task() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="先验证任务 66",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="verify_task",
+                        arguments={"task_id": 66},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Finalize",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已重新执行任务 66，并生成方法部分文件。",
+                            "confidence": 0.92,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    executed_tools: list[str] = []
+
+    async def _tool_executor(name: str, _params: dict):
+        executed_tools.append(name)
+        if name == "rerun_task":
+            return {
+                "status": "completed",
+                "success": True,
+                "produced_files": ["/tmp/task66/manuscript/methods/data_preprocessing.md"],
+            }
+        return {"success": False, "error": "verify should have been replaced"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["verify_task", "rerun_task"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 66,
+            "explicit_task_override": True,
+            "pending_scope_task_ids": [],
+        },
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "请继续执行 task 66",
+            task_context=TaskExecutionContext(
+                task_id=66,
+                task_name="数据来源与预处理方法描述",
+                task_instruction="重跑任务 66，重新生成方法部分文件。",
+                explicit_task_ids=[66],
+                explicit_task_override=True,
+            ),
+        )
+    )
+
+    assert result.final_answer == "已重新执行任务 66，并生成方法部分文件。"
+    assert executed_tools == ["rerun_task"]
+
+
+def test_task_handoff_after_execution_injects_execute_next_task_nudge() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Run task 39 first",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "run task 39"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Run task 40 now",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="code_executor",
+                        arguments={"task": "run task 40"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Finish",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已完成任务 40，并生成网络分析结果文件。",
+                            "confidence": 0.93,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    task_context = TaskExecutionContext(
+        task_id=39,
+        task_name="KEGG 通路富集分析执行",
+        task_instruction="先执行 Task 39，再继续 Task 40。",
+        explicit_task_ids=[39, 40],
+        explicit_task_override=True,
+    )
+
+    call_count = 0
+
+    async def _tool_executor(name: str, _params: dict):
+        nonlocal call_count
+        call_count += 1
+        if name == "code_executor" and call_count == 1:
+            agent.request_profile["current_task_id"] = 40
+            task_context.task_id = 40
+            task_context.task_name = "PPI 网络构建与关键模块识别"
+            task_context.task_instruction = "使用 Task 39 产物继续执行 Task 40。"
+            return {"success": True, "produced_files": ["/tmp/task39/kegg_enrichment_summary.txt"]}
+        return {"success": True, "produced_files": ["/tmp/task40/network_metrics.csv"]}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 39,
+            "explicit_task_override": True,
+        },
+    )
+
+    result = asyncio.run(agent.think("继续执行 Task 39，然后 Task 40", task_context=task_context))
+
+    assert result.final_answer == "已完成任务 40，并生成网络分析结果文件。"
+    assert len(llm.calls) >= 2
+    second_call_messages = llm.calls[1]
+    assert any(
+        "当前绑定任务已自动推进到 Task 40" in str(msg.get("content", ""))
+        or "has automatically advanced to Task 40" in str(msg.get("content", ""))
+        for msg in second_call_messages
+        if isinstance(msg, dict)
+    )
+    assert any(
+        "Task ID=40" in str(msg.get("content", ""))
+        for msg in second_call_messages
+        if isinstance(msg, dict)
+    )
+
+
+def test_task_handoff_prefers_request_profile_when_task_context_is_stale() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Run task 56 first",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "run task 56"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Run task 26 now",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="code_executor",
+                        arguments={"task": "run task 26"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Finish",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已继续执行到任务 26，并生成差异通讯比较结果。",
+                            "confidence": 0.92,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    task_context = TaskExecutionContext(
+        task_id=56,
+        task_name="可视化结果整理与导出",
+        task_instruction="先完成 Task 56，再继续 Task 26。",
+        explicit_task_ids=[9],
+        explicit_task_override=True,
+    )
+    executed_task_ids: list[int] = []
+
+    async def _tool_executor(name: str, _params: dict):
+        assert name == "code_executor"
+        current_task_id = int(agent.request_profile.get("current_task_id") or 0)
+        executed_task_ids.append(current_task_id)
+        if current_task_id == 56:
+            agent.request_profile["current_task_id"] = 26
+            agent.request_profile["pending_scope_task_ids"] = []
+            return {"success": True, "produced_files": ["/tmp/task56/visualization_summary.txt"]}
+        return {"success": True, "produced_files": ["/tmp/task26/differential_communication.csv"]}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 56,
+            "pending_scope_task_ids": [26],
+            "explicit_task_override": True,
+        },
+    )
+
+    result = asyncio.run(agent.think("继续执行 Task 9", task_context=task_context))
+
+    assert result.final_answer == "已继续执行到任务 26，并生成差异通讯比较结果。"
+    assert executed_task_ids == [56, 26]
+    second_call_messages = llm.calls[1]
+    assert any(
+        "Task ID=26" in str(msg.get("content", ""))
+        for msg in second_call_messages
+        if isinstance(msg, dict)
+    )
+
+
+def test_handoff_followthrough_forces_code_executor_after_no_tool_response() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Run task 45",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "run task 45"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Need the user to provide Task 9 definition first.",
+                tool_calls=[],
+            ),
+            NativeStreamResult(
+                content="Finish",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "已继续执行到任务 46，并生成当前子任务输出。",
+                            "confidence": 0.91,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    task_context = TaskExecutionContext(
+        task_id=45,
+        task_name="Task 45",
+        task_instruction="继续执行 Task 9 子任务链。",
+        explicit_task_ids=[9],
+        explicit_task_override=True,
+    )
+    executed_task_ids: list[int] = []
+
+    async def _tool_executor(name: str, params: dict):
+        assert name == "code_executor"
+        _ = params
+        task_id = task_context.task_id or 0
+        executed_task_ids.append(task_id)
+        if task_id == 45:
+            agent.request_profile["current_task_id"] = 46
+            task_context.task_id = 46
+            task_context.task_name = "Task 46"
+            task_context.task_instruction = "继续执行 Task 46。"
+            return {"success": True, "produced_files": ["/tmp/task45/output.txt"]}
+        return {"success": True, "produced_files": ["/tmp/task46/output.txt"]}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=3,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 45,
+            "explicit_task_override": True,
+        },
+    )
+
+    result = asyncio.run(agent.think("继续执行 Task 9", task_context=task_context))
+
+    assert result.final_answer == "已继续执行到任务 46，并生成当前子任务输出。"
+    assert executed_task_ids == [45, 46]
+    assert result.fallback_used is False
+
+
+def test_bound_execute_task_fallback_never_asks_for_missing_task_definition() -> None:
+    llm = _NativeDummyLLM(
+        [
+            NativeStreamResult(
+                content="Inspect task outputs first",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task48"},
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(_name: str, _params: dict):
+        return {
+            "success": True,
+            "summary": "listed /tmp/task48",
+            "produced_files": ["/tmp/task48/output.txt"],
+        }
+
+    async def _bad_fallback(*_args, **_kwargs):
+        return "请提供 Task 9 的具体内容，并确认是否存在 plan68_task9 目录。"
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations"],
+        tool_executor=_tool_executor,
+        max_iterations=1,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+            "current_task_id": 48,
+            "explicit_task_override": True,
+        },
+    )
+    agent._generate_fallback_from_evidence = _bad_fallback  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        agent.think(
+            "继续执行 Task 9",
+            task_context=TaskExecutionContext(
+                task_id=48,
+                task_name="Task 48",
+                task_instruction="继续执行 Task 48。",
+                explicit_task_ids=[9],
+                explicit_task_override=True,
+            ),
+        )
+    )
+
+    assert "请提供 Task 9" not in result.final_answer
+    assert "plan68_task9" not in result.final_answer
+    assert "当前绑定任务" in result.final_answer

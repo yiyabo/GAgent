@@ -22,6 +22,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*previous\.([^\}]+)\s*\}\}")
+_INTERNAL_ARTIFACT_FILENAMES = {"result.json", "manifest.json", "preview.json"}
+_INTERNAL_TOOL_OUTPUT_RE = re.compile(
+    r"(?:^|/)tool_outputs/job_[^/]+/step_\d+_[^/]+(?:/.*)?$",
+    re.IGNORECASE,
+)
+_NON_DELIVERABLE_WORKSPACE_RE = re.compile(
+    r"/plan\d+_task\d+/run_[^/]+(?:$|/results$|/(?:code|data|docs)(?:/.*)?$)",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # Conversation summary builder for CC context injection
@@ -88,14 +97,17 @@ def collect_completed_task_outputs(
         status = (node.status or "").strip().lower()
         if status not in ("completed", "done"):
             continue
-        result_text = (node.execution_result or "").strip()
-        if not result_text:
-            continue
-        snippet = result_text[:500]
-        if len(result_text) > 500:
-            snippet += "..."
-        entry_lines = [f"- Task [{node.id}] {node.display_name()}: {snippet}"]
         artifact_paths = extract_task_artifact_paths(node)
+        result_text = (node.execution_result or "").strip()
+        if not result_text and not artifact_paths:
+            continue
+        if artifact_paths:
+            entry_lines = [f"- Task [{node.id}] {node.display_name()}: completed"]
+        else:
+            snippet = result_text[:500]
+            if len(result_text) > 500:
+                snippet += "..."
+            entry_lines = [f"- Task [{node.id}] {node.display_name()}: {snippet}"]
         if artifact_paths:
             joined = "; ".join(artifact_paths[:4])
             if len(artifact_paths) > 4:
@@ -146,7 +158,7 @@ def _collect_candidate_artifact_paths(payload: Any, *, max_paths: int = 20) -> L
         if isinstance(value, dict):
             for item_key, item_value in value.items():
                 lowered = str(item_key or "").strip().lower()
-                if lowered in {"artifact_paths", "produced_files"} and isinstance(
+                if lowered in {"artifact_paths", "produced_files", "session_artifact_paths"} and isinstance(
                     item_value, (list, tuple, set)
                 ):
                     for item in item_value:
@@ -196,6 +208,52 @@ def _is_flat_relative_results_alias(path: str) -> bool:
     return bool(suffix) and "/" not in suffix
 
 
+def _is_internal_artifact_path(path: str) -> bool:
+    normalized = "/" + str(path or "").strip().replace("\\", "/").lstrip("/")
+    if not normalized or normalized == "/":
+        return False
+    lowered = normalized.lower()
+    basename = lowered.rsplit("/", 1)[-1]
+    if basename in _INTERNAL_ARTIFACT_FILENAMES and "/tool_outputs/" in lowered:
+        return True
+    return bool(_INTERNAL_TOOL_OUTPUT_RE.search(lowered))
+
+
+def _is_non_deliverable_workspace_path(path: str) -> bool:
+    normalized = "/" + str(path or "").strip().replace("\\", "/").lstrip("/")
+    if not normalized or normalized == "/":
+        return False
+    return bool(_NON_DELIVERABLE_WORKSPACE_RE.search(normalized))
+
+
+def _looks_like_file_path(path: str) -> bool:
+    text = str(path or "").strip()
+    if not text:
+        return False
+    if text.endswith("/"):
+        return False
+    return bool(Path(text).suffix)
+
+
+def _artifact_sort_key(path: str) -> Tuple[int, int, str]:
+    text = str(path or "").strip().replace("\\", "/")
+    lowered = text.lower()
+    is_file = _looks_like_file_path(text)
+    if is_file and "/results/plan" in lowered:
+        bucket = 0
+    elif is_file and "/results/" in lowered:
+        bucket = 1
+    elif is_file:
+        bucket = 2
+    elif "/results/plan" in lowered:
+        bucket = 3
+    elif "/results/" in lowered:
+        bucket = 4
+    else:
+        bucket = 5
+    return (bucket, 0 if is_file else 1, lowered)
+
+
 def extract_task_artifact_paths(
     execution_result: Any,
     *,
@@ -214,6 +272,8 @@ def extract_task_artifact_paths(
             not text
             or _is_stale_flat_session_results_path(text)
             or _is_flat_relative_results_alias(text)
+            or _is_internal_artifact_path(text)
+            or _is_non_deliverable_workspace_path(text)
         ):
             continue
         if text.startswith("/"):
@@ -224,7 +284,7 @@ def extract_task_artifact_paths(
     ordered: List[str] = []
     seen: set[str] = set()
     for bucket in (absolute, relative):
-        for item in bucket:
+        for item in sorted(bucket, key=_artifact_sort_key):
             if item in seen:
                 continue
             seen.add(item)
@@ -246,7 +306,12 @@ def resolve_code_executor_task_context(agent: Any) -> Tuple[Optional["PlanNode"]
 
     explicit_task_ids = agent.extra_context.get("explicit_task_ids")
     if isinstance(explicit_task_ids, list) and explicit_task_ids:
-        explicit_target = resolve_explicit_task_scope_target(tree, explicit_task_ids)
+        explicit_target = resolve_explicit_task_scope_target(
+            tree,
+            explicit_task_ids,
+            allow_cascade_rerun=True,
+            auto_include_dependency_closure=True,
+        )
         if explicit_target is None:
             return None, "explicit_task_scope_blocked"
         agent.extra_context["current_task_id"] = int(explicit_target)
@@ -411,6 +476,8 @@ def compose_code_executor_atomic_task_prompt(
         "- Treat flat files directly under a session root `results/` directory as convenience copies only; they may be stale and are not canonical raw inputs.",
         "- Ignore zero-byte or non-parseable session-temp duplicates when a canonical source path exists elsewhere.",
         "- For integration or aggregation tasks, if the explicit upstream artifact list is incomplete, report a blocked dependency instead of searching the session root for same-named replacements.",
+        "- If an upstream artifact exists and is readable but represents a zero-result outcome (for example zero rows or no significant hits), treat it as valid input for downstream aggregation/visualization/export tasks rather than a missing dependency.",
+        "- In zero-result cases, continue the current task and write empty-but-valid outputs at the required paths (for example empty tables, serialized empty objects, placeholder figures, and a short summary that clearly states zero findings). Do NOT fabricate positive signals.",
         "- If this task still needs decomposition or broader planning, STOP and output exactly:",
         "  STATUS: BLOCKED_SCOPE",
         "  REASON: NEED_ATOMIC_TASK",
