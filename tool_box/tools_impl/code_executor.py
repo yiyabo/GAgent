@@ -552,8 +552,24 @@ def _build_qwen_code_subprocess_env() -> Dict[str, str]:
     """Build a subprocess environment for Qwen Code CLI.
 
     Uses OpenAI-compatible auth pointing at dashscope.
+
+    The ``qwen`` CLI shebang is ``#!/usr/bin/env node`` and requires
+    Node >= 20.  When nvm is loaded in the shell, its node path may
+    shadow the conda environment's node (v20).  We detect the conda
+    env's bin directory and prepend it to PATH so the correct node is
+    resolved first.
     """
     env_map = dict(os.environ)
+
+    # --- Ensure conda-env node takes priority over nvm ---
+    conda_prefix = os.environ.get("CONDA_PREFIX", "")
+    if conda_prefix:
+        conda_bin = os.path.join(conda_prefix, "bin")
+        current_path = env_map.get("PATH", "")
+        # Only prepend if not already at the front.
+        if not current_path.startswith(conda_bin):
+            env_map["PATH"] = conda_bin + os.pathsep + current_path
+
     # Inject OpenAI-compatible credentials for QC.
     qwen_key = str(os.getenv("QWEN_API_KEY", "")).strip()
     if qwen_key:
