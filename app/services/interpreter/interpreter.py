@@ -56,8 +56,8 @@ def run_analysis(
     output_dir: str = "./results",
     max_depth: int = 5,
     node_budget: int = 50,
-    docker_image: str = "agent-plotter",
-    docker_timeout: int = 7200,
+    docker_image: Optional[str] = None,
+    docker_timeout: Optional[int] = None,
     llm_service=None,
 ) -> AnalysisResult:
     """
@@ -72,8 +72,8 @@ def run_analysis(
         output_dir: Directory for generated artifacts.
         max_depth: Maximum decomposition depth.
         node_budget: Maximum number of decomposed nodes.
-        docker_image: Docker image used for code execution tasks.
-        docker_timeout: Per-task execution timeout in seconds.
+        docker_image: Optional Docker image override for code execution tasks.
+        docker_timeout: Optional per-task execution timeout override.
         llm_service: Optional LLM service instance.
 
     Returns:
@@ -254,8 +254,8 @@ async def run_analysis_async(
     output_dir: str = "./results",
     max_depth: int = 5,
     node_budget: int = 50,
-    docker_image: str = "agent-plotter",
-    docker_timeout: int = 7200,
+    docker_image: Optional[str] = None,
+    docker_timeout: Optional[int] = None,
     llm_service=None,
 ) -> AnalysisResult:
     """
@@ -270,8 +270,8 @@ async def run_analysis_async(
         output_dir: Directory for generated artifacts.
         max_depth: Maximum decomposition depth.
         node_budget: Maximum number of decomposed nodes.
-        docker_image: Docker image used for code execution tasks.
-        docker_timeout: Per-task execution timeout in seconds.
+        docker_image: Optional Docker image override for code execution tasks.
+        docker_timeout: Optional per-task execution timeout override.
         llm_service: Optional LLM service instance.
 
     Returns:
@@ -410,8 +410,8 @@ def execute_plan(
     data_paths: List[str],
     *,
     output_dir: str = "./results",
-    docker_image: str = "agent-plotter",
-    docker_timeout: int = 300,
+    docker_image: Optional[str] = None,
+    docker_timeout: Optional[int] = None,
     llm_service=None,
 ) -> AnalysisResult:
     """
@@ -421,8 +421,8 @@ def execute_plan(
         plan_id: Plan ID.
         data_paths: Input dataset paths.
         output_dir: Directory for generated artifacts.
-        docker_image: Docker image used for code execution tasks.
-        docker_timeout: Per-task execution timeout in seconds.
+        docker_image: Optional Docker image override for code execution tasks.
+        docker_timeout: Optional per-task execution timeout override.
         llm_service: Optional LLM service instance.
 
     Returns:

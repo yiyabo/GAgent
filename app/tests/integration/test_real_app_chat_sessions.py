@@ -20,7 +20,7 @@ def test_real_app_chat_session_crud_persists_state(app_client_factory) -> None:
                 "current_task_name": "Validate deployment safety rails",
                 "settings": {
                     "default_search_provider": "builtin",
-                    "default_base_model": "qwen3.5-plus",
+                    "default_base_model": "qwen3.6-plus",
                     "default_llm_provider": "qwen",
                 },
             },
@@ -32,7 +32,7 @@ def test_real_app_chat_session_crud_persists_state(app_client_factory) -> None:
         assert payload["current_task_id"] == 7
         assert payload["current_task_name"] == "Validate deployment safety rails"
         assert payload["settings"]["default_search_provider"] == "builtin"
-        assert payload["settings"]["default_base_model"] == "qwen3.5-plus"
+        assert payload["settings"]["default_base_model"] == "qwen3.6-plus"
         assert payload["settings"]["default_llm_provider"] == "qwen"
 
         with get_db() as conn:

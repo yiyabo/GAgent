@@ -49,6 +49,25 @@ const TEXT_EXTS = new Set(['md', 'txt', 'csv', 'tsv', 'json', 'log', 'py', 'r', 
 // Files that need rendering (LaTeX -> PDF, Markdown -> HTML)
 const RENDERABLE_EXTS = new Set(['tex', 'md']);
 
+function getReleaseStatePresentation(releaseState?: string): {
+  color: string;
+  label: string;
+  icon: React.ReactNode;
+} | null {
+  const normalized = String(releaseState ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'draft') {
+    return { color: 'orange', label: 'Draft', icon: <EditOutlined /> };
+  }
+  if (normalized === 'final') {
+    return { color: 'green', label: 'Final', icon: <CheckCircleOutlined /> };
+  }
+  if (normalized === 'blocked') {
+    return { color: 'red', label: 'Blocked', icon: <StopOutlined /> };
+  }
+  return { color: 'blue', label: normalized.replace(/_/g, ' '), icon: <FileOutlined /> };
+}
+
 /* ---- CSV / TSV parsing ---- */
 
 interface ParsedTable {
@@ -412,6 +431,9 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
 
   const paperCompleted = Number(deliverableData?.paper_status?.completed_count ?? 0);
   const paperTotal = Number(deliverableData?.paper_status?.total_sections ?? 0);
+  const releaseSummary = String(deliverableData?.release_summary ?? '').trim();
+  const releaseStateMeta = getReleaseStatePresentation(deliverableData?.release_state);
+  const showPaperProgress = paperCompleted > 0 && paperTotal > 0;
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0 }}>
@@ -435,10 +457,24 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                 {mode === 'deliverables' ? 'Deliverables' : 'Raw Files'}
               </Text>
               {mode === 'deliverables' && (
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {deliverableData?.count ?? 0} files
-                  {paperTotal > 0 ? ` · Paper ${paperCompleted}/${paperTotal}` : ''}
-                </Text>
+                <>
+                  <Space size={8} wrap>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {deliverableData?.count ?? 0} files
+                      {showPaperProgress ? ` · Paper ${paperCompleted}/${paperTotal}` : ''}
+                    </Text>
+                    {releaseStateMeta && (
+                      <Tag icon={releaseStateMeta.icon} color={releaseStateMeta.color} style={{ marginInlineEnd: 0 }}>
+                        {releaseStateMeta.label}
+                      </Tag>
+                    )}
+                  </Space>
+                  {releaseSummary && (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {releaseSummary}
+                    </Text>
+                  )}
+                </>
               )}
             </Space>
             <Space size={6}>

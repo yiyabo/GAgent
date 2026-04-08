@@ -6,7 +6,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 
-from .guardrails import extract_task_ids_from_text
+from .guardrails import (
+    extract_task_ids_from_text,
+    local_manuscript_assembly_request,
+)
 from .subject_identity import (
     build_subject_aliases,
     canonicalize_subject_ref,
@@ -698,6 +701,16 @@ _ACTION_VERB_PHRASES = (
     "fix", "install", "configure",
 )
 
+_ANALYSIS_FOLLOWTHROUGH_PHRASES = (
+    "分析",
+    "分析一下",
+    "继续分析",
+    "analyze",
+    "analyse",
+    "analyze it",
+    "analyze this data",
+)
+
 # Chat-only continuations: "继续说" should stay as chat, not escalate to execute
 _CHAT_CONTINUATION_PHRASES = (
     "继续说", "继续讲", "继续解释", "继续介绍", "继续聊", "继续讨论",
@@ -1133,6 +1146,10 @@ def classify_request_tier(
         reasons.append("light_social")
         return "light", reasons, is_brief_followup
 
+    if is_brief_followup and has_depth_cue:
+        reasons.append("brief_followup_depth")
+        return "standard", reasons, True
+
     if is_brief_followup:
         return "light", reasons, True
 
@@ -1291,7 +1308,8 @@ def _max_iterations_execute(
     if decision.explicit_task_override:
         # Explicit task execution often needs to traverse a bound subtask chain,
         # so a 6-step cap is too easy to exhaust before followthrough can occur.
-        execute_cap = 16
+        # Use a generous cap (48) to support multi-subtask composite execution.
+        execute_cap = 48
     return max(3, min(default_max_iterations, execute_cap))
 
 
@@ -1633,6 +1651,11 @@ def resolve_intent_type(
     mutation_context_ok = has_subject_context or has_local_subject_continuity
     task_bound = current_task_id is not None or context_dict.get("current_task_id") is not None
     plan_bound = plan_id is not None or context_dict.get("plan_id") is not None
+    has_local_manuscript_assembly = local_manuscript_assembly_request(
+        text,
+        plan_bound=plan_bound,
+        task_bound=task_bound,
+    )
     has_plan_review_request = _has_explicit_plan_review_request(
         text,
         plan_bound=plan_bound,
@@ -1652,6 +1675,18 @@ def resolve_intent_type(
     is_chat_continuation = _contains_any(lowered, _CHAT_CONTINUATION_PHRASES)
     followthrough_implies_execute = (
         has_followthrough_cue and has_action_verb and not is_chat_continuation
+    )
+    followthrough_implies_analysis_execute = (
+        has_followthrough_cue
+        and not is_chat_continuation
+        and _contains_any(lowered, _ANALYSIS_FOLLOWTHROUGH_PHRASES)
+        and (
+            has_local_inspect_cue
+            or has_local_read_cue
+            or has_subject_context
+            or bool(explicit_path)
+            or has_attachments
+        )
     )
 
     if (
@@ -1689,10 +1724,19 @@ def resolve_intent_type(
             reasons.append("intent_plan_optimize_request")
         return "execute_task", reasons
 
-    if has_execute_keyword or (plan_bound and has_followthrough_cue) or followthrough_implies_execute:
+    if (
+        has_execute_keyword
+        or (plan_bound and has_followthrough_cue)
+        or followthrough_implies_execute
+        or followthrough_implies_analysis_execute
+    ):
         reasons.append("intent_execute_task")
-        if followthrough_implies_execute and not has_execute_keyword:
+        if (followthrough_implies_execute or followthrough_implies_analysis_execute) and not has_execute_keyword:
             reasons.append("execution_keyword")
+        return "execute_task", reasons
+
+    if has_local_manuscript_assembly:
+        reasons.append("intent_manuscript_assembly")
         return "execute_task", reasons
 
     if (

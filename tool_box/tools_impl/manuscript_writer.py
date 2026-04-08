@@ -20,7 +20,7 @@ import shutil
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Awaitable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.llm import LLMClient
 from app.services.llm.llm_service import LLMService, get_llm_service
@@ -51,6 +51,15 @@ _DEFAULT_SECTIONS = [
     "introduction",
     "method",
     "experiment",
+    "result",
+    "discussion",
+    "conclusion",
+    "references",
+]
+_DEFAULT_LOCAL_DRAFT_SECTIONS = [
+    "abstract",
+    "introduction",
+    "method",
     "result",
     "discussion",
     "conclusion",
@@ -753,6 +762,35 @@ def _section_title(section: str) -> str:
     return mapping.get(section.lower(), section.title())
 
 
+def _default_section_list(*, draft_only: bool, review_mode: bool) -> List[str]:
+    if draft_only and not review_mode:
+        return list(_DEFAULT_LOCAL_DRAFT_SECTIONS)
+    return list(_DEFAULT_SECTIONS)
+
+
+def _infer_section_profile(section_list: Sequence[str]) -> str:
+    normalized = [_normalize_section_key(str(section or "").strip()) for section in section_list]
+    if "experiment" in normalized:
+        return "research"
+    return "bio_manuscript"
+
+
+def _is_placeholder_section_content(section: str, text: str) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return True
+    lowered = normalized.lower()
+    placeholder_markers = {
+        "not available in provided context.",
+        "pending final synthesis from the completed result sections above.",
+    }
+    if lowered in placeholder_markers:
+        return True
+    if section == "references" and lowered == "% references":
+        return True
+    return False
+
+
 def _section_eval_dims(section: str, *, review_mode: bool = False) -> List[str]:
     """Return evaluation dimensions relevant to *section*."""
     key = _normalize_section_key(section)
@@ -1121,6 +1159,183 @@ def _build_merge_prompt(
     )
 
 
+def _demote_markdown_headings(text: str, *, levels: int = 1) -> str:
+    if levels <= 0:
+        return str(text or "").strip()
+
+    def _replace(match: re.Match[str]) -> str:
+        hashes = match.group(1)
+        suffix = match.group(2)
+        return f"{'#' * min(6, len(hashes) + levels)}{suffix}"
+
+    return re.sub(r"^(#{1,6})(\s.*)$", _replace, str(text or "").strip(), flags=re.MULTILINE)
+
+
+def _local_draft_bucket(path: str) -> Optional[str]:
+    normalized = str(path or "").strip().replace("\\", "/").lower()
+    if not normalized:
+        return None
+    if "/manuscript/results/" in normalized or normalized.startswith("manuscript/results/"):
+        return "result"
+    if (
+        "/methods/" in normalized
+        or normalized.startswith("methods/")
+        or normalized.endswith("data_source_preprocessing.md")
+    ):
+        return "method"
+    if normalized.endswith("_summary.md") or normalized.endswith("_summary.txt"):
+        return "supplementary"
+    return None
+
+
+def _local_draft_sort_key(bucket: str, path: str) -> Tuple[int, str]:
+    normalized = str(path or "").strip().replace("\\", "/").lower()
+    if bucket == "method":
+        for idx, token in enumerate(
+            (
+                "data_source_preprocessing",
+                "clustering_annotation",
+                "differential_enrichment",
+                "cell_communication",
+            )
+        ):
+            if token in normalized:
+                return idx, normalized
+        return 99, normalized
+    if bucket == "result":
+        match = re.search(r"5\.1\.3\.(\d+)", normalized)
+        if match:
+            return int(match.group(1)), normalized
+        return 99, normalized
+    return 99, normalized
+
+
+def _assemble_local_draft_from_context(
+    *,
+    task: str,
+    context_paths: List[str],
+    max_context_bytes: int,
+    section_list: List[str],
+) -> Tuple[str, str, List[str], Dict[str, int], Dict[str, str]]:
+    grouped: Dict[str, List[Tuple[Tuple[int, str], str, str]]] = {
+        "method": [],
+        "result": [],
+        "supplementary": [],
+    }
+    used_sources: List[str] = []
+
+    for raw in context_paths:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        try:
+            path = _resolve_project_path(value)
+        except Exception:
+            continue
+        if path.suffix.lower() not in {".md", ".txt"}:
+            continue
+        bucket = _local_draft_bucket(str(path.relative_to(_PROJECT_ROOT)))
+        if bucket is None:
+            continue
+        try:
+            content = _read_text_file(path, max_context_bytes).strip()
+        except Exception:
+            continue
+        if not content:
+            continue
+        rel = str(path.relative_to(_PROJECT_ROOT))
+        grouped[bucket].append((_local_draft_sort_key(bucket, rel), rel, content))
+        used_sources.append(rel)
+
+    for bucket in grouped:
+        grouped[bucket].sort(key=lambda item: item[0])
+
+    section_counts = {bucket: len(items) for bucket, items in grouped.items()}
+
+    def _render_group(items: List[Tuple[Tuple[int, str], str, str]], *, fallback: str) -> str:
+        if not items:
+            return fallback
+        rendered: List[str] = []
+        for _sort_key, rel, content in items:
+            block = _demote_markdown_headings(content, levels=1)
+            if not block.startswith("#"):
+                title = Path(rel).stem.replace("_", " ").strip() or rel
+                block = f"### {title}\n\n{block}"
+            rendered.append(block)
+        return "\n\n".join(rendered).strip()
+
+    parts: List[str] = [
+        "# Manuscript Draft",
+        "",
+        "> Auto-assembled locally from completed task outputs without additional literature review or re-analysis.",
+        "",
+    ]
+    ordered_sections = section_list or list(_DEFAULT_SECTIONS)
+    section_text_map: Dict[str, str] = {}
+    for section in ordered_sections:
+        key = _normalize_section_key(section)
+        title = _section_title(key)
+        parts.extend([f"## {title}", ""])
+        section_body = ""
+        if key == "abstract":
+            section_body = "Not available in provided context."
+        elif key == "introduction":
+            section_body = "Not available in provided context."
+        elif key == "method":
+            section_body = _render_group(
+                grouped["method"],
+                fallback="Not available in provided context.",
+            )
+        elif key == "experiment":
+            section_body = "Not available in provided context."
+        elif key == "result":
+            section_body = _render_group(
+                grouped["result"],
+                fallback="Not available in provided context.",
+            )
+        elif key == "discussion":
+            section_body = _render_group(
+                grouped["supplementary"],
+                fallback="Pending final synthesis from the completed result sections above.",
+            )
+        elif key == "conclusion":
+            section_body = "Pending final synthesis from the completed result sections above."
+        elif key == "references":
+            section_body = "Not available in provided context."
+        else:
+            section_body = "Not available in provided context."
+        section_text_map[key] = str(section_body).strip()
+        parts.append(section_body)
+        parts.extend(["", ""])
+
+    analysis_lines = [
+        "# Analysis Memo",
+        "",
+        "- mode: local_draft_assembly",
+        f"- task: {task}",
+        f"- source_files_used: {len(used_sources)}",
+        f"- method_sources: {section_counts['method']}",
+        f"- result_sources: {section_counts['result']}",
+        f"- supplementary_sources: {section_counts['supplementary']}",
+        "",
+        "## Included source files",
+        "",
+    ]
+    if used_sources:
+        analysis_lines.extend(f"- {path}" for path in used_sources)
+    else:
+        analysis_lines.append("- None")
+    analysis_lines.extend(["", "## Notes", "", "- This draft was assembled locally from existing Markdown outputs.", "- Missing sections remain explicitly marked as not available.", ""])
+
+    return (
+        "\n".join(parts).strip() + "\n",
+        "\n".join(analysis_lines).strip() + "\n",
+        used_sources,
+        section_counts,
+        section_text_map,
+    )
+
+
 def _build_final_polish_prompt(
     task: str,
     analysis_memo: str,
@@ -1250,6 +1465,7 @@ async def manuscript_writer_handler(
     merge_provider: Optional[str] = None,
     session_id: Optional[str] = None,
     keep_workspace: bool = False,
+    draft_only: bool = False,
 ) -> Dict[str, Any]:
     """
     Generate a manuscript draft using staged generation, evaluation, and merge.
@@ -1350,11 +1566,12 @@ async def manuscript_writer_handler(
             final_polish_llm_timeout_sec = 0.0
 
         context_paths = context_paths or []
-        section_list = sections or list(_DEFAULT_SECTIONS)
+        draft_only = bool(draft_only)
+        review_mode = _is_review_article_task(task)
+        section_list = sections or _default_section_list(draft_only=draft_only, review_mode=review_mode)
         section_list = [_normalize_section_key(s) for s in section_list if s and str(s).strip()]
         if not section_list:
-            section_list = list(_DEFAULT_SECTIONS)
-        review_mode = _is_review_article_task(task)
+            section_list = _default_section_list(draft_only=draft_only, review_mode=review_mode)
         review_evidence = (
             _load_review_evidence(
                 context_paths=context_paths,
@@ -1414,20 +1631,6 @@ async def manuscript_writer_handler(
             env_eval_model = os.getenv("MANUSCRIPT_EVAL_MODEL")
             if env_eval_model:
                 eval_model = env_eval_model.strip() or None
-
-        gen_llm, gen_model = _build_llm_service(generation_provider, gen_model)
-        eval_llm, eval_model = _build_llm_service(evaluation_provider, eval_model)
-        merge_llm, merge_model_name = _build_llm_service(merge_provider, merge_model_name)
-        final_polish_eval_llm, _ = _build_llm_service(
-            evaluation_provider,
-            eval_model,
-            timeout=final_polish_llm_timeout_sec,
-        )
-        final_polish_merge_llm, _ = _build_llm_service(
-            merge_provider,
-            merge_model_name,
-            timeout=final_polish_llm_timeout_sec,
-        )
 
         analysis_memo = ""
 
@@ -1773,6 +1976,107 @@ async def manuscript_writer_handler(
                         evaluation={"coverage_summary": coverage_payload.get("summary")},
                     ),
                 )
+
+        if draft_only:
+            draft_text, analysis_memo, used_sources, section_counts, section_text_map = _assemble_local_draft_from_context(
+                task=task,
+                context_paths=context_paths,
+                max_context_bytes=max_context_bytes,
+                section_list=section_list,
+            )
+            analysis_file.write_text(analysis_memo, encoding="utf-8")
+            output_file.write_text(draft_text, encoding="utf-8")
+            section_profile = _infer_section_profile(section_list)
+            applicable_sections = [section for section in section_list if section != "references"]
+            structured_section_dir = output_file.parent / f".{output_file.stem}_sections"
+            shutil.rmtree(structured_section_dir, ignore_errors=True)
+            structured_section_dir.mkdir(parents=True, exist_ok=True)
+            structured_sections: List[Dict[str, Any]] = []
+            completed_sections: List[str] = []
+            for idx, section in enumerate(section_list, start=1):
+                section_text = str(section_text_map.get(section) or "").strip()
+                if _is_placeholder_section_content(section, section_text):
+                    continue
+                section_path = structured_section_dir / f"{idx:02d}_{section}.md"
+                section_path.write_text(section_text + "\n", encoding="utf-8")
+                structured_sections.append(
+                    {
+                        "section": section,
+                        "path": _to_rel(section_path),
+                        "status": "completed",
+                        "substantive": True,
+                    }
+                )
+                if section != "references":
+                    completed_sections.append(section)
+            missing_sections = [section for section in applicable_sections if section not in completed_sections]
+            hidden_artifact_prefixes = _hidden_prefixes(
+                work_dir,
+                output_file,
+                analysis_file,
+                extra=[_to_session_rel(structured_section_dir) or ""],
+            )
+            cleanup_errors: List[str] = []
+            if not keep_workspace:
+                try:
+                    shutil.rmtree(work_dir)
+                except Exception as exc:
+                    cleanup_errors.append(str(exc))
+            return {
+                "tool": "manuscript_writer",
+                "success": True,
+                "draft_only": True,
+                "release_state": "draft",
+                "public_release_ready": False,
+                "release_summary": (
+                    "Local manuscript draft assembled from completed task outputs without publication-quality gating."
+                ),
+                "reference_library_path": reference_library_path or None,
+                "source_paths": used_sources,
+                "analysis_path": _to_rel(analysis_file),
+                "effective_analysis_path": _to_rel(analysis_file),
+                "output_path": _to_rel(output_file),
+                "effective_output_path": _to_rel(output_file),
+                "pre_polish_output_path": None,
+                "polished_output_path": None,
+                "section_profile": section_profile,
+                "applicable_sections": applicable_sections,
+                "completed_sections": completed_sections,
+                "missing_sections": missing_sections,
+                "sections": structured_sections,
+                "draft_chars": len(draft_text or ""),
+                "intermediate_purged": not keep_workspace,
+                "temp_workspace": _to_rel(work_dir),
+                "hidden_artifact_prefixes": hidden_artifact_prefixes,
+                "cleanup_errors": cleanup_errors,
+                "run_stats": {
+                    "draft_only": True,
+                    "final_chars": len(draft_text or ""),
+                    "final_polish_enabled": False,
+                    "source_file_count": len(used_sources),
+                    "method_sources": section_counts["method"],
+                    "result_sources": section_counts["result"],
+                    "supplementary_sources": section_counts["supplementary"],
+                    "section_profile": section_profile,
+                    "applicable_section_count": len(applicable_sections),
+                    "completed_section_count": len(completed_sections),
+                },
+                "bib_precheck_warning": bib_precheck_warning,
+            }
+
+        gen_llm, gen_model = _build_llm_service(generation_provider, gen_model)
+        eval_llm, eval_model = _build_llm_service(evaluation_provider, eval_model)
+        merge_llm, merge_model_name = _build_llm_service(merge_provider, merge_model_name)
+        final_polish_eval_llm, _ = _build_llm_service(
+            evaluation_provider,
+            eval_model,
+            timeout=final_polish_llm_timeout_sec,
+        )
+        final_polish_merge_llm, _ = _build_llm_service(
+            merge_provider,
+            merge_model_name,
+            timeout=final_polish_llm_timeout_sec,
+        )
 
         analysis_prompt = _build_analysis_prompt(task, context_text, section_list)
         analysis_memo = await _chat(gen_llm, analysis_prompt, gen_model)
@@ -2279,6 +2583,11 @@ manuscript_writer_tool = {
             "keep_workspace": {
                 "type": "boolean",
                 "description": "Keep intermediate drafts/reviews workspace for audit/debugging.",
+                "default": False,
+            },
+            "draft_only": {
+                "type": "boolean",
+                "description": "Assemble a lightweight local draft without the full staged evaluation and polish pipeline.",
                 "default": False,
             },
         },

@@ -107,8 +107,8 @@ class PlanExecutorInterpreter:
         data_file_paths: List[str],
         output_dir: str = "./results",
         llm_service: Optional[LLMService] = None,
-        docker_image: str = "agent-plotter",
-        docker_timeout: int = 120,
+        docker_image: Optional[str] = None,
+        docker_timeout: Optional[int] = None,
         repo: Optional[PlanRepository] = None
     ):
         """
@@ -119,8 +119,8 @@ class PlanExecutorInterpreter:
             data_file_paths: Input dataset paths.
             output_dir: Output directory for execution artifacts.
             llm_service: Optional LLM service instance.
-            docker_image: Docker image for code-required tasks.
-            docker_timeout: Timeout for code-required tasks.
+            docker_image: Optional Docker image override for code-required tasks.
+            docker_timeout: Optional timeout override for code-required tasks.
             repo: Optional repository instance. If omitted, a default repository is created.
         """
         self.plan_id = plan_id

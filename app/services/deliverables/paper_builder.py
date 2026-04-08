@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -16,6 +16,19 @@ SECTION_ORDER: Tuple[str, ...] = (
     "discussion",
     "conclusion",
 )
+
+SECTION_PROFILES: Dict[str, Tuple[str, ...]] = {
+    "research": SECTION_ORDER,
+    "bio_manuscript": (
+        "abstract",
+        "introduction",
+        "method",
+        "result",
+        "discussion",
+        "conclusion",
+    ),
+}
+DEFAULT_SECTION_PROFILE = "research"
 
 SECTION_TITLES: Dict[str, str] = {
     "abstract": "Abstract",
@@ -54,6 +67,8 @@ class PaperStatus:
     missing_sections: List[str]
     total_sections: int
     completed_count: int
+    section_profile: str = DEFAULT_SECTION_PROFILE
+    applicable_sections: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -61,10 +76,51 @@ class PaperStatus:
             "missing_sections": list(self.missing_sections),
             "total_sections": self.total_sections,
             "completed_count": self.completed_count,
+            "section_profile": self.section_profile,
+            "applicable_sections": list(self.applicable_sections),
         }
 
 
 class PaperBuilder:
+    @staticmethod
+    def normalize_section_key(section: str) -> str:
+        mapping = {
+            "methods": "method",
+            "experiments": "experiment",
+            "results": "result",
+            "conclusions": "conclusion",
+        }
+        key = str(section or "").strip().lower()
+        return mapping.get(key, key)
+
+    @staticmethod
+    def normalize_section_profile(profile: Optional[str]) -> str:
+        key = str(profile or "").strip().lower()
+        if key in SECTION_PROFILES:
+            return key
+        return DEFAULT_SECTION_PROFILE
+
+    def section_order(
+        self,
+        *,
+        section_profile: Optional[str] = None,
+        section_order: Optional[Sequence[str]] = None,
+    ) -> Tuple[str, ...]:
+        if section_order:
+            normalized = tuple(
+                section
+                for section in (
+                    self.normalize_section_key(item)
+                    for item in section_order
+                    if str(item or "").strip()
+                )
+                if section in SECTION_TITLES
+            )
+            if normalized:
+                return normalized
+        profile = self.normalize_section_profile(section_profile)
+        return SECTION_PROFILES.get(profile, SECTION_ORDER)
+
     def _legacy_infer_section(self, text: str) -> Optional[str]:
         haystack = str(text or "").strip().lower()
         if not haystack:
@@ -94,7 +150,7 @@ class PaperBuilder:
     ) -> Optional[str]:
         # Explicit section from plan/task metadata takes precedence
         if explicit_section is not None:
-            section_key = str(explicit_section).strip().lower()
+            section_key = self.normalize_section_key(explicit_section)
             if section_key in SECTION_ORDER:
                 return section_key
         candidates: List[str] = []
@@ -138,11 +194,17 @@ class PaperBuilder:
         paper_dir: Path,
         refs_dir: Path,
         title: str,
+        section_profile: Optional[str] = None,
+        section_order: Optional[Sequence[str]] = None,
     ) -> None:
+        resolved_sections = self.section_order(
+            section_profile=section_profile,
+            section_order=section_order,
+        )
         sections_dir = paper_dir / "sections"
         sections_dir.mkdir(parents=True, exist_ok=True)
         refs_dir.mkdir(parents=True, exist_ok=True)
-        for section in SECTION_ORDER:
+        for section in resolved_sections:
             section_path = self._section_path(paper_dir, section)
             if section_path.exists():
                 continue
@@ -151,8 +213,10 @@ class PaperBuilder:
                 encoding="utf-8",
             )
         main_tex = paper_dir / "main.tex"
-        if not main_tex.exists():
-            main_tex.write_text(self._main_tex_template(title=title), encoding="utf-8")
+        main_tex.write_text(
+            self._main_tex_template(title=title, section_order=resolved_sections),
+            encoding="utf-8",
+        )
         references_path = refs_dir / "references.bib"
         if not references_path.exists():
             references_path.write_text(
@@ -167,7 +231,7 @@ class PaperBuilder:
         section: str,
         content: str,
     ) -> Path:
-        section_key = section.strip().lower()
+        section_key = self.normalize_section_key(section)
         if section_key not in SECTION_ORDER:
             raise ValueError(f"Unsupported paper section: {section}")
         section_path = self._section_path(paper_dir, section_key)
@@ -211,25 +275,53 @@ class PaperBuilder:
                 handle.write("\n")
         return references_path
 
-    def get_status(self, *, paper_dir: Path) -> PaperStatus:
+    def get_status(
+        self,
+        *,
+        paper_dir: Path,
+        section_profile: Optional[str] = None,
+        section_order: Optional[Sequence[str]] = None,
+    ) -> PaperStatus:
+        resolved_sections = self.section_order(
+            section_profile=section_profile,
+            section_order=section_order,
+        )
+        resolved_profile = self.normalize_section_profile(section_profile)
         completed: List[str] = []
         missing: List[str] = []
-        for section in SECTION_ORDER:
+        for section in resolved_sections:
             section_path = self._section_path(paper_dir, section)
             if not section_path.exists():
                 missing.append(section)
                 continue
             text = section_path.read_text(encoding="utf-8")
-            if PLACEHOLDER_MARKER in text:
+            if not self.is_substantive_section_text(text):
                 missing.append(section)
             else:
                 completed.append(section)
         return PaperStatus(
             completed_sections=completed,
             missing_sections=missing,
-            total_sections=len(SECTION_ORDER),
+            total_sections=len(resolved_sections),
             completed_count=len(completed),
+            section_profile=resolved_profile,
+            applicable_sections=list(resolved_sections),
         )
+
+    def is_substantive_section_text(self, text: str) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        lowered = normalized.lower()
+        if PLACEHOLDER_MARKER.lower() in lowered:
+            return False
+        placeholder_markers = (
+            "not available in provided context.",
+            "pending final synthesis from the completed result sections above.",
+        )
+        if any(marker in lowered for marker in placeholder_markers):
+            return False
+        return True
 
     def _section_path(self, paper_dir: Path, section: str) -> Path:
         return paper_dir / "sections" / f"{section}.tex"
@@ -249,9 +341,9 @@ class PaperBuilder:
             f"% TODO: {title}\n"
         )
 
-    def _main_tex_template(self, *, title: str) -> str:
+    def _main_tex_template(self, *, title: str, section_order: Sequence[str]) -> str:
         safe_title = self._escape_text(title or "Untitled Project")
-        includes = "\n".join([f"\\input{{sections/{name}}}" for name in SECTION_ORDER])
+        includes = "\n".join([f"\\input{{sections/{name}}}" for name in section_order])
         return (
             "\\documentclass[11pt]{article}\n"
             "\\usepackage[utf8]{inputenc}\n"

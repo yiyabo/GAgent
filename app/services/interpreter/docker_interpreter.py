@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import time
 from urllib.parse import urlparse
@@ -26,6 +28,10 @@ _PROXY_ENV_NAMES = (
     "all_proxy",
     "NO_PROXY",
     "no_proxy",
+)
+
+_BENIGN_CLI_STDERR_PREFIXES = (
+    "WARNING: The requested image's platform",
 )
 
 try:
@@ -84,14 +90,88 @@ class DockerCodeInterpreter:
         self.extra_read_dirs = self._normalize_dirs(extra_read_dirs)
         self.extra_write_dirs = self._normalize_dirs(extra_write_dirs)
         self.client = None
+        self.client_error: Optional[str] = None
 
         if HAS_DOCKER:
             try:
                 self.client = docker.from_env()
             except Exception as e:
-                logger.error("Failed to connect to Docker daemon: %s", e)
+                self.client_error = str(e)
+                docker_bin = self._docker_binary()
+                if docker_bin:
+                    logger.warning(
+                        "Docker SDK unavailable (%s); falling back to docker CLI at %s",
+                        e,
+                        docker_bin,
+                    )
+                else:
+                    logger.error("Failed to connect to Docker daemon: %s", e)
         else:
-            logger.warning("Python 'docker' package is not installed. Please run `pip install docker`.")
+            docker_bin = self._docker_binary()
+            if docker_bin:
+                logger.warning(
+                    "Python 'docker' package is not installed; using docker CLI at %s.",
+                    docker_bin,
+                )
+            else:
+                logger.warning("Python 'docker' package is not installed. Please run `pip install docker`.")
+
+    @staticmethod
+    def _docker_binary() -> Optional[str]:
+        return shutil.which("docker")
+
+    @staticmethod
+    def _decode_process_stream(payload: bytes | str | None) -> str:
+        if payload is None:
+            return ""
+        if isinstance(payload, bytes):
+            return payload.decode("utf-8", errors="replace")
+        return str(payload)
+
+    def _detect_image_platform(self) -> Optional[str]:
+        """Return the platform string of the local image, e.g. ``linux/amd64``.
+
+        Falls back to ``None`` when the platform cannot be determined (e.g. the
+        image does not exist or the CLI is unavailable).  When the image was
+        built for a different platform than the host, callers should pass
+        ``--platform`` explicitly so Docker Desktop uses QEMU emulation.
+        """
+        docker_bin = self._docker_binary()
+        if not docker_bin:
+            return None
+        try:
+            result = subprocess.run(
+                [docker_bin, "image", "inspect", self.image,
+                 "--format", "{{.Os}}/{{.Architecture}}"],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+            if result.returncode == 0 and (result.stdout or "").strip():
+                return result.stdout.strip()
+            # Cross-platform images may fail `image inspect` — try
+            # `docker images --format` which lists them regardless.
+            result2 = subprocess.run(
+                [docker_bin, "images", "--format",
+                 "{{.Repository}}:{{.Tag}}", "--filter",
+                 f"reference={self.image}"],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+            if result2.returncode == 0 and (result2.stdout or "").strip():
+                # Image exists but inspect failed — likely cross-platform.
+                # Default to linux/amd64 which is the build script default.
+                return "linux/amd64"
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _runtime_unavailable_result(cls, message: str) -> CodeExecutionResult:
+        return CodeExecutionResult(
+            status="error",
+            output="",
+            error=message,
+            exit_code=-1,
+            runtime_failure=True,
+        )
 
     @staticmethod
     def _normalize_dirs(values: Optional[Sequence[str]]) -> list[str]:
@@ -229,6 +309,18 @@ os.makedirs(_NUMBA_CACHE_PATH, exist_ok=True)
         return str(payload)
 
     @staticmethod
+    def _sanitize_cli_stderr(stderr: str) -> str:
+        if not stderr:
+            return ""
+        lines = []
+        for line in stderr.splitlines():
+            stripped = line.strip()
+            if any(stripped.startswith(prefix) for prefix in _BENIGN_CLI_STDERR_PREFIXES):
+                continue
+            lines.append(line)
+        return "\n".join(lines).strip()
+
+    @staticmethod
     def _resolve_container_user() -> Optional[str]:
         if os.name != "posix":
             return None
@@ -243,12 +335,42 @@ os.makedirs(_NUMBA_CACHE_PATH, exist_ok=True)
 
     def _ensure_runtime_available(self) -> Optional[CodeExecutionResult]:
         if not self.client:
-            return CodeExecutionResult(
-                status="error",
-                output="",
-                error="Docker runtime is unavailable: client is not connected.",
-                exit_code=-1,
-                runtime_failure=True,
+            docker_bin = self._docker_binary()
+            if not docker_bin:
+                detail = self.client_error or "client is not connected."
+                return self._runtime_unavailable_result(
+                    f"Docker runtime is unavailable: {detail}"
+                )
+            # Use `docker images -q` instead of `docker image inspect` because
+            # inspect fails for cross-platform images (e.g. linux/amd64 on arm64
+            # host) even though they can run fine via QEMU emulation.
+            inspect_result = subprocess.run(
+                [docker_bin, "images", "-q", self.image],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if inspect_result.returncode == 0 and (inspect_result.stdout or "").strip():
+                return None
+            stderr = (inspect_result.stderr or "").strip()
+            if self.auto_pull:
+                pull_result = subprocess.run(
+                    [docker_bin, "pull", self.image],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if pull_result.returncode == 0:
+                    return None
+                pull_error = (pull_result.stderr or pull_result.stdout or "").strip()
+                return self._runtime_unavailable_result(
+                    f"Docker runtime failed while pulling image '{self.image}': {pull_error or 'unknown error'}"
+                )
+            error_text = stderr or (inspect_result.stdout or "").strip()
+            if "No such image" in error_text or "not found" in error_text.lower():
+                return self._runtime_unavailable_result(f"Docker image not found: {self.image}")
+            return self._runtime_unavailable_result(
+                f"Docker runtime is unavailable: {error_text or self.client_error or 'client is not connected.'}"
             )
 
         try:
@@ -297,6 +419,12 @@ os.makedirs(_NUMBA_CACHE_PATH, exist_ok=True)
         if runtime_check is not None:
             return runtime_check
 
+        if not self.client:
+            return self._run_container_cli(command)
+
+        return self._run_container_sdk(command)
+
+    def _run_container_sdk(self, command: Sequence[str]) -> CodeExecutionResult:
         container = None
         try:
             volumes = self._build_volume_mounts()
@@ -317,6 +445,9 @@ os.makedirs(_NUMBA_CACHE_PATH, exist_ok=True)
                 "working_dir": self.work_dir,
                 "environment": environment,
             }
+            platform = self._detect_image_platform()
+            if platform:
+                run_kwargs["platform"] = platform
             if self._should_use_host_network(environment):
                 run_kwargs["network_mode"] = "host"
             else:
@@ -377,6 +508,83 @@ os.makedirs(_NUMBA_CACHE_PATH, exist_ok=True)
                     container.remove(force=True)
                 except Exception:
                     pass
+
+    def _run_container_cli(self, command: Sequence[str]) -> CodeExecutionResult:
+        docker_bin = self._docker_binary()
+        if not docker_bin:
+            detail = self.client_error or "docker CLI not found."
+            return self._runtime_unavailable_result(
+                f"Docker runtime is unavailable: {detail}"
+            )
+
+        try:
+            volumes = self._build_volume_mounts()
+            user = self._resolve_container_user()
+            environment = self._build_env()
+            logger.info(
+                "Docker mounts for %s: %s",
+                self.image,
+                {host: spec["mode"] for host, spec in volumes.items()},
+            )
+
+            cli_command = [
+                docker_bin,
+                "run",
+                "--rm",
+                "--memory",
+                "8g",
+                "--workdir",
+                self.work_dir,
+            ]
+            platform = self._detect_image_platform()
+            if platform:
+                cli_command.extend(["--platform", platform])
+            if self._should_use_host_network(environment):
+                cli_command.extend(["--network", "host"])
+            if user:
+                cli_command.extend(["--user", user])
+            for host, spec in volumes.items():
+                cli_command.extend(["-v", f"{host}:{spec['bind']}:{spec['mode']}"])
+            for name, value in environment.items():
+                cli_command.extend(["-e", f"{name}={value}"])
+            cli_command.append(self.image)
+            cli_command.extend(command)
+
+            completed = subprocess.run(
+                cli_command,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                check=False,
+            )
+            exit_code = int(completed.returncode)
+            stdout = self._decode_process_stream(completed.stdout)
+            stderr = self._sanitize_cli_stderr(self._decode_process_stream(completed.stderr))
+
+            if exit_code == 125:
+                return self._runtime_unavailable_result(
+                    f"Docker runtime failed while starting the container: {stderr or stdout or 'unknown error'}"
+                )
+            if exit_code == 0:
+                return CodeExecutionResult("success", stdout, stderr, exit_code)
+            return CodeExecutionResult("failed", stdout, stderr, exit_code)
+
+        except subprocess.TimeoutExpired:
+            return CodeExecutionResult(
+                status="timeout",
+                output="",
+                error=f"Execution exceeded {self.timeout} seconds limit.",
+                exit_code=-1,
+            )
+        except Exception as exc:
+            logger.exception("Unexpected Docker execution error")
+            return CodeExecutionResult(
+                status="error",
+                output="",
+                error=f"Docker runtime failed unexpectedly: {exc}",
+                exit_code=-1,
+                runtime_failure=True,
+            )
 
     def run_python_code(self, code: str) -> CodeExecutionResult:
         """Execute Python code inside a Docker container."""

@@ -166,7 +166,7 @@ class ChatSessionSettings(BaseModel):
 
     default_search_provider: Optional[Literal["builtin", "perplexity", "tavily"]] = None
     default_base_model: Optional[
-        Literal["qwen3.5-plus", "qwen3-max-2026-01-23", "qwen-turbo"]
+        Literal["qwen3.6-plus", "qwen3.5-plus", "qwen3-max-2026-01-23", "qwen-turbo"]
     ] = None
     default_llm_provider: Optional[
         Literal["qwen"]

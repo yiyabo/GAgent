@@ -102,6 +102,20 @@ def literature_backed_review_request(user_message: str) -> bool:
     )
 
 
+def local_manuscript_assembly_request(
+    user_message: str,
+    *,
+    plan_bound: bool = False,
+    task_bound: bool = False,
+) -> bool:
+    text = str(user_message or "").strip()
+    if not text or not (plan_bound or task_bound):
+        return False
+    if not explicit_manuscript_request(text):
+        return False
+    return not literature_backed_review_request(text)
+
+
 def extract_review_topic(user_message: str) -> Optional[str]:
     text = str(user_message or "").strip()
     if not text:

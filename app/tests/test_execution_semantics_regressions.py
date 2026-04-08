@@ -958,6 +958,80 @@ def test_manuscript_writer_aligns_output_path_with_bound_task_contract(
     assert "manuscript/methods/data_preprocessing.md" in kwargs.get("task", "")
 
 
+def test_manuscript_writer_defaults_to_session_draft_for_non_paper_bound_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+    agent._current_user_message = "请基于现有输出整合生成最终论文草稿，不要查文献。"
+
+    task_node = PlanNode(
+        id=81,
+        plan_id=68,
+        name="任务合并优化-报告生成",
+        status="pending",
+        metadata={
+            "acceptance_criteria": {
+                "category": "analysis",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_nonempty", "path": "qc_report/comprehensive_qc_report.md"},
+                ],
+            },
+        },
+    )
+    tree = PlanTree(
+        id=68,
+        title="Plan 68",
+        nodes={81: task_node},
+        adjacency={None: [81], 81: []},
+    )
+
+    class _Repo:
+        def get_plan_tree(self, plan_id: int) -> PlanTree:
+            assert plan_id == 68
+            return tree
+
+    agent.plan_session = SimpleNamespace(plan_id=68, repo=_Repo())
+    agent.plan_tree = tree
+    agent.extra_context = {"current_task_id": 81}
+    agent._sync_task_status_after_tool_execution = lambda **_kwargs: None
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+    monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        captured["name"] = name
+        captured["kwargs"] = kwargs
+        return {
+            "success": True,
+            "tool": "manuscript_writer",
+            "output_path": kwargs.get("output_path"),
+        }
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(action_handlers_module, "execute_tool", _fake_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="manuscript_writer",
+        parameters={},
+        order=1,
+    )
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is True
+    assert captured["name"] == "manuscript_writer"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("output_path") == "manuscript/manuscript_draft.md"
+    assert "最终论文草稿" in kwargs.get("task", "")
+    assert kwargs.get("draft_only") is True
+
+
 def test_deliverable_submit_forwards_session_id_and_uses_publish_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

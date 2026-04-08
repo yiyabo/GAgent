@@ -1,70 +1,32 @@
-# Core analysis stack
-numpy==1.26.4
-pandas==2.2.3
-scipy==1.14.1
-matplotlib==3.9.4
-seaborn==0.13.2
-scikit-learn==1.5.2
-statsmodels==0.14.6
-networkx==3.4.2
-umap-learn==0.5.7
-pynndescent==0.5.13
-numba==0.59.1
-llvmlite==0.42.0
-
-# Data I/O and file-format support
-h5py==3.12.1
-tables==3.10.1
-pyarrow==18.1.0
-openpyxl==3.1.5
-xlrd==2.0.1
-loompy==3.0.8
-
-# General bioinformatics utilities
-biopython==1.84
-pysam==0.23.3
-pyfaidx==0.9.0.4
-pyBigWig==0.3.24
-pybedtools==0.11.0
-pyranges==0.1.4
-biom-format==2.1.16
-pybiomart==0.2.0
-HTSeq==2.0.9
-vcfpy==0.13.8
-dna-features-viewer==3.1.5
-mygene==3.2.2
-goatools==1.6.4
-gseapy==1.1.13
-pydeseq2==0.4.12
-cutadapt==4.9
-cooler==0.10.4
+# Pip-only supplement to the micromamba base environment.
+# Keep this file for the long-tail bio/single-cell packages that are either
+# absent from conda-forge or easier to pin from PyPI.
+annoy==1.17.3
+bbknn==1.6.0
 bioframe==0.8.0
 biotite==0.41.2
-pycirclize==1.10.1
+celltypist==1.7.1
+cooler==0.10.4
+cutadapt==4.9
+decoupler==1.6.0
+dna-features-viewer==3.1.5
+goatools==1.6.4
+gseapy==1.1.13
+harmonypy==0.0.10
+HTSeq==2.0.9
+multiqc==1.25
+mygene==3.2.2
 primer3-py==2.2.0
+pycirclize==1.10.1
+pybedtools==0.11.0
+pyBigWig==0.3.24
+pybiomart==0.2.0
+pydeseq2==0.4.12
+pyfaidx==0.9.0.4
 pyfastx==2.2.0
+pyranges==0.1.4
+pysam==0.23.3
+scanorama==1.7.4
+vcfpy==0.13.8
 biopandas==0.5.1
 pysradb==2.4.1
-multiqc==1.25
-
-# Single-cell analysis stack
-scanpy==1.10.4
-anndata==0.10.9
-harmonypy==0.0.10
-bbknn==1.6.0
-igraph==0.11.9
-leidenalg==0.10.2
-louvain==0.8.2
-scikit-misc==0.5.1
-scanorama==1.7.4
-dask[array]==2024.7.1
-decoupler==1.6.0
-celltypist==1.7.1
-mudata==0.3.1
-muon==0.1.7
-
-# Explicit scrublet runtime/build deps. Installing these ahead of scrublet
-# avoids slow resolver backtracking during the image build.
-cython==3.0.12
-scikit-image==0.25.2
-annoy==1.17.3

@@ -641,18 +641,19 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "function": {
             "name": "result_interpreter",
             "description": (
-                "Data analysis and result interpretation tool. Analyzes CSV, TSV, MAT, NPY "
-                "data files by generating and executing Python code."
+                "Data analysis and result interpretation tool. Supports lightweight metadata/profile "
+                "inspection plus code-backed analysis for CSV, TSV, MAT, NPY, H5AD, and TXT helper files."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["metadata", "generate", "execute", "analyze", "plan_analyze"],
+                        "enum": ["metadata", "profile", "generate", "execute", "analyze", "plan_analyze"],
                         "description": (
-                            "Analysis operation. 'analyze' is the full pipeline; "
-                            "'metadata' for schema peek; 'plan_analyze' for plan-linked workflows."
+                            "Analysis operation. 'profile' is the deterministic dataset-overview path; "
+                            "'analyze' is the full pipeline; 'metadata' is a schema peek; "
+                            "'plan_analyze' is for plan-linked workflows."
                         ),
                     },
                     "file_paths": {
@@ -662,7 +663,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     },
                     "file_path": {
                         "type": "string",
-                        "description": "Single file path (for metadata operation).",
+                        "description": "Single file path (for metadata/profile operations).",
                     },
                     "task_title": {
                         "type": "string",
@@ -743,6 +744,10 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     "keep_workspace": {
                         "type": "boolean",
                         "description": "Whether to keep intermediate drafting workspace artifacts.",
+                    },
+                    "draft_only": {
+                        "type": "boolean",
+                        "description": "Assemble a lightweight local draft without the full staged evaluation and polish pipeline.",
                     },
                 },
                 "required": ["task", "output_path"],

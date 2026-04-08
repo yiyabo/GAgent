@@ -732,6 +732,82 @@ def test_publish_blocked_review_pack_writer_only_exposes_release_summary(tmp_pat
     assert report.public_release_ready is False
 
 
+def test_publish_draft_manuscript_uses_bio_profile_and_filters_placeholder_sections(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    section_dir = tmp_path / "workspace" / ".manuscript_draft_sections"
+    output_file = tmp_path / "workspace" / "manuscript_draft.md"
+    analysis_file = tmp_path / "workspace" / "manuscript_draft.md.analysis.md"
+    method_file = section_dir / "03_method.md"
+    result_file = section_dir / "04_result.md"
+
+    section_dir.mkdir(parents=True, exist_ok=True)
+    method_file.write_text("Methods text grounded in completed task outputs.\n", encoding="utf-8")
+    result_file.write_text("Results text grounded in completed task outputs.\n", encoding="utf-8")
+    output_file.write_text("# Draft\n\nMethods and results.\n", encoding="utf-8")
+    analysis_file.write_text("# Analysis\n\nDraft assembly notes.\n", encoding="utf-8")
+
+    report = publisher.publish_from_tool_result(
+        session_id="session_draft_profile001",
+        tool_name="manuscript_writer",
+        raw_result={
+            "tool": "manuscript_writer",
+            "success": True,
+            "draft_only": True,
+            "public_release_ready": False,
+            "release_state": "draft",
+            "release_summary": "Local manuscript draft assembled from completed outputs.",
+            "section_profile": "bio_manuscript",
+            "applicable_sections": [
+                "abstract",
+                "introduction",
+                "method",
+                "result",
+                "discussion",
+                "conclusion",
+            ],
+            "completed_sections": ["method", "result"],
+            "missing_sections": ["abstract", "introduction", "discussion", "conclusion"],
+            "sections": [
+                {"section": "method", "path": str(method_file), "substantive": True},
+                {"section": "result", "path": str(result_file), "substantive": True},
+            ],
+            "output_path": str(output_file),
+            "analysis_path": str(analysis_file),
+        },
+        summary="draft manuscript",
+        task_name="Assemble ovarian cancer manuscript draft",
+    )
+
+    assert report is not None
+    latest_root = tmp_path / "runtime" / "session_draft_profile001" / "deliverables" / "latest"
+    manifest = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    item_paths = {str(item["path"]) for item in manifest["items"]}
+
+    assert report.release_state == "draft"
+    assert report.public_release_ready is False
+    assert report.paper_status["section_profile"] == "bio_manuscript"
+    assert report.paper_status["applicable_sections"] == [
+        "abstract",
+        "introduction",
+        "method",
+        "result",
+        "discussion",
+        "conclusion",
+    ]
+    assert report.paper_status["completed_count"] == 2
+    assert report.paper_status["completed_sections"] == ["method", "result"]
+    assert "abstract" in report.paper_status["missing_sections"]
+    assert "paper/sections/method.tex" in item_paths
+    assert "paper/sections/result.tex" in item_paths
+    assert "paper/sections/abstract.tex" not in item_paths
+    assert "paper/sections/experiment.tex" not in item_paths
+    assert "refs/references.bib" not in item_paths
+    assert "docs/report.md" in item_paths
+    assert "docs/analysis.md" in item_paths
+    assert (latest_root / "paper" / "sections" / "method.tex").exists()
+    assert (latest_root / "paper" / "sections" / "result.tex").exists()
+
+
 def test_publish_blocked_manuscript_run_clears_previous_public_paper_outputs(tmp_path: Path):
     publisher = _build_publisher(tmp_path)
     section_file = tmp_path / "workspace" / "sections" / "01_abstract.md"
