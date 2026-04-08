@@ -29,7 +29,7 @@ class SearchSettings:
 
     qwen_api_key: Optional[str] = None
     qwen_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-    qwen_model: str = "qwen3.5-plus"
+    qwen_model: str = "qwen3.6-plus"
     # OpenAI-compatible Responses API (DashScope / Model Studio web_search tool), see:
     # https://help.aliyun.com/zh/model-studio/web-search
     qwen_responses_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
@@ -76,7 +76,7 @@ def get_search_settings() -> SearchSettings:
 
     qwen_api_key = _env("QWEN_API_KEY")
     qwen_api_url = _env("QWEN_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
-    qwen_model = _env("QWEN_MODEL", "qwen3.5-plus")
+    qwen_model = _env("QWEN_MODEL", "qwen3.6-plus")
     qwen_responses_api_url = _env("QWEN_RESPONSES_API_URL")
     if not qwen_responses_api_url:
         qwen_responses_api_url = _derive_responses_url_from_chat_url(
@@ -123,7 +123,7 @@ def get_search_settings() -> SearchSettings:
         builtin_provider=builtin_provider or "qwen",
         qwen_api_key=qwen_api_key,
         qwen_api_url=qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        qwen_model=qwen_model or "qwen3.5-plus",
+        qwen_model=qwen_model or "qwen3.6-plus",
         qwen_responses_api_url=qwen_responses_api_url
         or "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
         qwen_responses_model=qwen_responses_model or None,

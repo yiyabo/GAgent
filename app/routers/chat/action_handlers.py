@@ -57,6 +57,7 @@ from app.services.upload_storage import delete_session_storage
 from app.services.tool_output_storage import store_tool_output
 from tool_box import execute_tool
 
+from .guardrails import explicit_manuscript_request, local_manuscript_assembly_request
 from .models import AgentStep, AgentResult
 from .artifact_gallery import (
     extract_artifact_gallery_from_result,
@@ -172,12 +173,22 @@ def _align_manuscript_writer_params_with_bound_task(agent: Any, params: Dict[str
 
     aligned = dict(params)
     metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
+    paper_meta = node.paper_metadata() if hasattr(node, "paper_metadata") else None
+    acceptance = metadata.get("acceptance_criteria") if isinstance(metadata, dict) else None
+    acceptance_category = (
+        str(acceptance.get("category") or "").strip().lower()
+        if isinstance(acceptance, dict)
+        else ""
+    )
     paper_mode = bool(
         metadata.get("paper_mode")
-        or metadata.get("paper_section")
-        or metadata.get("paper_role")
-        or metadata.get("paper_context_paths")
+        or getattr(paper_meta, "paper_section", None)
+        or getattr(paper_meta, "paper_role", None)
+        or getattr(paper_meta, "paper_context_paths", None)
+        or acceptance_category == "paper"
     )
+    if not paper_mode:
+        return aligned
 
     context_paths = aligned.get("context_paths") or []
     if isinstance(context_paths, str):
@@ -190,7 +201,11 @@ def _align_manuscript_writer_params_with_bound_task(agent: Any, params: Dict[str
     for item in context_paths:
         _append_unique_text(merged_context_paths, seen_paths, item)
 
-    raw_paper_context_paths = metadata.get("paper_context_paths")
+    raw_paper_context_paths = (
+        list(getattr(paper_meta, "paper_context_paths", []) or [])
+        if paper_meta is not None
+        else metadata.get("paper_context_paths")
+    )
     if isinstance(raw_paper_context_paths, list):
         for item in raw_paper_context_paths:
             _append_unique_text(merged_context_paths, seen_paths, item)
@@ -220,15 +235,25 @@ def _align_manuscript_writer_params_with_bound_task(agent: Any, params: Dict[str
     ]
     if len(expected_outputs) == 1:
         canonical_output = expected_outputs[0]
-        if paper_mode and not canonical_output.startswith("manuscript/"):
+        if not canonical_output.startswith("manuscript/"):
             canonical_output = f"manuscript/{canonical_output}"
         aligned["output_path"] = canonical_output
 
-    paper_section = str(metadata.get("paper_section") or "").strip().lower()
+    paper_section = str(
+        getattr(paper_meta, "paper_section", None) or metadata.get("paper_section") or ""
+    ).strip().lower()
     if paper_section and not aligned.get("sections"):
         aligned["sections"] = [paper_section]
 
     task_text = str(aligned.get("task") or "").strip()
+    if not task_text:
+        fallback_task = (
+            str(getattr(node, "instruction", "") or "").strip()
+            or str(getattr(node, "name", "") or "").strip()
+        )
+        if fallback_task:
+            aligned["task"] = fallback_task
+            task_text = fallback_task
     grounding_requirements: List[str] = []
     if paper_section:
         grounding_requirements.append(f"Focus only on the {paper_section} section.")
@@ -1711,9 +1736,22 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         params = clean_params
 
     elif tool_name == "manuscript_writer":
+        raw_action_params = action.parameters if isinstance(action.parameters, dict) else {}
+        params = _align_manuscript_writer_params_with_bound_task(agent, dict(params))
+        user_message = str(getattr(agent, "_current_user_message", "") or "").strip()
+        local_manuscript_request = local_manuscript_assembly_request(
+            user_message,
+            plan_bound=getattr(getattr(agent, "plan_session", None), "plan_id", None) is not None,
+            task_bound=(getattr(agent, "extra_context", {}) or {}).get("current_task_id") is not None,
+        )
+        if explicit_manuscript_request(user_message):
+            if not isinstance(params.get("task"), str) or not str(params.get("task") or "").strip():
+                params["task"] = user_message
+            if not isinstance(params.get("output_path"), str) or not str(params.get("output_path") or "").strip():
+                params["output_path"] = "manuscript/manuscript_draft.md"
+        aligned_params = dict(params)
         task_value = params.get("task")
         output_path = params.get("output_path")
-        raw_action_params = action.parameters if isinstance(action.parameters, dict) else {}
         if not isinstance(task_value, str) or not task_value.strip():
             return AgentStep(
                 action=action,
@@ -1729,17 +1767,17 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 details={"error": "missing_output_path", "tool": tool_name},
             )
 
-        context_paths = params.get("context_paths") or []
+        context_paths = aligned_params.get("context_paths") or []
         if isinstance(context_paths, str):
             context_paths = [context_paths]
         if not isinstance(context_paths, list):
             context_paths = []
 
-        analysis_path = params.get("analysis_path")
+        analysis_path = aligned_params.get("analysis_path")
         if analysis_path is not None and not isinstance(analysis_path, str):
             analysis_path = str(analysis_path)
 
-        max_context_bytes = params.get("max_context_bytes")
+        max_context_bytes = aligned_params.get("max_context_bytes")
         if max_context_bytes is not None:
             try:
                 max_context_bytes = int(max_context_bytes)
@@ -1758,7 +1796,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         if params.get("context_paths") is None:
             params["context_paths"] = []
 
-        sections = params.get("sections")
+        sections = aligned_params.get("sections")
         if sections is None:
             sections = raw_action_params.get("sections")
         if isinstance(sections, str):
@@ -1796,8 +1834,11 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         keep_workspace = raw_action_params.get("keep_workspace")
         if isinstance(keep_workspace, bool):
             params["keep_workspace"] = keep_workspace
-
-        params = _align_manuscript_writer_params_with_bound_task(agent, params)
+        draft_only = raw_action_params.get("draft_only")
+        if local_manuscript_request and not isinstance(draft_only, bool):
+            draft_only = True
+        if isinstance(draft_only, bool):
+            params["draft_only"] = draft_only
 
         if agent.session_id:
             params["session_id"] = agent.session_id
@@ -1929,7 +1970,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 details={"error": "missing_operation", "tool": tool_name},
             )
         operation = operation.strip()
-        valid_ops = {"metadata", "generate", "execute", "analyze", "plan_analyze"}
+        valid_ops = {"metadata", "profile", "generate", "execute", "analyze", "plan_analyze"}
         if operation not in valid_ops:
             return AgentStep(
                 action=action,
@@ -2766,7 +2807,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
                 evaluate_plan_rubric,
                 tree,
                 evaluator_provider="qwen",
-                evaluator_model="qwen3.5-plus",
+                evaluator_model="qwen3.6-plus",
             )
         except Exception as exc:
             logger.warning("review_plan rubric evaluation failed: %s", exc)

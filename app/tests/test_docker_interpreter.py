@@ -231,3 +231,65 @@ def test_run_file_uses_host_network_for_loopback_proxy(
     assert kwargs["environment"]["NO_PROXY"] == "localhost,127.0.0.1"
     assert kwargs["network_mode"] == "host"
     assert "network_disabled" not in kwargs
+
+
+def test_run_file_falls_back_to_docker_cli_when_sdk_client_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    work_dir = tmp_path / "session" / "run"
+    data_dir = tmp_path / "data"
+    for path in (work_dir, data_dir):
+        path.mkdir(parents=True, exist_ok=True)
+    code_file = work_dir / "task_code.py"
+    code_file.write_text("print('ok')", encoding="utf-8")
+
+    commands = []
+
+    def _mock_run(cmd, capture_output=False, text=False, check=False, timeout=None):
+        commands.append((list(cmd), timeout))
+        # Image availability check now uses `docker images -q`
+        if cmd[:3] == ["/usr/bin/docker", "images", "-q"]:
+            return docker_interpreter_module.subprocess.CompletedProcess(
+                cmd, 0, stdout="abc123\n", stderr=""
+            )
+        # Platform detection via `docker image inspect --format`
+        if cmd[:3] == ["/usr/bin/docker", "image", "inspect"]:
+            return docker_interpreter_module.subprocess.CompletedProcess(
+                cmd, 0, stdout="linux/amd64\n", stderr=""
+            )
+        if cmd[:2] == ["/usr/bin/docker", "run"]:
+            return docker_interpreter_module.subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="ok\n",
+                stderr=(
+                    "WARNING: The requested image's platform (linux/amd64) does not match "
+                    "the detected host platform (linux/arm64/v8) and no specific platform was requested\n"
+                ),
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(docker_interpreter_module.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(docker_interpreter_module.subprocess, "run", _mock_run)
+
+    interpreter = DockerCodeInterpreter(
+        image="custom:image",
+        work_dir=str(work_dir),
+        data_dir=str(data_dir),
+    )
+    interpreter.client = None
+    interpreter.client_error = "sdk unavailable"
+
+    result = interpreter.run_file(str(code_file))
+
+    assert result.status == "success"
+    assert result.error == ""
+    assert commands[0][0] == ["/usr/bin/docker", "images", "-q", "custom:image"]
+    # Find the actual `docker run` command (may be preceded by platform detection)
+    run_cmd = next(c for c, _ in commands if c[:2] == ["/usr/bin/docker", "run"])
+    assert "--platform" in run_cmd
+    assert "linux/amd64" in run_cmd
+    assert str(work_dir) in run_cmd
+    assert "custom:image" in run_cmd
+    assert f"{work_dir}:{work_dir}:rw" in run_cmd

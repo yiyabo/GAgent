@@ -276,6 +276,7 @@ Working directory: {work_dir}
         result = await code_executor_handler(
             task=task,
             add_dirs=add_dirs,
+            docker_image=request.docker_image,
             auth_mode="api_env",
             setting_sources="project",
             require_task_context=False,
@@ -346,6 +347,7 @@ async def run_analysis(request: AnalyzeRequest):
         executor = TaskExecutor(
             data_file_paths=effective_paths,
             output_dir=work_dir,
+            docker_image=request.docker_image,
         )
 
         result = await executor.execute(
@@ -398,6 +400,8 @@ def run_plan_analysis_endpoint(request: PlanAnalyzeRequest):
             output_dir=request.output_dir or "./results",
             max_depth=request.max_depth,
             node_budget=request.node_budget,
+            docker_image=request.docker_image,
+            docker_timeout=request.docker_timeout,
         )
 
         return PlanAnalyzeResponse(

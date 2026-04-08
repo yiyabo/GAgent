@@ -11,6 +11,7 @@ import re
 import threading
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
@@ -53,6 +54,18 @@ from tool_box import execute_tool
 _DEEP_THINK_MAX_ITER_DEFAULT = 64
 _DEEP_THINK_MAX_ITER_CAP = 128
 _READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
+_MANUSCRIPT_CONTEXT_EXTENSIONS = {
+    ".md",
+    ".txt",
+    ".csv",
+    ".tsv",
+    ".json",
+    ".jsonl",
+    ".yaml",
+    ".yml",
+    ".bib",
+}
+_MANUSCRIPT_CONTEXT_ROOT = Path(__file__).resolve().parents[3]
 # Tools that only observe / retrieve information and must NOT trigger task-status
 # sync regardless of their success flag.  Adding web_search / graph_rag /
 # literature_pipeline here prevents a failed search from flipping a task to
@@ -124,6 +137,123 @@ def _should_auto_sync_task_status(
 
     operation = str(params.get("operation") or "").strip().lower()
     return operation not in _READ_ONLY_FILE_OPERATIONS
+
+
+def _task_supports_paper_writing(node: Any) -> bool:
+    metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
+    paper_meta = node.paper_metadata() if hasattr(node, "paper_metadata") else None
+    acceptance = metadata.get("acceptance_criteria") if isinstance(metadata, dict) else None
+    acceptance_category = (
+        str(acceptance.get("category") or "").strip().lower()
+        if isinstance(acceptance, dict)
+        else ""
+    )
+    return bool(
+        metadata.get("paper_mode")
+        or getattr(paper_meta, "paper_section", None)
+        or getattr(paper_meta, "paper_role", None)
+        or getattr(paper_meta, "paper_context_paths", None)
+        or acceptance_category == "paper"
+    )
+
+
+def _looks_like_manuscript_context_file(path: Any) -> bool:
+    text = str(path or "").strip()
+    if not text or text.endswith("/"):
+        return False
+    if any(token in text for token in ("*", "?", "[", "]")):
+        return False
+    _root, ext = os.path.splitext(text.replace("\\", "/"))
+    return ext.lower() in _MANUSCRIPT_CONTEXT_EXTENSIONS
+
+
+def _manuscript_context_exists(path: Any) -> bool:
+    text = str(path or "").strip()
+    if not text:
+        return False
+    try:
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            candidate = (_MANUSCRIPT_CONTEXT_ROOT / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+    except Exception:
+        return False
+    return candidate.is_file()
+
+
+def _collect_completed_manuscript_context_paths(
+    plan_tree: Any,
+    *,
+    current_task_id: Optional[int],
+    max_paths: int = 24,
+) -> List[str]:
+    if plan_tree is None or not hasattr(plan_tree, "nodes"):
+        return []
+
+    ranked: List[Tuple[int, int, int, int, str]] = []
+    seen: set[str] = set()
+
+    for node in plan_tree.nodes.values():
+        node_id = getattr(node, "id", None)
+        if current_task_id is not None and node_id == current_task_id:
+            continue
+        status = str(getattr(node, "status", "") or "").strip().lower()
+        if status not in {"completed", "done", "success"}:
+            continue
+
+        metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
+        paper_meta = node.paper_metadata() if hasattr(node, "paper_metadata") else None
+        candidate_paths: List[str] = []
+
+        raw_paper_context_paths = (
+            list(getattr(paper_meta, "paper_context_paths", []) or [])
+            if paper_meta is not None
+            else metadata.get("paper_context_paths")
+        )
+        if isinstance(raw_paper_context_paths, list):
+            for item in raw_paper_context_paths:
+                text = str(item or "").strip()
+                if text:
+                    candidate_paths.append(text)
+
+        acceptance = metadata.get("acceptance_criteria") if isinstance(metadata, dict) else None
+        checks = acceptance.get("checks") if isinstance(acceptance, dict) else None
+        if isinstance(checks, list):
+            for check in checks:
+                if not isinstance(check, dict):
+                    continue
+                for key in ("path", "glob"):
+                    text = str(check.get(key) or "").strip()
+                    if text:
+                        candidate_paths.append(text)
+
+        try:
+            candidate_paths.extend(_extract_task_artifact_paths_fn(node))
+        except Exception:
+            pass
+
+        paper_priority = 0 if _task_supports_paper_writing(node) else 1
+        for raw_path in candidate_paths:
+            text = str(raw_path or "").strip()
+            if not _looks_like_manuscript_context_file(text) or text in seen:
+                continue
+            seen.add(text)
+            lowered = text.replace("\\", "/").lower()
+            path_priority = 0
+            if "/manuscript/" in lowered or lowered.startswith("manuscript/"):
+                path_priority = 0
+            elif lowered.endswith(".md"):
+                path_priority = 1
+            elif lowered.endswith(".bib"):
+                path_priority = 2
+            else:
+                path_priority = 3
+            exists_priority = 0 if _manuscript_context_exists(text) else 1
+            ranked.append((paper_priority, exists_priority, path_priority, -(int(node_id or 0)), text))
+
+    ranked.sort()
+    return [path for *_meta, path in ranked[:max_paths]]
 
 
 def _build_deep_think_task_context(
@@ -367,6 +497,7 @@ from .guardrails import (
     is_generic_plan_confirmation as _is_generic_plan_confirmation_fn,
     is_status_query_only as _is_status_query_only_fn,
     is_task_executable_status as _is_task_executable_status_fn,
+    local_manuscript_assembly_request as _local_manuscript_assembly_request_fn,
     looks_like_completion_claim as _looks_like_completion_claim_fn,
     reply_promises_execution as _reply_promises_execution_fn,
     should_force_plan_first as _should_force_plan_first_fn,
@@ -1189,6 +1320,98 @@ class StructuredChatAgent:
         structured = self._apply_task_execution_followthrough_guardrail(structured)
         return self._apply_completion_claim_guardrail(structured)
 
+    def _build_deterministic_local_manuscript_structured(
+        self,
+        user_message: str,
+    ) -> Optional[LLMStructuredResponse]:
+        request_tier = str(self.extra_context.get("request_tier") or "").strip().lower()
+        intent_type = str(self.extra_context.get("intent_type") or "").strip().lower()
+        if request_tier != "execute" or intent_type != "execute_task":
+            return None
+        if self.plan_session.plan_id is None:
+            return None
+        if bool(self.extra_context.get("requires_structured_plan")):
+            return None
+        if not _local_manuscript_assembly_request_fn(
+            user_message,
+            plan_bound=True,
+        ):
+            return None
+
+        raw_task_id = self.extra_context.get("current_task_id")
+        try:
+            task_id = int(raw_task_id) if raw_task_id is not None else None
+        except (TypeError, ValueError):
+            task_id = None
+
+        tree = getattr(self, "plan_tree", None)
+        if tree is None or (
+            task_id is not None and not getattr(tree, "has_node", lambda *_: False)(task_id)
+        ):
+            try:
+                tree = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id)
+            except Exception:
+                tree = None
+        if tree is None:
+            return None
+
+        current_node = None
+        if task_id is not None and getattr(tree, "has_node", lambda *_: False)(task_id):
+            try:
+                current_node = tree.get_node(task_id)
+            except Exception:
+                current_node = None
+
+        if current_node is not None and _task_supports_paper_writing(current_node):
+            return None
+
+        context_paths = _collect_completed_manuscript_context_paths(
+            tree,
+            current_task_id=task_id,
+            max_paths=12,
+        )
+        language = detect_reasoning_language(user_message)
+        reply_text = (
+            "我会基于已完成任务的现有产物直接整合本地论文草稿。"
+            if language == "zh"
+            else "I will assemble a local manuscript draft directly from the completed task outputs."
+        )
+        params: Dict[str, Any] = {
+            "task": str(user_message or "").strip(),
+            "output_path": "manuscript/manuscript_draft.md",
+            "draft_only": True,
+        }
+        if context_paths:
+            params["context_paths"] = context_paths
+
+        metadata: Dict[str, Any] = {
+            "origin": "local_manuscript_assembly_shortcut",
+        }
+        if task_id is not None:
+            metadata["bound_task_id"] = task_id
+
+        logger.info(
+            "[CHAT][ROUTING][MANUSCRIPT_SHORTCUT] plan_id=%s current_task_id=%s context_paths=%s",
+            self.plan_session.plan_id,
+            task_id,
+            len(context_paths),
+        )
+        return LLMStructuredResponse.model_validate(
+            {
+                "llm_reply": {"message": reply_text},
+                "actions": [
+                    {
+                        "kind": "tool_operation",
+                        "name": "manuscript_writer",
+                        "parameters": params,
+                        "order": 1,
+                        "blocking": True,
+                        "metadata": metadata,
+                    }
+                ],
+            }
+        )
+
     def _build_deterministic_execute_task_structured(self) -> Optional[LLMStructuredResponse]:
         request_tier = str(self.extra_context.get("request_tier") or "").strip().lower()
         intent_type = str(self.extra_context.get("intent_type") or "").strip().lower()
@@ -1554,6 +1777,13 @@ class StructuredChatAgent:
                     "[TASK_SYNC] Failed to load plan tree for verification context: %s",
                     tree_err,
                 )
+
+            if tool_name in {"manuscript_writer", "review_pack_writer"} and not _task_supports_paper_writing(node):
+                logger.info(
+                    "[TASK_SYNC] Skipping task status sync for non-paper %s execution",
+                    tool_name,
+                )
+                return
 
             payload_metadata: Dict[str, Any] = {"tool_name": tool_name}
             if isinstance(extra_metadata, dict):
@@ -1949,6 +2179,224 @@ class StructuredChatAgent:
             if event_sink is not None:
                 await event_sink(payload)
             yield _sse_message(payload)
+            return
+
+        deterministic_manuscript = self._build_deterministic_local_manuscript_structured(
+            effective_user_message
+        )
+        if deterministic_manuscript is not None:
+            async def _through_sink(payload: Dict[str, Any]) -> str:
+                if event_sink is not None:
+                    await event_sink(payload)
+                return _sse_message(payload)
+
+            if routing_decision.thinking_visibility == "progress":
+                label = (
+                    "整合已完成任务结果"
+                    if detect_reasoning_language(effective_user_message) == "zh"
+                    else "Assembling completed task outputs"
+                )
+                yield await _through_sink(
+                    {
+                        "type": "progress_status",
+                        "phase": "planning",
+                        "label": label,
+                        "status": "active",
+                    }
+                )
+
+            result = await self.execute_structured(deterministic_manuscript)
+            tool_results = [
+                {
+                    "name": step.action.name,
+                    "summary": step.details.get("summary"),
+                    "parameters": step.details.get("parameters"),
+                    "result": step.details.get("result"),
+                }
+                for step in result.steps
+                if step.action.kind == "tool_operation"
+            ]
+            response_text = str(result.reply or "").strip() or (
+                result.summarize_steps() or ""
+            )
+            shortcut_reply = str(
+                deterministic_manuscript.llm_reply.message or ""
+            ).strip()
+            manuscript_result = next(
+                (
+                    entry
+                    for entry in tool_results
+                    if entry.get("name") == "manuscript_writer"
+                    and isinstance(entry.get("result"), dict)
+                ),
+                None,
+            )
+            if manuscript_result is not None and (
+                not response_text or response_text == shortcut_reply
+            ):
+                result_payload = manuscript_result.get("result") or {}
+                parameter_payload = (
+                    manuscript_result.get("parameters")
+                    if isinstance(manuscript_result.get("parameters"), dict)
+                    else {}
+                )
+                summary_text = str(manuscript_result.get("summary") or "").strip()
+                output_path = str(
+                    result_payload.get("output_path")
+                    or result_payload.get("effective_output_path")
+                    or parameter_payload.get("output_path")
+                    or ""
+                ).strip()
+                analysis_path = str(
+                    result_payload.get("analysis_path")
+                    or result_payload.get("effective_analysis_path")
+                    or ""
+                ).strip()
+                if not analysis_path and output_path:
+                    analysis_path = f"{output_path}.analysis.md"
+                run_stats = (
+                    result_payload.get("run_stats")
+                    if isinstance(result_payload.get("run_stats"), dict)
+                    else {}
+                )
+                source_count = (
+                    int(run_stats.get("source_file_count"))
+                    if str(run_stats.get("source_file_count") or "").isdigit()
+                    else None
+                )
+                if source_count is None and isinstance(
+                    parameter_payload.get("context_paths"), list
+                ):
+                    source_count = len(
+                        [
+                            path
+                            for path in parameter_payload.get("context_paths", [])
+                            if isinstance(path, str) and path.strip()
+                        ]
+                    )
+                method_sources = (
+                    int(run_stats.get("method_sources"))
+                    if str(run_stats.get("method_sources") or "").isdigit()
+                    else None
+                )
+                result_sources = (
+                    int(run_stats.get("result_sources"))
+                    if str(run_stats.get("result_sources") or "").isdigit()
+                    else None
+                )
+                supplementary_sources = (
+                    int(run_stats.get("supplementary_sources"))
+                    if str(run_stats.get("supplementary_sources") or "").isdigit()
+                    else None
+                )
+                if detect_reasoning_language(effective_user_message) == "zh":
+                    lines = ["已完成本地论文草稿整合。", ""]
+                    if output_path:
+                        lines.append(f"- 草稿文件：`{output_path}`")
+                    if analysis_path:
+                        lines.append(f"- 分析备忘：`{analysis_path}`")
+                    if source_count is not None:
+                        counts_line = f"- 来源文件：{source_count} 个"
+                        detail_parts = []
+                        if method_sources is not None:
+                            detail_parts.append(f"Methods {method_sources}")
+                        if result_sources is not None:
+                            detail_parts.append(f"Results {result_sources}")
+                        if supplementary_sources is not None:
+                            detail_parts.append(f"Supplementary {supplementary_sources}")
+                        if detail_parts:
+                            counts_line += f"（{'，'.join(detail_parts)}）"
+                        lines.append(counts_line)
+                    lines.append("- 说明：直接复用已完成任务输出，未重新分析，也未额外检索文献。")
+                    if summary_text:
+                        lines.extend(["", f"> {summary_text}"])
+                else:
+                    lines = ["Completed the local manuscript draft assembly.", ""]
+                    if output_path:
+                        lines.append(f"- Draft: `{output_path}`")
+                    if analysis_path:
+                        lines.append(f"- Analysis memo: `{analysis_path}`")
+                    if source_count is not None:
+                        counts_line = f"- Source files used: {source_count}"
+                        detail_parts = []
+                        if method_sources is not None:
+                            detail_parts.append(f"Methods {method_sources}")
+                        if result_sources is not None:
+                            detail_parts.append(f"Results {result_sources}")
+                        if supplementary_sources is not None:
+                            detail_parts.append(
+                                f"Supplementary {supplementary_sources}"
+                            )
+                        if detail_parts:
+                            counts_line += f" ({', '.join(detail_parts)})"
+                        lines.append(counts_line)
+                    lines.append(
+                        "- Notes: reused completed task outputs directly without re-analysis or additional literature retrieval."
+                    )
+                    if summary_text:
+                        lines.extend(["", f"> {summary_text}"])
+                response_text = "\n".join(lines).strip()
+            if not response_text:
+                response_text = (
+                    "已完成本地论文草稿整合。"
+                    if detect_reasoning_language(effective_user_message) == "zh"
+                    else "Completed the local manuscript draft assembly."
+                )
+            resolved_plan_id = result.bound_plan_id or self.plan_session.plan_id
+            metadata_payload: Dict[str, Any] = {
+                "plan_id": resolved_plan_id,
+                "plan_outline": result.plan_outline,
+                "plan_persisted": result.plan_persisted,
+                "success": result.success,
+                "errors": result.errors,
+                "status": "completed" if result.success else "failed",
+                "analysis_text": response_text,
+                "final_summary": response_text,
+                "shortcut_used": "local_manuscript_assembly",
+                "raw_actions": [step.action.model_dump() for step in result.steps],
+                **routing_decision.metadata(),
+            }
+            if tool_results:
+                metadata_payload["tool_results"] = [
+                    entry
+                    for entry in tool_results
+                    if entry and isinstance(entry.get("result"), dict)
+                ]
+            if result.actions_summary:
+                metadata_payload["actions_summary"] = result.actions_summary
+            if result.job_id:
+                metadata_payload["job_id"] = result.job_id
+                metadata_payload["job_type"] = result.job_type or "chat_action"
+
+            if self.session_id and response_text:
+                try:
+                    _persist_runtime_context(self)
+                    save_metadata = dict(metadata_payload)
+                    save_metadata["analysis_text"] = response_text
+                    save_metadata["final_summary"] = response_text
+                    _save_chat_message(
+                        self.session_id,
+                        "assistant",
+                        response_text,
+                        metadata=save_metadata,
+                    )
+                except Exception as save_err:  # pragma: no cover - defensive
+                    logger.warning(
+                        "[CHAT][MANUSCRIPT_SHORTCUT] Failed to save response: %s",
+                        save_err,
+                    )
+
+            yield await _through_sink(
+                {
+                    "type": "final",
+                    "payload": {
+                        "response": response_text,
+                        "llm_reply": {"message": response_text},
+                        "actions": [step.action_payload for step in result.steps],
+                        "metadata": metadata_payload,
+                    },
+                }
+            )
             return
 
         if (
@@ -3240,7 +3688,7 @@ class StructuredChatAgent:
                                 None,
                                 current_turn_artifact_gallery,
                             )
-                        if thinking_visible:
+                        if thinking_visible or progress_visible:
                             metadata_payload["thinking_process"] = {
                                 "status": "completed",
                                 "total_iterations": res.total_iterations,
@@ -3618,6 +4066,9 @@ class StructuredChatAgent:
     async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
         self._current_user_message = user_message
         deterministic = self._build_deterministic_execute_task_structured()
+        if deterministic is not None:
+            return deterministic
+        deterministic = self._build_deterministic_local_manuscript_structured(user_message)
         if deterministic is not None:
             return deterministic
         prompt = self._build_prompt(user_message)

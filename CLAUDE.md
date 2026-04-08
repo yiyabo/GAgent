@@ -52,6 +52,8 @@ cd web-ui && npm run test                   # Frontend tests
 cd web-ui && npm run lint && npm run type-check
 ```
 
+> **⚠️ 重启规则（必须遵守）：** 任何需要重启后端/前端的场景，**一律使用 `./scripts/start_all.sh`**，禁止手动执行 `uvicorn` 或其他方式启动。该脚本会自动 stop → sync skills → health check → 启动后端+前端。
+
 ---
 
 ## 2. Project Layout

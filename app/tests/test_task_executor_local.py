@@ -31,9 +31,10 @@ def _run(coro):
 
 
 @pytest.fixture(autouse=True)
-def _clear_settings_cache():
+def _clear_settings_cache(monkeypatch: pytest.MonkeyPatch):
     """Clear lru_cache on executor settings to avoid cross-test pollution."""
     from app.config.executor_config import get_executor_settings
+    monkeypatch.setenv("CODE_EXECUTOR_LOCAL_RUNTIME", "host")
     get_executor_settings.cache_clear()
     yield
     get_executor_settings.cache_clear()
@@ -682,6 +683,98 @@ def test_backend_switch_to_qwen_code(make_executor, monkeypatch):
     assert result.success is True
 
 
+def test_local_execution_uses_docker_runtime_from_settings(make_executor, monkeypatch):
+    executor = make_executor()
+    captured = {}
+
+    monkeypatch.setattr(
+        "app.services.interpreter.task_executer.get_executor_settings",
+        lambda: MagicMock(
+            code_execution_backend="local",
+            code_execution_local_runtime="docker",
+            code_execution_docker_image="gagent-python-runtime:latest",
+            code_execution_timeout=321,
+        ),
+    )
+
+    async def _fake_execute_code_locally(**kwargs):
+        captured.update(kwargs)
+        return CodeExecutionOutcome(
+            success=True,
+            code="print('ok')",
+            description="docker runtime",
+            stdout="ok\n",
+            attempts=1,
+            execution_backend="docker",
+            execution_status="completed",
+        )
+
+    monkeypatch.setattr(
+        "app.services.interpreter.task_executer.execute_code_locally",
+        _fake_execute_code_locally,
+    )
+
+    result = _run(executor._execute_code_task_local(
+        task_title="test",
+        task_description="use docker runtime",
+    ))
+
+    assert result.success is True
+    assert captured["execution_backend"] == "docker"
+    assert captured["docker_image"] == "gagent-python-runtime:latest"
+    assert captured["timeout"] == 321
+
+
+def test_local_execution_prefers_explicit_docker_overrides(tmp_path: Path, tmp_data_file: Path, monkeypatch):
+    llm = MagicMock()
+    llm.chat = MagicMock(return_value="mocked")
+    executor = TaskExecutor(
+        data_file_paths=[str(tmp_data_file)],
+        output_dir=str(tmp_path / "output"),
+        llm_service=llm,
+        docker_image="custom:image",
+        docker_timeout=900,
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        "app.services.interpreter.task_executer.get_executor_settings",
+        lambda: MagicMock(
+            code_execution_backend="local",
+            code_execution_local_runtime="docker",
+            code_execution_docker_image="gagent-python-runtime:latest",
+            code_execution_timeout=321,
+        ),
+    )
+
+    async def _fake_execute_code_locally(**kwargs):
+        captured.update(kwargs)
+        return CodeExecutionOutcome(
+            success=True,
+            code="print('ok')",
+            description="docker runtime",
+            stdout="ok\n",
+            attempts=1,
+            execution_backend="docker",
+            execution_status="completed",
+        )
+
+    monkeypatch.setattr(
+        "app.services.interpreter.task_executer.execute_code_locally",
+        _fake_execute_code_locally,
+    )
+
+    result = _run(executor._execute_code_task_local(
+        task_title="test",
+        task_description="use docker override",
+    ))
+
+    assert result.success is True
+    assert captured["execution_backend"] == "docker"
+    assert captured["docker_image"] == "custom:image"
+    assert captured["timeout"] == 900
+
+
 # ---------------------------------------------------------------------------
 # Persistent code file: verify file is written and retained
 # ---------------------------------------------------------------------------
@@ -1167,6 +1260,31 @@ def test_skill_context_content_is_injected(make_executor, monkeypatch):
 
     assert "Use seqkit for quick FASTA diagnostics." in hints
     assert trace["selected_skill_ids"] == ["bio-tools-router"]
+
+
+def test_execute_lightweight_overview_skips_llm_and_skill_selection(make_executor, monkeypatch):
+    executor = make_executor()
+
+    executor.llm_service.chat.side_effect = AssertionError("lightweight overview should not call LLM")
+
+    async def _unexpected_select_skills(**_kwargs):
+        raise AssertionError("lightweight overview should not select skills")
+
+    monkeypatch.setattr(executor, "_select_skills_for_task", _unexpected_select_skills)
+
+    result = _run(
+        executor.execute(
+            task_title="GVD Phage Dataset Overview",
+            task_description="Provide a quick overview of the TSV files: rows, columns, schema, and key fields.",
+        )
+    )
+
+    assert result.success is True
+    assert result.task_type == TaskType.TEXT_ONLY
+    assert result.text_response is not None
+    assert "Dataset overview based on extracted metadata" in result.text_response
+    assert "rows x" in result.text_response
+    assert result.skill_trace["selection_source"] == "skipped_lightweight_overview"
 
 
 # ---------------------------------------------------------------------------

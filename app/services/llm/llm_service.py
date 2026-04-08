@@ -54,16 +54,27 @@ class LLMService:
         Raises:
             RuntimeError: If all retry attempts fail
         """
-        for attempt in range(self._retry_attempts):
+        retry_attempts_override = kwargs.pop("retry_attempts", None)
+        retry_delay_override = kwargs.pop("retry_delay", None)
+        try:
+            retry_attempts = max(1, int(retry_attempts_override))
+        except (TypeError, ValueError):
+            retry_attempts = self._retry_attempts
+        try:
+            retry_delay = max(0.0, float(retry_delay_override))
+        except (TypeError, ValueError):
+            retry_delay = self._retry_delay
+
+        for attempt in range(retry_attempts):
             try:
                 return self._execute_chat(prompt, **kwargs)
             except Exception as e:
                 logger.warning(f"LLM chat attempt {attempt + 1} failed: {e}")
-                if attempt < self._retry_attempts - 1:
-                    time.sleep(self._retry_delay * (attempt + 1))
+                if attempt < retry_attempts - 1:
+                    time.sleep(retry_delay * (attempt + 1))
                 else:
                     logger.error(f"All LLM chat attempts failed for prompt: {prompt[:100]}...")
-                    raise RuntimeError(f"LLM chat failed after {self._retry_attempts} attempts: {e}")
+                    raise RuntimeError(f"LLM chat failed after {retry_attempts} attempts: {e}")
         
         # This should never be reached
         raise RuntimeError("Unexpected error in LLM chat")
@@ -82,16 +93,27 @@ class LLMService:
         Raises:
             RuntimeError: If all retry attempts fail
         """
-        for attempt in range(self._retry_attempts):
+        retry_attempts_override = kwargs.pop("retry_attempts", None)
+        retry_delay_override = kwargs.pop("retry_delay", None)
+        try:
+            retry_attempts = max(1, int(retry_attempts_override))
+        except (TypeError, ValueError):
+            retry_attempts = self._retry_attempts
+        try:
+            retry_delay = max(0.0, float(retry_delay_override))
+        except (TypeError, ValueError):
+            retry_delay = self._retry_delay
+
+        for attempt in range(retry_attempts):
             try:
                 return await self._execute_chat_async(prompt, **kwargs)
             except Exception as e:
                 logger.warning(f"Async LLM chat attempt {attempt + 1} failed: {e}")
-                if attempt < self._retry_attempts - 1:
-                    await asyncio.sleep(self._retry_delay * (attempt + 1))
+                if attempt < retry_attempts - 1:
+                    await asyncio.sleep(retry_delay * (attempt + 1))
                 else:
                     logger.error(f"All async LLM chat attempts failed for prompt: {prompt[:100]}...")
-                    raise RuntimeError(f"Async LLM chat failed after {self._retry_attempts} attempts: {e}")
+                    raise RuntimeError(f"Async LLM chat failed after {retry_attempts} attempts: {e}")
         
         # This should never be reached
         raise RuntimeError("Unexpected error in async LLM chat")

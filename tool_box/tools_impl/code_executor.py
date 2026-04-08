@@ -24,6 +24,12 @@ from app.services.plans.acceptance_criteria import (
 )
 from app.services.plans.decomposition_jobs import get_current_job, log_job_event
 from app.services.session_paths import get_runtime_root, get_runtime_session_dir
+from app.config.executor_config import (
+    DEFAULT_CODE_EXECUTION_DOCKER_IMAGE,
+    DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME,
+    resolve_code_execution_docker_image,
+    resolve_code_execution_local_runtime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -354,12 +360,12 @@ _HARD_ALLOWED_TOOL_MAP = {name.lower(): name for name in _HARD_ALLOWED_TOOL_NAME
 _DEFAULT_SETTING_SOURCES = "project,local"
 _DEFAULT_API_SETTING_SOURCES = "project"
 _DEFAULT_AUTH_MODE = "api_env"
-_DEFAULT_CODE_EXECUTOR_LOCAL_RUNTIME = "docker"
-_DEFAULT_CODE_EXECUTOR_DOCKER_IMAGE = "gagent-python-runtime:latest"
+_DEFAULT_CODE_EXECUTOR_LOCAL_RUNTIME = DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME
+_DEFAULT_CODE_EXECUTOR_DOCKER_IMAGE = DEFAULT_CODE_EXECUTION_DOCKER_IMAGE
 _SUPPORTED_SETTING_SOURCES = {"user", "project", "local"}
 _SUPPORTED_AUTH_MODES = {"claude_login", "api_env"}
 _DEFAULT_API_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic"
-_DEFAULT_API_MODEL = "qwen3.5-plus"
+_DEFAULT_API_MODEL = "qwen3.6-plus"
 _DEFAULT_QC_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE: Sequence[str] = (
     "ANTHROPIC_API_KEY",
@@ -385,17 +391,19 @@ _CLAUDE_ENV_ALIAS_FOR_API_MODE: Sequence[tuple[str, str]] = (
 
 
 def _resolve_code_executor_local_runtime(value: Optional[str] = None) -> str:
-    raw = str(value or os.getenv("CODE_EXECUTOR_LOCAL_RUNTIME") or _DEFAULT_CODE_EXECUTOR_LOCAL_RUNTIME).strip().lower()
-    if raw == "local":
-        return "host"
-    if raw in {"docker", "host"}:
-        return raw
-    return _DEFAULT_CODE_EXECUTOR_LOCAL_RUNTIME
+    raw = value if value is not None else os.getenv("CODE_EXECUTOR_LOCAL_RUNTIME")
+    return resolve_code_execution_local_runtime(
+        raw,
+        default=_DEFAULT_CODE_EXECUTOR_LOCAL_RUNTIME,
+    )
 
 
 def _resolve_code_executor_docker_image(value: Optional[str] = None) -> str:
-    raw = str(value or os.getenv("CODE_EXECUTOR_DOCKER_IMAGE") or _DEFAULT_CODE_EXECUTOR_DOCKER_IMAGE).strip()
-    return raw or _DEFAULT_CODE_EXECUTOR_DOCKER_IMAGE
+    raw = value if value is not None else os.getenv("CODE_EXECUTOR_DOCKER_IMAGE")
+    return resolve_code_execution_docker_image(
+        raw,
+        default=_DEFAULT_CODE_EXECUTOR_DOCKER_IMAGE,
+    )
 
 
 def _resolve_allowed_tools(value: Any) -> List[str]:
@@ -613,6 +621,17 @@ def _build_qwen_code_command(
     """Build the ``qwen`` CLI command for non-interactive prompt execution."""
     task_text = _build_cli_task_contract(task, execution_spec)
     writable_dirs = [name for name in task_subdirs if str(name).strip().lower() != "code"]
+    try:
+        from app.config.executor_config import get_executor_settings as _get_settings
+        _settings = _get_settings()
+        _max_turns = str(_settings.qc_max_session_turns)
+        _shell_timeout_ms = max(
+            1000,
+            min(600000, int(getattr(_settings, "qc_shell_timeout_ms", 600000))),
+        )
+    except Exception:
+        _max_turns = "50"
+        _shell_timeout_ms = 600000
     enhanced_task = (
         f"[ATOMIC TASK]\n"
         f"Execute the task below as a single unit. Multi-step code execution "
@@ -656,14 +675,16 @@ def _build_qwen_code_command(
         f"5. Progress Reporting: When processing multiple items in a loop, "
         f"print progress after each item: print(f'Processed {{i+1}}/{{total}} items'). "
         f"Print final summary: print(f'Completed {{done}}/{{total}} items'). "
-        f"Save results after each item, not only at the end."
+        f"Save results after each item, not only at the end.\n"
+        f"6. When using the shell tool for installs, builds, tests, or other "
+        f"one-shot commands that may exceed two minutes, set its `timeout` "
+        f"parameter explicitly to {_shell_timeout_ms} milliseconds instead of "
+        f"relying on the default 120000ms timeout.\n"
+        f"7. Use background execution only for processes that are meant to "
+        f"keep running (servers, watchers, daemons), not for one-shot installs "
+        f"or analysis commands."
         f"{allowed_dirs_info}"
     )
-    try:
-        from app.config.executor_config import get_executor_settings as _get_settings
-        _max_turns = str(_get_settings().qc_max_session_turns)
-    except Exception:
-        _max_turns = "50"
     cmd: List[str] = [
         "qwen",
         "-p", enhanced_task,
@@ -1319,6 +1340,8 @@ async def _execute_task_locally(
     work_dir: Optional[str] = None,
     data_dir: Optional[str] = None,
     extra_dirs: Optional[Sequence[str]] = None,
+    docker_image: Optional[str] = None,
+    runtime_mode: Optional[str] = None,
     tool_context: Optional[Any] = None,
     auto_fix: bool = True,
     session_dir: Optional[str] = None,
@@ -1332,20 +1355,24 @@ async def _execute_task_locally(
     from app.services.interpreter.code_execution import CodeExecutionSpec, execute_code_locally
     from app.services.llm.llm_service import get_llm_service
 
-    runtime_mode = _resolve_code_executor_local_runtime()
-    execution_backend = "docker" if runtime_mode == "docker" else "local"
-    docker_image = _resolve_code_executor_docker_image() if execution_backend == "docker" else None
+    effective_runtime_mode = _resolve_code_executor_local_runtime(runtime_mode)
+    execution_backend = "docker" if effective_runtime_mode == "docker" else "local"
+    effective_docker_image = (
+        _resolve_code_executor_docker_image(docker_image)
+        if execution_backend == "docker"
+        else None
+    )
 
     logger.info(
         "[CODE_EXECUTOR_LOCAL] Using %s runtime backend for task",
-        runtime_mode,
+        effective_runtime_mode,
     )
 
     async def _report(stage: str, message: str, **extra: Any) -> None:
         if tool_context is not None and tool_context.on_progress:
             await tool_context.on_progress({"stage": stage, "message": message, **extra})
 
-    await _report("started", f"Generating code for task ({runtime_mode} runtime)")
+    await _report("started", f"Generating code for task ({effective_runtime_mode} runtime)")
 
     if not work_dir:
         import tempfile
@@ -1367,8 +1394,8 @@ async def _execute_task_locally(
             "error": blocked_reason,
             "error_category": "blocked_dependency",
             "error_summary": blocked_reason,
-            "execution_mode": f"code_executor_{runtime_mode}",
-            "docker_image_effective": docker_image,
+            "execution_mode": f"code_executor_{effective_runtime_mode}",
+            "docker_image_effective": effective_docker_image,
             "runtime_failure": False,
         }
 
@@ -1421,7 +1448,7 @@ async def _execute_task_locally(
     except Exception:
         writable_dirs = []
 
-    await _report("running", f"Executing generated code via {runtime_mode} runtime")
+    await _report("running", f"Executing generated code via {effective_runtime_mode} runtime")
     structured_spec = None
     if execution_spec:
         structured_spec = CodeExecutionSpec(
@@ -1448,7 +1475,7 @@ async def _execute_task_locally(
         auto_fix=auto_fix,
         timeout=_exec_timeout,
         execution_backend=execution_backend,
-        docker_image=docker_image,
+        docker_image=effective_docker_image,
         readable_dirs=readable_dirs,
         writable_dirs=writable_dirs,
         execution_spec=structured_spec,
@@ -1480,8 +1507,8 @@ async def _execute_task_locally(
         "plan_patch_suggestion": outcome.plan_patch_suggestion,
         "stdout_file": outcome.stdout_file,
         "stderr_file": outcome.stderr_file,
-        "execution_mode": f"code_executor_{runtime_mode}",
-        "docker_image_effective": docker_image,
+        "execution_mode": f"code_executor_{effective_runtime_mode}",
+        "docker_image_effective": effective_docker_image,
         "runtime_failure": outcome.runtime_failure,
     }
     if not outcome.success:
@@ -1515,6 +1542,7 @@ async def code_executor_handler(
     task: str,
     allowed_tools: Optional[Any] = None,
     add_dirs: Optional[Any] = None,
+    docker_image: Optional[str] = None,
     skip_permissions: bool = True,
     output_format: str = "json",
     session_id: Optional[str] = None,
@@ -1536,6 +1564,7 @@ async def code_executor_handler(
         task: Task description for Claude to complete
         allowed_tools: Comma-separated list of allowed tools (e.g. "Bash Edit")
         add_dirs: Comma-separated list of additional directories to allow access
+        docker_image: Optional Docker image override for local Docker execution.
         skip_permissions: Skip permission checks (recommended for trusted environments)
         output_format: Output format: "text" or "json"
         session_id: Session ID for workspace isolation
@@ -1730,6 +1759,7 @@ async def code_executor_handler(
                 work_dir=str(task_work_dir),
                 data_dir=local_data_dir,
                 extra_dirs=allowed_dirs,
+                docker_image=docker_image,
                 tool_context=tool_context,
                 auto_fix=auto_fix,
                 session_dir=str(session_dir),

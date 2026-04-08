@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -6,6 +7,7 @@ from app.routers.chat.agent import (
     _build_deep_think_task_context,
     _refresh_deep_think_runtime_context,
 )
+from app.routers.chat.models import AgentResult, AgentStep
 from app.routers.chat_routes import StructuredChatAgent
 from app.services.llm.structured_response import LLMAction, LLMReply, LLMStructuredResponse
 from app.services.plans.plan_models import PlanNode, PlanTree
@@ -42,6 +44,86 @@ def _build_agent(user_message: str, *, current_task_id: int = 23) -> StructuredC
     agent.plan_session = _DummyPlanSession(plan_id=34, tree=tree)
     agent.extra_context = {"current_task_id": current_task_id}
     agent._current_user_message = user_message
+    return agent
+
+
+def _build_local_manuscript_agent() -> StructuredChatAgent:
+    task81 = PlanNode(
+        id=81,
+        plan_id=68,
+        name="任务合并优化-报告生成",
+        status="completed",
+        instruction="将分散的QC报告任务合并为综合QC报告。",
+        path="/81",
+        metadata={"dependencies": [3]},
+    )
+    task66 = PlanNode(
+        id=66,
+        plan_id=68,
+        name="数据来源与预处理方法描述",
+        status="completed",
+        instruction="撰写方法部分。",
+        path="/66",
+        metadata={
+            "paper_mode": True,
+            "paper_section": "method",
+            "paper_context_paths": [
+                "methods/data_source_preprocessing.md",
+                "methods/not_a_file/",
+            ],
+        },
+        execution_result=json.dumps(
+            {
+                "artifact_paths": [
+                    "/tmp/results/plan68_task66/data_source_preprocessing.md",
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+    task70 = PlanNode(
+        id=70,
+        plan_id=68,
+        name="5.1.3.1 单细胞图谱概览与细胞组成结果撰写",
+        status="completed",
+        instruction="撰写结果部分。",
+        path="/70",
+        metadata={
+            "paper_mode": True,
+            "paper_section": "result",
+            "paper_context_paths": [
+                "manuscript/results/5.1.3.1_atlas_composition.md",
+                "results/1.2_qc/",
+            ],
+        },
+        execution_result=json.dumps(
+            {
+                "artifact_paths": [
+                    "/tmp/results/plan68_task70/qc_summary.csv",
+                    "/tmp/results/plan68_task70/figure.png",
+                ]
+            },
+            ensure_ascii=False,
+        ),
+    )
+    tree = PlanTree(
+        id=68,
+        title="plan68",
+        nodes={66: task66, 70: task70, 81: task81},
+        adjacency={None: [66, 70, 81]},
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = _DummyPlanSession(plan_id=68, tree=tree)
+    agent.plan_tree = tree
+    agent.extra_context = {
+        "current_task_id": 81,
+        "request_tier": "execute",
+        "intent_type": "execute_task",
+    }
+    agent._current_user_message = ""
+    agent.history = []
+    agent.session_id = None
+    agent.llm_service = _ExplodingLLM()
     return agent
 
 
@@ -144,8 +226,7 @@ def test_deterministic_execute_shortcut_builds_rerun_action():
     assert action.metadata["origin"] == "explicit_execute_shortcut"
 
 
-@pytest.mark.asyncio
-async def test_invoke_llm_uses_deterministic_execute_shortcut():
+def test_invoke_llm_uses_deterministic_execute_shortcut():
     agent = _build_agent("继续执行 Task 39", current_task_id=39)
     agent.extra_context.update(
         {
@@ -157,12 +238,121 @@ async def test_invoke_llm_uses_deterministic_execute_shortcut():
     )
     agent.llm_service = _ExplodingLLM()
 
-    structured = await agent._invoke_llm("继续执行 Task 39")
+    structured = asyncio.run(agent._invoke_llm("继续执行 Task 39"))
 
     assert len(structured.actions) == 1
     action = structured.actions[0]
     assert action.name == "rerun_task"
     assert action.parameters["task_id"] == 39
+
+
+def test_deterministic_local_manuscript_shortcut_builds_manuscript_writer_action():
+    agent = _build_local_manuscript_agent()
+
+    structured = agent._build_deterministic_local_manuscript_structured(
+        "请基于已完成任务整合生成最终论文草稿，不要查文献，也不要重新分析。"
+    )
+
+    assert structured is not None
+    assert len(structured.actions) == 1
+    action = structured.actions[0]
+    assert action.kind == "tool_operation"
+    assert action.name == "manuscript_writer"
+    assert action.parameters["draft_only"] is True
+    assert action.parameters["output_path"] == "manuscript/manuscript_draft.md"
+    assert "methods/data_source_preprocessing.md" in action.parameters["context_paths"]
+    assert "manuscript/results/5.1.3.1_atlas_composition.md" in action.parameters["context_paths"]
+    assert "/tmp/results/plan68_task70/qc_summary.csv" in action.parameters["context_paths"]
+    assert "results/1.2_qc/" not in action.parameters["context_paths"]
+    assert "/tmp/results/plan68_task70/figure.png" not in action.parameters["context_paths"]
+    assert action.metadata["origin"] == "local_manuscript_assembly_shortcut"
+
+
+def test_invoke_llm_uses_deterministic_local_manuscript_shortcut():
+    agent = _build_local_manuscript_agent()
+
+    structured = asyncio.run(
+        agent._invoke_llm(
+            "请基于已完成任务整合生成最终论文草稿，不要查文献，也不要重新分析。"
+        )
+    )
+
+    assert len(structured.actions) == 1
+    action = structured.actions[0]
+    assert action.name == "manuscript_writer"
+    assert action.parameters["draft_only"] is True
+    assert action.parameters["output_path"] == "manuscript/manuscript_draft.md"
+
+
+def test_process_unified_stream_uses_local_manuscript_shortcut():
+    agent = _build_local_manuscript_agent()
+    prompt = "请基于已完成任务整合生成最终论文草稿，不要查文献，也不要重新分析。"
+    captured: dict[str, LLMStructuredResponse] = {}
+
+    async def _fake_execute_structured(structured: LLMStructuredResponse) -> AgentResult:
+        captured["structured"] = structured
+        action = structured.actions[0]
+        step = AgentStep(
+            action=action,
+            success=True,
+            message="Manuscript writer succeeded. Draft: manuscript/manuscript_draft.md; analysis memo: manuscript/manuscript_draft.md.analysis.md.",
+            details={
+                "summary": "Manuscript writer succeeded. Draft: manuscript/manuscript_draft.md; analysis memo: manuscript/manuscript_draft.md.analysis.md.",
+                "parameters": dict(action.parameters),
+                "result": {
+                    "tool": "manuscript_writer",
+                    "success": True,
+                    "output_path": "manuscript/manuscript_draft.md",
+                    "analysis_path": "manuscript/manuscript_draft.md.analysis.md",
+                    "run_stats": {
+                        "source_file_count": 12,
+                        "method_sources": 4,
+                        "result_sources": 4,
+                        "supplementary_sources": 4,
+                    },
+                },
+            },
+        )
+        return AgentResult(
+            reply="我会基于已完成任务的现有产物直接整合本地论文草稿。",
+            steps=[step],
+            suggestions=[],
+            primary_intent="manuscript_writer",
+            success=True,
+            bound_plan_id=68,
+            plan_outline="plan68",
+            plan_persisted=False,
+            actions_summary=[],
+            errors=[],
+        )
+
+    agent.execute_structured = _fake_execute_structured  # type: ignore[method-assign]
+
+    async def _collect() -> list[str]:
+        chunks: list[str] = []
+        async for chunk in agent.process_unified_stream(prompt):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(_collect())
+
+    assert captured["structured"].actions[0].name == "manuscript_writer"
+    assert captured["structured"].actions[0].parameters["draft_only"] is True
+    final_payload = json.loads(chunks[-1].removeprefix("data: ").strip())
+    assert final_payload["type"] == "final"
+    assert final_payload["payload"]["metadata"]["shortcut_used"] == "local_manuscript_assembly"
+    assert final_payload["payload"]["actions"][0]["name"] == "manuscript_writer"
+    assert "BLOCKED_DEPENDENCY" not in final_payload["payload"]["llm_reply"]["message"]
+    assert "已完成本地论文草稿整合" in final_payload["payload"]["llm_reply"]["message"]
+    assert "`manuscript/manuscript_draft.md`" in final_payload["payload"]["llm_reply"]["message"]
+    assert (
+        final_payload["payload"]["response"]
+        == final_payload["payload"]["metadata"]["final_summary"]
+    )
+    assert (
+        final_payload["payload"]["metadata"]["analysis_text"]
+        == final_payload["payload"]["llm_reply"]["message"]
+    )
 
 
 def test_refresh_deep_think_runtime_context_updates_bound_task() -> None:

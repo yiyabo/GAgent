@@ -25,6 +25,7 @@ from .guardrails import (
     is_status_query_only,
     is_task_executable_status,
     literature_backed_review_request,
+    local_manuscript_assembly_request,
     looks_like_completion_claim,
     reply_promises_execution,
     requests_abstract_only,
@@ -54,6 +55,17 @@ _FOLLOWTHROUGH_EXECUTE_TOKENS = (
     "跑",
     "运行",
 )
+_LOCAL_MANUSCRIPT_PREP_TOOLS = frozenset(
+    {
+        "web_search",
+        "graph_rag",
+        "literature_pipeline",
+        "file_operations",
+        "document_reader",
+        "vision_reader",
+        "result_interpreter",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -77,11 +89,20 @@ async def apply_experiment_fallback(
 
     explicit_request = explicit_manuscript_request(user_message)
     literature_review_request = literature_backed_review_request(user_message)
+    extra_context = getattr(agent, "extra_context", {}) or {}
+    task_bound = extra_context.get("current_task_id") is not None
+    plan_bound = getattr(getattr(agent, "plan_session", None), "plan_id", None) is not None
+    local_manuscript_request = local_manuscript_assembly_request(
+        user_message,
+        plan_bound=plan_bound,
+        task_bound=task_bound,
+    )
 
     logger.info(
-        "[CHAT][GUARDRAIL][WRITE] explicit=%s literature_review=%s actions=%s",
+        "[CHAT][GUARDRAIL][WRITE] explicit=%s literature_review=%s local_assembly=%s actions=%s",
         explicit_request,
         literature_review_request,
+        local_manuscript_request,
         [action.name for action in structured.actions],
     )
 
@@ -99,6 +120,117 @@ async def apply_experiment_fallback(
         )
         return structured
 
+    def _build_manuscript_action(source_action: Optional[LLMAction] = None) -> LLMAction:
+        source_params = (
+            dict(source_action.parameters)
+            if isinstance(source_action, LLMAction)
+            and isinstance(source_action.parameters, dict)
+            else {}
+        )
+        params: Dict[str, Any] = {}
+        task_text = str(source_params.get("task") or "").strip() or user_message.strip()
+        if task_text:
+            params["task"] = task_text
+        output_path = str(source_params.get("output_path") or "").strip()
+        if output_path:
+            params["output_path"] = output_path
+        if requests_abstract_only(user_message):
+            params["sections"] = ["abstract"]
+        else:
+            sections = source_params.get("sections")
+            if isinstance(sections, list):
+                clean_sections = [
+                    str(item).strip()
+                    for item in sections
+                    if isinstance(item, str) and str(item).strip()
+                ]
+                if clean_sections:
+                    params["sections"] = clean_sections
+        for key in (
+            "max_revisions",
+            "evaluation_threshold",
+            "keep_workspace",
+            "draft_only",
+            "generation_model",
+            "evaluation_model",
+            "merge_model",
+            "generation_provider",
+            "evaluation_provider",
+            "merge_provider",
+        ):
+            value = source_params.get(key)
+            if value is not None:
+                params[key] = value
+        context_paths = source_params.get("context_paths")
+        if isinstance(context_paths, list):
+            clean_paths = [
+                str(item).strip()
+                for item in context_paths
+                if isinstance(item, str) and str(item).strip()
+            ]
+            if clean_paths:
+                params["context_paths"] = clean_paths
+        elif isinstance(context_paths, str) and context_paths.strip():
+            params["context_paths"] = [context_paths.strip()]
+        analysis_path = str(source_params.get("analysis_path") or "").strip()
+        if analysis_path:
+            params["analysis_path"] = analysis_path
+        if local_manuscript_request:
+            params["draft_only"] = True
+        return LLMAction(
+            kind="tool_operation",
+            name="manuscript_writer",
+            parameters=params,
+            order=source_action.order if isinstance(source_action, LLMAction) else 1,
+            blocking=source_action.blocking if isinstance(source_action, LLMAction) else True,
+            retry_policy=source_action.retry_policy if isinstance(source_action, LLMAction) else None,
+            metadata=(
+                dict(source_action.metadata)
+                if isinstance(source_action, LLMAction) and isinstance(source_action.metadata, dict)
+                else {}
+            ),
+        )
+
+    tool_actions = [
+        action for action in structured.actions if action.kind == "tool_operation"
+    ]
+
+    if local_manuscript_request:
+        if writing_actions:
+            rewritten_actions: List[LLMAction] = []
+            rewrote_review_pack = False
+            for action in structured.actions:
+                if action.kind == "tool_operation" and action.name == "review_pack_writer":
+                    rewritten_actions.append(_build_manuscript_action(action))
+                    rewrote_review_pack = True
+                    continue
+                rewritten_actions.append(action)
+            if rewrote_review_pack:
+                structured.actions = rewritten_actions
+                logger.info(
+                    "[CHAT][GUARDRAIL][WRITE] rewrote non-review review_pack_writer action(s) to manuscript_writer"
+                )
+            else:
+                logger.info(
+                    "[CHAT][GUARDRAIL][WRITE] keeping existing manuscript_writer action(s) for local assembly"
+                )
+            return structured
+
+        if tool_actions and not all(
+            action.name in _LOCAL_MANUSCRIPT_PREP_TOOLS for action in tool_actions
+        ):
+            logger.info(
+                "[CHAT][GUARDRAIL][WRITE] leaving actions unchanged because non-prep tool present for local assembly: %s",
+                [action.name for action in tool_actions],
+            )
+            return structured
+
+        structured.actions = [_build_manuscript_action()]
+        logger.info(
+            "[CHAT][GUARDRAIL][WRITE] rewrote prep-only actions to manuscript_writer for local assembly"
+        )
+        return structured
+
     if writing_actions:
         logger.info("[CHAT][GUARDRAIL][WRITE] keeping existing writing action(s)")
         return structured
@@ -110,9 +242,6 @@ async def apply_experiment_fallback(
         return structured
 
     retrieval_only_tools = {"web_search", "graph_rag", "literature_pipeline"}
-    tool_actions = [
-        action for action in structured.actions if action.kind == "tool_operation"
-    ]
     if tool_actions and not all(action.name in retrieval_only_tools for action in tool_actions):
         logger.info(
             "[CHAT][GUARDRAIL][WRITE] leaving actions unchanged because non-retrieval tool present: %s",

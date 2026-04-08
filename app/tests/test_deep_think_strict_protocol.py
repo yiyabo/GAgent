@@ -680,6 +680,77 @@ def test_blocked_dependency_answer_prefers_structured_document_reader_summary() 
     assert "[OUTER AGENT EXECUTION CONTRACT]" not in answer
 
 
+def test_native_large_file_listing_is_compacted_before_next_llm_call() -> None:
+    large_items = [
+        {
+            "name": f"sample_{idx}.fasta",
+            "path": f"/tmp/gvd/sample_{idx}.fasta",
+            "type": "file",
+            "size": 5000 + idx,
+        }
+        for idx in range(5000)
+    ]
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Inspect the extracted directory first",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/gvd"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="done",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={"answer": "done", "confidence": 0.9},
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(name: str, params: dict):
+        assert name == "file_operations"
+        assert params["operation"] == "list"
+        return {
+            "operation": "list",
+            "path": params["path"],
+            "success": True,
+            "items": large_items,
+            "count": len(large_items),
+        }
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations"],
+        tool_executor=_tool_executor,
+        max_iterations=3,
+    )
+
+    result = asyncio.run(agent.think("check whether the directory is extracted"))
+
+    assert result.final_answer == "done"
+    assert len(llm.calls) >= 2
+    second_call_messages = llm.calls[1]
+    tool_messages = [msg for msg in second_call_messages if msg.get("role") == "tool"]
+    assert len(tool_messages) == 1
+
+    payload = json.loads(str(tool_messages[0]["content"]))
+    compact_result = payload["result"]
+    assert compact_result["llm_compacted"] is True
+    assert compact_result["count"] == len(large_items)
+    assert compact_result["omitted_items"] > 0
+    assert len(compact_result["sample_items"]) < len(large_items)
+    assert len(str(tool_messages[0]["content"])) < DeepThinkAgent.MAX_TOOL_RESULT_TEXT_CHARS
+    assert "sample_4999.fasta" not in str(tool_messages[0]["content"])
+
+
 def test_structured_plan_outcome_detects_created_plan() -> None:
     agent = _build_plan_agent(
         {
@@ -997,6 +1068,30 @@ def test_research_fallback_prefers_evidence_synthesis_over_process_sentence() ->
     answer = asyncio.run(agent._fallback_answer_from_steps(steps, "帮我选一个方向"))
     assert "更值得优先关注的方向" in answer
     assert "让我先收集" not in answer
+
+
+def test_structured_fallback_uses_user_facing_evidence_format() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    steps = [
+        ThinkingStep(
+            iteration=1,
+            thought="先看目录结构，再总结。",
+            action='{"tool":"file_operations","params":{"operation":"list","path":"/tmp"}}',
+            action_result='{"success": true, "summary": "Found 2 files: a.tsv, b.tsv"}',
+            self_correction=None,
+        )
+    ]
+
+    answer = agent._build_structured_fallback(steps, "看看结果")
+
+    assert "[Step 1]" not in answer
+    assert "我先给出目前能确认的信息" in answer
+    assert "Found 2 files" in answer
 
 
 def test_research_failure_marks_answer_as_unverified_when_external_search_fails() -> None:
@@ -1793,6 +1888,166 @@ def test_unverified_terminal_session_does_not_set_real_execution_flag() -> None:
     assert "代码执行已完成" not in result.final_answer
     assert "finished execution" not in result.final_answer
     assert "BLOCKED_DEPENDENCY" in result.final_answer
+
+
+def test_execute_task_failed_execution_cannot_finish_with_success_shaped_report() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Run the analysis code",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "analyze the dataset"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Inspect the workspace",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/phagescope"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Submit the polished report",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "数据分析已完成，并得出了关键生物学结论。",
+                            "confidence": 0.94,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(name: str, _params: dict):
+        if name == "code_executor":
+            return {
+                "success": False,
+                "error": "Docker image not found: gagent-python-runtime:latest",
+            }
+        return {"success": True, "summary": "listed /tmp/phagescope"}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "code_executor"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+        },
+    )
+
+    result = asyncio.run(agent.think("继续分析这个数据"))
+
+    assert "gagent-python-runtime:latest" in result.final_answer
+    assert "不能把后续分析性表述视为已验证结论" in result.final_answer
+    assert "数据分析已完成，并得出了关键生物学结论。" not in result.final_answer
+    assert result.fallback_used is True
+
+
+def test_execute_task_failed_execution_prefers_verified_profile_recovery() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Run the heavy execution path first",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="code_executor",
+                        arguments={"task": "analyze the dataset"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Use a deterministic profile instead",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="result_interpreter",
+                        arguments={
+                            "operation": "profile",
+                            "file_paths": ["/tmp/gvd.tsv", "/tmp/batch_test_phageids.txt"],
+                        },
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Submit the full narrative",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "完整分析已经完成，并验证了所有统计结论。",
+                            "confidence": 0.91,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(name: str, _params: dict):
+        if name == "code_executor":
+            return {
+                "success": False,
+                "error": "Docker image not found: gagent-python-runtime:latest",
+            }
+        if name == "result_interpreter":
+            return {
+                "success": True,
+                "operation": "profile",
+                "task_type": "text_only",
+                "profile_mode": "deterministic",
+                "execution_status": "success",
+                "execution_output": (
+                    "Deterministic dataset profile (code-derived, no model synthesis):\n"
+                    "- gvd.tsv: 2 rows x 3 columns\n"
+                    "- batch_test_phageids.txt: 2 lookup IDs\n"
+                    "- ID match batch_test_phageids.txt -> gvd.tsv (column Phage_ID): "
+                    "1/2 matched, 1 missing"
+                ),
+                "profile": {
+                    "summary": (
+                        "Deterministic dataset profile (code-derived, no model synthesis):\n"
+                        "- gvd.tsv: 2 rows x 3 columns\n"
+                        "- batch_test_phageids.txt: 2 lookup IDs\n"
+                        "- ID match batch_test_phageids.txt -> gvd.tsv (column Phage_ID): "
+                        "1/2 matched, 1 missing"
+                    )
+                },
+            }
+        return {"success": True}
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["code_executor", "result_interpreter"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={
+            "request_tier": "execute",
+            "intent_type": "execute_task",
+        },
+    )
+
+    result = asyncio.run(agent.think("继续分析这个数据"))
+
+    assert "执行工具未成功完成" in result.final_answer
+    assert "Deterministic dataset profile" in result.final_answer
+    assert "1/2 matched, 1 missing" in result.final_answer
+    assert "完整分析已经完成" not in result.final_answer
+    assert result.fallback_used is True
 
 
 def test_execute_task_filters_plan_operation_from_available_tools() -> None:

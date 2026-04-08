@@ -199,15 +199,15 @@ class LLMClient(LLMProvider):
             env_model = os.getenv("QWEN_MODEL")
             self.api_key = api_key or env_api_key or settings.qwen_api_key
             self.url = url or env_url or settings.qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-            selected_model = model or env_model or settings.qwen_model or "qwen3.5-plus"
+            selected_model = model or env_model or settings.qwen_model or "qwen3.6-plus"
             selected_model_str = str(selected_model).strip().lower()
             if selected_model_str and not selected_model_str.startswith("qwen"):
                 logger.warning(
                     "Model '%s' is not a Qwen-series model; forcing model='%s'",
                     selected_model,
-                    settings.qwen_model or "qwen3.5-plus",
+                    settings.qwen_model or "qwen3.6-plus",
                 )
-                selected_model = settings.qwen_model or "qwen3.5-plus"
+                selected_model = settings.qwen_model or "qwen3.6-plus"
             self.model = selected_model
         elif provider_name == "kimi":
             env_api_key = os.getenv("KIMI_API_KEY")
@@ -268,7 +268,7 @@ class LLMClient(LLMProvider):
                 or settings.qwen_api_url
                 or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
             )
-            self.model = model or env_model or settings.qwen_model or "qwen3.5-plus"
+            self.model = model or env_model or settings.qwen_model or "qwen3.6-plus"
 
         settings_timeout = getattr(settings, "llm_request_timeout", None)
         if settings_timeout in (None, ""):
@@ -300,7 +300,14 @@ class LLMClient(LLMProvider):
         except Exception:
             self.backoff_base = 0.5
 
-    def chat(self, prompt: str, force_real: bool = False, model: Optional[str] = None, messages: Optional[list] = None, **_: Any) -> str:
+    def chat(
+        self,
+        prompt: str,
+        force_real: bool = False,
+        model: Optional[str] = None,
+        messages: Optional[list] = None,
+        **kwargs: Any,
+    ) -> str:
         if self.mock and not force_real:
             return "This is a mock completion."
 
@@ -313,17 +320,26 @@ class LLMClient(LLMProvider):
         else:
             payload_messages = [{"role": "user", "content": prompt}]
 
+        try:
+            max_tokens = int(kwargs.pop("max_tokens"))
+        except (KeyError, TypeError, ValueError):
+            max_tokens = 16384
+        timeout_override = _normalize_timeout(kwargs.pop("timeout", None), self.timeout)
+        try:
+            request_retries = max(0, int(kwargs.pop("retries")))
+        except (KeyError, TypeError, ValueError):
+            request_retries = self.retries
         payload = {
             "model": model or self.model,
             "messages": payload_messages,
-            "max_tokens": 16384,
+            "max_tokens": max_tokens,
         }
         headers = self._build_headers()
-        timeout = _make_request_timeout(self.timeout)
+        timeout = _make_request_timeout(timeout_override)
 
         client = _get_shared_sync_client()
         last_err: Optional[Exception] = None
-        for attempt in range(self.retries + 1):
+        for attempt in range(request_retries + 1):
             try:
                 response = client.post(
                     self.url, headers=headers, json=payload,
@@ -337,7 +353,7 @@ class LLMClient(LLMProvider):
                     raise RuntimeError(f"Unexpected LLM response: {obj}")
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code if e.response is not None else None
-                if isinstance(status_code, int) and 500 <= status_code < 600 and attempt < self.retries:
+                if isinstance(status_code, int) and 500 <= status_code < 600 and attempt < request_retries:
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
                     time.sleep(delay)
                     last_err = e
@@ -350,7 +366,7 @@ class LLMClient(LLMProvider):
                 raise RuntimeError(f"LLM HTTPError: {status_code} {body}".strip())
             except Exception as e:
                 # Treat as transient (network) and retry
-                if attempt < self.retries:
+                if attempt < request_retries:
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
                     time.sleep(delay)
                     last_err = e
@@ -363,7 +379,7 @@ class LLMClient(LLMProvider):
         force_real: bool = False,
         model: Optional[str] = None,
         messages: Optional[list] = None,
-        **_: Any,
+        **kwargs: Any,
     ) -> str:
         if self.mock and not force_real:
             return "This is a mock completion."
@@ -372,16 +388,25 @@ class LLMClient(LLMProvider):
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
 
         payload_messages = messages if messages else [{"role": "user", "content": prompt}]
+        try:
+            max_tokens = int(kwargs.pop("max_tokens"))
+        except (KeyError, TypeError, ValueError):
+            max_tokens = 16384
+        timeout_override = _normalize_timeout(kwargs.pop("timeout", None), self.timeout)
+        try:
+            request_retries = max(0, int(kwargs.pop("retries")))
+        except (KeyError, TypeError, ValueError):
+            request_retries = self.retries
         payload = {
             "model": model or self.model,
             "messages": payload_messages,
-            "max_tokens": 16384,
+            "max_tokens": max_tokens,
         }
         headers = self._build_headers()
-        timeout = _make_request_timeout(self.timeout)
+        timeout = _make_request_timeout(timeout_override)
         client = _get_shared_async_client()
 
-        for attempt in range(self.retries + 1):
+        for attempt in range(request_retries + 1):
             try:
                 response = await client.post(
                     self.url, headers=headers, json=payload,
@@ -395,7 +420,7 @@ class LLMClient(LLMProvider):
                     raise RuntimeError(f"Unexpected LLM response: {obj}")
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code if e.response is not None else None
-                if isinstance(status_code, int) and 500 <= status_code < 600 and attempt < self.retries:
+                if isinstance(status_code, int) and 500 <= status_code < 600 and attempt < request_retries:
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
                     await asyncio.sleep(delay)
                     continue
@@ -406,7 +431,7 @@ class LLMClient(LLMProvider):
                     body = str(e)
                 raise RuntimeError(f"LLM HTTPError: {status_code} {body}".strip())
             except Exception as e:
-                if attempt < self.retries:
+                if attempt < request_retries:
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
                     await asyncio.sleep(delay)
                     continue

@@ -1,7 +1,7 @@
 """Vision Reader Tool Implementation
 
 This module provides vision-based reading capabilities backed by a multimodal
-model (qwen3.5-plus - native multimodal supporting text/image/video).
+model (qwen3.6-plus - native multimodal supporting text/image/video).
 It is exposed as a text-only tool to the main agent: all outputs are English
 text / JSON that can be consumed by a text-only LLM such as Qwen3-Max.
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
-    """Call Qwen native multimodal model (qwen3.5-plus) with an image or PDF.
+    """Call Qwen native multimodal model (qwen3.6-plus) with an image or PDF.
 
     The API is assumed to be OpenAI-compatible chat completions with
     `messages: [{role: "user", content: [{type: "text"}, {type: "image_url"}]}]`.
@@ -41,7 +41,7 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
     Environment / settings used:
     - QWEN_VL_API_KEY (fallback: QWEN_API_KEY, settings.qwen_api_key)
     - QWEN_VL_API_URL (fallback: QWEN_API_URL, settings.qwen_api_url)
-    - QWEN_VL_MODEL   (fallback: QWEN_MODEL, settings.qwen_model, default: qwen3.5-plus)
+    - QWEN_VL_MODEL   (fallback: QWEN_MODEL, settings.qwen_model, default: qwen3.6-plus)
     """
 
     settings = get_settings()
@@ -74,7 +74,7 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
         os.getenv("QWEN_VL_MODEL")
         or os.getenv("QWEN_MODEL")
         or settings.qwen_model
-        or "qwen3.5-plus"
+        or "qwen3.6-plus"
     )
 
     abs_path = Path(file_path).resolve()
@@ -404,7 +404,7 @@ async def vision_reader_handler(
     """Vision reader tool handler - reads documents and images using vision model.
 
     This handler delegates visual understanding tasks to a multimodal model
-    (qwen3.5-plus - native multimodal) and returns text that can be consumed by downstream LLMs.
+    (qwen3.6-plus - native multimodal) and returns text that can be consumed by downstream LLMs.
 
     Args:
         operation: One of "read_pdf", "read_image", "ocr_page", "read_equation_image", "describe_figure", "extract_table".
@@ -589,7 +589,7 @@ async def vision_reader_handler(
 vision_reader_tool: Dict[str, Any] = {
     "name": "vision_reader",
     "description": (
-        "Vision-based reader for documents and images. Uses qwen3.5-plus (native multimodal) "
+        "Vision-based reader for documents and images. Uses qwen3.6-plus (native multimodal) "
         "to read PDFs (page by page), OCR images, read equations, describe figures, and "
         "extract tables. Replaces document_reader for all file reading needs."
     ),

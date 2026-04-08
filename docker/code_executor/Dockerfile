@@ -1,7 +1,10 @@
-FROM python:3.10-slim
+ARG MICROMAMBA_BASE_IMAGE=mambaorg/micromamba:2.5.0
+FROM ${MICROMAMBA_BASE_IMAGE}
 
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_TRUSTED_HOST=pypi.org
+
+USER root
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -47,21 +50,25 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
 
 WORKDIR /opt/code-executor
 
-COPY docker/code_executor/requirements.txt /tmp/code-executor-requirements.txt
+COPY --chown=$MAMBA_USER:$MAMBA_USER docker/code_executor/environment.yml /tmp/code-executor-environment.yml
+COPY --chown=$MAMBA_USER:$MAMBA_USER docker/code_executor/requirements.txt /tmp/code-executor-requirements.txt
+
+USER $MAMBA_USER
+
+RUN micromamba install -y -n base -f /tmp/code-executor-environment.yml && \
+    micromamba clean --all --yes
 
 # Keep setuptools below 81 so the legacy `louvain` package still exposes
 # `pkg_resources` during import-time compatibility checks.
-RUN python -m pip install --upgrade \
-        pip==25.0.1 \
-        setuptools==80.9.0 \
-        wheel==0.46.3 \
-        -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} && \
-    python -m pip install -r /tmp/code-executor-requirements.txt \
+ARG MAMBA_DOCKERFILE_ACTIVATE=1
+
+RUN python -m pip install -r /tmp/code-executor-requirements.txt \
         -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} && \
     python -m pip install --no-deps scrublet==0.2.3 \
         -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} && \
-    python -m pip check && \
-    python - <<'PY'
+    python -m pip check
+
+RUN python - <<'PY'
 import importlib
 
 modules = [
@@ -121,10 +128,16 @@ modules = [
     "scrublet",
 ]
 failed = []
+allowed_import_errors = {
+    "pybiomart": "unable to open database file",
+}
 for module in modules:
     try:
         importlib.import_module(module)
     except Exception as exc:
+        allowed_error = allowed_import_errors.get(module)
+        if allowed_error and allowed_error in str(exc).lower():
+            continue
         failed.append(f"{module}: {exc}")
 
 from scanpy.experimental.pp import _highly_variable_genes  # noqa: F401

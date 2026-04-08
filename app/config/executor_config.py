@@ -7,6 +7,31 @@ from typing import Optional
 
 from app.services.foundation.settings import get_settings
 
+DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME = "docker"
+DEFAULT_CODE_EXECUTION_DOCKER_IMAGE = "gagent-python-runtime:latest"
+
+
+def resolve_code_execution_local_runtime(
+    value: Optional[str],
+    *,
+    default: str = DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME,
+) -> str:
+    raw = str(value or "").strip().lower()
+    if raw == "local":
+        return "host"
+    if raw in {"docker", "host"}:
+        return raw
+    return default
+
+
+def resolve_code_execution_docker_image(
+    value: Optional[str],
+    *,
+    default: str = DEFAULT_CODE_EXECUTION_DOCKER_IMAGE,
+) -> str:
+    raw = str(value or "").strip()
+    return raw or default
+
 
 @dataclass(frozen=True)
 class ExecutorSettings:
@@ -29,9 +54,12 @@ class ExecutorSettings:
     skill_max_per_task: int = 3
     skill_trace_enabled: bool = True
     code_execution_backend: str = "local"  # "local" | "qwen_code" | "claude_code"
+    code_execution_local_runtime: str = DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME
+    code_execution_docker_image: str = DEFAULT_CODE_EXECUTION_DOCKER_IMAGE
     # --- Layer 4: configurable limits ---
     deep_think_max_iterations: int = 12
     qc_max_session_turns: int = 50
+    qc_shell_timeout_ms: int = 600000
     code_execution_timeout: int = 120
     # --- Layer 1/3: auto-execution and recovery ---
     force_rerun: bool = False
@@ -137,11 +165,22 @@ def get_executor_settings() -> ExecutorSettings:
             defaults.code_execution_backend,
             {"local", "qwen_code", "claude_code"},
         ),
+        code_execution_local_runtime=resolve_code_execution_local_runtime(
+            os.getenv("CODE_EXECUTOR_LOCAL_RUNTIME"),
+            default=defaults.code_execution_local_runtime,
+        ),
+        code_execution_docker_image=resolve_code_execution_docker_image(
+            os.getenv("CODE_EXECUTOR_DOCKER_IMAGE"),
+            default=defaults.code_execution_docker_image,
+        ),
         deep_think_max_iterations=max(
             1, min(50, _env_int("DEEP_THINK_MAX_ITERATIONS", defaults.deep_think_max_iterations))
         ),
         qc_max_session_turns=max(
             10, min(500, _env_int("QC_MAX_SESSION_TURNS", defaults.qc_max_session_turns))
+        ),
+        qc_shell_timeout_ms=max(
+            1000, min(600000, _env_int("QC_SHELL_TIMEOUT_MS", defaults.qc_shell_timeout_ms))
         ),
         code_execution_timeout=max(
             30, min(3600, _env_int("CODE_EXECUTION_TIMEOUT", defaults.code_execution_timeout))
@@ -153,5 +192,11 @@ def get_executor_settings() -> ExecutorSettings:
         ),
     )
 
-
-__all__ = ["ExecutorSettings", "get_executor_settings"]
+__all__ = [
+    "DEFAULT_CODE_EXECUTION_DOCKER_IMAGE",
+    "DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME",
+    "ExecutorSettings",
+    "get_executor_settings",
+    "resolve_code_execution_docker_image",
+    "resolve_code_execution_local_runtime",
+]

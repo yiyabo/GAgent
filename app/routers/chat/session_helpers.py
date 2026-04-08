@@ -17,7 +17,12 @@ from app.llm import LLMClient
 # Constants
 # ---------------------------------------------------------------------------
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
-VALID_BASE_MODELS = {"qwen3.5-plus", "qwen3-max-2026-01-23", "qwen-turbo"}
+VALID_BASE_MODELS = {
+    "qwen3.6-plus",
+    "qwen3.5-plus",
+    "qwen3-max-2026-01-23",
+    "qwen-turbo",
+}
 VALID_LLM_PROVIDERS = {"qwen"}
 SESSION_RUNTIME_CONTEXT_KEYS = (
     "active_subject",

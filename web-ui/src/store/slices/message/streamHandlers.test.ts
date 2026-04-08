@@ -263,6 +263,25 @@ describe('streamHandlers session sync', () => {
     expect(metadata.deep_think_progress.history).toHaveLength(2);
   });
 
+  it('downgrades recoverable phase errors to retrying while the run is still active', () => {
+    const { store, ctx } = buildContext();
+
+    handleProgressStatus(ctx as any, {
+      phase: 'analyzing',
+      label: 'Analyzing findings',
+      status: 'failed',
+      iteration: 3,
+    });
+
+    const metadata: any = store.messages[0].metadata;
+    expect(metadata.deep_think_progress.current_tool).toBeNull();
+    expect(metadata.deep_think_progress.current_status).toBe('retrying');
+    expect(metadata.deep_think_progress.history).toHaveLength(1);
+    expect(metadata.deep_think_progress.history[0]).toMatchObject({
+      status: 'retrying',
+    });
+  });
+
   it('keeps generic progress labels out of expanded notes', () => {
     const { store, ctx } = buildContext();
 
