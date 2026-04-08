@@ -54,6 +54,15 @@ export interface DeliverableVersionSummary {
   published_modules: string[];
 }
 
+export interface DeliverablePaperStatus {
+  completed_sections: string[];
+  missing_sections: string[];
+  total_sections: number;
+  completed_count: number;
+  section_profile?: string;
+  applicable_sections?: string[];
+}
+
 export interface DeliverableListResponse {
   session_id: string;
   scope: 'latest' | 'history';
@@ -62,7 +71,11 @@ export interface DeliverableListResponse {
   modules: Record<string, DeliverableItem[]>;
   items: DeliverableItem[];
   count: number;
-  paper_status?: Record<string, any>;
+  paper_status?: DeliverablePaperStatus;
+  release_state?: 'draft' | 'final' | 'blocked' | string;
+  public_release_ready?: boolean;
+  release_summary?: string | null;
+  hidden_artifact_prefixes?: string[];
   available_versions: DeliverableVersionSummary[];
 }
 

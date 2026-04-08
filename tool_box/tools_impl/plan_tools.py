@@ -309,7 +309,7 @@ async def _review_plan(plan_id: Optional[int]) -> Dict[str, Any]:
         rubric_result = evaluate_plan_rubric(
             plan_tree,
             evaluator_provider="qwen",
-            evaluator_model="qwen3.5-plus",
+            evaluator_model="qwen3.6-plus",
         )
 
         # Persist evaluation into plan metadata (merge, do not overwrite).

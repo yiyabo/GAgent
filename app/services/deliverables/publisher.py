@@ -460,6 +460,8 @@ class DeliverablePublisher:
                     if copied is not None:
                         items.append(copied)
 
+        manuscript_result = self._extract_manuscript_result(raw_result)
+        manuscript_structure = self._extract_manuscript_structure_metadata(raw_result)
         manuscript_items: List[Dict[str, Any]] = []
         if not blocked_manuscript_release:
             manuscript_items = self._publish_manuscript_outputs(
@@ -488,6 +490,7 @@ class DeliverablePublisher:
         # summaries (e.g., "manuscript finished").
         if (
             not blocked_manuscript_release
+            and not isinstance(manuscript_result, dict)
             and not manuscript_has_section_artifacts
             and self._should_use_legacy_file_ingest(normalized_tool)
         ):
@@ -508,7 +511,13 @@ class DeliverablePublisher:
         paper_dir = latest_root / "paper"
         refs_dir = latest_root / "refs"
         if section is not None:
-            self._paper_builder.ensure_structure(paper_dir=paper_dir, refs_dir=refs_dir, title=title)
+            self._paper_builder.ensure_structure(
+                paper_dir=paper_dir,
+                refs_dir=refs_dir,
+                title=title,
+                section_profile=manuscript_structure.get("section_profile"),
+                section_order=manuscript_structure.get("applicable_sections"),
+            )
             section_path = self._paper_builder.update_section(
                 paper_dir=paper_dir,
                 section=section,
@@ -545,7 +554,13 @@ class DeliverablePublisher:
         bib_text_candidates = self._extract_bib_text_candidates(raw_result)
         if self._should_use_legacy_file_ingest(normalized_tool):
             for bib_text in bib_text_candidates:
-                self._paper_builder.ensure_structure(paper_dir=paper_dir, refs_dir=refs_dir, title=title)
+                self._paper_builder.ensure_structure(
+                    paper_dir=paper_dir,
+                    refs_dir=refs_dir,
+                    title=title,
+                    section_profile=manuscript_structure.get("section_profile"),
+                    section_order=manuscript_structure.get("applicable_sections"),
+                )
                 merged = self._paper_builder.merge_bib_entries(refs_dir=refs_dir, bib_text=bib_text)
                 if merged is None:
                     continue
@@ -569,16 +584,30 @@ class DeliverablePublisher:
                 "missing_sections": [],
                 "total_sections": 0,
                 "completed_count": 0,
+                "section_profile": manuscript_structure.get("section_profile") or "research",
+                "applicable_sections": [],
             }
         elif paper_dir.exists() and (items or self._manifest_items_from_manifest(previous_manifest)):
-            self._paper_builder.ensure_structure(paper_dir=paper_dir, refs_dir=refs_dir, title=title)
-            paper_status = self._paper_builder.get_status(paper_dir=paper_dir).to_dict()
+            self._paper_builder.ensure_structure(
+                paper_dir=paper_dir,
+                refs_dir=refs_dir,
+                title=title,
+                section_profile=manuscript_structure.get("section_profile"),
+                section_order=manuscript_structure.get("applicable_sections"),
+            )
+            paper_status = self._paper_builder.get_status(
+                paper_dir=paper_dir,
+                section_profile=manuscript_structure.get("section_profile"),
+                section_order=manuscript_structure.get("applicable_sections"),
+            ).to_dict()
         else:
             paper_status = {
                 "completed_sections": [],
                 "missing_sections": [],
                 "total_sections": 0,
                 "completed_count": 0,
+                "section_profile": manuscript_structure.get("section_profile") or "research",
+                "applicable_sections": [],
             }
 
         deduped_updates = self._dedupe_items(items)
@@ -707,13 +736,85 @@ class DeliverablePublisher:
             "hidden_artifact_prefixes": hidden_artifact_prefixes,
         }
 
+    def _extract_manuscript_structure_metadata(self, payload: Any) -> Dict[str, Any]:
+        manuscript_result = self._extract_manuscript_result(payload)
+        section_profile = "research"
+        applicable_sections: List[str] = []
+        if isinstance(manuscript_result, dict):
+            raw_profile = manuscript_result.get("section_profile")
+            section_profile = self._paper_builder.normalize_section_profile(
+                raw_profile if isinstance(raw_profile, str) else None
+            )
+            raw_applicable = manuscript_result.get("applicable_sections")
+            if isinstance(raw_applicable, list):
+                for item in raw_applicable:
+                    normalized = self._normalize_manuscript_section(str(item or "").strip()) or str(item or "").strip().lower()
+                    if normalized and normalized != "references" and normalized not in applicable_sections:
+                        applicable_sections.append(normalized)
+            elif isinstance(manuscript_result.get("sections"), list):
+                for row in manuscript_result.get("sections") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    normalized = self._normalize_manuscript_section(str(row.get("section") or "").strip())
+                    if normalized and normalized not in applicable_sections:
+                        applicable_sections.append(normalized)
+        if not applicable_sections:
+            applicable_sections = list(
+                self._paper_builder.section_order(section_profile=section_profile)
+            )
+        return {
+            "section_profile": section_profile,
+            "applicable_sections": applicable_sections,
+        }
+
     @staticmethod
     def _is_blocked_manuscript_release(tool_name: str, raw_result: Any) -> bool:
         normalized_tool = str(tool_name or "").strip().lower()
         if normalized_tool not in {"manuscript_writer", "review_pack_writer"}:
             return False
         release_meta = DeliverablePublisher._extract_release_metadata(raw_result)
+        release_state = str(release_meta.get("release_state") or "").strip().lower()
+        if release_state:
+            return release_state == "blocked"
         return not bool(release_meta.get("public_release_ready"))
+
+    def _paper_file_is_substantive(self, file_path: Path) -> bool:
+        if not file_path.exists() or not file_path.is_file():
+            return False
+        rel = str(file_path).replace("\\", "/")
+        if rel.endswith("/paper/main.tex"):
+            sections_dir = file_path.parent / "sections"
+            if not sections_dir.exists():
+                return False
+            for section_file in sections_dir.glob("*.tex"):
+                try:
+                    if self._paper_builder.is_substantive_section_text(
+                        section_file.read_text(encoding="utf-8")
+                    ):
+                        return True
+                except Exception:
+                    continue
+            return False
+        if file_path.suffix.lower() == ".tex" and file_path.parent.name == "sections":
+            try:
+                return self._paper_builder.is_substantive_section_text(
+                    file_path.read_text(encoding="utf-8")
+                )
+            except Exception:
+                return False
+        return True
+
+    @staticmethod
+    def _refs_file_is_substantive(file_path: Path) -> bool:
+        if not file_path.exists() or not file_path.is_file():
+            return False
+        if file_path.suffix.lower() != ".bib":
+            return True
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except Exception:
+            return False
+        return bool(re.search(r"@\w+\s*\{", text))
 
     @staticmethod
     def _parse_bibtex_entries(bib_text: str) -> Dict[str, Dict[str, str]]:
@@ -915,13 +1016,32 @@ class DeliverablePublisher:
         paper_dir = latest_root / "paper"
         refs_dir = latest_root / "refs"
         docs_dir = latest_root / "docs"
-        self._paper_builder.ensure_structure(paper_dir=paper_dir, refs_dir=refs_dir, title=title)
         docs_dir.mkdir(parents=True, exist_ok=True)
+        structure_meta = self._extract_manuscript_structure_metadata(manuscript_result)
+        section_profile = structure_meta.get("section_profile")
+        applicable_sections = structure_meta.get("applicable_sections")
+        paper_structure_initialized = False
+        published_paper_sections = False
+
+        def _ensure_paper_structure() -> None:
+            nonlocal paper_structure_initialized
+            if paper_structure_initialized:
+                return
+            self._paper_builder.ensure_structure(
+                paper_dir=paper_dir,
+                refs_dir=refs_dir,
+                title=title,
+                section_profile=section_profile if isinstance(section_profile, str) else None,
+                section_order=applicable_sections if isinstance(applicable_sections, list) else None,
+            )
+            paper_structure_initialized = True
 
         sections_payload = manuscript_result.get("sections")
         if isinstance(sections_payload, list):
             for row in sections_payload:
                 if not isinstance(row, dict):
+                    continue
+                if row.get("substantive") is False:
                     continue
                 raw_section = str(row.get("section") or "").strip().lower()
                 section_key = self._normalize_manuscript_section(raw_section)
@@ -970,11 +1090,13 @@ class DeliverablePublisher:
                     continue
                 if not section_key:
                     continue
+                _ensure_paper_structure()
                 section_path = self._paper_builder.update_section(
                     paper_dir=paper_dir,
                     section=section_key,
                     content=text,
                 )
+                published_paper_sections = True
                 items.append(
                     {
                         "module": "paper",
@@ -1000,6 +1122,11 @@ class DeliverablePublisher:
                             "source_path": self._to_project_relative(source),
                         }
                     )
+
+        if not published_paper_sections:
+            shutil.rmtree(paper_dir, ignore_errors=True)
+            if refs_dir.exists() and not any(self._refs_file_is_substantive(path) for path in refs_dir.rglob("*") if path.is_file()):
+                shutil.rmtree(refs_dir, ignore_errors=True)
 
         analysis_ref = manuscript_result.get("effective_analysis_path") or manuscript_result.get("analysis_path")
         if isinstance(analysis_ref, str) and analysis_ref.strip():
@@ -1353,8 +1480,12 @@ class DeliverablePublisher:
 
     def _file_belongs_in_deliverables(self, file_path: Path, module: str) -> bool:
         """Heuristic check for orphan files with no source tracking."""
-        if module in {"paper", "refs", "docs"}:
+        if module == "docs":
             return True
+        if module == "paper":
+            return self._paper_file_is_substantive(file_path)
+        if module == "refs":
+            return self._refs_file_is_substantive(file_path)
         if module == "image_tabular":
             return file_path.suffix.lower() in (IMAGE_EXTS | TABULAR_EXTS | {".pdf"})
         if module == "code":
@@ -1609,6 +1740,10 @@ class DeliverablePublisher:
             return False
         if module == "docs":
             return self._is_allowed_doc_file(source_path)
+        if module == "paper":
+            return self._paper_file_is_substantive(source_path)
+        if module == "refs":
+            return self._refs_file_is_substantive(source_path)
         if module == "code":
             return self._is_allowed_code_file(source_path)
         return True

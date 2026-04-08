@@ -15,6 +15,10 @@ from .prompts.coder_prompt import (
 
 logger = logging.getLogger(__name__)
 
+_CODEGEN_REQUEST_TIMEOUT_SEC = 180
+_CODEGEN_SERVICE_ATTEMPTS = 2
+_CODEGEN_CLIENT_RETRIES = 0
+
 
 class CodeTaskResponse(BaseModel):
     """Structured response returned by code generation prompts."""
@@ -102,6 +106,17 @@ class CodeGenerator:
             datasets_info.append(dataset_info)
         return "\n\n".join(datasets_info)
 
+    def _chat_with_codegen_budget(self, prompt: str) -> str:
+        kwargs = {
+            "timeout": _CODEGEN_REQUEST_TIMEOUT_SEC,
+            "retry_attempts": _CODEGEN_SERVICE_ATTEMPTS,
+            "retries": _CODEGEN_CLIENT_RETRIES,
+        }
+        try:
+            return self.llm.chat(prompt=prompt, **kwargs)
+        except TypeError:
+            return self.llm.chat(prompt=prompt)
+
     def generate(
         self,
         metadata_list: List[DatasetMetadata],
@@ -132,7 +147,7 @@ class CodeGenerator:
 
         full_prompt = f"{self.system_prompt}\n\n{user_prompt}"
 
-        response_text = self.llm.chat(prompt=full_prompt)
+        response_text = self._chat_with_codegen_budget(full_prompt)
         return CodeTaskResponse.parse_from_llm_output(response_text)
 
     def fix_code(
@@ -179,7 +194,7 @@ class CodeGenerator:
             full_prompt = f"{self.system_prompt}\n\n{user_prompt}"
 
             try:
-                response_text = self.llm.chat(prompt=full_prompt)
+                response_text = self._chat_with_codegen_budget(full_prompt)
                 result = CodeTaskResponse.parse_from_llm_output(response_text)
 
                 if result.code and result.code.strip():

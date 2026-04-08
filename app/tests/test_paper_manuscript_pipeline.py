@@ -353,6 +353,59 @@ def test_manuscript_writer_scopes_relative_output_path_to_session_dir(
     assert output_file.read_text(encoding="utf-8").strip()
 
 
+def test_manuscript_writer_draft_only_mode_skips_quality_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (_ for _ in ()).throw(AssertionError("_build_llm_service should not be called in draft_only mode")),
+    )
+
+    async def _unexpected_chat(_llm, _prompt: str, _model):
+        raise AssertionError("_chat should not be called in draft_only mode")
+
+    monkeypatch.setattr(manuscript_writer_module, "_chat", _unexpected_chat)
+
+    ctx_path = tmp_path / "manuscript" / "results" / "5.1.3.1_atlas_composition.md"
+    ctx_path.parent.mkdir(parents=True, exist_ok=True)
+    ctx_path.write_text("## Results\nIntegrated findings.", encoding="utf-8")
+
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Assemble a local manuscript draft.",
+            output_path="runtime/session_demo/manuscript/manuscript_draft.md",
+            context_paths=["manuscript/results/5.1.3.1_atlas_composition.md"],
+            sections=["abstract", "result", "references"],
+            draft_only=True,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["draft_only"] is True
+    assert result["release_state"] == "draft"
+    assert result["public_release_ready"] is False
+    assert result["output_path"] == "runtime/session_demo/manuscript/manuscript_draft.md"
+    assert result["analysis_path"] == "runtime/session_demo/manuscript/manuscript_draft.md.analysis.md"
+    assert result["section_profile"] == "bio_manuscript"
+    assert result["applicable_sections"] == ["abstract", "result"]
+    assert result["completed_sections"] == ["result"]
+    assert result["missing_sections"] == ["abstract"]
+    assert len(result["sections"]) == 1
+    assert result["run_stats"]["draft_only"] is True
+    assert result["run_stats"]["source_file_count"] == 1
+
+    output_file = tmp_path / "runtime" / "session_demo" / "manuscript" / "manuscript_draft.md"
+    section_file = tmp_path / "runtime" / "session_demo" / "manuscript" / ".manuscript_draft_sections" / "02_result.md"
+    assert output_file.exists()
+    assert section_file.exists()
+    assert "Integrated findings" in output_file.read_text(encoding="utf-8")
+    assert "Integrated findings" in section_file.read_text(encoding="utf-8")
+
+
 def test_manuscript_writer_blocks_release_when_final_polish_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

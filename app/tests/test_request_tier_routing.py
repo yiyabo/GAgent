@@ -37,6 +37,19 @@ def test_request_tier_routes_latest_sources_request_to_research_auto_deepthink()
     assert "time_sensitive_cue" in decision.route_reason_codes
 
 
+def test_bound_local_manuscript_assembly_routes_to_execute_not_research() -> None:
+    decision = resolve_request_routing(
+        message="请基于已完成任务整合生成最终论文草稿，不要查文献，也不要重新分析。",
+        plan_id=68,
+        current_task_id=66,
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.request_tier == "execute"
+    assert "intent_manuscript_assembly" in decision.route_reason_codes
+    assert "intent_research" not in decision.route_reason_codes
+
+
 def test_request_tier_routes_attachment_request_to_execute_auto_deepthink() -> None:
     decision = resolve_request_routing(
         message="帮我分析这个文件",
@@ -294,6 +307,54 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
     assert "code_executor" in profile.available_tools
     assert "deliverable_submit" in profile.available_tools
     assert profile.max_iterations == 2
+
+
+def test_brief_local_inspect_followup_with_depth_cue_promotes_to_standard() -> None:
+    decision = resolve_request_routing(
+        message="详细分析一下里面的数据",
+        context={
+            "active_subject": {
+                "kind": "workspace",
+                "canonical_ref": "data/demo",
+                "display_ref": "data/demo",
+                "verification_state": "verified",
+                "salience": 5,
+                "last_referenced_turn": 2,
+            }
+        },
+        history=[
+            {"role": "user", "content": "看看 data/demo 里有什么"},
+            {"role": "assistant", "content": "我先看一下。"},
+        ],
+    )
+
+    assert decision.intent_type == "local_inspect"
+    assert decision.request_tier == "standard"
+    assert "brief_followup_depth" in decision.route_reason_codes
+
+
+def test_followthrough_data_analysis_followup_routes_to_execute_task() -> None:
+    decision = resolve_request_routing(
+        message="那你可以继续去分析一下这个数据了",
+        context={
+            "active_subject": {
+                "kind": "file",
+                "canonical_ref": "/Users/apple/LLM/agent/phagescope/batch_test_phageids.txt",
+                "display_ref": "/Users/apple/LLM/agent/phagescope/batch_test_phageids.txt",
+                "verification_state": "verified",
+                "salience": 5,
+                "last_referenced_turn": 3,
+            }
+        },
+        history=[
+            {"role": "user", "content": "看看这个数据"},
+            {"role": "assistant", "content": "我已经读了目录和文件预览。"},
+        ],
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.request_tier == "execute"
+    assert "intent_execute_task" in decision.route_reason_codes
 
 
 def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
@@ -867,7 +928,7 @@ def test_explicit_task_override_execute_profile_gets_more_iterations() -> None:
         simple_thinking_budget=2000,
         default_max_iterations=64,
     )
-    assert profile.max_iterations == 16
+    assert profile.max_iterations == 48
 
 
 def test_explicit_task_id_does_not_override_genuine_execute() -> None:

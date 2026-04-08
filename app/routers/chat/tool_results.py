@@ -390,6 +390,85 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             if compact_metadata:
                 sanitized["metadata"] = compact_metadata
 
+        profile_mode = raw_result.get("profile_mode")
+        if isinstance(profile_mode, str) and profile_mode.strip():
+            sanitized["profile_mode"] = profile_mode.strip()
+
+        profile = raw_result.get("profile")
+        if isinstance(profile, dict):
+            compact_profile: Dict[str, Any] = {}
+            structured = profile.get("structured_datasets")
+            if isinstance(structured, list):
+                compact_structured: List[Dict[str, Any]] = []
+                for item in structured[:5]:
+                    if not isinstance(item, dict):
+                        continue
+                    compact_item: Dict[str, Any] = {}
+                    for key in (
+                        "filename",
+                        "file_format",
+                        "total_rows",
+                        "total_columns",
+                    ):
+                        if key in item:
+                            compact_item[key] = item.get(key)
+                    column_names = _compact_column_names(item.get("column_names"))
+                    if column_names:
+                        compact_item["column_names"] = column_names
+                    if compact_item:
+                        compact_structured.append(compact_item)
+                if compact_structured:
+                    compact_profile["structured_datasets"] = compact_structured
+
+            lookup_files = profile.get("lookup_files")
+            if isinstance(lookup_files, list):
+                compact_lookup: List[Dict[str, Any]] = []
+                for item in lookup_files[:5]:
+                    if not isinstance(item, dict):
+                        continue
+                    compact_item: Dict[str, Any] = {}
+                    for key in ("filename", "entry_count"):
+                        if key in item:
+                            compact_item[key] = item.get(key)
+                    samples = item.get("sample_values")
+                    if isinstance(samples, list) and samples:
+                        compact_item["sample_values"] = [
+                            str(value).strip() for value in samples[:3] if str(value).strip()
+                        ]
+                    if compact_item:
+                        compact_lookup.append(compact_item)
+                if compact_lookup:
+                    compact_profile["lookup_files"] = compact_lookup
+
+            identifier_matches = profile.get("identifier_matches")
+            if isinstance(identifier_matches, list):
+                compact_matches: List[Dict[str, Any]] = []
+                for item in identifier_matches[:5]:
+                    if not isinstance(item, dict):
+                        continue
+                    compact_item: Dict[str, Any] = {}
+                    for key in (
+                        "lookup_file",
+                        "dataset",
+                        "identifier_column",
+                        "lookup_count",
+                        "matched_count",
+                        "missing_count",
+                    ):
+                        if key in item:
+                            compact_item[key] = item.get(key)
+                    if compact_item:
+                        compact_matches.append(compact_item)
+                if compact_matches:
+                    compact_profile["identifier_matches"] = compact_matches
+
+            profile_summary = profile.get("summary")
+            if isinstance(profile_summary, str) and profile_summary.strip():
+                compact_profile["summary"] = _trim_text(profile_summary, limit=1200)
+
+            if compact_profile:
+                sanitized["profile"] = compact_profile
+
         code_description = raw_result.get("code_description")
         if isinstance(code_description, str) and code_description.strip():
             sanitized["code_description"] = _trim_text(code_description, limit=300)

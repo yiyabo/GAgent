@@ -73,6 +73,54 @@ def test_summarize_result_interpreter_uses_execution_summary() -> None:
     assert "任务已完成" in summary
 
 
+def test_sanitize_result_interpreter_profile_keeps_compact_profile_summary() -> None:
+    raw = {
+        "success": True,
+        "operation": "profile",
+        "profile_mode": "deterministic",
+        "execution_status": "success",
+        "execution_output": "Deterministic dataset profile (code-derived, no model synthesis):",
+        "profile": {
+            "structured_datasets": [
+                {
+                    "filename": "gvd.tsv",
+                    "file_format": "tsv",
+                    "total_rows": 2,
+                    "total_columns": 3,
+                    "column_names": ["Phage_ID", "Length", "Host"],
+                }
+            ],
+            "lookup_files": [
+                {
+                    "filename": "batch_test_phageids.txt",
+                    "entry_count": 2,
+                    "sample_values": ["phage_a", "phage_missing"],
+                }
+            ],
+            "identifier_matches": [
+                {
+                    "lookup_file": "batch_test_phageids.txt",
+                    "dataset": "gvd.tsv",
+                    "identifier_column": "Phage_ID",
+                    "lookup_count": 2,
+                    "matched_count": 1,
+                    "missing_count": 1,
+                }
+            ],
+            "summary": "Deterministic dataset profile (code-derived, no model synthesis):\n- gvd.tsv: 2 rows x 3 columns",
+        },
+    }
+
+    sanitized = sanitize_tool_result("result_interpreter", raw)
+    summary = summarize_tool_result("result_interpreter", sanitized)
+
+    assert sanitized["profile_mode"] == "deterministic"
+    assert sanitized["profile"]["structured_datasets"][0]["filename"] == "gvd.tsv"
+    assert sanitized["profile"]["identifier_matches"][0]["matched_count"] == 1
+    assert "result_interpreter profile succeeded" in summary
+    assert "Deterministic dataset profile" in summary
+
+
 def test_summarize_terminal_session_write_defaults_to_dispatch_summary() -> None:
     sanitized = sanitize_tool_result(
         "terminal_session",

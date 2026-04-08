@@ -44,6 +44,20 @@ else
     echo "Warning: sync_skills.sh not found or not executable"
 fi
 
+# Ensure code_executor Docker image exists (Docker Desktop may garbage-collect it)
+_CODE_EXECUTOR_IMAGE="${CODE_EXECUTOR_DOCKER_IMAGE:-gagent-python-runtime:latest}"
+if docker image inspect "$_CODE_EXECUTOR_IMAGE" >/dev/null 2>&1; then
+  echo "Docker image $_CODE_EXECUTOR_IMAGE found."
+else
+  echo "Docker image $_CODE_EXECUTOR_IMAGE missing — rebuilding..."
+  if [ -x "$ROOT_DIR/scripts/build_code_executor_image.sh" ]; then
+    bash "$ROOT_DIR/scripts/build_code_executor_image.sh"
+    echo "Docker image rebuilt."
+  else
+    echo "Warning: build_code_executor_image.sh not found, code_executor may fail."
+  fi
+fi
+
 start_bg() {
   local name="$1"
   local cmd="$2"

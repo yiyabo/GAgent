@@ -1,5 +1,6 @@
 import asyncio
 import json
+from types import SimpleNamespace
 import pytest  # pylint: disable=import-error  # type: ignore[import-unresolved]
 from pathlib import Path
 
@@ -584,6 +585,44 @@ def test_local_backend_collects_custom_acceptance_output_dirs(
     assert any(path.endswith("figures_raw/figure_inventory.log") for path in result["artifact_paths"])
 
 
+def test_code_executor_handler_passes_docker_image_override_to_local_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    captured = {}
+
+    async def _fake_local(**kwargs):
+        captured.update(kwargs)
+        work_dir = Path(kwargs["work_dir"])
+        results_dir = work_dir / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "plot.png").write_bytes(b"png")
+        return {
+            "success": True,
+            "stdout": "ok\n",
+            "stderr": "",
+            "exit_code": 0,
+            "code_file": str(work_dir / "task_code.py"),
+            "result": "generated plot.png",
+            "execution_mode": "code_executor_docker",
+            "docker_image_effective": "custom:image",
+        }
+
+    monkeypatch.setattr(code_executor_module, "_execute_task_locally", _fake_local)
+
+    result = asyncio.run(
+        code_executor_module.code_executor_handler(
+            task="generate a plot",
+            docker_image="custom:image",
+            require_task_context=False,
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["docker_image"] == "custom:image"
+
+
 def test_execute_task_locally_blocks_before_generation_on_incomplete_dependency(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -800,6 +839,29 @@ class TestQwenCodeCLI:
             model=None, debug=True, allowed_dirs_info="",
         )
         assert "-d" in cmd
+
+    def test_build_qwen_code_command_includes_shell_timeout_guidance(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.config.executor_config.get_executor_settings",
+            lambda: SimpleNamespace(
+                qc_max_session_turns=50,
+                qc_shell_timeout_ms=420000,
+            ),
+        )
+        cmd = _build_qwen_code_command(
+            task="install dependencies",
+            work_dir="/tmp",
+            file_prefix="run",
+            output_format="json",
+            allowed_tools=["Bash"],
+            allowed_dirs=[],
+            model=None,
+            debug=False,
+            allowed_dirs_info="",
+        )
+        prompt_text = cmd[cmd.index("-p") + 1]
+        assert "timeout` parameter explicitly to 420000 milliseconds" in prompt_text
+        assert "default 120000ms timeout" in prompt_text
 
     def test_build_qwen_code_command_includes_bound_task_context(self):
         cmd = _build_qwen_code_command(

@@ -88,6 +88,7 @@ _MODEL_CONTEXT_WINDOWS: Dict[str, int] = {
     "qwen-plus": 131072,
     "qwen-max": 131072,
     "qwen-turbo": 131072,
+    "qwen3.6-plus": 256000,
     "qwen3.5-plus": 131072,
     "qwen-long": 1000000,
     "kimi-k2.5": 131072,
@@ -139,7 +140,7 @@ class ContextWindowManager:
 
     Usage::
 
-        mgr = ContextWindowManager(model="qwen3.5-plus")
+        mgr = ContextWindowManager(model="qwen3.6-plus")
         messages = [...]
 
         # Check if compaction needed before LLM call

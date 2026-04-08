@@ -178,6 +178,64 @@ def test_sync_task_status_runs_for_scoped_code_executor() -> None:
     assert len(repo.cascaded) == 1
 
 
+def test_sync_task_status_skips_for_non_paper_manuscript_writer() -> None:
+    repo = _RepoTaskSyncWithTreeStub(_build_tree())
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 30}
+    agent._dirty = False
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="manuscript_writer",
+        success=True,
+        summary="drafted",
+        message="drafted",
+        params={"task": "Write a manuscript draft", "output_path": "manuscript/manuscript_draft.md"},
+    )
+
+    assert repo.updated == []
+    assert repo.cascaded == []
+
+
+def test_sync_task_status_runs_for_paper_manuscript_writer() -> None:
+    root = PlanNode(
+        id=1,
+        plan_id=49,
+        name="Root",
+        status="pending",
+    )
+    paper_leaf = PlanNode(
+        id=30,
+        plan_id=49,
+        name="Methods subsection",
+        status="pending",
+        parent_id=1,
+        metadata={"paper_mode": True},
+    )
+    tree = PlanTree(
+        id=49,
+        title="Plan 49",
+        nodes={1: root, 30: paper_leaf},
+        adjacency={None: [1], 1: [30], 30: []},
+    )
+    repo = _RepoTaskSyncWithTreeStub(tree)
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 30}
+    agent._dirty = False
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="manuscript_writer",
+        success=True,
+        summary="drafted",
+        message="drafted",
+        params={"task": "Write a methods subsection", "output_path": "manuscript/methods/method.md"},
+    )
+
+    assert len(repo.updated) == 1
+    assert len(repo.cascaded) == 1
+
+
 def test_sync_task_status_skips_for_read_only_file_operations() -> None:
     repo = _RepoTaskSyncStub()
     agent = StructuredChatAgent.__new__(StructuredChatAgent)

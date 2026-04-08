@@ -393,6 +393,8 @@ class DeepThinkAgent:
     MAX_IDENTICAL_TOOL_CALL_CYCLES = 4
     EXTERNAL_RETRIABLE_TOOLS = frozenset({"web_search", "literature_pipeline"})
     MAX_EXTERNAL_TOOL_RETRIES = 1
+    MAX_TOOL_RESULT_TEXT_CHARS = 12_000
+    MAX_FILE_OPERATION_LIST_SAMPLE_ITEMS = 40
 
     ARTIFACT_PATH_RE = re.compile(
         r'(?:saved?|writ(?:ten|e)|created?|generated?|output|produced?|exported?)\s+'
@@ -1787,6 +1789,245 @@ class DeepThinkAgent:
             return text
         return f"{normalized_notice}\n\n{text}"
 
+    @classmethod
+    def _collect_execute_truth_events(
+        cls,
+        steps: Sequence[ThinkingStep],
+    ) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
+        order = 0
+        for step in steps:
+            for entry in cls._extract_tool_payloads_from_step(step):
+                tool_name = str(entry.get("tool") or "").strip().lower()
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                inner = cls._unwrap_tool_result(payload)
+                if not isinstance(inner, dict):
+                    continue
+
+                raw_success = inner.get("success")
+                if raw_success is None:
+                    raw_success = payload.get("success")
+                success = bool(raw_success) if raw_success is not None else False
+
+                operation = str(
+                    inner.get("operation")
+                    or payload.get("operation")
+                    or ""
+                ).strip().lower()
+                task_type = str(inner.get("task_type") or "").strip().lower()
+                execution_status = str(inner.get("execution_status") or "").strip().lower()
+                verification_state = str(inner.get("verification_state") or "").strip().lower()
+
+                kind: Optional[str] = None
+                trusted = False
+                if tool_name == "result_interpreter":
+                    if operation in {"profile", "metadata"} or (
+                        operation == "analyze" and task_type == "text_only"
+                    ):
+                        kind = "profile"
+                        trusted = success
+                    elif operation in {"execute", "analyze"}:
+                        kind = "execution"
+                        trusted = success and (
+                            execution_status == "success" or not execution_status
+                        )
+                elif tool_name == "terminal_session":
+                    if operation == "write":
+                        kind = "execution"
+                        trusted = success and verification_state == "verified_success"
+                elif tool_name in cls._CODE_EXECUTION_TOOLS:
+                    kind = "execution"
+                    trusted = success
+
+                if kind is None:
+                    continue
+
+                summary_text = ""
+                profile_payload = inner.get("profile")
+                if isinstance(profile_payload, dict):
+                    profile_summary = profile_payload.get("summary")
+                    if isinstance(profile_summary, str) and profile_summary.strip():
+                        summary_text = profile_summary.strip()
+                if not summary_text:
+                    execution_output = inner.get("execution_output")
+                    if isinstance(execution_output, str) and execution_output.strip():
+                        summary_text = execution_output.strip()
+                if not summary_text:
+                    for key in ("summary", "error", "execution_error", "message"):
+                        candidate = str(
+                            inner.get(key) or payload.get(key) or ""
+                        ).strip()
+                        if candidate:
+                            summary_text = candidate
+                            break
+
+                error_text = str(
+                    inner.get("error")
+                    or inner.get("execution_error")
+                    or payload.get("error")
+                    or ""
+                ).strip()
+
+                events.append(
+                    {
+                        "order": order,
+                        "iteration": step.iteration,
+                        "tool": tool_name,
+                        "operation": operation,
+                        "kind": kind,
+                        "success": success,
+                        "trusted": trusted,
+                        "summary_text": summary_text,
+                        "error": error_text,
+                    }
+                )
+                order += 1
+        return events
+
+    def _build_execute_failure_warning(
+        self,
+        *,
+        user_query: str,
+        failed_event: Dict[str, Any],
+    ) -> str:
+        """Soft warning prepended to the model's answer when execution failed
+        but the model produced substantive content from read-only tools."""
+        language = detect_reasoning_language(user_query or "")
+        tool_name = str(failed_event.get("tool") or "execution tool").strip()
+        failure_detail = str(
+            failed_event.get("error")
+            or failed_event.get("summary_text")
+            or "unknown failure"
+        ).strip()
+        return _localized_text(
+            language,
+            (
+                f"> ⚠️ **注意**：本轮主执行工具未成功（{tool_name} 失败：{failure_detail}）。"
+                "以下内容基于文件读取工具的输出，统计数值未经代码验证，仅供参考。"
+            ),
+            (
+                f"> ⚠️ **Warning**: The main execution tool failed in this run "
+                f"({tool_name}: {failure_detail}). "
+                f"The content below is based on file-reading tools; "
+                f"statistical figures are not code-verified and should be treated as approximate."
+            ),
+        )
+
+    def _build_execute_failure_truth_barrier(
+        self,
+        *,
+        user_query: str,
+        failed_event: Dict[str, Any],
+        profile_text: Optional[str] = None,
+    ) -> str:
+        language = detect_reasoning_language(user_query or profile_text or "")
+        tool_name = str(failed_event.get("tool") or "execution tool").strip()
+        failure_detail = str(
+            failed_event.get("error")
+            or failed_event.get("summary_text")
+            or "unknown failure"
+        ).strip()
+
+        if profile_text:
+            return _localized_text(
+                language,
+                (
+                    f"说明：本轮真正的执行工具未成功完成（{tool_name} 失败：{failure_detail}）。"
+                    "下面只保留本轮已验证的确定性数据 profile 结果，不把它当作完整分析已完成：\n\n"
+                    f"{profile_text}"
+                ),
+                (
+                    f"Note: The main execution tool did not complete successfully in this run "
+                    f"({tool_name} failed: {failure_detail}). The content below is limited to "
+                    f"verified deterministic dataset profiling from this run and should not be "
+                    f"treated as a completed full analysis.\n\n{profile_text}"
+                ),
+            )
+
+        return _localized_text(
+            language,
+            (
+                f"本轮真正的执行工具未成功完成（{tool_name} 失败：{failure_detail}）。"
+                "因此不能把后续分析性表述视为已验证结论。当前只能确认执行被该错误阻塞；"
+                "如需继续，请先修复该失败原因后再重新运行。"
+            ),
+            (
+                f"The main execution tool did not complete successfully in this run "
+                f"({tool_name} failed: {failure_detail}). Any later analysis-style narrative "
+                f"cannot be treated as verified. At this point the run is blocked by that error; "
+                f"fix the failure first and rerun to obtain a trustworthy result."
+            ),
+        )
+
+    def _apply_execute_failure_truth_barrier(
+        self,
+        answer: str,
+        *,
+        user_query: str,
+        steps: Sequence[ThinkingStep],
+    ) -> str:
+        text = str(answer or "").strip()
+        if not text or not self._is_execute_task_request():
+            return text
+
+        events = self._collect_execute_truth_events(steps)
+        failed_execution_events = [
+            event
+            for event in events
+            if event.get("kind") == "execution" and not event.get("success")
+        ]
+        if not failed_execution_events:
+            return text
+
+        last_failure = failed_execution_events[-1]
+        last_failure_order = int(last_failure.get("order", -1))
+        later_events = [
+            event for event in events if int(event.get("order", -1)) > last_failure_order
+        ]
+
+        if any(
+            event.get("kind") == "execution" and event.get("trusted")
+            for event in later_events
+        ):
+            return text
+
+        profile_recovery = next(
+            (
+                event
+                for event in reversed(later_events)
+                if event.get("kind") == "profile"
+                and event.get("trusted")
+                and str(event.get("summary_text") or "").strip()
+            ),
+            None,
+        )
+        if profile_recovery is not None:
+            barrier = self._build_execute_failure_truth_barrier(
+                user_query=user_query,
+                failed_event=last_failure,
+                profile_text=str(profile_recovery.get("summary_text") or "").strip(),
+            )
+            return barrier
+
+        # Check if the model's answer contains substantive content from
+        # successful read tools (document_reader, file_operations, etc.).
+        # If so, prepend a warning instead of replacing the entire answer,
+        # so partial results are preserved for the user.
+        has_substantive_answer = len(text) > 200
+        if has_substantive_answer:
+            warning = self._build_execute_failure_warning(
+                user_query=user_query,
+                failed_event=last_failure,
+            )
+            return f"{warning}\n\n---\n\n{text}"
+
+        return self._build_execute_failure_truth_barrier(
+            user_query=user_query,
+            failed_event=last_failure,
+        )
+
     @staticmethod
     def _unwrap_tool_result(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Return the innermost result dict, handling nested {result: {...}} wrappers."""
@@ -2176,7 +2417,15 @@ class DeepThinkAgent:
     def _build_request_tier_block(self) -> str:
         tier = self._request_tier()
         floor = (self._capability_floor() or "plain_chat").strip().lower()
+        intent_type = str(self.request_profile.get("intent_type") or "").strip().lower()
         non_plain = floor != "plain_chat"
+        local_inspect_note = (
+            "- For local inspection requests asking what's inside, schema, columns, previews, or a quick dataset overview, start with file_operations, document_reader, or result_interpreter metadata/profile and keep the path lightweight.\n"
+            "- Prefer result_interpreter profile for deterministic row/column counts, sample values, and simple ID-overlap checks on local CSV/TSV-style datasets.\n"
+            "- Do not jump to result_interpreter analyze or code_executor unless the user clearly needs calculations, transformations, or plots.\n"
+            if non_plain and intent_type == "local_inspect"
+            else ""
+        )
         light_tool_note = (
             "\n- Capability is not plain_chat: use tools when the answer depends on file/workspace/remote state; "
             "a no-tool guess is not an acceptable substitute for a check you could run.\n"
@@ -2195,6 +2444,7 @@ class DeepThinkAgent:
                 "- Use the smallest amount of explanation that fully answers the user.\n"
                 "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
                 "- Prefer finishing in one short reasoning pass.\n"
+                + local_inspect_note
                 + light_tool_note
             )
         if tier == "standard":
@@ -2204,6 +2454,7 @@ class DeepThinkAgent:
                 "- Avoid research style output unless the user explicitly asks for sources or latest information.\n"
                 "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
                 "- Prefer low-overhead execution, but do not ignore required evidence.\n"
+                + local_inspect_note
                 + std_tool_note
             )
         if tier == "research":
@@ -2230,6 +2481,7 @@ class DeepThinkAgent:
                 "- Keep the tone professional and execution-focused; avoid decorative emojis or cheerleading.\n"
                 "- Use web_search only to fill a concrete factual gap that blocks execution quality.\n"
                 "- For a bound execute_task request, observation-only probing is only a short precursor. After one observation-only cycle, move to real execution or report BLOCKED_DEPENDENCY.\n"
+                "- For local structured-data overview/schema/count/sample-value requests, prefer result_interpreter profile before heavier code_executor runs.\n"
                 "- Do not silently rewrite the current task into an upstream preprocessing task just because prerequisite deliverables are missing.\n"
                 "- For immutable source inputs, prefer canonical data-directory paths over same-named session-root `results/` copies, especially when the session copy is empty or malformed.\n"
                 "- For single-cell integration tasks, fewer than 2 valid upstream samples means the preconditions are not met; do not claim integration succeeded.\n"
@@ -3022,6 +3274,13 @@ class DeepThinkAgent:
                                     f"Detected task handoff from {bound_task_before_cycle} to "
                                     f"{bound_task_after_cycle}; injected an execute-next-task nudge."
                                 )
+                                # Skip partial-completion / finalization checks this
+                                # iteration — the handoff target hasn't been executed
+                                # yet and finalization would prematurely end the run.
+                                current_step.status = "analyzing"
+                                if self.on_thinking:
+                                    await self._safe_callback(current_step)
+                                continue
                             elif executed_pending_handoff:
                                 pending_handoff_task_id = None
                                 pending_handoff_previous_task_id = None
@@ -3411,6 +3670,14 @@ class DeepThinkAgent:
             tool_failures=tool_failures,
             search_verified=search_verified,
         )
+        execute_truth_answer = self._apply_execute_failure_truth_barrier(
+            final_answer,
+            user_query=user_query,
+            steps=thinking_steps,
+        )
+        if execute_truth_answer != final_answer:
+            fallback_used = True
+        final_answer = execute_truth_answer
         structured_plan_outcome = self._summarize_structured_plan_outcome(
             thinking_steps,
             user_query=user_query,
@@ -3959,6 +4226,14 @@ Respond with ONLY a JSON object:
             tool_failures=tool_failures,
             search_verified=search_verified,
         )
+        execute_truth_answer = self._apply_execute_failure_truth_barrier(
+            final_answer,
+            user_query=user_query,
+            steps=thinking_steps,
+        )
+        if execute_truth_answer != final_answer:
+            fallback_used = True
+        final_answer = execute_truth_answer
         structured_plan_outcome = self._summarize_structured_plan_outcome(
             thinking_steps,
             user_query=user_query,
@@ -4218,13 +4493,12 @@ Respond with ONLY a JSON object:
                 if self.on_tool_result:
                     await self._safe_generic_callback(self.on_tool_result, tool_name, callback_payload)
                 await self._emit_artifacts(tool_name, tool_result, iteration)
-                normalized_payload = {
-                    "success": callback_success,
-                    "tool": tool_name,
-                    "result": tool_result,
-                    "error": callback_error,
-                }
-                tool_result_text = json.dumps(normalized_payload, ensure_ascii=False, default=str)
+                tool_result_text = self._build_tool_result_text_for_llm(
+                    tool_name=tool_name,
+                    result=tool_result,
+                    success=callback_success,
+                    error=callback_error,
+                )
                 evidence = self._extract_evidence(tool_name, tool_params, tool_result)
                 return {
                     "index": index,
@@ -4404,6 +4678,124 @@ Respond with ONLY a JSON object:
             if parts:
                 return "; ".join(parts)[:600]
         return str(result)[:600]
+
+    @classmethod
+    def _build_tool_result_text_for_llm(
+        cls,
+        *,
+        tool_name: str,
+        result: Any,
+        success: bool,
+        error: Any,
+    ) -> str:
+        payload = {
+            "success": success,
+            "tool": tool_name,
+            "result": result,
+            "error": error,
+        }
+        raw_text = json.dumps(payload, ensure_ascii=False, default=str)
+        if len(raw_text) <= cls.MAX_TOOL_RESULT_TEXT_CHARS:
+            return raw_text
+
+        compact_result = cls._compact_tool_result_for_llm(tool_name, result)
+        if compact_result is None:
+            return raw_text
+
+        compact_payload = {
+            "success": success,
+            "tool": tool_name,
+            "result": compact_result,
+            "error": error,
+        }
+        compact_text = json.dumps(compact_payload, ensure_ascii=False, default=str)
+        logger.info(
+            "[DEEP_THINK_NATIVE] Compacted tool result for llm context: tool=%s raw_chars=%s compact_chars=%s",
+            tool_name,
+            len(raw_text),
+            len(compact_text),
+        )
+        return compact_text
+
+    @classmethod
+    def _compact_tool_result_for_llm(
+        cls, tool_name: str, result: Any
+    ) -> Optional[Dict[str, Any]]:
+        if str(tool_name or "").strip().lower() == "file_operations":
+            return cls._compact_file_operations_result_for_llm(result)
+        return None
+
+    @classmethod
+    def _compact_file_operations_result_for_llm(
+        cls, result: Any
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(result, dict):
+            return None
+        if str(result.get("operation") or "").strip().lower() != "list":
+            return None
+
+        items = result.get("items")
+        if not isinstance(items, list):
+            return None
+
+        count_raw = result.get("count")
+        try:
+            total_count = int(count_raw)
+        except Exception:
+            total_count = len(items)
+
+        file_count = 0
+        directory_count = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type == "file":
+                file_count += 1
+            elif item_type == "directory":
+                directory_count += 1
+
+        path = str(result.get("path") or "").strip()
+        preview_limit = min(len(items), cls.MAX_FILE_OPERATION_LIST_SAMPLE_ITEMS)
+        compact_result: Dict[str, Any] = {}
+
+        while True:
+            sample_items: List[Dict[str, Any]] = []
+            for item in items[:preview_limit]:
+                if not isinstance(item, dict):
+                    continue
+                sample_item: Dict[str, Any] = {
+                    "name": str(item.get("name") or ""),
+                    "type": str(item.get("type") or ""),
+                }
+                size_value = item.get("size")
+                if isinstance(size_value, (int, float)):
+                    sample_item["size"] = int(size_value)
+                sample_items.append(sample_item)
+
+            compact_result = {
+                "operation": "list",
+                "path": path,
+                "success": bool(result.get("success", True)),
+                "count": total_count,
+                "files_count": file_count,
+                "directories_count": directory_count,
+                "sample_items": sample_items,
+                "omitted_items": max(0, total_count - len(sample_items)),
+                "llm_compacted": True,
+                "summary": (
+                    f"Listed {total_count} items under {path or '.'} "
+                    f"({file_count} files, {directory_count} directories). "
+                    f"Showing the first {len(sample_items)} item(s) only because the full directory listing is too large for LLM context."
+                ),
+            }
+            compact_text = json.dumps(compact_result, ensure_ascii=False, default=str)
+            if len(compact_text) <= cls.MAX_TOOL_RESULT_TEXT_CHARS or preview_limit == 0:
+                return compact_result
+            if preview_limit <= 5:
+                preview_limit = 0
+            else:
+                preview_limit //= 2
 
     @staticmethod
     def _append_tool_cycle_messages(
@@ -4685,7 +5077,7 @@ Respond with ONLY a JSON object:
                 "\"database\": \"nuccore|protein\", \"format\": \"fasta\"}. "
                 "Do not use code_executor as fallback when sequence_fetch fails."
             ),
-            "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. Params: {\"task\": \"description\"}",
+            "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. For local CSV/TSV overview/schema/count requests, prefer result_interpreter profile first. Params: {\"task\": \"description\"}",
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. For broad comparisons, prefer focused parallel subqueries with Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\"]}.",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
             "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. For a bound execute_task request, read/list/exists/info are inspection-only and do not count as task completion. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
@@ -4759,19 +5151,25 @@ Output fields to report:
 - predicted_lifestyle: temperate|virulent
 - positive_window_fraction and thresholds""",
             "result_interpreter": """Data analysis and result interpretation tool.
-Analyzes CSV, TSV, MAT, NPY data files by generating and executing Python code via Claude Code.
+Can inspect CSV, TSV, MAT, NPY, H5AD, and TXT helper files and only escalates to generated code when the request truly needs calculations, transformations, or plots.
 
 Operations:
 - metadata: Extract dataset metadata (columns, types, samples)
+- profile: Deterministic dataset profile for row/column counts, sample values, and simple ID overlap
 - generate: Generate Python analysis code based on task description
 - execute: Execute Python code via Claude Code
 - analyze: Full pipeline (metadata → generate → execute with auto-fix)
+
+For quick local inspection (overview, schema, columns, row/column counts, previews), prefer metadata/profile first and keep the path lightweight. Use analyze only when the user clearly needs code-backed analysis or visualization.
 
 Params for analyze (recommended):
 {"operation": "analyze", "file_paths": ["/path/to/data.csv"], "task_title": "Analysis Title", "task_description": "What to analyze"}
 
 Params for metadata:
 {"operation": "metadata", "file_path": "/path/to/data.csv"}
+
+Params for profile:
+{"operation": "profile", "file_paths": ["/path/to/data.csv", "/path/to/ids.txt"]}
 
 Use this for data exploration, statistical analysis, and visualization tasks on structured data files.""",
             "plan_operation": """Plan creation and optimization tool for structured task planning.
@@ -5323,6 +5721,30 @@ When ready to answer:
         parts.reverse()
         return "\n\n".join(parts)
 
+    def _collect_user_facing_evidence_snippets(
+        self,
+        steps: List[ThinkingStep],
+        *,
+        max_steps: int = 8,
+        max_chars: int = 3000,
+        per_snippet_max: int = 900,
+    ) -> str:
+        raw = self._collect_evidence_snippets(
+            steps,
+            max_steps=max_steps,
+            max_chars=max_chars,
+            per_snippet_max=per_snippet_max,
+        )
+        if not raw.strip():
+            return ""
+        bullets: List[str] = []
+        for block in raw.split("\n\n"):
+            cleaned = re.sub(r"^\[Step\s+\d+\]\s*", "", block.strip(), count=1)
+            cleaned = cleaned.strip()
+            if cleaned:
+                bullets.append(f"- {cleaned}")
+        return "\n".join(bullets)
+
     def _build_bound_execute_task_fallback(
         self,
         steps: List[ThinkingStep],
@@ -5375,13 +5797,15 @@ When ready to answer:
 
     def _build_structured_fallback(self, steps: List[ThinkingStep], user_query: str = "") -> str:
         """Last-resort fallback: include evidence excerpts rather than a generic 'no answer' message."""
-        n = len(steps)
-        counts = self._collect_tool_usage_counts(steps)
-        stats = self._format_tool_usage_counts(counts)
         language = detect_reasoning_language(user_query)
 
         # Collect any meaningful evidence to include in the fallback
-        evidence = self._collect_evidence_snippets(steps, max_steps=12, max_chars=4000, per_snippet_max=1200)
+        evidence = self._collect_user_facing_evidence_snippets(
+            steps,
+            max_steps=12,
+            max_chars=4000,
+            per_snippet_max=1200,
+        )
         # Also collect useful thoughts
         useful_thoughts: List[str] = []
         for s in reversed(steps):
@@ -5394,38 +5818,30 @@ When ready to answer:
         useful_thoughts.reverse()
 
         # If we have substantial evidence or thoughts, build a content-rich fallback
-        if evidence.strip() and len(evidence.strip()) > 100:
+        if evidence.strip() and len(evidence.strip()) > 60:
             if language == "zh":
-                tools_part = f"（{stats}）" if stats else ""
-                header = f"经过 {n} 步深度思考{tools_part}，以下是收集到的关键信息：\n\n"
-                footer = "\n\n---\n*以上为工具输出摘要，可能需要进一步验证。如需更精确的结果，建议缩小问题范围后重试。*"
+                header = "我先给出目前能确认的信息：\n\n"
+                footer = "\n\n如需更精确的结论，建议进一步缩小范围，或明确指出要继续核查的对象。"
             else:
-                tools_part = f" ({stats})" if stats else ""
-                header = f"After {n} reasoning step(s){tools_part}, here are the key findings:\n\n"
-                footer = "\n\n---\n*The above is a summary of tool outputs and may need further verification. For more precise results, try narrowing the question.*"
+                header = "Here is what could be confirmed from the completed checks:\n\n"
+                footer = "\n\nIf you need a tighter conclusion, narrow the question or point to the exact fact that still needs verification."
             return header + evidence.strip() + footer
 
         if useful_thoughts:
             combined = "\n\n".join(useful_thoughts)
             if language == "zh":
-                tools_part = f"（{stats}）" if stats else ""
-                return f"经过 {n} 步深度思考{tools_part}，以下是分析过程中的关键发现：\n\n{combined}"
-            tools_part = f" ({stats})" if stats else ""
-            return f"After {n} reasoning step(s){tools_part}, here are the key insights from the analysis:\n\n{combined}"
+                return f"我先给出目前已经收敛出的关键判断：\n\n{combined}"
+            return f"Here are the key conclusions that could still be supported:\n\n{combined}"
 
         # Truly nothing useful — keep minimal message
         if language == "zh":
-            tools_part = f"（{stats}）" if stats else "（未解析到明确工具名）"
             return (
-                f"经过 {n} 步深度思考{tools_part}，暂未形成可直接提交的确定结论。"
-                "这个问题可能需要更聚焦的范围，或需要进一步验证关键信息后再收敛。"
-                "建议缩小问题范围，改成更具体、可核验的问题后重试。"
+                "这一轮检查还不足以支撑可靠结论。"
+                "建议进一步缩小范围，或指定要继续核查的对象后再收敛。"
             )
-        tools_part = f" ({stats})" if stats else ""
         return (
-            f"DeepThink completed {n} reasoning step(s){tools_part} but did not reach a final answer. "
-            "This request likely needs a narrower scope or an additional verification pass before it can be concluded. "
-            "Try a more specific, fact-checkable follow-up."
+            "The completed checks were not enough to support a reliable final answer. "
+            "This request likely needs a narrower scope or a more specific fact to verify next."
         )
 
     async def _generate_fallback_from_evidence(

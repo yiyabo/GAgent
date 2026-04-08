@@ -201,7 +201,7 @@ async def search(
 
     api_key = settings.qwen_api_key
     api_url = settings.qwen_responses_api_url
-    model = (settings.qwen_responses_model or settings.qwen_model or "qwen3.5-plus").strip()
+    model = (settings.qwen_responses_model or settings.qwen_model or "qwen3.6-plus").strip()
 
     if not api_key:
         raise WebSearchError(

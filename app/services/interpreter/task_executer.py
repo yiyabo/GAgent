@@ -24,7 +24,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from app.config.executor_config import get_executor_settings
+from app.config.executor_config import (
+    get_executor_settings,
+    resolve_code_execution_docker_image,
+)
 from app.services.llm.llm_service import LLMService, get_llm_service
 from app.services.skills import SkillsLoader, get_skills_loader
 from .code_execution import execute_code_locally, CodeExecutionOutcome
@@ -36,6 +39,124 @@ from .prompts.task_executer import (
 )
 
 logger = logging.getLogger(__name__)
+
+_LIGHTWEIGHT_OVERVIEW_CUES = (
+    "dataset overview",
+    "data overview",
+    "overview",
+    "quick overview",
+    "quick summary",
+    "schema",
+    "metadata",
+    "preview",
+    "what's inside",
+    "what is inside",
+    "row count",
+    "row counts",
+    "column",
+    "columns",
+    "column names",
+    "headers",
+    "header",
+    "structure",
+    "inspect",
+    "inside",
+    "数据概览",
+    "概览",
+    "概况",
+    "总览",
+    "快速概览",
+    "结构",
+    "元数据",
+    "预览",
+    "列名",
+    "表头",
+    "字段",
+    "行数",
+    "列数",
+    "内容",
+    "里面有什么",
+    "有哪些数据",
+)
+
+_LIGHTWEIGHT_SAMPLE_CUES = (
+    "sample",
+    "samples",
+    "example",
+    "examples",
+    "preview",
+    "head",
+    "示例",
+    "样例",
+    "样本",
+    "前几行",
+)
+
+_HEAVY_ANALYSIS_CUES = (
+    "plot",
+    "plots",
+    "figure",
+    "figures",
+    "visualization",
+    "visualize",
+    "chart",
+    "heatmap",
+    "scatter",
+    "histogram",
+    "umap",
+    "tsne",
+    "pca",
+    "graph",
+    "network",
+    "cluster",
+    "clustering",
+    "integrate",
+    "integration",
+    "harmony",
+    "bbknn",
+    "batch correction",
+    "regression",
+    "model",
+    "train",
+    "predict",
+    "classification",
+    "differential",
+    "enrichment",
+    "gsea",
+    "kegg",
+    "gene set",
+    "anova",
+    "statistical test",
+    "correlation",
+    "transform",
+    "merge",
+    "filter",
+    "export",
+    "run code",
+    "画图",
+    "绘图",
+    "可视化",
+    "图表",
+    "热图",
+    "散点",
+    "聚类",
+    "整合",
+    "批次校正",
+    "回归",
+    "模型",
+    "训练",
+    "预测",
+    "分类",
+    "差异",
+    "富集",
+    "统计检验",
+    "相关性",
+    "转换",
+    "合并",
+    "筛选",
+    "导出",
+    "执行代码",
+)
 
 
 class TaskType(str, Enum):
@@ -86,8 +207,8 @@ class TaskExecutor:
         self,
         data_file_paths: List[str],
         llm_service: Optional[LLMService] = None,
-        docker_image: str = "agent-plotter",  # parameter, 
-        docker_timeout: int = 60,  # parameter, 
+        docker_image: Optional[str] = None,
+        docker_timeout: Optional[int] = None,
         output_dir: Optional[str] = None,
         session_id: Optional[str] = None,
         plan_id: Optional[int] = None,
@@ -98,8 +219,8 @@ class TaskExecutor:
         Args:
             data_file_paths: Dataset file paths (e.g., CSV/TSV/MAT).
             llm_service: Optional LLM service instance.
-            docker_image: Reserved compatibility parameter.
-            docker_timeout: Reserved compatibility parameter.
+            docker_image: Optional Docker image override for code execution tasks.
+            docker_timeout: Optional execution timeout override for code tasks.
             output_dir: Output directory for generated artifacts.
             session_id: Optional session ID for Claude Code scope.
             plan_id: Optional plan ID for Claude Code scope.
@@ -165,6 +286,8 @@ class TaskExecutor:
         # Initialize LLM service (used for task type classification and text-only tasks).
         self.llm_service = llm_service or get_llm_service()
         self.skill_settings = get_executor_settings()
+        self.docker_image = str(docker_image).strip() if docker_image else None
+        self.docker_timeout = int(docker_timeout) if docker_timeout and int(docker_timeout) > 0 else None
 
         # Claude Code workspace isolation parameters.
         self.session_id = session_id
@@ -208,6 +331,76 @@ class TaskExecutor:
 - Key columns: {", ".join(col.name for col in metadata.columns[:6])}"""
             summaries.append(summary)
         return "\n\n".join(summaries)
+
+    @staticmethod
+    def _format_sample_values(values: Any, *, limit: int = 3) -> str:
+        if not isinstance(values, list):
+            return ""
+        cleaned = [
+            str(value).strip()
+            for value in values[:limit]
+            if value is not None and str(value).strip()
+        ]
+        return ", ".join(cleaned)
+
+    def _is_lightweight_overview_task(
+        self,
+        task_title: str,
+        task_description: str,
+        *,
+        is_visualization: bool = False,
+    ) -> bool:
+        if is_visualization or not self.metadata_list:
+            return False
+        combined = f"{task_title}\n{task_description}".lower()
+        if any(token in combined for token in _HEAVY_ANALYSIS_CUES):
+            return False
+        return any(token in combined for token in _LIGHTWEIGHT_OVERVIEW_CUES)
+
+    def _build_lightweight_overview_result(
+        self,
+        task_title: str,
+        task_description: str,
+    ) -> TaskExecutionResult:
+        combined = f"{task_title}\n{task_description}".lower()
+        include_samples = any(token in combined for token in _LIGHTWEIGHT_SAMPLE_CUES)
+        lines = ["Dataset overview based on extracted metadata:"]
+
+        for metadata in self.metadata_list[:5]:
+            column_names = [
+                str(getattr(col, "name", "") or "").strip()
+                for col in getattr(metadata, "columns", [])[:8]
+                if str(getattr(col, "name", "") or "").strip()
+            ]
+            line = (
+                f"- {metadata.filename}: {metadata.file_format}, "
+                f"{metadata.total_rows} rows x {metadata.total_columns} columns"
+            )
+            if column_names:
+                line += f"; key columns: {', '.join(column_names)}"
+            if include_samples:
+                sample_parts: List[str] = []
+                for col in getattr(metadata, "columns", [])[:3]:
+                    name = str(getattr(col, "name", "") or "").strip()
+                    sample_text = self._format_sample_values(getattr(col, "sample_values", []))
+                    if name and sample_text:
+                        sample_parts.append(f"{name}={sample_text}")
+                if sample_parts:
+                    line += f"; sample values: {'; '.join(sample_parts)}"
+            lines.append(line)
+
+        if len(self.metadata_list) > 5:
+            lines.append(f"- {len(self.metadata_list) - 5} additional dataset(s) omitted for brevity.")
+
+        lines.append("This is a metadata-level overview; no code execution or plotting was required.")
+        return TaskExecutionResult(
+            task_type=TaskType.TEXT_ONLY,
+            success=True,
+            text_response="\n".join(lines),
+            code_description="Direct metadata overview",
+            total_attempts=1,
+            gathered_info="metadata_overview",
+        )
 
     def _analyze_task_type(self, task_title: str, task_description: str) -> TaskType:
         """Use the LLM to classify whether the task requires code execution."""
@@ -357,7 +550,22 @@ class TaskExecutor:
         skill_hints: str = "",
     ) -> TaskExecutionResult:
         """Execute a code-required task via unified local code execution."""
-        logger.info(f"Executing task with local interpreter: {task_title}")
+        settings = get_executor_settings()
+        local_runtime = settings.code_execution_local_runtime
+        execution_backend = "docker" if local_runtime == "docker" else "local"
+        docker_image = None
+        if execution_backend == "docker":
+            docker_image = resolve_code_execution_docker_image(
+                self.docker_image,
+                default=settings.code_execution_docker_image,
+            )
+        execution_timeout = self.docker_timeout or settings.code_execution_timeout
+
+        logger.info(
+            "Executing task with %s runtime: %s",
+            local_runtime,
+            task_title,
+        )
 
         # ---- Build augmented task description ----
         data_files_info = '\n'.join([f"  - {fp}" for fp in self.data_file_paths])
@@ -391,6 +599,9 @@ class TaskExecutor:
             work_dir=self.output_dir,
             data_dir=self.data_dir,
             code_filename=self._local_code_filename(task_id),
+            timeout=execution_timeout,
+            execution_backend=execution_backend,
+            docker_image=docker_image,
         )
 
         viz_purpose = None
@@ -601,6 +812,11 @@ class TaskExecutor:
     ) -> TaskExecutionResult:
         """Main async entrypoint for executing a task."""
         logger.info(f"Starting task execution: {task_title}")
+        lightweight_overview = self._is_lightweight_overview_task(
+            task_title,
+            task_description,
+            is_visualization=is_visualization,
+        )
 
         # Determine task type.
         if force_code is True:
@@ -609,6 +825,9 @@ class TaskExecutor:
         elif force_code is False:
             task_type = TaskType.TEXT_ONLY
             logger.info("Task type: TEXT_ONLY (forced)")
+        elif lightweight_overview:
+            task_type = TaskType.TEXT_ONLY
+            logger.info("Task type: TEXT_ONLY (lightweight overview heuristic)")
         else:
             task_type = self._analyze_task_type(task_title, task_description)
 
@@ -623,14 +842,27 @@ class TaskExecutor:
             tool_hints.append("bio_tools")
         if any(token in task_text for token in ("report", "paper", "manuscript", "methods", "results")):
             tool_hints.append("manuscript_writer")
-        skill_hints, _skill_trace = await self._select_skills_for_task(
-            task_title,
-            task_description,
-            tool_hints=sorted(set(tool_hints)),
-        )
+        skill_hints = ""
+        if lightweight_overview:
+            _skill_trace = {
+                "candidate_skill_ids": [],
+                "selected_skill_ids": [],
+                "selection_source": "skipped_lightweight_overview",
+                "injection_mode_by_skill": {},
+                "injected_chars": 0,
+                "selection_latency_ms": 0.0,
+            }
+        else:
+            skill_hints, _skill_trace = await self._select_skills_for_task(
+                task_title,
+                task_description,
+                tool_hints=sorted(set(tool_hints)),
+            )
 
         # Execute by task type.
-        if task_type == TaskType.CODE_REQUIRED:
+        if lightweight_overview:
+            result = self._build_lightweight_overview_result(task_title, task_description)
+        elif task_type == TaskType.CODE_REQUIRED:
             # Use Claude Code for code-required tasks.
             result = await self._execute_code_task(
                 task_title,

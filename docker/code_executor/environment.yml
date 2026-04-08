@@ -1,0 +1,48 @@
+name: base
+channels:
+  - conda-forge
+dependencies:
+  # Interpreter and packaging
+  - python=3.10
+  - pip=25.0.1
+  - setuptools=80.9.0
+  - wheel=0.46.3
+
+  # Core analysis stack
+  - numpy=1.26.4
+  - pandas=2.2.3
+  - scipy=1.14.1
+  - matplotlib=3.9.4
+  - seaborn=0.13.2
+  - scikit-learn=1.5.2
+  - statsmodels=0.14.6
+  - networkx=3.4.2
+  - umap-learn=0.5.7
+  - pynndescent=0.5.13
+  - numba=0.59.1
+  - llvmlite=0.42.0
+
+  # Data I/O and array backends
+  - h5py=3.12.1
+  - pytables=3.10.1
+  - pyarrow=18.1.0
+  - openpyxl=3.1.5
+  - xlrd=2.0.1
+  - loompy=3.0.8
+
+  # Scientific / compiled core kept in conda for reproducibility
+  - biopython=1.84
+  - biom-format=2.1.16
+  - scanpy=1.10.4
+  - anndata=0.10.9
+  - python-igraph=0.11.9
+  - leidenalg=0.10.2
+  - louvain=0.8.2
+  - scikit-misc=0.5.1
+  - dask=2024.7.1
+  - mudata=0.3.1
+  - muon=0.1.7
+
+  # Build/runtime deps for scrublet and similar compiled extras
+  - cython=3.0.12
+  - scikit-image=0.25.2

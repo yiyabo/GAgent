@@ -71,6 +71,19 @@ const GENERIC_PROGRESS_LABELS = new Set([
   'working on the request',
 ]);
 
+const PHASE_PROGRESS_LABELS = new Set([
+  '分析请求中',
+  '检索资料中',
+  '整理候选方向中',
+  '汇总结论中',
+  '生成最终答复中',
+  'planning the response',
+  'gathering evidence',
+  'analyzing findings',
+  'synthesizing conclusions',
+  'preparing the final answer',
+]);
+
 function normalizeProgressText(value: unknown): string {
   return String(value ?? '')
     .replace(/\s+/g, ' ')
@@ -87,6 +100,11 @@ function truncateProgressText(value: string, maxChars: number): string {
 function isGenericProgressLabel(value: unknown): boolean {
   const normalized = normalizeProgressText(value).toLowerCase();
   return GENERIC_PROGRESS_LABELS.has(normalized);
+}
+
+function isPhaseProgressLabel(value: unknown): boolean {
+  const normalized = normalizeProgressText(value).toLowerCase();
+  return PHASE_PROGRESS_LABELS.has(normalized);
 }
 
 function normalizeCompactProgressStatus(status: unknown, label: unknown): 'running' | 'retrying' | 'failed' | 'completed' {
@@ -615,7 +633,10 @@ export function handleProgressStatus(ctx: StreamHandlerContext, event: any): voi
       : {};
   const toolName =
     typeof event?.tool === 'string' && event.tool.trim().length > 0 ? event.tool.trim() : null;
-  const compactStatus = normalizeCompactProgressStatus(event?.status, event?.label);
+  let compactStatus = normalizeCompactProgressStatus(event?.status, event?.label);
+  if (!toolName && compactStatus === 'failed' && isPhaseProgressLabel(event?.label)) {
+    compactStatus = 'retrying';
+  }
   const normalizedLabel = normalizeProgressLabel(event?.label, toolName);
   const normalizedDetails = normalizeProgressDetails(event?.label, event?.details);
   const history = Array.isArray(current.history) ? [...current.history] : [];
