@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from .runtime_guardrails import inject_env_mutation_guard
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,6 +74,7 @@ class LocalCodeInterpreter:
         env["DATA_DIR"] = self.data_dir or self.work_dir
         env["WORKSPACE"] = self.work_dir
         env["DATA"] = self.data_dir or self.work_dir
+        inject_env_mutation_guard(env, self.work_dir)
         return env
 
     def run_python_code(self, code: str) -> CodeExecutionResult:

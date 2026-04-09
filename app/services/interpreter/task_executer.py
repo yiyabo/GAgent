@@ -37,6 +37,7 @@ from .prompts.task_executer import (
     TASK_TYPE_USER_PROMPT_TEMPLATE,
     TEXT_TASK_PROMPT_TEMPLATE,
 )
+from .runtime_guardrails import looks_like_engineering_task
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,6 @@ _HEAVY_ANALYSIS_CUES = (
     "执行代码",
 )
 
-
 class TaskType(str, Enum):
     """Supported task execution modes."""
     CODE_REQUIRED = "code_required"  # Task requires code execution/tooling.
@@ -188,6 +188,21 @@ class TaskExecutionResult(BaseModel):
     error_message: Optional[str] = Field(None, description="Top-level execution error message")
     skill_trace: Optional[Dict[str, Any]] = Field(
         None, description="Structured skill selection/injection trace"
+    )
+    execution_backend: Optional[str] = Field(
+        None, description="Actual execution backend used"
+    )
+    execution_lane: Optional[str] = Field(
+        None, description="Selected execution lane"
+    )
+    execution_lane_reason: Optional[str] = Field(
+        None, description="Why this execution lane was selected"
+    )
+    workspace_dir: Optional[str] = Field(
+        None, description="Workspace or run directory used for execution"
+    )
+    code_file: Optional[str] = Field(
+        None, description="Primary generated code file when available"
     )
 
 
@@ -400,7 +415,79 @@ class TaskExecutor:
             code_description="Direct metadata overview",
             total_attempts=1,
             gathered_info="metadata_overview",
+            execution_lane="metadata_overview",
+            execution_lane_reason="overview task satisfied from extracted dataset metadata",
         )
+
+    def _looks_like_engineering_task(
+        self,
+        task_title: str,
+        task_description: str,
+    ) -> bool:
+        return looks_like_engineering_task(task_title, task_description)
+
+    @staticmethod
+    def _qwen_code_backend_available() -> bool:
+        if shutil.which("qwen") is None:
+            return False
+        try:
+            from tool_box.tools_impl.code_executor import (
+                _build_qwen_code_subprocess_env,
+                _validate_qwen_code_config,
+            )
+
+            env = _build_qwen_code_subprocess_env()
+            return _validate_qwen_code_config(env) is None
+        except Exception as exc:
+            logger.info("Unable to confirm qwen_code availability: %s", exc)
+            return False
+
+    def _resolve_code_execution_backend(
+        self,
+        task_title: str,
+        task_description: str,
+        *,
+        is_visualization: bool = False,
+    ) -> Tuple[str, str, str]:
+        settings = get_executor_settings()
+        configured_backend = str(
+            getattr(settings, "code_execution_backend", "auto") or "auto"
+        ).strip().lower() or "auto"
+
+        if configured_backend in {"local", "qwen_code", "claude_code"}:
+            return (
+                configured_backend,
+                "configured_backend",
+                f"CODE_EXECUTION_BACKEND={configured_backend}",
+            )
+
+        engineering_task = self._looks_like_engineering_task(
+            task_title,
+            task_description,
+        )
+        has_dataset_context = bool(self.metadata_list or self.data_file_paths)
+
+        if engineering_task or not has_dataset_context:
+            if self._qwen_code_backend_available():
+                reason = (
+                    "engineering-style task detected"
+                    if engineering_task
+                    else "general code task without dataset context"
+                )
+                return "qwen_code", "engineering_primary", reason
+            fallback_reason = (
+                "engineering-style task detected but qwen_code is unavailable"
+                if engineering_task
+                else "qwen_code unavailable for a general code task"
+            )
+            return "local", "local_fallback", fallback_reason
+
+        reason = (
+            "visualization or analysis task with dataset context"
+            if is_visualization
+            else "dataset-backed analysis task"
+        )
+        return "local", "analysis_fast_path", reason
 
     def _analyze_task_type(self, task_title: str, task_description: str) -> TaskType:
         """Use the LLM to classify whether the task requires code execution."""
@@ -519,20 +606,38 @@ class TaskExecutor:
     ) -> TaskExecutionResult:
         """Execute a code-required task.
 
-        Dispatches to local execution (LLM generates code → subprocess runs it)
-        or Claude Code CLI based on the CODE_EXECUTION_BACKEND setting.
+        Dispatches to the analysis fast path or CLI engineering path.
         """
-        settings = get_executor_settings()
-        if settings.code_execution_backend in ("claude_code", "qwen_code"):
-            return await self._execute_code_task_legacy_cli(
+        selected_backend, execution_lane, lane_reason = (
+            self._resolve_code_execution_backend(
+                task_title,
+                task_description,
+                is_visualization=is_visualization,
+            )
+        )
+        logger.info(
+            "Selected execution backend=%s lane=%s reason=%s task=%s",
+            selected_backend,
+            execution_lane,
+            lane_reason,
+            task_title,
+        )
+
+        if selected_backend in ("claude_code", "qwen_code"):
+            result = await self._execute_code_task_legacy_cli(
+                task_title, task_description, subtask_results,
+                is_visualization, task_id, skill_hints,
+            )
+        else:
+            result = await self._execute_code_task_local(
                 task_title, task_description, subtask_results,
                 is_visualization, task_id, skill_hints,
             )
 
-        return await self._execute_code_task_local(
-            task_title, task_description, subtask_results,
-            is_visualization, task_id, skill_hints,
-        )
+        result.execution_lane = result.execution_lane or execution_lane
+        result.execution_lane_reason = result.execution_lane_reason or lane_reason
+        result.execution_backend = result.execution_backend or selected_backend
+        return result
 
     @staticmethod
     def _local_code_filename(task_id: Optional[int]) -> str:
@@ -620,6 +725,9 @@ class TaskExecutor:
             visualization_purpose=viz_purpose or outcome.visualization_purpose,
             visualization_analysis=outcome.visualization_analysis,
             error_message=outcome.stderr if not outcome.success else None,
+            execution_backend=outcome.execution_backend,
+            workspace_dir=self.output_dir,
+            code_file=outcome.code_file or None,
         )
 
     async def _execute_code_task_legacy_cli(
@@ -634,7 +742,7 @@ class TaskExecutor:
         """Legacy: execute a code-required task through Claude Code CLI."""
         from tool_box.tools_impl.code_executor import code_executor_handler
 
-        logger.info(f"Executing task with Claude Code: {task_title}")
+        logger.info("Executing task with CLI backend: %s", task_title)
 
         # Build enriched task description.
         datasets_summary = self._format_datasets_summary()
@@ -732,13 +840,18 @@ class TaskExecutor:
                 task_type=TaskType.CODE_REQUIRED,
                 success=success,
                 final_code=None,
-                code_description=f"Task completed by Claude Code: {task_title}",
+                code_description=(
+                    f"Task completed by {result.get('cli_backend', 'cli')}: {task_title}"
+                ),
                 code_output=stdout,
                 code_error=(stderr if stderr else err_text) if not success else None,
                 total_attempts=1,
                 has_visualization=has_visualization,
                 visualization_purpose=visualization_purpose,
                 error_message=err_text,
+                execution_backend=result.get("cli_backend") or "cli",
+                workspace_dir=task_dir or self.output_dir,
+                code_file=result.get("code_file"),
             )
 
         except Exception as e:
@@ -746,7 +859,7 @@ class TaskExecutor:
             return TaskExecutionResult(
                 task_type=TaskType.CODE_REQUIRED,
                 success=False,
-                error_message=f"Claude Code execution failed: {str(e)}"
+                error_message=f"CLI code execution failed: {str(e)}"
             )
 
     def _execute_text_task(
