@@ -1,5 +1,8 @@
 import asyncio
 import json
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 import pytest  # pylint: disable=import-error  # type: ignore[import-unresolved]
 from pathlib import Path
@@ -31,6 +34,7 @@ from tool_box.tools_impl.code_executor import (
     _resolve_setting_sources,
     _sanitize_task_dir_component,
     _iter_stream_lines_unbounded,
+    _looks_like_engineering_task,
     _execute_task_locally,
     _validate_api_mode_config,
     _validate_scope_contract,
@@ -623,6 +627,65 @@ def test_code_executor_handler_passes_docker_image_override_to_local_backend(
     assert captured["docker_image"] == "custom:image"
 
 
+@pytest.mark.parametrize(
+    "task_text",
+    [
+        "Read /TMP_PROJECT/phagescope/gvd_phage_meta_data.tsv and plot completeness.",
+        "Read phagescope/gvd_phage_meta_data.tsv and plot completeness.",
+    ],
+)
+def test_code_executor_handler_infers_task_referenced_project_dir_for_local_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    task_text: str,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    project_root = tmp_path / "project"
+    default_data_dir = project_root / "data"
+    phagescope_dir = project_root / "phagescope"
+    dataset_path = phagescope_dir / "gvd_phage_meta_data.tsv"
+
+    default_data_dir.mkdir(parents=True, exist_ok=True)
+    phagescope_dir.mkdir(parents=True, exist_ok=True)
+    dataset_path.write_text("Completeness\nComplete\n", encoding="utf-8")
+
+    monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(code_executor_module, "_PROJECT_ROOT", project_root)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_local(**kwargs):
+        captured.update(kwargs)
+        work_dir = Path(str(kwargs["work_dir"]))
+        results_dir = work_dir / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "plot.png").write_bytes(b"png")
+        return {
+            "success": True,
+            "stdout": "ok\n",
+            "stderr": "",
+            "exit_code": 0,
+            "code_file": str(work_dir / "task_code.py"),
+            "result": "generated plot.png",
+            "execution_mode": "code_executor_docker",
+            "docker_image_effective": "gagent-python-runtime:latest",
+        }
+
+    monkeypatch.setattr(code_executor_module, "_execute_task_locally", _fake_local)
+
+    result = asyncio.run(
+        code_executor_module.code_executor_handler(
+            task=task_text.replace("/TMP_PROJECT", str(project_root)),
+            require_task_context=False,
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["data_dir"] == str(phagescope_dir)
+    assert str(default_data_dir) in captured["extra_dirs"]
+    assert str(phagescope_dir) in captured["extra_dirs"]
+
+
 def test_execute_task_locally_blocks_before_generation_on_incomplete_dependency(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -959,3 +1022,238 @@ class TestQwenCodeCLI:
         result = _validate_qwen_code_config({})
         assert result is not None
         assert "QWEN_API_KEY" in result
+
+
+# ---------------------------------------------------------------------------
+# Runtime env-mutation guardrail tests
+# ---------------------------------------------------------------------------
+
+class TestEnvMutationGuard:
+    """Tests for the runtime env-mutation guardrail (_inject_env_mutation_guard)."""
+
+    def test_inject_sets_pip_require_virtualenv(self, tmp_path):
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard
+
+        env: dict = {"PATH": "/usr/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+        assert env.get("PIP_REQUIRE_VIRTUALENV") == "1"
+
+    def test_inject_prepends_guard_bin_to_path(self, tmp_path):
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        original_path = "/usr/bin:/usr/local/bin"
+        env: dict = {"PATH": original_path}
+        inject_env_mutation_guard(env, str(tmp_path))
+
+        guard_bin = str(tmp_path / _GUARD_BIN)
+        assert env["PATH"].startswith(guard_bin + os.pathsep)
+        assert original_path in env["PATH"]
+
+    def test_inject_is_idempotent(self, tmp_path):
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        env: dict = {"PATH": "/usr/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+        path_after_first = env["PATH"]
+        inject_env_mutation_guard(env, str(tmp_path))  # call again
+        assert env["PATH"] == path_after_first, "second call should not prepend guard_bin again"
+
+    def test_wrapper_scripts_are_created(self, tmp_path):
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        env: dict = {"PATH": "/usr/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+
+        guard_bin = tmp_path / _GUARD_BIN
+        for cmd in ("conda", "mamba", "micromamba", "npm"):
+            wrapper = guard_bin / cmd
+            assert wrapper.exists(), f"wrapper for {cmd} should exist"
+            assert os.access(str(wrapper), os.X_OK), f"wrapper for {cmd} should be executable"
+
+    def test_conda_wrapper_blocks_install(self, tmp_path):
+        """conda install should be blocked by the runtime wrapper."""
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        env: dict = {"PATH": "/usr/bin:/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+
+        conda_wrapper = tmp_path / _GUARD_BIN / "conda"
+        result = subprocess.run(
+            [sys.executable, str(conda_wrapper), "install", "numpy"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+        assert "GUARDRAIL" in result.stderr
+
+    def test_conda_wrapper_blocks_create(self, tmp_path):
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        env: dict = {"PATH": "/usr/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+
+        conda_wrapper = tmp_path / _GUARD_BIN / "conda"
+        result = subprocess.run(
+            [sys.executable, str(conda_wrapper), "create", "-n", "myenv"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+        assert "GUARDRAIL" in result.stderr
+
+    def test_conda_wrapper_passthrough_info(self, tmp_path):
+        """conda info (non-mutation) should NOT be blocked by the wrapper."""
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        env: dict = {"PATH": "/usr/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+
+        conda_wrapper = tmp_path / _GUARD_BIN / "conda"
+        # When the real conda binary doesn't exist the wrapper exits 0 silently.
+        # We just verify the wrapper does NOT produce the GUARDRAIL message.
+        result = subprocess.run(
+            [sys.executable, str(conda_wrapper), "info"],
+            capture_output=True, text=True,
+        )
+        assert "GUARDRAIL" not in result.stderr
+        if result.returncode != 0:
+            assert "not found" in result.stderr.lower()
+
+    def test_conda_wrapper_allows_env_list(self, tmp_path):
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        env: dict = {"PATH": "/usr/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+
+        conda_wrapper = tmp_path / _GUARD_BIN / "conda"
+        result = subprocess.run(
+            [sys.executable, str(conda_wrapper), "env", "list"],
+            capture_output=True, text=True,
+        )
+        assert "GUARDRAIL" not in result.stderr
+        if result.returncode != 0:
+            assert "not found" in result.stderr.lower()
+
+    def test_mamba_wrapper_blocks_install(self, tmp_path):
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        env: dict = {"PATH": "/usr/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+
+        mamba_wrapper = tmp_path / _GUARD_BIN / "mamba"
+        result = subprocess.run(
+            [sys.executable, str(mamba_wrapper), "install", "scipy"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+        assert "GUARDRAIL" in result.stderr
+
+    def test_conda_wrapper_blocks_run_bypass(self, tmp_path):
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        env: dict = {"PATH": "/usr/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+
+        conda_wrapper = tmp_path / _GUARD_BIN / "conda"
+        result = subprocess.run(
+            [sys.executable, str(conda_wrapper), "run", "-n", "base", "python", "-m", "pip", "install", "numpy"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+        assert "GUARDRAIL" in result.stderr
+
+    def test_npm_wrapper_blocks_global_install(self, tmp_path):
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        env: dict = {"PATH": "/usr/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+
+        npm_wrapper = tmp_path / _GUARD_BIN / "npm"
+        result = subprocess.run(
+            [sys.executable, str(npm_wrapper), "install", "-g", "typescript"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+        assert "GUARDRAIL" in result.stderr
+
+    def test_npm_wrapper_passthrough_local_install(self, tmp_path):
+        """npm install without -g should NOT be blocked."""
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard, _ENV_GUARD_BIN as _GUARD_BIN
+
+        env: dict = {"PATH": "/usr/bin"}
+        inject_env_mutation_guard(env, str(tmp_path))
+
+        npm_wrapper = tmp_path / _GUARD_BIN / "npm"
+        result = subprocess.run(
+            [sys.executable, str(npm_wrapper), "install", "lodash"],
+            capture_output=True, text=True,
+        )
+        # Not blocked — wrapper may fail because real npm is missing but the
+        # GUARDRAIL message should be absent.
+        assert "GUARDRAIL" not in result.stderr
+
+    def test_pip_require_virtualenv_env_var_present_after_inject(self, tmp_path):
+        """PIP_REQUIRE_VIRTUALENV=1 must be set so python -m pip install is blocked."""
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard
+
+        env: dict = {}
+        inject_env_mutation_guard(env, str(tmp_path))
+        assert env["PIP_REQUIRE_VIRTUALENV"] == "1"
+
+    def test_inject_survives_missing_work_dir(self, tmp_path):
+        """inject_env_mutation_guard must not raise even if work_dir needs creation."""
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard
+
+        new_dir = tmp_path / "nonexistent" / "subdir"
+        env: dict = {"PATH": "/usr/bin"}
+        # Should not raise — creates the directory tree automatically.
+        inject_env_mutation_guard(env, str(new_dir))
+        assert env.get("PIP_REQUIRE_VIRTUALENV") == "1"
+
+
+class TestEnvGuardIntegration:
+    """Verify the guard is actually wired into CLI subprocess env builders."""
+
+    def test_qwen_code_env_has_pip_require_virtualenv(self, tmp_path, monkeypatch):
+        """After inject, subprocess env for QC must contain PIP_REQUIRE_VIRTUALENV."""
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard
+        from tool_box.tools_impl.code_executor import _build_qwen_code_subprocess_env
+
+        monkeypatch.setenv("QWEN_API_KEY", "sk-test")
+        env = _build_qwen_code_subprocess_env()
+        inject_env_mutation_guard(env, str(tmp_path))
+        assert env.get("PIP_REQUIRE_VIRTUALENV") == "1"
+
+    def test_claude_code_env_has_pip_require_virtualenv(self, tmp_path, monkeypatch):
+        from tool_box.tools_impl.code_executor import _inject_env_mutation_guard as inject_env_mutation_guard
+        from tool_box.tools_impl.code_executor import _build_code_executor_subprocess_env
+
+        monkeypatch.setenv("QWEN_API_KEY", "sk-test")
+        env = _build_code_executor_subprocess_env("api_env")
+        inject_env_mutation_guard(env, str(tmp_path))
+        assert env.get("PIP_REQUIRE_VIRTUALENV") == "1"
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    [
+        "Build a phylogenetic tree from these sequences.",
+        "Compile summary statistics across all samples.",
+        "Perform a statistical test on expression data from /tmp/pytest-of-apple/run_1/data.tsv.",
+        "Route reads to the reference genome and summarize mapping quality.",
+        "Call the NCBI API to fetch metadata and plot the results.",
+        "Read analysis.py and explain what it does.",
+    ],
+)
+def test_engineering_task_matcher_ignores_analysis_like_requests(task_text: str) -> None:
+    assert _looks_like_engineering_task(task_text) is False
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    [
+        "Create a multi-file FastAPI backend with React frontend.",
+        "Refactor the repository structure and add integration test coverage.",
+        "Update package.json and requirements.txt for the project.",
+    ],
+)
+def test_engineering_task_matcher_detects_engineering_requests(task_text: str) -> None:
+    assert _looks_like_engineering_task(task_text) is True

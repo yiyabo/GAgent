@@ -30,12 +30,35 @@ from app.config.executor_config import (
     resolve_code_execution_docker_image,
     resolve_code_execution_local_runtime,
 )
+from app.services.interpreter.runtime_guardrails import (
+    ENV_GUARD_BIN as _ENV_GUARD_BIN,
+    inject_env_mutation_guard as _inject_env_mutation_guard,
+    looks_like_engineering_task as _looks_like_engineering_task,
+)
 
 logger = logging.getLogger(__name__)
 
 _BLOCK_SCOPE_STATUS = "STATUS: BLOCKED_SCOPE"
 _BLOCK_SCOPE_REASON = "REASON: NEED_ATOMIC_TASK"
 _DEFAULT_TASK_SUBDIRECTORIES = ("results", "code", "data", "docs")
+_TASK_READ_DIR_PREFIXES: Sequence[str] = (
+    "app",
+    "code",
+    "data",
+    "docker",
+    "docs",
+    "paper",
+    "phagescope",
+    "reference",
+    "results",
+    "runtime",
+    "scripts",
+    "test",
+    "tests",
+    "tool_box",
+    "web-ui",
+)
+_TASK_PATH_TOKEN_RE = r"[^\s'\"`<>\(\)\[\]\{\},;:]+"
 
 
 def _get_available_skills() -> List[str]:
@@ -604,6 +627,36 @@ def _validate_qwen_code_config(env_map: Dict[str, str]) -> Optional[str]:
     )
 
 
+# Shared runtime guardrails are applied to both CLI and local execution paths.
+
+
+def _qwen_code_cli_available() -> bool:
+    if shutil.which("qwen") is None:
+        return False
+    env_map = _build_qwen_code_subprocess_env()
+    return _validate_qwen_code_config(env_map) is None
+
+
+def _resolve_code_executor_backend(task: str) -> tuple[str, str, str]:
+    backend = "auto"
+    try:
+        from app.config.executor_config import get_executor_settings
+
+        backend = str(get_executor_settings().code_execution_backend or "auto").strip().lower() or "auto"
+    except Exception:
+        backend = "auto"
+
+    if backend in {"local", "qwen_code", "claude_code"}:
+        return backend, "configured_backend", f"CODE_EXECUTION_BACKEND={backend}"
+
+    if _looks_like_engineering_task(task):
+        if _qwen_code_cli_available():
+            return "qwen_code", "engineering_primary", "engineering-style task detected"
+        return "local", "local_fallback", "engineering-style task detected but qwen_code is unavailable"
+
+    return "local", "analysis_fast_path", "analysis-style code task routed to local fast path"
+
+
 def _build_qwen_code_command(
     *,
     task: str,
@@ -682,7 +735,14 @@ def _build_qwen_code_command(
         f"relying on the default 120000ms timeout.\n"
         f"7. Use background execution only for processes that are meant to "
         f"keep running (servers, watchers, daemons), not for one-shot installs "
-        f"or analysis commands."
+        f"or analysis commands.\n"
+        f"8. Do NOT modify shared host environments: no global `conda install`, "
+        f"`pip install`, `npm install -g`, or writes into shared site-packages.\n"
+        f"9. If a lightweight dependency is truly required, install it only into "
+        f"a task-local environment under the workspace (for example `.venv/`).\n"
+        f"10. If the dependency requires a heavy solver, compiled stack, or a "
+        f"new runtime image/profile, stop and report BLOCKED_DEPENDENCY instead "
+        f"of mutating the shared host environment."
         f"{allowed_dirs_info}"
     )
     cmd: List[str] = [
@@ -1069,6 +1129,32 @@ def _collect_run_artifacts(
     return collected
 
 
+def _extract_code_workspace_metadata(
+    *,
+    run_dir: Path,
+    produced_files: Sequence[str],
+) -> tuple[Optional[str], Optional[str]]:
+    code_dir = (run_dir / "code").resolve()
+    code_dir_value = str(code_dir) if code_dir.exists() and code_dir.is_dir() else None
+    primary_code_file: Optional[str] = None
+    for item in produced_files:
+        try:
+            candidate = Path(str(item)).resolve()
+        except Exception:
+            continue
+        if not candidate.is_file():
+            continue
+        if code_dir_value is not None:
+            try:
+                candidate.relative_to(code_dir)
+            except ValueError:
+                continue
+        if candidate.suffix.lower() in {".py", ".r", ".sh", ".js", ".ts", ".tsx"}:
+            primary_code_file = str(candidate)
+            break
+    return code_dir_value, primary_code_file
+
+
 def _build_verification_artifact_paths(
     *,
     task_work_dir: Path,
@@ -1119,6 +1205,66 @@ def _is_path_within(child: Path, parent: Path) -> bool:
         return True
     except Exception:
         return False
+
+
+def _extract_task_referenced_read_dirs(
+    task: str,
+    *,
+    execution_spec: Optional[Dict[str, Any]],
+    session_dir: Path,
+) -> List[str]:
+    texts: List[str] = [str(task or "")]
+    if isinstance(execution_spec, dict) and execution_spec:
+        try:
+            texts.append(json.dumps(execution_spec, ensure_ascii=False))
+        except Exception:
+            logger.debug("Failed to serialize execution_spec for task path inference.")
+
+    if not any(text.strip() for text in texts):
+        return []
+
+    escaped_root = re.escape(str(_PROJECT_ROOT))
+    absolute_pattern = re.compile(rf"{escaped_root}(?:/{_TASK_PATH_TOKEN_RE})+")
+    relative_roots = "|".join(re.escape(prefix) for prefix in _TASK_READ_DIR_PREFIXES)
+    relative_pattern = re.compile(
+        rf"(?<![\w.-])(?:{relative_roots})(?:/{_TASK_PATH_TOKEN_RE})+"
+    )
+
+    inferred_dirs: List[str] = []
+    seen: set[str] = set()
+
+    def _register(raw_path: str) -> None:
+        token = str(raw_path or "").strip()
+        if not token:
+            return
+        candidate = Path(token)
+        if not candidate.is_absolute():
+            candidate = _PROJECT_ROOT / candidate
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            return
+        target_dir = resolved if resolved.is_dir() else resolved.parent
+        if not target_dir.exists() or not target_dir.is_dir():
+            return
+        if not (
+            _is_path_within(target_dir, _PROJECT_ROOT)
+            or _is_path_within(target_dir, session_dir)
+        ):
+            return
+        dir_str = str(target_dir)
+        if dir_str in seen:
+            return
+        seen.add(dir_str)
+        inferred_dirs.append(dir_str)
+
+    for text in texts:
+        for match in absolute_pattern.finditer(text):
+            _register(match.group(0))
+        for match in relative_pattern.finditer(text):
+            _register(match.group(0))
+
+    return inferred_dirs
 
 
 def _sanitize_task_dir_component(value: str) -> str:
@@ -1580,19 +1726,21 @@ async def code_executor_handler(
     Returns:
         Dict containing execution results
     """
-    use_local_backend = False
-    use_qwen_code_backend = False
-    try:
-        from app.config.executor_config import get_executor_settings
-        _backend = get_executor_settings().code_execution_backend
-        use_local_backend = _backend == "local"
-        use_qwen_code_backend = _backend == "qwen_code"
-    except Exception:
-        use_local_backend = False
+    selected_backend, execution_lane, execution_lane_reason = (
+        _resolve_code_executor_backend(task)
+    )
+    use_local_backend = selected_backend == "local"
+    use_qwen_code_backend = selected_backend == "qwen_code"
 
     log_file = None
     log_path = None
     log_lock = asyncio.Lock()
+    logger.info(
+        "code_executor selected backend=%s lane=%s reason=%s",
+        selected_backend,
+        execution_lane,
+        execution_lane_reason,
+    )
 
     try:
         try:
@@ -1737,6 +1885,16 @@ async def code_executor_handler(
                     allowed_dirs.append(resolved_str)
                 if resolved_str not in resolved_add_dirs:
                     resolved_add_dirs.append(resolved_str)
+
+        inferred_task_dirs = _extract_task_referenced_read_dirs(
+            task,
+            execution_spec=execution_spec,
+            session_dir=session_dir,
+        )
+        for inferred_dir in inferred_task_dirs:
+            if inferred_dir not in allowed_dirs:
+                allowed_dirs.append(inferred_dir)
+                logger.info("Auto-added task-referenced directory: %s", inferred_dir)
             
         allowed_dirs_info = ""
         if allowed_dirs:
@@ -1748,6 +1906,8 @@ async def code_executor_handler(
         local_data_dir: Optional[str] = None
         if len(resolved_add_dirs) == 1:
             local_data_dir = resolved_add_dirs[0]
+        elif not resolved_add_dirs and len(inferred_task_dirs) == 1:
+            local_data_dir = inferred_task_dirs[0]
         elif not resolved_add_dirs and default_data_dir.exists():
             local_data_dir = str(default_data_dir)
 
@@ -1768,6 +1928,10 @@ async def code_executor_handler(
             produced_files = _collect_run_artifacts(
                 run_dir=task_work_dir,
                 subdirs=task_subdirs,
+            )
+            code_directory, primary_code_file = _extract_code_workspace_metadata(
+                run_dir=task_work_dir,
+                produced_files=produced_files,
             )
             session_artifact_paths = _promote_task_results_to_session_root(
                 session_dir=session_dir,
@@ -1799,7 +1963,14 @@ async def code_executor_handler(
                 "stdout": str(local_result.get("stdout") or ""),
                 "stderr": str(local_result.get("stderr") or ""),
                 "exit_code": local_result.get("exit_code", -1),
+                "execution_backend": str(
+                    local_result.get("execution_backend")
+                    or local_result.get("execution_mode")
+                    or "local"
+                ),
                 "execution_mode": str(local_result.get("execution_mode") or "code_executor_host"),
+                "execution_lane": execution_lane,
+                "execution_lane_reason": execution_lane_reason,
                 "working_directory": str(task_work_dir),
                 "log_path": str(log_path) if log_path else None,
                 "debug_log_path": None,
@@ -1807,6 +1978,8 @@ async def code_executor_handler(
                 "claude_model_effective": None,
                 "claude_setting_sources_effective": None,
                 "claude_auth_mode_effective": None,
+                "code_directory": code_directory,
+                "code_file": local_result.get("code_file") or primary_code_file,
                 "produced_files": produced_files,
                 "produced_files_count": len(produced_files),
                 "artifact_paths": verification_artifact_paths,
@@ -1849,12 +2022,23 @@ async def code_executor_handler(
             if local_completion_info:
                 result_payload.update(local_completion_info)
 
+            if log_file:
+                try:
+                    log_file.write(
+                        f"[{datetime.utcnow().isoformat()}Z] Local code execution finished\n"
+                    )
+                    log_file.flush()
+                    log_file.close()
+                except Exception as log_err:
+                    logger.warning("Failed to finalize local code executor log file: %s", log_err)
+
             return result_payload
 
         # ---- Build CLI command and environment ----
         if use_qwen_code_backend:
             # Qwen Code path
             subprocess_env = _build_qwen_code_subprocess_env()
+            _inject_env_mutation_guard(subprocess_env, str(task_work_dir))
             qc_config_error = _validate_qwen_code_config(subprocess_env)
             if qc_config_error:
                 return {"success": False, "error": qc_config_error, "task": task}
@@ -1892,6 +2076,7 @@ async def code_executor_handler(
             # Legacy Claude Code path
             effective_auth_mode = _resolve_auth_mode(auth_mode)
             subprocess_env = _build_code_executor_subprocess_env(effective_auth_mode)
+            _inject_env_mutation_guard(subprocess_env, str(task_work_dir))
             if effective_auth_mode == "api_env":
                 api_mode_error = _validate_api_mode_config(subprocess_env)
                 if api_mode_error:
@@ -1929,7 +2114,13 @@ async def code_executor_handler(
                 f"2. Run them and save outputs under {_format_directory_choices(writable_task_subdirs)}.\n"
                 f"3. Put publishable deliverable code under results/submission/ "
                 f"or results/deliverable/.\n"
-                f"4. Return a summary of actual outputs produced."
+                f"4. Return a summary of actual outputs produced.\n"
+                f"5. Do NOT modify shared host environments: no global `conda install`, "
+                f"`pip install`, or writes into shared site-packages. Use task-local "
+                f"workspace environments only.\n"
+                f"6. If the task needs a heavy dependency solve, compiled stack, or a "
+                f"new runtime image/profile, report BLOCKED_DEPENDENCY instead of "
+                f"mutating the shared host environment."
                 f"{allowed_dirs_info}"
             )
             def _rebuild_cli_command(task_override: str) -> List[str]:
@@ -1952,7 +2143,13 @@ async def code_executor_handler(
                     f"2. Run them and save outputs under {_format_directory_choices(writable_task_subdirs)}.\n"
                     f"3. Put publishable deliverable code under results/submission/ "
                     f"or results/deliverable/.\n"
-                    f"4. Return a summary of actual outputs produced."
+                    f"4. Return a summary of actual outputs produced.\n"
+                    f"5. Do NOT modify shared host environments: no global `conda install`, "
+                    f"`pip install`, or writes into shared site-packages. Use task-local "
+                    f"workspace environments only.\n"
+                    f"6. If the task needs a heavy dependency solve, compiled stack, or a "
+                    f"new runtime image/profile, report BLOCKED_DEPENDENCY instead of "
+                    f"mutating the shared host environment."
                     f"{allowed_dirs_info}"
                 )
                 rebuilt = [
@@ -2113,6 +2310,10 @@ async def code_executor_handler(
             session_artifact_paths=session_artifact_paths,
             session_dir=session_dir,
         )
+        code_directory, primary_code_file = _extract_code_workspace_metadata(
+            run_dir=task_work_dir,
+            produced_files=produced_files,
+        )
         execution_status = "completed" if return_code == 0 else "failed"
         verification_status: Optional[str] = None
         failure_kind: Optional[str] = None
@@ -2240,13 +2441,18 @@ async def code_executor_handler(
             "stderr": stderr,
             "output_data": output_data,
             "exit_code": return_code,
+            "execution_backend": "qwen_code" if use_qwen_code_backend else "claude_code",
             "execution_mode": "code_executor_local",
+            "execution_lane": execution_lane,
+            "execution_lane_reason": execution_lane_reason,
             "working_directory": str(task_work_dir),
             "log_path": str(log_path) if log_path else None,
             "debug_log_path": str(debug_log_path) if debug_log_path else None,
             "allowed_tools_effective": normalized_allowed_tools,
             "cli_model_effective": effective_model,
             "cli_backend": "qwen_code" if use_qwen_code_backend else "claude_code",
+            "code_directory": code_directory,
+            "code_file": primary_code_file,
             "produced_files": produced_files,
             "produced_files_count": len(produced_files),
             "artifact_paths": verification_artifact_paths,
