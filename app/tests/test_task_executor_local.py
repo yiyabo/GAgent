@@ -1,13 +1,14 @@
 """Tests for local code execution backend in TaskExecutor."""
 
 import asyncio
+import os
 from types import SimpleNamespace
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from app.services.interpreter.task_executer import TaskExecutor, TaskType, TaskExecutionResult
-from app.services.interpreter.local_interpreter import CodeExecutionResult
+from app.services.interpreter.local_interpreter import CodeExecutionResult, LocalCodeInterpreter
 from app.services.interpreter.coder import CodeTaskResponse
 from app.services.interpreter.code_execution import (
     classify_error,
@@ -681,6 +682,156 @@ def test_backend_switch_to_qwen_code(make_executor, monkeypatch):
 
     assert legacy_called["value"] is True
     assert result.success is True
+
+
+def test_backend_switch_auto_prefers_qwen_for_engineering_tasks(make_executor, monkeypatch):
+    executor = make_executor()
+
+    monkeypatch.setattr(
+        "app.services.interpreter.task_executer.get_executor_settings",
+        lambda: MagicMock(code_execution_backend="auto"),
+    )
+    monkeypatch.setattr(
+        TaskExecutor,
+        "_qwen_code_backend_available",
+        staticmethod(lambda: True),
+    )
+
+    legacy_called = {"value": False}
+
+    async def mock_legacy(self, *a, **kw):
+        legacy_called["value"] = True
+        return TaskExecutionResult(
+            task_type=TaskType.CODE_REQUIRED,
+            success=True,
+        )
+
+    monkeypatch.setattr(
+        TaskExecutor, "_execute_code_task_legacy_cli", mock_legacy,
+    )
+
+    result = _run(executor._execute_code_task(
+        task_title="Build service",
+        task_description="Create a multi-file FastAPI backend with pytest coverage",
+    ))
+
+    assert legacy_called["value"] is True
+    assert result.success is True
+    assert result.execution_backend == "qwen_code"
+    assert result.execution_lane == "engineering_primary"
+
+
+def test_backend_switch_auto_keeps_local_for_dataset_analysis(make_executor, monkeypatch):
+    executor = make_executor()
+    captured = {}
+
+    monkeypatch.setattr(
+        "app.services.interpreter.task_executer.get_executor_settings",
+        lambda: MagicMock(
+            code_execution_backend="auto",
+            code_execution_local_runtime="docker",
+            code_execution_docker_image="gagent-python-runtime:latest",
+            code_execution_timeout=321,
+        ),
+    )
+    monkeypatch.setattr(
+        TaskExecutor,
+        "_qwen_code_backend_available",
+        staticmethod(lambda: True),
+    )
+
+    async def _fake_execute_code_locally(**kwargs):
+        captured.update(kwargs)
+        return CodeExecutionOutcome(
+            success=True,
+            code="print('ok')",
+            description="docker runtime",
+            stdout="ok\n",
+            attempts=1,
+            execution_backend="docker",
+            execution_status="completed",
+            code_file=str(Path(kwargs["work_dir"]) / "task_1_code.py"),
+        )
+
+    monkeypatch.setattr(
+        "app.services.interpreter.task_executer.execute_code_locally",
+        _fake_execute_code_locally,
+    )
+
+    result = _run(executor._execute_code_task(
+        task_title="Generate QC plots",
+        task_description="Create UMAP and QC figures for the dataset",
+        is_visualization=True,
+        task_id=1,
+    ))
+
+    assert captured["execution_backend"] == "docker"
+    assert result.success is True
+    assert result.execution_backend == "docker"
+    assert result.execution_lane == "analysis_fast_path"
+    assert result.code_file is not None
+
+
+def test_backend_switch_auto_keeps_local_for_analysis_build_phrase(make_executor, monkeypatch):
+    executor = make_executor()
+    captured = {}
+
+    monkeypatch.setattr(
+        "app.services.interpreter.task_executer.get_executor_settings",
+        lambda: MagicMock(
+            code_execution_backend="auto",
+            code_execution_local_runtime="docker",
+            code_execution_docker_image="gagent-python-runtime:latest",
+            code_execution_timeout=321,
+        ),
+    )
+    monkeypatch.setattr(
+        TaskExecutor,
+        "_qwen_code_backend_available",
+        staticmethod(lambda: True),
+    )
+
+    async def _fake_execute_code_locally(**kwargs):
+        captured.update(kwargs)
+        return CodeExecutionOutcome(
+            success=True,
+            code="print('ok')",
+            description="analysis task",
+            stdout="ok\n",
+            attempts=1,
+            execution_backend="docker",
+            execution_status="completed",
+        )
+
+    monkeypatch.setattr(
+        "app.services.interpreter.task_executer.execute_code_locally",
+        _fake_execute_code_locally,
+    )
+
+    result = _run(executor._execute_code_task(
+        task_title="Phylogeny",
+        task_description="Build a phylogenetic tree from the dataset and export the figure",
+        is_visualization=True,
+    ))
+
+    assert captured["execution_backend"] == "docker"
+    assert result.execution_lane == "analysis_fast_path"
+    assert result.execution_backend == "docker"
+
+
+def test_local_interpreter_build_env_injects_runtime_guard(tmp_path: Path):
+    interpreter = LocalCodeInterpreter(
+        work_dir=str(tmp_path / "workspace"),
+        data_dir=str(tmp_path / "data"),
+    )
+
+    env = interpreter._build_env()
+
+    assert env["PIP_REQUIRE_VIRTUALENV"] == "1"
+    assert env["DATA_DIR"] == str(tmp_path / "data")
+    assert env["WORKSPACE"] == str(tmp_path / "workspace")
+    assert env["DATA"] == str(tmp_path / "data")
+    assert env["PATH"].split(os.pathsep)[0] == str((tmp_path / "workspace" / ".env_guard" / "bin"))
 
 
 def test_local_execution_uses_docker_runtime_from_settings(make_executor, monkeypatch):
