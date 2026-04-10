@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -323,11 +324,14 @@ class QwenSessionDriver:
 
 # Module-level singleton
 _driver: Optional[QwenSessionDriver] = None
+_driver_lock = threading.Lock()
 
 
 def get_qwen_session_driver() -> QwenSessionDriver:
-    """Return the module-level QwenSessionDriver singleton."""
+    """Return the module-level QwenSessionDriver singleton (thread-safe)."""
     global _driver
     if _driver is None:
-        _driver = QwenSessionDriver()
+        with _driver_lock:
+            if _driver is None:
+                _driver = QwenSessionDriver()
     return _driver

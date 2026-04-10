@@ -2102,8 +2102,8 @@ async def code_executor_handler(
                     "[CODE_EXECUTOR] Using Docker container %s for qwen_code execution",
                     _container,
                 )
-            except Exception as _docker_err:
-                logger.info(
+            except (RuntimeError, OSError, asyncio.TimeoutError) as _docker_err:
+                logger.warning(
                     "[CODE_EXECUTOR] Docker container unavailable (%s), "
                     "falling back to host subprocess",
                     _docker_err,
