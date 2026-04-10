@@ -164,7 +164,7 @@ const TerminalPanel: React.FC<Props> = ({ sessionId }) => {
         }
       };
     },
-    [disposeSocket, mode, sendResize, sessionId, terminalId]
+    [disposeSocket, mode, sendResize, sessionId]
   );
 
   useEffect(() => {
@@ -328,6 +328,18 @@ const TerminalPanel: React.FC<Props> = ({ sessionId }) => {
         connected={connected}
         terminalId={terminalId}
         onModeChange={(nextMode) => {
+          if (nextMode === mode) return;
+          if (reconnectRef.current != null) {
+            window.clearTimeout(reconnectRef.current);
+            reconnectRef.current = null;
+          }
+          manualCloseRef.current = true;
+          disposeSocket();
+          setConnected(false);
+          setErrorText(null);
+          setTerminalIdSynced(null);
+          terminalRef.current?.clear();
+          terminalRef.current?.writeln(`Agent Terminal ready\r\n[terminal] Switched to ${nextMode}`);
           setMode(nextMode);
         }}
         onCreate={handleCreate}
