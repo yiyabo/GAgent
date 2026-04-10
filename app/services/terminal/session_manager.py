@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from .audit_logger import AuditLogger
 from .command_filter import CommandFilter, CommandDecision, RiskLevel
+from .docker_pty_backend import DockerPTYBackend
 from .protocol import WSMessageType
 from .pty_backend import PTYBackend
 from .ssh_backend import SSHBackend, SSHConfig
@@ -25,7 +26,7 @@ except Exception:  # pragma: no cover
     RemoteExecutionConfig = None  # type: ignore
 
 
-TerminalMode = Literal["sandbox", "ssh"]
+TerminalMode = Literal["sandbox", "ssh", "qwen_code"]
 
 
 @dataclass
@@ -49,7 +50,7 @@ class TerminalSession:
     session_id: str
     terminal_id: str
     mode: TerminalMode
-    backend: Union[PTYBackend, SSHBackend]
+    backend: Union[PTYBackend, SSHBackend, DockerPTYBackend]
     created_at: datetime
     last_activity: datetime
     state: Literal["creating", "active", "idle", "closing", "closed"]
@@ -107,13 +108,15 @@ class TerminalSessionManager:
         workspace = self._workspace_path(owner)
         terminal_id = str(uuid4())
         created_at = self._now()
-        backend: Union[PTYBackend, SSHBackend]
+        backend: Union[PTYBackend, SSHBackend, DockerPTYBackend]
         audit_logger = AuditLogger(terminal_id)
 
         if mode == "sandbox":
             backend = PTYBackend()
         elif mode == "ssh":
             backend = SSHBackend()
+        elif mode == "qwen_code":
+            backend = DockerPTYBackend()
         else:
             raise ValueError(f"Unsupported terminal mode: {mode}")
 
@@ -136,6 +139,11 @@ class TerminalSessionManager:
                 cwd=session.cwd,
                 env=session.env,
                 command_handler=lambda command: self._handle_command_check(session, command),
+            )
+        elif mode == "qwen_code":
+            await backend.spawn(
+                cwd=session.cwd,
+                env=session.env,
             )
         else:
             cfg = ssh_config
@@ -341,7 +349,7 @@ class TerminalSessionManager:
                 pending.future.set_result(False)
         session.pending_approvals.clear()
 
-        if isinstance(session.backend, PTYBackend):
+        if isinstance(session.backend, (PTYBackend, DockerPTYBackend)):
             await session.backend.terminate()
         else:
             await session.backend.disconnect()

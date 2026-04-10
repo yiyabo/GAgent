@@ -2353,6 +2353,69 @@ class DeepThinkAgent:
         )
         return "\n".join(lines) + "\n"
 
+    @classmethod
+    def _extract_successful_created_plan_from_tool_results(
+        cls,
+        tool_results: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        for item in tool_results:
+            if str(item.get("tool_name") or "").strip().lower() != "plan_operation":
+                continue
+            payload = item.get("tool_result")
+            if not isinstance(payload, dict):
+                continue
+            inner = cls._unwrap_tool_result(payload)
+            success = bool(inner.get("success", payload.get("success")))
+            operation = str(inner.get("operation") or payload.get("operation") or "").strip().lower()
+            if not success or operation != "create":
+                continue
+            plan_id = cls._coerce_positive_int(inner.get("plan_id") or payload.get("plan_id"))
+            if plan_id is None:
+                continue
+            plan_title = str(
+                inner.get("plan_title")
+                or inner.get("title")
+                or payload.get("plan_title")
+                or payload.get("title")
+                or ""
+            ).strip()
+            return {
+                "plan_id": plan_id,
+                "plan_title": plan_title or None,
+                "already_bound_plan_reused": bool(
+                    inner.get("already_bound_plan_reused")
+                    or payload.get("already_bound_plan_reused")
+                ),
+            }
+        return None
+
+    def _build_created_plan_finalize_nudge(
+        self,
+        *,
+        user_query: str,
+        plan_id: int,
+        plan_title: Optional[str] = None,
+    ) -> str:
+        language = detect_reasoning_language(user_query)
+        title_suffix = f"，标题：{plan_title}" if language == "zh" and plan_title else (
+            f", title: {plan_title}" if plan_title else ""
+        )
+        return _localized_text(
+            language,
+            (
+                f"结构化计划已创建成功（plan_id={plan_id}{title_suffix}）。"
+                "不要再次调用 `plan_operation` 的 `create`。"
+                "请基于这个已创建的计划，简要说明核心目标和任务结构，"
+                "然后立刻调用 `submit_final_answer` 结束本轮。"
+            ),
+            (
+                f"The structured plan has already been created successfully (plan_id={plan_id}{title_suffix}). "
+                "Do not call `plan_operation` with `create` again. "
+                "Briefly summarize the created plan's goal and task structure, then call "
+                "`submit_final_answer` immediately to finish this turn."
+            ),
+        )
+
     def _get_structured_plan_retry_prompt(self) -> str:
         mode = self._plan_request_mode()
         current_plan_id = self._current_plan_id()
@@ -2843,6 +2906,7 @@ class DeepThinkAgent:
         force_verified_execution_finalization = False
         pending_handoff_task_id: Optional[int] = None
         pending_handoff_previous_task_id: Optional[int] = None
+        structured_plan_finalize_nudge_plan_id: Optional[int] = None
         runtime_iteration_limit = self.max_iterations
         handoff_iteration_extensions = 0
 
@@ -3034,6 +3098,42 @@ class DeepThinkAgent:
                         assistant_content=result.content or "",
                         current_step=current_step,
                     )
+
+                    if final_call is None:
+                        created_plan = self._extract_successful_created_plan_from_tool_results(
+                            tool_results
+                        )
+                        created_plan_id = (
+                            int(created_plan["plan_id"])
+                            if isinstance(created_plan, dict)
+                            and created_plan.get("plan_id") is not None
+                            else None
+                        )
+                        if (
+                            created_plan_id is not None
+                            and self._requires_structured_plan()
+                            and self._plan_request_mode() in {"create", "create_new"}
+                            and structured_plan_finalize_nudge_plan_id != created_plan_id
+                        ):
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": self._build_created_plan_finalize_nudge(
+                                        user_query=user_query,
+                                        plan_id=created_plan_id,
+                                        plan_title=(
+                                            created_plan.get("plan_title")
+                                            if isinstance(created_plan, dict)
+                                            else None
+                                        ),
+                                    ),
+                                }
+                            )
+                            structured_plan_finalize_nudge_plan_id = created_plan_id
+                            logger.info(
+                                "[DEEP_THINK_NATIVE] Injected finalize nudge after successful plan creation: plan_id=%s",
+                                created_plan_id,
+                            )
 
                     tool_cycle_signature = self._build_tool_cycle_signature(tool_results)
                     if tool_cycle_signature and tool_cycle_signature == last_tool_cycle_signature:

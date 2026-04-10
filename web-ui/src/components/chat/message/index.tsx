@@ -15,13 +15,20 @@ import { MarkdownRenderer } from '../MarkdownRenderer';
 import { TypingIndicator } from '../TypingIndicator';
 import ArtifactGallery from '../ArtifactGallery';
 import type { DecompositionJobStatus } from '@/types';
-import { FINAL_JOB_STATUSES, normalizeJobStatus, computeDecomposeProgress } from './utils';
+import {
+  FINAL_JOB_STATUSES,
+  normalizeJobStatus,
+  computeDecomposeProgress,
+  isBackgroundDispatchCategory,
+  shouldShowStreamingCursor,
+} from './utils';
 import MessageAvatar from './MessageAvatar';
 import ToolProgressCard, { BackgroundDispatchCard } from './ToolProgressCard';
 import MessageActions from './MessageActions';
 import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
 import { collectArtifactGallery } from '@/utils/artifactGallery';
+import { resolveThinkingDisplayMode } from '@store/slices/message/thinkingPresentation';
 
 const { Text } = Typography;
 
@@ -160,8 +167,15 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
       ? finalSummary
       : null;
   const status = metadata?.status;
+  const bgCategory = (metadata as any)?.background_category as string | undefined;
+  const isBackgroundDispatch = isBackgroundDispatchCategory(bgCategory);
   const isStreaming =
     unifiedStream && (status === 'pending' || status === 'running');
+  const showStreamCursor = shouldShowStreamingCursor({
+    unifiedStream,
+    status,
+    backgroundCategory: bgCategory,
+  });
   /** Same id as chat run (dt_...). Prefer chat_run_id — it is set as soon as the run is created; deep_think_job_id may arrive later via control_ack. */
   const chatRunIdFromMeta =
     typeof (metadata as any)?.chat_run_id === 'string'
@@ -172,13 +186,21 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
       ? String((metadata as any).deep_think_job_id).trim()
       : null;
   const runIdForDeepThink = chatRunIdFromMeta || deepThinkJobId;
-  const hasCompactProgress =
-    (metadata as any)?.thinking_visibility === 'progress' &&
-    Boolean((metadata as any)?.deep_think_progress);
+  const hasCompactProgress = Boolean((metadata as any)?.deep_think_progress);
+  const thinkingDisplayMode = useMemo(
+    () =>
+      resolveThinkingDisplayMode({
+        metadata: (metadata as Record<string, any> | undefined) ?? null,
+        thinkingProcess: message.thinking_process,
+        isStreaming,
+      }),
+    [isStreaming, message.thinking_process, metadata],
+  );
+  const showCompactProgress = thinkingDisplayMode === 'compact_progress' && hasCompactProgress;
   const deepThinkPausedFromMetadata = Boolean((metadata as any)?.deep_think_paused);
   const showThinkingProcess =
     Boolean(message.thinking_process) &&
-    (metadata as any)?.thinking_visibility === 'visible';
+    (thinkingDisplayMode === 'full_thinking' || thinkingDisplayMode === 'final_answer');
   const [deepThinkPaused, setDeepThinkPaused] = useState<boolean>(deepThinkPausedFromMetadata);
   const [deepThinkControlBusyAction, setDeepThinkControlBusyAction] = useState<
     'pause' | 'resume' | 'skip_step' | null
@@ -247,7 +269,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     !(metadata as any)?.actions?.length &&
     (content?.trim?.() ?? '') === '' &&
     !analysisText &&
-    !hasCompactProgress &&
+    !showCompactProgress &&
     !hasThinkingSteps  // If thinking steps exist, render ThinkingProcess instead.
   ) {
     return <TypingIndicator message="Thinking..." showAvatar={true} />;
@@ -326,14 +348,11 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
   };
 
   // ---- Background dispatch card ----
-  const bgCategory = (metadata as any)?.background_category as string | undefined;
-  const isBackgroundDispatch = Boolean(bgCategory && (bgCategory === 'phagescope' || bgCategory === 'code_executor' || bgCategory === 'task_creation'));
-
   const renderSummary = () => {
     const responsePlaceholderVisible =
       unifiedStream &&
-      isStreaming &&
-      !hasCompactProgress &&
+      showStreamCursor &&
+      !showCompactProgress &&
       !displayTextForUi;
     if (responsePlaceholderVisible) {
       // When ThinkingProcess is active and visible, don't show redundant placeholder —
@@ -353,7 +372,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
           }}
         >
           {placeholderText}
-          <span className="stream-cursor">▍</span>
+          {showStreamCursor ? <span className="stream-cursor">▍</span> : null}
         </div>
       );
     }
@@ -362,13 +381,42 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     return (
       <div style={{ marginTop: 4 }} className="assistant-markdown-stream">
         <MarkdownRenderer content={displayTextForUi} sessionId={effectiveSessionId} />
-        {isStreaming ? <span className="stream-cursor">▍</span> : null}
+        {showStreamCursor ? <span className="stream-cursor">▍</span> : null}
       </div>
     );
   };
 
   const renderUnifiedStatusLine = () => {
     return null;
+  };
+
+  const renderThinkingProcessBlock = () => {
+    if (!showThinkingProcess || !message.thinking_process) {
+      return null;
+    }
+
+    return (
+      <ThinkingProcess
+        process={message.thinking_process}
+        isFinished={thinkingIsFinished}
+        canControl={deepThinkCanControl}
+        onPause={() => {
+          void issueDeepThinkControl('pause');
+        }}
+        onResume={() => {
+          void issueDeepThinkControl('resume');
+        }}
+        onSkipStep={() => {
+          void issueDeepThinkControl('skip_step');
+        }}
+        onCancelRun={issueCancelRun}
+        paused={deepThinkPaused}
+        controlDisabled={deepThinkControlDisabled}
+        controlBusy={deepThinkControlBusyAction !== null}
+        controlBusyAction={deepThinkControlBusyAction}
+        cancelRunBusy={deepThinkCancelRunBusy}
+      />
+    );
   };
 
   // Render message content.
@@ -466,7 +514,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                 <>
                   {isBackgroundDispatch ? (
                     <BackgroundDispatchCard metadata={metadata} />
-                  ) : (
+                  ) : showCompactProgress ? (
                     <ToolProgressCard
                       metadata={metadata}
                       isDecomposeActive={isDecomposeActive}
@@ -475,30 +523,8 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                       effectiveDecomposeJob={effectiveDecomposeJob}
                       processSummary={processSummary}
                     />
-                  )}
-                  {/* Thinking Process */}
-                  {showThinkingProcess && message.thinking_process && (
-                    <ThinkingProcess
-                      process={message.thinking_process}
-                      isFinished={thinkingIsFinished}
-                      canControl={deepThinkCanControl}
-                      onPause={() => {
-                        void issueDeepThinkControl('pause');
-                      }}
-                      onResume={() => {
-                        void issueDeepThinkControl('resume');
-                      }}
-                      onSkipStep={() => {
-                        void issueDeepThinkControl('skip_step');
-                      }}
-                      onCancelRun={issueCancelRun}
-                      paused={deepThinkPaused}
-                      controlDisabled={deepThinkControlDisabled}
-                      controlBusy={deepThinkControlBusyAction !== null}
-                      controlBusyAction={deepThinkControlBusyAction}
-                      cancelRunBusy={deepThinkCancelRunBusy}
-                    />
-                  )}
+                  ) : null}
+                  {showThinkingProcess && renderThinkingProcessBlock()}
                   {summaryBlock}
                   {showInlineArtifactGallery && (
                     <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />
@@ -508,7 +534,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
             }
             return (
               <>
-                {hasCompactProgress && (
+                {showCompactProgress && (
                   <ToolProgressCard
                     metadata={metadata}
                     isDecomposeActive={isDecomposeActive}
@@ -518,29 +544,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                     processSummary={processSummary}
                   />
                 )}
-                {/* Thinking Process - always render if present */}
-                {showThinkingProcess && message.thinking_process && (
-                  <ThinkingProcess
-                    process={message.thinking_process}
-                    isFinished={thinkingIsFinished}
-                    canControl={deepThinkCanControl}
-                    onPause={() => {
-                      void issueDeepThinkControl('pause');
-                    }}
-                    onResume={() => {
-                      void issueDeepThinkControl('resume');
-                    }}
-                    onSkipStep={() => {
-                      void issueDeepThinkControl('skip_step');
-                    }}
-                    onCancelRun={issueCancelRun}
-                    paused={deepThinkPaused}
-                    controlDisabled={deepThinkControlDisabled}
-                    controlBusy={deepThinkControlBusyAction !== null}
-                    controlBusyAction={deepThinkControlBusyAction}
-                    cancelRunBusy={deepThinkCancelRunBusy}
-                  />
-                )}
+                {showThinkingProcess && renderThinkingProcessBlock()}
                 {summaryBlock ?? renderContent()}
                 {showInlineArtifactGallery && (
                   <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />

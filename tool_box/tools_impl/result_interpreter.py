@@ -616,6 +616,11 @@ Working directory: {exec_work_dir}
                     "has_visualization": result.has_visualization,
                     "visualization_purpose": result.visualization_purpose,
                     "visualization_analysis": result.visualization_analysis,
+                    "execution_backend": getattr(result, "execution_backend", None),
+                    "execution_lane": getattr(result, "execution_lane", None),
+                    "execution_lane_reason": getattr(result, "execution_lane_reason", None),
+                    "workspace_dir": getattr(result, "workspace_dir", None),
+                    "code_file": getattr(result, "code_file", None),
                     "retries_used": max(0, result.total_attempts - 1),
                     "work_dir": exec_work_dir,
                 }

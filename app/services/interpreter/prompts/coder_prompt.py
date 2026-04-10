@@ -158,6 +158,8 @@ When multiple datasets are provided:
 ### Bound Task Dependency Rules
 - If the task depends on upstream intermediate files or deliverables and they are missing, do NOT silently rewrite the task into a different upstream workflow unless the task description explicitly authorizes that fallback.
 - Instead, print a clear blocked-dependency report describing which prerequisite inputs are missing and why the current task cannot proceed yet.
+- If the task names a required input file or directory by path and that path is missing, stop with a blocked-dependency report instead of guessing a substitute location.
+- Never silently fall back to `.`, the current working directory, or guessed sibling paths when a required input path is missing.
 - For immutable source inputs such as metadata tables, prefer canonical absolute paths from the data directory over same-named session-temp `results/` copies, especially when a session copy is empty or malformed.
 - Do NOT generate placeholder "success" summaries or fake output artifacts for work that did not actually complete.
 

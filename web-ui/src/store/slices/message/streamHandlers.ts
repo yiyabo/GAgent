@@ -46,6 +46,7 @@ import {
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { SessionStorage } from '@/utils/sessionStorage';
 import type { StreamHandlerContext } from './types';
+import { resolveThinkingDisplayMode } from './thinkingPresentation';
 
 function inferThinkingLanguage(ctx: StreamHandlerContext): 'zh' | 'en' {
   const messages = ctx.get().messages;
@@ -410,6 +411,7 @@ export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void 
   if ((existingMetadata as any).thinking_visibility !== 'visible') {
     (existingMetadata as any).thinking_visibility = 'visible';
   }
+  (existingMetadata as any).thinking_display_mode = 'full_thinking';
 
   ctx.get().updateMessage(ctx.assistantMessageId, {
     metadata: existingMetadata,
@@ -489,6 +491,7 @@ function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext, force: boolean = f
     if ((existingMetadata as any).thinking_visibility !== 'visible') {
       (existingMetadata as any).thinking_visibility = 'visible';
     }
+    (existingMetadata as any).thinking_display_mode = 'full_thinking';
     ctx.get().updateMessage(ctx.assistantMessageId, {
       metadata: existingMetadata,
       thinking_process: {
@@ -706,6 +709,7 @@ export function handleProgressStatus(ctx: StreamHandlerContext, event: any): voi
     updated_at: new Date().toISOString(),
   };
   (existingMetadata as any).thinking_visibility = 'progress';
+  (existingMetadata as any).thinking_display_mode = 'compact_progress';
   (existingMetadata as any).unified_stream = true;
   if (!(existingMetadata as any).status || (existingMetadata as any).status === 'pending') {
     (existingMetadata as any).status = 'running';
@@ -780,6 +784,7 @@ export function processBackgroundDispatch(ctx: StreamHandlerContext): void {
 export async function processFinalPayload(ctx: StreamHandlerContext): Promise<void> {
   const result: ChatResponsePayload = ctx.state.finalPayload!;
   const actions = (result.actions ?? []) as ChatActionSummary[];
+  const currentMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
   const resolvedPlanId = (result.metadata?.plan_id !== undefined ? coercePlanId(result.metadata.plan_id) : undefined) ?? extractPlanIdFromActions(actions) ?? coercePlanId(ctx.mergedMetadata.plan_id) ?? ctx.get().currentPlanId ?? null;
   const resolvedPlanTitle = (result.metadata?.plan_title !== undefined ? coercePlanTitle(result.metadata.plan_title) : undefined) ?? extractPlanTitleFromActions(actions) ?? coercePlanTitle(ctx.mergedMetadata.plan_title) ?? ctx.get().currentPlanTitle ?? null;
   const resolvedTaskId = result.metadata?.task_id ?? ctx.mergedMetadata.task_id ?? ctx.get().currentTaskId ?? null;
@@ -800,7 +805,7 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
     final_summary: (result.metadata?.final_summary as string | undefined) ?? (result.response ?? ctx.state.streamedContent ?? ''),
   };
   const existingProgress = (
-    (ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId)?.metadata as any)?.deep_think_progress ??
+    (currentMessage?.metadata as any)?.deep_think_progress ??
     (result.metadata as any)?.deep_think_progress
   ) as Record<string, any> | undefined;
   if (existingProgress && typeof existingProgress === 'object') {
@@ -837,42 +842,43 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
     ),
   );
   if (initialArtifactGallery.length > 0) assistantMetadata.artifact_gallery = initialArtifactGallery;
-
-  ctx.get().updateMessage(ctx.assistantMessageId, {
-    content: (assistantMetadata as any).unified_stream === true ? (assistantMetadata.analysis_text?.trim() ? assistantMetadata.analysis_text : (((assistantMetadata as any).plan_message as string) || assistantMetadata.final_summary || '')) : (result.response ?? ctx.state.streamedContent),
-    metadata: assistantMetadata,
-  });
-  const postFinalMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
   const thinkingFromMeta = (assistantMetadata as any)?.thinking_process;
-  const streamedTp = postFinalMessage?.thinking_process;
+  const streamedTp = currentMessage?.thinking_process;
   const hasSteps = (tp: unknown) =>
     tp &&
     typeof tp === 'object' &&
     Array.isArray((tp as { steps?: unknown }).steps) &&
     ((tp as { steps: unknown[] }).steps?.length ?? 0) > 0;
   const nextThinkingStatus = initialStatus === 'failed' ? 'error' : 'completed';
+  let nextThinkingProcess: Record<string, unknown> | null = null;
   if (hasSteps(streamedTp)) {
     const metaSummary =
       thinkingFromMeta && typeof thinkingFromMeta === 'object'
         ? (thinkingFromMeta as Record<string, unknown>).summary
         : undefined;
-    ctx.get().updateMessage(ctx.assistantMessageId, {
-      thinking_process: {
-        ...(streamedTp as Record<string, unknown>),
-        status: nextThinkingStatus,
-        summary:
-          (streamedTp as Record<string, unknown>).summary ??
-          (typeof metaSummary === 'string' ? metaSummary : undefined),
-      } as any,
-    });
+    nextThinkingProcess = {
+      ...(streamedTp as Record<string, unknown>),
+      status: nextThinkingStatus,
+      summary:
+        (streamedTp as Record<string, unknown>).summary ??
+        (typeof metaSummary === 'string' ? metaSummary : undefined),
+    };
   } else if (hasSteps(thinkingFromMeta)) {
-    ctx.get().updateMessage(ctx.assistantMessageId, {
-      thinking_process: {
-        ...(thinkingFromMeta as Record<string, unknown>),
-        status: nextThinkingStatus,
-      } as any,
-    });
+    nextThinkingProcess = {
+      ...(thinkingFromMeta as Record<string, unknown>),
+      status: nextThinkingStatus,
+    };
   }
+  (assistantMetadata as any).thinking_display_mode = resolveThinkingDisplayMode({
+    metadata: assistantMetadata,
+    thinkingProcess: nextThinkingProcess as any,
+    isStreaming: initialStatus === 'pending' || initialStatus === 'running',
+  });
+  ctx.get().updateMessage(ctx.assistantMessageId, {
+    content: (assistantMetadata as any).unified_stream === true ? (assistantMetadata.analysis_text?.trim() ? assistantMetadata.analysis_text : (((assistantMetadata as any).plan_message as string) || assistantMetadata.final_summary || '')) : (result.response ?? ctx.state.streamedContent),
+    metadata: assistantMetadata,
+    ...(nextThinkingProcess ? { thinking_process: nextThinkingProcess as any } : {}),
+  });
   ctx.get().setActiveRunId(resolveChatSessionProcessingKey(ctx.currentSession), null);
   ctx.get().setSessionProcessing(
     resolveChatSessionProcessingKey(ctx.currentSession),

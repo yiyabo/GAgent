@@ -14,7 +14,7 @@ import {
 import type { ChatMessage as ChatMessageType } from '@/types';
 import { useChatStore } from '@store/chat';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
-import { formatTime, fallbackCopyToClipboard } from './utils';
+import { formatTime, fallbackCopyToClipboard, resolveMessageCopyText } from './utils';
 
 const { Text } = Typography;
 
@@ -29,15 +29,16 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
     state.processingSessionIds.has(resolveChatSessionProcessingKey(state.currentSession))
   );
   const [isSaving, setIsSaving] = useState(false);
+  const copyText = resolveMessageCopyText(message);
 
   // Copy message content (with HTTP fallback path).
   const handleCopy = () => {
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(content).catch(() => {
-        fallbackCopyToClipboard(content);
+      navigator.clipboard.writeText(copyText).catch(() => {
+        fallbackCopyToClipboard(copyText);
       });
     } else {
-      fallbackCopyToClipboard(content);
+      fallbackCopyToClipboard(copyText);
     }
   };
 

@@ -52,6 +52,7 @@ const TerminalToolbar: React.FC<Props> = ({
           options={[
             { value: 'sandbox', label: 'Sandbox PTY' },
             { value: 'ssh', label: 'SSH' },
+            { value: 'qwen_code', label: 'Qwen Code' },
           ]}
           style={{ width: 120 }}
         />

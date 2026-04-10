@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 _IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".svg", ".pdf"})
 _DEFAULT_DOCKER_IMAGE = "gagent-python-runtime:latest"
+_ABSOLUTE_PATH_TOKEN_RE = re.compile(
+    r"(?<![\w.-])/(?:[^\s'\"`<>\(\)\[\]\{\},;:，。；：！？、（）【】《》「」『』“”‘’])+"
+)
+_TRAILING_PATH_PUNCTUATION = ".,;:!?)]}'\"，。；：！？、）】》」』”’"
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +361,59 @@ def _normalize_execution_backend(value: Optional[str]) -> str:
     return "local"
 
 
+def _path_is_within(candidate: Path, root: str) -> bool:
+    root_text = str(root or "").strip()
+    if not root_text:
+        return False
+    try:
+        candidate_abs = os.path.abspath(str(candidate))
+        root_abs = os.path.abspath(root_text)
+        return os.path.commonpath([candidate_abs, root_abs]) == root_abs
+    except Exception:
+        return False
+
+
+def _strip_trailing_path_punctuation(value: str) -> str:
+    return str(value or "").strip().rstrip(_TRAILING_PATH_PUNCTUATION)
+
+
+def _find_missing_absolute_input_paths(
+    task_description: str,
+    *,
+    writable_roots: Sequence[str] = (),
+) -> List[str]:
+    text = str(task_description or "")
+    if not text.strip():
+        return []
+
+    missing: List[str] = []
+    seen: set[str] = set()
+    for match in _ABSOLUTE_PATH_TOKEN_RE.finditer(text):
+        token = _strip_trailing_path_punctuation(match.group(0))
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        candidate = Path(token).expanduser()
+        if candidate.exists():
+            continue
+        if any(_path_is_within(candidate, root) for root in writable_roots):
+            continue
+        missing.append(str(candidate))
+    return missing
+
+
+def _format_missing_input_path_blocker(paths: Sequence[str]) -> str:
+    preview = ", ".join(str(path) for path in list(paths)[:3])
+    suffix = ""
+    if len(paths) > 3:
+        suffix = f" (+{len(paths) - 3} more)"
+    return (
+        "BLOCKED_DEPENDENCY: task references missing absolute input path(s): "
+        f"{preview}{suffix}. Update the task or bound plan to point at an accessible "
+        "input path. Do not fall back to '.' or the workspace."
+    )
+
+
 _MAX_CONTRACT_REPAIR_ATTEMPTS = 1
 
 
@@ -478,6 +535,25 @@ async def execute_code_locally(
             enhanced_description = contracted_description
 
     normalized_backend = _normalize_execution_backend(execution_backend)
+    missing_input_paths = _find_missing_absolute_input_paths(
+        enhanced_description,
+        writable_roots=(work_dir, *writable_dirs),
+    )
+    if missing_input_paths:
+        blocked_summary = _format_missing_input_path_blocker(missing_input_paths)
+        logger.warning(
+            "Blocking local code execution because task references missing absolute input paths: %s",
+            ", ".join(missing_input_paths[:5]),
+        )
+        return CodeExecutionOutcome(
+            success=False,
+            stderr=blocked_summary,
+            exit_code=1,
+            error_category="blocked_dependency",
+            error_summary=blocked_summary,
+            execution_backend=normalized_backend,
+            execution_status="failed",
+        )
     generator = CodeGenerator(
         llm_service=llm_service,
         system_prompt=build_coder_system_prompt(

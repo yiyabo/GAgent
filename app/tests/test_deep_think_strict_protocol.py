@@ -773,6 +773,83 @@ def test_structured_plan_outcome_detects_created_plan() -> None:
     assert outcome["plan_id"] == 55
 
 
+def test_native_plan_create_injects_finalize_nudge() -> None:
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Create the requested plan",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="plan_operation",
+                        arguments={
+                            "operation": "create",
+                            "title": "Genome diversity plan",
+                            "description": "Plan the genomic diversity analysis.",
+                            "tasks": [
+                                {
+                                    "name": "Define subset",
+                                    "instruction": "Select representative phage groups.",
+                                }
+                            ],
+                        },
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Finalize the response",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "Structured plan created successfully.",
+                            "confidence": 0.92,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(name: str, _params: dict):
+        assert name == "plan_operation"
+        return {
+            "success": True,
+            "operation": "create",
+            "plan_id": 58,
+            "title": "Genome diversity plan",
+        }
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["plan_operation"],
+        tool_executor=_tool_executor,
+        max_iterations=3,
+        request_profile={
+            "requires_structured_plan": True,
+            "plan_request_mode": "create",
+        },
+    )
+
+    result = asyncio.run(
+        agent.think("Create a structured plan for phage genomic diversity analysis")
+    )
+
+    second_call_messages = llm.calls[1]
+    user_messages = [
+        str(message.get("content") or "")
+        for message in second_call_messages
+        if message.get("role") == "user"
+    ]
+    assert any(
+        "Do not call `plan_operation` with `create` again" in message
+        for message in user_messages
+    )
+    assert result.structured_plan_satisfied is True
+    assert result.structured_plan_plan_id == 58
+
+
 def test_structured_plan_outcome_detects_bound_plan_update() -> None:
     agent = _build_plan_agent(
         {

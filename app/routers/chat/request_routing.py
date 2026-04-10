@@ -19,6 +19,7 @@ from .subject_identity import (
 RequestTier = Literal["light", "standard", "research", "execute"]
 RequestRouteMode = Literal["manual_deepthink", "auto_simple", "auto_deepthink"]
 ThinkingVisibility = Literal["visible", "progress", "hidden"]
+ThinkingDisplayMode = Literal["full_thinking", "compact_progress", "final_answer", "hidden"]
 PlanRequestMode = Literal["create", "update_bound", "create_new"]
 IntentType = Literal[
     "chat",
@@ -814,11 +815,19 @@ class RequestRoutingDecision:
         return self.request_route_mode != "auto_simple"
 
     def metadata(self) -> Dict[str, Any]:
+        thinking_display_mode: ThinkingDisplayMode
+        if self.thinking_visibility == "progress":
+            thinking_display_mode = "compact_progress"
+        elif self.thinking_visibility == "visible":
+            thinking_display_mode = "full_thinking"
+        else:
+            thinking_display_mode = "hidden"
         payload = {
             "request_tier": self.request_tier,
             "request_route_mode": self.request_route_mode,
             "route_reason_codes": list(self.route_reason_codes),
             "thinking_visibility": self.thinking_visibility,
+            "thinking_display_mode": thinking_display_mode,
             "intent_type": self.intent_type,
             "capability_floor": self.capability_floor,
             "simple_channel_allowed": self.simple_channel_allowed,

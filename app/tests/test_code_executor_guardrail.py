@@ -632,6 +632,7 @@ def test_code_executor_handler_passes_docker_image_override_to_local_backend(
     [
         "Read /TMP_PROJECT/phagescope/gvd_phage_meta_data.tsv and plot completeness.",
         "Read phagescope/gvd_phage_meta_data.tsv and plot completeness.",
+        "读取 /TMP_PROJECT/phagescope/gvd_phage_meta_data.tsv，统计 Completeness 并绘图。",
     ],
 )
 def test_code_executor_handler_infers_task_referenced_project_dir_for_local_backend(
@@ -715,6 +716,37 @@ def test_execute_task_locally_blocks_before_generation_on_incomplete_dependency(
     assert result["success"] is False
     assert result["error_category"] == "blocked_dependency"
     assert "QC [failed]" in result["error_summary"]
+
+
+def test_execute_task_locally_blocks_missing_absolute_task_path_before_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing_dir = "/home/zczhao/GAgent/phagescop"
+
+    def _unexpected_generate(*args, **kwargs):
+        raise AssertionError("code generation should not run for a missing declared input path")
+
+    monkeypatch.setattr(
+        "app.services.interpreter.code_execution.CodeGenerator.generate",
+        _unexpected_generate,
+    )
+    monkeypatch.setattr(
+        "app.services.llm.llm_service.get_llm_service",
+        lambda: SimpleNamespace(chat=lambda *args, **kwargs: ""),
+    )
+
+    result = asyncio.run(
+        _execute_task_locally(
+            task=f"Read files from {missing_dir} and summarize the directory contents.",
+            work_dir=str(tmp_path / "workspace"),
+            session_dir=str(tmp_path / "session"),
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_category"] == "blocked_dependency"
+    assert missing_dir in result["error_summary"]
 
 
 # ---------------------------------------------------------------------------

@@ -31,10 +31,11 @@ async def terminal_session_handler(
     if op == "create":
         if not session_id:
             raise ValueError("session_id is required for create")
-        ssh_cfg = SSHConfig(**ssh_config) if (mode == "ssh" and isinstance(ssh_config, dict)) else None
+        resolved_mode = mode if mode in ("sandbox", "ssh", "qwen_code") else "sandbox"
+        ssh_cfg = SSHConfig(**ssh_config) if (resolved_mode == "ssh" and isinstance(ssh_config, dict)) else None
         session = await terminal_session_manager.create_session(
             session_id,
-            mode="ssh" if mode == "ssh" else "sandbox",
+            mode=resolved_mode,
             ssh_config=ssh_cfg,
         )
         return {
@@ -50,9 +51,10 @@ async def terminal_session_handler(
     if op == "ensure":
         if not session_id:
             raise ValueError("session_id is required for ensure")
+        resolved_mode = mode if mode in ("sandbox", "ssh", "qwen_code") else "sandbox"
         session = await terminal_session_manager.ensure_session_for_chat(
             session_id,
-            mode="ssh" if mode == "ssh" else "sandbox",
+            mode=resolved_mode,
         )
         return {
             "operation": op,
@@ -224,7 +226,7 @@ terminal_session_tool = {
             },
             "session_id": {"type": "string"},
             "terminal_id": {"type": "string"},
-            "mode": {"type": "string", "enum": ["sandbox", "ssh"], "default": "sandbox"},
+            "mode": {"type": "string", "enum": ["sandbox", "ssh", "qwen_code"], "default": "sandbox"},
             "ssh_config": {
                 "type": "object",
                 "properties": {
