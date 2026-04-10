@@ -668,6 +668,7 @@ def _build_qwen_code_command(
     model: Optional[str],
     debug: bool,
     allowed_dirs_info: str,
+    qwen_session_id: Optional[str] = None,
     task_subdirs: Sequence[str] = _DEFAULT_TASK_SUBDIRECTORIES,
     execution_spec: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
@@ -753,6 +754,8 @@ def _build_qwen_code_command(
         "--approval-mode", "yolo",
         "--auth-type", "openai",
     ]
+    if qwen_session_id:
+        cmd.extend(["--session-id", qwen_session_id])
     if model:
         cmd.extend(["-m", model])
     if debug:
@@ -763,6 +766,51 @@ def _build_qwen_code_command(
     for abs_path in allowed_dirs:
         cmd.extend(["--add-dir", abs_path])
     return cmd
+
+
+def _build_qwen_container_mounts(
+    *,
+    task_work_dir: Path,
+    session_dir: Path,
+    allowed_dirs: Sequence[str],
+) -> List[tuple[str, str]]:
+    """Return bind mounts needed for containerized qwen access.
+
+    Every directory exposed to qwen via ``--add-dir`` must also exist inside
+    the container at the same absolute path. We mount the minimal covering set:
+    skip directories already covered by ``task_work_dir`` or an earlier parent
+    mount, while preserving same-path host/container mapping.
+    """
+
+    task_root = task_work_dir.resolve()
+    candidates: List[Path] = []
+    if session_dir.exists():
+        candidates.append(session_dir.resolve())
+    for raw_dir in allowed_dirs:
+        token = str(raw_dir or "").strip()
+        if not token:
+            continue
+        try:
+            resolved = Path(token).resolve()
+        except Exception:
+            continue
+        if resolved.exists() and resolved.is_dir():
+            candidates.append(resolved)
+
+    ordered: List[Path] = []
+    seen: set[str] = set()
+    for candidate in sorted(candidates, key=lambda item: (len(item.parts), str(item))):
+        candidate_str = str(candidate)
+        if candidate_str in seen:
+            continue
+        if _is_path_within(candidate, task_root):
+            continue
+        if any(_is_path_within(candidate, mounted_parent) for mounted_parent in ordered):
+            continue
+        ordered.append(candidate)
+        seen.add(candidate_str)
+
+    return [(str(path), str(path)) for path in ordered]
 
 
 def _coerce_positive_int(value: Any, *, field_name: str) -> Optional[int]:
@@ -2036,6 +2084,7 @@ async def code_executor_handler(
 
         # ---- Build CLI command and environment ----
         _docker_container_name: Optional[str] = None  # set when running inside container
+        _qwen_session_id: Optional[str] = None
         if use_qwen_code_backend:
             # Qwen Code path
             subprocess_env = _build_qwen_code_subprocess_env()
@@ -2062,6 +2111,7 @@ async def code_executor_handler(
                     model=effective_model,
                     debug=debug_log_path is not None,
                     allowed_dirs_info=allowed_dirs_info,
+                    qwen_session_id=_qwen_session_id,
                     task_subdirs=task_subdirs,
                     execution_spec=execution_spec,
                 )
@@ -2087,12 +2137,14 @@ async def code_executor_handler(
                 _container = await _qc_driver.ensure_container(
                     _effective_session_id,
                     host_work_dir=str(task_work_dir),
-                    extra_mounts=[
-                        (str(session_dir), str(session_dir)),
-                        (str(_PROJECT_ROOT / "data"), str(_PROJECT_ROOT / "data")),
-                    ],
+                    extra_mounts=_build_qwen_container_mounts(
+                        task_work_dir=task_work_dir,
+                        session_dir=session_dir,
+                        allowed_dirs=allowed_dirs,
+                    ),
                 )
                 _docker_container_name = _container
+                _qwen_session_id = _qc_driver.get_qwen_session_id(_effective_session_id)
                 # Rebuild cmd — _rebuild_cli_command now wraps with docker exec
                 cmd = _rebuild_cli_command(task)
                 # Env is inside the container; host subprocess only needs docker binary

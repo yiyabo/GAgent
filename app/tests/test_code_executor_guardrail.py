@@ -718,6 +718,134 @@ def test_execute_task_locally_blocks_before_generation_on_incomplete_dependency(
     assert "QC [failed]" in result["error_summary"]
 
 
+def test_code_executor_qwen_container_mounts_allowed_dirs_and_passes_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    project_root = tmp_path / "project"
+    default_data_dir = project_root / "data"
+    extra_dir = project_root / "phagescope"
+    default_data_dir.mkdir(parents=True, exist_ok=True)
+    extra_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("QWEN_API_KEY", "sk-test")
+    monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(code_executor_module, "_PROJECT_ROOT", project_root)
+
+    def _fake_resolve_runtime_session_dir(session_id: str) -> Path:
+        session_dir = (runtime_root / f"session_{session_id}").resolve()
+        session_dir.mkdir(parents=True, exist_ok=True)
+        return session_dir
+
+    monkeypatch.setattr(
+        code_executor_module,
+        "_resolve_runtime_session_dir",
+        _fake_resolve_runtime_session_dir,
+    )
+    monkeypatch.setattr(
+        code_executor_module,
+        "_resolve_code_executor_backend",
+        lambda _task: ("qwen_code", "configured_backend", "test"),
+    )
+
+    async def _fake_task_dir(_task: str) -> str:
+        return "demo-task"
+
+    monkeypatch.setattr(code_executor_module, "_generate_task_dir_name_llm", _fake_task_dir)
+
+    captured: dict[str, object] = {}
+
+    class _FakeDriver:
+        async def ensure_container(
+            self,
+            session_id: str,
+            *,
+            host_work_dir: str,
+            extra_mounts=None,
+            image=None,
+        ):
+            captured["session_id"] = session_id
+            captured["host_work_dir"] = host_work_dir
+            captured["extra_mounts"] = list(extra_mounts or [])
+            captured["image"] = image
+            return "test-container"
+
+        def get_qwen_session_id(self, session_id: str):
+            captured["qwen_session_lookup"] = session_id
+            return "qc-session-123"
+
+    monkeypatch.setattr(
+        "app.services.terminal.qwen_session_driver.get_qwen_session_driver",
+        lambda: _FakeDriver(),
+    )
+
+    class _FakeStream:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+            self._sent = False
+
+        async def read(self, _chunk_size: int = 65536) -> bytes:
+            if self._sent:
+                return b""
+            self._sent = True
+            return self._payload
+
+    class _FakeProcess:
+        def __init__(self, command):
+            self.command = list(command)
+            self.stdout = _FakeStream(b'{"result":"ok"}\n')
+            self.stderr = _FakeStream(b"")
+            self.returncode = 0
+
+        async def wait(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    async def _fake_create_subprocess_exec(*command, **kwargs):
+        captured["command"] = list(command)
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
+        return _FakeProcess(command)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    result = asyncio.run(
+        code_executor_module.code_executor_handler(
+            task=f"Read files from {extra_dir} and summarize them.",
+            allowed_tools=["Bash"],
+            add_dirs=[str(extra_dir)],
+            session_id="chat-xyz",
+            require_task_context=False,
+            auto_fix=False,
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["session_id"] == "chat-xyz"
+    assert captured["qwen_session_lookup"] == "chat-xyz"
+
+    mounts = captured["extra_mounts"]
+    expected_session_dir = (runtime_root / "session_chat-xyz").resolve()
+    assert (str(expected_session_dir), str(expected_session_dir)) in mounts
+    assert (str(default_data_dir), str(default_data_dir)) in mounts
+    assert (str(extra_dir), str(extra_dir)) in mounts
+
+    command = captured["command"]
+    assert command[:6] == [
+        "docker",
+        "exec",
+        "-w",
+        captured["host_work_dir"],
+        "test-container",
+        "qwen",
+    ]
+    assert "--session-id" in command
+    assert command[command.index("--session-id") + 1] == "qc-session-123"
+
+
 def test_execute_task_locally_blocks_missing_absolute_task_path_before_generation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -934,6 +1062,22 @@ class TestQwenCodeCLI:
             model=None, debug=True, allowed_dirs_info="",
         )
         assert "-d" in cmd
+
+    def test_build_qwen_code_command_includes_session_id(self):
+        cmd = _build_qwen_code_command(
+            task="x",
+            work_dir="/tmp",
+            file_prefix="r",
+            output_format="json",
+            allowed_tools=["Bash"],
+            allowed_dirs=[],
+            model=None,
+            debug=False,
+            allowed_dirs_info="",
+            qwen_session_id="agent-session-123",
+        )
+        idx = cmd.index("--session-id")
+        assert cmd[idx + 1] == "agent-session-123"
 
     def test_build_qwen_code_command_includes_shell_timeout_guidance(self, monkeypatch):
         monkeypatch.setattr(

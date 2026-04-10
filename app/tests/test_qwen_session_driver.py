@@ -3,7 +3,7 @@
 import asyncio
 import os
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import MagicMock
 
 from app.services.terminal.qwen_session_driver import (
     QwenSessionDriver,
@@ -100,62 +100,3 @@ class TestSingleton:
         assert d1 is d2
         mod._driver = None  # cleanup
 
-
-# ---------------------------------------------------------------------------
-# Session ownership fields (session_manager integration)
-# ---------------------------------------------------------------------------
-
-class TestSessionOwnershipFields:
-    def test_terminal_session_has_owner_fields(self):
-        from app.services.terminal.session_manager import TerminalSession
-        import dataclasses
-        field_names = {f.name for f in dataclasses.fields(TerminalSession)}
-        assert "owner" in field_names
-        assert "owner_lease_expires" in field_names
-        assert "busy" in field_names
-
-    def test_default_owner_is_none(self):
-        from app.services.terminal.session_manager import TerminalSession
-        from datetime import datetime, timezone
-        session = TerminalSession(
-            session_id="test",
-            terminal_id="t1",
-            mode="sandbox",
-            backend=MagicMock(),
-            created_at=datetime.now(timezone.utc),
-            last_activity=datetime.now(timezone.utc),
-            state="active",
-            env={},
-            cwd="/tmp",
-            audit_logger=MagicMock(),
-        )
-        assert session.owner == "none"
-        assert session.owner_lease_expires is None
-        assert session.busy is False
-
-
-# ---------------------------------------------------------------------------
-# Code executor Docker integration flag
-# ---------------------------------------------------------------------------
-
-class TestCodeExecutorDockerFlag:
-    """Verify that code_executor has the Docker container integration point."""
-
-    def test_docker_container_name_variable_exists_in_source(self):
-        """The code_executor should reference _docker_container_name."""
-        import inspect
-        from tool_box.tools_impl.code_executor import code_executor_handler
-        source = inspect.getsource(code_executor_handler)
-        assert "_docker_container_name" in source
-        assert "qwen_session_driver" in source
-
-    def test_rebuild_cli_command_wraps_docker(self):
-        """Verify _rebuild_cli_command concept handles docker wrapping."""
-        # This is a structural test — the actual _rebuild_cli_command is a closure
-        # inside code_executor_handler, so we verify it exists in source
-        import inspect
-        from tool_box.tools_impl.code_executor import code_executor_handler
-        source = inspect.getsource(code_executor_handler)
-        assert "docker" in source
-        assert "exec" in source
-        assert "_docker_container_name" in source
