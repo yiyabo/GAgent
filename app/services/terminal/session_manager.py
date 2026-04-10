@@ -72,6 +72,7 @@ class TerminalSessionManager:
         self._max_sessions = max_sessions
         self._idle_timeout = idle_timeout
         self._lock = asyncio.Lock()
+        self._ownership_lock = asyncio.Lock()
         self._command_filter = CommandFilter()
         self._reaper_task: Optional[asyncio.Task] = None
 
@@ -280,22 +281,28 @@ class TerminalSessionManager:
     async def acquire_ownership(
         self, terminal_id: str, owner: str = "agent", lease_seconds: float = 300.0,
     ) -> None:
-        """Claim ownership of a terminal session (agent or user)."""
+        """Claim ownership of a terminal session (agent or user).
+
+        Uses ``_ownership_lock`` to prevent races between concurrent
+        acquire/release/write calls without nesting ``self._lock``.
+        """
         session = await self.get_session(terminal_id)
-        if session.owner not in ("none", owner):
-            raise PermissionError(
-                f"Terminal already owned by '{session.owner}', cannot acquire for '{owner}'"
-            )
-        session.owner = owner  # type: ignore[assignment]
-        session.owner_lease_expires = time.time() + lease_seconds
-        session.busy = True
+        async with self._ownership_lock:
+            if session.owner not in ("none", owner):
+                raise PermissionError(
+                    f"Terminal already owned by '{session.owner}', cannot acquire for '{owner}'"
+                )
+            session.owner = owner  # type: ignore[assignment]
+            session.owner_lease_expires = time.time() + lease_seconds
+            session.busy = True
 
     async def release_ownership(self, terminal_id: str) -> None:
         """Release ownership and mark session as idle."""
         session = await self.get_session(terminal_id)
-        session.owner = "none"
-        session.owner_lease_expires = None
-        session.busy = False
+        async with self._ownership_lock:
+            session.owner = "none"
+            session.owner_lease_expires = None
+            session.busy = False
 
     async def write_and_wait(
         self,
