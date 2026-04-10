@@ -2035,6 +2035,7 @@ async def code_executor_handler(
             return result_payload
 
         # ---- Build CLI command and environment ----
+        _docker_container_name: Optional[str] = None  # set when running inside container
         if use_qwen_code_backend:
             # Qwen Code path
             subprocess_env = _build_qwen_code_subprocess_env()
@@ -2051,7 +2052,7 @@ async def code_executor_handler(
                 or None
             )
             def _rebuild_cli_command(task_override: str) -> List[str]:
-                return _build_qwen_code_command(
+                bare_cmd = _build_qwen_code_command(
                     task=task_override,
                     work_dir=str(task_work_dir),
                     file_prefix=file_prefix,
@@ -2064,6 +2065,11 @@ async def code_executor_handler(
                     task_subdirs=task_subdirs,
                     execution_spec=execution_spec,
                 )
+                # Wrap with docker exec if running inside a container
+                if _docker_container_name:
+                    return ["docker", "exec", "-w", str(task_work_dir),
+                            _docker_container_name] + bare_cmd
+                return bare_cmd
             cmd = _rebuild_cli_command(task)
             _cli_label = "Qwen Code"
             _diag_key = subprocess_env.get("OPENAI_API_KEY", "")
@@ -2072,6 +2078,36 @@ async def code_executor_handler(
                 "[CODE_EXECUTOR_DIAG] backend=qwen_code api_key_len=%d base_url=%s model=%s",
                 len(_diag_key), _diag_url, effective_model or "(default)",
             )
+
+            # --- Try Docker container execution for isolation + persistence ---
+            try:
+                from app.services.terminal.qwen_session_driver import get_qwen_session_driver
+                _qc_driver = get_qwen_session_driver()
+                _effective_session_id = str(session_id or "adhoc").strip()
+                _container = await _qc_driver.ensure_container(
+                    _effective_session_id,
+                    host_work_dir=str(task_work_dir),
+                    extra_mounts=[
+                        (str(session_dir), str(session_dir)),
+                        (str(_PROJECT_ROOT / "data"), str(_PROJECT_ROOT / "data")),
+                    ],
+                )
+                _docker_container_name = _container
+                # Rebuild cmd — _rebuild_cli_command now wraps with docker exec
+                cmd = _rebuild_cli_command(task)
+                # Env is inside the container; host subprocess only needs docker binary
+                subprocess_env = dict(os.environ)
+                _cli_label = "Qwen Code (container)"
+                logger.info(
+                    "[CODE_EXECUTOR] Using Docker container %s for qwen_code execution",
+                    _container,
+                )
+            except Exception as _docker_err:
+                logger.info(
+                    "[CODE_EXECUTOR] Docker container unavailable (%s), "
+                    "falling back to host subprocess",
+                    _docker_err,
+                )
         else:
             # Legacy Claude Code path
             effective_auth_mode = _resolve_auth_mode(auth_mode)
