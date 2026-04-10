@@ -114,3 +114,10 @@ paper/final_figures/rbp_threshold_scan.png,把论文中的结果加进去
 
 冲击图
 散点图旁边加箱线图
+
+
+1. 针对于模型幻觉（结果文件，加一个tag）-->物理代码验证，不依赖于LLM
+2. 长任务执行会乱，把需求和任务结构化，提供prompt-->构成一个json，确定好需要执行的node的依赖关系以及流程。做一个todo-list,每一个写清楚对xxxnode执行。
+execution-tree基于plan-tree,可用于根据用户来进行动态调整tree，增删改查。
+
+3. 

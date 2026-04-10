@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
@@ -85,6 +86,57 @@ def test_llm_client_stream_timeout_can_be_overridden() -> None:
 
     assert client.timeout == 60
     assert client.stream_timeout == 120
+
+
+def test_native_tool_stream_uses_stream_timeout(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeStreamResponse:
+        def raise_for_status(self) -> None:
+            return
+
+        async def aiter_lines(self):
+            yield "data: [DONE]"
+
+    class _FakeStreamContext:
+        async def __aenter__(self):
+            return _FakeStreamResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeAsyncClient:
+        def stream(self, method, url, **kwargs):
+            captured["method"] = method
+            captured["url"] = url
+            captured["timeout"] = kwargs.get("timeout")
+            return _FakeStreamContext()
+
+    monkeypatch.setattr("app.llm._get_shared_async_client", lambda: _FakeAsyncClient())
+
+    client = LLMClient(
+        provider="qwen",
+        api_key="test-key",
+        url="https://example.com/v1/chat/completions",
+        model="qwen-test",
+        timeout=60,
+        stream_timeout=120,
+        retries=0,
+    )
+
+    result = asyncio.run(
+        client.stream_chat_with_tools_async(
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+        )
+    )
+
+    assert result.content == ""
+    timeout_arg = captured.get("timeout")
+    assert timeout_arg is not None
+    assert isinstance(timeout_arg, httpx.Timeout)
+    assert timeout_arg.connect == 10.0
+    assert timeout_arg.read == 120.0
 
 
 # -- _make_request_timeout semantics --

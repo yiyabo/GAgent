@@ -115,6 +115,86 @@ const formatCompactStatus = (status: unknown) => {
 const isSameText = (left: unknown, right: unknown) =>
   normalizeProgressText(left).toLowerCase() === normalizeProgressText(right).toLowerCase();
 
+export const deriveCompactActionPreview = (
+  actions: any[],
+  currentTool?: string | null,
+  maxItems: number = 3,
+): string[] => {
+  const currentToolNormalized = normalizeProgressText(currentTool).toLowerCase();
+  const preview: string[] = [];
+  const seen = new Set<string>();
+
+  for (const action of Array.isArray(actions) ? actions : []) {
+    const kind = normalizeProgressText(action?.kind).toLowerCase();
+    const name = normalizeProgressText(action?.name);
+    let label = '';
+    if (kind === 'tool_operation') {
+      label = name || 'tool_operation';
+    } else if (
+      kind === 'plan_operation' ||
+      kind === 'task_operation' ||
+      kind === 'context_request'
+    ) {
+      label = kind;
+    } else {
+      label = name || kind;
+    }
+    const normalized = normalizeProgressText(label).toLowerCase();
+    if (!normalized || normalized === currentToolNormalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    preview.push(label);
+    if (preview.length >= maxItems) break;
+  }
+
+  return preview;
+};
+
+export const deriveCompactRecentActivity = ({
+  history,
+  expandedNotes,
+  currentLabel,
+  currentDetails,
+}: {
+  history: any[];
+  expandedNotes: unknown[];
+  currentLabel?: string | null;
+  currentDetails?: string | null;
+}): string[] => {
+  const preview: string[] = [];
+  const seen = new Set<string>();
+  const currentCandidates = [
+    normalizeProgressText(currentLabel).toLowerCase(),
+    normalizeProgressText(currentDetails).toLowerCase(),
+  ].filter(Boolean);
+
+  const push = (value: string) => {
+    const normalized = normalizeProgressText(value).toLowerCase();
+    if (!normalized || currentCandidates.includes(normalized) || seen.has(normalized)) return;
+    seen.add(normalized);
+    preview.push(value);
+  };
+
+  const historyItems = Array.isArray(history) ? history.slice(-4).reverse() : [];
+  for (const entry of historyItems) {
+    const label = normalizeProgressText(entry?.label);
+    const tool = normalizeProgressText(entry?.tool);
+    if (label && currentCandidates.includes(label.toLowerCase())) continue;
+    const text = tool && label ? `${formatToolName(tool)} · ${label}` : label || tool;
+    if (!text) continue;
+    push(text);
+    if (preview.length >= 3) return preview;
+  }
+
+  for (const note of Array.isArray(expandedNotes) ? expandedNotes : []) {
+    const normalized = normalizeProgressText(note);
+    if (!normalized) continue;
+    push(normalized);
+    if (preview.length >= 3) break;
+  }
+
+  return preview;
+};
+
 interface ToolProgressCardProps {
   metadata: ChatMessageType['metadata'];
   isDecomposeActive: boolean;
@@ -323,12 +403,14 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
           );
     const latestToolItem =
       derivedToolItems.length > 0 ? derivedToolItems[derivedToolItems.length - 1] : null;
+    const titleTool = currentTool || latestToolItem?.tool || null;
+    const phaseTitle = formatPhaseTitle(deepThinkProgress.phase);
     const currentTitle = progressFinished
       ? latestToolItem
         ? formatToolName(latestToolItem.tool)
         : 'Answer ready'
-      : currentTool
-        ? formatToolName(currentTool)
+      : titleTool
+        ? formatToolName(titleTool)
         : formatPhaseTitle(deepThinkProgress.phase);
     const currentSubtitle = progressFinished
       ? normalizeProgressText(latestToolItem?.details || latestToolItem?.label) || null
@@ -342,6 +424,13 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
     const visibleNotes = compactNotes.filter(
       (note) => !isSameText(note, currentSubtitle) && !isSameText(note, currentDetails)
     );
+    const actionPreview = deriveCompactActionPreview(visibleActions, titleTool, 3);
+    const recentActivity = deriveCompactRecentActivity({
+      history: compactHistory,
+      expandedNotes: visibleNotes,
+      currentLabel: currentSubtitle,
+      currentDetails,
+    });
 
     return (
       <div
@@ -382,6 +471,11 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
                 <Text strong style={{ fontSize: 14, color: 'var(--text-primary)' }}>
                   {currentTitle}
                 </Text>
+                {titleTool && !isSameText(phaseTitle, currentTitle) && (
+                  <Text style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>
+                    {phaseTitle}
+                  </Text>
+                )}
                 {compactStatus && compactStatus !== 'Completed' && (
                   <Tag color={compactStatus === 'Failed' ? 'red' : compactStatus === 'Retrying' ? 'gold' : 'blue'} style={{ margin: 0 }}>
                     {compactStatus}
@@ -390,7 +484,37 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
               </Space>
               {(currentSubtitle || currentDetails) && (
                 <div style={{ marginTop: 6, minWidth: 0 }}>
-                  {renderExpandableText(currentDetails || currentSubtitle, 'progress_current', 96, { muted: true, singleLine: true })}
+                  {renderExpandableText(currentDetails || currentSubtitle, 'progress_current', 140, { muted: true })}
+                </div>
+              )}
+              {(actionPreview.length > 0 || recentActivity.length > 0) && (
+                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {actionPreview.length > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      {actionPreview.map((label) => (
+                        <Tag key={label} style={{ margin: 0 }}>
+                          {label}
+                        </Tag>
+                      ))}
+                      {visibleActions.length > actionPreview.length && (
+                        <Text style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>
+                          +{visibleActions.length - actionPreview.length}
+                        </Text>
+                      )}
+                    </div>
+                  )}
+                  {recentActivity.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {recentActivity.slice(0, 2).map((entry, idx) => (
+                        <Text
+                          key={`recent_${idx}`}
+                          style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.6 }}
+                        >
+                          • {entry}
+                        </Text>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

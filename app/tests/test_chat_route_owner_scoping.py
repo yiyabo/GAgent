@@ -100,6 +100,10 @@ def test_chat_message_propagates_request_owner_to_session_helpers(
         seen["current_task"] = (session_id, owner_id)
         return None
 
+    def _load_session_runtime_context(session_id, *, owner_id=None):
+        seen["runtime_context"] = (session_id, owner_id)
+        return {}
+
     def _save_assistant_response(session_id, response, *, owner_id=None):
         seen["assistant"] = (session_id, owner_id, response.response)
         return response
@@ -111,6 +115,7 @@ def test_chat_message_propagates_request_owner_to_session_helpers(
     monkeypatch.setattr(chat_routes, "_save_chat_message", _save_chat_message)
     monkeypatch.setattr(chat_routes, "_get_session_settings", _get_session_settings)
     monkeypatch.setattr(chat_routes, "_get_session_current_task", _get_session_current_task)
+    monkeypatch.setattr(chat_routes, "_load_session_runtime_context", _load_session_runtime_context)
     monkeypatch.setattr(chat_routes, "_save_assistant_response", _save_assistant_response)
     monkeypatch.setattr(chat_routes, "_set_session_plan_id", _set_session_plan_id)
 
@@ -124,6 +129,7 @@ def test_chat_message_propagates_request_owner_to_session_helpers(
     assert response.response == "assistant response"
     assert seen["binding"] == ("sess-owner-1", None, "alice")
     assert seen["settings"] == ("sess-owner-1", "alice")
+    assert seen["runtime_context"] == ("sess-owner-1", "alice")
     assert seen["current_task"] == ("sess-owner-1", "alice")
     assert seen["set_plan"] == ("sess-owner-1", None, "alice")
     assert seen["saved_messages"] == [("sess-owner-1", "user", "hello", "alice")]

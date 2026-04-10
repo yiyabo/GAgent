@@ -31,6 +31,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
     promptText,
     errorText,
     success,
+    executionMeta,
     providerLabel,
     fallbackLabel,
     metadata,
@@ -91,6 +92,33 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
       typeof payload.result?.error === 'string' && payload.result.error.trim().length > 0
         ? payload.result.error
         : undefined;
+    const executionBackend =
+      typeof payload.result?.execution_backend === 'string' && payload.result.execution_backend.trim().length > 0
+        ? payload.result.execution_backend.trim()
+        : undefined;
+    const executionLane =
+      typeof payload.result?.execution_lane === 'string' && payload.result.execution_lane.trim().length > 0
+        ? payload.result.execution_lane.trim()
+        : undefined;
+    const executionLaneReason =
+      typeof payload.result?.execution_lane_reason === 'string' &&
+      payload.result.execution_lane_reason.trim().length > 0
+        ? payload.result.execution_lane_reason.trim()
+        : undefined;
+    const workspaceDir =
+      typeof payload.result?.workspace_dir === 'string' && payload.result.workspace_dir.trim().length > 0
+        ? payload.result.workspace_dir.trim()
+        : typeof payload.result?.work_dir === 'string' && payload.result.work_dir.trim().length > 0
+          ? payload.result.work_dir.trim()
+          : undefined;
+    const codeFile =
+      typeof payload.result?.code_file === 'string' && payload.result.code_file.trim().length > 0
+        ? payload.result.code_file.trim()
+        : undefined;
+    const codeDirectory =
+      typeof payload.result?.code_directory === 'string' && payload.result.code_directory.trim().length > 0
+        ? payload.result.code_directory.trim()
+        : undefined;
 
     return {
       toolName: toolValue,
@@ -102,6 +130,17 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
       promptText: isGraph && typeof payload.result?.prompt === 'string' ? payload.result.prompt : undefined,
       errorText: error,
       success: successState,
+      executionMeta:
+        executionBackend || executionLane || executionLaneReason || workspaceDir || codeDirectory || codeFile
+          ? {
+              executionBackend,
+              executionLane,
+              executionLaneReason,
+              workspaceDir,
+              codeDirectory,
+              codeFile,
+            }
+          : undefined,
       providerLabel: providerLabelText,
       fallbackLabel: fallbackLabelText,
       metadata: isGraph && payload.result?.metadata && typeof payload.result.metadata === 'object'
@@ -172,6 +211,35 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
             <Text type="secondary">
               Query: <Text code>{query}</Text>
             </Text>
+          )}
+          {executionMeta && (
+            <Space direction="vertical" size={0}>
+              {(executionMeta.executionBackend || executionMeta.executionLane) && (
+                <Text type="secondary">
+                  Execution:
+                  {executionMeta.executionBackend ? ` ${executionMeta.executionBackend}` : ''}
+                  {executionMeta.executionLane ? ` (${executionMeta.executionLane})` : ''}
+                </Text>
+              )}
+              {executionMeta.executionLaneReason && (
+                <Text type="secondary">Reason: {executionMeta.executionLaneReason}</Text>
+              )}
+              {executionMeta.workspaceDir && (
+                <Text type="secondary">
+                  Workspace: <Text code>{executionMeta.workspaceDir}</Text>
+                </Text>
+              )}
+              {executionMeta.codeDirectory && (
+                <Text type="secondary">
+                  Code dir: <Text code>{executionMeta.codeDirectory}</Text>
+                </Text>
+              )}
+              {executionMeta.codeFile && (
+                <Text type="secondary">
+                  Code file: <Text code>{executionMeta.codeFile}</Text>
+                </Text>
+              )}
+            </Space>
           )}
           {responseText && (
             <Paragraph style={{ marginBottom: 8, whiteSpace: 'pre-wrap' }}>

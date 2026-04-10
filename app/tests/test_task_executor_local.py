@@ -162,6 +162,67 @@ def test_execute_code_locally_skips_auto_fix_for_blocked_dependency(tmp_path: Pa
     assert "Fewer than 2 valid samples" in (outcome.error_summary or "")
 
 
+def test_execute_code_locally_blocks_missing_absolute_input_path_before_generation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    missing_dir = tmp_path / "missing_input"
+
+    def _unexpected_generate(*args, **kwargs):
+        raise AssertionError("code generation should not run for a missing declared input path")
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", _unexpected_generate)
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="summarize dataset",
+            task_description=f"Read all files from {missing_dir} and summarize them.",
+            work_dir=str(tmp_path / "workspace"),
+            llm_service=MagicMock(),
+        )
+    )
+
+    assert outcome.success is False
+    assert outcome.error_category == "blocked_dependency"
+    assert str(missing_dir) in (outcome.error_summary or "")
+
+
+def test_execute_code_locally_allows_existing_absolute_input_path_with_cjk_punctuation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    data_file = tmp_path / "dataset.tsv"
+    data_file.write_text("value\n1\n2\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def _fake_generate(self, **kwargs):
+        captured["generated"] = True
+        return CodeTaskResponse(code="print('ok')", description="ok")
+
+    def _mock_run_file(self, code_file):
+        return CodeExecutionResult(
+            status="success",
+            output="ok\n",
+            error="",
+            exit_code=0,
+        )
+
+    monkeypatch.setattr(f"{_CE_MOD}.CodeGenerator.generate", _fake_generate)
+    monkeypatch.setattr(f"{_CE_MOD}.LocalCodeInterpreter.run_file", _mock_run_file)
+
+    outcome = _run(
+        execute_code_locally(
+            task_title="summarize dataset",
+            task_description=f"读取 {data_file}，统计 value 列频数并输出结果。",
+            work_dir=str(tmp_path / "workspace"),
+            llm_service=MagicMock(),
+        )
+    )
+
+    assert outcome.success is True
+    assert captured["generated"] is True
+
+
 def test_execute_code_locally_verifies_explicit_acceptance_criteria(tmp_path: Path, monkeypatch):
     fake_code_resp = CodeTaskResponse(code="print('qc done')", description="qc")
 

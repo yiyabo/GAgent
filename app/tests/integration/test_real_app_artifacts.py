@@ -11,6 +11,14 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _ensure_session(client, session_id: str) -> None:
+    response = client.patch(
+        f"/chat/sessions/{session_id}",
+        json={"name": f"Session {session_id}"},
+    )
+    assert response.status_code == 200
+
+
 @pytest.mark.integration
 def test_real_app_artifact_endpoints_use_isolated_runtime_roots(
     app_client_factory,
@@ -57,6 +65,7 @@ def test_real_app_artifact_endpoints_use_isolated_runtime_roots(
     )
 
     with app_client_factory() as client:
+        _ensure_session(client, session_id)
         listing_response = client.get(f"/artifacts/sessions/{session_id}")
         assert listing_response.status_code == 200
         listing_paths = {
@@ -150,6 +159,7 @@ def test_real_app_artifact_endpoints_hide_blocked_release_paths_and_reject_trave
     )
 
     with app_client_factory() as client:
+        _ensure_session(client, session_id)
         deliverable_response = client.get(
             f"/artifacts/sessions/{session_id}/deliverables",
             params={"include_draft": "true"},
@@ -184,10 +194,11 @@ def test_real_app_artifact_endpoints_hide_blocked_release_paths_and_reject_trave
 
 
 @pytest.mark.integration
-def test_real_app_missing_deliverables_session_returns_empty_payload(
+def test_real_app_missing_deliverables_for_existing_session_returns_empty_payload(
     app_client_factory,
 ) -> None:
     with app_client_factory() as client:
+        _ensure_session(client, "missing-production-session")
         response = client.get(
             "/artifacts/sessions/missing-production-session/deliverables"
         )

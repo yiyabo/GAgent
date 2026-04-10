@@ -20,6 +20,7 @@ def test_request_tier_routes_greeting_to_light_auto_simple() -> None:
     assert decision.request_tier == "light"
     assert decision.request_route_mode == "auto_deepthink"
     assert decision.thinking_visibility == "visible"
+    assert decision.metadata()["thinking_display_mode"] == "full_thinking"
     assert decision.manual_deep_think is False
     assert decision.capability_floor == "tools"
 
@@ -33,6 +34,7 @@ def test_request_tier_routes_latest_sources_request_to_research_auto_deepthink()
     assert decision.request_route_mode == "auto_deepthink"
     assert decision.thinking_visibility == "progress"
     assert decision.metadata()["progress_mode"] == "compact"
+    assert decision.metadata()["thinking_display_mode"] == "compact_progress"
     assert "research_cue" in decision.route_reason_codes
     assert "time_sensitive_cue" in decision.route_reason_codes
 
@@ -966,3 +968,22 @@ def test_extract_task_ids_ignores_completed_and_artifact_references() -> None:
     decision = resolve_request_routing(message=message)
     assert decision.intent_type == "execute_task"
     assert decision.explicit_task_ids == [39, 40]
+
+
+def test_score_like_rubric_numbers_do_not_trigger_explicit_task_override() -> None:
+    message = (
+        "你要不优化一下？这个得分也太低了吧....你清楚怎么优化嘛？之前的得分：\n"
+        "任务粒度/原子性\t46/100\t部分任务过于笼统\n"
+        "可复现性/参数化\t16/100\t未指定工具/参数/阈值\n"
+        "科学严谨性\t14/100\t缺少验证与备选方案\n"
+        "上下文完整性\t16/100\t缺少目标关联与动机说明\n"
+        "这几个太低了哇"
+    )
+
+    assert extract_task_ids_from_text(message) == []
+
+    decision = resolve_request_routing(message=message, plan_id=67)
+    assert decision.explicit_task_override is False
+    assert decision.explicit_task_ids == []
+    assert decision.requires_plan_optimize is True
+    assert decision.plan_request_mode == "update_bound"

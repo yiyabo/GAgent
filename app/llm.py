@@ -568,7 +568,7 @@ class LLMClient(LLMProvider):
         # Accumulator for streamed tool_calls keyed by index
         tc_accum: Dict[int, Dict[str, str]] = {}
 
-        timeout = _make_request_timeout(self.timeout)
+        timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
         async with client.stream("POST", self.url, headers=headers, json=payload,
                                  timeout=timeout) as resp:

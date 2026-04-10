@@ -58,7 +58,7 @@ _TASK_READ_DIR_PREFIXES: Sequence[str] = (
     "tool_box",
     "web-ui",
 )
-_TASK_PATH_TOKEN_RE = r"[^\s'\"`<>\(\)\[\]\{\},;:]+"
+_TASK_PATH_TOKEN_RE = r"[^\s'\"`<>\(\)\[\]\{\},;:，。；：！？、（）【】《》「」『』“”‘’]+"
 
 
 def _get_available_skills() -> List[str]:

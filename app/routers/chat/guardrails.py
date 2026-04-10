@@ -236,7 +236,6 @@ def extract_task_ids_from_text(text: str) -> List[int]:
 
     multi_patterns = [
         rf"{_TASK_LABEL_PATTERN}\s*[#:=：]?\s*(\d+(?:\s*{_TASK_SEPARATOR_PATTERN}\s*(?:{_TASK_LABEL_PATTERN}\s*[#:=：]?\s*)?\d+)+)",
-        rf"(?<!\d)((?:\d+\s*{_TASK_SEPARATOR_PATTERN}\s*)+\d+)(?!\d)",
     ]
     for pattern in multi_patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):

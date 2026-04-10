@@ -365,7 +365,7 @@ class TestFallbackArtifactMatchNoLenient:
         )
         assert result == actual
 
-    def test_extension_match_still_works(self, tmp_path):
+    def test_extension_only_match_no_longer_works(self, tmp_path):
         expected = tmp_path / "expected_output.csv"
         actual = tmp_path / "different_name.csv"
         actual.write_text("data")
@@ -374,7 +374,7 @@ class TestFallbackArtifactMatchNoLenient:
         result = verifier._fallback_artifact_match(
             expected, [str(actual)], lenient=True
         )
-        assert result == actual
+        assert result is None
 
     def test_different_extension_no_match(self, tmp_path):
         expected = tmp_path / "output.pdf"
