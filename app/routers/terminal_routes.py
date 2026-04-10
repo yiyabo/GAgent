@@ -160,6 +160,8 @@ async def terminal_websocket(
                 )
                 await websocket.close(code=1011)
                 return
+            if session.mode != mode:
+                session = await terminal_session_manager.ensure_session_for_chat(session_id, mode=mode)
         else:
             session = await terminal_session_manager.ensure_session_for_chat(session_id, mode=mode)
     except Exception as exc:
