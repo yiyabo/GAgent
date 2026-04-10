@@ -1,14 +1,20 @@
+import { useMemo } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { ENV } from '@/config/env';
 import { ChatMessage } from '@/types';
 import { buildToolResultsCache, resolveHistoryCursor } from '@store/chatUtils';
-import { collectToolResultsFromMetadata } from '@utils/toolResults';
-import { collectArtifactGallery } from '@/utils/artifactGallery';
-import { parseChatTimestamp } from '@/utils/chatMessageUtils';
+import { hydratePersistedMessage } from '@store/slices/message/historyHydration';
+import { useChatStore } from '@store/chat';
 
 export const MESSAGES_QUERY_KEY = (sessionId: string) => ['messages', sessionId];
 
 export function useMessages(sessionId: string | null | undefined) {
+    const liveMessages = useChatStore((state) => state.messages);
+    const fallbackToolResults = useMemo(
+        () => buildToolResultsCache(liveMessages),
+        [liveMessages]
+    );
+
     return useInfiniteQuery({
         queryKey: MESSAGES_QUERY_KEY(sessionId || ''),
         queryFn: async ({ pageParam }) => {
@@ -29,39 +35,13 @@ export function useMessages(sessionId: string | null | undefined) {
 
             const data = await response.json();
 
-            // Process messages similar to loadChatHistory in store
             const messages: ChatMessage[] = (data.messages || []).map((msg: any, index: number) => {
-                const metadata =
-                    msg.metadata && typeof msg.metadata === 'object'
-                        ? { ...(msg.metadata as Record<string, any>) }
-                        : {};
-                if (typeof msg.id === 'number') {
-                    metadata.backend_id = msg.id;
-                }
-
-                const toolResults = collectToolResultsFromMetadata(metadata.tool_results);
-                if (toolResults.length > 0) {
-                    metadata.tool_results = toolResults;
-                }
-                const artifactGallery = collectArtifactGallery(metadata.artifact_gallery);
-                if (artifactGallery.length > 0) {
-                    metadata.artifact_gallery = artifactGallery;
-                }
-
-                // Hydrate thinking_process from metadata if available
-                const thinkingProcess = metadata.thinking_process;
-
-                const backendId = typeof msg.id === 'number' ? msg.id : null;
-                const messageId = backendId !== null ? `${sessionId}_${backendId}` : `${sessionId}_${index}`;
-
-                return {
-                    id: messageId,
-                    type: (msg.role || 'assistant') as 'user' | 'assistant' | 'system',
-                    content: msg.content,
-                    timestamp: parseChatTimestamp(msg.timestamp),
-                    metadata,
-                    thinking_process: thinkingProcess,
-                };
+                return hydratePersistedMessage({
+                    sessionId,
+                    rawMessage: msg,
+                    index,
+                    fallbackToolResults,
+                });
             });
 
             return {

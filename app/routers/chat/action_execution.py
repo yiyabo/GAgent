@@ -10,6 +10,7 @@ import inspect
 import json
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -140,6 +141,91 @@ def _clip_text(value: Any, *, limit: int = 240) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)] + "..."
+
+
+_DISTRIBUTION_TOTAL_PATTERNS = (
+    re.compile(r"共\s*([\d,]+)\s*条(?:记录|数据|样本|序列)?"),
+    re.compile(r"total\s*[:=]?\s*([\d,]+)\s*(?:records?|rows?|entries?)", re.IGNORECASE),
+)
+_INLINE_COUNT_PATTERN = re.compile(r"(?:合计|共)\s*([\d,]+)\s*条")
+_PERCENT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)%")
+
+
+def _parse_int_token(value: Any) -> Optional[int]:
+    text = str(value or "").strip().replace(",", "")
+    if not text.isdigit():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _format_percent(value: float) -> str:
+    return f"{value:.1f}%"
+
+
+def _repair_distribution_summary_math(text: Optional[str]) -> Optional[str]:
+    raw = str(text or "")
+    if not raw.strip() or "%" not in raw:
+        return text
+
+    lines = raw.splitlines()
+    table_counts_total = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        if cells[0].startswith("---") or cells[1].startswith("---"):
+            continue
+        count = _parse_int_token(cells[1])
+        if count is None:
+            continue
+        table_counts_total += count
+
+    total: Optional[int] = None
+    for pattern in _DISTRIBUTION_TOTAL_PATTERNS:
+        match = pattern.search(raw)
+        if not match:
+            continue
+        total = _parse_int_token(match.group(1))
+        if total:
+            break
+    if total is None and table_counts_total > 0:
+        total = table_counts_total
+    if not total:
+        return text
+
+    repaired_lines: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if len(cells) >= 3 and not (cells[0].startswith("---") or cells[1].startswith("---")):
+                count = _parse_int_token(cells[1])
+                if count is not None:
+                    expected_percent = _format_percent((count / total) * 100.0)
+                    cells[2] = expected_percent
+                    line = "| " + " | ".join(cells) + " |"
+
+        count_matches = list(_INLINE_COUNT_PATTERN.finditer(line))
+        pct_matches = list(_PERCENT_PATTERN.finditer(line))
+        if len(count_matches) == 1 and len(pct_matches) == 1:
+            count = _parse_int_token(count_matches[0].group(1))
+            if count is not None:
+                expected_percent = _format_percent((count / total) * 100.0)
+                start, end = pct_matches[0].span(0)
+                current_percent = pct_matches[0].group(0)
+                if current_percent != expected_percent:
+                    line = line[:start] + expected_percent + line[end:]
+
+        repaired_lines.append(line)
+
+    return "\n".join(repaired_lines)
 
 
 def _normalize_lifecycle_label(value: Any) -> Optional[str]:
@@ -742,7 +828,10 @@ async def _generate_tool_analysis(
         llm_service = _get_llm_service_for_provider(llm_provider)
 
         analysis = await llm_service.chat_async(base_prompt)
-        return sanitize_professional_response_text(analysis.strip()) if analysis else None
+        if not analysis:
+            return None
+        cleaned = sanitize_professional_response_text(analysis.strip())
+        return _repair_distribution_summary_math(cleaned)
 
     except Exception as exc:
         logger.error(
@@ -875,7 +964,10 @@ async def _generate_action_analysis(
     try:
         llm_service = _get_llm_service_for_provider(llm_provider)
         analysis = await llm_service.chat_async(prompt)
-        return sanitize_professional_response_text(analysis.strip()) if analysis else None
+        if not analysis:
+            return None
+        cleaned = sanitize_professional_response_text(analysis.strip())
+        return _repair_distribution_summary_math(cleaned)
     except Exception as exc:
         logger.error(
             "[CHAT][SUMMARY] Failed to generate action analysis for session=%s: %s",
@@ -1723,6 +1815,8 @@ async def _execute_action_run(run_id: str) -> None:
             analysis_text = result.reply or result.summarize_steps()
 
         summary_text = _build_brief_action_summary(result.steps) or result.summarize_steps()
+        analysis_text = _repair_distribution_summary_math(analysis_text)
+        summary_text = _repair_distribution_summary_math(summary_text)
 
         if analysis_text:
             result_dict["analysis_text"] = analysis_text

@@ -8,7 +8,12 @@ vi.mock('@api/chat', () => ({
 }));
 
 import { chatApi } from '@api/chat';
-import { handleJobUpdate, handleProgressStatus, processFinalPayload } from './streamHandlers';
+import {
+  handleJobUpdate,
+  handleProgressStatus,
+  handleThinkingStep,
+  processFinalPayload,
+} from './streamHandlers';
 
 const buildContext = () => {
   const assistantMessage = {
@@ -223,6 +228,7 @@ describe('streamHandlers session sync', () => {
     expect(metadata.deep_think_progress.current_status).toBeNull();
     expect(metadata.deep_think_progress.current_tool).toBeNull();
     expect(metadata.deep_think_progress.current_label).toBeNull();
+    expect(metadata.thinking_display_mode).toBe('final_answer');
     expect(metadata.deep_think_progress.tool_items).toHaveLength(1);
     expect(metadata.deep_think_progress.tool_items[0]).toMatchObject({
       tool: 'web_search',
@@ -252,6 +258,7 @@ describe('streamHandlers session sync', () => {
 
     const metadata: any = store.messages[0].metadata;
     expect(metadata.thinking_visibility).toBe('progress');
+    expect(metadata.thinking_display_mode).toBe('compact_progress');
     expect(metadata.deep_think_progress.current_tool).toBe('web_search');
     expect(metadata.deep_think_progress.current_status).toBe('retrying');
     expect(metadata.deep_think_progress.tool_items).toHaveLength(1);
@@ -304,5 +311,29 @@ describe('streamHandlers session sync', () => {
     expect(metadata.deep_think_progress.current_label.length).toBeLessThanOrEqual(72);
     expect(metadata.deep_think_progress.expanded_notes).toHaveLength(1);
     expect(metadata.deep_think_progress.expanded_notes[0]).toContain('论文基本信息');
+  });
+
+  it('switches to full-thinking mode once structured thinking steps arrive', () => {
+    const { store, ctx } = buildContext();
+
+    handleProgressStatus(ctx as any, {
+      phase: 'planning',
+      label: '分析请求中',
+      status: 'active',
+      iteration: 0,
+    });
+
+    handleThinkingStep(ctx as any, {
+      step: {
+        iteration: 1,
+        thought: '先确认数据来源',
+        status: 'thinking',
+        kind: 'reasoning',
+      },
+    });
+
+    const metadata: any = store.messages[0].metadata;
+    expect(metadata.thinking_visibility).toBe('visible');
+    expect(metadata.thinking_display_mode).toBe('full_thinking');
   });
 });

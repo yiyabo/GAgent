@@ -3,7 +3,6 @@ import {
   ChatMessage,
   ChatActionStatus,
   Memory,
-  ThinkingProcess,
 } from '@/types';
 import {
   streamChatEvents,
@@ -12,19 +11,16 @@ import {
   buildToolResultsCache,
   resolveHistoryCursor,
 } from '../../chatUtils';
-import { parseChatTimestamp } from '@/utils/chatMessageUtils';
 import { memoryApi } from '@api/memory';
 import { chatApi } from '@api/chat';
 import { ENV } from '@/config/env';
-import {
-  collectToolResultsFromMetadata,
-} from '@utils/toolResults';
 import {
   collectArtifactGallery,
   mergeArtifactGalleries,
 } from '@/utils/artifactGallery';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { recoverPlanBindingFromMessages } from './planRecovery';
+import { hydratePersistedMessage } from './historyHydration';
 
 /** Recent turns attached to each API request. Align with backend `CHAT_HISTORY_MAX_MESSAGES` (default 80, cap 200). */
 const CHAT_REQUEST_HISTORY_LIMIT = 80;
@@ -157,84 +153,6 @@ const _finalizeAfterUnifiedStream = async (
   await processFinalPayload(ctx);
 };
 
-const _normalizeThinkingProcessStatus = (status: any): 'active' | 'completed' | 'error' => {
-  if (status === 'completed' || status === 'done') return 'completed';
-  if (status === 'error' || status === 'failed') return 'error';
-  return 'active';
-};
-
-const _normalizeThinkingStepStatus = (status: any): 'pending' | 'thinking' | 'calling_tool' | 'analyzing' | 'done' | 'completed' | 'error' => {
-  const value = typeof status === 'string' ? status.trim().toLowerCase() : '';
-  if (value === 'pending') return 'pending';
-  if (value === 'thinking') return 'thinking';
-  if (value === 'calling_tool') return 'calling_tool';
-  if (value === 'analyzing') return 'analyzing';
-  if (value === 'done') return 'done';
-  if (value === 'completed') return 'completed';
-  if (value === 'error' || value === 'failed') return 'error';
-  return 'thinking';
-};
-
-const _hydrateThinkingProcess = (raw: any): ThinkingProcess | undefined => {
-  let payload = raw;
-  if (typeof payload === 'string') {
-    try {
-      payload = JSON.parse(payload);
-    } catch {
-      return undefined;
-    }
-  }
-  if (!payload || typeof payload !== 'object') {
-    return undefined;
-  }
-  const rawSteps = Array.isArray((payload as any).steps) ? (payload as any).steps : [];
-  const steps = rawSteps
-    .filter((step: any) => step && typeof step === 'object')
-    .map((step: any, index: number) => {
-      const rawIteration = Number(step.iteration);
-      const iteration = Number.isFinite(rawIteration) && rawIteration > 0 ? rawIteration : index + 1;
-      return {
-        iteration,
-        thought: typeof step.thought === 'string' ? step.thought : '',
-        display_text: typeof step.display_text === 'string' ? step.display_text : undefined,
-        kind:
-          step.kind === 'reasoning' || step.kind === 'tool' || step.kind === 'summary'
-            ? step.kind
-            : undefined,
-        action: step.action ?? null,
-        action_result: step.action_result ?? null,
-        evidence: Array.isArray(step.evidence)
-          ? step.evidence
-              .filter((ev: any) => ev && typeof ev === 'object')
-              .map((ev: any) => ({
-                type: typeof ev.type === 'string' ? ev.type : 'output',
-                title: typeof ev.title === 'string' ? ev.title : undefined,
-                ref: typeof ev.ref === 'string' ? ev.ref : undefined,
-                snippet: typeof ev.snippet === 'string' ? ev.snippet : undefined,
-              }))
-          : undefined,
-        status: _normalizeThinkingStepStatus(step.status),
-        timestamp: typeof step.timestamp === 'string' ? step.timestamp : undefined,
-        self_correction: step.self_correction ?? null,
-        started_at: typeof step.started_at === 'string' ? step.started_at : undefined,
-        finished_at: typeof step.finished_at === 'string' ? step.finished_at : undefined,
-      };
-    });
-  const totalIterationsRaw = Number((payload as any).total_iterations);
-  const inferredIterations = steps.reduce((max, step) => Math.max(max, step.iteration || 0), 0);
-  const totalIterations =
-    Number.isFinite(totalIterationsRaw) && totalIterationsRaw > 0
-      ? Math.max(totalIterationsRaw, inferredIterations)
-      : inferredIterations;
-  return {
-    steps,
-    status: _normalizeThinkingProcessStatus((payload as any).status),
-    total_iterations: totalIterations,
-    summary: typeof (payload as any).summary === 'string' ? (payload as any).summary : undefined,
-    error: typeof (payload as any).error === 'string' ? (payload as any).error : undefined,
-  };
-};
-
 export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   messages: [],
   historyHasMore: false,
@@ -346,47 +264,14 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   const existingMessages = get().messages;
   const existingToolResults = buildToolResultsCache(existingMessages);
 
-  const newMessages: ChatMessage[] = data.messages.map((msg: any, index: number) => {
-  const metadata =
-  msg.metadata && typeof msg.metadata === 'object'
-  ? { ...(msg.metadata as Record<string, any>) }
-  : {};
-  if (typeof msg.id === 'number') {
-  metadata.backend_id = msg.id;
-  }
-  const trackingId =
-  typeof metadata.tracking_id === 'string' ? metadata.tracking_id : null;
-  let toolResults = collectToolResultsFromMetadata(metadata.tool_results);
-  if (toolResults.length === 0 && trackingId && existingToolResults.has(trackingId)) {
-  toolResults = existingToolResults.get(trackingId) ?? [];
-  }
-  if (toolResults.length > 0) {
-  metadata.tool_results = toolResults;
-  }
-  const artifactGallery = collectArtifactGallery(metadata.artifact_gallery);
-  if (artifactGallery.length > 0) {
-  metadata.artifact_gallery = artifactGallery;
-  }
-
-  // Hydrate thinking_process from metadata with schema normalization.
-  const thinkingProcess = _hydrateThinkingProcess(metadata.thinking_process);
-  if (thinkingProcess) {
-  metadata.thinking_process = thinkingProcess;
-  } else if ('thinking_process' in metadata) {
-  delete (metadata as any).thinking_process;
-  }
-
-  const backendId = typeof msg.id === 'number' ? msg.id : null;
-  const messageId = backendId !== null ? `${sessionId}_${backendId}` : `${sessionId}_${index}`;
-  return {
-  id: messageId,
-  type: (msg.role || 'assistant') as 'user' | 'assistant' | 'system',
-  content: msg.content,
-  timestamp: parseChatTimestamp(msg.timestamp),
-  metadata,
-  thinking_process: thinkingProcess,
-  };
-  });
+  const newMessages: ChatMessage[] = data.messages.map((msg: any, index: number) =>
+  hydratePersistedMessage({
+  sessionId,
+  rawMessage: msg,
+  index,
+  fallbackToolResults: existingToolResults,
+  })
+  );
 
   const merged = append ? [...newMessages, ...existingMessages] : newMessages;
   const seen = new Set<string>();

@@ -28,6 +28,7 @@ export type ChatActionStatus = 'pending' | 'running' | 'completed' | 'failed';
 export type RequestTier = 'light' | 'standard' | 'research' | 'execute';
 export type RequestRouteMode = 'manual_deepthink' | 'auto_simple' | 'auto_deepthink';
 export type ThinkingVisibility = 'visible' | 'progress' | 'hidden';
+export type ThinkingDisplayMode = 'compact_progress' | 'full_thinking' | 'final_answer' | 'hidden';
 
 export interface CompactProgressToolItem {
   tool: string;
@@ -130,6 +131,7 @@ export interface ChatResponseMetadata {
   request_route_mode?: RequestRouteMode;
   route_reason_codes?: string[];
   thinking_visibility?: ThinkingVisibility;
+  thinking_display_mode?: ThinkingDisplayMode;
   deep_think_progress?: CompactProgressState;
   [key: string]: any;
 }
@@ -204,6 +206,7 @@ export interface ChatMessage {
     request_route_mode?: RequestRouteMode;
     route_reason_codes?: string[];
     thinking_visibility?: ThinkingVisibility;
+    thinking_display_mode?: ThinkingDisplayMode;
     deep_think_progress?: CompactProgressState;
     type?: string;
     job?: DecompositionJobStatus | null;

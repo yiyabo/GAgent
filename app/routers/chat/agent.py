@@ -921,6 +921,7 @@ def _build_recent_image_display_response(
         "status": "completed",
         **routing_decision.metadata(),
     }
+    metadata["thinking_display_mode"] = "final_answer"
 
     if not selected_items:
         if selection_mode != "ambiguous":
@@ -1156,6 +1157,8 @@ def _apply_grounded_local_answer(
 
 def _structured_plan_metadata_from_result(
     result: DeepThinkResult,
+    *,
+    tool_results: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     if not result.structured_plan_required:
         return {}
@@ -1168,6 +1171,37 @@ def _structured_plan_metadata_from_result(
     message = str(result.structured_plan_message or "").strip()
     if message:
         metadata["plan_creation_message"] = message
+    if isinstance(tool_results, list):
+        for item in reversed(tool_results):
+            if not isinstance(item, dict):
+                continue
+            tool_name = str(item.get("tool") or item.get("name") or "").strip().lower()
+            if tool_name != "plan_operation":
+                continue
+            result_payload = item.get("result")
+            if not isinstance(result_payload, dict):
+                continue
+            auto_review = result_payload.get("auto_review")
+            if not isinstance(auto_review, dict):
+                continue
+            job_id = str(auto_review.get("decomposition_job_id") or "").strip()
+            if not job_id:
+                continue
+            get_job_payload = getattr(plan_decomposition_jobs, "get_job_payload", None)
+            job_payload = (
+                get_job_payload(job_id, include_logs=False)
+                if callable(get_job_payload)
+                else None
+            ) or {
+                "job_id": job_id,
+                "job_type": "plan_decompose",
+                "status": "queued",
+            }
+            plan_id = result_payload.get("plan_id")
+            if plan_id is not None and job_payload.get("plan_id") is None:
+                job_payload["plan_id"] = plan_id
+            metadata["decomposition_job"] = _sanitize_chat_metadata_value(job_payload)
+            break
     return metadata
 
 
@@ -1181,6 +1215,143 @@ def _plan_runtime_metadata(plan_tree: Any) -> Dict[str, Any]:
     return {}
 
 
+def _plan_evaluation_from_tool_results(
+    tool_results: Optional[List[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(tool_results, list):
+        return None
+    for item in reversed(tool_results):
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool") or item.get("name") or "").strip().lower()
+        if tool_name != "plan_operation":
+            continue
+        result_payload = item.get("result")
+        if not isinstance(result_payload, dict):
+            continue
+        operation = str(result_payload.get("operation") or "").strip().lower()
+        if operation != "review":
+            continue
+        rubric_score = result_payload.get("rubric_score")
+        if not isinstance(rubric_score, (int, float)):
+            continue
+        evaluator = (
+            result_payload.get("rubric_evaluator")
+            if isinstance(result_payload.get("rubric_evaluator"), dict)
+            else {}
+        )
+        evaluation: Dict[str, Any] = {
+            "plan_id": result_payload.get("plan_id"),
+            "rubric_version": evaluator.get("rubric_version"),
+            "evaluator_provider": evaluator.get("provider"),
+            "evaluator_model": evaluator.get("model"),
+            "evaluated_at": evaluator.get("evaluated_at"),
+            "overall_score": float(rubric_score),
+            "dimension_scores": (
+                dict(result_payload.get("rubric_dimension_scores"))
+                if isinstance(result_payload.get("rubric_dimension_scores"), dict)
+                else {}
+            ),
+            "subcriteria_scores": (
+                dict(result_payload.get("rubric_subcriteria_scores"))
+                if isinstance(result_payload.get("rubric_subcriteria_scores"), dict)
+                else {}
+            ),
+            "feedback": (
+                dict(result_payload.get("rubric_feedback"))
+                if isinstance(result_payload.get("rubric_feedback"), dict)
+                else {}
+            ),
+        }
+        rule_evidence = result_payload.get("rule_evidence")
+        if isinstance(rule_evidence, dict):
+            evaluation["rule_evidence"] = dict(rule_evidence)
+        return {
+            key: value
+            for key, value in evaluation.items()
+            if value not in (None, {}, [])
+        }
+    return None
+
+
+def _build_deep_think_response_metadata(
+    *,
+    result: DeepThinkResult,
+    routing_metadata: Dict[str, Any],
+    plan_id: Optional[int],
+    plan_title: Optional[str],
+    reasoning_language: str,
+    thinking_visible: bool,
+    progress_visible: bool,
+    artifact_gallery: Optional[List[Dict[str, Any]]] = None,
+    tool_results: Optional[List[Dict[str, Any]]] = None,
+    deep_think_job_id: Optional[str] = None,
+    background_category: Optional[str] = None,
+    display_text: Optional[str] = None,
+    structured_plan_meta: Optional[Dict[str, Any]] = None,
+    plan_runtime_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {
+        "plan_id": plan_id,
+        "plan_title": plan_title,
+        "deep_think": True,
+        "iterations": result.total_iterations,
+        "tools_used": result.tools_used,
+        "confidence": result.confidence,
+        "tool_failures": result.tool_failures,
+        "search_verified": result.search_verified,
+        "fallback_used": result.fallback_used,
+        "status": "completed",
+        "unified_stream": True,
+        **routing_metadata,
+        **(structured_plan_meta or {}),
+        **(plan_runtime_meta or {}),
+    }
+    normalized_display_text = str(display_text or "").strip()
+    if normalized_display_text:
+        metadata["analysis_text"] = normalized_display_text
+        metadata["final_summary"] = normalized_display_text
+    metadata["thinking_display_mode"] = "final_answer"
+    if artifact_gallery:
+        metadata["artifact_gallery"] = merge_artifact_gallery(
+            None,
+            artifact_gallery,
+        )
+    if tool_results:
+        metadata["tool_results"] = [
+            _sanitize_chat_metadata_value(item)
+            for item in tool_results
+            if isinstance(item, dict)
+        ]
+        latest_plan_evaluation = _plan_evaluation_from_tool_results(tool_results)
+        if isinstance(latest_plan_evaluation, dict) and latest_plan_evaluation:
+            metadata["plan_evaluation"] = _sanitize_chat_metadata_value(
+                latest_plan_evaluation
+            )
+    if thinking_visible or progress_visible:
+        metadata["thinking_process"] = {
+            "status": "completed",
+            "total_iterations": result.total_iterations,
+            "summary": result.thinking_summary,
+            "steps": [
+                {
+                    **build_user_visible_step(
+                        step,
+                        language=reasoning_language,
+                        preserve_thought=True,
+                    ),
+                    "status": "done" if step.status == "done" else "completed",
+                }
+                for step in result.thinking_steps
+            ],
+        }
+    if background_category:
+        metadata["background_category"] = background_category
+    if deep_think_job_id:
+        metadata["deep_think_job_id"] = deep_think_job_id
+    return metadata
+
+
 def _should_bind_created_plan(
     *,
     existing_plan_id: Optional[int],
@@ -1189,6 +1360,80 @@ def _should_bind_created_plan(
     if existing_plan_id is None:
         return True
     return str(plan_request_mode or "").strip().lower() == "create_new"
+
+
+def _build_existing_plan_create_result(
+    *,
+    existing_plan_id: int,
+    plan_title: Optional[str] = None,
+) -> Dict[str, Any]:
+    title_suffix = f" ('{plan_title}')" if isinstance(plan_title, str) and plan_title.strip() else ""
+    summary = (
+        f"Structured plan already exists for this request: plan_id={existing_plan_id}{title_suffix}. "
+        "Do not call plan_operation create again in this turn. "
+        "Reuse the existing plan and submit the final answer."
+    )
+    payload: Dict[str, Any] = {
+        "success": True,
+        "operation": "create",
+        "plan_id": existing_plan_id,
+        "binding_skipped": True,
+        "existing_plan_id": existing_plan_id,
+        "already_bound_plan_reused": True,
+        "message": summary,
+        "summary": summary,
+        "next_step_hint": (
+            "Do not call plan_operation create again. Summarize the created plan "
+            "and finish the turn."
+        ),
+    }
+    if isinstance(plan_title, str) and plan_title.strip():
+        payload["title"] = plan_title.strip()
+    return payload
+
+
+_SKIP_CHAT_METADATA_VALUE = object()
+
+
+def _sanitize_chat_metadata_value(value: Any) -> Any:
+    if callable(value):
+        return _SKIP_CHAT_METADATA_VALUE
+    if isinstance(value, dict):
+        sanitized: Dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key) == "tool_context":
+                continue
+            normalized = _sanitize_chat_metadata_value(item)
+            if normalized is _SKIP_CHAT_METADATA_VALUE:
+                continue
+            sanitized[str(key)] = normalized
+        return sanitized
+    if isinstance(value, list):
+        sanitized_list: List[Any] = []
+        for item in value:
+            normalized = _sanitize_chat_metadata_value(item)
+            if normalized is _SKIP_CHAT_METADATA_VALUE:
+                continue
+            sanitized_list.append(normalized)
+        return sanitized_list
+    if isinstance(value, tuple):
+        sanitized_tuple: List[Any] = []
+        for item in value:
+            normalized = _sanitize_chat_metadata_value(item)
+            if normalized is _SKIP_CHAT_METADATA_VALUE:
+                continue
+            sanitized_tuple.append(normalized)
+        return sanitized_tuple
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _sanitize_deep_think_tool_params(params: Any) -> Dict[str, Any]:
+    if not isinstance(params, dict):
+        return {}
+    sanitized = _sanitize_chat_metadata_value(params)
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 class StructuredChatAgent:
@@ -2356,6 +2601,7 @@ class StructuredChatAgent:
                 "raw_actions": [step.action.model_dump() for step in result.steps],
                 **routing_decision.metadata(),
             }
+            metadata_payload["thinking_display_mode"] = "final_answer"
             if tool_results:
                 metadata_payload["tool_results"] = [
                     entry
@@ -2420,6 +2666,7 @@ class StructuredChatAgent:
         thinking_visible = routing_decision.thinking_visibility == "visible"
         progress_visible = routing_decision.thinking_visibility == "progress"
         current_turn_artifact_gallery: List[Dict[str, Any]] = []
+        current_turn_tool_results: List[Dict[str, Any]] = []
 
         if deep_think_job_id:
             try:
@@ -2918,12 +3165,53 @@ class StructuredChatAgent:
                 dt_agent: Any = None
                 deep_think_task_context: Optional[TaskExecutionContext] = None
 
+                def _sync_dt_agent_plan_binding(
+                    plan_id: Optional[int],
+                    *,
+                    plan_title: Optional[str] = None,
+                ) -> None:
+                    if plan_id is None:
+                        return
+                    self.extra_context["plan_id"] = plan_id
+                    request_profile = getattr(dt_agent, "request_profile", None)
+                    if isinstance(request_profile, dict):
+                        request_profile["current_plan_id"] = plan_id
+                        if isinstance(plan_title, str) and plan_title.strip():
+                            request_profile["current_plan_title"] = plan_title.strip()
+
                 # Wrapper for tool execution with plan_operation binding
                 async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
                     nonlocal deep_think_tool_order, deep_think_bg_category
                     nonlocal bio_failure_active, failed_tool_name
                     nonlocal help_seen_after_failure, retry_seen_after_help
-                    safe_params = params if isinstance(params, dict) else {}
+                    safe_params = _sanitize_deep_think_tool_params(params)
+                    requested_operation = str(safe_params.get("operation") or "").strip().lower()
+
+                    if name == "plan_operation" and requested_operation == "create":
+                        existing_plan_id = self.plan_session.plan_id
+                        if (
+                            existing_plan_id is not None
+                            and not _should_bind_created_plan(
+                                existing_plan_id=existing_plan_id,
+                                plan_request_mode=routing_decision.plan_request_mode,
+                            )
+                        ):
+                            plan_tree = getattr(self, "plan_tree", None)
+                            plan_title = (
+                                str(getattr(plan_tree, "title", "") or "").strip() or None
+                            )
+                            _sync_dt_agent_plan_binding(
+                                existing_plan_id,
+                                plan_title=plan_title,
+                            )
+                            logger.info(
+                                "[DeepThink] Reused existing bound plan %s for repeated plan_operation create request",
+                                existing_plan_id,
+                            )
+                            return _build_existing_plan_create_result(
+                                existing_plan_id=existing_plan_id,
+                                plan_title=plan_title,
+                            )
 
                     if name not in ("plan_operation", "verify_task"):
                         if name == "code_executor":
@@ -3049,6 +3337,58 @@ class StructuredChatAgent:
                             tool_params=safe_params,
                             iteration=deep_think_tool_order,
                         )
+                        recent_tool_results = self.extra_context.get(
+                            "recent_tool_results"
+                        )
+                        latest_recent_entry = (
+                            recent_tool_results[-1]
+                            if isinstance(recent_tool_results, list)
+                            and recent_tool_results
+                            else None
+                        )
+                        if (
+                            isinstance(latest_recent_entry, dict)
+                            and str(
+                                latest_recent_entry.get("tool")
+                                or latest_recent_entry.get("name")
+                                or ""
+                            ).strip()
+                            == name
+                        ):
+                            captured_tool_result = {
+                                **dict(latest_recent_entry),
+                                "name": str(
+                                    latest_recent_entry.get("name")
+                                    or latest_recent_entry.get("tool")
+                                    or name
+                                ).strip(),
+                                "parameters": (
+                                    dict(latest_recent_entry.get("parameters"))
+                                    if isinstance(
+                                        latest_recent_entry.get("parameters"), dict
+                                    )
+                                    else dict(safe_params)
+                                ),
+                                "result": (
+                                    dict(latest_recent_entry.get("result"))
+                                    if isinstance(
+                                        latest_recent_entry.get("result"), dict
+                                    )
+                                    else dict(result)
+                                ),
+                            }
+                        else:
+                            captured_tool_result = {
+                                "name": name,
+                                "tool": name,
+                                "summary": _safe_text(
+                                    result.get("summary") or step.message,
+                                    limit=600,
+                                ),
+                                "parameters": dict(safe_params),
+                                "result": dict(result),
+                            }
+                        current_turn_tool_results.append(captured_tool_result)
 
                         if name == "sequence_fetch":
                             result_success = result.get("success") is not False
@@ -3276,7 +3616,14 @@ class StructuredChatAgent:
                                             )
                                             result["rebound_from_plan_id"] = existing_plan_id
                                         self._refresh_plan_tree(force_reload=True)
-                                        self.extra_context["plan_id"] = plan_id
+                                        plan_tree = getattr(self, "plan_tree", None)
+                                        plan_title = (
+                                            str(getattr(plan_tree, "title", "") or "").strip() or None
+                                        )
+                                        _sync_dt_agent_plan_binding(
+                                            plan_id,
+                                            plan_title=plan_title,
+                                        )
                                         self._dirty = True
 
                                         if (
@@ -3314,6 +3661,13 @@ class StructuredChatAgent:
                                                 "recent_tool_results", []
                                             ),
                                         }
+                                        if self.session_id:
+                                            session_ctx["session_id"] = self.session_id
+                                        owner_id = str(
+                                            self.extra_context.get("owner_id") or ""
+                                        ).strip()
+                                        if owner_id:
+                                            session_ctx["owner_id"] = owner_id
                                         decompose_result = await asyncio.to_thread(
                                             self._auto_decompose_plan,
                                             plan_id,
@@ -3400,6 +3754,19 @@ class StructuredChatAgent:
                                             plan_id,
                                             bind_err,
                                         )
+
+                        current_turn_tool_results.append(
+                            {
+                                "name": name,
+                                "tool": name,
+                                "summary": _safe_text(
+                                    result.get("summary") or result.get("message"),
+                                    limit=600,
+                                ),
+                                "parameters": dict(safe_params),
+                                "result": _sanitize_chat_metadata_value(dict(result)),
+                            }
+                        )
 
                     return result
 
@@ -3665,50 +4032,29 @@ class StructuredChatAgent:
                     try:
                         _persist_runtime_context(self)
                         plan_tree = getattr(self, "plan_tree", None)
-                        structured_plan_meta = _structured_plan_metadata_from_result(res)
+                        structured_plan_meta = _structured_plan_metadata_from_result(
+                            res,
+                            tool_results=current_turn_tool_results,
+                        )
                         plan_runtime_meta = _plan_runtime_metadata(plan_tree)
                         resolved_plan_id = res.structured_plan_plan_id or self.plan_session.plan_id
                         plan_title = res.structured_plan_title or (plan_tree.title if plan_tree else None)
-                        metadata_payload: Dict[str, Any] = {
-                            "plan_id": resolved_plan_id,
-                            "plan_title": plan_title,
-                            "deep_think": True,
-                            "iterations": res.total_iterations,
-                            "tools_used": res.tools_used,
-                            "confidence": res.confidence,
-                            "tool_failures": res.tool_failures,
-                            "search_verified": res.search_verified,
-                            "fallback_used": res.fallback_used,
-                            **routing_decision.metadata(),
-                            **structured_plan_meta,
-                            **plan_runtime_meta,
-                        }
-                        if current_turn_artifact_gallery:
-                            metadata_payload["artifact_gallery"] = merge_artifact_gallery(
-                                None,
-                                current_turn_artifact_gallery,
-                            )
-                        if thinking_visible or progress_visible:
-                            metadata_payload["thinking_process"] = {
-                                "status": "completed",
-                                "total_iterations": res.total_iterations,
-                                "summary": res.thinking_summary,
-                                "steps": [
-                                    {
-                                        **build_user_visible_step(
-                                            s,
-                                            language=reasoning_language,
-                                            preserve_thought=True,
-                                        ),
-                                        "status": "done"
-                                        if s.status == "done"
-                                        else "completed",
-                                    }
-                                    for s in res.thinking_steps
-                                ],
-                            }
-                        if result_job_id:
-                            metadata_payload["deep_think_job_id"] = result_job_id
+                        metadata_payload = _build_deep_think_response_metadata(
+                            result=res,
+                            routing_metadata=routing_decision.metadata(),
+                            plan_id=resolved_plan_id,
+                            plan_title=plan_title,
+                            reasoning_language=reasoning_language,
+                            thinking_visible=thinking_visible,
+                            progress_visible=progress_visible,
+                            artifact_gallery=current_turn_artifact_gallery,
+                            tool_results=current_turn_tool_results,
+                            deep_think_job_id=result_job_id,
+                            background_category=item.get("bg_category"),
+                            display_text=full_response,
+                            structured_plan_meta=structured_plan_meta,
+                            plan_runtime_meta=plan_runtime_meta,
+                        )
                         _save_chat_message(
                             self.session_id,
                             "assistant",
@@ -3741,32 +4087,32 @@ class StructuredChatAgent:
                 # No need to yield it again here to avoid duplication
                 bg_category = item.get("bg_category")
                 plan_tree = getattr(self, "plan_tree", None)
-                structured_plan_meta = _structured_plan_metadata_from_result(res)
+                structured_plan_meta = _structured_plan_metadata_from_result(
+                    res,
+                    tool_results=current_turn_tool_results,
+                )
                 plan_runtime_meta = _plan_runtime_metadata(plan_tree)
                 resolved_plan_id = res.structured_plan_plan_id or self.plan_session.plan_id
                 plan_title = res.structured_plan_title or (plan_tree.title if plan_tree else None)
-                final_metadata: Dict[str, Any] = {
-                    "plan_id": resolved_plan_id,  # Include plan_id so frontend can update
-                    "plan_title": plan_title,
-                    "deep_think": True,
-                    "tool_failures": res.tool_failures,
-                    "search_verified": res.search_verified,
-                    "fallback_used": res.fallback_used,
-                    **routing_decision.metadata(),
-                    **structured_plan_meta,
-                    **plan_runtime_meta,
-                }
-                if current_turn_artifact_gallery:
-                    final_metadata["artifact_gallery"] = merge_artifact_gallery(
-                        None,
-                        current_turn_artifact_gallery,
-                    )
-                if bg_category:
-                    final_metadata["background_category"] = bg_category
-                if result_job_id:
-                    final_metadata["deep_think_job_id"] = result_job_id
+                final_metadata = _build_deep_think_response_metadata(
+                    result=res,
+                    routing_metadata=routing_decision.metadata(),
+                    plan_id=resolved_plan_id,
+                    plan_title=plan_title,
+                    reasoning_language=reasoning_language,
+                    thinking_visible=thinking_visible,
+                    progress_visible=progress_visible,
+                    artifact_gallery=current_turn_artifact_gallery,
+                    tool_results=current_turn_tool_results,
+                    deep_think_job_id=result_job_id,
+                    background_category=bg_category,
+                    display_text=full_response,
+                    structured_plan_meta=structured_plan_meta,
+                    plan_runtime_meta=plan_runtime_meta,
+                )
                 payload = {
                     "llm_reply": {"message": res.final_answer},
+                    "response": full_response,
                     "actions": [],
                     "metadata": final_metadata,
                 }
@@ -3907,6 +4253,7 @@ class StructuredChatAgent:
                     "final_summary": display_text,
                     **routing_decision.metadata(),
                 }
+                save_meta["thinking_display_mode"] = "final_answer"
                 if thinking_process is not None:
                     save_meta["thinking_process"] = thinking_process
                 _save_chat_message(
@@ -3929,6 +4276,7 @@ class StructuredChatAgent:
             "final_summary": display_text,
             **routing_decision.metadata(),
         }
+        meta["thinking_display_mode"] = "final_answer"
         if thinking_process is not None:
             meta["thinking_process"] = thinking_process
         payload = {

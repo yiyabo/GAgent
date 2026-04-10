@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.routers import job_routes
+from app.services.request_principal import LEGACY_LOCAL_OWNER_ID
 
 
 def _create_board_db() -> sqlite3.Connection:
@@ -19,12 +20,14 @@ def _create_board_db() -> sqlite3.Connection:
         """
   CREATE TABLE chat_sessions (
   id TEXT PRIMARY KEY,
+  owner_id TEXT,
   plan_id INTEGER
   );
 
   CREATE TABLE chat_action_runs (
   id TEXT PRIMARY KEY,
   session_id TEXT,
+  owner_id TEXT,
   user_message TEXT,
   plan_id INTEGER,
   status TEXT,
@@ -36,6 +39,7 @@ def _create_board_db() -> sqlite3.Connection:
 
   CREATE TABLE plan_decomposition_job_index (
   job_id TEXT PRIMARY KEY,
+  owner_id TEXT,
   plan_id INTEGER NOT NULL,
   job_type TEXT NOT NULL DEFAULT 'plan_decompose',
   created_at TEXT
@@ -54,6 +58,7 @@ def _insert_action_run(
     status: str,
     action_name: str,
     created_at: str,
+    owner_id: str = LEGACY_LOCAL_OWNER_ID,
 ) -> None:
     structured_json = json.dumps(
         {
@@ -71,11 +76,11 @@ def _insert_action_run(
     conn.execute(
         """
   INSERT INTO chat_action_runs (
-  id, session_id, user_message, plan_id, status, structured_json, created_at, started_at, finished_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+  id, session_id, owner_id, user_message, plan_id, status, structured_json, created_at, started_at, finished_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
   """,
-        (run_id, session_id, "run task", plan_id,
-         status, structured_json, created_at),
+        (run_id, session_id, owner_id, "run task", plan_id,
+          status, structured_json, created_at),
     )
     conn.commit()
 
@@ -87,13 +92,14 @@ def _insert_job_index(
     plan_id: int,
     job_type: str = "plan_decompose",
     created_at: str,
+    owner_id: str = LEGACY_LOCAL_OWNER_ID,
 ) -> None:
     conn.execute(
         """
-  INSERT INTO plan_decomposition_job_index (job_id, plan_id, job_type, created_at)
-  VALUES (?, ?, ?, ?)
+  INSERT INTO plan_decomposition_job_index (job_id, owner_id, plan_id, job_type, created_at)
+  VALUES (?, ?, ?, ?, ?)
   """,
-        (job_id, plan_id, job_type, created_at),
+        (job_id, owner_id, plan_id, job_type, created_at),
     )
     conn.commit()
 
@@ -303,7 +309,9 @@ def test_jobs_board_uses_session_plan_binding_for_task_creation(
     conn, payloads, client = board_api_env
 
     conn.execute(
-        "INSERT INTO chat_sessions (id, plan_id) VALUES (?, ?)", ("sess-z", 77))
+        "INSERT INTO chat_sessions (id, owner_id, plan_id) VALUES (?, ?, ?)",
+        ("sess-z", LEGACY_LOCAL_OWNER_ID, 77),
+    )
     conn.commit()
 
     _insert_action_run(

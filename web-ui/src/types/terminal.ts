@@ -1,4 +1,4 @@
-export type TerminalMode = 'sandbox' | 'ssh';
+export type TerminalMode = 'sandbox' | 'ssh' | 'qwen_code';
 
 export interface TerminalSessionInfo {
   terminal_id: string;

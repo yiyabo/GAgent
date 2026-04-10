@@ -49,7 +49,7 @@ export const terminalApi = new TerminalApi();
 
 export const buildTerminalWsUrl = (
   sessionId: string,
-  options?: { mode?: 'sandbox' | 'ssh'; terminalId?: string }
+  options?: { mode?: 'sandbox' | 'ssh' | 'qwen_code'; terminalId?: string }
 ): string => {
   const base = ENV.WS_BASE_URL.replace(/\/$/, '');
   const params = new URLSearchParams();

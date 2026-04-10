@@ -49,7 +49,7 @@ class SSHConfigPayload(BaseModel):
 
 class CreateTerminalSessionRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=128)
-    mode: Literal["sandbox", "ssh"] = "sandbox"
+    mode: Literal["sandbox", "ssh", "qwen_code"] = "sandbox"
     ssh_config: Optional[SSHConfigPayload] = None
 
 
@@ -135,7 +135,7 @@ async def get_terminal_audit(
 async def terminal_websocket(
     websocket: WebSocket,
     session_id: str,
-    mode: Literal["sandbox", "ssh"] = Query("sandbox"),
+    mode: Literal["sandbox", "ssh", "qwen_code"] = Query("sandbox"),
     terminal_id: Optional[str] = Query(None),
 ):
     if not _terminal_enabled():

@@ -2,6 +2,7 @@
 
 from .audit_logger import AuditLogger
 from .command_filter import CommandDecision, CommandFilter, RiskLevel
+from .docker_pty_backend import DockerPTYBackend
 from .protocol import WSMessage, WSMessageType, decode_bytes, encode_bytes, make_error_payload
 from .pty_backend import PTYBackend
 from .resource_limiter import DEFAULT_TERMINAL_LIMITS, ResourceLimits, apply_limits_in_child
@@ -18,6 +19,7 @@ __all__ = [
     "decode_bytes",
     "encode_bytes",
     "make_error_payload",
+    "DockerPTYBackend",
     "PTYBackend",
     "DEFAULT_TERMINAL_LIMITS",
     "ResourceLimits",

@@ -193,6 +193,12 @@ class DockerCodeInterpreter:
             return False
 
     def _build_env(self) -> dict:
+        # Build a minimal, explicit environment for the container.
+        # IMPORTANT: we do NOT inherit os.environ here — this is intentional.
+        # Host conda state (CONDA_PREFIX, CONDA_DEFAULT_ENV, …) and any other
+        # host-specific variables must NOT leak into the container because that
+        # would create a dependency on the host runtime and could allow code
+        # running inside Docker to discover and target the host conda env.
         data_dir = self.data_dir or self.work_dir
         cache_root = os.path.join(self.work_dir, ".code_executor_cache")
         env = {

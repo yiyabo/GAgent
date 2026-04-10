@@ -1241,6 +1241,8 @@ def start_decomposition_job_thread(
     expand_depth: Optional[int] = None,
     node_budget: Optional[int] = None,
     allow_existing_children: Optional[bool] = None,
+    owner_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     after_success: Optional[Callable[[], None]] = None,
 ) -> PlanDecompositionJob:
     effective_node_budget: Optional[int] = (
@@ -1259,6 +1261,8 @@ def start_decomposition_job_thread(
         plan_id=plan_id,
         task_id=task_id,
         mode=mode,
+        owner_id=owner_id,
+        session_id=session_id,
         params={k: v for k, v in params.items() if v is not None},
     )
     plan_decomposition_jobs.append_log(

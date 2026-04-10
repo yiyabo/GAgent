@@ -72,6 +72,31 @@ def coerce_int(value: Any, field: str) -> int:
         raise ValueError(f"{field} must be an integer; received {value!r}") from exc
 
 
+def _normalize_optional_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _resolve_auto_decompose_context(
+    agent: Any,
+    session_context: Optional[Dict[str, Any]],
+) -> tuple[Optional[Dict[str, Any]], Optional[str], Optional[str]]:
+    effective_context = dict(session_context or {})
+    owner_id = _normalize_optional_text(effective_context.get("owner_id"))
+    session_id = _normalize_optional_text(effective_context.get("session_id"))
+    if owner_id is None and isinstance(getattr(agent, "extra_context", None), dict):
+        owner_id = _normalize_optional_text(agent.extra_context.get("owner_id"))
+    if session_id is None:
+        session_id = _normalize_optional_text(getattr(agent, "session_id", None))
+    if owner_id is not None:
+        effective_context.setdefault("owner_id", owner_id)
+    if session_id is not None:
+        effective_context.setdefault("session_id", session_id)
+    return (effective_context or None), owner_id, session_id
+
+
 def auto_decompose_plan(
     agent: Any,
     plan_id: int,
@@ -80,6 +105,10 @@ def auto_decompose_plan(
     session_context: Optional[Dict[str, Any]] = None,
     after_success: Optional[Callable[[], None]] = None,
 ) -> Optional[Dict[str, Any]]:
+    effective_session_context, owner_id, session_id = _resolve_auto_decompose_context(
+        agent,
+        session_context,
+    )
     settings = agent.decomposer_settings
     if not settings.auto_on_create:
         note = "Automatic decomposition is disabled."
@@ -102,7 +131,7 @@ def auto_decompose_plan(
                 plan_id,
                 max_depth=settings.max_depth,
                 node_budget=settings.total_node_budget,
-                session_context=session_context,
+                session_context=effective_session_context,
             )
         except Exception as exc:  # pragma: no cover - defensive
             message = f"Automatic decomposition failed: {exc}"
@@ -135,6 +164,8 @@ def auto_decompose_plan(
             mode="plan_bfs",
             max_depth=settings.max_depth,
             node_budget=settings.total_node_budget,
+            owner_id=owner_id,
+            session_id=session_id,
             after_success=after_success,
         )
     except Exception as exc:  # pragma: no cover - defensive

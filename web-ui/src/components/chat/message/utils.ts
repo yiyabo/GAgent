@@ -1,10 +1,21 @@
-import type { DecompositionJobStatus } from '@/types';
+import type { ChatMessage as ChatMessageType, DecompositionJobStatus } from '@/types';
+import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
 
 export const FINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'completed']);
+export const BACKGROUND_DISPATCH_CATEGORIES = new Set([
+  'phagescope',
+  'code_executor',
+  'task_creation',
+]);
 
 export const normalizeJobStatus = (raw: unknown): string => {
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
   return value || 'queued';
+};
+
+export const isBackgroundDispatchCategory = (value: unknown): boolean => {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  return BACKGROUND_DISPATCH_CATEGORIES.has(normalized);
 };
 
 export const toNumber = (value: unknown): number | null => {
@@ -92,4 +103,37 @@ export const fallbackCopyToClipboard = (text: string) => {
     console.error('Fallback copy failed:', err);
   }
   document.body.removeChild(textArea);
+};
+
+// Keep copy behavior aligned with what ChatMessage actually renders.
+export const resolveMessageCopyText = (message: Pick<ChatMessageType, 'type' | 'content' | 'metadata'>): string => {
+  const normalizedContent =
+    message.type === 'assistant' ? extractLlmReplyMessage(message.content) : message.content;
+  const analysisText =
+    typeof (message.metadata as any)?.analysis_text === 'string'
+      ? ((message.metadata as any).analysis_text as string)
+      : '';
+  const finalSummary =
+    typeof (message.metadata as any)?.final_summary === 'string'
+      ? ((message.metadata as any).final_summary as string)
+      : (normalizedContent ?? '');
+  const preferred =
+    analysisText && analysisText.trim().length > 0 ? analysisText : finalSummary || normalizedContent || '';
+  return message.type === 'assistant' ? extractLlmReplyMessage(preferred) : preferred;
+};
+
+export const shouldShowStreamingCursor = ({
+  unifiedStream,
+  status,
+  backgroundCategory,
+}: {
+  unifiedStream?: boolean;
+  status?: unknown;
+  backgroundCategory?: unknown;
+}): boolean => {
+  if (!unifiedStream) return false;
+  const normalizedStatus = typeof status === 'string' ? status.trim().toLowerCase() : '';
+  if (normalizedStatus !== 'pending' && normalizedStatus !== 'running') return false;
+  if (isBackgroundDispatchCategory(backgroundCategory)) return false;
+  return true;
 };

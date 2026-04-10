@@ -53,7 +53,7 @@ class ExecutorSettings:
     skill_selection_mode: str = "hybrid"
     skill_max_per_task: int = 3
     skill_trace_enabled: bool = True
-    code_execution_backend: str = "local"  # "local" | "qwen_code" | "claude_code"
+    code_execution_backend: str = "auto"  # "auto" | "local" | "qwen_code" | "claude_code"
     code_execution_local_runtime: str = DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME
     code_execution_docker_image: str = DEFAULT_CODE_EXECUTION_DOCKER_IMAGE
     # --- Layer 4: configurable limits ---
@@ -163,7 +163,7 @@ def get_executor_settings() -> ExecutorSettings:
         code_execution_backend=_env_choice(
             "CODE_EXECUTION_BACKEND",
             defaults.code_execution_backend,
-            {"local", "qwen_code", "claude_code"},
+            {"auto", "local", "qwen_code", "claude_code"},
         ),
         code_execution_local_runtime=resolve_code_execution_local_runtime(
             os.getenv("CODE_EXECUTOR_LOCAL_RUNTIME"),
