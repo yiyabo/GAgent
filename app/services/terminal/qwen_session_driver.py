@@ -13,9 +13,11 @@ Architecture::
     code_executor_handler()
       ↓ use_qwen_code_backend=True + Docker available
     QwenSessionDriver.ensure_container()   ← manages per-session containers
-    QwenSessionDriver.exec_qwen_task()     ← docker exec <container> qwen -p ...
-      ↓
-    returns (exit_code, stdout, stderr)    ← same as subprocess path
+    build qwen CLI args with stable --session-id
+    docker exec <container> qwen ...
+
+``exec_qwen_task()`` remains available as a lower-level helper for future
+callers that want to bypass the generic subprocess wrapper.
 """
 
 from __future__ import annotations

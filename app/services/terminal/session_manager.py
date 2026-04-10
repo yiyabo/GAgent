@@ -6,7 +6,6 @@ import asyncio
 import base64
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,10 +59,6 @@ class TerminalSession:
     subscribers: Set[asyncio.Queue] = field(default_factory=set)
     pending_approvals: Dict[str, PendingApproval] = field(default_factory=dict)
     output_task: Optional[asyncio.Task] = None
-    # Ownership/lease fields for agent-managed sessions
-    owner: Literal["user", "agent", "none"] = "none"
-    owner_lease_expires: Optional[float] = None  # epoch timestamp
-    busy: bool = False
 
 
 class TerminalSessionManager:
@@ -72,7 +67,6 @@ class TerminalSessionManager:
         self._max_sessions = max_sessions
         self._idle_timeout = idle_timeout
         self._lock = asyncio.Lock()
-        self._ownership_lock = asyncio.Lock()
         self._command_filter = CommandFilter()
         self._reaper_task: Optional[asyncio.Task] = None
 
@@ -260,49 +254,9 @@ class TerminalSessionManager:
 
     async def write(self, terminal_id: str, data: bytes, *, caller: str = "user") -> None:
         session = await self.get_session(terminal_id)
-        # Ownership guard: reject user writes when agent owns the session
-        if caller == "user" and session.owner == "agent":
-            lease_ok = (
-                session.owner_lease_expires is not None
-                and time.time() < session.owner_lease_expires
-            )
-            if lease_ok or session.busy:
-                raise PermissionError(
-                    "Terminal is currently owned by the agent. "
-                    "Wait for the agent to release it."
-                )
-            # Lease expired and not busy — auto-release
-            session.owner = "none"
-            session.owner_lease_expires = None
         session.last_activity = self._now()
         session.audit_logger.log_event("input", data=data)
         await session.backend.write(data)
-
-    async def acquire_ownership(
-        self, terminal_id: str, owner: str = "agent", lease_seconds: float = 300.0,
-    ) -> None:
-        """Claim ownership of a terminal session (agent or user).
-
-        Uses ``_ownership_lock`` to prevent races between concurrent
-        acquire/release/write calls without nesting ``self._lock``.
-        """
-        session = await self.get_session(terminal_id)
-        async with self._ownership_lock:
-            if session.owner not in ("none", owner):
-                raise PermissionError(
-                    f"Terminal already owned by '{session.owner}', cannot acquire for '{owner}'"
-                )
-            session.owner = owner  # type: ignore[assignment]
-            session.owner_lease_expires = time.time() + lease_seconds
-            session.busy = True
-
-    async def release_ownership(self, terminal_id: str) -> None:
-        """Release ownership and mark session as idle."""
-        session = await self.get_session(terminal_id)
-        async with self._ownership_lock:
-            session.owner = "none"
-            session.owner_lease_expires = None
-            session.busy = False
 
     async def write_and_wait(
         self,
