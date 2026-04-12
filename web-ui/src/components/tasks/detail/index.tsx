@@ -6,6 +6,7 @@ import {
   Empty,
   Space,
   Spin,
+  Tooltip,
   Typography,
 } from 'antd';
 import { ReloadOutlined, CopyOutlined, PlayCircleOutlined, UnorderedListOutlined } from '@ant-design/icons';
@@ -285,12 +286,12 @@ const TaskDetailDrawer: React.FC = () => {
       title={
         activeTask
           ? (
-            <Space direction="vertical" size={0}>
-              <Title level={5} style={{ margin: 0 }}>
+            <div style={{ maxWidth: 200 }}>
+              <Title level={5} style={{ margin: 0 }} ellipsis={{ tooltip: activeTask.name }}>
                 {activeTask.name}
               </Title>
               <Text type="secondary">Task ID: {activeTask.id}</Text>
-            </Space>
+            </div>
           )
           : 'Task Details'
       }
@@ -299,14 +300,14 @@ const TaskDetailDrawer: React.FC = () => {
       destroyOnClose={false}
       maskClosable
       extra={
-        <Space>
-          <Button
-            icon={<UnorderedListOutlined />}
-            onClick={() => setTodoListOpen(true)}
-            disabled={!currentPlanId || !selectedTaskId}
-          >
-            Todo List
-          </Button>
+        <Space size={4}>
+          <Tooltip title="Todo List">
+            <Button
+              icon={<UnorderedListOutlined />}
+              onClick={() => setTodoListOpen(true)}
+              disabled={!currentPlanId || !selectedTaskId}
+            />
+          </Tooltip>
           <Button
             type="primary"
             icon={<PlayCircleOutlined />}
@@ -316,21 +317,21 @@ const TaskDetailDrawer: React.FC = () => {
           >
             Execute
           </Button>
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={handleRefresh}
-            disabled={!currentPlanId || !selectedTaskId}
-            loading={tasksLoading || resultLoading}
-          >
-            Refresh
-          </Button>
-          <Button
-            icon={<CopyOutlined />}
-            onClick={handleCopyTask}
-            disabled={!activeTask}
-          >
-            Copy
-          </Button>
+          <Tooltip title="Refresh">
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={handleRefresh}
+              disabled={!currentPlanId || !selectedTaskId}
+              loading={tasksLoading || resultLoading}
+            />
+          </Tooltip>
+          <Tooltip title="Copy">
+            <Button
+              icon={<CopyOutlined />}
+              onClick={handleCopyTask}
+              disabled={!activeTask}
+            />
+          </Tooltip>
         </Space>
       }
     >
