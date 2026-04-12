@@ -53,6 +53,9 @@ class _Tree:
     def has_node(self, task_id: int) -> bool:
         return task_id in self.nodes
 
+    def children_ids(self, task_id: int) -> list:
+        return []
+
 
 class _Job:
     def __init__(
