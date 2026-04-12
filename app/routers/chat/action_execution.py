@@ -1724,7 +1724,7 @@ async def _execute_action_run(run_id: str) -> None:
             cascade_failed_ids: Set[int] = set()
             cascade_skipped_ids: Set[int] = set()
 
-            # Try to get plan tree for dependency checking (optional).
+            # Try to get plan tree for dependency checking + phase ordering.
             _cascade_tree = None
             try:
                 _ps = getattr(agent, "plan_session", None)
@@ -1733,6 +1733,89 @@ async def _execute_action_run(run_id: str) -> None:
                     _cascade_tree = _ct_fn()
             except Exception:
                 pass
+
+            # ── Phase-aware reordering via TodoList ───────────
+            # Reorder pending tasks by topological phase layers so
+            # that prerequisite tasks execute before their dependents.
+            _cascade_phases: Dict[int, int] = {}  # task_id → phase
+            _current_phase: int = -1
+            if _cascade_tree is not None:
+                try:
+                    from app.services.plans.todo_list import (
+                        _compute_phase_layers,
+                    )
+
+                    # Compute phases for ALL pending tasks based on
+                    # their mutual in-scope dependencies.
+                    _pending_int_set = set()
+                    for _pid in pending:
+                        try:
+                            _pending_int_set.add(int(_pid))
+                        except (ValueError, TypeError):
+                            pass
+
+                    _deps_map: Dict[int, List[int]] = {}
+                    for _tid in _pending_int_set:
+                        try:
+                            _n = _cascade_tree.get_node(_tid)
+                            _deps_map[_tid] = [
+                                d for d in _n.dependencies
+                                if d in _pending_int_set
+                            ]
+                        except (KeyError, ValueError, TypeError):
+                            _deps_map[_tid] = []
+
+                    _cascade_phases = _compute_phase_layers(
+                        _pending_int_set, _deps_map
+                    )
+
+                    if _cascade_phases:
+                        # Sort pending by (phase, task_id)
+                        _is_str = (
+                            isinstance(pending[0], str) if pending else False
+                        )
+                        pending = sorted(
+                            pending,
+                            key=lambda t: (
+                                _cascade_phases.get(int(t), 999),
+                                int(t),
+                            ),
+                        )
+                        _agent_ctx["pending_scope_task_ids"] = pending
+
+                        _n_phases = (
+                            max(_cascade_phases.values()) + 1
+                            if _cascade_phases
+                            else 0
+                        )
+                        logger.info(
+                            "[CASCADE] Phase-ordered %d pending tasks "
+                            "across %d phases",
+                            len(pending),
+                            _n_phases,
+                        )
+                        plan_decomposition_jobs.append_log(
+                            job.job_id,
+                            "info",
+                            f"[CASCADE] Phase-ordered {len(pending)} tasks "
+                            f"across {_n_phases} phases",
+                            {
+                                "phases": _n_phases,
+                                "pending_tasks": len(pending),
+                                "phase_assignments": {
+                                    str(k): v
+                                    for k, v in sorted(
+                                        _cascade_phases.items()
+                                    )
+                                },
+                            },
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[CASCADE] TodoList phase ordering failed "
+                        "(falling back to FIFO): %s",
+                        exc,
+                    )
 
             while (
                 cascade_count < _CASCADE_MAX_TASKS
@@ -1784,6 +1867,29 @@ async def _execute_action_run(run_id: str) -> None:
                 _agent_ctx["pending_scope_task_ids"] = pending
 
                 remaining_count = len(pending)
+
+                # ── Phase transition detection ───────────────────
+                _task_phase = _cascade_phases.get(int(next_task_id), -1)
+                if _task_phase >= 0 and _task_phase != _current_phase:
+                    _current_phase = _task_phase
+                    _phase_label = f"Phase {_task_phase + 1}"
+                    logger.info(
+                        "[CASCADE] ═══ Entering %s ═══ (task %s)",
+                        _phase_label,
+                        next_task_id,
+                    )
+                    plan_decomposition_jobs.append_log(
+                        job.job_id,
+                        "info",
+                        f"[CASCADE] ═══ Entering {_phase_label} ═══",
+                        {
+                            "cascade_iteration": cascade_count,
+                            "phase": _task_phase,
+                            "phase_label": _phase_label,
+                            "first_task_in_phase": int(next_task_id),
+                        },
+                    )
+
                 logger.info(
                     "[CASCADE] iter=%d next_task=%s remaining=%d run=%s",
                     cascade_count,
@@ -1905,9 +2011,16 @@ async def _execute_action_run(run_id: str) -> None:
 
             # Build cascade-level summary reply
             _cascade_summary_parts: List[str] = []
+            _phase_count = (
+                (max(_cascade_phases.values()) + 1) if _cascade_phases else 0
+            )
             _cascade_summary_parts.append(
                 f"Cascade completed: {succeeded_count} succeeded"
             )
+            if _phase_count > 0:
+                _cascade_summary_parts.append(
+                    f"across {_phase_count} phases"
+                )
             if cascade_failed_ids:
                 _cascade_summary_parts.append(
                     f"{len(cascade_failed_ids)} failed ({sorted(cascade_failed_ids)})"
