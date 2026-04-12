@@ -14,6 +14,7 @@ Phase assignment uses the Longest-Path Layering algorithm:
 from __future__ import annotations
 
 import heapq
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -188,6 +189,88 @@ def _compute_phase_layers(
     return phase_of
 
 
+# ---------------------------------------------------------------------------
+# Phase semantic labels (heuristic)
+# ---------------------------------------------------------------------------
+
+# Ordered list of (label, keyword_patterns).  First match wins per task.
+_PHASE_LABEL_RULES: List[Tuple[str, List[str]]] = [
+    ("Data Preparation", [
+        r"data.*(?:prep|collect|gather|download|fetch|load|import|input|source|manifest)",
+        r"(?:download|fetch|collect|gather|acquire)\b",
+        r"\binput\b.*(?:file|data)",
+    ]),
+    ("Quality Control", [
+        r"\bqc\b", r"quality.*control", r"quality.*check", r"quality.*assess",
+        r"\bfilter(?:ing)?\b", r"\bclean(?:ing)?\b", r"\btrim(?:ming)?\b",
+        r"contamination", r"completeness",
+    ]),
+    ("Preprocessing", [
+        r"preprocess", r"pre-process", r"normali[sz]", r"transform",
+        r"format.*convert", r"standard[iz]", r"\bconvert\b",
+        r"\bmerge\b", r"\bcombine\b", r"\bintegrat",
+    ]),
+    ("Assembly", [
+        r"\bassembl", r"\bscaffold", r"\bcontig",
+    ]),
+    ("Annotation", [
+        r"\bannotat", r"\bgene.*predict", r"\borf\b", r"\bprodigal\b",
+        r"\bprokka\b", r"\bfunctional.*annotat",
+    ]),
+    ("Alignment", [
+        r"\balign", r"\bblast\b", r"\bhmm", r"\bmsa\b",
+        r"\bmuscle\b", r"\bmafft\b", r"\bclustal",
+    ]),
+    ("Phylogenetics", [
+        r"\bphylogen", r"\btree.*build", r"\bbootstrap",
+        r"\biqtree\b", r"\braxml\b", r"\bnewick\b",
+    ]),
+    ("Analysis", [
+        r"\banalys[ie]s?\b", r"\bstatistic", r"\bcompar",
+        r"\bdiversit", r"\babundance", r"\bcluster",
+        r"\bpca\b", r"\bumap\b", r"\bt-sne\b",
+    ]),
+    ("Visualization", [
+        r"\bvisuali[sz]", r"\bplot\b", r"\bfigure\b", r"\bchart\b",
+        r"\bheatmap\b", r"\bgraph(?!ql)\b", r"\bdraw\b", r"\brender\b",
+    ]),
+    ("Reporting", [
+        r"\breport\b", r"\bsummar", r"\bmanuscript", r"\bwrite.*up",
+        r"\bdocument", r"\bconclu",
+    ]),
+]
+
+
+def _classify_task_label(name: str, instruction: Optional[str]) -> Optional[str]:
+    """Return the best semantic label for a single task, or None."""
+    text = (name or "").lower()
+    if instruction:
+        text += " " + instruction[:300].lower()
+    for label, patterns in _PHASE_LABEL_RULES:
+        for pat in patterns:
+            if re.search(pat, text):
+                return label
+    return None
+
+
+def assign_phase_labels(phases: List[TodoPhase]) -> None:
+    """Mutate *phases* in-place, assigning semantic labels via heuristic.
+
+    For each phase, classify every task and pick the most common label.
+    Falls back to "Phase N" if no majority label is found.
+    """
+    for phase in phases:
+        votes: Dict[str, int] = {}
+        for item in phase.items:
+            label = _classify_task_label(item.name, item.instruction)
+            if label:
+                votes[label] = votes.get(label, 0) + 1
+        if votes:
+            winner = max(votes, key=lambda k: votes[k])
+            phase.label = winner
+        # else keep default "Phase N"
+
+
 def build_todo_list(
     tree: PlanTree,
     target_task_id: int,
@@ -283,6 +366,9 @@ def build_todo_list(
         label = f"Phase {p + 1}"
         phases.append(TodoPhase(phase_id=p, label=label, items=items))
 
+    # Apply semantic labels via heuristic keyword matching
+    assign_phase_labels(phases)
+
     return TodoList(target_task_id=target_task_id, phases=phases)
 
 
@@ -291,4 +377,5 @@ __all__ = [
     "TodoPhase",
     "TodoList",
     "build_todo_list",
+    "assign_phase_labels",
 ]
