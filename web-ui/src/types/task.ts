@@ -132,6 +132,19 @@ export interface DependencyNodeInfo {
   status: string;
 }
 
+export interface ExecutionChecklistItem {
+  step_index: number;
+  task_id: number;
+  name: string;
+  status: string;
+  execution_state: 'completed' | 'failed' | 'running' | 'blocked' | 'ready' | string;
+  instruction?: string | null;
+  depends_on: number[];
+  unmet_dependencies: number[];
+  expected_deliverables: string[];
+  is_target: boolean;
+}
+
 export interface DependencyPlanResponse {
   plan_id: number;
   target_task_id: number;
@@ -141,6 +154,7 @@ export interface DependencyPlanResponse {
   missing_dependencies: DependencyNodeInfo[];
   running_dependencies: DependencyNodeInfo[];
   execution_order: number[];
+  execution_items: ExecutionChecklistItem[];
   cycle_detected: boolean;
   cycle_paths: number[][];
 }
@@ -195,4 +209,35 @@ export interface ExecutionResult {
     iterations: number;
   };
   artifacts?: string[];
+}
+
+// ---- Todo-List (phased execution plan) ----
+
+export interface TodoItemResponse {
+  task_id: number;
+  name: string;
+  instruction: string | null;
+  status: string;
+  dependencies: number[];
+  phase: number;
+}
+
+export interface TodoPhaseResponse {
+  phase_id: number;
+  label: string;
+  status: string;
+  total: number;
+  completed: number;
+  items: TodoItemResponse[];
+}
+
+export interface TodoListResponse {
+  plan_id: number;
+  target_task_id: number;
+  total_tasks: number;
+  completed_tasks: number;
+  phases: TodoPhaseResponse[];
+  execution_order: number[];
+  pending_order: number[];
+  summary: string;
 }
