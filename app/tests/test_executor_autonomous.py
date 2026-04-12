@@ -247,6 +247,35 @@ class TestSmartThrottle:
         assert 2 in summary.executed_task_ids
         assert 3 in summary.executed_task_ids
 
+    def test_on_task_complete_callback(self):
+        """on_task_complete callback fires for each task."""
+        from app.services.plans.plan_executor import ExecutionConfig
+
+        nodes = [
+            _Node(id=1, name="A"),
+            _Node(id=2, name="B"),
+        ]
+        tree = _Tree(nodes)
+        run_results = [
+            ("completed", "ok"),
+            ("completed", "ok"),
+        ]
+        executor = self._make_executor(tree, run_results)
+
+        callback_calls = []
+        def on_complete(result, current, total):
+            callback_calls.append((result.task_id, result.status, current, total))
+
+        cfg = ExecutionConfig(
+            enable_skills=False,
+            on_task_complete=on_complete,
+        )
+
+        summary = executor.execute_plan(plan_id=1, config=cfg)
+        assert len(callback_calls) == 2
+        assert callback_calls[0] == (1, "completed", 1, 2)
+        assert callback_calls[1] == (2, "completed", 2, 2)
+
 
 # ---------------------------------------------------------------------------
 # Tests — Result context expansion
