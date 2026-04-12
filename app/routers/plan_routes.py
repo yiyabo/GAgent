@@ -16,10 +16,15 @@ from app.database import get_db
 from app.repository.plan_repository import PlanRepository
 from app.services.realtime_bus import EventSubscription, get_realtime_bus
 from app.services.request_principal import ensure_owner_access, get_request_owner_id
+from app.services.plans.acceptance_criteria import (
+    derive_acceptance_criteria_from_text,
+    derive_expected_deliverables,
+)
 from app.services.plans.dependency_planner import DependencyPlan, compute_dependency_plan
 from app.services.plans.plan_decomposer import PlanDecomposer, DecompositionResult
 from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor
 from app.services.plans.task_verification import TaskVerificationService
+from app.services.plans.todo_list import build_todo_list as _build_todo_list
 from app.services.plans.decomposition_jobs import (
     execute_decomposition_job,
     plan_decomposition_jobs,
@@ -118,6 +123,35 @@ class SubgraphResponse(BaseModel):
     max_depth: int
     outline: str
     nodes: list[dict[str, Any]]
+
+
+class TodoItemResponse(BaseModel):
+    task_id: int
+    name: str
+    instruction: Optional[str] = None
+    status: str
+    dependencies: List[int] = Field(default_factory=list)
+    phase: int
+
+
+class TodoPhaseResponse(BaseModel):
+    phase_id: int
+    label: str
+    status: str
+    total: int
+    completed: int
+    items: List[TodoItemResponse]
+
+
+class TodoListResponse(BaseModel):
+    plan_id: int
+    target_task_id: int
+    total_tasks: int
+    completed_tasks: int
+    phases: List[TodoPhaseResponse]
+    execution_order: List[int]
+    pending_order: List[int]
+    summary: str
 
 
 class DecomposeTaskRequest(BaseModel):
@@ -236,6 +270,19 @@ class DependencyNodeSummary(BaseModel):
     status: str
 
 
+class ExecutionChecklistItem(BaseModel):
+    step_index: int
+    task_id: int
+    name: str
+    status: str
+    execution_state: str
+    instruction: Optional[str] = None
+    depends_on: List[int] = Field(default_factory=list)
+    unmet_dependencies: List[int] = Field(default_factory=list)
+    expected_deliverables: List[str] = Field(default_factory=list)
+    is_target: bool = False
+
+
 class DependencyPlanResponse(BaseModel):
     plan_id: int
     target_task_id: int
@@ -245,8 +292,83 @@ class DependencyPlanResponse(BaseModel):
     missing_dependencies: List[DependencyNodeSummary] = Field(default_factory=list)
     running_dependencies: List[DependencyNodeSummary] = Field(default_factory=list)
     execution_order: List[int] = Field(default_factory=list)
+    execution_items: List[ExecutionChecklistItem] = Field(default_factory=list)
     cycle_detected: bool = False
     cycle_paths: List[List[int]] = Field(default_factory=list)
+
+
+def _expected_deliverables_for_node(node: Any) -> List[str]:
+    metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
+    criteria = metadata.get("acceptance_criteria")
+    if not isinstance(criteria, dict):
+        raw_execution_result = getattr(node, "execution_result", None)
+        if isinstance(raw_execution_result, str):
+            try:
+                raw_execution_result = json.loads(raw_execution_result)
+            except Exception:
+                raw_execution_result = None
+        if isinstance(raw_execution_result, dict):
+            payload_meta = raw_execution_result.get("metadata")
+            if isinstance(payload_meta, dict):
+                criteria = payload_meta.get("acceptance_criteria")
+    if not isinstance(criteria, dict):
+        criteria = derive_acceptance_criteria_from_text(getattr(node, "instruction", None))
+    if not isinstance(criteria, dict):
+        return []
+    return derive_expected_deliverables(criteria)
+
+
+def _build_execution_checklist_items(
+    tree: "PlanTree",
+    plan: DependencyPlan,
+) -> List[ExecutionChecklistItem]:
+    satisfied = set(plan.satisfied_statuses or ("completed", "done"))
+    selected = set(plan.execution_order)
+    items: List[ExecutionChecklistItem] = []
+
+    for index, task_id in enumerate(plan.execution_order, start=1):
+        if task_id not in tree.nodes:
+            continue
+        node = tree.nodes[task_id]
+        ordering_dependencies: Set[int] = {
+            dep_id
+            for dep_id in list(getattr(node, "dependencies", []) or [])
+            if dep_id in selected and dep_id in tree.nodes
+        }
+        for child_id in tree.children_ids(task_id):
+            if child_id in selected and child_id in tree.nodes:
+                ordering_dependencies.add(child_id)
+        unmet = [
+            dep_id
+            for dep_id in sorted(ordering_dependencies)
+            if _normalize_task_status(tree.nodes[dep_id].status) not in satisfied
+        ]
+        raw_status = _normalize_task_status(getattr(node, "status", None))
+        if raw_status in satisfied:
+            execution_state = "completed"
+        elif raw_status in {"failed", "error"}:
+            execution_state = "failed"
+        elif raw_status == "running" or task_id in plan.running_dependencies:
+            execution_state = "running"
+        elif unmet:
+            execution_state = "blocked"
+        else:
+            execution_state = "ready"
+        items.append(
+            ExecutionChecklistItem(
+                step_index=index,
+                task_id=task_id,
+                name=node.display_name(),
+                status=str(getattr(node, "status", "") or "pending"),
+                execution_state=execution_state,
+                instruction=str(getattr(node, "instruction", "") or "").strip() or None,
+                depends_on=sorted(ordering_dependencies),
+                unmet_dependencies=unmet,
+                expected_deliverables=_expected_deliverables_for_node(node),
+                is_target=task_id == plan.target_task_id,
+            )
+        )
+    return items
 
 
 def _to_dependency_plan_response(
@@ -266,6 +388,7 @@ def _to_dependency_plan_response(
         missing_dependencies=[_node_summary(tid) for tid in plan.missing_dependencies],
         running_dependencies=[_node_summary(tid) for tid in plan.running_dependencies],
         execution_order=list(plan.execution_order),
+        execution_items=_build_execution_checklist_items(tree, plan),
         cycle_detected=plan.cycle_detected,
         cycle_paths=[list(path) for path in plan.cycle_paths],
     )
@@ -1051,6 +1174,70 @@ def get_plan_execution_summary(plan_id: int, request: Request):
         skipped=status_counts["skipped"],
         running=status_counts["running"],
         pending=status_counts["pending"],
+    )
+
+
+@plan_router.get(
+    "/{plan_id}/todo-list",
+    response_model=TodoListResponse,
+    summary="Get phased todo-list for a target task",
+)
+def get_plan_todo_list(
+    plan_id: int,
+    request: Request,
+    target_task_id: int = Query(..., description="Target task whose dependency subgraph to resolve"),
+    expand_composites: bool = Query(True, description="Expand composite tasks to atomic leaves"),
+):
+    """Build a phased todo-list for *target_task_id* showing all dependencies
+    grouped into execution phases with semantic labels."""
+    tree = _load_authorized_plan_tree(plan_id, request)
+
+    if not tree.has_node(target_task_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task {target_task_id} not found in plan {plan_id}",
+        )
+
+    todo = _build_todo_list(
+        tree,
+        target_task_id,
+        include_target=True,
+        expand_composites=expand_composites,
+    )
+
+    phases_out: List[TodoPhaseResponse] = []
+    for phase in todo.phases:
+        items_out = [
+            TodoItemResponse(
+                task_id=item.task_id,
+                name=item.name,
+                instruction=item.instruction,
+                status=item.status,
+                dependencies=item.dependencies,
+                phase=item.phase,
+            )
+            for item in phase.items
+        ]
+        phases_out.append(
+            TodoPhaseResponse(
+                phase_id=phase.phase_id,
+                label=phase.label,
+                status=phase.status,
+                total=phase.total,
+                completed=phase.completed_count,
+                items=items_out,
+            )
+        )
+
+    return TodoListResponse(
+        plan_id=plan_id,
+        target_task_id=target_task_id,
+        total_tasks=todo.total_tasks,
+        completed_tasks=todo.completed_tasks,
+        phases=phases_out,
+        execution_order=todo.execution_order,
+        pending_order=todo.pending_order,
+        summary=todo.summary(),
     )
 
 

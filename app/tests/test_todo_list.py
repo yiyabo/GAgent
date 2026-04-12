@@ -18,6 +18,8 @@ from app.services.plans.todo_list import (
     TodoList,
     TodoPhase,
     build_todo_list,
+    assign_phase_labels,
+    _classify_task_label,
     _collect_leaf_ids,
     _compute_phase_layers,
 )
@@ -267,8 +269,12 @@ class TestBuildTodoList:
 
     def test_phase_labels(self, linear_chain_tree: PlanTree):
         todo = build_todo_list(linear_chain_tree, 4)
-        for i, phase in enumerate(todo.phases):
-            assert phase.label == f"Phase {i + 1}"
+        # Semantic labels should be assigned based on task names
+        labels = [p.label for p in todo.phases]
+        assert labels[0] == "Data Preparation"  # "Data Prep"
+        assert labels[1] == "Preprocessing"       # "Preprocessing"
+        assert labels[2] == "Analysis"             # "Analysis"
+        assert labels[3] == "Reporting"            # "Summary"
 
     def test_phase_status_pending(self, linear_chain_tree: PlanTree):
         todo = build_todo_list(linear_chain_tree, 4)
@@ -290,7 +296,7 @@ class TestBuildTodoList:
         todo = build_todo_list(diamond_tree, 4)
         summary = todo.summary()
         assert "TodoList for task 4" in summary
-        assert "Phase 1" in summary
+        assert "Data Preparation" in summary  # semantic label for "Fetch Data"
         assert "Fetch Data" in summary
 
     def test_target_excluded(self, linear_chain_tree: PlanTree):
@@ -341,3 +347,88 @@ class TestTodoItemProperties:
     def test_is_done_failed(self):
         item = TodoItem(1, "A", "do A", "failed", [], 0)
         assert item.is_done is False
+
+
+# ── Phase label tests ────────────────────────────────────────────
+
+
+class TestPhaseLabels:
+    """Tests for heuristic semantic label assignment."""
+
+    def test_classify_data_preparation(self):
+        assert _classify_task_label("Download input data", None) == "Data Preparation"
+
+    def test_classify_qc(self):
+        assert _classify_task_label("QC filtering", None) == "Quality Control"
+
+    def test_classify_preprocessing(self):
+        assert _classify_task_label("Normalize read counts", None) == "Preprocessing"
+
+    def test_classify_annotation(self):
+        assert _classify_task_label("Gene annotation with Prokka", None) == "Annotation"
+
+    def test_classify_alignment(self):
+        assert _classify_task_label("Multiple sequence alignment", None) == "Alignment"
+
+    def test_classify_phylogenetics(self):
+        assert _classify_task_label("Build phylogenetic tree", None) == "Phylogenetics"
+
+    def test_classify_analysis(self):
+        assert _classify_task_label("Statistical analysis of diversity", None) == "Analysis"
+
+    def test_classify_visualization(self):
+        assert _classify_task_label("Plot heatmap", None) == "Visualization"
+
+    def test_classify_reporting(self):
+        assert _classify_task_label("Generate summary report", None) == "Reporting"
+
+    def test_classify_unknown_returns_none(self):
+        assert _classify_task_label("mysterious step", None) is None
+
+    def test_classify_uses_instruction(self):
+        label = _classify_task_label("Step X", "Download and collect data files")
+        assert label == "Data Preparation"
+
+    def test_assign_phase_labels_majority_vote(self):
+        """Phase label should be the most common category among its tasks."""
+        phases = [
+            TodoPhase(
+                phase_id=0,
+                label="Phase 1",
+                items=[
+                    TodoItem(1, "Download data", "fetch files", "pending", [], 0),
+                    TodoItem(2, "Collect input data", "gather sources", "pending", [], 0),
+                    TodoItem(3, "QC check", "quality control", "pending", [], 0),
+                ],
+            )
+        ]
+        assign_phase_labels(phases)
+        assert phases[0].label == "Data Preparation"
+
+    def test_assign_phase_labels_fallback(self):
+        """Phase with no classifiable tasks keeps default label."""
+        phases = [
+            TodoPhase(
+                phase_id=0,
+                label="Phase 1",
+                items=[
+                    TodoItem(1, "mysterious step", None, "pending", [], 0),
+                ],
+            )
+        ]
+        assign_phase_labels(phases)
+        assert phases[0].label == "Phase 1"
+
+    def test_build_todo_list_includes_labels(self):
+        """build_todo_list should auto-assign semantic labels."""
+        nodes = [
+            _node(1, "Download source data", deps=[]),
+            _node(2, "QC filtering", deps=[1]),
+            _node(3, "Statistical analysis", deps=[2]),
+        ]
+        tree = _tree(nodes)
+        todo = build_todo_list(tree, 3)
+        labels = [p.label for p in todo.phases]
+        assert labels[0] == "Data Preparation"
+        assert labels[1] == "Quality Control"
+        assert labels[2] == "Analysis"
