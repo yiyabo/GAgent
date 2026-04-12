@@ -299,13 +299,17 @@ def test_cascade_runs_all_pending_tasks(monkeypatch) -> None:
     assert len(cascade_logs) >= 3  # at least 3 auto-continue + 1 summary
 
 
-def test_cascade_stops_on_failure(monkeypatch) -> None:
-    """Cascade should stop when a task fails and report partial progress."""
+def test_cascade_continues_after_failure(monkeypatch) -> None:
+    """Cascade continues executing independent tasks after a failure.
+
+    Without a plan tree for dependency checking, all remaining tasks
+    are attempted. Failed tasks are tracked in cascade_failed_ids.
+    """
     run_id = "run_cascade_fail"
     results = {
         34: _ok_result(34),
         35: _fail_result(35),  # This one fails
-        36: _ok_result(36),  # Should not be reached
+        36: _ok_result(36),  # Independent — should still execute
     }
     updates, job_store, call_log = _patch_cascade(
         monkeypatch,
@@ -317,12 +321,26 @@ def test_cascade_stops_on_failure(monkeypatch) -> None:
 
     asyncio.run(action_execution._execute_action_run(run_id))
 
-    # Only tasks 34 and 35 should be executed; 36 should be skipped
-    assert call_log == [34, 35]
+    # All 3 tasks should be executed (35 fails, 36 still runs)
+    assert call_log == [34, 35, 36]
 
-    # Final status should be failed
+    # Final status should be failed (task 35 failed)
     final = updates[-1]
     assert final["status"] == "failed"
+
+    # Result should contain steps from all tasks
+    result_payload = final["result"]
+    assert result_payload["success"] is False
+
+    # Cascade summary log should show 1 failed
+    cascade_summary_logs = [
+        log for log in job_store.logs
+        if "[CASCADE] Completed" in log["message"]
+    ]
+    assert len(cascade_summary_logs) == 1
+    summary_payload = cascade_summary_logs[0]["payload"]
+    assert summary_payload["failed_ids"] == [35]
+    assert summary_payload["succeeded"] >= 1
 
 
 def test_cascade_skips_when_no_pending(monkeypatch) -> None:
@@ -590,3 +608,354 @@ def test_cascade_updates_context(monkeypatch) -> None:
     assert context_snapshots[2]["current_task_id"] == 36
     assert context_snapshots[2]["task_id_param"] == 36
     assert context_snapshots[2]["pending"] == []
+
+
+# ── New tests for cascade resilience features ────────────────────
+
+
+class _PlanTreeStub:
+    """Minimal plan tree stub for dependency-based skip tests."""
+
+    def __init__(self, deps_map: Dict[int, List[int]]) -> None:
+        # deps_map: {task_id: [dependency_ids]}
+        self._deps = deps_map
+
+    def get_node(self, task_id: int):
+        return SimpleNamespace(dependencies=self._deps.get(task_id, []))
+
+
+class _PlanSessionWithTree(_PlanSessionStub):
+    """PlanSession stub that exposes a current_tree()."""
+
+    def __init__(self, deps_map: Dict[int, List[int]], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._tree = _PlanTreeStub(deps_map)
+
+    def current_tree(self):
+        return self._tree
+
+
+def test_cascade_retries_on_exception(monkeypatch) -> None:
+    """Exception during execute_structured should trigger retry.
+
+    First attempt raises, second succeeds → task marked as success.
+    asyncio.sleep must be patched to avoid real delays.
+    """
+    monkeypatch.setattr(action_execution, "asyncio", _make_async_stub())
+
+    run_id = "run_cascade_retry"
+    attempt_counts: Dict[int, int] = {}
+
+    class _RetryAgent:
+        def __init__(self, **kwargs):
+            self.extra_context = dict(kwargs.get("extra_context") or {})
+            self.plan_session = kwargs.get("plan_session") or _PlanSessionStub()
+            self.llm_service = object()
+
+        async def execute_structured(self, structured: LLMStructuredResponse):
+            actions = structured.sorted_actions()
+            task_id = None
+            for a in actions:
+                if a.name == "rerun_task":
+                    task_id = a.parameters.get("task_id")
+                    break
+            if task_id is None:
+                return _ok_result(0)
+
+            attempt_counts[task_id] = attempt_counts.get(task_id, 0) + 1
+
+            if task_id == 35 and attempt_counts[task_id] == 1:
+                raise ConnectionError("transient network error")
+
+            return _ok_result(task_id)
+
+    record = _build_rerun_task_record(run_id, 34, [35])
+    updates: List[Dict[str, Any]] = []
+    job_store = _JobStoreStub()
+
+    async def _fake_analysis(*_args, **_kwargs):
+        return "analysis"
+
+    async def _no_retry(*_a, **_k):
+        return {"attempted": False, "success": False}
+
+    monkeypatch.setattr(action_execution, "PlanSession", _PlanSessionStub)
+    monkeypatch.setattr(
+        action_execution, "get_structured_chat_agent_cls", lambda: _RetryAgent
+    )
+    monkeypatch.setattr(
+        action_execution, "fetch_action_run",
+        lambda _id: record if _id == run_id else None,
+    )
+    monkeypatch.setattr(
+        action_execution, "update_action_run",
+        lambda _id, **kwargs: updates.append(kwargs),
+    )
+    monkeypatch.setattr(action_execution, "plan_decomposition_jobs", job_store)
+    monkeypatch.setattr(action_execution, "set_current_job", lambda _: None)
+    monkeypatch.setattr(action_execution, "reset_current_job", lambda _: None)
+    monkeypatch.setattr(
+        action_execution, "_update_message_content_by_tracking",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        action_execution, "_update_message_metadata_by_tracking",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        action_execution, "_set_session_plan_id", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        action_execution, "_generate_action_analysis", _fake_analysis
+    )
+    monkeypatch.setattr(
+        action_execution, "_run_blocking_failure_deep_think_retry_once", _no_retry
+    )
+    monkeypatch.setattr(
+        action_execution, "_generate_tool_analysis", _fake_analysis
+    )
+
+    asyncio.run(action_execution._execute_action_run(run_id))
+
+    # Task 35 should have been called twice (1 fail + 1 retry success)
+    assert attempt_counts[35] == 2
+
+    # Final result should be success
+    final = updates[-1]
+    assert final["status"] == "completed"
+    assert final["result"]["success"] is True
+
+    # Retry log should be present
+    retry_logs = [
+        log for log in job_store.logs if "Retrying" in log["message"]
+    ]
+    assert len(retry_logs) >= 1
+
+
+def test_cascade_dependency_skip(monkeypatch) -> None:
+    """Task depending on a failed task should be skipped.
+
+    Tasks: 34→OK, 35→FAIL, 36 depends on 35 → SKIP, 37 independent → OK.
+    """
+    monkeypatch.setattr(action_execution, "asyncio", _make_async_stub())
+
+    run_id = "run_dep_skip"
+    deps_map = {
+        34: [],
+        35: [34],
+        36: [35],  # depends on 35 which will fail
+        37: [34],  # depends only on 34 which succeeds
+    }
+    results = {
+        34: _ok_result(34),
+        35: _fail_result(35),
+        36: _ok_result(36),  # wouldn't reach anyway
+        37: _ok_result(37),
+    }
+
+    record = _build_rerun_task_record(run_id, 34, [35, 36, 37])
+    updates: List[Dict[str, Any]] = []
+    job_store = _JobStoreStub()
+    call_log: List[int] = []
+
+    plan_session = _PlanSessionWithTree(deps_map)
+
+    class _DepAgent:
+        def __init__(self, **kwargs):
+            self.extra_context = dict(kwargs.get("extra_context") or {})
+            self.plan_session = kwargs.get("plan_session") or plan_session
+            self.llm_service = object()
+
+        async def execute_structured(self, structured: LLMStructuredResponse):
+            task_id = None
+            for a in structured.sorted_actions():
+                if a.name == "rerun_task":
+                    task_id = a.parameters.get("task_id")
+                    break
+            if task_id is not None:
+                call_log.append(task_id)
+            return results.get(task_id, _ok_result(task_id or 0))
+
+    # Override the agent class to inject the tree-aware plan session
+    class _DepAgentFactory:
+        @staticmethod
+        def __call__(**kwargs):
+            # Force plan_session to our stub with tree
+            kwargs["plan_session"] = plan_session
+            return _DepAgent(**kwargs)
+
+    async def _fake_analysis(*_args, **_kwargs):
+        return "analysis"
+
+    async def _no_retry(*_a, **_k):
+        return {"attempted": False, "success": False}
+
+    monkeypatch.setattr(action_execution, "PlanSession", lambda **_k: plan_session)
+    monkeypatch.setattr(
+        action_execution, "get_structured_chat_agent_cls",
+        lambda: _DepAgentFactory(),
+    )
+    monkeypatch.setattr(
+        action_execution, "fetch_action_run",
+        lambda _id: record if _id == run_id else None,
+    )
+    monkeypatch.setattr(
+        action_execution, "update_action_run",
+        lambda _id, **kwargs: updates.append(kwargs),
+    )
+    monkeypatch.setattr(action_execution, "plan_decomposition_jobs", job_store)
+    monkeypatch.setattr(action_execution, "set_current_job", lambda _: None)
+    monkeypatch.setattr(action_execution, "reset_current_job", lambda _: None)
+    monkeypatch.setattr(
+        action_execution, "_update_message_content_by_tracking",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        action_execution, "_update_message_metadata_by_tracking",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        action_execution, "_set_session_plan_id", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        action_execution, "_generate_action_analysis", _fake_analysis
+    )
+    monkeypatch.setattr(
+        action_execution, "_run_blocking_failure_deep_think_retry_once", _no_retry
+    )
+    monkeypatch.setattr(
+        action_execution, "_generate_tool_analysis", _fake_analysis
+    )
+
+    asyncio.run(action_execution._execute_action_run(run_id))
+
+    # Task 36 should be SKIPPED (depends on failed 35), 37 should execute
+    assert 34 in call_log
+    assert 35 in call_log
+    assert 36 not in call_log  # skipped
+    assert 37 in call_log  # independent, still runs
+
+    # Cascade summary should show skip
+    summary_logs = [
+        log for log in job_store.logs if "[CASCADE] Completed" in log["message"]
+    ]
+    assert len(summary_logs) == 1
+    payload = summary_logs[0]["payload"]
+    assert 36 in payload["skipped_ids"]
+    assert 35 in payload["failed_ids"]
+
+
+def test_cascade_transitive_skip(monkeypatch) -> None:
+    """Transitive dependency skip: A fails → B skipped → C skipped (C depends on B).
+    """
+    monkeypatch.setattr(action_execution, "asyncio", _make_async_stub())
+
+    run_id = "run_trans_skip"
+    deps_map = {
+        10: [],
+        11: [10],
+        12: [11],   # depends on 11 (which depends on failed 10→won't help)
+        13: [12],   # depends on 12 (transitive skip)
+    }
+    results = {
+        10: _ok_result(10),
+        11: _fail_result(11),
+        12: _ok_result(12),
+        13: _ok_result(13),
+    }
+
+    record = _build_rerun_task_record(run_id, 10, [11, 12, 13])
+    updates: List[Dict[str, Any]] = []
+    job_store = _JobStoreStub()
+    call_log: List[int] = []
+
+    plan_session = _PlanSessionWithTree(deps_map)
+
+    class _TransAgent:
+        def __init__(self, **kwargs):
+            self.extra_context = dict(kwargs.get("extra_context") or {})
+            self.plan_session = kwargs.get("plan_session") or plan_session
+            self.llm_service = object()
+
+        async def execute_structured(self, structured: LLMStructuredResponse):
+            task_id = None
+            for a in structured.sorted_actions():
+                if a.name == "rerun_task":
+                    task_id = a.parameters.get("task_id")
+                    break
+            if task_id is not None:
+                call_log.append(task_id)
+            return results.get(task_id, _ok_result(task_id or 0))
+
+    class _TransFactory:
+        @staticmethod
+        def __call__(**kwargs):
+            kwargs["plan_session"] = plan_session
+            return _TransAgent(**kwargs)
+
+    async def _fake(*_a, **_k):
+        return "analysis"
+
+    async def _no_retry(*_a, **_k):
+        return {"attempted": False, "success": False}
+
+    monkeypatch.setattr(action_execution, "PlanSession", lambda **_k: plan_session)
+    monkeypatch.setattr(
+        action_execution, "get_structured_chat_agent_cls", lambda: _TransFactory()
+    )
+    monkeypatch.setattr(
+        action_execution, "fetch_action_run",
+        lambda _id: record if _id == run_id else None,
+    )
+    monkeypatch.setattr(
+        action_execution, "update_action_run",
+        lambda _id, **kwargs: updates.append(kwargs),
+    )
+    monkeypatch.setattr(action_execution, "plan_decomposition_jobs", job_store)
+    monkeypatch.setattr(action_execution, "set_current_job", lambda _: None)
+    monkeypatch.setattr(action_execution, "reset_current_job", lambda _: None)
+    monkeypatch.setattr(
+        action_execution, "_update_message_content_by_tracking",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        action_execution, "_update_message_metadata_by_tracking",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        action_execution, "_set_session_plan_id", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(action_execution, "_generate_action_analysis", _fake)
+    monkeypatch.setattr(
+        action_execution, "_run_blocking_failure_deep_think_retry_once", _no_retry
+    )
+    monkeypatch.setattr(action_execution, "_generate_tool_analysis", _fake)
+
+    asyncio.run(action_execution._execute_action_run(run_id))
+
+    # 11 fails, 12 depends on 11 → skipped, 13 depends on 12 → skipped
+    assert 10 in call_log
+    assert 11 in call_log
+    assert 12 not in call_log  # dependency skip
+    assert 13 not in call_log  # transitive skip
+
+    summary = [
+        log for log in job_store.logs if "[CASCADE] Completed" in log["message"]
+    ]
+    assert len(summary) == 1
+    payload = summary[0]["payload"]
+    assert sorted(payload["skipped_ids"]) == [12, 13]
+    assert payload["failed_ids"] == [11]
+
+
+def _make_async_stub():
+    """Create a module-like stub for asyncio with a no-op sleep."""
+    import types
+
+    stub = types.ModuleType("asyncio_stub")
+
+    async def _noop_sleep(_seconds):
+        pass
+
+    stub.sleep = _noop_sleep
+    return stub
