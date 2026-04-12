@@ -11,13 +11,16 @@ import json
 import hashlib
 import os
 import re
+import shlex
 import shutil
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Callable, Awaitable, Sequence
 import asyncio
 from uuid import uuid4
 from app.services.plans.acceptance_criteria import (
+    derive_acceptance_criteria_from_text,
     derive_relative_output_dirs,
     resolve_glob_min_count,
     resolve_glob_pattern,
@@ -171,6 +174,47 @@ def _compact_cli_text(value: Optional[str], *, limit: int = 320) -> str:
     return text[: max(0, limit - 3)] + "..."
 
 
+_QWEN_DEBUG_ENABLED_LINE_RE = re.compile(
+    r"^Debug mode enabled(?:\s+Logging to:\s*(?P<path>\S+))?\s*$",
+    re.IGNORECASE,
+)
+_QWEN_LOGGING_TO_LINE_RE = re.compile(
+    r"^Logging to:\s*(?P<path>\S+)\s*$",
+    re.IGNORECASE,
+)
+_QWEN_TRANSCRIPTS_ROOT = "/tmp/gagent_home/.qwen/projects"
+_QWEN_SHELL_FALLBACK_TIMEOUT_MS = 600000
+_QWEN_SHELL_FALLBACK_MAX_TIMEOUT_MS = 3600000
+
+
+def _partition_cli_stderr_lines(stderr: str) -> tuple[List[str], str]:
+    actionable_lines: List[str] = []
+    debug_log_path = ""
+
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        match = _QWEN_DEBUG_ENABLED_LINE_RE.match(line)
+        if match:
+            maybe_path = str(match.group("path") or "").strip()
+            if maybe_path:
+                debug_log_path = maybe_path
+            continue
+
+        match = _QWEN_LOGGING_TO_LINE_RE.match(line)
+        if match:
+            maybe_path = str(match.group("path") or "").strip()
+            if maybe_path:
+                debug_log_path = maybe_path
+            continue
+
+        actionable_lines.append(line)
+
+    return actionable_lines, debug_log_path
+
+
 async def _iter_stream_lines_unbounded(
     stream: asyncio.StreamReader,
     *,
@@ -201,7 +245,7 @@ async def _iter_stream_lines_unbounded(
 
 
 def _extract_readable_error(stderr: str) -> str:
-    """Extract a human-readable error from Claude CLI stderr.
+    """Extract a human-readable error from CLI stderr.
 
     When the CLI crashes, stderr may contain a minified JS stack trace that is
     useless for debugging.  This function detects that pattern and produces a
@@ -210,7 +254,9 @@ def _extract_readable_error(stderr: str) -> str:
     if not stderr or not stderr.strip():
         return ""
 
-    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    lines, _debug_log_path = _partition_cli_stderr_lines(stderr)
+    if not lines:
+        return ""
 
     # 1. Detect known structured error messages first.
     for line in lines:
@@ -262,19 +308,272 @@ def _extract_readable_error(stderr: str) -> str:
     return _compact_cli_text(joined, limit=360)
 
 
-def _build_cli_failure_error(*, return_code: Optional[int], stderr: str, stdout: str) -> str:
+def _extract_qwen_debug_log_path(stderr: str) -> str:
+    if not stderr or not stderr.strip():
+        return ""
+    _lines, debug_log_path = _partition_cli_stderr_lines(stderr)
+    return debug_log_path
+
+
+def _extract_pending_qwen_function_call(transcript_text: str) -> Optional[Dict[str, Any]]:
+    """Return the latest assistant function call without a matching tool result."""
+    if not transcript_text or not transcript_text.strip():
+        return None
+
+    completed_call_ids: set[str] = set()
+    pending_calls: list[Dict[str, Any]] = []
+
+    for raw_line in transcript_text.splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        payload_type = str(payload.get("type") or "").strip().lower()
+        if payload_type == "tool_result":
+            tool_call_result = payload.get("toolCallResult")
+            if isinstance(tool_call_result, dict):
+                call_id = str(tool_call_result.get("callId") or "").strip()
+                if call_id:
+                    completed_call_ids.add(call_id)
+                    continue
+            message = payload.get("message")
+            if isinstance(message, dict):
+                for part in message.get("parts") or []:
+                    if not isinstance(part, dict):
+                        continue
+                    function_response = part.get("functionResponse")
+                    if not isinstance(function_response, dict):
+                        continue
+                    call_id = str(function_response.get("id") or "").strip()
+                    if call_id:
+                        completed_call_ids.add(call_id)
+                        break
+            continue
+
+        if payload_type != "assistant":
+            continue
+
+        message = payload.get("message")
+        if not isinstance(message, dict):
+            continue
+        for part in message.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            function_call = part.get("functionCall")
+            if not isinstance(function_call, dict):
+                continue
+            call_id = str(function_call.get("id") or "").strip()
+            name = str(function_call.get("name") or "").strip()
+            args = function_call.get("args")
+            if not call_id or not name or not isinstance(args, dict):
+                continue
+            pending_calls.append(
+                {
+                    "id": call_id,
+                    "name": name,
+                    "args": json.loads(json.dumps(args, ensure_ascii=False)),
+                }
+            )
+
+    for function_call in reversed(pending_calls):
+        if function_call["id"] not in completed_call_ids:
+            return function_call
+    return None
+
+
+def _extract_pending_qwen_shell_command(transcript_text: str) -> Optional[Dict[str, Any]]:
+    pending_call = _extract_pending_qwen_function_call(transcript_text)
+    if not isinstance(pending_call, dict):
+        return None
+    if str(pending_call.get("name") or "").strip() != "run_shell_command":
+        return None
+
+    args = pending_call.get("args")
+    if not isinstance(args, dict):
+        return None
+
+    command = str(args.get("command") or "").strip()
+    if not command:
+        return None
+
+    raw_timeout = args.get("timeout")
+    timeout_ms = _QWEN_SHELL_FALLBACK_TIMEOUT_MS
+    if raw_timeout is not None:
+        try:
+            timeout_ms = int(str(raw_timeout).strip())
+        except (TypeError, ValueError):
+            timeout_ms = _QWEN_SHELL_FALLBACK_TIMEOUT_MS
+    timeout_ms = max(timeout_ms, _QWEN_SHELL_FALLBACK_TIMEOUT_MS)
+    timeout_ms = min(timeout_ms, _QWEN_SHELL_FALLBACK_MAX_TIMEOUT_MS)
+
+    return {
+        "call_id": str(pending_call.get("id") or "").strip(),
+        "command": command,
+        "description": str(args.get("description") or "").strip(),
+        "timeout_ms": timeout_ms,
+    }
+
+
+async def _run_subprocess_capture(
+    command: Sequence[str],
+    *,
+    cwd: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
+    timeout_s: Optional[float] = None,
+) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=cwd,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        if timeout_s and timeout_s > 0:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout_s,
+            )
+        else:
+            stdout_bytes, stderr_bytes = await process.communicate()
+        return_code = int(process.returncode or 0)
+    except asyncio.TimeoutError:
+        try:
+            process.kill()
+            stdout_bytes, stderr_bytes = await process.communicate()
+        except Exception:
+            stdout_bytes = b""
+            stderr_bytes = b""
+        timeout_note = f"\n[TIMEOUT] pending qwen shell call exceeded {int(timeout_s or 0)}s"
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace") + timeout_note
+        return -1, stdout_bytes.decode("utf-8", errors="replace"), stderr_text
+
+    return (
+        return_code,
+        stdout_bytes.decode("utf-8", errors="replace"),
+        stderr_bytes.decode("utf-8", errors="replace"),
+    )
+
+
+async def _read_qwen_transcript_text(
+    *,
+    qwen_session_id: Optional[str],
+    container_name: Optional[str] = None,
+) -> str:
+    session_token = str(qwen_session_id or "").strip()
+    if not session_token:
+        return ""
+
+    if container_name:
+        transcript_glob = f"*/chats/{session_token}.jsonl"
+        shell_cmd = (
+            f'path="$(find {_QWEN_TRANSCRIPTS_ROOT} -path {shlex.quote(transcript_glob)} -print -quit)" && '
+            '[ -n "$path" ] && cat "$path"'
+        )
+        return_code, stdout, _stderr = await _run_subprocess_capture(
+            ["docker", "exec", container_name, "sh", "-lc", shell_cmd],
+            timeout_s=5.0,
+        )
+        if return_code == 0:
+            return stdout
+        return ""
+
+    host_projects_root = Path.home() / ".qwen" / "projects"
+    if not host_projects_root.exists():
+        return ""
+    for candidate in host_projects_root.glob(f"**/chats/{session_token}.jsonl"):
+        try:
+            return candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return ""
+
+
+async def _recover_pending_qwen_shell_call(
+    *,
+    qwen_session_id: Optional[str],
+    container_name: Optional[str],
+    task_work_dir: str,
+) -> Optional[Dict[str, Any]]:
+    transcript_text = await _read_qwen_transcript_text(
+        qwen_session_id=qwen_session_id,
+        container_name=container_name,
+    )
+    pending_shell = _extract_pending_qwen_shell_command(transcript_text)
+    if not isinstance(pending_shell, dict):
+        return None
+
+    shell_command = str(pending_shell.get("command") or "").strip()
+    if not shell_command:
+        return None
+
+    timeout_ms = int(pending_shell.get("timeout_ms") or _QWEN_SHELL_FALLBACK_TIMEOUT_MS)
+    timeout_s = max(1.0, timeout_ms / 1000.0)
+
+    if container_name:
+        from app.services.terminal.docker_pty_backend import CONTAINER_EXEC_PATH
+
+        command = [
+            "docker",
+            "exec",
+            "-e",
+            f"PATH={CONTAINER_EXEC_PATH}",
+            "-w",
+            str(task_work_dir),
+            container_name,
+            "/bin/bash",
+            "-c",
+            shell_command,
+        ]
+        return_code, stdout, stderr = await _run_subprocess_capture(
+            command,
+            timeout_s=timeout_s,
+        )
+    else:
+        return_code, stdout, stderr = await _run_subprocess_capture(
+            ["/bin/bash", "-c", shell_command],
+            cwd=str(task_work_dir),
+            timeout_s=timeout_s,
+        )
+
+    return {
+        "exit_code": return_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "command": shell_command,
+        "timeout_ms": timeout_ms,
+        "call_id": str(pending_shell.get("call_id") or "").strip(),
+        "description": str(pending_shell.get("description") or "").strip(),
+    }
+
+
+def _build_cli_failure_error(
+    *,
+    return_code: Optional[int],
+    stderr: str,
+    stdout: str,
+    backend_label: str = "Claude Code",
+) -> str:
     parts: List[str] = []
     if return_code is not None:
         parts.append(f"exit_code={return_code}")
     stderr_excerpt = _extract_readable_error(stderr)
     if stderr_excerpt:
         parts.append(f"stderr={stderr_excerpt}")
+    else:
+        debug_log_path = _extract_qwen_debug_log_path(stderr)
+        if debug_log_path:
+            parts.append(f"debug_log={debug_log_path}")
     stdout_excerpt = _compact_cli_text(stdout, limit=220)
     if stdout_excerpt:
         parts.append(f"stdout={stdout_excerpt}")
     if not parts:
-        return "Claude CLI execution failed (success=false)."
-    return f"Claude CLI execution failed: {'; '.join(parts)}"
+        return f"{backend_label} execution failed (success=false)."
+    return f"{backend_label} execution failed: {'; '.join(parts)}"
 
 
 _PARTIAL_COMPLETION_PATTERNS: List[re.Pattern] = [
@@ -630,6 +929,27 @@ def _validate_qwen_code_config(env_map: Dict[str, str]) -> Optional[str]:
 # Shared runtime guardrails are applied to both CLI and local execution paths.
 
 
+def _build_qwen_execution_session_id(
+    session_id: Optional[str],
+    run_id: str,
+    *,
+    phase: str = "primary",
+    retry_attempt: int = 0,
+) -> str:
+    from app.services.terminal.docker_pty_backend import _sanitise_qwen_session_id
+
+    session_token = str(session_id or "adhoc").strip() or "adhoc"
+    raw = f"agent:{session_token}:{run_id}:{phase}"
+    if retry_attempt > 0:
+        raw = f"{raw}:retry:{retry_attempt}"
+    return _sanitise_qwen_session_id(raw)
+
+
+def _is_qwen_session_in_use_error(stderr_text: Any) -> bool:
+    text = str(stderr_text or "").strip().lower()
+    return "session id" in text and "already in use" in text
+
+
 def _qwen_code_cli_available() -> bool:
     if shutil.which("qwen") is None:
         return False
@@ -639,22 +959,42 @@ def _qwen_code_cli_available() -> bool:
 
 def _resolve_code_executor_backend(task: str) -> tuple[str, str, str]:
     backend = "auto"
+    auto_strategy = "qwen_primary"
     try:
         from app.config.executor_config import get_executor_settings
 
-        backend = str(get_executor_settings().code_execution_backend or "auto").strip().lower() or "auto"
+        settings = get_executor_settings()
+        backend = str(getattr(settings, "code_execution_backend", "auto") or "auto").strip().lower() or "auto"
+        auto_strategy = (
+            str(getattr(settings, "code_execution_auto_strategy", "qwen_primary") or "qwen_primary").strip().lower()
+            or "qwen_primary"
+        )
     except Exception:
         backend = "auto"
+        auto_strategy = "qwen_primary"
 
     if backend in {"local", "qwen_code", "claude_code"}:
         return backend, "configured_backend", f"CODE_EXECUTION_BACKEND={backend}"
 
-    if _looks_like_engineering_task(task):
-        if _qwen_code_cli_available():
-            return "qwen_code", "engineering_primary", "engineering-style task detected"
+    qwen_available = _qwen_code_cli_available()
+    engineering_task = _looks_like_engineering_task(task)
+
+    if auto_strategy == "split":
+        if engineering_task:
+            if qwen_available:
+                return "qwen_code", "engineering_primary", "engineering-style task detected"
+            return "local", "local_fallback", "engineering-style task detected but qwen_code is unavailable"
+        return "local", "analysis_fast_path", "analysis-style code task routed to local fast path"
+
+    if qwen_available:
+        if engineering_task:
+            return "qwen_code", "qwen_primary", "engineering-style task routed to shared qwen_code session"
+        return "qwen_code", "qwen_primary", "code task routed to qwen_code primary lane"
+
+    if engineering_task:
         return "local", "local_fallback", "engineering-style task detected but qwen_code is unavailable"
 
-    return "local", "analysis_fast_path", "analysis-style code task routed to local fast path"
+    return "local", "analysis_fast_path", "qwen_code unavailable for analysis-style code task"
 
 
 def _build_qwen_code_command(
@@ -739,9 +1079,14 @@ def _build_qwen_code_command(
         f"or analysis commands.\n"
         f"8. Do NOT modify shared host environments: no global `conda install`, "
         f"`pip install`, `npm install -g`, or writes into shared site-packages.\n"
-        f"9. If a lightweight dependency is truly required, install it only into "
-        f"a task-local environment under the workspace (for example `.venv/`).\n"
-        f"10. If the dependency requires a heavy solver, compiled stack, or a "
+        f"9. Inside qwen_code, do NOT create a new virtual environment with "
+        f"`python -m venv`; lightweight Python dependencies should be installed "
+        f"with `python3 -m pip install --user ...` or `python3 -m pip install "
+        f"--target <workspace>/vendor ...` instead.\n"
+        f"10. If a lightweight dependency is needed before running a script, "
+        f"combine the install step and the main script execution in the same "
+        f"`run_shell_command` call so the task finishes in one tool invocation.\n"
+        f"11. If the dependency requires a heavy solver, compiled stack, or a "
         f"new runtime image/profile, stop and report BLOCKED_DEPENDENCY instead "
         f"of mutating the shared host environment."
         f"{allowed_dirs_info}"
@@ -1441,10 +1786,49 @@ def _extract_acceptance_criteria_from_node(node: Any) -> Optional[Dict[str, Any]
             criteria = payload_meta.get("acceptance_criteria")
             if isinstance(criteria, dict):
                 return json.loads(json.dumps(criteria, ensure_ascii=False))
+    derived = derive_acceptance_criteria_from_text(getattr(node, "instruction", None))
+    if isinstance(derived, dict) and derived.get("checks"):
+        return derived
     return None
 
 
-def _build_execution_spec(plan_id: Optional[int], task_id: Optional[int]) -> Optional[Dict[str, Any]]:
+def _build_ad_hoc_execution_spec(task_text: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(task_text, str) or not task_text.strip():
+        return None
+
+    acceptance_criteria = derive_acceptance_criteria_from_text(task_text)
+    checks = acceptance_criteria.get("checks") if isinstance(acceptance_criteria, dict) else None
+    if not isinstance(checks, list) or not checks:
+        return None
+
+    task_name = "Ad-hoc execution task"
+    for raw_line in task_text.splitlines():
+        line = " ".join(str(raw_line or "").split()).strip()
+        if not line:
+            continue
+        task_name = line[:93] + "..." if len(line) > 96 else line
+        break
+
+    return {
+        "plan_id": None,
+        "task_id": None,
+        "task_name": task_name,
+        "task_instruction": task_text.strip(),
+        "acceptance_criteria": acceptance_criteria,
+        "dependency_outputs": [],
+        "dependency_artifact_paths": [],
+        "dependency_blockers": [],
+    }
+
+
+def _build_execution_spec(
+    plan_id: Optional[int],
+    task_id: Optional[int],
+    *,
+    task_text: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    if plan_id is None and task_id is None:
+        return _build_ad_hoc_execution_spec(task_text)
     if plan_id is None or task_id is None:
         return None
 
@@ -1680,6 +2064,21 @@ async def _execute_task_locally(
     else:
         await _report("failed", f"Execution failed: {outcome.error_category or 'unknown'}")
 
+    produced_files: List[str] = []
+    if isinstance(outcome.artifact_verification, dict):
+        for item in outcome.artifact_verification.get("actual_outputs") or []:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            candidate = Path(item)
+            resolved = candidate if candidate.is_absolute() else (Path(work_dir) / candidate)
+            text = str(resolved.resolve())
+            if text not in produced_files:
+                produced_files.append(text)
+    for item in outcome.visualization_files:
+        text = str(item or "").strip()
+        if text and text not in produced_files:
+            produced_files.append(text)
+
     result: Dict[str, Any] = {
         "success": outcome.success,
         "task": task,
@@ -1697,6 +2096,8 @@ async def _execute_task_locally(
         "verification_status": outcome.verification_status,
         "failure_kind": outcome.failure_kind,
         "contract_diff": outcome.contract_diff,
+        "verification": outcome.verification,
+        "artifact_verification": outcome.artifact_verification,
         "repair_attempts": outcome.repair_attempts,
         "plan_patch_suggestion": outcome.plan_patch_suggestion,
         "stdout_file": outcome.stdout_file,
@@ -1704,6 +2105,8 @@ async def _execute_task_locally(
         "execution_mode": f"code_executor_{effective_runtime_mode}",
         "docker_image_effective": effective_docker_image,
         "runtime_failure": outcome.runtime_failure,
+        "produced_files": produced_files,
+        "produced_files_count": len(produced_files),
     }
     if not outcome.success:
         if outcome.runtime_failure:
@@ -1841,7 +2244,11 @@ async def code_executor_handler(
                 task_dir_name = f"plan{resolved_plan_id}_{task_dir_name}"
             task_dir_base = task_dir_name
 
-        execution_spec = _build_execution_spec(resolved_plan_id, resolved_task_id)
+        execution_spec = _build_execution_spec(
+            resolved_plan_id,
+            resolved_task_id,
+            task_text=task,
+        )
 
         task_root_dir = session_dir / task_dir_base
         task_root_dir.mkdir(parents=True, exist_ok=True)
@@ -1859,6 +2266,8 @@ async def code_executor_handler(
         logger.info(f"Using task workspace: {task_work_dir}")
 
         debug_log_path: Optional[Path] = None
+
+        effective_execution_session_id = str(session_id or "adhoc").strip() or "adhoc"
 
         try:
             job_id = get_current_job()
@@ -2085,6 +2494,7 @@ async def code_executor_handler(
         # ---- Build CLI command and environment ----
         _docker_container_name: Optional[str] = None  # set when running inside container
         _qwen_session_id: Optional[str] = None
+        _container_execution_lock: Optional[asyncio.Lock] = None
         if use_qwen_code_backend:
             # Qwen Code path
             subprocess_env = _build_qwen_code_subprocess_env()
@@ -2099,6 +2509,10 @@ async def code_executor_handler(
                     or os.getenv("QWEN_MODEL", "")
                 ).strip()
                 or None
+            )
+            _qwen_session_id = _build_qwen_execution_session_id(
+                effective_execution_session_id,
+                run_id,
             )
             def _rebuild_cli_command(task_override: str) -> List[str]:
                 bare_cmd = _build_qwen_code_command(
@@ -2117,8 +2531,21 @@ async def code_executor_handler(
                 )
                 # Wrap with docker exec if running inside a container
                 if _docker_container_name:
-                    return ["docker", "exec", "-w", str(task_work_dir),
-                            _docker_container_name] + bare_cmd
+                    from app.services.terminal.docker_pty_backend import (
+                        CONTAINER_EXEC_PATH,
+                        QWEN_EXECUTABLE,
+                    )
+
+                    return [
+                        "docker",
+                        "exec",
+                        "-e",
+                        f"PATH={CONTAINER_EXEC_PATH}",
+                        "-w",
+                        str(task_work_dir),
+                        _docker_container_name,
+                        QWEN_EXECUTABLE,
+                    ] + bare_cmd[1:]
                 return bare_cmd
             cmd = _rebuild_cli_command(task)
             _cli_label = "Qwen Code"
@@ -2133,9 +2560,8 @@ async def code_executor_handler(
             try:
                 from app.services.terminal.qwen_session_driver import get_qwen_session_driver
                 _qc_driver = get_qwen_session_driver()
-                _effective_session_id = str(session_id or "adhoc").strip()
                 _container = await _qc_driver.ensure_container(
-                    _effective_session_id,
+                    effective_execution_session_id,
                     host_work_dir=str(task_work_dir),
                     extra_mounts=_build_qwen_container_mounts(
                         task_work_dir=task_work_dir,
@@ -2144,7 +2570,7 @@ async def code_executor_handler(
                     ),
                 )
                 _docker_container_name = _container
-                _qwen_session_id = _qc_driver.get_qwen_session_id(_effective_session_id)
+                _container_execution_lock = _qc_driver.get_execution_lock(effective_execution_session_id)
                 # Rebuild cmd — _rebuild_cli_command now wraps with docker exec
                 cmd = _rebuild_cli_command(task)
                 # Env is inside the container; host subprocess only needs docker binary
@@ -2274,36 +2700,64 @@ async def code_executor_handler(
 
         # Retry logic for transient provider / CLI failures.
         max_cli_retries, cli_retry_base_delay_s = _resolve_cli_retry_policy()
+        qwen_shell_recovery: Optional[Dict[str, Any]] = None
+
+        async def _record_stream_line(decoded_line: str, lines, callback, stream_name: str):
+            lines.append(decoded_line)
+            formatted_line = f"[{stream_name}] {decoded_line}" if decoded_line else f"[{stream_name}]"
+            if log_file:
+                try:
+                    async with log_lock:
+                        log_file.write(formatted_line + "\n")
+                        log_file.flush()
+                except Exception as log_err:
+                    logger.warning(f"Failed to write Claude Code log line: {log_err}")
+            if callback:
+                try:
+                    capped_line = formatted_line
+                    if len(capped_line) > 4000:
+                        capped_line = capped_line[:3997] + "..."
+                    await callback(capped_line)
+                except Exception as e:
+                    logger.error(f"Error in stream callback: {e}")
 
         async def _read_stream(stream, lines, callback, stream_name: str):
             async for decoded_line in _iter_stream_lines_unbounded(stream):
-                lines.append(decoded_line)
-                formatted_line = f"[{stream_name}] {decoded_line}" if decoded_line else f"[{stream_name}]"
-                if log_file:
-                    try:
-                        async with log_lock:
-                            log_file.write(formatted_line + "\n")
-                            log_file.flush()
-                    except Exception as log_err:
-                        logger.warning(f"Failed to write Claude Code log line: {log_err}")
-                if callback:
-                    try:
-                        capped_line = formatted_line
-                        if len(capped_line) > 4000:
-                            capped_line = capped_line[:3997] + "..."
-                        await callback(capped_line)
-                    except Exception as e:
-                        logger.error(f"Error in stream callback: {e}")
+                await _record_stream_line(decoded_line, lines, callback, stream_name)
 
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
         return_code = -1
-        async def _run_cli_with_retry(command: List[str]) -> tuple[int, str, str, Optional[Dict[str, Any]]]:
+
+        @asynccontextmanager
+        async def _maybe_hold_execution_lock():
+            if _container_execution_lock is None:
+                yield
+                return
+            async with _container_execution_lock:
+                yield
+
+        async def _run_cli_with_retry(
+            task_override: str,
+            *,
+            phase: str = "primary",
+        ) -> tuple[int, str, str, Optional[Dict[str, Any]]]:
+            nonlocal _qwen_session_id, qwen_shell_recovery
             local_stdout_lines: list[str] = []
             local_stderr_lines: list[str] = []
             local_return_code = -1
 
             for _attempt in range(1, max_cli_retries + 2):
+                if use_qwen_code_backend:
+                    if _attempt == 1:
+                        _qwen_session_id = _build_qwen_execution_session_id(
+                            effective_execution_session_id,
+                            run_id,
+                            phase=phase,
+                        )
+                    command = _rebuild_cli_command(task_override)
+                else:
+                    command = _rebuild_cli_command(task_override)
                 local_stdout_lines.clear()
                 local_stderr_lines.clear()
 
@@ -2343,13 +2797,68 @@ async def code_executor_handler(
                     logger.info("[CODE_EXECUTOR_RETRY] Scope block detected, not retrying.")
                     break
 
+                if use_qwen_code_backend:
+                    qwen_shell_recovery = await _recover_pending_qwen_shell_call(
+                        qwen_session_id=_qwen_session_id,
+                        container_name=_docker_container_name,
+                        task_work_dir=str(task_work_dir),
+                    )
+                    if isinstance(qwen_shell_recovery, dict):
+                        logger.warning(
+                            "[CODE_EXECUTOR] Replaying pending qwen run_shell_command after CLI exit "
+                            "(session=%s run=%s phase=%s attempt=%d)",
+                            effective_execution_session_id,
+                            run_id,
+                            phase,
+                            _attempt,
+                        )
+                        if log_file:
+                            try:
+                                async with log_lock:
+                                    log_file.write(
+                                        f"[{datetime.utcnow().isoformat()}Z] Replaying pending qwen shell call "
+                                        f"(attempt={_attempt}, timeout_ms={qwen_shell_recovery.get('timeout_ms')})\n"
+                                    )
+                                    log_file.write(
+                                        f"[recovery] command={qwen_shell_recovery.get('command')}\n"
+                                    )
+                                    log_file.flush()
+                            except Exception:
+                                pass
+                        local_return_code = int(qwen_shell_recovery.get("exit_code") or 0)
+                        local_stdout_lines.clear()
+                        local_stderr_lines.clear()
+                        recovered_stdout = str(qwen_shell_recovery.get("stdout") or "")
+                        recovered_stderr = str(qwen_shell_recovery.get("stderr") or "")
+                        for decoded_line in recovered_stdout.splitlines():
+                            await _record_stream_line(decoded_line, local_stdout_lines, on_stdout, "stdout")
+                        for decoded_line in recovered_stderr.splitlines():
+                            await _record_stream_line(decoded_line, local_stderr_lines, on_stderr, "stderr")
+                        break
+
                 if _attempt <= max_cli_retries:
+                    stderr_text = "\n".join(local_stderr_lines)
+                    if use_qwen_code_backend and _is_qwen_session_in_use_error(stderr_text):
+                        _qwen_session_id = _build_qwen_execution_session_id(
+                            effective_execution_session_id,
+                            run_id,
+                            phase=phase,
+                            retry_attempt=_attempt,
+                        )
+                        logger.warning(
+                            "[CODE_EXECUTOR_RETRY] Rotating qwen session-id after in-use conflict "
+                            "(session=%s run=%s phase=%s attempt=%d)",
+                            effective_execution_session_id,
+                            run_id,
+                            phase,
+                            _attempt,
+                        )
                     retry_delay_s = min(cli_retry_base_delay_s * (2 ** (_attempt - 1)), 30.0)
                     logger.warning(
                         "[CODE_EXECUTOR_RETRY] CLI failed (attempt %d/%d, exit=%d). "
                         "Retrying in %.1fs... stderr_hint=%s",
                         _attempt, max_cli_retries + 1, local_return_code,
-                        retry_delay_s, _extract_readable_error("\n".join(local_stderr_lines))[:200],
+                        retry_delay_s, _extract_readable_error(stderr_text)[:200],
                     )
                     if log_file:
                         try:
@@ -2378,129 +2887,134 @@ async def code_executor_handler(
                     local_output_data = {"raw_output": local_stdout}
             return local_return_code, local_stdout, local_stderr, local_output_data
 
-        return_code, stdout, stderr, output_data = await _run_cli_with_retry(cmd)
+        async with _maybe_hold_execution_lock():
+            return_code, stdout, stderr, output_data = await _run_cli_with_retry(task)
 
-        success = return_code == 0
+            success = return_code == 0
 
-        blocked_detail = _detect_scope_blocked(stdout, output_data)
-        if blocked_detail:
-            success = False
+            blocked_detail = _detect_scope_blocked(stdout, output_data)
+            if blocked_detail:
+                success = False
 
-        produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
-        session_artifact_paths = _promote_task_results_to_session_root(
-            session_dir=session_dir,
-            task_work_dir=task_work_dir,
-        )
-        verification_artifact_paths = _build_verification_artifact_paths(
-            task_work_dir=task_work_dir,
-            subdirs=task_subdirs,
-            produced_files=produced_files,
-            session_artifact_paths=session_artifact_paths,
-            session_dir=session_dir,
-        )
-        code_directory, primary_code_file = _extract_code_workspace_metadata(
-            run_dir=task_work_dir,
-            produced_files=produced_files,
-        )
-        execution_status = "completed" if return_code == 0 else "failed"
-        verification_status: Optional[str] = None
-        failure_kind: Optional[str] = None
-        contract_diff: Optional[Dict[str, Any]] = None
-        repair_attempts = 0
-        plan_patch_suggestion: Optional[str] = None
-        contract_error_summary: Optional[str] = None
-        contract_fix_guidance: Optional[str] = None
+            produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
+            session_artifact_paths = _promote_task_results_to_session_root(
+                session_dir=session_dir,
+                task_work_dir=task_work_dir,
+            )
+            verification_artifact_paths = _build_verification_artifact_paths(
+                task_work_dir=task_work_dir,
+                subdirs=task_subdirs,
+                produced_files=produced_files,
+                session_artifact_paths=session_artifact_paths,
+                session_dir=session_dir,
+            )
+            code_directory, primary_code_file = _extract_code_workspace_metadata(
+                run_dir=task_work_dir,
+                produced_files=produced_files,
+            )
+            execution_status = "completed" if return_code == 0 else "failed"
+            verification_status: Optional[str] = None
+            failure_kind: Optional[str] = None
+            contract_diff: Optional[Dict[str, Any]] = None
+            verification: Optional[Dict[str, Any]] = None
+            repair_attempts = 0
+            plan_patch_suggestion: Optional[str] = None
+            contract_error_summary: Optional[str] = None
+            contract_fix_guidance: Optional[str] = None
 
-        if success and execution_spec and execution_spec.get("acceptance_criteria"):
-            try:
-                from app.services.interpreter.code_execution import (
-                    CodeExecutionSpec,
-                    _extract_verification_state,
-                    _format_verification_guidance,
-                    _summarize_verification_failures,
-                    _verify_execution_against_contract,
-                )
-
-                finalization = _verify_execution_against_contract(
-                    execution_spec=CodeExecutionSpec(
-                        plan_id=execution_spec.get("plan_id"),
-                        task_id=execution_spec.get("task_id"),
-                        task_name=execution_spec.get("task_name"),
-                        task_instruction=execution_spec.get("task_instruction"),
-                        acceptance_criteria=execution_spec.get("acceptance_criteria"),
-                        dependency_outputs=list(execution_spec.get("dependency_outputs") or []),
-                        dependency_artifact_paths=list(execution_spec.get("dependency_artifact_paths") or []),
-                    ),
-                    work_dir=str(task_work_dir),
-                )
-                verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
-                    _extract_verification_state(finalization)
-                )
-                if finalization.final_status == "failed" and auto_fix:
-                    repair_attempts = 1
-                    contract_error_summary = _summarize_verification_failures(verification)
-                    contract_fix_guidance = _format_verification_guidance(verification)
-                    repair_task = _build_cli_contract_repair_task(
-                        task,
-                        execution_spec,
-                        contract_diff=contract_diff,
-                        guidance=contract_fix_guidance,
+            if success and execution_spec and execution_spec.get("acceptance_criteria"):
+                try:
+                    from app.services.interpreter.code_execution import (
+                        CodeExecutionSpec,
+                        _extract_verification_state,
+                        _format_verification_guidance,
+                        _summarize_verification_failures,
+                        _verify_execution_against_contract,
                     )
-                    repair_cmd = _rebuild_cli_command(repair_task)
-                    return_code, stdout, stderr, output_data = await _run_cli_with_retry(repair_cmd)
-                    success = return_code == 0
-                    execution_status = "completed" if return_code == 0 else "failed"
-                    blocked_detail = _detect_scope_blocked(stdout, output_data)
-                    if blocked_detail:
-                        success = False
-                    produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
-                    session_artifact_paths = _promote_task_results_to_session_root(
-                        session_dir=session_dir,
-                        task_work_dir=task_work_dir,
+
+                    finalization = _verify_execution_against_contract(
+                        execution_spec=CodeExecutionSpec(
+                            plan_id=execution_spec.get("plan_id"),
+                            task_id=execution_spec.get("task_id"),
+                            task_name=execution_spec.get("task_name"),
+                            task_instruction=execution_spec.get("task_instruction"),
+                            acceptance_criteria=execution_spec.get("acceptance_criteria"),
+                            dependency_outputs=list(execution_spec.get("dependency_outputs") or []),
+                            dependency_artifact_paths=list(execution_spec.get("dependency_artifact_paths") or []),
+                        ),
+                        work_dir=str(task_work_dir),
                     )
-                    verification_artifact_paths = _build_verification_artifact_paths(
-                        task_work_dir=task_work_dir,
-                        subdirs=task_subdirs,
-                        produced_files=produced_files,
-                        session_artifact_paths=session_artifact_paths,
-                        session_dir=session_dir,
+                    verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
+                        _extract_verification_state(finalization)
                     )
-                    if success:
-                        finalization = _verify_execution_against_contract(
-                            execution_spec=CodeExecutionSpec(
-                                plan_id=execution_spec.get("plan_id"),
-                                task_id=execution_spec.get("task_id"),
-                                task_name=execution_spec.get("task_name"),
-                                task_instruction=execution_spec.get("task_instruction"),
-                                acceptance_criteria=execution_spec.get("acceptance_criteria"),
-                                dependency_outputs=list(execution_spec.get("dependency_outputs") or []),
-                                dependency_artifact_paths=list(execution_spec.get("dependency_artifact_paths") or []),
-                            ),
-                            work_dir=str(task_work_dir),
-                        )
-                        verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
-                            _extract_verification_state(finalization)
-                        )
-                        if finalization.final_status == "failed":
-                            success = False
-                            contract_error_summary = _summarize_verification_failures(verification)
-                            contract_fix_guidance = _format_verification_guidance(verification)
-                    else:
-                        verification_status = "not_run"
-                        failure_kind = "execution_failed"
-                        contract_diff = None
-                        plan_patch_suggestion = None
-                        contract_error_summary = None
-                        contract_fix_guidance = None
-                    if not success and not blocked_detail and contract_error_summary is None and verification_status == "failed":
+                    if finalization.final_status == "failed" and auto_fix:
+                        repair_attempts = 1
                         contract_error_summary = _summarize_verification_failures(verification)
                         contract_fix_guidance = _format_verification_guidance(verification)
-                elif finalization.final_status == "failed":
-                    success = False
-                    contract_error_summary = _summarize_verification_failures(verification)
-                    contract_fix_guidance = _format_verification_guidance(verification)
-            except Exception as contract_exc:
-                logger.warning("CLI contract verification failed unexpectedly: %s", contract_exc)
+                        repair_task = _build_cli_contract_repair_task(
+                            task,
+                            execution_spec,
+                            contract_diff=contract_diff,
+                            guidance=contract_fix_guidance,
+                        )
+                        return_code, stdout, stderr, output_data = await _run_cli_with_retry(
+                            repair_task,
+                            phase="repair",
+                        )
+                        success = return_code == 0
+                        execution_status = "completed" if return_code == 0 else "failed"
+                        blocked_detail = _detect_scope_blocked(stdout, output_data)
+                        if blocked_detail:
+                            success = False
+                        produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
+                        session_artifact_paths = _promote_task_results_to_session_root(
+                            session_dir=session_dir,
+                            task_work_dir=task_work_dir,
+                        )
+                        verification_artifact_paths = _build_verification_artifact_paths(
+                            task_work_dir=task_work_dir,
+                            subdirs=task_subdirs,
+                            produced_files=produced_files,
+                            session_artifact_paths=session_artifact_paths,
+                            session_dir=session_dir,
+                        )
+                        if success:
+                            finalization = _verify_execution_against_contract(
+                                execution_spec=CodeExecutionSpec(
+                                    plan_id=execution_spec.get("plan_id"),
+                                    task_id=execution_spec.get("task_id"),
+                                    task_name=execution_spec.get("task_name"),
+                                    task_instruction=execution_spec.get("task_instruction"),
+                                    acceptance_criteria=execution_spec.get("acceptance_criteria"),
+                                    dependency_outputs=list(execution_spec.get("dependency_outputs") or []),
+                                    dependency_artifact_paths=list(execution_spec.get("dependency_artifact_paths") or []),
+                                ),
+                                work_dir=str(task_work_dir),
+                            )
+                            verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
+                                _extract_verification_state(finalization)
+                            )
+                            if finalization.final_status == "failed":
+                                success = False
+                                contract_error_summary = _summarize_verification_failures(verification)
+                                contract_fix_guidance = _format_verification_guidance(verification)
+                        else:
+                            verification_status = "not_run"
+                            failure_kind = "execution_failed"
+                            contract_diff = None
+                            verification = None
+                            plan_patch_suggestion = None
+                            contract_error_summary = None
+                            contract_fix_guidance = None
+                        if not success and not blocked_detail and contract_error_summary is None and verification_status == "failed":
+                            contract_error_summary = _summarize_verification_failures(verification)
+                            contract_fix_guidance = _format_verification_guidance(verification)
+                    elif finalization.final_status == "failed":
+                        success = False
+                        contract_error_summary = _summarize_verification_failures(verification)
+                        contract_fix_guidance = _format_verification_guidance(verification)
+                except Exception as contract_exc:
+                    logger.warning("CLI contract verification failed unexpectedly: %s", contract_exc)
 
         if log_file:
             try:
@@ -2510,7 +3024,7 @@ async def code_executor_handler(
                 logger.warning(f"Failed to finalize Claude Code log file: {log_err}")
 
         # Build return result
-        result_payload = {
+            result_payload = {
             "tool": "code_executor",
             "task": task,
             "plan_id": resolved_plan_id,
@@ -2546,12 +3060,18 @@ async def code_executor_handler(
             "artifact_paths": verification_artifact_paths,
             "session_artifact_paths": session_artifact_paths,
             "execution_status": execution_status,
-            "verification_status": verification_status,
-            "failure_kind": failure_kind,
-            "contract_diff": contract_diff,
-            "repair_attempts": repair_attempts,
-            "plan_patch_suggestion": plan_patch_suggestion,
-        }
+                "verification_status": verification_status,
+                "failure_kind": failure_kind,
+                "contract_diff": contract_diff,
+                "verification": verification,
+                "artifact_verification": (
+                    verification.get("artifact_verification")
+                    if isinstance(verification, dict)
+                    else None
+                ),
+                "repair_attempts": repair_attempts,
+                "plan_patch_suggestion": plan_patch_suggestion,
+            }
         if contract_error_summary:
             result_payload["error_category"] = "acceptance_criteria_failed"
             result_payload["error_summary"] = contract_error_summary
@@ -2564,6 +3084,7 @@ async def code_executor_handler(
                 return_code=return_code,
                 stderr=stderr,
                 stdout=stdout,
+                backend_label=_cli_label,
             )
         if blocked_detail:
             result_payload["blocked_by_scope_guardrail"] = True

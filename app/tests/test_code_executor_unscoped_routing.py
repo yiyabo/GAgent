@@ -140,6 +140,67 @@ def test_prepare_code_executor_params_routes_unscoped_for_session_stale_composit
     assert prepared_params.get("allowed_tools") == "Write,Bash,Read"
 
 
+def test_prepare_code_executor_params_routes_unscoped_for_session_deliverable_conflict(
+    monkeypatch,
+) -> None:
+    leaf = PlanNode(
+        id=30,
+        plan_id=49,
+        name="Subset definition and quality control",
+        instruction=(
+            "Generate `subset_manifest.tsv` and save `results/qc_summary.md` for the current task."
+        ),
+        parent_id=1,
+        status="pending",
+    )
+    tree = PlanTree(
+        id=49,
+        title="Plan 49",
+        nodes={1: PlanNode(id=1, plan_id=49, name="Root", status="pending"), 30: leaf},
+        adjacency={None: [1], 1: [30], 30: []},
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=_RepoStub(tree))
+    agent.extra_context = {
+        "current_task_id": 30,
+        "_current_task_source": "session",
+    }
+    agent.session_id = "session_test"
+    agent.mode = "assistant"
+    agent._sync_job_id = None
+    agent.conversation_id = "conv_test"
+    monkeypatch.setattr(chat_routes, "get_current_job", lambda: "job_test")
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="code_executor",
+        parameters={
+            "task": (
+                "Write and execute a Python script. Save outputs to `results/terminal_code_stats.csv` "
+                "and `results/terminal_code_summary.md`."
+            ),
+            "allowed_tools": ["Write", "Bash", "Read"],
+        },
+        order=1,
+    )
+
+    prepared = asyncio.run(
+        agent._prepare_code_executor_params(
+            action=action,
+            tool_name="code_executor",
+            params=dict(action.parameters),
+        )
+    )
+
+    assert isinstance(prepared, tuple)
+    prepared_params, original_task = prepared
+    assert original_task.startswith("Write and execute a Python script")
+    assert prepared_params.get("require_task_context") is False
+    assert "plan_id" not in prepared_params
+    assert "task_id" not in prepared_params
+    assert prepared_params.get("allowed_tools") == "Write,Bash,Read"
+
+
 def test_sync_task_status_skips_for_unscoped_code_executor() -> None:
     repo = _RepoTaskSyncStub()
     agent = StructuredChatAgent.__new__(StructuredChatAgent)
@@ -482,6 +543,10 @@ def test_build_deep_think_task_context_includes_dependency_outputs() -> None:
             {
                 "status": "completed",
                 "content": "filtered_cancer1.h5ad generated",
+                "metadata": {"verification_status": "passed"},
+                "produced_files": [
+                    "/home/zczhao/GAgent/runtime/session_x/results/plan49_task10/run_1/filtered_cancer1.h5ad"
+                ],
             },
             ensure_ascii=False,
         ),

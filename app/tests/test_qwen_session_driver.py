@@ -2,9 +2,10 @@
 
 import asyncio
 import os
+from types import SimpleNamespace
 import pytest
-from unittest.mock import MagicMock
 
+from app.services.terminal.docker_pty_backend import DockerPTYBackend
 from app.services.terminal.qwen_session_driver import (
     QwenSessionDriver,
     get_qwen_session_driver,
@@ -100,3 +101,59 @@ class TestSingleton:
         assert d1 is d2
         mod._driver = None  # cleanup
 
+
+class TestSharedTerminalReuse:
+    @pytest.mark.asyncio
+    async def test_ensure_container_reuses_shared_qwen_terminal(self, monkeypatch):
+        driver = QwenSessionDriver()
+        shared_lock = asyncio.Lock()
+        mount_root = os.path.realpath("/tmp/project")
+        shared_backend = DockerPTYBackend()
+        shared_backend._container_name = "shared-container"
+        shared_backend._qwen_session_id = "shared-qwen-session"
+        shared_backend._same_path_mount_roots = (mount_root,)
+        shared_session = SimpleNamespace(
+            terminal_id="term-123",
+            session_id="chat-123",
+            backend=shared_backend,
+            command_lock=shared_lock,
+        )
+
+        async def _fake_ensure_qwen_code_session(session_id: str, *, required_paths=None):
+            assert session_id == "chat-123"
+            assert required_paths
+            return shared_session
+
+        monkeypatch.setattr(
+            "app.services.terminal.qwen_session_driver.terminal_session_manager.ensure_qwen_code_session",
+            _fake_ensure_qwen_code_session,
+        )
+
+        container = await driver.ensure_container(
+            "chat-123",
+            host_work_dir=os.path.join(mount_root, "runtime", "task1"),
+            extra_mounts=[(os.path.join(mount_root, "data"), os.path.join(mount_root, "data"))],
+        )
+
+        assert container == "shared-container"
+        assert driver.get_qwen_session_id("chat-123") == "shared-qwen-session"
+        assert driver.get_execution_lock("chat-123") is shared_lock
+
+    @pytest.mark.asyncio
+    async def test_cleanup_does_not_remove_shared_terminal_container(self, monkeypatch):
+        driver = QwenSessionDriver()
+        driver._containers["chat-123"] = "shared-container"
+        driver._session_ids["chat-123"] = "shared-qwen-session"
+        driver._shared_terminal_ids["chat-123"] = "term-123"
+        driver._locks["chat-123"] = asyncio.Lock()
+
+        removed = {"called": False}
+
+        async def _fake_force_remove(_name: str):
+            removed["called"] = True
+
+        monkeypatch.setattr(driver, "_force_remove", _fake_force_remove)
+
+        await driver.cleanup("chat-123")
+
+        assert removed["called"] is False

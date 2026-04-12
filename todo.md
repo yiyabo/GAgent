@@ -120,4 +120,11 @@ paper/final_figures/rbp_threshold_scan.png,把论文中的结果加进去
 2. 长任务执行会乱，把需求和任务结构化，提供prompt-->构成一个json，确定好需要执行的node的依赖关系以及流程。做一个todo-list,每一个写清楚对xxxnode执行。
 execution-tree基于plan-tree,可用于根据用户来进行动态调整tree，增删改查。
 
-3. 
+3. 做出来的任务的分析图
+
+边界控制：
+1. 第一列，任务的问题“比如任务没执行完，幻觉”-->加tag
+2. 
+
+Phagescope、local_tools工具列表
+3个实验叶子结点对应的产出
