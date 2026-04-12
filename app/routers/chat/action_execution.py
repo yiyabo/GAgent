@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
@@ -1711,6 +1712,7 @@ async def _execute_action_run(run_id: str) -> None:
         #   tasks are skipped (transitive)
         # - Continue-after-failure: independent tasks still execute
         cascade_count = 0
+        _cascade_start_time = time.time()
         _agent_ctx = getattr(agent, "extra_context", None) or {}
         pending = _agent_ctx.get("pending_scope_task_ids") if isinstance(_agent_ctx, dict) else None
         if (
@@ -2014,6 +2016,7 @@ async def _execute_action_run(run_id: str) -> None:
             _phase_count = (
                 (max(_cascade_phases.values()) + 1) if _cascade_phases else 0
             )
+            _cascade_elapsed = round(time.time() - _cascade_start_time, 1)
             _cascade_summary_parts.append(
                 f"Cascade completed: {succeeded_count} succeeded"
             )
@@ -2029,7 +2032,7 @@ async def _execute_action_run(run_id: str) -> None:
                 _cascade_summary_parts.append(
                     f"{len(cascade_skipped_ids)} skipped ({sorted(cascade_skipped_ids)})"
                 )
-            _cascade_reply = ", ".join(_cascade_summary_parts) + "."
+            _cascade_reply = ", ".join(_cascade_summary_parts) + f" ({_cascade_elapsed}s)."
 
             overall_success = not has_failures
             result = result.model_copy(
@@ -2054,6 +2057,7 @@ async def _execute_action_run(run_id: str) -> None:
                     "skipped_ids": sorted(cascade_skipped_ids),
                     "total_steps": len(cascade_all_steps),
                     "overall_success": overall_success,
+                    "elapsed_sec": _cascade_elapsed,
                 },
             )
         # ── End Task Cascade ────────────────────────────────────
