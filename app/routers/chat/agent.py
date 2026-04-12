@@ -391,6 +391,14 @@ def _build_deep_think_task_context(
     if completed_outputs_summary:
         addition = f"Completed task outputs:\n{completed_outputs_summary}"
         context_summary = f"{context_summary}\n\n{addition}" if context_summary else addition
+
+    # Inject todo-list summary if available from cascade context
+    _extra_ctx = getattr(agent, "extra_context", {}) or {}
+    _todo_summary = _extra_ctx.get("todo_list_summary")
+    if _todo_summary and isinstance(_todo_summary, str):
+        _todo_block = f"Todo-list execution plan:\n{_todo_summary}"
+        context_summary = f"{context_summary}\n\n{_todo_block}" if context_summary else _todo_block
+
     return TaskExecutionContext(
         task_id=task_id,
         task_name=task_name or None,

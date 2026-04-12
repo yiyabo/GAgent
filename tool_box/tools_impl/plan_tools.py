@@ -69,10 +69,16 @@ async def plan_operation_handler(
             return await _optimize_plan(plan_id, changes)
         elif operation == "get":
             return await _get_plan(plan_id)
+        elif operation == "todo_list":
+            return await _get_todo_list(
+                plan_id,
+                target_task_id=kwargs.get("target_task_id"),
+                expand_composites=kwargs.get("expand_composites", True),
+            )
         else:
             return {
                 "success": False,
-                "error": f"Unknown operation: {operation}. Supported: create, review, optimize, get",
+                "error": f"Unknown operation: {operation}. Supported: create, review, optimize, get, todo_list",
             }
     except Exception as e:
         logger.exception(f"Plan operation '{operation}' failed: {e}")
@@ -781,6 +787,86 @@ async def _get_plan(plan_id: Optional[int]) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to get plan: {str(e)}"}
 
 
+async def _get_todo_list(
+    plan_id: Optional[int],
+    target_task_id: Optional[int],
+    expand_composites: bool = True,
+) -> Dict[str, Any]:
+    """Build a phased todo-list for a target task showing all dependencies
+    grouped into execution phases with semantic labels.
+
+    Returns a structured summary that the agent can use to understand the
+    overall execution plan, phase ordering, and what remains to be done.
+    """
+    if plan_id is None:
+        return {"success": False, "error": "plan_id is required"}
+    if target_task_id is None:
+        return {"success": False, "error": "target_task_id is required"}
+
+    try:
+        from app.repository.plan_repository import PlanRepository
+        from app.services.plans.todo_list import build_todo_list, assign_phase_labels
+
+        repo = PlanRepository()
+        plan_tree = repo.get_plan_tree(plan_id)
+
+        if not plan_tree.has_node(target_task_id):
+            return {
+                "success": False,
+                "error": f"Task {target_task_id} not found in plan {plan_id}",
+            }
+
+        todo = build_todo_list(
+            plan_tree,
+            target_task_id,
+            include_target=True,
+            expand_composites=expand_composites,
+        )
+        assign_phase_labels(todo.phases)
+
+        phases_out = []
+        for phase in todo.phases:
+            items_out = [
+                {
+                    "task_id": item.task_id,
+                    "name": item.name,
+                    "status": item.status,
+                    "dependencies": item.dependencies,
+                    "phase": item.phase,
+                }
+                for item in phase.items
+            ]
+            phases_out.append({
+                "phase_id": phase.phase_id,
+                "label": phase.label,
+                "status": phase.status,
+                "total": phase.total,
+                "completed": phase.completed_count,
+                "items": items_out,
+            })
+
+        return {
+            "success": True,
+            "operation": "todo_list",
+            "plan_id": plan_id,
+            "target_task_id": target_task_id,
+            "total_tasks": todo.total_tasks,
+            "completed_tasks": todo.completed_tasks,
+            "phases": phases_out,
+            "execution_order": todo.execution_order,
+            "pending_order": todo.pending_order,
+            "summary": todo.summary(),
+            "message": (
+                f"Todo-list for task {target_task_id}: "
+                f"{todo.completed_tasks}/{todo.total_tasks} completed, "
+                f"{len(todo.phases)} phases."
+            ),
+        }
+    except Exception as e:
+        logger.exception(f"Failed to build todo-list: {e}")
+        return {"success": False, "error": f"Failed to build todo-list: {str(e)}"}
+
+
 # Tool definition for registration
 plan_operation_tool = {
     "name": "plan_operation",
@@ -803,6 +889,11 @@ OPTIMIZE CHANGE FORMAT (each change MUST have an "action" field):
 - delete_task: {"action": "delete_task", "task_id": 5}
 - reorder_task: {"action": "reorder_task", "task_id": 3, "new_position": 1}
 
+TODO_LIST operation:
+- Returns phased execution plan for a target task with all dependencies grouped by phase
+- Shows phase labels (Data Preparation, Preprocessing, Analysis, etc.), completion status, and execution order
+- Use to understand overall progress and what remains before starting execution
+
 Legacy compatibility:
 - Nested `updated_fields` / `updates` / `fields` payloads are accepted and flattened.
 - `task_name` / `task_instruction` aliases are accepted for add_task/update_task.""",
@@ -813,7 +904,7 @@ Legacy compatibility:
             "operation": {
                 "type": "string",
                 "description": "Operation type",
-                "enum": ["create", "review", "optimize", "get"],
+                "enum": ["create", "review", "optimize", "get", "todo_list"],
             },
             "title": {
                 "type": "string",
@@ -842,7 +933,15 @@ Legacy compatibility:
             },
             "plan_id": {
                 "type": "integer",
-                "description": "Plan ID (required for review, optimize, get)",
+                "description": "Plan ID (required for review, optimize, get, todo_list)",
+            },
+            "target_task_id": {
+                "type": "integer",
+                "description": "Target task ID whose dependency subgraph to resolve (required for todo_list)",
+            },
+            "expand_composites": {
+                "type": "boolean",
+                "description": "Expand composite tasks to atomic leaves (for todo_list, default true)",
             },
             "changes": {
                 "type": "array",
@@ -881,5 +980,6 @@ Legacy compatibility:
         "Review plan #123 for dependency issues",
         "Optimize plan #123 by adding a data collection task",
         "Get details of plan #123",
+        "Get todo-list for task #35 in plan #1 to see phased execution plan",
     ],
 }
