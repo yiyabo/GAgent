@@ -1812,6 +1812,33 @@ async def _execute_action_run(run_id: str) -> None:
                                 },
                             },
                         )
+
+                        # Build brief todo-list summary for agent context
+                        try:
+                            from app.services.plans.todo_list import (
+                                build_todo_list,
+                                assign_phase_labels,
+                            )
+                            _tgt_id = int(next(iter(pending), 0)) if pending else None
+                            if _tgt_id and _cascade_tree:
+                                _todo = build_todo_list(
+                                    _cascade_tree,
+                                    _tgt_id,
+                                    include_target=True,
+                                    expand_composites=True,
+                                )
+                                assign_phase_labels(_todo.phases)
+                                _agent_ctx["todo_list_summary"] = _todo.summary()
+                                logger.info(
+                                    "[CASCADE] Todo-list summary injected: %s",
+                                    _todo.summary()[:200],
+                                )
+                        except Exception as _todo_exc:
+                            logger.debug(
+                                "[CASCADE] Todo-list summary generation "
+                                "skipped: %s",
+                                _todo_exc,
+                            )
                 except Exception as exc:
                     logger.warning(
                         "[CASCADE] TodoList phase ordering failed "
