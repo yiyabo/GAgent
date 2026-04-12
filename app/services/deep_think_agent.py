@@ -82,6 +82,24 @@ _TOOL_RESULT_PREFIX_RE = re.compile(r"^\[[^\]]*]\s*")
 _EXPLORATORY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
 
 
+def _looks_like_completion_claim_text(reply_text: str) -> bool:
+    lowered = str(reply_text or "").strip().lower()
+    if not lowered:
+        return False
+    claim_tokens = (
+        "completed",
+        "all required files",
+        "files have been created",
+        "generated successfully",
+        "已完成",
+        "执行完毕",
+        "已生成",
+        "已导出",
+        "准备就绪",
+    )
+    return any(token in lowered for token in claim_tokens)
+
+
 @dataclass
 class ThinkingStep:
     """Represents a single step in the thinking process."""
@@ -1271,6 +1289,14 @@ class DeepThinkAgent:
             task_label = task_context.task_name
 
         verified_success = self._tool_results_indicate_verified_success(tool_results or [])
+        if verified_success and not observed_outputs:
+            for ref in self._collect_verified_output_refs_from_tool_results(tool_results or []):
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                observed_outputs.append(ref)
+                if len(observed_outputs) >= 6:
+                    break
 
         if language == "zh":
             lines = []
@@ -1441,27 +1467,95 @@ class DeepThinkAgent:
             current = nested
 
     @classmethod
+    def _payload_dict_indicates_verified_success(cls, candidate: Dict[str, Any]) -> bool:
+        verification_state = str(candidate.get("verification_state") or "").strip().lower()
+        if verification_state == "verified_success":
+            return True
+        verification_status = str(candidate.get("verification_status") or "").strip().lower()
+        if verification_status == "passed":
+            return True
+        metadata = candidate.get("metadata")
+        if isinstance(metadata, dict):
+            metadata_verification_status = str(
+                metadata.get("verification_status") or ""
+            ).strip().lower()
+            if metadata_verification_status == "passed":
+                return True
+            verification = metadata.get("verification")
+            if isinstance(verification, dict):
+                verification_status = str(verification.get("status") or "").strip().lower()
+                if verification_status == "passed":
+                    return True
+        return False
+
+    @classmethod
     def _tool_results_indicate_verified_success(cls, tool_results: Sequence[Dict[str, Any]]) -> bool:
         for item in tool_results:
             payload = item.get("tool_result")
             for candidate in cls._iter_tool_payload_dicts(payload):
-                verification_state = str(candidate.get("verification_state") or "").strip().lower()
-                if verification_state == "verified_success":
+                if cls._payload_dict_indicates_verified_success(candidate):
                     return True
-                verification_status = str(candidate.get("verification_status") or "").strip().lower()
-                if verification_status == "passed":
-                    return True
-                metadata = candidate.get("metadata")
-                if isinstance(metadata, dict):
-                    metadata_verification_status = str(metadata.get("verification_status") or "").strip().lower()
-                    if metadata_verification_status == "passed":
-                        return True
-                    verification = metadata.get("verification")
-                    if isinstance(verification, dict):
-                        verification_status = str(verification.get("status") or "").strip().lower()
-                        if verification_status == "passed":
-                            return True
         return False
+
+    @classmethod
+    def _collect_verified_output_refs_from_tool_results(
+        cls,
+        tool_results: Sequence[Dict[str, Any]],
+    ) -> List[str]:
+        collected: List[str] = []
+        seen: set[str] = set()
+        for item in tool_results:
+            payload = item.get("tool_result")
+            for candidate in cls._iter_tool_payload_dicts(payload):
+                if not cls._payload_dict_indicates_verified_success(candidate):
+                    continue
+                artifact_verification = candidate.get("artifact_verification")
+                if not isinstance(artifact_verification, dict):
+                    continue
+                raw_outputs = artifact_verification.get("verified_outputs")
+                if not isinstance(raw_outputs, list) or not raw_outputs:
+                    raw_outputs = artifact_verification.get("actual_outputs")
+                if not isinstance(raw_outputs, list) or not raw_outputs:
+                    raw_outputs = artifact_verification.get("expected_deliverables")
+                if not isinstance(raw_outputs, list) or not raw_outputs:
+                    continue
+
+                base_dir_value = (
+                    candidate.get("task_directory_full")
+                    or candidate.get("run_directory")
+                    or candidate.get("working_directory")
+                )
+                base_dir = (
+                    Path(str(base_dir_value).strip()).expanduser()
+                    if str(base_dir_value or "").strip()
+                    else None
+                )
+
+                for raw in raw_outputs:
+                    label = str(raw or "").strip().replace("\\", "/")
+                    if not label:
+                        continue
+                    path = Path(label).expanduser()
+                    if not path.is_absolute():
+                        if base_dir is None:
+                            continue
+                        path = base_dir / path
+                    try:
+                        resolved = path.resolve(strict=False)
+                    except Exception:
+                        resolved = path
+                    normalized = "/" + str(resolved).replace("\\", "/").lstrip("/")
+                    if (
+                        not normalized
+                        or normalized in seen
+                        or cls._is_internal_artifact_path(normalized)
+                    ):
+                        continue
+                    seen.add(normalized)
+                    collected.append(normalized)
+                    if len(collected) >= 8:
+                        return collected
+        return collected
 
     @classmethod
     def _collect_task_scoped_output_refs_from_tool_results(
@@ -2017,6 +2111,11 @@ class DeepThinkAgent:
         # so partial results are preserved for the user.
         has_substantive_answer = len(text) > 200
         if has_substantive_answer:
+            if _looks_like_completion_claim_text(text):
+                return self._build_execute_failure_truth_barrier(
+                    user_query=user_query,
+                    failed_event=last_failure,
+                )
             warning = self._build_execute_failure_warning(
                 user_query=user_query,
                 failed_event=last_failure,
@@ -5821,6 +5920,92 @@ When ready to answer:
         parts.reverse()
         return "\n\n".join(parts)
 
+    @staticmethod
+    def _humanize_single_tool_result(tool_name: str, obj: dict) -> str:
+        """Convert a single parsed tool-result dict into a concise, human-readable line."""
+        success = obj.get("success")
+        result = obj.get("result") or obj
+        tool = str(result.get("tool", "") or tool_name).strip()
+
+        # --- terminal_session: skip noise-only entries ---
+        if tool == "terminal_session" or "terminal_id" in obj:
+            output = str(result.get("output") or obj.get("output") or "").strip()
+            vs = result.get("verification_summary") or obj.get("verification_summary")
+            if vs:
+                return f"终端会话：{vs}"
+            if output and len(output) > 15:
+                return f"终端输出：{output[:300]}"
+            return ""  # skip noise
+
+        # --- code_executor ---
+        if tool == "code_executor":
+            if success is True or result.get("success") is True:
+                stdout = str(result.get("stdout") or "").strip()
+                artifacts = result.get("artifact_paths") or []
+                result_files = [
+                    p for p in artifacts
+                    if "/results/" in str(p) and not str(p).rstrip("/").endswith("/results")
+                ]
+                parts: List[str] = ["代码执行成功"]
+                if stdout:
+                    # Take the most informative lines (skip blank / separator lines)
+                    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip() and ln.strip("=- ")]
+                    if lines:
+                        preview = "; ".join(lines[:5])
+                        if len(preview) > 300:
+                            preview = preview[:297] + "..."
+                        parts.append(f"输出：{preview}")
+                if result_files:
+                    names = [p.rsplit("/", 1)[-1] for p in result_files[:8]]
+                    parts.append(f"产出文件：{', '.join(names)}")
+                return "。".join(parts)
+            else:
+                error = str(result.get("error") or result.get("stderr") or "unknown error").strip()
+                if len(error) > 200:
+                    error = error[:197] + "..."
+                return f"代码执行失败：{error}"
+
+        # --- file_operations ---
+        if tool == "file_operations":
+            op = str(result.get("operation") or "").strip()
+            if op == "list":
+                items = result.get("items") or []
+                file_names = [
+                    f"{it.get('name', '?')} ({it.get('size', '?')} B)"
+                    for it in items if isinstance(it, dict)
+                ][:10]
+                if file_names:
+                    return f"文件列表：{', '.join(file_names)}"
+                return f"文件列表：空（{result.get('path', '')}）"
+            if op == "read":
+                summary = str(result.get("summary") or "").strip()
+                path = str(result.get("path") or "").strip()
+                fname = path.rsplit("/", 1)[-1] if path else "?"
+                if summary:
+                    return f"文件读取 ({fname})：{summary[:200]}"
+                return f"已读取文件：{fname}"
+            if op == "write":
+                path = str(result.get("path") or "").strip()
+                fname = path.rsplit("/", 1)[-1] if path else "?"
+                size = result.get("size", "?")
+                return f"已写入文件：{fname} ({size} B)"
+            return f"文件操作 ({op})：{result.get('summary', '完成')}"
+
+        # --- generic tool with summary ---
+        summary = str(result.get("summary") or "").strip()
+        if summary and len(summary) > 10:
+            if tool:
+                return f"{tool}：{summary[:300]}"
+            return summary[:300]
+        if success is True:
+            return f"{tool}：执行完成" if tool else "工具执行完成"
+        if success is False:
+            error = str(result.get("error") or "").strip()
+            if tool:
+                return f"{tool}：失败{f' — {error[:150]}' if error else ''}"
+            return f"执行失败{f'：{error[:150]}' if error else ''}"
+        return ""
+
     def _collect_user_facing_evidence_snippets(
         self,
         steps: List[ThinkingStep],
@@ -5829,20 +6014,65 @@ When ready to answer:
         max_chars: int = 3000,
         per_snippet_max: int = 900,
     ) -> str:
-        raw = self._collect_evidence_snippets(
-            steps,
-            max_steps=max_steps,
-            max_chars=max_chars,
-            per_snippet_max=per_snippet_max,
-        )
-        if not raw.strip():
-            return ""
+        """Build human-readable bullet list from raw step action_results.
+
+        Unlike _collect_evidence_snippets (which preserves JSON for LLM synthesis),
+        this method humanizes tool results into natural-language summaries for direct
+        display to the user.
+        """
         bullets: List[str] = []
-        for block in raw.split("\n\n"):
-            cleaned = re.sub(r"^\[Step\s+\d+\]\s*", "", block.strip(), count=1)
-            cleaned = cleaned.strip()
-            if cleaned:
-                bullets.append(f"- {cleaned}")
+        total = 0
+        count = 0
+        for step in reversed(steps):
+            if count >= max_steps:
+                break
+            ar = step.action_result
+            if not isinstance(ar, str) or not ar.strip():
+                continue
+            count += 1
+
+            # action_result may contain multiple tool results:
+            # "[tool_a] {json}\n\n[tool_b] {json}"
+            segments = re.split(r"\n\n(?=\[)", ar)
+            for seg in segments:
+                seg = seg.strip()
+                if not seg:
+                    continue
+                # Extract tool name prefix if present: [tool_name] rest
+                prefix_match = re.match(r"^\[([^\]]+)]\s*", seg)
+                tool_name = prefix_match.group(1) if prefix_match else ""
+                body = seg[prefix_match.end():] if prefix_match else seg
+
+                # Try to parse as JSON and humanize
+                humanized = None  # None = not parsed; "" = parsed but skip
+                try:
+                    obj = json.loads(body)
+                    if isinstance(obj, dict):
+                        humanized = self._humanize_single_tool_result(tool_name, obj)
+                except Exception:
+                    pass
+
+                # humanized == "" means the humanizer explicitly says "skip this"
+                if humanized == "":
+                    continue
+                if humanized is None:
+                    # Non-JSON or unrecognized: use a trimmed version
+                    cleaned = " ".join(body.split()).strip()
+                    if len(cleaned) > per_snippet_max:
+                        cleaned = cleaned[: per_snippet_max - 3] + "..."
+                    if cleaned and len(cleaned) > 15:
+                        humanized = cleaned
+                if not humanized:
+                    continue
+                if len(humanized) > per_snippet_max:
+                    humanized = humanized[: per_snippet_max - 3] + "..."
+                bullet = f"- {humanized}"
+                if total + len(bullet) + 1 > max_chars:
+                    break
+                bullets.append(bullet)
+                total += len(bullet) + 1
+
+        bullets.reverse()
         return "\n".join(bullets)
 
     def _build_bound_execute_task_fallback(
@@ -5918,13 +6148,23 @@ When ready to answer:
         useful_thoughts.reverse()
 
         # If we have substantial evidence or thoughts, build a content-rich fallback
-        if evidence.strip() and len(evidence.strip()) > 60:
+        if evidence.strip() and len(evidence.strip()) > 20:
+            # Check if we have successful tool execution evidence
+            has_success = "代码执行成功" in evidence or "已写入文件" in evidence or "产出文件" in evidence
             if language == "zh":
-                header = "我先给出目前能确认的信息：\n\n"
-                footer = "\n\n如需更精确的结论，建议进一步缩小范围，或明确指出要继续核查的对象。"
+                if has_success:
+                    header = "以下是本轮工具执行的结果摘要：\n\n"
+                    footer = ""
+                else:
+                    header = "以下是本轮执行中观察到的信息：\n\n"
+                    footer = "\n\n如需更详细的分析，请指出具体要查看的内容。"
             else:
-                header = "Here is what could be confirmed from the completed checks:\n\n"
-                footer = "\n\nIf you need a tighter conclusion, narrow the question or point to the exact fact that still needs verification."
+                if has_success:
+                    header = "Here is the summary of tool execution results:\n\n"
+                    footer = ""
+                else:
+                    header = "Here is what was observed during execution:\n\n"
+                    footer = "\n\nFor a more detailed analysis, please specify what you'd like to examine."
             return header + evidence.strip() + footer
 
         if useful_thoughts:

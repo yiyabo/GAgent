@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from .acceptance_criteria import (
+    derive_acceptance_criteria_from_text,
     derive_expected_deliverables,
     derive_relative_output_dirs,
     resolve_glob_min_count,
@@ -122,9 +123,7 @@ class TaskVerificationService:
                 artifact_paths=local_artifact_paths,
             )
 
-        explicit_criteria = self._explicit_acceptance_criteria(node)
-        generated = False
-        effective_criteria = explicit_criteria
+        effective_criteria, generated = self._effective_acceptance_criteria(node)
 
         if not self._has_checks(effective_criteria):
             verification = self._build_verification_record(
@@ -199,6 +198,7 @@ class TaskVerificationService:
             artifact_paths=local_artifact_paths,
         )
         metadata["verification_status"] = verification_status
+        contract_diff: Optional[Dict[str, List[str]]] = None
         if failures:
             contract_diff = self._build_contract_diff(
                 criteria=effective_criteria,
@@ -213,7 +213,16 @@ class TaskVerificationService:
             if plan_patch_suggestion:
                 metadata["plan_patch_suggestion"] = plan_patch_suggestion
                 verification["plan_patch_suggestion"] = plan_patch_suggestion
+        artifact_verification = self._build_artifact_verification_summary(
+            criteria=effective_criteria,
+            artifact_paths=local_artifact_paths,
+            base_dir=base_dir,
+            verification_status=verification_status,
+            contract_diff=contract_diff,
+        )
+        metadata["artifact_verification"] = artifact_verification
         metadata["verification"] = verification
+        verification["artifact_verification"] = copy.deepcopy(artifact_verification)
         normalized_payload["metadata"] = metadata
         normalized_payload["status"] = "failed" if failures and blocking else "completed"
 
@@ -288,11 +297,11 @@ class TaskVerificationService:
         )
         return finalization
 
-    def _explicit_acceptance_criteria(self, node: PlanNode) -> Optional[Dict[str, Any]]:
+    def _effective_acceptance_criteria(self, node: PlanNode) -> Tuple[Optional[Dict[str, Any]], bool]:
         metadata = node.metadata if isinstance(node.metadata, dict) else {}
         criteria = metadata.get("acceptance_criteria")
         if isinstance(criteria, dict):
-            return copy.deepcopy(criteria)
+            return copy.deepcopy(criteria), False
         exec_result = node.execution_result
         if isinstance(exec_result, str):
             try:
@@ -304,8 +313,11 @@ class TaskVerificationService:
             if isinstance(exec_meta, dict):
                 criteria = exec_meta.get("acceptance_criteria")
                 if isinstance(criteria, dict):
-                    return copy.deepcopy(criteria)
-        return None
+                    return copy.deepcopy(criteria), False
+        derived = derive_acceptance_criteria_from_text(getattr(node, "instruction", None))
+        if isinstance(derived, dict) and self._has_checks(derived):
+            return derived, True
+        return None, False
 
     @classmethod
     def parse_shorthand_criteria(cls, raw_criteria: Sequence[str]) -> Dict[str, Any]:
@@ -979,15 +991,23 @@ class TaskVerificationService:
             output for output in actual_outputs
             if not self._output_matches_expected(output, expected_deliverables)
         ]
-        missing_suffixes = {
-            Path(item).suffix.lower()
-            for item in missing_required_outputs
-            if Path(str(item)).suffix
-        }
+        missing_identity_suffixes: Dict[str, set[str]] = {}
+        missing_stem_suffixes: Dict[str, set[str]] = {}
+        for item in missing_required_outputs:
+            identity, stem, suffix = self._deliverable_identity_parts(item)
+            if identity and suffix:
+                missing_identity_suffixes.setdefault(identity, set()).add(suffix)
+            if stem and suffix:
+                missing_stem_suffixes.setdefault(stem, set()).add(suffix)
+
         wrong_format_outputs = [
             output
             for output in unexpected_outputs
-            if Path(output).suffix.lower() in missing_suffixes
+            if self._looks_like_wrong_format_output(
+                output,
+                missing_identity_suffixes=missing_identity_suffixes,
+                missing_stem_suffixes=missing_stem_suffixes,
+            )
         ]
         return {
             "expected_deliverables": expected_deliverables,
@@ -995,6 +1015,40 @@ class TaskVerificationService:
             "missing_required_outputs": missing_required_outputs,
             "wrong_format_outputs": wrong_format_outputs,
             "unexpected_outputs": unexpected_outputs,
+        }
+
+    def _build_artifact_verification_summary(
+        self,
+        *,
+        criteria: Optional[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+        base_dir: Path,
+        verification_status: str,
+        contract_diff: Optional[Dict[str, List[str]]],
+    ) -> Dict[str, Any]:
+        expected_deliverables = self._expected_deliverables(criteria)
+        actual_outputs = self._actual_outputs(artifact_paths, base_dir=base_dir)
+        verified_outputs = [
+            output
+            for output in actual_outputs
+            if self._output_matches_expected(output, expected_deliverables)
+        ]
+        diff = contract_diff if isinstance(contract_diff, dict) else {}
+        if verification_status == "passed":
+            tags = ["verified_outputs"]
+        elif verification_status == "failed":
+            tags = ["contract_mismatch"]
+        else:
+            tags = ["verification_skipped"]
+        return {
+            "status": verification_status,
+            "tags": tags,
+            "expected_deliverables": expected_deliverables,
+            "actual_outputs": actual_outputs,
+            "verified_outputs": verified_outputs,
+            "missing_required_outputs": list(diff.get("missing_required_outputs") or []),
+            "wrong_format_outputs": list(diff.get("wrong_format_outputs") or []),
+            "unexpected_outputs": list(diff.get("unexpected_outputs") or []),
         }
 
     def _expected_deliverables(self, criteria: Optional[Dict[str, Any]]) -> List[str]:
@@ -1079,6 +1133,32 @@ class TaskVerificationService:
             elif normalized_output == text:
                 return True
         return False
+
+    @staticmethod
+    def _deliverable_identity_parts(value: Any) -> tuple[str, str, str]:
+        normalized = TaskVerificationService._normalize_glob_text(value)
+        if not normalized or any(token in normalized for token in ("*", "?", "[")):
+            return "", "", ""
+        root, suffix = os.path.splitext(normalized)
+        basename = normalized.rsplit("/", 1)[-1]
+        stem, _ = os.path.splitext(basename)
+        return root, stem, suffix.lower()
+
+    @classmethod
+    def _looks_like_wrong_format_output(
+        cls,
+        output: str,
+        *,
+        missing_identity_suffixes: Dict[str, set[str]],
+        missing_stem_suffixes: Dict[str, set[str]],
+    ) -> bool:
+        identity, stem, suffix = cls._deliverable_identity_parts(output)
+        if not suffix:
+            return False
+        expected_suffixes = set(missing_identity_suffixes.get(identity, set()))
+        if not expected_suffixes:
+            expected_suffixes = set(missing_stem_suffixes.get(stem, set()))
+        return bool(expected_suffixes) and suffix not in expected_suffixes
 
     @staticmethod
     def _build_plan_patch_suggestion(contract_diff: Dict[str, List[str]]) -> Optional[str]:

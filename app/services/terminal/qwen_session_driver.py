@@ -31,6 +31,14 @@ import threading
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+from .docker_pty_backend import (
+    CONTAINER_EXEC_PATH,
+    QWEN_EXECUTABLE,
+    DockerPTYBackend,
+    _sanitise_qwen_session_id,
+)
+from .session_manager import terminal_session_manager
+
 logger = logging.getLogger(__name__)
 
 # Re-use image/limits from docker_pty_backend
@@ -56,6 +64,9 @@ class QwenSessionDriver:
     def __init__(self) -> None:
         self._containers: Dict[str, str] = {}  # session_id → container_name
         self._session_ids: Dict[str, str] = {}  # session_id → qwen --session-id value
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self._shared_terminal_ids: Dict[str, str] = {}  # session_id → terminal_id
+        self._identity_file_paths: Dict[str, Tuple[str, str]] = {}
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -88,8 +99,56 @@ class QwenSessionDriver:
         """
         async with self._lock:
             name = self._containers.get(session_id)
-            if name and await self._container_running(name):
-                return name
+            if name:
+                if session_id in self._shared_terminal_ids:
+                    terminal_id = self._shared_terminal_ids.get(session_id)
+                    if terminal_id:
+                        try:
+                            session = await terminal_session_manager.get_session(terminal_id)
+                        except KeyError:
+                            self._shared_terminal_ids.pop(session_id, None)
+                        else:
+                            backend = session.backend
+                            if (
+                                isinstance(backend, DockerPTYBackend)
+                                and backend.container_name == name
+                                and await self._container_running(name)
+                            ):
+                                return name
+                elif await self._container_running(name):
+                    return name
+                self._containers.pop(session_id, None)
+                self._session_ids.pop(session_id, None)
+                self._locks.pop(session_id, None)
+                self._shared_terminal_ids.pop(session_id, None)
+
+            required_paths = [os.path.realpath(host_work_dir)]
+            for host_path, _container_path in extra_mounts or []:
+                token = str(host_path or "").strip()
+                if token:
+                    required_paths.append(os.path.realpath(token))
+
+            shared_session = await terminal_session_manager.ensure_qwen_code_session(
+                session_id,
+                required_paths=required_paths,
+            )
+            shared_backend = shared_session.backend
+            if isinstance(shared_backend, DockerPTYBackend):
+                shared_container = shared_backend.container_name
+                if shared_container and all(
+                    shared_backend.covers_path(path) for path in required_paths
+                ):
+                    self._containers[session_id] = shared_container
+                    self._session_ids[session_id] = (
+                        shared_backend.qwen_session_id or shared_session.session_id
+                    )
+                    self._locks[session_id] = shared_session.command_lock
+                    self._shared_terminal_ids[session_id] = shared_session.terminal_id
+                    logger.info(
+                        "Reusing shared qwen_code terminal session %s for agent execution",
+                        shared_session.terminal_id,
+                    )
+                    return shared_container
 
             # Container doesn't exist or is dead — create a new one
             image = image or _DEFAULT_IMAGE
@@ -101,12 +160,15 @@ class QwenSessionDriver:
 
             env_map = self._build_env()
             env_file_path: Optional[str] = None
+            identity_paths: Optional[Tuple[str, str]] = None
+            container_started = False
             try:
                 if env_map:
                     fd, env_file_path = tempfile.mkstemp(suffix=".env", prefix="gagent_qcd_")
                     with os.fdopen(fd, "w") as f:
                         for k, v in env_map.items():
                             f.write(f"{k}={v}\n")
+                identity_paths = DockerPTYBackend._create_identity_mount_files()
 
                 docker_cmd: List[str] = [
                     "docker", "run", "-d",
@@ -120,6 +182,11 @@ class QwenSessionDriver:
                 ]
                 if env_file_path:
                     docker_cmd.extend(["--env-file", env_file_path])
+                if identity_paths:
+                    docker_cmd.extend([
+                        "-v", f"{identity_paths[0]}:/etc/passwd:ro",
+                        "-v", f"{identity_paths[1]}:/etc/group:ro",
+                    ])
 
                 # Mount work_dir at the same host path inside the container
                 real_work = os.path.realpath(host_work_dir)
@@ -151,16 +218,26 @@ class QwenSessionDriver:
                 if proc.returncode != 0:
                     raise RuntimeError(f"Failed to create container: {stderr.decode().strip()}")
                 logger.info("Agent container %s started", name)
+                container_started = True
+                if identity_paths:
+                    self._identity_file_paths[session_id] = identity_paths
             finally:
                 if env_file_path:
                     try:
                         os.unlink(env_file_path)
                     except OSError:
                         pass
+                if not container_started and identity_paths:
+                    DockerPTYBackend._cleanup_identity_files(identity_paths)
 
             self._containers[session_id] = name
             # Stable qwen session-id for context continuity
-            self._session_ids.setdefault(session_id, f"agent-{_sanitise_container_suffix(session_id)}")
+            self._session_ids.setdefault(
+                session_id,
+                _sanitise_qwen_session_id(f"agent:{session_id}"),
+            )
+            self._locks.setdefault(session_id, asyncio.Lock())
+            self._shared_terminal_ids.pop(session_id, None)
             return name
 
     async def exec_qwen_task(
@@ -177,10 +254,13 @@ class QwenSessionDriver:
 
         Returns (exit_code, stdout_text, stderr_text).
         """
-        cmd: List[str] = ["docker", "exec"]
+        cmd: List[str] = ["docker", "exec", "-e", f"PATH={CONTAINER_EXEC_PATH}"]
         if cwd:
             cmd.extend(["-w", cwd])
-        cmd.extend([container_name, "qwen"] + qwen_args)
+        normalized_args = list(qwen_args)
+        if normalized_args and normalized_args[0] in {"qwen", QWEN_EXECUTABLE}:
+            normalized_args = normalized_args[1:]
+        cmd.extend([container_name, QWEN_EXECUTABLE] + normalized_args)
 
         logger.info(
             "[QWEN_SESSION_DRIVER] exec in %s: qwen %s (cwd=%s)",
@@ -244,22 +324,48 @@ class QwenSessionDriver:
         """Return the stable qwen ``--session-id`` for context continuity."""
         return self._session_ids.get(session_id)
 
+    def get_execution_lock(self, session_id: str) -> asyncio.Lock:
+        """Return the per-session execution lock used by agent/UI shared qwen access."""
+        lock = self._locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[session_id] = lock
+        return lock
+
     async def cleanup(self, session_id: str) -> None:
         """Stop and remove the container for a session."""
         async with self._lock:
             name = self._containers.pop(session_id, None)
             self._session_ids.pop(session_id, None)
+            self._locks.pop(session_id, None)
+            shared_terminal_id = self._shared_terminal_ids.pop(session_id, None)
+            identity_paths = self._identity_file_paths.pop(session_id, None)
+        if shared_terminal_id:
+            return
         if name:
             await self._force_remove(name)
+        if identity_paths:
+            DockerPTYBackend._cleanup_identity_files(identity_paths)
 
     async def cleanup_all(self) -> None:
         """Remove all managed containers."""
         async with self._lock:
-            names = list(self._containers.values())
+            shared_session_ids = set(self._shared_terminal_ids.keys())
+            names = [
+                name
+                for session_id, name in self._containers.items()
+                if session_id not in shared_session_ids
+            ]
             self._containers.clear()
             self._session_ids.clear()
+            self._locks.clear()
+            self._shared_terminal_ids.clear()
+            identity_paths = list(self._identity_file_paths.values())
+            self._identity_file_paths.clear()
         for name in names:
             await self._force_remove(name)
+        for paths in identity_paths:
+            DockerPTYBackend._cleanup_identity_files(paths)
 
     # ------------------------------------------------------------------
     # Static helpers
@@ -268,21 +374,7 @@ class QwenSessionDriver:
     @staticmethod
     def _build_env() -> Dict[str, str]:
         """Build container env (Qwen API creds, writable HOME)."""
-        env: Dict[str, str] = {}
-        qwen_key = os.getenv("QWEN_API_KEY", "").strip()
-        if qwen_key:
-            env["OPENAI_API_KEY"] = qwen_key
-        env["OPENAI_BASE_URL"] = (
-            os.getenv("QWEN_CODE_BASE_URL", "").strip()
-            or os.getenv("OPENAI_BASE_URL", "").strip()
-            or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        )
-        env["TERM"] = "xterm-256color"
-        env["HOME"] = "/tmp/gagent_home"
-        model = os.getenv("QWEN_CODE_MODEL", "").strip()
-        if model:
-            env["QWEN_CODE_MODEL"] = model
-        return env
+        return DockerPTYBackend._build_container_env()
 
     @staticmethod
     async def _check_image(image: str) -> None:

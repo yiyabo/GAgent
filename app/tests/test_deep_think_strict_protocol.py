@@ -1112,6 +1112,88 @@ def test_post_execution_probe_stop_answer_reports_verified_completion_when_tool_
     assert "可直接基于这些结果继续后续任务" in answer
 
 
+def test_post_execution_probe_stop_answer_uses_verified_outputs_from_unscoped_run() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["code_executor"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+
+    answer = agent._build_post_execution_probe_stop_answer(
+        task_context=TaskExecutionContext(
+            task_id=1,
+            task_name="Genomic Diversity Analysis of Selected Phage Groups",
+        ),
+        user_query="继续看 Task 1 的结果",
+        steps=[],
+        tool_results=[
+            {
+                "tool_name": "code_executor",
+                "tool_result": {
+                    "success": True,
+                    "result": {
+                        "verification_status": "passed",
+                        "run_directory": "/tmp/runtime/session/phage_genome_qc_911124/run_20260411_100327_064365_276a06a2",
+                        "artifact_verification": {
+                            "status": "passed",
+                            "verified_outputs": [
+                                "results/subset_manifest.csv",
+                                "results/qc_summary.md",
+                                "results/qc_report.pdf",
+                            ],
+                        },
+                    },
+                },
+            },
+        ],
+    )
+
+    assert "执行与验证实际上已完成" in answer
+    assert "subset_manifest.csv" in answer
+    assert "qc_summary.md" in answer
+    assert "qc_report.pdf" in answer
+    assert "未在当前 task 作用域内观察到稳定输出文件" not in answer
+
+
+def test_execute_failure_truth_barrier_replaces_completion_claim_after_failed_execution() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["code_executor"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+        request_profile={"request_tier": "execute", "intent_type": "execute_task"},
+    )
+    step = ThinkingStep(
+        iteration=1,
+        thought="",
+        action='{"tool":"code_executor","params":{"task":"run qc subset"}}',
+        action_result=json.dumps(
+            {
+                "success": False,
+                "error": "file_nonempty: results/subset_manifest.csv (File is missing or empty.)",
+            },
+            ensure_ascii=False,
+        ),
+        self_correction=None,
+    )
+
+    answer = agent._apply_execute_failure_truth_barrier(
+        "### 任务执行状态\n**已完成**。所有交付物均已生成并校验通过。\n\n"
+        "最终交付物：\n"
+        "1. /tmp/runtime/run/results/subset_manifest.csv\n"
+        "2. /tmp/runtime/run/results/qc_summary.md\n"
+        "3. /tmp/runtime/run/results/qc_report.pdf\n"
+        "补充说明：这些文件均为非空有效文件，可直接进入后续分析阶段。",
+        user_query="执行这个任务",
+        steps=[step],
+    )
+
+    assert "执行工具未成功完成" in answer
+    assert "当前只能确认执行被该错误阻塞" in answer
+    assert "所有交付物均已生成并校验通过" not in answer
+
+
 def test_process_only_answer_detection_flags_collection_preface() -> None:
     assert is_process_only_answer("我来帮您系统梳理热点方向。让我先收集最新的文献证据。")
     assert is_process_only_answer("Let me first gather the latest evidence and then summarize it.")
@@ -1167,8 +1249,57 @@ def test_structured_fallback_uses_user_facing_evidence_format() -> None:
     answer = agent._build_structured_fallback(steps, "看看结果")
 
     assert "[Step 1]" not in answer
-    assert "我先给出目前能确认的信息" in answer
+    # Should use humanized header, not raw JSON dump
+    assert "以下是本轮" in answer
+    # Evidence should be humanized, not raw JSON
     assert "Found 2 files" in answer
+
+
+def test_structured_fallback_humanizes_code_executor_success() -> None:
+    """When code_executor succeeds, fallback should show human-readable summary, not raw JSON."""
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["code_executor", "file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    # Simulate multi-tool action_result from native tool calling
+    action_result = (
+        '[terminal_session] {"tool": "terminal_session"}\n\n'
+        '[code_executor] {"success": true, "tool": "code_executor", "result": {'
+        '"tool": "code_executor", "success": true, '
+        '"stdout": "Pipeline complete. 9 PASS, 6 FAIL out of 15 total", '
+        '"artifact_paths": ["/run/results", "/run/results/subset_manifest.csv", "/run/results/qc_report.pdf"]'
+        '}}\n\n'
+        '[file_operations] {"success": true, "tool": "file_operations", "result": {'
+        '"tool": "file_operations", "operation": "list", "path": "/run/results", '
+        '"items": [{"name": "subset_manifest.csv", "type": "file", "size": 1526}, '
+        '{"name": "qc_report.pdf", "type": "file", "size": 31140}]'
+        '}}'
+    )
+    steps = [
+        ThinkingStep(
+            iteration=1,
+            thought="执行pipeline",
+            action='{"tool":"code_executor"}',
+            action_result=action_result,
+            self_correction=None,
+        )
+    ]
+
+    answer = agent._build_structured_fallback(steps, "运行QC流程")
+
+    # Should NOT contain raw JSON
+    assert '{"tool"' not in answer
+    assert '{"success"' not in answer
+    # Should contain humanized content
+    assert "代码执行成功" in answer
+    assert "9 PASS" in answer
+    assert "subset_manifest.csv" in answer
+    # Should use success-aware header
+    assert "以下是本轮工具执行的结果摘要" in answer
+    # Noise-only terminal_session should be filtered out
+    assert "terminal_session" not in answer
 
 
 def test_research_failure_marks_answer_as_unverified_when_external_search_fails() -> None:

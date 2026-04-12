@@ -16,6 +16,20 @@ import { statusColorMap, statusLabelMap } from './constants';
 import { resolveTaskName, resolveTaskStatus } from './TaskDetailSections';
 
 const { Text } = Typography;
+const executionStateColorMap: Record<string, string> = {
+  completed: 'success',
+  running: 'processing',
+  blocked: 'error',
+  failed: 'error',
+  ready: 'blue',
+};
+const executionStateLabelMap: Record<string, string> = {
+  completed: 'Completed',
+  running: 'Running',
+  blocked: 'Blocked',
+  failed: 'Failed',
+  ready: 'Ready',
+};
 
 interface TaskExecuteModalProps {
   open: boolean;
@@ -144,6 +158,13 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   onExecutionStarted,
   ]);
 
+  const executionItems = dependencyPlan?.execution_items ?? [];
+  const executionStateCounts = executionItems.reduce<Record<string, number>>((acc, item) => {
+    const key = item.execution_state || 'pending';
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+
   return (
   <Modal
   open={open}
@@ -261,16 +282,77 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   </div>
 
   <div>
-  <Text type="secondary">Execution order:</Text>
-  <Space
-  direction="vertical"
-  size={6}
-  style={{ width: '100%', marginTop: 6 }}
-  >
-  {(dependencyPlan.execution_order ?? []).map((tid, index) => {
-  const isTarget = tid === selectedTaskId;
-  const status = resolveTaskStatus(tid, taskMap, dependencyPlan);
-  return (
+   <Text type="secondary">Execution order:</Text>
+   {executionItems.length > 0 && (
+   <div style={{ marginTop: 6 }}>
+   <Text type="secondary">
+   Steps: {executionItems.length} | Ready: {executionStateCounts.ready ?? 0} | Running:{' '}
+   {executionStateCounts.running ?? 0} | Blocked: {executionStateCounts.blocked ?? 0} |
+   Completed: {executionStateCounts.completed ?? 0}
+   </Text>
+   </div>
+   )}
+   <Space
+   direction="vertical"
+   size={6}
+   style={{ width: '100%', marginTop: 6 }}
+   >
+   {executionItems.length > 0
+   ? executionItems.map((item) => {
+   const tid = item.task_id;
+   const isTarget = item.is_target;
+   return (
+   <Space
+   key={`${tid}_${item.step_index}`}
+   direction="vertical"
+   size={2}
+   style={{ width: '100%', padding: '8px 10px', border: '1px solid #f0f0f0', borderRadius: 8 }}
+   >
+   <Space size={8} wrap>
+   <Text type="secondary" style={{ width: 22 }}>
+   {item.step_index}.
+   </Text>
+   <Tag color={executionStateColorMap[item.execution_state] ?? 'default'}>
+   {executionStateLabelMap[item.execution_state] ?? item.execution_state}
+   </Tag>
+   <Tag color={statusColorMap[item.status] ?? 'default'}>
+   {statusLabelMap[item.status] ?? item.status}
+   </Tag>
+   <Button
+   size="small"
+   type={isTarget ? 'primary' : 'link'}
+   onClick={() => handleDependencyClick(tid)}
+   >
+   #{tid} {item.name}
+   </Button>
+   {isTarget && <Text type="secondary">(target task)</Text>}
+   </Space>
+   {item.depends_on.length > 0 && (
+   <Text type="secondary">
+   Depends on: {item.depends_on.map((dep) => `#${dep}`).join(', ')}
+   {item.unmet_dependencies.length > 0
+   ? ` | unmet: ${item.unmet_dependencies.map((dep) => `#${dep}`).join(', ')}`
+   : ''}
+   </Text>
+   )}
+   {item.instruction && (
+   <Text type="secondary">
+   {item.instruction.length > 220 ? `${item.instruction.slice(0, 217)}...` : item.instruction}
+   </Text>
+   )}
+   {item.expected_deliverables.length > 0 && (
+   <Text type="secondary">
+   Expected outputs: {item.expected_deliverables.slice(0, 4).join(', ')}
+   {item.expected_deliverables.length > 4 ? ', ...' : ''}
+   </Text>
+   )}
+   </Space>
+   );
+   })
+   : (dependencyPlan.execution_order ?? []).map((tid, index) => {
+   const isTarget = tid === selectedTaskId;
+   const status = resolveTaskStatus(tid, taskMap, dependencyPlan);
+   return (
   <Space key={`${tid}_${index}`} size={8} wrap>
   <Text type="secondary" style={{ width: 22 }}>
   {index + 1}.
@@ -285,12 +367,12 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   >
   #{tid} {resolveTaskName(tid, selectedTaskId, activeTask, taskMap, dependencyPlan)}
   </Button>
-  {isTarget && <Text type="secondary">(target task)</Text>}
-  </Space>
-  );
-  })}
-  </Space>
-  </div>
+   {isTarget && <Text type="secondary">(target task)</Text>}
+   </Space>
+   );
+   })}
+   </Space>
+   </div>
   </>
   )}
   </Space>
