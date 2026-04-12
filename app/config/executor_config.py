@@ -54,6 +54,7 @@ class ExecutorSettings:
     skill_max_per_task: int = 3
     skill_trace_enabled: bool = True
     code_execution_backend: str = "auto"  # "auto" | "local" | "qwen_code" | "claude_code"
+    code_execution_auto_strategy: str = "qwen_primary"  # "qwen_primary" | "split"
     code_execution_local_runtime: str = DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME
     code_execution_docker_image: str = DEFAULT_CODE_EXECUTION_DOCKER_IMAGE
     # --- Layer 4: configurable limits ---
@@ -65,6 +66,7 @@ class ExecutorSettings:
     force_rerun: bool = False
     auto_recovery: bool = False
     max_recovery_attempts: int = 2
+    autonomous: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -165,6 +167,11 @@ def get_executor_settings() -> ExecutorSettings:
             defaults.code_execution_backend,
             {"auto", "local", "qwen_code", "claude_code"},
         ),
+        code_execution_auto_strategy=_env_choice(
+            "CODE_EXECUTION_AUTO_STRATEGY",
+            defaults.code_execution_auto_strategy,
+            {"qwen_primary", "split"},
+        ),
         code_execution_local_runtime=resolve_code_execution_local_runtime(
             os.getenv("CODE_EXECUTOR_LOCAL_RUNTIME"),
             default=defaults.code_execution_local_runtime,
@@ -190,6 +197,7 @@ def get_executor_settings() -> ExecutorSettings:
         max_recovery_attempts=max(
             1, min(5, _env_int("PLAN_EXECUTOR_MAX_RECOVERY", defaults.max_recovery_attempts))
         ),
+        autonomous=_env_bool("PLAN_EXECUTOR_AUTONOMOUS", defaults.autonomous),
     )
 
 __all__ = [

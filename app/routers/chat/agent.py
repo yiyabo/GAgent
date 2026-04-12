@@ -1902,6 +1902,65 @@ class StructuredChatAgent:
                 },
             )
 
+        task_source = str(self.extra_context.get("_current_task_source") or "").strip().lower()
+        explicit_task_selected = (
+            self.extra_context.get("task_id") is not None or task_source == "request"
+        )
+        if task_source == "session" and not explicit_task_selected:
+            from app.services.plans.acceptance_criteria import extract_explicit_deliverables_from_text
+
+            task_deliverables = extract_explicit_deliverables_from_text(
+                getattr(task_node, "instruction", None)
+            )
+            user_deliverables = extract_explicit_deliverables_from_text(original_task)
+            if (
+                task_deliverables
+                and user_deliverables
+                and not {item.lower() for item in task_deliverables}.intersection(
+                    item.lower() for item in user_deliverables
+                )
+            ):
+                logger.info(
+                    "[CLAUDE_CODE] Routing session-bound request to unscoped execution due to deliverable conflict. task_id=%s task_deliverables=%s user_deliverables=%s",
+                    getattr(task_node, "id", None),
+                    task_deliverables,
+                    user_deliverables,
+                )
+                from app.routers.chat.code_executor_helpers import build_conversation_summary_for_cc
+
+                conv_summary = build_conversation_summary_for_cc(
+                    getattr(self, "history", None) or [],
+                    budget=1200,
+                )
+                unscoped_task = original_task
+                if conv_summary:
+                    unscoped_task = (
+                        f"{original_task}\n\n"
+                        f"[Recent conversation context (reference only)]:\n{conv_summary}"
+                    )
+                prepared_params = {
+                    "task": unscoped_task,
+                    "require_task_context": False,
+                    "auth_mode": "api_env",
+                    "setting_sources": "project",
+                }
+                if allowed_tools:
+                    prepared_params["allowed_tools"] = allowed_tools
+                if add_dirs:
+                    prepared_params["add_dirs"] = add_dirs
+                if self.session_id:
+                    prepared_params["session_id"] = self.session_id
+
+                current_job_id = get_current_job()
+                if not current_job_id:
+                    current_job_id, _ = self._resolve_job_meta()
+                if current_job_id:
+                    out_cb, err_cb = _code_executor_job_stream_loggers(current_job_id)
+                    prepared_params["on_stdout"] = out_cb
+                    prepared_params["on_stderr"] = err_cb
+
+                return prepared_params, original_task
+
         amem_hints = ""
         try:
             from app.services.amem_client import get_amem_client
@@ -2064,6 +2123,7 @@ class StructuredChatAgent:
             )
             if artifact_paths:
                 payload_metadata["artifact_paths"] = artifact_paths
+
             payload = {
                 "status": new_status,
                 "content": summary or message,
@@ -2080,6 +2140,44 @@ class StructuredChatAgent:
                 ),
                 trigger="auto",
             )
+
+            # --- Artifact existence/non-empty verification ---
+            # Only runs for code_executor when finalization didn't already
+            # downgrade status. Only checks absolute paths.
+            if (
+                finalization.final_status == "completed"
+                and artifact_paths
+                and tool_name == "code_executor"
+            ):
+                missing_artifacts: List[str] = []
+                empty_artifacts: List[str] = []
+                for ap in artifact_paths:
+                    try:
+                        import os as _os
+                        if not _os.path.isabs(ap):
+                            continue
+                        if not _os.path.exists(ap):
+                            missing_artifacts.append(ap)
+                        elif _os.path.isfile(ap) and _os.path.getsize(ap) == 0:
+                            empty_artifacts.append(ap)
+                    except Exception:
+                        pass
+                if missing_artifacts or empty_artifacts:
+                    issues: List[str] = []
+                    if missing_artifacts:
+                        issues.append(f"missing: {missing_artifacts}")
+                    if empty_artifacts:
+                        issues.append(f"empty: {empty_artifacts}")
+                    logger.warning(
+                        "[TASK_SYNC] Artifact verification failed for task %s: %s",
+                        current_task_id,
+                        "; ".join(issues),
+                    )
+                    finalization.final_status = "failed"
+                    finalization.payload["status"] = "failed"
+                    finalization.payload.setdefault("metadata", {})["artifact_verification_failed"] = True
+                    finalization.payload["metadata"]["missing_artifacts"] = missing_artifacts
+                    finalization.payload["metadata"]["empty_artifacts"] = empty_artifacts
 
             repo.update_task(
                 self.plan_session.plan_id,

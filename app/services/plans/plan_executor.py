@@ -194,11 +194,17 @@ class ExecutionConfig:
     force_rerun: bool = False
     auto_recovery: bool = False
     max_recovery_attempts: int = 2
+    autonomous: bool = False
     enable_skills: bool = True
     skill_budget_chars: int = 6000
     skill_selection_mode: str = "hybrid"
     skill_max_per_task: int = 3
     skill_trace_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if self.autonomous:
+            self.auto_recovery = True
+            self.dependency_throttle = False
 
     @classmethod
     def from_settings(cls, settings: ExecutorSettings) -> "ExecutionConfig":
@@ -215,6 +221,7 @@ class ExecutionConfig:
             force_rerun=getattr(settings, "force_rerun", False),
             auto_recovery=getattr(settings, "auto_recovery", False),
             max_recovery_attempts=max(1, getattr(settings, "max_recovery_attempts", 2)),
+            autonomous=getattr(settings, "autonomous", False),
             enable_skills=settings.enable_skills,
             skill_budget_chars=settings.skill_budget_chars,
             skill_selection_mode=settings.skill_selection_mode,
@@ -651,6 +658,9 @@ class PlanExecutor:
         artifact_registry: Dict[int, List[str]] = {}
         if cfg.session_context is None:
             cfg.session_context = {}
+
+        # Track failed/skipped task ids for transitive dependency skip
+        _failed_or_skipped: set = set()
         cfg.session_context["_artifact_registry"] = artifact_registry
 
         # Layer 3: Recovery attempt tracker per task
@@ -702,6 +712,25 @@ class PlanExecutor:
                 _log_job("info", "Skipping already-completed task.", {
                     "plan_id": plan_id, "task_id": node.id,
                     "task_name": node.display_name(),
+                })
+                continue
+
+            # --- Transitive dependency skip (autonomous mode) ---
+            node_deps = set(getattr(node, "dependencies", None) or [])
+            blocked_by = node_deps & _failed_or_skipped
+            if blocked_by:
+                _failed_or_skipped.add(node.id)
+                skip_result = ExecutionResult(
+                    plan_id=plan_id,
+                    task_id=node.id,
+                    status="skipped",
+                    content=f"Skipped: upstream task(s) {sorted(blocked_by)} failed or were skipped",
+                    metadata={"skipped_reason": "upstream_failed", "blocked_by": sorted(blocked_by)},
+                )
+                _record_final_result(skip_result)
+                _log_job("warning", "Skipping task due to upstream failure.", {
+                    "plan_id": plan_id, "task_id": node.id,
+                    "blocked_by": sorted(blocked_by),
                 })
                 continue
 
@@ -853,31 +882,35 @@ class PlanExecutor:
             _record_final_result(result, replace_existing=True)
 
             if result.status == "skipped":
-                if not recovered and cfg.dependency_throttle and result.metadata.get("blocked_by_dependencies"):
-                    logger.warning(
-                        "Stopping execution for plan %s: task %s blocked by unresolved dependencies",
-                        plan_id,
-                        node.id,
-                    )
-                    _log_job(
-                        "warning",
-                        "Plan execution stopped: dependency blockage unresolvable.",
-                        {"plan_id": plan_id, "blocked_task_id": node.id},
-                    )
-                    break
+                if not recovered:
+                    _failed_or_skipped.add(node.id)
+                    if cfg.dependency_throttle:
+                        logger.warning(
+                            "Stopping execution for plan %s: task %s blocked by unresolved dependencies",
+                            plan_id,
+                            node.id,
+                        )
+                        _log_job(
+                            "warning",
+                            "Plan execution stopped: dependency blockage unresolvable.",
+                            {"plan_id": plan_id, "blocked_task_id": node.id},
+                        )
+                        break
             elif result.status != "completed":
-                if not recovered and cfg.dependency_throttle:
-                    logger.warning(
-                        "Stopping execution for plan %s due to failure on task %s",
-                        plan_id,
-                        node.id,
-                    )
-                    _log_job(
-                        "warning",
-                        "Plan execution stopped: unrecoverable failure.",
-                        {"plan_id": plan_id, "failed_task_id": node.id},
-                    )
-                    break
+                if not recovered:
+                    _failed_or_skipped.add(node.id)
+                    if cfg.dependency_throttle:
+                        logger.warning(
+                            "Stopping execution for plan %s due to failure on task %s",
+                            plan_id,
+                            node.id,
+                        )
+                        _log_job(
+                            "warning",
+                            "Plan execution stopped: unrecoverable failure.",
+                            {"plan_id": plan_id, "failed_task_id": node.id},
+                        )
+                        break
 
             # Log the FINAL status (after potential recovery)
             level = (
@@ -1447,7 +1480,7 @@ class PlanExecutor:
                     "status": dep.status,
                     "execution_result": self._prompt_builder._summarize_long_result(
                         dep.execution_result or "(not executed)",
-                        max_length=1200,
+                        max_length=4000,
                     ),
                     "artifact_paths": artifact_paths,
                     "deliverable_manifest": artifact_context.get("deliverable_manifest"),
