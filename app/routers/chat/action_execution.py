@@ -1741,10 +1741,13 @@ async def _execute_action_run(run_id: str) -> None:
             # that prerequisite tasks execute before their dependents.
             _cascade_phases: Dict[int, int] = {}  # task_id → phase
             _current_phase: int = -1
+            _todo_scope_target: Optional[int] = None
             if _cascade_tree is not None:
                 try:
                     from app.services.plans.todo_list import (
                         _compute_phase_layers,
+                        build_todo_list,
+                        assign_phase_labels,
                     )
 
                     # Compute phases for ALL pending tasks based on
@@ -1814,31 +1817,32 @@ async def _execute_action_run(run_id: str) -> None:
                         )
 
                         # Build brief todo-list summary for agent context
-                        try:
-                            from app.services.plans.todo_list import (
-                                build_todo_list,
-                                assign_phase_labels,
-                            )
-                            _tgt_id = int(next(iter(pending), 0)) if pending else None
-                            if _tgt_id and _cascade_tree:
+                        # Capture the scope target (last task = most deps = full view)
+                        # and refresh summary each cascade iteration inside the loop.
+                        _todo_scope_target = (
+                            int(pending[-1]) if pending else None
+                        )
+                        if _todo_scope_target and _cascade_tree:
+                            try:
                                 _todo = build_todo_list(
                                     _cascade_tree,
-                                    _tgt_id,
+                                    _todo_scope_target,
                                     include_target=True,
                                     expand_composites=True,
                                 )
                                 assign_phase_labels(_todo.phases)
                                 _agent_ctx["todo_list_summary"] = _todo.summary()
                                 logger.info(
-                                    "[CASCADE] Todo-list summary injected: %s",
+                                    "[CASCADE] Todo-list summary injected (scope=%s): %s",
+                                    _todo_scope_target,
                                     _todo.summary()[:200],
                                 )
-                        except Exception as _todo_exc:
-                            logger.debug(
-                                "[CASCADE] Todo-list summary generation "
-                                "skipped: %s",
-                                _todo_exc,
-                            )
+                            except Exception as _todo_exc:
+                                logger.debug(
+                                    "[CASCADE] Todo-list summary generation "
+                                    "skipped: %s",
+                                    _todo_exc,
+                                )
                 except Exception as exc:
                     logger.warning(
                         "[CASCADE] TodoList phase ordering failed "
@@ -1894,6 +1898,22 @@ async def _execute_action_run(run_id: str) -> None:
                 _agent_ctx["current_task_id"] = next_task_id
                 _agent_ctx["task_id"] = next_task_id
                 _agent_ctx["pending_scope_task_ids"] = pending
+
+                # Refresh todo-list summary so agent sees live progress
+                if _todo_scope_target and _cascade_tree:
+                    try:
+                        _ps_ref = getattr(agent, "plan_session", None)
+                        _ct_fn_ref = getattr(_ps_ref, "current_tree", None) if _ps_ref else None
+                        if callable(_ct_fn_ref):
+                            _cascade_tree = _ct_fn_ref()
+                        _todo = build_todo_list(
+                            _cascade_tree, _todo_scope_target,
+                            include_target=True, expand_composites=True,
+                        )
+                        assign_phase_labels(_todo.phases)
+                        _agent_ctx["todo_list_summary"] = _todo.summary()
+                    except Exception:
+                        pass  # keep previous summary
 
                 remaining_count = len(pending)
 
