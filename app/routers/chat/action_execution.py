@@ -6,12 +6,14 @@ analysis/execution handlers used by the chat API endpoints.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
 import os
 import re
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
@@ -100,6 +102,10 @@ _AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
 # Maximum number of additional tasks the cascade loop will execute
 # within a single background action run.
 _CASCADE_MAX_TASKS = 50
+
+# Retry parameters for individual cascade tasks.
+_CASCADE_MAX_RETRIES = 2
+_CASCADE_RETRY_BASE_DELAY = 3.0  # seconds; exponential backoff: 3s, 6s
 
 
 def _is_single_rerun_task_action(structured: LLMStructuredResponse) -> bool:
@@ -697,6 +703,193 @@ def truncate_summary_text(value: Optional[str]) -> Optional[str]:
     return str(value)
 
 
+def _latest_verification_result_payload(
+    tool_results_payload: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    latest_result_payload: Optional[Dict[str, Any]] = None
+    latest_verification_status = ""
+
+    for item in reversed(tool_results_payload or []):
+        if not isinstance(item, dict):
+            continue
+        result_payload = item.get("result")
+        if not isinstance(result_payload, dict):
+            continue
+        verification_status = str(result_payload.get("verification_status") or "").strip().lower()
+        if not verification_status:
+            artifact_verification = result_payload.get("artifact_verification")
+            if isinstance(artifact_verification, dict):
+                verification_status = str(artifact_verification.get("status") or "").strip().lower()
+        if not verification_status:
+            continue
+        latest_result_payload = result_payload
+        latest_verification_status = verification_status
+        break
+
+    return latest_result_payload, latest_verification_status
+
+
+def _format_artifact_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def _resolve_verified_output_rows(result_payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    artifact_verification = result_payload.get("artifact_verification")
+    if not isinstance(artifact_verification, dict):
+        return []
+
+    raw_outputs = artifact_verification.get("verified_outputs")
+    if not isinstance(raw_outputs, list) or not raw_outputs:
+        raw_outputs = artifact_verification.get("actual_outputs")
+    if not isinstance(raw_outputs, list) or not raw_outputs:
+        raw_outputs = artifact_verification.get("expected_deliverables")
+    if not isinstance(raw_outputs, list) or not raw_outputs:
+        return []
+
+    base_dir_value = (
+        result_payload.get("task_directory_full")
+        or result_payload.get("run_directory")
+        or result_payload.get("working_directory")
+    )
+    base_dir = Path(str(base_dir_value).strip()).expanduser() if str(base_dir_value or "").strip() else None
+
+    rows: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_output in raw_outputs[:40]:
+        label = str(raw_output or "").strip().replace("\\", "/")
+        if not label:
+            continue
+        path = Path(label).expanduser()
+        if not path.is_absolute():
+            if base_dir is None:
+                continue
+            path = base_dir / path
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        absolute_path = str(resolved)
+        if absolute_path in seen:
+            continue
+        seen.add(absolute_path)
+
+        size_text = "unknown"
+        try:
+            if resolved.exists() and resolved.is_file():
+                size_text = _format_artifact_size(int(resolved.stat().st_size))
+        except OSError:
+            pass
+
+        rows.append(
+            {
+                "file": label,
+                "absolute_path": absolute_path,
+                "size": size_text,
+            }
+        )
+    return rows
+
+
+def _build_contract_verification_success_analysis(
+    user_message: str,
+    tool_results_payload: List[Dict[str, Any]],
+) -> Optional[str]:
+    language = "zh" if re.search(r"[\u4e00-\u9fff]", user_message or "") else "en"
+    latest_result_payload, latest_verification_status = _latest_verification_result_payload(
+        tool_results_payload
+    )
+    if latest_verification_status != "passed" or not isinstance(latest_result_payload, dict):
+        return None
+
+    rows = _resolve_verified_output_rows(latest_result_payload)
+    if not rows:
+        return None
+
+    if language == "zh":
+        lines = [
+            "已通过确定性交付物校验。以下交付物已在本次运行目录中被物理验证为存在且非空：",
+            "",
+            "| # | File | Absolute Path | Size |",
+            "|---|---|---|---|",
+        ]
+    else:
+        lines = [
+            "Deterministic artifact verification passed. The following deliverables were physically verified as present and non-empty in this run directory:",
+            "",
+            "| # | File | Absolute Path | Size |",
+            "|---|---|---|---|",
+        ]
+
+    for index, row in enumerate(rows, start=1):
+        lines.append(
+            f"| {index} | `{row['file']}` | `{row['absolute_path']}` | {row['size']} |"
+        )
+
+    return "\n".join(lines)
+
+
+def _build_contract_verification_analysis(
+    user_message: str,
+    tool_results_payload: List[Dict[str, Any]],
+) -> Optional[str]:
+    language = "zh" if re.search(r"[\u4e00-\u9fff]", user_message or "") else "en"
+    latest_result_payload, latest_verification_status = _latest_verification_result_payload(
+        tool_results_payload
+    )
+
+    if latest_verification_status != "failed" or not isinstance(latest_result_payload, dict):
+        return None
+
+    contract_diff = latest_result_payload.get("contract_diff")
+    if not isinstance(contract_diff, dict):
+        contract_diff = {}
+    artifact_verification = latest_result_payload.get("artifact_verification")
+    produced_files = latest_result_payload.get("produced_files") or []
+    if not isinstance(produced_files, list):
+        produced_files = []
+    if not produced_files and isinstance(artifact_verification, dict):
+        produced_files = list(artifact_verification.get("actual_outputs") or [])
+
+    missing = [str(item) for item in contract_diff.get("missing_required_outputs") or [] if str(item).strip()]
+    wrong_format = [str(item) for item in contract_diff.get("wrong_format_outputs") or [] if str(item).strip()]
+    unexpected = [str(item) for item in contract_diff.get("unexpected_outputs") or [] if str(item).strip()]
+    actual = []
+    for raw in produced_files:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        actual.append(Path(text).name if "/" in text or "\\" in text else text)
+
+    if language == "zh":
+        lines = ["确定性产物校验未通过：本次生成结果与任务要求的交付物 contract 不一致。"]
+        if missing:
+            lines.append(f"缺失的必需输出：{', '.join(missing[:6])}")
+        if wrong_format:
+            lines.append(f"格式不匹配的输出：{', '.join(wrong_format[:6])}")
+        if unexpected:
+            lines.append(f"额外生成但不在 contract 内的输出：{', '.join(unexpected[:6])}")
+        if actual:
+            lines.append(f"本次实际观察到的输出：{', '.join(actual[:8])}")
+        lines.append("因此当前任务不能判定为已完成；应先修复产物路径、文件名或格式，再重新执行。")
+        return "\n".join(lines)
+
+    lines = ["Deterministic artifact verification failed: the generated outputs do not satisfy the task contract."]
+    if missing:
+        lines.append(f"Missing required outputs: {', '.join(missing[:6])}")
+    if wrong_format:
+        lines.append(f"Wrong-format outputs: {', '.join(wrong_format[:6])}")
+    if unexpected:
+        lines.append(f"Unexpected outputs: {', '.join(unexpected[:6])}")
+    if actual:
+        lines.append(f"Actual observed outputs: {', '.join(actual[:8])}")
+    lines.append("This task should not be reported as completed until the artifact contract is satisfied.")
+    return "\n".join(lines)
+
+
 def build_actions_summary(agent: Any, steps: List["AgentStep"]) -> List[Dict[str, Any]]:
     summary: List[Dict[str, Any]] = []
     for step in steps:
@@ -745,7 +938,16 @@ async def _generate_tool_analysis(
                 tool_desc += f"\n   Execution summary: {summary}"
 
             if isinstance(result_data, dict):
-                useful_fields = ["output", "stdout", "stderr", "success", "error"]
+                useful_fields = [
+                    "output",
+                    "stdout",
+                    "stderr",
+                    "success",
+                    "error",
+                    "produced_files_count",
+                    "verification_status",
+                    "failure_kind",
+                ]
                 for field in useful_fields:
                     if field in result_data and result_data[field]:
                         value = result_data[field]
@@ -789,6 +991,10 @@ async def _generate_tool_analysis(
                         "action",
                         "status_code",
                         "result_kind",
+                        "produced_files",
+                        "artifact_paths",
+                        "contract_diff",
+                        "artifact_verification",
                     ):
                         if field in result_data and result_data[field] is not None:
                             details_payload[field] = result_data[field]
@@ -1498,6 +1704,12 @@ async def _execute_action_run(run_id: str) -> None:
         # When a composite task ("执行任务8") expanded to multiple leaf
         # tasks [34, 35, 36, …], execute them sequentially in this
         # background run without requiring additional user messages.
+        #
+        # Resilience features:
+        # - Per-task retry on *exceptions* with exponential backoff
+        # - Dependency-aware skip: tasks depending on failed/skipped
+        #   tasks are skipped (transitive)
+        # - Continue-after-failure: independent tasks still execute
         cascade_count = 0
         _agent_ctx = getattr(agent, "extra_context", None) or {}
         pending = _agent_ctx.get("pending_scope_task_ids") if isinstance(_agent_ctx, dict) else None
@@ -1507,19 +1719,66 @@ async def _execute_action_run(run_id: str) -> None:
             and isinstance(pending, list)
             and len(pending) > 0
         ):
-            cascade_all_steps = list(result.steps)
-            cascade_all_errors = list(result.errors or [])
+            cascade_all_steps: List[Any] = list(result.steps)
+            cascade_all_errors: List[str] = list(result.errors or [])
+            cascade_failed_ids: Set[int] = set()
+            cascade_skipped_ids: Set[int] = set()
+
+            # Try to get plan tree for dependency checking (optional).
+            _cascade_tree = None
+            try:
+                _ps = getattr(agent, "plan_session", None)
+                _ct_fn = getattr(_ps, "current_tree", None) if _ps else None
+                if callable(_ct_fn):
+                    _cascade_tree = _ct_fn()
+            except Exception:
+                pass
 
             while (
                 cascade_count < _CASCADE_MAX_TASKS
-                and result.success
                 and isinstance(pending, list)
                 and len(pending) > 0
             ):
                 cascade_count += 1
                 next_task_id = pending.pop(0)
 
-                # Update agent context so task binding is correct.
+                # ── Dependency-aware skip ────────────────────────
+                # Skip if any direct dependency is in failed OR skipped
+                # (transitive: if A fails, B skipped, C depends on B → skipped)
+                _blocked_set = cascade_failed_ids | cascade_skipped_ids
+                _skip_reason = None
+                if _cascade_tree and _blocked_set:
+                    try:
+                        _node = _cascade_tree.get_node(int(next_task_id))
+                        _blocked_by = set(_node.dependencies) & _blocked_set
+                        if _blocked_by:
+                            _skip_reason = (
+                                f"depends on failed/skipped task(s) {sorted(_blocked_by)}"
+                            )
+                    except (KeyError, ValueError, TypeError):
+                        pass
+
+                if _skip_reason:
+                    cascade_skipped_ids.add(int(next_task_id))
+                    logger.info(
+                        "[CASCADE] Skipping task %s: %s",
+                        next_task_id,
+                        _skip_reason,
+                    )
+                    plan_decomposition_jobs.append_log(
+                        job.job_id,
+                        "warning",
+                        f"[CASCADE] Skipping task {next_task_id}: {_skip_reason}",
+                        {
+                            "cascade_iteration": cascade_count,
+                            "task_id": next_task_id,
+                            "skip_reason": _skip_reason,
+                        },
+                    )
+                    pending = _agent_ctx.get("pending_scope_task_ids")
+                    continue
+
+                # ── Update agent context ─────────────────────────
                 _agent_ctx["current_task_id"] = next_task_id
                 _agent_ctx["task_id"] = next_task_id
                 _agent_ctx["pending_scope_task_ids"] = pending
@@ -1559,38 +1818,110 @@ async def _execute_action_run(run_id: str) -> None:
                     ],
                 )
 
-                try:
-                    result = await agent.execute_structured(cascade_structured)
-                except Exception as exc:
-                    logger.exception(
-                        "[CASCADE] Task %s raised exception: %s",
-                        next_task_id,
-                        exc,
-                    )
-                    cascade_all_errors.append(
-                        f"[CASCADE] Task {next_task_id} exception: {exc}"
-                    )
-                    from .models import AgentResult
-                    result = AgentResult(
-                        reply=f"Cascade stopped: task {next_task_id} raised {exc}",
-                        steps=[],
-                        suggestions=[],
-                        primary_intent=None,
-                        success=False,
-                        errors=[str(exc)],
-                    )
-                    break
+                # ── Execute with exception-only retry ────────────
+                # Retry on *exceptions* (transient network / timeout).
+                # Logical failures (success=False) are NOT retried —
+                # they are deterministic and side-effecting.
+                task_ok = False
+                for attempt in range(_CASCADE_MAX_RETRIES + 1):
+                    if attempt > 0:
+                        delay = _CASCADE_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                        logger.info(
+                            "[CASCADE] Retry %d/%d for task %s after %.1fs delay",
+                            attempt,
+                            _CASCADE_MAX_RETRIES,
+                            next_task_id,
+                            delay,
+                        )
+                        plan_decomposition_jobs.append_log(
+                            job.job_id,
+                            "info",
+                            f"[CASCADE] Retrying task {next_task_id} "
+                            f"(attempt {attempt + 1}/{_CASCADE_MAX_RETRIES + 1})",
+                            {
+                                "task_id": next_task_id,
+                                "attempt": attempt + 1,
+                            },
+                        )
+                        await asyncio.sleep(delay)
 
+                    try:
+                        result = await agent.execute_structured(
+                            cascade_structured
+                        )
+                        # Logical success or failure — don't retry logical
+                        # failures, only exceptions trigger retry.
+                        task_ok = result.success
+                        break
+                    except Exception as exc:
+                        logger.exception(
+                            "[CASCADE] Task %s exception (attempt %d/%d): %s",
+                            next_task_id,
+                            attempt + 1,
+                            _CASCADE_MAX_RETRIES + 1,
+                            exc,
+                        )
+                        if attempt == _CASCADE_MAX_RETRIES:
+                            # Final attempt failed — record as failure
+                            cascade_all_errors.append(
+                                f"[CASCADE] Task {next_task_id} exception "
+                                f"after {_CASCADE_MAX_RETRIES + 1} attempts: {exc}"
+                            )
+                            from .models import AgentResult as _AR
+
+                            result = _AR(
+                                reply=(
+                                    f"Cascade: task {next_task_id} failed "
+                                    f"after {_CASCADE_MAX_RETRIES + 1} attempts: {exc}"
+                                ),
+                                steps=[],
+                                suggestions=[],
+                                primary_intent=None,
+                                success=False,
+                                errors=[str(exc)],
+                            )
+
+                # Only record the terminal attempt in canonical steps/errors
                 cascade_all_steps.extend(result.steps)
                 cascade_all_errors.extend(result.errors or [])
+
+                if not task_ok:
+                    cascade_failed_ids.add(int(next_task_id))
+                    logger.warning(
+                        "[CASCADE] Task %s failed (recorded as cascade failure)",
+                        next_task_id,
+                    )
 
                 # Re-read pending (plan tree may have changed)
                 pending = _agent_ctx.get("pending_scope_task_ids")
 
-            # Rebuild merged result covering all cascade iterations.
-            overall_success = all(s.success for s in cascade_all_steps)
+            # ── Build merged result ──────────────────────────────
+            has_failures = len(cascade_failed_ids) > 0
+            succeeded_count = (
+                cascade_count
+                - len(cascade_failed_ids)
+                - len(cascade_skipped_ids)
+            )
+
+            # Build cascade-level summary reply
+            _cascade_summary_parts: List[str] = []
+            _cascade_summary_parts.append(
+                f"Cascade completed: {succeeded_count} succeeded"
+            )
+            if cascade_failed_ids:
+                _cascade_summary_parts.append(
+                    f"{len(cascade_failed_ids)} failed ({sorted(cascade_failed_ids)})"
+                )
+            if cascade_skipped_ids:
+                _cascade_summary_parts.append(
+                    f"{len(cascade_skipped_ids)} skipped ({sorted(cascade_skipped_ids)})"
+                )
+            _cascade_reply = ", ".join(_cascade_summary_parts) + "."
+
+            overall_success = not has_failures
             result = result.model_copy(
                 update={
+                    "reply": _cascade_reply,
                     "steps": cascade_all_steps,
                     "errors": cascade_all_errors,
                     "success": overall_success,
@@ -1599,11 +1930,15 @@ async def _execute_action_run(run_id: str) -> None:
             plan_decomposition_jobs.append_log(
                 job.job_id,
                 "info",
-                f"[CASCADE] Completed {cascade_count} additional tasks. "
-                f"Total steps: {len(cascade_all_steps)}. "
-                f"Overall success: {overall_success}.",
+                f"[CASCADE] Completed {cascade_count} tasks. "
+                f"Succeeded: {succeeded_count}, "
+                f"Failed: {len(cascade_failed_ids)}, "
+                f"Skipped: {len(cascade_skipped_ids)}.",
                 {
                     "cascade_total": cascade_count,
+                    "succeeded": succeeded_count,
+                    "failed_ids": sorted(cascade_failed_ids),
+                    "skipped_ids": sorted(cascade_skipped_ids),
                     "total_steps": len(cascade_all_steps),
                     "overall_success": overall_success,
                 },
@@ -1779,7 +2114,22 @@ async def _execute_action_run(run_id: str) -> None:
             if deep_think_answer:
                 analysis_text = deep_think_answer
                 result_dict["analysis_source"] = "deep_think_retry"
-        elif _should_skip_post_action_analysis(result.steps):
+        grounded_contract_analysis = _build_contract_verification_analysis(
+            record.get("user_message", ""),
+            tool_results_payload,
+        )
+        if grounded_contract_analysis:
+            analysis_text = grounded_contract_analysis
+            result_dict["analysis_source"] = "artifact_verification"
+        else:
+            grounded_contract_success_analysis = _build_contract_verification_success_analysis(
+                record.get("user_message", ""),
+                tool_results_payload,
+            )
+            if grounded_contract_success_analysis:
+                analysis_text = grounded_contract_success_analysis
+                result_dict["analysis_source"] = "artifact_verification_success"
+        if not analysis_text and _should_skip_post_action_analysis(result.steps):
             analysis_text = (result.reply or result.summarize_steps() or "").strip() or None
             if analysis_text:
                 result_dict["analysis_source"] = "structured_action"
