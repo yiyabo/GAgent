@@ -7,7 +7,7 @@ import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -195,6 +195,7 @@ class ExecutionConfig:
     auto_recovery: bool = False
     max_recovery_attempts: int = 2
     autonomous: bool = False
+    on_task_complete: Optional[Callable[["ExecutionResult", int, int], None]] = None
     enable_skills: bool = True
     skill_budget_chars: int = 6000
     skill_selection_mode: str = "hybrid"
@@ -931,6 +932,13 @@ class PlanExecutor:
                     "duration_sec": result.duration_sec,
                 },
             )
+
+            # Fire on_task_complete callback
+            if cfg.on_task_complete is not None:
+                try:
+                    cfg.on_task_complete(result, idx + 1, total_tasks)
+                except Exception as cb_err:
+                    logger.warning("on_task_complete callback error: %s", cb_err)
 
         summary.finished_at = time.time()
 
