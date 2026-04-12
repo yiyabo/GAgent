@@ -959,3 +959,118 @@ def _make_async_stub():
 
     stub.sleep = _noop_sleep
     return stub
+
+
+def test_cascade_phase_ordering(monkeypatch) -> None:
+    """Cascade should reorder pending tasks by topological phases.
+
+    DAG: 1→3, 2→3, 3→4  (tasks 1,2 are phase 0; 3 is phase 1; 4 is phase 2)
+    If pending is given as [4, 3, 2] (wrong order), the TodoList integration
+    should reorder to [2, 3, 4] (phase order).
+    """
+    from app.services.plans.plan_models import PlanNode, PlanTree
+
+    monkeypatch.setattr(action_execution, "asyncio", _make_async_stub())
+
+    run_id = "run_phase_order"
+    nodes = {
+        1: PlanNode(id=1, plan_id=1, name="Fetch", dependencies=[]),
+        2: PlanNode(id=2, plan_id=1, name="Download", dependencies=[]),
+        3: PlanNode(id=3, plan_id=1, name="Merge", dependencies=[1, 2]),
+        4: PlanNode(id=4, plan_id=1, name="Analyze", dependencies=[3]),
+    }
+    tree = PlanTree(id=1, title="Test", nodes=nodes)
+    tree.rebuild_adjacency()
+
+    results = {tid: _ok_result(tid) for tid in [1, 2, 3, 4]}
+    call_log: List[int] = []
+
+    class _PhaseTreeSession(_PlanSessionStub):
+        def current_tree(self):
+            return tree
+
+    plan_session = _PhaseTreeSession()
+
+    class _PhaseAgent:
+        def __init__(self, **kwargs):
+            self.extra_context = dict(kwargs.get("extra_context") or {})
+            self.plan_session = kwargs.get("plan_session") or plan_session
+            self.llm_service = object()
+
+        async def execute_structured(self, structured: LLMStructuredResponse):
+            task_id = None
+            for a in structured.sorted_actions():
+                if a.name == "rerun_task":
+                    task_id = a.parameters.get("task_id")
+                    break
+            if task_id is not None:
+                call_log.append(task_id)
+            return results.get(task_id, _ok_result(task_id or 0))
+
+    class _PhaseFactory:
+        @staticmethod
+        def __call__(**kwargs):
+            kwargs["plan_session"] = plan_session
+            return _PhaseAgent(**kwargs)
+
+    # Pending in WRONG order — should be reordered by phases
+    record = _build_rerun_task_record(run_id, 1, [4, 3, 2])
+    updates: List[Dict[str, Any]] = []
+    job_store = _JobStoreStub()
+
+    async def _fake(*_a, **_k):
+        return "analysis"
+
+    async def _no_retry(*_a, **_k):
+        return {"attempted": False, "success": False}
+
+    monkeypatch.setattr(action_execution, "PlanSession", lambda **_k: plan_session)
+    monkeypatch.setattr(
+        action_execution, "get_structured_chat_agent_cls", lambda: _PhaseFactory()
+    )
+    monkeypatch.setattr(
+        action_execution, "fetch_action_run",
+        lambda _id: record if _id == run_id else None,
+    )
+    monkeypatch.setattr(
+        action_execution, "update_action_run",
+        lambda _id, **kwargs: updates.append(kwargs),
+    )
+    monkeypatch.setattr(action_execution, "plan_decomposition_jobs", job_store)
+    monkeypatch.setattr(action_execution, "set_current_job", lambda _: None)
+    monkeypatch.setattr(action_execution, "reset_current_job", lambda _: None)
+    monkeypatch.setattr(
+        action_execution, "_update_message_content_by_tracking",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        action_execution, "_update_message_metadata_by_tracking",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        action_execution, "_set_session_plan_id", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(action_execution, "_generate_action_analysis", _fake)
+    monkeypatch.setattr(
+        action_execution, "_run_blocking_failure_deep_think_retry_once", _no_retry
+    )
+    monkeypatch.setattr(action_execution, "_generate_tool_analysis", _fake)
+
+    asyncio.run(action_execution._execute_action_run(run_id))
+
+    # Task 1 is the first (from record), then the pending should be
+    # reordered: 2 (phase 0) before 3 (phase 1) before 4 (phase 2)
+    assert call_log[0] == 1  # initial task from record
+    remaining = call_log[1:]
+    assert remaining.index(2) < remaining.index(3)
+    assert remaining.index(3) < remaining.index(4)
+
+    # Phase transition logs should be present
+    phase_logs = [
+        log for log in job_store.logs if "Entering Phase" in log["message"]
+    ]
+    assert len(phase_logs) >= 1  # at least one phase transition
+
+    # Final result should be success
+    final = updates[-1]
+    assert final["status"] == "completed"
