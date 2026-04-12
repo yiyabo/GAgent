@@ -11,6 +11,7 @@ import type {
     DecompositionJobStatus,
   JobLogTailResponse,
   BackgroundTaskBoardResponse,
+  TodoListResponse,
 } from '@/types';
 
 interface SubgraphResponse {
@@ -155,6 +156,17 @@ class PlanTreeApi extends BaseApi {
 
   verifyTask = async (planId: number, taskId: number): Promise<VerifyTaskResponse> => {
   return this.post<VerifyTaskResponse>(`/tasks/${taskId}/verify?plan_id=${planId}`, {});
+  };
+
+  getPlanTodoList = async (
+    planId: number,
+    targetTaskId: number,
+    options?: { expandComposites?: boolean }
+  ): Promise<TodoListResponse> => {
+    return this.get<TodoListResponse>(`/plans/${planId}/todo-list`, {
+      target_task_id: targetTaskId,
+      expand_composites: options?.expandComposites,
+    });
   };
 }
 
