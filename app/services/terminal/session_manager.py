@@ -9,12 +9,12 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional, Set, Union
+from typing import Any, Dict, Literal, Optional, Sequence, Set, Tuple, Union
 from uuid import uuid4
 
 from .audit_logger import AuditLogger
 from .command_filter import CommandFilter, CommandDecision, RiskLevel
-from .docker_pty_backend import DockerPTYBackend
+from .docker_pty_backend import CONTAINER_WORKDIR, DockerPTYBackend
 from .protocol import WSMessageType
 from .pty_backend import PTYBackend
 from .ssh_backend import SSHBackend, SSHConfig
@@ -26,6 +26,7 @@ except Exception:  # pragma: no cover
 
 
 TerminalMode = Literal["sandbox", "ssh", "qwen_code"]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass
@@ -59,6 +60,7 @@ class TerminalSession:
     subscribers: Set[asyncio.Queue] = field(default_factory=set)
     pending_approvals: Dict[str, PendingApproval] = field(default_factory=dict)
     output_task: Optional[asyncio.Task] = None
+    command_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class TerminalSessionManager:
@@ -87,12 +89,91 @@ class TerminalSessionManager:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _build_qwen_mount_plan(
+        self,
+        *,
+        extra_mounts: Optional[Sequence[Tuple[str, str]]] = None,
+    ) -> list[tuple[str, str]]:
+        mounts: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+
+        def _append(host_path: str, container_path: str) -> None:
+            host_token = str(host_path or "").strip()
+            container_token = str(container_path or "").strip()
+            if not host_token or not container_token:
+                return
+            resolved_host = Path(host_token).resolve()
+            if not resolved_host.exists():
+                return
+            key = (str(resolved_host), os.path.normpath(container_token))
+            if key in seen:
+                return
+            seen.add(key)
+            mounts.append(key)
+
+        if _REPO_ROOT.exists():
+            _append(str(_REPO_ROOT), str(_REPO_ROOT))
+
+        for host_path, container_path in extra_mounts or ():
+            _append(str(host_path), str(container_path))
+
+        return mounts
+
+    @staticmethod
+    def _build_qwen_add_dirs(mount_plan: Sequence[Tuple[str, str]]) -> list[str]:
+        add_dirs: list[str] = []
+        seen: set[str] = set()
+        for _host_path, container_path in mount_plan:
+            normalized = os.path.normpath(str(container_path))
+            if not normalized or normalized == CONTAINER_WORKDIR or normalized in seen:
+                continue
+            seen.add(normalized)
+            add_dirs.append(normalized)
+        return add_dirs
+
+    @staticmethod
+    def _qwen_required_same_path_mounts(
+        required_paths: Optional[Sequence[str]],
+    ) -> list[tuple[str, str]]:
+        mounts: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for raw_path in required_paths or ():
+            token = str(raw_path or "").strip()
+            if not token:
+                continue
+            resolved = Path(token).resolve()
+            if not resolved.exists():
+                continue
+            mount_root = resolved if resolved.is_dir() else resolved.parent
+            mount_token = str(mount_root)
+            if mount_token in seen:
+                continue
+            seen.add(mount_token)
+            mounts.append((mount_token, mount_token))
+        return mounts
+
+    @staticmethod
+    def _qwen_session_covers_paths(
+        session: "TerminalSession",
+        required_paths: Optional[Sequence[str]],
+    ) -> bool:
+        if session.mode != "qwen_code" or not isinstance(session.backend, DockerPTYBackend):
+            return False
+        return all(
+            session.backend.covers_path(str(path))
+            for path in required_paths or ()
+            if str(path or "").strip()
+        )
+
     async def create_session(
         self,
         session_id: str,
         *,
         mode: TerminalMode = "sandbox",
         ssh_config: Optional[SSHConfig] = None,
+        qwen_extra_mounts: Optional[Sequence[Tuple[str, str]]] = None,
+        qwen_add_dirs: Optional[Sequence[str]] = None,
+        qwen_session_id: Optional[str] = None,
     ) -> TerminalSession:
         self._ensure_reaper()
         owner = str(session_id).strip()
@@ -140,9 +221,23 @@ class TerminalSessionManager:
                 command_handler=lambda command: self._handle_command_check(session, command),
             )
         elif mode == "qwen_code":
+            qwen_mount_plan = self._build_qwen_mount_plan(
+                extra_mounts=qwen_extra_mounts,
+            )
+            qwen_add_dir_list = self._build_qwen_add_dirs(qwen_mount_plan)
+            for raw_dir in qwen_add_dirs or ():
+                dir_token = os.path.normpath(str(raw_dir or "").strip())
+                if dir_token and dir_token not in qwen_add_dir_list:
+                    qwen_add_dir_list.append(dir_token)
             await backend.spawn(
                 cwd=session.cwd,
                 env=session.env,
+                extra_mounts=qwen_mount_plan,
+                qwen_session_id=qwen_session_id or owner,
+                exec_args=DockerPTYBackend.build_qwen_exec_args(
+                    qwen_session_id=qwen_session_id or owner,
+                    extra_dirs=qwen_add_dir_list,
+                ),
             )
         else:
             cfg = ssh_config
@@ -181,6 +276,9 @@ class TerminalSessionManager:
         if not target_id:
             raise ValueError("session_id is required")
 
+        if mode == "qwen_code":
+            return await self.ensure_qwen_code_session(target_id)
+
         async with self._lock:
             candidates = [
                 s
@@ -192,6 +290,52 @@ class TerminalSessionManager:
                 return candidates[0]
 
         return await self.create_session(target_id, mode=mode)
+
+    async def ensure_qwen_code_session(
+        self,
+        session_id: str,
+        *,
+        required_paths: Optional[Sequence[str]] = None,
+    ) -> TerminalSession:
+        target_id = str(session_id).strip()
+        if not target_id:
+            raise ValueError("session_id is required")
+
+        normalized_required = [
+            str(Path(str(path).strip()).resolve())
+            for path in required_paths or ()
+            if str(path or "").strip()
+        ]
+
+        async with self._lock:
+            candidates = [
+                s
+                for s in self._sessions.values()
+                if s.session_id == target_id and s.mode == "qwen_code" and s.state in {"active", "idle", "creating"}
+            ]
+            candidates.sort(key=lambda s: s.last_activity, reverse=True)
+
+        for candidate in candidates:
+            if self._qwen_session_covers_paths(candidate, normalized_required):
+                return candidate
+
+        if candidates and candidates[0].subscribers:
+            return candidates[0]
+
+        qwen_extra_mounts = self._qwen_required_same_path_mounts(normalized_required)
+        qwen_mount_plan = self._build_qwen_mount_plan(extra_mounts=qwen_extra_mounts)
+        qwen_add_dirs = self._build_qwen_add_dirs(qwen_mount_plan)
+
+        if candidates:
+            await self.close_session(candidates[0].terminal_id)
+
+        return await self.create_session(
+            target_id,
+            mode="qwen_code",
+            qwen_extra_mounts=qwen_mount_plan,
+            qwen_add_dirs=qwen_add_dirs,
+            qwen_session_id=target_id,
+        )
 
     async def list_sessions(self, *, session_id: Optional[str] = None) -> list[dict[str, Any]]:
         async with self._lock:
@@ -256,7 +400,8 @@ class TerminalSessionManager:
         session = await self.get_session(terminal_id)
         session.last_activity = self._now()
         session.audit_logger.log_event("input", data=data)
-        await session.backend.write(data)
+        async with session.command_lock:
+            await session.backend.write(data)
 
     async def write_and_wait(
         self,
@@ -277,33 +422,34 @@ class TerminalSessionManager:
         queue: asyncio.Queue = asyncio.Queue(maxsize=2048)
         session.subscribers.add(queue)
         try:
-            session.last_activity = self._now()
-            session.audit_logger.log_event("input", data=data)
-            await session.backend.write(data)
+            async with session.command_lock:
+                session.last_activity = self._now()
+                session.audit_logger.log_event("input", data=data)
+                await session.backend.write(data)
 
-            chunks: list[bytes] = []
-            deadline = asyncio.get_event_loop().time() + timeout
-            settled = False
+                chunks: list[bytes] = []
+                deadline = asyncio.get_event_loop().time() + timeout
+                settled = False
 
-            while True:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    break
-                wait_time = min(remaining, idle_timeout)
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=wait_time)
-                except asyncio.TimeoutError:
-                    # No output for idle_timeout — command likely finished
-                    if chunks:
-                        settled = True
+                while True:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
                         break
-                    # Haven't seen any output yet; keep waiting up to deadline
-                    continue
-                if isinstance(event, TerminalEvent) and event.type == WSMessageType.OUTPUT:
-                    if isinstance(event.payload, (bytes, bytearray)):
-                        chunks.append(bytes(event.payload))
-                    elif isinstance(event.payload, str):
-                        chunks.append(event.payload.encode("utf-8", errors="replace"))
+                    wait_time = min(remaining, idle_timeout)
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=wait_time)
+                    except asyncio.TimeoutError:
+                        # No output for idle_timeout — command likely finished
+                        if chunks:
+                            settled = True
+                            break
+                        # Haven't seen any output yet; keep waiting up to deadline
+                        continue
+                    if isinstance(event, TerminalEvent) and event.type == WSMessageType.OUTPUT:
+                        if isinstance(event.payload, (bytes, bytearray)):
+                            chunks.append(bytes(event.payload))
+                        elif isinstance(event.payload, str):
+                            chunks.append(event.payload.encode("utf-8", errors="replace"))
 
             raw = b"".join(chunks)
             text = raw.decode("utf-8", errors="replace")

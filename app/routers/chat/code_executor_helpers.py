@@ -10,6 +10,9 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from app.services.plans.acceptance_criteria import (
+    extract_explicit_deliverables_from_text,
+)
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 
 from .guardrail_handlers import resolve_explicit_task_scope_target
@@ -22,6 +25,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*previous\.([^\}]+)\s*\}\}")
+_COMPLETED_TASK_STATUSES = {"completed", "done", "success"}
+_CASCADE_COMPLETION_MARKER = "completed as part of parent task"
 _INTERNAL_ARTIFACT_FILENAMES = {"result.json", "manifest.json", "preview.json"}
 _INTERNAL_TOOL_OUTPUT_RE = re.compile(
     r"(?:^|/)tool_outputs/job_[^/]+/step_\d+_[^/]+(?:/.*)?$",
@@ -94,11 +99,10 @@ def collect_completed_task_outputs(
     for node in plan_tree.nodes.values():
         if node.id == current_task_id:
             continue
-        status = (node.status or "").strip().lower()
-        if status not in ("completed", "done"):
+        if not _task_has_trusted_completion_evidence(plan_tree, node):
             continue
         artifact_paths = extract_task_artifact_paths(node)
-        result_text = (node.execution_result or "").strip()
+        result_text = _summarize_completion_result_text(node)
         if not result_text and not artifact_paths:
             continue
         if artifact_paths:
@@ -139,6 +143,108 @@ def _coerce_execution_payload(value: Any) -> Optional[Dict[str, Any]]:
     if isinstance(payload, dict):
         return payload
     return None
+
+
+def _is_cascade_completed(node: Any) -> bool:
+    status = str(getattr(node, "status", "") or "").strip().lower()
+    if status not in _COMPLETED_TASK_STATUSES:
+        return False
+    result = str(getattr(node, "execution_result", "") or "").strip().lower()
+    return _CASCADE_COMPLETION_MARKER in result
+
+
+def _payload_indicates_verified_completion(payload: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+
+    candidates: List[Any] = [payload.get("verification_status")]
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.append(metadata.get("verification_status"))
+        nested_artifact_verification = metadata.get("artifact_verification")
+        if isinstance(nested_artifact_verification, dict):
+            candidates.append(nested_artifact_verification.get("status"))
+    artifact_verification = payload.get("artifact_verification")
+    if isinstance(artifact_verification, dict):
+        candidates.append(artifact_verification.get("status"))
+
+    return any(
+        str(value or "").strip().lower() in {"passed", "verified", "success"}
+        for value in candidates
+    )
+
+
+def _task_has_trusted_completion_evidence(
+    plan_tree: Any,
+    node: Any,
+    *,
+    _memo: Optional[Dict[int, bool]] = None,
+) -> bool:
+    if node is None:
+        return False
+
+    if _memo is None:
+        _memo = {}
+
+    node_id = getattr(node, "id", None)
+    if isinstance(node_id, int) and node_id in _memo:
+        return _memo[node_id]
+
+    status = str(getattr(node, "status", "") or "").strip().lower()
+    if status not in _COMPLETED_TASK_STATUSES or _is_cascade_completed(node):
+        trusted = False
+    else:
+        payload = _coerce_execution_payload(node)
+        trusted = bool(extract_task_artifact_paths(node)) or _payload_indicates_verified_completion(
+            payload
+        )
+
+        child_ids: List[int] = []
+        if (
+            plan_tree is not None
+            and hasattr(plan_tree, "children_ids")
+            and hasattr(plan_tree, "has_node")
+            and hasattr(plan_tree, "get_node")
+        ):
+            for raw_child_id in plan_tree.children_ids(getattr(node, "id", None)):
+                try:
+                    child_id = int(raw_child_id)
+                except (TypeError, ValueError):
+                    continue
+                if not plan_tree.has_node(child_id):
+                    continue
+                child_ids.append(child_id)
+
+        if child_ids and not trusted:
+            trusted = all(
+                _task_has_trusted_completion_evidence(
+                    plan_tree,
+                    plan_tree.get_node(child_id),
+                    _memo=_memo,
+                )
+                for child_id in child_ids
+            )
+
+    if isinstance(node_id, int):
+        _memo[node_id] = trusted
+    return trusted
+
+
+def _summarize_completion_result_text(node: Any) -> str:
+    payload = _coerce_execution_payload(node)
+    if isinstance(payload, dict):
+        for candidate in (
+            payload.get("summary"),
+            payload.get("result"),
+            payload.get("content"),
+            (payload.get("metadata") or {}).get("summary")
+            if isinstance(payload.get("metadata"), dict)
+            else None,
+        ):
+            text = str(candidate or "").strip()
+            if text:
+                return text
+    return str(getattr(node, "execution_result", "") or "").strip()
 
 
 def _collect_candidate_artifact_paths(payload: Any, *, max_paths: int = 20) -> List[str]:
@@ -484,12 +590,37 @@ def compose_code_executor_atomic_task_prompt(
         "  DETAIL: <one sentence>",
     ]
 
-    if user_task_context and user_task_context != task_instruction:
+    task_deliverables = extract_explicit_deliverables_from_text(task_instruction)
+    user_deliverables = extract_explicit_deliverables_from_text(user_task_context)
+    deliverable_conflict = bool(
+        task_deliverables
+        and user_deliverables
+        and not {item.lower() for item in task_deliverables}.intersection(
+            item.lower() for item in user_deliverables
+        )
+    )
+
+    if user_task_context and user_task_context != task_instruction and not deliverable_conflict:
         lines.extend(
             [
                 "",
                 "User-provided context (reference only, do not expand scope):",
                 user_task_context,
+            ]
+        )
+    elif deliverable_conflict:
+        logger.warning(
+            "[CODE_EXECUTOR] Omitted conflicting user context for bound task %s. task_deliverables=%s user_deliverables=%s",
+            getattr(task_node, "id", None),
+            task_deliverables,
+            user_deliverables,
+        )
+        lines.extend(
+            [
+                "",
+                "Conflicting ad hoc user context was omitted because its requested deliverables do not match the authoritative atomic task contract.",
+                f"Authoritative deliverables: {', '.join(task_deliverables[:6]) or 'none'}",
+                f"Conflicting requested deliverables: {', '.join(user_deliverables[:6]) or 'none'}",
             ]
         )
 

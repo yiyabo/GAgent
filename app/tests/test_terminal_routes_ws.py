@@ -16,6 +16,13 @@ def _build_client() -> TestClient:
     return TestClient(app)
 
 
+def _cleanup_reaper() -> None:
+    task = getattr(terminal_routes.terminal_session_manager, "_reaper_task", None)
+    if task is not None:
+        task.cancel()
+        terminal_routes.terminal_session_manager._reaper_task = None
+
+
 def test_terminal_websocket_roundtrip(monkeypatch) -> None:
     monkeypatch.setenv("TERMINAL_ENABLED", "true")
     client = _build_client()
@@ -36,6 +43,7 @@ def test_terminal_websocket_roundtrip(monkeypatch) -> None:
     finally:
         if terminal_id:
             client.delete(f"/api/v1/terminal/sessions/{terminal_id}")
+        _cleanup_reaper()
         client.close()
 
 
@@ -87,4 +95,5 @@ def test_terminal_websocket_mode_mismatch_reuses_chat_session_with_requested_mod
             assert hello["payload"]["terminal_id"] == "qwen-tid"
             assert hello["payload"]["mode"] == "qwen_code"
     finally:
+        _cleanup_reaper()
         client.close()

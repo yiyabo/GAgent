@@ -1,4 +1,4 @@
-from app.routers.plan_routes import _build_execution_dependency_plan
+from app.routers.plan_routes import _build_execution_dependency_plan, _to_dependency_plan_response
 from app.services.plans.plan_models import PlanNode, PlanTree
 
 
@@ -60,3 +60,24 @@ def test_execution_plan_keeps_target_only_when_subtasks_disabled() -> None:
     )
 
     assert plan.execution_order == [1]
+
+
+def test_dependency_plan_response_includes_execution_items_and_outputs() -> None:
+    tree = _build_tree()
+    tree.nodes[2].instruction = "Write `results/child_a.csv` for downstream analysis."
+    tree.nodes[3].instruction = "Write `results/child_b.md` for downstream analysis."
+
+    plan = _build_execution_dependency_plan(
+        tree,
+        target_task_id=1,
+        include_dependencies=False,
+        include_subtasks=True,
+    )
+    response = _to_dependency_plan_response(tree, plan)
+
+    assert response.execution_items
+    child_a = next(item for item in response.execution_items if item.task_id == 2)
+    root = next(item for item in response.execution_items if item.task_id == 1)
+    assert "results/child_a.csv" in child_a.expected_deliverables
+    assert child_a.execution_state == "blocked"
+    assert set(root.depends_on) == {2, 3}

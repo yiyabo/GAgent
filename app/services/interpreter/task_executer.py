@@ -453,6 +453,10 @@ class TaskExecutor:
         configured_backend = str(
             getattr(settings, "code_execution_backend", "auto") or "auto"
         ).strip().lower() or "auto"
+        auto_strategy = str(
+            getattr(settings, "code_execution_auto_strategy", "qwen_primary")
+            or "qwen_primary"
+        ).strip().lower() or "qwen_primary"
 
         if configured_backend in {"local", "qwen_code", "claude_code"}:
             return (
@@ -466,15 +470,45 @@ class TaskExecutor:
             task_description,
         )
         has_dataset_context = bool(self.metadata_list or self.data_file_paths)
+        qwen_available = self._qwen_code_backend_available()
+
+        if auto_strategy == "split":
+            if engineering_task or not has_dataset_context:
+                if qwen_available:
+                    reason = (
+                        "engineering-style task detected"
+                        if engineering_task
+                        else "general code task without dataset context"
+                    )
+                    return "qwen_code", "qwen_primary", reason
+                fallback_reason = (
+                    "engineering-style task detected but qwen_code is unavailable"
+                    if engineering_task
+                    else "qwen_code unavailable for a general code task"
+                )
+                return "local", "local_fallback", fallback_reason
+
+            reason = (
+                "visualization or analysis task with dataset context"
+                if is_visualization
+                else "dataset-backed analysis task"
+            )
+            return "local", "analysis_fast_path", reason
+
+        if qwen_available:
+            if engineering_task:
+                reason = (
+                    "engineering-style task routed to shared qwen_code session"
+                )
+            elif has_dataset_context:
+                reason = (
+                    "dataset-backed code task routed to qwen_code primary lane"
+                )
+            else:
+                reason = "general code task without dataset context"
+            return "qwen_code", "qwen_primary", reason
 
         if engineering_task or not has_dataset_context:
-            if self._qwen_code_backend_available():
-                reason = (
-                    "engineering-style task detected"
-                    if engineering_task
-                    else "general code task without dataset context"
-                )
-                return "qwen_code", "engineering_primary", reason
             fallback_reason = (
                 "engineering-style task detected but qwen_code is unavailable"
                 if engineering_task
@@ -483,11 +517,11 @@ class TaskExecutor:
             return "local", "local_fallback", fallback_reason
 
         reason = (
-            "visualization or analysis task with dataset context"
+            "dataset-backed analysis task fell back to local because qwen_code is unavailable"
             if is_visualization
-            else "dataset-backed analysis task"
+            else "dataset-backed code task fell back to local because qwen_code is unavailable"
         )
-        return "local", "analysis_fast_path", reason
+        return "local", "local_fallback", reason
 
     def _analyze_task_type(self, task_title: str, task_description: str) -> TaskType:
         """Use the LLM to classify whether the task requires code execution."""

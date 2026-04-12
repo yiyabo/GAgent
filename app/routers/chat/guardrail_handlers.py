@@ -13,6 +13,9 @@ from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from app.services.plans.acceptance_criteria import (
+    extract_explicit_deliverables_from_text,
+)
 from app.services.llm.structured_response import LLMAction, LLMStructuredResponse
 
 from .guardrails import (
@@ -1106,13 +1109,27 @@ def apply_completion_claim_guardrail(
 
     current_task_id = (getattr(agent, "extra_context", {}) or {}).get("current_task_id")
     plan_id = getattr(getattr(agent, "plan_session", None), "plan_id", None)
-    if current_task_id is not None and plan_id is not None:
+    tree = None
+    if plan_id is not None:
+        try:
+            tree = getattr(agent, "plan_tree", None)
+            has_node = getattr(tree, "has_node", None)
+            if tree is None or not callable(has_node):
+                tree = agent.plan_session.repo.get_plan_tree(plan_id)
+            elif current_task_id is not None:
+                try:
+                    task_id = int(current_task_id)
+                except (TypeError, ValueError):
+                    task_id = None
+                if task_id is not None and not has_node(task_id):
+                    tree = agent.plan_session.repo.get_plan_tree(plan_id)
+        except Exception:
+            tree = None
+
+    if current_task_id is not None and tree is not None:
         try:
             task_id = int(current_task_id)
-            tree = getattr(agent, "plan_tree", None)
-            if tree is None or not getattr(tree, "has_node", lambda *_: False)(task_id):
-                tree = agent.plan_session.repo.get_plan_tree(plan_id)
-            if tree is not None and tree.has_node(task_id):
+            if tree.has_node(task_id):
                 node = tree.get_node(task_id)
                 task_status = str(getattr(node, "status", "") or "").strip().lower()
                 if task_status not in {"", "completed", "done", "success"}:
@@ -1122,32 +1139,405 @@ def apply_completion_claim_guardrail(
                         "task status and blocker instead."
                     )
                     return structured
+                raw_execution_result = getattr(node, "execution_result", None)
+                if isinstance(raw_execution_result, str):
+                    try:
+                        raw_execution_result = json.loads(raw_execution_result)
+                    except Exception:
+                        raw_execution_result = None
+                payload_meta = (
+                    raw_execution_result.get("metadata")
+                    if isinstance(raw_execution_result, dict)
+                    else None
+                )
+                if isinstance(payload_meta, dict):
+                    verification_status = str(
+                        payload_meta.get("verification_status") or ""
+                    ).strip().lower()
+                    failure_kind = str(payload_meta.get("failure_kind") or "").strip().lower()
+                    if verification_status == "failed" or failure_kind == "contract_mismatch":
+                        structured.llm_reply.message = (
+                            f"The reply claimed task completion, but deterministic artifact verification "
+                            f"for bound task [{task_id}] is `{verification_status or failure_kind}`. "
+                            "Do not report completion. Summarize the contract mismatch and missing outputs instead."
+                        )
+                        return structured
         except Exception:
             pass
+
+    if tree is not None:
+        claimed_completed_task_ids = _extract_completed_task_ids_from_reply(reply_text)
+        unsupported_task_ids: List[int] = []
+        for task_id in claimed_completed_task_ids:
+            if not tree.has_node(task_id):
+                unsupported_task_ids.append(task_id)
+                continue
+            if not _plan_node_has_trusted_completion_evidence(tree, tree.get_node(task_id)):
+                unsupported_task_ids.append(task_id)
+        if unsupported_task_ids:
+            unsupported_label = ", ".join(f"[{task_id}]" for task_id in unsupported_task_ids)
+            structured.llm_reply.message = (
+                "The reply claimed these plan tasks were completed, but the bound plan has no "
+                f"trustworthy execution evidence for them: {unsupported_label}. Do not mark them "
+                "completed. Only summarize tasks whose own run produced verified outputs or passed "
+                "deterministic artifact verification."
+            )
+            return structured
+
+        mismatched_deliverables = _collect_mismatched_task_deliverables(reply_text, tree)
+        if mismatched_deliverables:
+            mismatch_lines = []
+            for task_id, deliverables in mismatched_deliverables.items():
+                preview = ", ".join(deliverables[:3])
+                if len(deliverables) > 3:
+                    preview += ", ..."
+                mismatch_lines.append(f"- Task [{task_id}]: {preview}")
+            mismatch_block = "\n".join(mismatch_lines)
+            structured.llm_reply.message = (
+                "The reply assigned deliverables to plan tasks that do not match those tasks' "
+                "recorded outputs, so completion cannot be trusted:\n"
+                f"{mismatch_block}\n"
+                "Do not mix files from unrelated runs into a task summary. Only report deliverables "
+                "that belong to that specific task's verified or recorded outputs."
+            )
+            return structured
 
     declared_paths = extract_declared_absolute_paths(reply_text)
     if not declared_paths:
         return structured
 
-    missing_paths: List[str] = []
+    invalid_paths: List[str] = []
     for raw_path in declared_paths:
         try:
-            if not Path(raw_path).exists():
-                missing_paths.append(raw_path)
+            candidate = Path(raw_path)
+            if not candidate.exists():
+                invalid_paths.append(f"{raw_path} (missing)")
+                continue
+            if candidate.is_file() and candidate.stat().st_size <= 0:
+                invalid_paths.append(f"{raw_path} (empty)")
         except Exception:
-            missing_paths.append(raw_path)
+            invalid_paths.append(f"{raw_path} (unreadable)")
 
-    if not missing_paths:
+    if not invalid_paths:
         return structured
 
-    missing_block = "\n".join(f"- {path}" for path in missing_paths)
+    missing_block = "\n".join(f"- {path}" for path in invalid_paths)
     structured.llm_reply.message = (
-        "The reply claimed files were generated, but the following paths do not currently exist, "
+        "The reply claimed files were generated, but the following paths are missing or empty, "
         "so completion cannot be confirmed:\n"
         f"{missing_block}\n"
-        "Please first verify files are actually written, or clearly state that execution is still in progress."
+        "Please first verify files are actually written and non-empty, or clearly state that execution is still in progress."
     )
     return structured
+
+
+def _extract_completed_task_ids_from_reply(reply_text: str) -> List[int]:
+    text = str(reply_text or "")
+    if not text:
+        return []
+
+    ordered_ids: List[int] = []
+    seen: set[int] = set()
+    in_completed_section = False
+
+    completed_section_re = re.compile(
+        r"^\s{0,3}#{1,6}\s*(?:completed(?:\s+sub-?tasks|\s+tasks)?|已完成(?:的)?(?:子)?任务)\b",
+        flags=re.IGNORECASE,
+    )
+    heading_re = re.compile(r"^\s{0,3}#{1,6}\s+")
+    table_completion_re = re.compile(
+        r"^\|\s*:?\s*(\d+)\s*\|.*\|\s*(?:completed|done|success|已完成|完成)(?:\s*\([^|]+\))?\s*\|?\s*$",
+        flags=re.IGNORECASE,
+    )
+    task_patterns = (
+        re.compile(r"\btask\s*[#:=：]?\s*(\d+)\b", flags=re.IGNORECASE),
+        re.compile(r"任务\s*[#:=：]?\s*(\d+)"),
+        re.compile(r"第\s*(\d+)\s*(?:个)?任务"),
+    )
+
+    def _append(task_id: int) -> None:
+        if task_id <= 0 or task_id in seen:
+            return
+        seen.add(task_id)
+        ordered_ids.append(task_id)
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if completed_section_re.search(line):
+            in_completed_section = True
+            continue
+        line_mentions_task = any(pattern.search(line) for pattern in task_patterns)
+        if heading_re.search(line) and not completed_section_re.search(line) and not line_mentions_task:
+            in_completed_section = False
+
+        table_match = table_completion_re.search(line)
+        if table_match:
+            _append(int(table_match.group(1)))
+            continue
+
+        line_lower = line.lower()
+        line_claims_completion = (
+            in_completed_section
+            or "已完成" in line
+            or "验证通过" in line
+            or "已通过验证" in line
+            or "verification passed" in line_lower
+            or "already completed" in line_lower
+            or "completed" in line_lower
+            or "verified" in line_lower
+        )
+        if not line_claims_completion:
+            continue
+        for pattern in task_patterns:
+            for match in pattern.finditer(line):
+                try:
+                    _append(int(match.group(1)))
+                except (TypeError, ValueError):
+                    continue
+
+    return ordered_ids
+
+
+def _extract_task_claimed_deliverables(reply_text: str) -> Dict[int, List[str]]:
+    text = str(reply_text or "")
+    if not text:
+        return {}
+
+    task_patterns = (
+        re.compile(r"\btask\s*[#:=：]?\s*(\d+)\b", flags=re.IGNORECASE),
+        re.compile(r"任务\s*[#:=：]?\s*(\d+)"),
+        re.compile(r"第\s*(\d+)\s*(?:个)?任务"),
+    )
+    heading_re = re.compile(r"^\s{0,3}#{1,6}\s+")
+
+    section_lines: Dict[int, List[str]] = {}
+    current_task_id: Optional[int] = None
+
+    def _extract_task_id(line: str) -> Optional[int]:
+        for pattern in task_patterns:
+            match = pattern.search(line)
+            if not match:
+                continue
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        task_id_in_line = _extract_task_id(line)
+        if task_id_in_line is not None:
+            current_task_id = task_id_in_line
+        elif heading_re.search(line):
+            current_task_id = None
+
+        if current_task_id is None:
+            continue
+        section_lines.setdefault(current_task_id, []).append(raw_line)
+
+    claimed: Dict[int, List[str]] = {}
+    for task_id, lines in section_lines.items():
+        deliverables = extract_explicit_deliverables_from_text("\n".join(lines))
+        if not deliverables:
+            continue
+        claimed[task_id] = deliverables
+
+    return claimed
+
+
+def _deliverable_match_tokens(value: str) -> List[str]:
+    text = str(value or "").strip().strip("`'\"")
+    if not text:
+        return []
+    normalized = text.replace("\\", "/").lstrip("./").lower()
+    if not normalized:
+        return []
+    parts = [segment for segment in normalized.split("/") if segment]
+    tokens = [normalized]
+    if parts:
+        tokens.append(parts[-1])
+    if len(parts) >= 2:
+        tokens.append("/".join(parts[-2:]))
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for item in tokens:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _collect_mismatched_task_deliverables(
+    reply_text: str,
+    tree: "PlanTree",
+) -> Dict[int, List[str]]:
+    claimed = _extract_task_claimed_deliverables(reply_text)
+    if not claimed:
+        return {}
+
+    mismatched: Dict[int, List[str]] = {}
+    for task_id, deliverables in claimed.items():
+        if not deliverables or not tree.has_node(task_id):
+            continue
+        payload = _coerce_execution_result_payload(tree.get_node(task_id))
+        actual_paths = _collect_plan_node_artifact_paths(payload)
+        if not actual_paths:
+            mismatched[task_id] = deliverables
+            continue
+        actual_tokens = {
+            token
+            for path in actual_paths
+            for token in _deliverable_match_tokens(path)
+        }
+        unmatched = [
+            item
+            for item in deliverables
+            if actual_tokens.isdisjoint(_deliverable_match_tokens(item))
+        ]
+        if unmatched:
+            mismatched[task_id] = unmatched
+    return mismatched
+
+
+def _coerce_execution_result_payload(value: Any) -> Optional[Dict[str, Any]]:
+    payload = value
+    if hasattr(value, "execution_result"):
+        payload = getattr(value, "execution_result")
+    if isinstance(payload, str):
+        raw = payload.strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _payload_indicates_verified_completion(payload: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+
+    candidates: List[Any] = [payload.get("verification_status")]
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.append(metadata.get("verification_status"))
+        nested_artifact_verification = metadata.get("artifact_verification")
+        if isinstance(nested_artifact_verification, dict):
+            candidates.append(nested_artifact_verification.get("status"))
+    artifact_verification = payload.get("artifact_verification")
+    if isinstance(artifact_verification, dict):
+        candidates.append(artifact_verification.get("status"))
+
+    return any(
+        str(value or "").strip().lower() in {"passed", "verified", "success"}
+        for value in candidates
+    )
+
+
+def _collect_plan_node_artifact_paths(
+    payload: Optional[Dict[str, Any]],
+    *,
+    max_paths: int = 20,
+) -> List[str]:
+    if not isinstance(payload, dict):
+        return []
+
+    found: List[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        found.append(text)
+
+    def _visit(value: Any) -> None:
+        if len(found) >= max_paths:
+            return
+        if isinstance(value, dict):
+            for item_key, item_value in value.items():
+                lowered = str(item_key or "").strip().lower()
+                if lowered in {
+                    "artifact_paths",
+                    "produced_files",
+                    "session_artifact_paths",
+                    "verified_outputs",
+                    "actual_outputs",
+                    "expected_deliverables",
+                } and isinstance(item_value, (list, tuple, set)):
+                    for item in item_value:
+                        _add(item)
+                    continue
+                if lowered in {"manifest_path", "preview_path", "report_path"}:
+                    _add(item_value)
+                    continue
+                if isinstance(item_value, (dict, list, tuple, set)):
+                    _visit(item_value)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _visit(item)
+
+    _visit(payload)
+    return found[:max_paths]
+
+
+def _plan_node_has_trusted_completion_evidence(
+    tree: "PlanTree",
+    node: Any,
+    *,
+    _memo: Optional[Dict[int, bool]] = None,
+) -> bool:
+    if node is None:
+        return False
+
+    if _memo is None:
+        _memo = {}
+
+    node_id = getattr(node, "id", None)
+    if isinstance(node_id, int) and node_id in _memo:
+        return _memo[node_id]
+
+    status = str(getattr(node, "status", "") or "").strip().lower()
+    if status not in {"completed", "done", "success"} or _is_cascade_completed(node):
+        trusted = False
+    else:
+        payload = _coerce_execution_result_payload(node)
+        trusted = bool(_collect_plan_node_artifact_paths(payload)) or _payload_indicates_verified_completion(
+            payload
+        )
+        child_ids = [
+            child_id
+            for child_id in getattr(tree, "children_ids", lambda *_: [])(getattr(node, "id", None))
+            if isinstance(child_id, int) and tree.has_node(child_id)
+        ]
+        if child_ids and not trusted:
+            trusted = all(
+                _plan_node_has_trusted_completion_evidence(
+                    tree,
+                    tree.get_node(child_id),
+                    _memo=_memo,
+                )
+                for child_id in child_ids
+            )
+
+    if isinstance(node_id, int):
+        _memo[node_id] = trusted
+    return trusted
 
 
 # ---------------------------------------------------------------------------

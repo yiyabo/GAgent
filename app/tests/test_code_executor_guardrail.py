@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import pytest  # pylint: disable=import-error  # type: ignore[import-unresolved]
 from pathlib import Path
 
@@ -16,11 +17,15 @@ from app.services.plans.plan_models import PlanNode, PlanTree
 from tool_box.tools_impl import code_executor as code_executor_module
 from tool_box.tools_impl.code_executor import (
     _DEFAULT_ALLOWED_TOOL_NAMES,
+    _build_execution_spec,
+    _build_qwen_execution_session_id,
     _build_cli_failure_error,
     _build_code_executor_subprocess_env,
     _compact_cli_text,
     _coerce_positive_int,
     _detect_scope_blocked,
+    _extract_pending_qwen_function_call,
+    _extract_pending_qwen_shell_command,
     _extract_readable_error,
     _is_path_within,
     _normalize_csv_values,
@@ -36,9 +41,18 @@ from tool_box.tools_impl.code_executor import (
     _iter_stream_lines_unbounded,
     _looks_like_engineering_task,
     _execute_task_locally,
+    _resolve_code_executor_backend,
     _validate_api_mode_config,
     _validate_scope_contract,
 )
+
+
+def _force_local_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        code_executor_module,
+        "_resolve_code_executor_backend",
+        lambda _task: ("local", "analysis_fast_path", "forced local backend for test"),
+    )
 
 
 def test_normalize_csv_values_handles_strings_and_lists() -> None:
@@ -97,6 +111,50 @@ def test_build_cli_failure_error_includes_exit_and_stream_excerpts() -> None:
     )
     assert "exit_code=127" in message
     assert "stderr=claude: command not found" in message
+
+
+def test_build_cli_failure_error_uses_qwen_label_and_debug_log() -> None:
+    message = _build_cli_failure_error(
+        return_code=1,
+        stderr="Debug mode enabled Logging to: /tmp/qwen-debug.txt",
+        stdout="",
+        backend_label="Qwen Code (container)",
+    )
+
+    assert message == (
+        "Qwen Code (container) execution failed: "
+        "exit_code=1; debug_log=/tmp/qwen-debug.txt"
+    )
+
+
+def test_build_cli_failure_error_uses_qwen_label_and_split_debug_log() -> None:
+    message = _build_cli_failure_error(
+        return_code=1,
+        stderr="Debug mode enabled\nLogging to: /tmp/qwen-debug-split.txt",
+        stdout="",
+        backend_label="Qwen Code (container)",
+    )
+
+    assert message == (
+        "Qwen Code (container) execution failed: "
+        "exit_code=1; debug_log=/tmp/qwen-debug-split.txt"
+    )
+
+
+def test_build_cli_failure_error_prefers_real_qwen_stderr_over_debug_banner() -> None:
+    message = _build_cli_failure_error(
+        return_code=1,
+        stderr=(
+            "Debug mode enabled Logging to: /tmp/qwen-debug.txt\n"
+            "Error: Session Id abc is already in use."
+        ),
+        stdout="",
+        backend_label="Qwen Code",
+    )
+
+    assert message.startswith("Qwen Code execution failed:")
+    assert "stderr=Error: Session Id abc is already in use." in message
+    assert "debug_log=" not in message
 
 
 def test_extract_readable_error_does_not_default_http_400_to_missing_api_key() -> None:
@@ -197,6 +255,77 @@ def test_validate_scope_contract_requires_plan_and_task_when_enabled() -> None:
         )
         is None
     )
+
+
+def test_resolve_code_executor_backend_auto_prefers_qwen_primary_for_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.config.executor_config.get_executor_settings",
+        lambda: SimpleNamespace(
+            code_execution_backend="auto",
+            code_execution_auto_strategy="qwen_primary",
+        ),
+    )
+    monkeypatch.setattr(code_executor_module, "_qwen_code_cli_available", lambda: True)
+
+    backend, lane, reason = _resolve_code_executor_backend(
+        "Generate subset_manifest.csv and qc_report.pdf from the dataset"
+    )
+
+    assert backend == "qwen_code"
+    assert lane == "qwen_primary"
+    assert "qwen_code primary lane" in reason
+
+
+def test_resolve_code_executor_backend_auto_split_keeps_local_for_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.config.executor_config.get_executor_settings",
+        lambda: SimpleNamespace(
+            code_execution_backend="auto",
+            code_execution_auto_strategy="split",
+        ),
+    )
+    monkeypatch.setattr(code_executor_module, "_qwen_code_cli_available", lambda: True)
+
+    backend, lane, reason = _resolve_code_executor_backend(
+        "Generate subset_manifest.csv and qc_report.pdf from the dataset"
+    )
+
+    assert backend == "local"
+    assert lane == "analysis_fast_path"
+    assert "analysis-style code task routed to local fast path" == reason
+
+
+def test_build_execution_spec_derives_ad_hoc_contract_without_inputs() -> None:
+    task = """
+Execute a 3-node phage QC pipeline.
+
+- `pipeline.py` is only a reference script name and is not a deliverable.
+- `data/source_manifest.tsv` is an input file, not a final deliverable.
+- The final deliverables that must match exactly are:
+  - `results/subset_manifest.csv`
+  - `results/qc_summary.md`
+  - `results/qc_report.pdf`
+"""
+
+    spec = _build_execution_spec(None, None, task_text=task)
+
+    assert spec is not None
+    assert spec["plan_id"] is None
+    assert spec["task_id"] is None
+    assert spec["task_instruction"] == task.strip()
+    assert spec["acceptance_criteria"] == {
+        "category": "file_data",
+        "blocking": True,
+        "checks": [
+            {"type": "file_nonempty", "path": "results/subset_manifest.csv"},
+            {"type": "file_nonempty", "path": "results/qc_summary.md"},
+            {"type": "file_nonempty", "path": "results/qc_report.pdf"},
+        ],
+    }
 
 
 def test_coerce_positive_int_validates_value() -> None:
@@ -464,6 +593,51 @@ def test_collect_completed_task_outputs_includes_artifact_paths() -> None:
     assert "/home/zczhao/GAgent/runtime/session_x/plan68_task3/run_1/results" not in summary
 
 
+def test_collect_completed_task_outputs_skips_untrusted_completed_nodes() -> None:
+    node_2 = PlanNode(
+        id=2,
+        plan_id=68,
+        name="QC",
+        status="completed",
+        execution_result=json.dumps(
+            {
+                "status": "completed",
+                "metadata": {"verification_status": "passed"},
+                "produced_files": [
+                    "/home/zczhao/GAgent/runtime/session_x/results/plan68_task2/run_1/subset_manifest.csv"
+                ],
+            }
+        ),
+    )
+    node_3 = PlanNode(
+        id=3,
+        plan_id=68,
+        name="Cascade completed child",
+        status="completed",
+        execution_result="completed as part of parent task",
+    )
+    node_4 = PlanNode(
+        id=4,
+        plan_id=68,
+        name="Text-only completion",
+        status="completed",
+        execution_result="completed without recorded outputs",
+    )
+    node_5 = PlanNode(id=5, plan_id=68, name="Current", status="running")
+    tree = PlanTree(
+        id=68,
+        title="Plan",
+        nodes={2: node_2, 3: node_3, 4: node_4, 5: node_5},
+        adjacency={None: [2, 3, 4, 5], 2: [], 3: [], 4: [], 5: []},
+    )
+
+    summary = collect_completed_task_outputs(tree, current_task_id=5)
+
+    assert "Task [2] QC" in summary
+    assert "Task [3]" not in summary
+    assert "Task [4]" not in summary
+
+
 def test_local_backend_enforces_scope_contract_before_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -489,6 +663,7 @@ def test_local_backend_returns_promoted_artifact_paths(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    _force_local_backend(monkeypatch)
 
     async def _fake_local(*, work_dir: str, **_kwargs):
         results_dir = Path(work_dir) / "results"
@@ -534,10 +709,11 @@ def test_local_backend_collects_custom_acceptance_output_dirs(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    _force_local_backend(monkeypatch)
     monkeypatch.setattr(
         code_executor_module,
         "_build_execution_spec",
-        lambda plan_id, task_id: {
+        lambda plan_id, task_id, task_text=None: {
             "plan_id": plan_id,
             "task_id": task_id,
             "task_name": "图表收集与初步审查",
@@ -594,6 +770,10 @@ def test_code_executor_handler_passes_docker_image_override_to_local_backend(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    _force_local_backend(monkeypatch)
+    async def _fake_task_dir_name(_task: str) -> str:
+        return "plot_task"
+    monkeypatch.setattr(code_executor_module, "_generate_task_dir_name_llm", _fake_task_dir_name)
     captured = {}
 
     async def _fake_local(**kwargs):
@@ -652,6 +832,10 @@ def test_code_executor_handler_infers_task_referenced_project_dir_for_local_back
 
     monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", runtime_root)
     monkeypatch.setattr(code_executor_module, "_PROJECT_ROOT", project_root)
+    _force_local_backend(monkeypatch)
+    async def _fake_task_dir_name(_task: str) -> str:
+        return "plot_task"
+    monkeypatch.setattr(code_executor_module, "_generate_task_dir_name_llm", _fake_task_dir_name)
 
     captured: dict[str, object] = {}
 
@@ -771,9 +955,9 @@ def test_code_executor_qwen_container_mounts_allowed_dirs_and_passes_session_id(
             captured["image"] = image
             return "test-container"
 
-        def get_qwen_session_id(self, session_id: str):
-            captured["qwen_session_lookup"] = session_id
-            return "qc-session-123"
+        def get_execution_lock(self, session_id: str):
+            captured["qwen_lock_lookup"] = session_id
+            return asyncio.Lock()
 
     monkeypatch.setattr(
         "app.services.terminal.qwen_session_driver.get_qwen_session_driver",
@@ -825,7 +1009,6 @@ def test_code_executor_qwen_container_mounts_allowed_dirs_and_passes_session_id(
 
     assert result["success"] is True
     assert captured["session_id"] == "chat-xyz"
-    assert captured["qwen_session_lookup"] == "chat-xyz"
 
     mounts = captured["extra_mounts"]
     expected_session_dir = (runtime_root / "session_chat-xyz").resolve()
@@ -834,16 +1017,375 @@ def test_code_executor_qwen_container_mounts_allowed_dirs_and_passes_session_id(
     assert (str(extra_dir), str(extra_dir)) in mounts
 
     command = captured["command"]
-    assert command[:6] == [
+    assert command[:8] == [
         "docker",
         "exec",
+        "-e",
+        "PATH=/opt/conda/bin:/opt/conda/condabin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "-w",
         captured["host_work_dir"],
         "test-container",
-        "qwen",
+        "/opt/conda/bin/qwen",
     ]
     assert "--session-id" in command
-    assert command[command.index("--session-id") + 1] == "qc-session-123"
+    assert command[command.index("--session-id") + 1] == _build_qwen_execution_session_id(
+        "chat-xyz",
+        result["run_id"],
+    )
+    assert captured["qwen_lock_lookup"] == "chat-xyz"
+
+
+def test_code_executor_rotates_qwen_session_id_after_in_use_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    project_root = tmp_path / "project"
+    (project_root / "data").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(code_executor_module, "_PROJECT_ROOT", project_root)
+    monkeypatch.setattr(
+        code_executor_module,
+        "_resolve_code_executor_backend",
+        lambda _task: ("qwen_code", "configured_backend", "test"),
+    )
+
+    async def _fake_task_dir(_task: str) -> str:
+        return "retry-demo"
+
+    monkeypatch.setattr(code_executor_module, "_generate_task_dir_name_llm", _fake_task_dir)
+
+    class _FakeDriver:
+        async def ensure_container(
+            self,
+            session_id: str,
+            *,
+            host_work_dir: str,
+            extra_mounts=None,
+            image=None,
+        ):
+            return "test-container"
+
+        def get_execution_lock(self, session_id: str):
+            return asyncio.Lock()
+
+    monkeypatch.setattr(
+        "app.services.terminal.qwen_session_driver.get_qwen_session_driver",
+        lambda: _FakeDriver(),
+    )
+    monkeypatch.setattr(
+        code_executor_module,
+        "_read_qwen_transcript_text",
+        AsyncMock(return_value=""),
+    )
+
+    async def _fast_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
+
+    class _FakeStream:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+            self._sent = False
+
+        async def read(self, _chunk_size: int = 65536) -> bytes:
+            if self._sent:
+                return b""
+            self._sent = True
+            return self._payload
+
+    commands: list[list[str]] = []
+
+    class _FakeProcess:
+        def __init__(self, command: list[str], *, returncode: int, stdout: bytes, stderr: bytes):
+            self.command = list(command)
+            self.stdout = _FakeStream(stdout)
+            self.stderr = _FakeStream(stderr)
+            self.returncode = returncode
+
+        async def wait(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    async def _fake_create_subprocess_exec(*command, **kwargs):
+        command_list = list(command)
+        commands.append(command_list)
+        session_token = command_list[command_list.index("--session-id") + 1]
+        if len(commands) == 1:
+            return _FakeProcess(
+                command_list,
+                returncode=1,
+                stdout=b"",
+                stderr=f"Error: Session Id {session_token} is already in use.".encode("utf-8"),
+            )
+        return _FakeProcess(
+            command_list,
+            returncode=0,
+            stdout=b'{"result":"ok"}\n',
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    result = asyncio.run(
+        code_executor_module.code_executor_handler(
+            task="Summarize files in the workspace.",
+            session_id="chat-xyz",
+            require_task_context=False,
+            auto_fix=False,
+        )
+    )
+
+    assert result["success"] is True
+    assert len(commands) == 2
+    first_session = commands[0][commands[0].index("--session-id") + 1]
+    second_session = commands[1][commands[1].index("--session-id") + 1]
+    assert first_session != second_session
+
+
+def test_extract_pending_qwen_shell_command_from_incomplete_transcript() -> None:
+    transcript = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "id": "call_done",
+                                    "name": "write_file",
+                                    "args": {"file_path": "/tmp/demo.py", "content": "print('hi')"},
+                                }
+                            }
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "tool_result",
+                    "toolCallResult": {"callId": "call_done", "status": "success"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "id": "call_pending",
+                                    "name": "run_shell_command",
+                                    "args": {
+                                        "command": "python3 code/demo.py 2>&1",
+                                        "timeout": 120000,
+                                        "description": "Run the demo script",
+                                    },
+                                }
+                            }
+                        ],
+                    },
+                }
+            ),
+        ]
+    )
+
+    assert _extract_pending_qwen_function_call(transcript) == {
+        "id": "call_pending",
+        "name": "run_shell_command",
+        "args": {
+            "command": "python3 code/demo.py 2>&1",
+            "timeout": 120000,
+            "description": "Run the demo script",
+        },
+    }
+    assert _extract_pending_qwen_shell_command(transcript) == {
+        "call_id": "call_pending",
+        "command": "python3 code/demo.py 2>&1",
+        "description": "Run the demo script",
+        "timeout_ms": 600000,
+    }
+
+
+def test_extract_pending_qwen_shell_command_ignores_completed_tool_result() -> None:
+    transcript = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "id": "call_complete",
+                                    "name": "run_shell_command",
+                                    "args": {"command": "python3 code/demo.py", "timeout": 120000},
+                                }
+                            }
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "tool_result",
+                    "toolCallResult": {"callId": "call_complete", "status": "success"},
+                }
+            ),
+        ]
+    )
+
+    assert _extract_pending_qwen_shell_command(transcript) is None
+
+
+def test_code_executor_recovers_pending_qwen_shell_call_after_silent_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    project_root = tmp_path / "project"
+    (project_root / "data").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("QWEN_API_KEY", "sk-test")
+    monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(code_executor_module, "_PROJECT_ROOT", project_root)
+    monkeypatch.setattr(
+        code_executor_module,
+        "_resolve_code_executor_backend",
+        lambda _task: ("qwen_code", "configured_backend", "test"),
+    )
+
+    async def _fake_task_dir(_task: str) -> str:
+        return "recover-demo"
+
+    monkeypatch.setattr(code_executor_module, "_generate_task_dir_name_llm", _fake_task_dir)
+
+    class _FakeDriver:
+        async def ensure_container(
+            self,
+            session_id: str,
+            *,
+            host_work_dir: str,
+            extra_mounts=None,
+            image=None,
+        ):
+            return "test-container"
+
+        def get_execution_lock(self, session_id: str):
+            return asyncio.Lock()
+
+    monkeypatch.setattr(
+        "app.services.terminal.qwen_session_driver.get_qwen_session_driver",
+        lambda: _FakeDriver(),
+    )
+
+    transcript = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "role": "model",
+                "parts": [
+                    {
+                        "functionCall": {
+                            "id": "call_pending",
+                            "name": "run_shell_command",
+                            "args": {
+                                "command": "python3 code/pipeline_3node.py 2>&1",
+                                "timeout": 120000,
+                                "description": "Execute generated pipeline",
+                            },
+                        }
+                    }
+                ],
+            },
+        }
+    )
+    monkeypatch.setattr(
+        code_executor_module,
+        "_read_qwen_transcript_text",
+        AsyncMock(return_value=transcript),
+    )
+
+    class _FakeStream:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+            self._sent = False
+
+        async def read(self, _chunk_size: int = 65536) -> bytes:
+            if self._sent:
+                return b""
+            self._sent = True
+            return self._payload
+
+    class _QwenProcess:
+        def __init__(self, command: list[str]):
+            self.command = list(command)
+            self.stdout = _FakeStream(b"")
+            self.stderr = _FakeStream(
+                b"Debug mode enabled\nLogging to: /tmp/gagent_home/.qwen/debug/demo.txt\n"
+            )
+            self.returncode = 1
+
+        async def wait(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    class _RecoveryProcess:
+        def __init__(self, work_dir: str):
+            self._work_dir = work_dir
+            self.returncode = 0
+
+        async def communicate(self):
+            results_dir = Path(self._work_dir) / "results"
+            results_dir.mkdir(parents=True, exist_ok=True)
+            (results_dir / "recovered.txt").write_text("recovered\n", encoding="utf-8")
+            return (
+                b"Current working directory: /tmp/recover-demo\nRecovered pipeline execution\n",
+                b"",
+            )
+
+        def kill(self):
+            self.returncode = -9
+
+    commands: list[list[str]] = []
+
+    async def _fake_create_subprocess_exec(*command, **kwargs):
+        command_list = list(command)
+        commands.append(command_list)
+        if command_list[:2] == ["docker", "exec"] and "/opt/conda/bin/qwen" in command_list:
+            return _QwenProcess(command_list)
+        if command_list[:2] == ["docker", "exec"] and "/bin/bash" in command_list and "-c" in command_list:
+            work_dir = command_list[command_list.index("-w") + 1]
+            return _RecoveryProcess(work_dir)
+        raise AssertionError(f"unexpected command: {command_list}")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    result = asyncio.run(
+        code_executor_module.code_executor_handler(
+            task="Run the generated pipeline and produce results/recovered.txt.",
+            session_id="chat-xyz",
+            require_task_context=False,
+            auto_fix=False,
+        )
+    )
+
+    assert result["success"] is True
+    assert "Recovered pipeline execution" in result["stdout"]
+    assert any("/opt/conda/bin/qwen" in command for command in commands)
+    assert any(command[-1] == "python3 code/pipeline_3node.py 2>&1" for command in commands)
+    assert any("/bin/bash" in command and "-c" in command for command in commands)
+    assert any(path.endswith("results/recovered.txt") for path in result["produced_files"])
 
 
 def test_execute_task_locally_blocks_missing_absolute_task_path_before_generation(
@@ -1101,6 +1643,9 @@ class TestQwenCodeCLI:
         prompt_text = cmd[cmd.index("-p") + 1]
         assert "timeout` parameter explicitly to 420000 milliseconds" in prompt_text
         assert "default 120000ms timeout" in prompt_text
+        assert "do NOT create a new virtual environment with `python -m venv`" in prompt_text
+        assert "`python3 -m pip install --user ...`" in prompt_text
+        assert "same `run_shell_command` call" in prompt_text
 
     def test_build_qwen_code_command_includes_bound_task_context(self):
         cmd = _build_qwen_code_command(

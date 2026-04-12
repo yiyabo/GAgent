@@ -74,6 +74,8 @@ class CodeExecutionOutcome:
     verification_status: Optional[str] = None
     failure_kind: Optional[str] = None
     contract_diff: Optional[Dict[str, Any]] = None
+    verification: Optional[Dict[str, Any]] = None
+    artifact_verification: Optional[Dict[str, Any]] = None
     repair_attempts: int = 0
     plan_patch_suggestion: Optional[str] = None
 
@@ -752,6 +754,8 @@ async def execute_code_locally(
                     fix_guidance = _FIX_HINTS["missing_package"].format(pkg=pkg)
 
     post_execution_error_summary: Optional[str] = None
+    verification_details: Optional[Dict[str, Any]] = None
+    artifact_verification: Optional[Dict[str, Any]] = None
     if success and execution_spec is not None and execution_spec.acceptance_criteria:
         try:
             finalization = _verify_execution_against_contract(
@@ -761,6 +765,9 @@ async def execute_code_locally(
             verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
                 _extract_verification_state(finalization)
             )
+            verification_details = verification or None
+            if isinstance(verification, dict):
+                artifact_verification = verification.get("artifact_verification")
             if finalization.final_status == "failed":
                 error_category = "acceptance_criteria_failed"
                 post_execution_error_summary = _summarize_verification_failures(verification)
@@ -801,6 +808,9 @@ async def execute_code_locally(
                             verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
                                 _extract_verification_state(finalization)
                             )
+                            verification_details = verification or None
+                            if isinstance(verification, dict):
+                                artifact_verification = verification.get("artifact_verification")
                             if finalization.final_status == "failed":
                                 success = False
                                 error_category = "acceptance_criteria_failed"
@@ -815,6 +825,8 @@ async def execute_code_locally(
                             verification_status = "not_run"
                             failure_kind = "execution_failed"
                             contract_diff = None
+                            verification_details = None
+                            artifact_verification = None
                             plan_patch_suggestion = None
                             if exec_result.runtime_failure:
                                 error_category = _runtime_error_category(normalized_backend)
@@ -878,6 +890,8 @@ async def execute_code_locally(
         verification_status=verification_status,
         failure_kind=failure_kind,
         contract_diff=contract_diff,
+        verification=verification_details,
+        artifact_verification=artifact_verification if isinstance(artifact_verification, dict) else None,
         repair_attempts=repair_attempts,
         plan_patch_suggestion=plan_patch_suggestion,
     )

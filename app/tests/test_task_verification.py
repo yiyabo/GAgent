@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from app.routers import plan_routes
+from app.services.plans.acceptance_criteria import extract_explicit_deliverables_from_text
 from app.services.plans.plan_executor import ExecutionConfig, ExecutionResponse, PlanExecutor
 from app.services.plans.plan_models import PlanNode, PlanTree
 from app.services.plans.task_verification import TaskVerificationService
@@ -133,6 +134,114 @@ def test_task_verifier_records_contract_diff_for_mismatch(tmp_path):
     ]
     assert "results/NK_cell_upregulated_genes.csv" in metadata["contract_diff"]["unexpected_outputs"]
     assert metadata["plan_patch_suggestion"]
+
+
+def test_task_verifier_derives_acceptance_criteria_from_instruction(tmp_path):
+    actual = tmp_path / "results" / "terminal_code_stats.csv"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("file_name,total_lines\nx,1\n", encoding="utf-8")
+    node = PlanNode(
+        id=35,
+        plan_id=68,
+        name="子集定义与质量控制",
+        instruction=(
+            "Generate the final subset manifest (`subset_manifest.tsv`) and save the summary report to "
+            "`results/qc_summary.md`."
+        ),
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "done",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "run_directory": str(tmp_path),
+            },
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "failed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata["artifact_verification"]["tags"] == ["contract_mismatch"]
+    assert metadata["contract_diff"]["missing_required_outputs"] == [
+        "subset_manifest.tsv",
+        "results/qc_summary.md",
+    ]
+
+
+def test_extract_explicit_deliverables_ignores_input_paths_and_tool_scripts() -> None:
+    text = (
+        "Use the existing pipeline.py script to process samples, read results/subset_manifest.tsv, "
+        "and save the final summary to results/qc_summary.csv."
+    )
+
+    assert extract_explicit_deliverables_from_text(text) == ["results/qc_summary.csv"]
+
+
+def test_extract_explicit_deliverables_keeps_multiline_output_sections() -> None:
+    text = (
+        "Save the following output files to disk:\n"
+        "phase1_data.h5ad\n"
+        "phase2_data.h5ad\n"
+        "final_report.pdf\n"
+    )
+
+    assert extract_explicit_deliverables_from_text(text) == [
+        "phase1_data.h5ad",
+        "phase2_data.h5ad",
+        "final_report.pdf",
+    ]
+
+
+def test_task_verifier_marks_cross_extension_outputs_as_wrong_format(tmp_path):
+    actual = tmp_path / "results" / "subset_manifest.tsv"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("id\nphage_1\n", encoding="utf-8")
+    node = PlanNode(
+        id=36,
+        plan_id=68,
+        name="导出基因清单",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "file_nonempty",
+                        "path": "results/subset_manifest.csv",
+                    }
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "done",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "run_directory": str(tmp_path),
+            },
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "failed"
+    assert metadata["contract_diff"]["missing_required_outputs"] == [
+        "results/subset_manifest.csv"
+    ]
+    assert metadata["contract_diff"]["wrong_format_outputs"] == [
+        "results/subset_manifest.tsv"
+    ]
 
 
 def test_task_verifier_pdb_residue_present_avoids_text_false_positive(tmp_path):

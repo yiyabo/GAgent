@@ -750,7 +750,10 @@ def test_backend_switch_auto_prefers_qwen_for_engineering_tasks(make_executor, m
 
     monkeypatch.setattr(
         "app.services.interpreter.task_executer.get_executor_settings",
-        lambda: MagicMock(code_execution_backend="auto"),
+        lambda: MagicMock(
+            code_execution_backend="auto",
+            code_execution_auto_strategy="qwen_primary",
+        ),
     )
     monkeypatch.setattr(
         TaskExecutor,
@@ -779,20 +782,18 @@ def test_backend_switch_auto_prefers_qwen_for_engineering_tasks(make_executor, m
     assert legacy_called["value"] is True
     assert result.success is True
     assert result.execution_backend == "qwen_code"
-    assert result.execution_lane == "engineering_primary"
+    assert result.execution_lane == "qwen_primary"
 
 
-def test_backend_switch_auto_keeps_local_for_dataset_analysis(make_executor, monkeypatch):
+def test_backend_switch_auto_prefers_qwen_for_dataset_analysis_by_default(make_executor, monkeypatch):
     executor = make_executor()
-    captured = {}
+    legacy_called = {"value": False}
 
     monkeypatch.setattr(
         "app.services.interpreter.task_executer.get_executor_settings",
         lambda: MagicMock(
             code_execution_backend="auto",
-            code_execution_local_runtime="docker",
-            code_execution_docker_image="gagent-python-runtime:latest",
-            code_execution_timeout=321,
+            code_execution_auto_strategy="qwen_primary",
         ),
     )
     monkeypatch.setattr(
@@ -801,22 +802,15 @@ def test_backend_switch_auto_keeps_local_for_dataset_analysis(make_executor, mon
         staticmethod(lambda: True),
     )
 
-    async def _fake_execute_code_locally(**kwargs):
-        captured.update(kwargs)
-        return CodeExecutionOutcome(
+    async def mock_legacy(self, *a, **kw):
+        legacy_called["value"] = True
+        return TaskExecutionResult(
+            task_type=TaskType.CODE_REQUIRED,
             success=True,
-            code="print('ok')",
-            description="docker runtime",
-            stdout="ok\n",
-            attempts=1,
-            execution_backend="docker",
-            execution_status="completed",
-            code_file=str(Path(kwargs["work_dir"]) / "task_1_code.py"),
         )
 
     monkeypatch.setattr(
-        "app.services.interpreter.task_executer.execute_code_locally",
-        _fake_execute_code_locally,
+        TaskExecutor, "_execute_code_task_legacy_cli", mock_legacy,
     )
 
     result = _run(executor._execute_code_task(
@@ -826,14 +820,13 @@ def test_backend_switch_auto_keeps_local_for_dataset_analysis(make_executor, mon
         task_id=1,
     ))
 
-    assert captured["execution_backend"] == "docker"
+    assert legacy_called["value"] is True
     assert result.success is True
-    assert result.execution_backend == "docker"
-    assert result.execution_lane == "analysis_fast_path"
-    assert result.code_file is not None
+    assert result.execution_backend == "qwen_code"
+    assert result.execution_lane == "qwen_primary"
 
 
-def test_backend_switch_auto_keeps_local_for_analysis_build_phrase(make_executor, monkeypatch):
+def test_backend_switch_auto_split_keeps_local_for_analysis_build_phrase(make_executor, monkeypatch):
     executor = make_executor()
     captured = {}
 
@@ -841,6 +834,7 @@ def test_backend_switch_auto_keeps_local_for_analysis_build_phrase(make_executor
         "app.services.interpreter.task_executer.get_executor_settings",
         lambda: MagicMock(
             code_execution_backend="auto",
+            code_execution_auto_strategy="split",
             code_execution_local_runtime="docker",
             code_execution_docker_image="gagent-python-runtime:latest",
             code_execution_timeout=321,
