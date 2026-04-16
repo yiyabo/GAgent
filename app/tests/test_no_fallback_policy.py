@@ -188,7 +188,14 @@ async def _noop_tool_executor(_name: str, _params: dict):
     return {"ok": True}
 
 
-def test_deep_think_summary_fails_fast_without_text_fallback() -> None:
+def test_deep_think_summary_builds_from_steps_without_llm_call() -> None:
+    """Summary generation now builds from visible steps locally (no LLM call).
+
+    Previously this test asserted that a failing LLM raised
+    DeepThinkProtocolError.  After the optimisation that removed the LLM
+    summary call (to eliminate 1-10s latency after the final answer), the
+    method always succeeds with a locally-built summary.
+    """
     agent = DeepThinkAgent(
         llm_client=_SummaryFailingLLMStub(),
         available_tools=["web_search"],
@@ -205,8 +212,8 @@ def test_deep_think_summary_fails_fast_without_text_fallback() -> None:
         )
     ]
 
-    with pytest.raises(DeepThinkProtocolError, match="summary generation failed"):
-        asyncio.run(agent._generate_summary(steps, "why strict mode"))
+    result = asyncio.run(agent._generate_summary(steps, "why strict mode"))
+    assert isinstance(result, str) and len(result) > 0
 
 
 class _RouterInvalidJSONLLMStub:

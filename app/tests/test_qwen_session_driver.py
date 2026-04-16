@@ -157,3 +157,51 @@ class TestSharedTerminalReuse:
         await driver.cleanup("chat-123")
 
         assert removed["called"] is False
+
+    @pytest.mark.asyncio
+    async def test_ensure_container_skips_shared_reuse_when_alias_mount_needed(self, monkeypatch, tmp_path):
+        driver = QwenSessionDriver()
+        real_tmp = tmp_path / "real-tmp"
+        real_tmp.mkdir()
+        work_dir = real_tmp / "workspace"
+
+        async def _unexpected_shared_reuse(*_args, **_kwargs):
+            raise AssertionError("shared terminal reuse should be skipped for alias mounts")
+
+        class _Proc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"container-id", b""
+
+        async def _fake_subprocess_exec(*_args, **_kwargs):
+            return _Proc()
+
+        async def _fake_check_image(_image: str) -> None:
+            return None
+
+        async def _fake_force_remove(_name: str) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "app.services.terminal.qwen_session_driver.terminal_session_manager.ensure_qwen_code_session",
+            _unexpected_shared_reuse,
+        )
+        monkeypatch.setattr(driver, "_check_image", _fake_check_image)
+        monkeypatch.setattr(driver, "_force_remove", _fake_force_remove)
+        monkeypatch.setattr(
+            "app.services.terminal.qwen_session_driver.DockerPTYBackend._create_identity_mount_files",
+            staticmethod(lambda: None),
+        )
+        monkeypatch.setattr(
+            "app.services.terminal.qwen_session_driver.asyncio.create_subprocess_exec",
+            _fake_subprocess_exec,
+        )
+
+        container = await driver.ensure_container(
+            "chat-123",
+            host_work_dir=str(work_dir),
+            extra_mounts=[(str(real_tmp), "/tmp")],
+        )
+
+        assert container == "gagent-qc-agent-chat-123"

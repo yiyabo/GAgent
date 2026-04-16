@@ -495,6 +495,7 @@ from .guardrail_handlers import (
     match_atomic_task_by_keywords as _match_atomic_task_by_keywords_fn,
     resolve_explicit_task_scope_target as _resolve_explicit_task_scope_target_fn,
     resolve_all_explicit_task_scope_targets as _resolve_all_explicit_task_scope_targets_fn,
+    resolve_full_plan_executable_targets as _resolve_full_plan_executable_targets_fn,
     resolve_followthrough_target_task_id as _resolve_followthrough_target_task_id_fn,
     classify_explicit_scope_none_reason as _classify_explicit_scope_none_reason_fn,
 )
@@ -2751,19 +2752,6 @@ class StructuredChatAgent:
             )
             return
 
-        if (
-            routing_decision.capability_floor == "plain_chat"
-            and routing_decision.simple_channel_allowed
-        ):
-            async for chunk in self.stream_simple_chat(
-                effective_user_message,
-                routing_decision=routing_decision,
-                route_profile=route_profile,
-                event_sink=event_sink,
-            ):
-                yield chunk
-            return
-
         queue: asyncio.Queue[Any] = asyncio.Queue()
         deep_think_job_id: Optional[str] = run_id or f"dt_{uuid4().hex}"
         deep_think_job_created = False
@@ -4032,6 +4020,18 @@ class StructuredChatAgent:
                         )
                     await queue.put({"type": "error", "error": "Run cancelled."})
                 else:
+                    # Put result in queue FIRST so the consumer can emit the
+                    # ``final`` SSE event without waiting for job bookkeeping.
+                    await queue.put(
+                        {
+                            "type": "result",
+                            "result": result,
+                            "bg_category": deep_think_bg_category,
+                            "job_id": deep_think_job_id if deep_think_job_created else None,
+                        }
+                    )
+                    # Persist job status AFTER the result is queued (non-blocking
+                    # for the SSE consumer).
                     if deep_think_job_created and deep_think_job_id:
                         plan_decomposition_jobs.mark_success(
                             deep_think_job_id,
@@ -4046,14 +4046,6 @@ class StructuredChatAgent:
                                 "tool_count": len(result.tools_used),
                             },
                         )
-                    await queue.put(
-                        {
-                            "type": "result",
-                            "result": result,
-                            "bg_category": deep_think_bg_category,
-                            "job_id": deep_think_job_id if deep_think_job_created else None,
-                        }
-                    )
             except Exception as e:
                 logger.exception("Deep think execution failed")
                 if deep_think_job_created and deep_think_job_id:
@@ -4133,64 +4125,10 @@ class StructuredChatAgent:
 
                 full_response = "\n\n".join(final_content_parts)
 
-                # 💾 Save Deep Think response to database
-                if self.session_id and full_response:
-                    try:
-                        _persist_runtime_context(self)
-                        plan_tree = getattr(self, "plan_tree", None)
-                        structured_plan_meta = _structured_plan_metadata_from_result(
-                            res,
-                            tool_results=current_turn_tool_results,
-                        )
-                        plan_runtime_meta = _plan_runtime_metadata(plan_tree)
-                        resolved_plan_id = res.structured_plan_plan_id or self.plan_session.plan_id
-                        plan_title = res.structured_plan_title or (plan_tree.title if plan_tree else None)
-                        metadata_payload = _build_deep_think_response_metadata(
-                            result=res,
-                            routing_metadata=routing_decision.metadata(),
-                            plan_id=resolved_plan_id,
-                            plan_title=plan_title,
-                            reasoning_language=reasoning_language,
-                            thinking_visible=thinking_visible,
-                            progress_visible=progress_visible,
-                            artifact_gallery=current_turn_artifact_gallery,
-                            tool_results=current_turn_tool_results,
-                            deep_think_job_id=result_job_id,
-                            background_category=item.get("bg_category"),
-                            display_text=full_response,
-                            structured_plan_meta=structured_plan_meta,
-                            plan_runtime_meta=plan_runtime_meta,
-                        )
-                        _save_chat_message(
-                            self.session_id,
-                            "assistant",
-                            full_response,
-                            metadata=metadata_payload,
-                        )
-                        logger.info(
-                            "[CHAT][DEEP_THINK] Response saved to database for session=%s",
-                            self.session_id,
-                        )
-                        if res.structured_plan_required:
-                            logger.info(
-                                "[CHAT][DEEP_THINK][PLAN] session=%s required=%s mode=%s state=%s satisfied=%s plan_id=%s operation=%s message=%s",
-                                self.session_id,
-                                res.structured_plan_required,
-                                routing_decision.plan_request_mode,
-                                res.structured_plan_state,
-                                res.structured_plan_satisfied,
-                                resolved_plan_id,
-                                res.structured_plan_operation,
-                                res.structured_plan_message,
-                            )
-                    except Exception as save_err:
-                        logger.warning(
-                            "[CHAT][DEEP_THINK] Failed to save response: %s",
-                            save_err,
-                        )
-
                 # Note: final_answer was already streamed via on_final_delta callback
                 # No need to yield it again here to avoid duplication
+
+                # Build metadata ONCE (shared by SSE final event and DB save)
                 bg_category = item.get("bg_category")
                 plan_tree = getattr(self, "plan_tree", None)
                 structured_plan_meta = _structured_plan_metadata_from_result(
@@ -4216,6 +4154,8 @@ class StructuredChatAgent:
                     structured_plan_meta=structured_plan_meta,
                     plan_runtime_meta=plan_runtime_meta,
                 )
+
+                # 🚀 Emit final event to client FIRST (before DB save)
                 payload = {
                     "llm_reply": {"message": res.final_answer},
                     "response": full_response,
@@ -4225,6 +4165,38 @@ class StructuredChatAgent:
                 final_payload = {"type": "final", "payload": payload}
                 out = await _through_sink(final_payload)
                 yield out
+
+                # 💾 Save Deep Think response to database AFTER final event
+                if self.session_id and full_response:
+                    try:
+                        _persist_runtime_context(self)
+                        _save_chat_message(
+                            self.session_id,
+                            "assistant",
+                            full_response,
+                            metadata=final_metadata,
+                        )
+                        logger.info(
+                            "[CHAT][DEEP_THINK] Response saved to database for session=%s",
+                            self.session_id,
+                        )
+                        if res.structured_plan_required:
+                            logger.info(
+                                "[CHAT][DEEP_THINK][PLAN] session=%s required=%s mode=%s state=%s satisfied=%s plan_id=%s operation=%s message=%s",
+                                self.session_id,
+                                res.structured_plan_required,
+                                routing_decision.plan_request_mode,
+                                res.structured_plan_state,
+                                res.structured_plan_satisfied,
+                                resolved_plan_id,
+                                res.structured_plan_operation,
+                                res.structured_plan_message,
+                            )
+                    except Exception as save_err:
+                        logger.warning(
+                            "[CHAT][DEEP_THINK] Failed to save response: %s",
+                            save_err,
+                        )
 
     async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
         """Backward-compatible helper that force-enables the DeepThink path."""
@@ -4346,6 +4318,31 @@ class StructuredChatAgent:
             ],
         }
 
+        plan_tree = getattr(self, "plan_tree", None)
+        plan_title = plan_tree.title if plan_tree else None
+        meta: Dict[str, Any] = {
+            "plan_id": self.plan_session.plan_id,
+            "plan_title": plan_title,
+            "status": "completed",
+            "unified_stream": True,
+            "analysis_text": display_text,
+            "final_summary": display_text,
+            **routing_decision.metadata(),
+        }
+        meta["thinking_display_mode"] = "final_answer"
+        if thinking_process is not None:
+            meta["thinking_process"] = thinking_process
+        payload = {
+            "llm_reply": {"message": display_text},
+            "response": display_text,
+            "actions": [],
+            "metadata": meta,
+        }
+
+        # 🚀 Emit final event to client FIRST (before DB save)
+        yield await _through_sink({"type": "final", "payload": payload})
+
+        # 💾 Save response to database AFTER final event
         if self.session_id and display_text:
             try:
                 _persist_runtime_context(self)
@@ -4370,28 +4367,6 @@ class StructuredChatAgent:
                 )
             except Exception as save_err:
                 logger.warning("[SIMPLE_CHAT] Failed to save response: %s", save_err)
-
-        plan_tree = getattr(self, "plan_tree", None)
-        plan_title = plan_tree.title if plan_tree else None
-        meta: Dict[str, Any] = {
-            "plan_id": self.plan_session.plan_id,
-            "plan_title": plan_title,
-            "status": "completed",
-            "unified_stream": True,
-            "analysis_text": display_text,
-            "final_summary": display_text,
-            **routing_decision.metadata(),
-        }
-        meta["thinking_display_mode"] = "final_answer"
-        if thinking_process is not None:
-            meta["thinking_process"] = thinking_process
-        payload = {
-            "llm_reply": {"message": display_text},
-            "response": display_text,
-            "actions": [],
-            "metadata": meta,
-        }
-        yield await _through_sink({"type": "final", "payload": payload})
 
     def _resolve_thinking_enabled(self) -> bool:
         settings = get_settings()
@@ -4434,7 +4409,6 @@ class StructuredChatAgent:
                 "request_route_mode": routing_decision.request_route_mode,
                 "intent_type": routing_decision.intent_type,
                 "capability_floor": routing_decision.capability_floor,
-                "simple_channel_allowed": routing_decision.simple_channel_allowed,
                 "subject_resolution": dict(routing_decision.subject_resolution),
                 "brevity_hint": routing_decision.brevity_hint,
                 "explicit_task_ids": list(routing_decision.explicit_task_ids),
@@ -4443,9 +4417,54 @@ class StructuredChatAgent:
                 "plan_request_mode": routing_decision.plan_request_mode,
                 "requires_plan_review": routing_decision.requires_plan_review,
                 "requires_plan_optimize": routing_decision.requires_plan_optimize,
+                "full_plan_execution": routing_decision.full_plan_execution,
                 "current_user_turn_index": _current_user_turn_index_from_history(self.history),
             }
         )
+
+        # ── Full plan execution ───────────────────────────────────────
+        # When user requests "执行整个计划" / "complete all tasks",
+        # resolve ALL executable leaves across the entire plan tree
+        # and feed them into the cascade pipeline.
+        if routing_decision.full_plan_execution:
+            self.extra_context["_current_task_source"] = "full_plan"
+            if self.plan_session.plan_id is not None:
+                try:
+                    tree = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id)
+                    all_targets = _resolve_full_plan_executable_targets_fn(tree)
+                except Exception:
+                    all_targets = []
+
+                if all_targets:
+                    first_target = all_targets[0]
+                    self.extra_context["current_task_id"] = int(first_target)
+                    self.extra_context["task_id"] = int(first_target)
+                    remaining = all_targets[1:]
+                    if remaining:
+                        self.extra_context["pending_scope_task_ids"] = remaining
+                    # Synthesize explicit_task_override so the deterministic
+                    # shortcut fires (rerun_task → cascade loop).
+                    self.extra_context["explicit_task_override"] = True
+                    self.extra_context["explicit_task_ids"] = all_targets
+                    logger.info(
+                        "[CHAT][ROUTING][FULL_PLAN] Full plan execution: "
+                        "total=%d first=%s pending=%d plan_id=%s",
+                        len(all_targets),
+                        first_target,
+                        len(remaining),
+                        self.plan_session.plan_id,
+                    )
+                else:
+                    # No executable tasks remain
+                    self.extra_context["explicit_scope_all_blocked"] = True
+                    self.extra_context["explicit_scope_block_reason"] = "all_completed"
+                    logger.info(
+                        "[CHAT][ROUTING][FULL_PLAN] No executable tasks "
+                        "remain in plan %s",
+                        self.plan_session.plan_id,
+                    )
+            return
+
         if routing_decision.explicit_task_override:
             self.extra_context["_current_task_source"] = "request"
             if self.plan_session.plan_id is not None:

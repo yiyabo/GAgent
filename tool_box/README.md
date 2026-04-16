@@ -46,7 +46,6 @@ asyncio.run(main())
 ### 3.  (tools_impl/)
 - **web_search**: 
 - **file_operations**: 
-- **database_query**: 
 
 ### 4.  (router.py)
 - 
@@ -87,11 +86,7 @@ result = await execute_tool("file_operations",
                           operation="read",
                           path="config.json")
 
-# 
-result = await execute_tool("database_query",
-                          database="data.db",
-                          sql="SELECT * FROM users",
-                          operation="query")
+
 ```
 
 ### 

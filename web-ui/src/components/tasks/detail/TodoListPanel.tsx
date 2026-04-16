@@ -11,6 +11,7 @@ import {
   Tag,
   Tooltip,
   Typography,
+  message,
 } from 'antd';
 import {
   CheckCircleOutlined,
@@ -18,6 +19,7 @@ import {
   CloseCircleOutlined,
   ExclamationCircleOutlined,
   MinusCircleOutlined,
+  PlayCircleOutlined,
   ReloadOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons';
@@ -25,8 +27,6 @@ import { planTreeApi } from '@api/planTree';
 import type { TodoItemResponse, TodoListResponse, TodoPhaseResponse } from '@/types';
 
 const { Text, Title, Paragraph } = Typography;
-
-// ---- Status rendering helpers ----
 
 const phaseStatusConfig: Record<string, { color: string; label: string }> = {
   completed: { color: 'success', label: 'Completed' },
@@ -52,7 +52,6 @@ const taskStatusColor: Record<string, string> = {
   running: 'processing',
 };
 
-// ---- Phase step status mapping for Steps component ----
 function phaseToStepStatus(status: string): 'finish' | 'process' | 'wait' | 'error' {
   switch (status) {
     case 'completed':
@@ -65,8 +64,6 @@ function phaseToStepStatus(status: string): 'finish' | 'process' | 'wait' | 'err
       return 'wait';
   }
 }
-
-// ---- Sub-components ----
 
 const TodoTaskItem: React.FC<{
   item: TodoItemResponse;
@@ -140,7 +137,7 @@ const TodoPhaseCard: React.FC<{
         <Space size={8}>
           <Badge status={cfg.color as any} />
           <Title level={5} style={{ margin: 0 }}>
-            Phase {phase.phase_id}: {phase.label}
+            Phase {phase.phase_id + 1}: {phase.label}
           </Title>
         </Space>
         <Space size={8}>
@@ -167,14 +164,13 @@ const TodoPhaseCard: React.FC<{
   );
 };
 
-// ---- Main panel ----
-
 interface TodoListPanelProps {
   open: boolean;
   onClose: () => void;
   planId: number | null;
   targetTaskId: number | null;
   onTaskClick?: (taskId: number) => void;
+  fullPlan?: boolean;
 }
 
 const TodoListPanel: React.FC<TodoListPanelProps> = ({
@@ -183,39 +179,72 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
   planId,
   targetTaskId,
   onTaskClick,
+  fullPlan = false,
 }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [todoList, setTodoList] = useState<TodoListResponse | null>(null);
+  const [executing, setExecuting] = useState(false);
 
   const fetchTodoList = useCallback(async () => {
-    if (!planId || !targetTaskId) return;
+    if (!planId) return;
+    if (!fullPlan && !targetTaskId) return;
     setLoading(true);
     setError(null);
     try {
-      const data = await planTreeApi.getPlanTodoList(planId, targetTaskId);
+      const data = fullPlan
+        ? await planTreeApi.getFullPlanTodoList(planId)
+        : await planTreeApi.getPlanTodoList(planId!, targetTaskId!);
       setTodoList(data);
     } catch (err: any) {
       setError(err?.message || 'Failed to load todo list');
     } finally {
       setLoading(false);
     }
-  }, [planId, targetTaskId]);
+  }, [planId, targetTaskId, fullPlan]);
 
   useEffect(() => {
-    if (open && planId && targetTaskId) {
+    if (open && planId && (fullPlan || targetTaskId)) {
       void fetchTodoList();
     }
     if (!open) {
       setTodoList(null);
       setError(null);
     }
-  }, [open, planId, targetTaskId, fetchTodoList]);
+  }, [open, planId, targetTaskId, fullPlan, fetchTodoList]);
+
+  const handleExecuteFullPlan = useCallback(async () => {
+    if (!planId) return;
+    setExecuting(true);
+    try {
+      const result = await planTreeApi.executeFullPlan(planId, {
+        async_mode: true,
+        skip_completed: true,
+        stop_on_failure: false,
+      });
+      if (result.success) {
+        message.success(result.message || 'Plan execution started.');
+        setTimeout(() => void fetchTodoList(), 1500);
+      } else {
+        message.error(result.message || 'Failed to start execution.');
+      }
+    } catch (err: any) {
+      message.error(err?.message || 'Failed to execute plan.');
+    } finally {
+      setExecuting(false);
+    }
+  }, [planId, fetchTodoList]);
 
   const overallPct =
     todoList && todoList.total_tasks > 0
       ? Math.round((todoList.completed_tasks / todoList.total_tasks) * 100)
       : 0;
+
+  const isFullPlanMode = fullPlan || targetTaskId === null;
+  const hasPending = todoList ? todoList.pending_order.length > 0 : false;
+  const titleText = isFullPlanMode
+    ? `Plan Todo List`
+    : `Todo List — Task #${targetTaskId}`;
 
   return (
     <Modal
@@ -223,19 +252,30 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
       title={
         <Space>
           <UnorderedListOutlined />
-          <span>Todo List — Task #{targetTaskId}</span>
+          <span>{titleText}</span>
         </Space>
       }
       onCancel={onClose}
       width={720}
       footer={[
+        isFullPlanMode && hasPending ? (
+          <Button
+            key="execute"
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            onClick={handleExecuteFullPlan}
+            loading={executing}
+          >
+            Execute Full Plan
+          </Button>
+        ) : null,
         <Button key="refresh" icon={<ReloadOutlined />} onClick={fetchTodoList} loading={loading}>
           Refresh
         </Button>,
         <Button key="close" onClick={onClose}>
           Close
         </Button>,
-      ]}
+      ].filter(Boolean)}
     >
       {loading && !todoList ? (
         <div style={{ display: 'flex', justifyContent: 'center', padding: '32px 0' }}>
@@ -247,7 +287,6 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
         <Text type="secondary">No data</Text>
       ) : (
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          {/* Overall progress */}
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
               <Text strong>
@@ -258,7 +297,6 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
             <Progress percent={overallPct} />
           </div>
 
-          {/* Phase timeline */}
           {todoList.phases.length > 0 && (
             <Steps
               size="small"
@@ -275,14 +313,12 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
             />
           )}
 
-          {/* Phase cards */}
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             {todoList.phases.map((phase) => (
               <TodoPhaseCard key={phase.phase_id} phase={phase} onTaskClick={onTaskClick} />
             ))}
           </Space>
 
-          {/* Summary */}
           {todoList.summary && (
             <Paragraph
               type="secondary"

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from app.services.session_paths import get_runtime_root
 from app.services.upload_storage import ensure_session_dir
 
 
@@ -43,11 +44,15 @@ def store_tool_output(
     summary: Optional[str],
 ) -> Optional[StoredToolOutput]:
     if not session_id:
-        return None
-
-    session_root = ensure_session_dir(session_id)
-    outputs_root = session_root / "tool_outputs"
-    job_label = f"job_{job_id}" if job_id else "job_unknown"
+        # Fallback for no-session tool calls (prevents root pollution like tool_outputs/)
+        outputs_root = get_runtime_root() / "tool_outputs"
+        outputs_root.mkdir(parents=True, exist_ok=True)
+        session_root = outputs_root.parent
+        job_label = f"job_{job_id}" if job_id else "job_unknown"
+    else:
+        session_root = ensure_session_dir(session_id)
+        outputs_root = session_root / "tool_outputs"
+        job_label = f"job_{job_id}" if job_id else "job_unknown"
     step_label = _build_step_label(action, tool_name)
     output_dir = outputs_root / job_label / step_label
     output_dir.mkdir(parents=True, exist_ok=True)

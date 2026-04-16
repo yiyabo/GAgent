@@ -229,7 +229,7 @@ class TestClassifyToolConcurrency:
     def test_registered_concurrent_safe_tool(self):
         register_all_tools()
         assert classify_tool_concurrency("web_search") is True
-        assert classify_tool_concurrency("database_query") is True
+        assert classify_tool_concurrency("document_reader") is True
 
     def test_registered_non_concurrent_tool(self):
         register_all_tools()

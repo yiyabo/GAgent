@@ -113,14 +113,12 @@ _READ_ONLY_CONCURRENT_TOOLS = {
     "vision_reader",
     "graph_rag",
     "sequence_fetch",
-    # database_query intentionally NOT here: its "execute" operation runs
-    # INSERT/UPDATE/DELETE, so is_read_only=False is correct.
 }
 
 # Tools that MUST be concurrent-safe but NOT necessarily read-only
 # (e.g. they have mutating sub-operations but are thread-safe overall)
 _CONCURRENT_SAFE_TOOLS = {
-    "database_query",
+    "deeppl",
 }
 
 # Tools that MUST NOT be concurrent-safe
@@ -190,7 +188,7 @@ class TestRegisteredToolMetadata:
             name for name in registry.get_tool_names()
             if name not in _TOOL_METADATA
         ]
-        # Allow some tools to be absent (e.g. internal_api, generate_experiment_card)
+        # Allow some tools to be absent (e.g. generate_experiment_card)
         # but flag if many are missing
         assert len(missing) <= 5, (
             f"Too many tools without metadata entries: {missing}"

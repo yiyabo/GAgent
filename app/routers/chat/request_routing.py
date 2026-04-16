@@ -29,10 +29,7 @@ IntentType = Literal[
     "research",
     "execute_task",
 ]
-CapabilityFloor = Literal[
-    "plain_chat",
-    "tools",
-]
+CapabilityFloor = Literal["tools"]
 SubjectKind = Literal["none", "file", "directory", "workspace"]
 
 _MANUAL_DEEP_RE = re.compile(r"^\s*/(?:think|deep)\b", re.IGNORECASE)
@@ -151,6 +148,80 @@ _TIME_SENSITIVE_PHRASES = (
     "今年",
     "今天",
     "本月",
+)
+
+# ── Full plan execution phrases ───────────────────────────────────
+# Phrases that signal the user wants to execute *all* remaining tasks
+# in the plan tree, not just specific task IDs.
+_FULL_PLAN_EXECUTION_PHRASES = (
+    "execute all",
+    "execute the entire plan",
+    "execute the whole plan",
+    "execute entire plan",
+    "execute whole plan",
+    "run all tasks",
+    "run the entire plan",
+    "run the whole plan",
+    "complete all tasks",
+    "complete the plan",
+    "complete entire plan",
+    "finish all tasks",
+    "finish the plan",
+    "执行整个计划",
+    "执行全部任务",
+    "执行所有任务",
+    "完成整个计划",
+    "完成全部任务",
+    "完成所有任务",
+    "把计划做完",
+    "把任务做完",
+    "把所有任务做完",
+    "全部执行",
+    "自动执行",
+    "自动完成所有",
+    "自动执行所有",
+    "自动完成计划",
+    "自动执行计划",
+    "开始执行整个",
+    "开始执行全部",
+    "开始完成所有",
+    "开始自动执行",
+    "一键执行",
+    "一键完成",
+)
+
+_FULL_PLAN_STATUS_QUERY_MARKERS = (
+    "?",
+    "？",
+    "吗",
+    "么",
+    "是否",
+    "是不是",
+    "已经",
+    "状态",
+    "进度",
+    "完成了",
+    "完成了吗",
+    "执行了吗",
+    "跑完了吗",
+    "有没有完成",
+)
+
+_FULL_PLAN_IMPERATIVE_CONTEXTS = (
+    "请",
+    "帮我",
+    "麻烦",
+    "开始",
+    "继续",
+    "直接",
+    "立即",
+    "一键",
+    "please",
+    "can you",
+    "could you",
+    "go ahead",
+    "let's",
+    "lets ",
 )
 
 _EXECUTE_PHRASES = (
@@ -779,14 +850,9 @@ _ALL_TOOLS: List[str] = [
     "verify_task",
 ]
 
-_SUCCESSOR_TOOLSET: Dict[CapabilityFloor, List[str]] = {
-    "plain_chat": [],
+# Legacy alias kept for backward compatibility in action_handlers._enforce_capability_guard.
+_SUCCESSOR_TOOLSET: Dict[str, List[str]] = {
     "tools": list(_ALL_TOOLS),
-}
-
-_CAPABILITY_ORDER: Dict[CapabilityFloor, int] = {
-    "plain_chat": 0,
-    "tools": 1,
 }
 
 
@@ -800,7 +866,6 @@ class RequestRoutingDecision:
     effective_user_message: str
     intent_type: IntentType
     capability_floor: CapabilityFloor
-    simple_channel_allowed: bool
     subject_resolution: Dict[str, Any]
     brevity_hint: bool
     explicit_task_ids: List[int]
@@ -809,6 +874,7 @@ class RequestRoutingDecision:
     plan_request_mode: Optional[PlanRequestMode] = None
     requires_plan_review: bool = False
     requires_plan_optimize: bool = False
+    full_plan_execution: bool = False
 
     @property
     def use_deep_think(self) -> bool:
@@ -830,7 +896,6 @@ class RequestRoutingDecision:
             "thinking_display_mode": thinking_display_mode,
             "intent_type": self.intent_type,
             "capability_floor": self.capability_floor,
-            "simple_channel_allowed": self.simple_channel_allowed,
             "subject_resolution": dict(self.subject_resolution),
             "brevity_hint": self.brevity_hint,
             "explicit_task_ids": list(self.explicit_task_ids),
@@ -839,6 +904,7 @@ class RequestRoutingDecision:
             "plan_request_mode": self.plan_request_mode,
             "requires_plan_review": self.requires_plan_review,
             "requires_plan_optimize": self.requires_plan_optimize,
+            "full_plan_execution": self.full_plan_execution,
         }
         if self.thinking_visibility == "progress":
             payload["progress_mode"] = "compact"
@@ -854,13 +920,13 @@ class RequestTierProfile:
     output_bias: str
     intent_type: IntentType
     capability_floor: CapabilityFloor
-    simple_channel_allowed: bool
     explicit_task_ids: List[int]
     explicit_task_override: bool
     requires_structured_plan: bool = False
     plan_request_mode: Optional[PlanRequestMode] = None
     requires_plan_review: bool = False
     requires_plan_optimize: bool = False
+    full_plan_execution: bool = False
 
     def prompt_metadata(self) -> Dict[str, Any]:
         return {
@@ -871,18 +937,19 @@ class RequestTierProfile:
             "available_tools": list(self.available_tools),
             "intent_type": self.intent_type,
             "capability_floor": self.capability_floor,
-            "simple_channel_allowed": self.simple_channel_allowed,
             "explicit_task_ids": list(self.explicit_task_ids),
             "explicit_task_override": self.explicit_task_override,
             "requires_structured_plan": self.requires_structured_plan,
             "plan_request_mode": self.plan_request_mode,
             "requires_plan_review": self.requires_plan_review,
             "requires_plan_optimize": self.requires_plan_optimize,
+            "full_plan_execution": self.full_plan_execution,
         }
 
 
 def allowed_tools_for_capability_floor(capability_floor: CapabilityFloor) -> List[str]:
-    return list(_SUCCESSOR_TOOLSET.get(capability_floor, []))
+    """Always returns all tools — capability_floor is always 'tools'."""
+    return list(_ALL_TOOLS)
 
 
 def manual_deep_think_requested(
@@ -974,7 +1041,6 @@ def resolve_request_routing(
             )
             combined_reasons.extend(_cap_reasons)
             combined_reasons.extend(_tier_reasons)
-    simple_channel_allowed = (not manual) and capability_floor == "plain_chat"
     context_plan_id = (context or {}).get("plan_id")
     context_task_id = (context or {}).get("current_task_id")
     effective_plan_bound = plan_id is not None or context_plan_id is not None
@@ -1001,6 +1067,21 @@ def resolve_request_routing(
         plan_request_mode = "update_bound"
     requires_structured_plan = plan_request_mode is not None
 
+    # ── Full plan execution detection ─────────────────────────────
+    # "执行整个计划" / "complete all tasks" etc. → execute the entire
+    # plan tree automatically via cascade, not just specific task IDs.
+    full_plan_execution = _is_full_plan_execution_request(
+        effective_user_message, plan_bound=effective_plan_bound,
+    )
+    if full_plan_execution:
+        combined_reasons.append("full_plan_execution")
+        if intent_type != "execute_task":
+            intent_type = "execute_task"
+            combined_reasons.append("intent_execute_task")
+        if request_tier != "execute":
+            request_tier = "execute"
+            combined_reasons.append("tier_elevated_full_plan")
+
     if manual:
         combined_reasons = ["manual_deepthink"] + [
             code for code in combined_reasons if code != "manual_deepthink"
@@ -1014,7 +1095,6 @@ def resolve_request_routing(
             effective_user_message=effective_user_message,
             intent_type=intent_type,
             capability_floor=capability_floor,
-            simple_channel_allowed=simple_channel_allowed,
             subject_resolution=subject_resolution,
             brevity_hint=brevity_hint,
             explicit_task_ids=explicit_task_ids,
@@ -1023,6 +1103,7 @@ def resolve_request_routing(
             plan_request_mode=plan_request_mode,
             requires_plan_review=requires_plan_review,
             requires_plan_optimize=requires_plan_optimize,
+            full_plan_execution=full_plan_execution,
         )
     return RequestRoutingDecision(
         request_tier=request_tier,
@@ -1033,7 +1114,6 @@ def resolve_request_routing(
         effective_user_message=effective_user_message,
         intent_type=intent_type,
         capability_floor=capability_floor,
-        simple_channel_allowed=simple_channel_allowed,
         subject_resolution=subject_resolution,
         brevity_hint=brevity_hint,
         explicit_task_ids=explicit_task_ids,
@@ -1042,6 +1122,7 @@ def resolve_request_routing(
         plan_request_mode=plan_request_mode,
         requires_plan_review=requires_plan_review,
         requires_plan_optimize=requires_plan_optimize,
+        full_plan_execution=full_plan_execution,
     )
 
 
@@ -1176,12 +1257,7 @@ def determine_capability_floor(
 ) -> tuple[CapabilityFloor, List[str]]:
     """Always grant tool access — the LLM decides which tools to use.
 
-    Previously ``intent_type == "chat"`` mapped to ``plain_chat`` (no tools),
-    which caused the LLM to hallucinate or produce useless "pick an option"
-    text when the routing heuristics mis-classified a real task as chat.
-    Since the cost of having tools available but unused is zero, we now
-    unconditionally return ``"tools"``.
-
+    The cost of having tools available but unused is zero.
     IntentType is preserved for prompt engineering and request_tier control.
     """
     return "tools", [f"capability_{intent_type}"]
@@ -1314,8 +1390,8 @@ def _max_iterations_execute(
     default_max_iterations: int,
 ) -> int:
     execute_cap = 6
-    if decision.explicit_task_override:
-        # Explicit task execution often needs to traverse a bound subtask chain,
+    if decision.full_plan_execution or decision.explicit_task_override:
+        # Explicit task / full plan execution needs to traverse many tasks,
         # so a 6-step cap is too easy to exhaust before followthrough can occur.
         # Use a generous cap (48) to support multi-subtask composite execution.
         execute_cap = 48
@@ -1333,13 +1409,13 @@ def build_request_tier_profile(
         available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
         intent_type=decision.intent_type,
         capability_floor=decision.capability_floor,
-        simple_channel_allowed=decision.simple_channel_allowed,
         explicit_task_ids=list(decision.explicit_task_ids),
         explicit_task_override=decision.explicit_task_override,
         requires_structured_plan=decision.requires_structured_plan,
         plan_request_mode=decision.plan_request_mode,
         requires_plan_review=decision.requires_plan_review,
         requires_plan_optimize=decision.requires_plan_optimize,
+        full_plan_execution=decision.full_plan_execution,
     )
     if decision.request_tier == "light":
         return RequestTierProfile(
@@ -1378,12 +1454,6 @@ def build_request_tier_profile(
     )
 
 
-def _max_capability(left: CapabilityFloor, right: CapabilityFloor) -> CapabilityFloor:
-    if _CAPABILITY_ORDER[left] >= _CAPABILITY_ORDER[right]:
-        return left
-    return right
-
-
 def _contains_any(text: str, phrases: Sequence[str]) -> bool:
     haystack = text.lower()
     return any(phrase.lower() in haystack for phrase in phrases)
@@ -1401,6 +1471,30 @@ def _has_explicit_plan_request(text: str) -> bool:
     return _contains_any_lowered(lowered, _PLAN_REQUEST_PHRASES) or _contains_any_lowered(
         lowered, _PLAN_NEW_REQUEST_PHRASES
     ) or bool(_PLAN_REQUEST_RE.search(lowered))
+
+
+def _is_full_plan_execution_request(text: str, *, plan_bound: bool) -> bool:
+    """Detect if the user wants to execute the entire plan tree.
+
+    Requires the session to be plan-bound; otherwise the request makes
+    no sense.
+    """
+    if not plan_bound:
+        return False
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    if not _contains_any_lowered(lowered, _FULL_PLAN_EXECUTION_PHRASES):
+        return False
+    looks_like_status_question = _contains_any_lowered(
+        lowered, _FULL_PLAN_STATUS_QUERY_MARKERS,
+    )
+    has_imperative_context = _contains_any_lowered(
+        lowered, _FULL_PLAN_IMPERATIVE_CONTEXTS,
+    )
+    if looks_like_status_question and not has_imperative_context:
+        return False
+    return True
 
 
 def _is_explicit_new_plan_request(text: str) -> bool:
@@ -1617,6 +1711,37 @@ def _is_phagescope_task_result_followup(lowered: str) -> bool:
     return _contains_any(lowered, _PHAGESCOPE_TASK_RESULT_PHRASES)
 
 
+def _try_semantic_intent_fallback(message: str) -> Optional[tuple[IntentType, List[str]]]:
+    """Attempt semantic intent classification when rules produce no match.
+
+    Returns ``(intent, reason_codes)`` if the embedding classifier is
+    confident, or ``None`` to let the caller fall back to ``"chat"``.
+    This function is intentionally fail-safe: any exception results in
+    ``None`` so the main routing pipeline is never disrupted.
+    """
+    try:
+        from app.services.foundation.settings import get_settings
+
+        if not get_settings().semantic_intent_enabled:
+            return None
+
+        from app.services.intent import get_semantic_intent_classifier
+
+        classifier = get_semantic_intent_classifier()
+        if not classifier.is_initialized:
+            classifier.initialize()
+            if not classifier.is_initialized:
+                return None
+
+        intent, _score, sem_reasons = classifier.classify(message)
+        if intent is not None:
+            return intent, sem_reasons  # type: ignore[return-value]
+        return None
+    except Exception as exc:
+        logging.getLogger(__name__).debug("semantic intent fallback error: %s", exc)
+        return None
+
+
 def resolve_intent_type(
     *,
     message: str,
@@ -1807,6 +1932,13 @@ def resolve_intent_type(
     if has_local_read_cue:
         reasons.append("intent_local_read")
         return "local_read", reasons
+
+    # Semantic fallback: only when enabled and no rule matched
+    semantic_result = _try_semantic_intent_fallback(text)
+    if semantic_result is not None:
+        sem_intent, sem_reasons = semantic_result
+        reasons.extend(sem_reasons)
+        return sem_intent, reasons
 
     reasons.append("intent_chat")
     return "chat", reasons

@@ -136,22 +136,40 @@ def _stub_chat_factory(
     review_mode: bool = False,
     review_intro_citations: str = "[@known1; @known2]",
     review_method_citations: str = "[@known3; @known4]",
-    review_experiment_citations: str = "[@known5; @known6]",
-    review_result_citations: str = "[@known7; @known8]",
-    review_discussion_citations: str = "[@known9; @known10]",
-    review_conclusion_citations: str = "[@known11; @known12]",
+    review_experiment_citations: str = "[@known1; @known2; @known3]",
+    review_result_citations: str = "[@known4; @known5; @known6]",
+    review_discussion_citations: str = "[@known5; @known6; @known7]",
+    review_conclusion_citations: str = "[@known8; @known9]",
     polish_pass: bool = True,
     final_polish_exc: Exception | None = None,
+    final_polish_text: str | None = None,
+    final_polish_revision_text: str | None = None,
 ):
+    def _extract_prompt_body(prompt: str, marker: str) -> str | None:
+        if marker not in prompt:
+            return None
+        tail = prompt.split(marker, 1)[1]
+        tail = tail.rsplit("\n\nReturn ONLY", 1)[0]
+        body = tail.strip()
+        return body or None
+
+    def _extract_section_name(prompt: str) -> str:
+        first_line = str(prompt or "").splitlines()[0].strip().lower()
+        for prefix in ("write the section:", "revise the section:"):
+            if first_line.startswith(prefix):
+                return first_line.split(":", 1)[1].strip()
+        return ""
+
     async def _stub_chat(_llm, prompt: str, _model):
         if "produce an ANALYSIS MEMO" in prompt:
             return "# Analysis Memo\n- grounded context"
         if "Write the section:" in prompt or "Revise the section:" in prompt:
-            if "Introduction" in prompt:
+            section_name = _extract_section_name(prompt)
+            if section_name == "introduction":
                 if review_mode:
                     return f"## Introduction\nThis review frames the therapeutic challenge and cites {review_intro_citations}."
                 return f"## Introduction\nThis section cites {intro_citation}."
-            if "Abstract" in prompt:
+            if section_name == "abstract":
                 if review_mode:
                     return (
                         "## Abstract\n"
@@ -163,27 +181,27 @@ def _stub_chat_factory(
                         "Overall, the review suggests phage therapy remains promising with careful evidence-linked deployment."
                     )
                 return "## Abstract\nConcise summary."
-            if "Methods" in prompt:
+            if section_name == "methods":
                 if review_mode:
                     return f"## Methods\nThis review summarizes the evidence workflow and cites {review_method_citations}."
                 return "## Methods\nMethod details."
-            if "Experiments" in prompt:
+            if section_name == "experiments":
                 if review_mode:
                     return f"## Experiments\nAcross representative models, cited studies {review_experiment_citations} compare assays, controls, and endpoints."
                 return "## Experiments\nExperiment setup."
-            if "Results" in prompt:
+            if section_name == "results":
                 if review_mode:
                     return f"## Results\nAcross studies {review_result_citations}, comparative synthesis highlights receptor usage and quantitative reductions in bacterial burden."
                 return "## Results\nResult interpretation."
-            if "Discussion" in prompt:
+            if section_name == "discussion":
                 if review_mode:
                     return f"## Discussion\nThese studies {review_discussion_citations} suggest translational promise, but heterogeneity remains a limitation."
                 return "## Discussion\nDiscussion points."
-            if "Conclusion" in prompt:
+            if section_name == "conclusion":
                 if review_mode:
                     return f"## Conclusion\nTaken together, the evidence {review_conclusion_citations} supports cautious optimism for phage therapy."
                 return "## Conclusion\nConcluding remarks."
-            if "References" in prompt:
+            if section_name == "references":
                 return "## References\nNot available"
             return "## Section\nDraft text."
         if "Evaluate the following section" in prompt:
@@ -201,10 +219,22 @@ def _stub_chat_factory(
         if "final manuscript editor" in prompt:
             if final_polish_exc is not None:
                 raise final_polish_exc
+            if final_polish_text is not None:
+                return final_polish_text
+            extracted = _extract_prompt_body(prompt, "Manuscript draft:\n")
+            if extracted is not None:
+                return extracted
             return "## Final Manuscript\nPolished final manuscript."
         if "revising a manuscript after a final publication-readiness review" in prompt:
             if final_polish_exc is not None:
                 raise final_polish_exc
+            if final_polish_revision_text is not None:
+                return final_polish_revision_text
+            if final_polish_text is not None:
+                return final_polish_text
+            extracted = _extract_prompt_body(prompt, "Current polished draft:\n")
+            if extracted is not None:
+                return extracted
             return "## Final Manuscript\nPolished final manuscript after revision."
         if "final release gate reviewer" in prompt:
             return json.dumps(
@@ -513,6 +543,60 @@ def test_manuscript_writer_blocks_release_when_final_polish_times_out(
     )
 
 
+def test_manuscript_writer_polish_guard_blocks_citation_and_numeric_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
+
+    polished_text = (
+        "## Abstract\nConcise summary with 42 patients.\n\n"
+        "## Introduction\nThis section cites [@known1; @newref].\n\n"
+        "## References\n[@known1]\n[@newref]\n"
+    )
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_chat",
+        _stub_chat_factory(final_polish_text=polished_text),
+    )
+
+    bib_path = tmp_path / "ctx" / "references.bib"
+    bib_path.parent.mkdir(parents=True, exist_ok=True)
+    bib_path.write_text(
+        "@article{known1,\n"
+        "  title={Known Paper},\n"
+        "  author={Doe, Jane},\n"
+        "  year={2025}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Write a manuscript.",
+            output_path="out/final.md",
+            context_paths=["ctx/references.bib"],
+            sections=["abstract", "introduction", "references"],
+            keep_workspace=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "polish_quality_gate_failed"
+    consistency = result.get("release_consistency_report") or {}
+    defects = consistency.get("defects") or []
+    assert "citation_set_changed" in defects
+    assert "numeric_claims_changed" in defects
+    release_review = result.get("release_review") or {}
+    assert "citation_set_changed" in (release_review.get("defects") or [])
+
+
 def test_final_polish_timeout_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     called = {"wait_for": False}
 
@@ -638,6 +722,36 @@ def test_manuscript_writer_blocks_review_release_without_structured_evidence(
     assert "study_cards" in str(result["coverage_summary"]).lower()
 
 
+def test_manuscript_writer_article_mode_review_overrides_task_heuristic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
+    monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(review_mode=True))
+
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Write a manuscript on Pseudomonas phage.",
+            output_path="out/review.md",
+            context_paths=[],
+            article_mode="review",
+            sections=["abstract", "introduction", "method", "experiment", "result", "discussion", "conclusion", "references"],
+            keep_workspace=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "low_evidence_coverage"
+    assert result["article_mode_requested"] == "review"
+    assert result["article_mode_resolved"] == "review"
+
+
 def test_manuscript_writer_review_mode_passes_with_structured_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -709,6 +823,55 @@ def test_manuscript_writer_review_mode_blocks_unsupported_claims(
     assert result["error_code"] == "unsupported_claims"
     assert result["public_release_ready"] is False
     assert "insufficient_evidence_linkage" in str(result["sections"])
+
+
+def test_manuscript_writer_review_mode_blocks_thin_section_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_build_llm_service",
+        lambda provider, model, **kwargs: (object(), model),
+    )
+    monkeypatch.setattr(
+        manuscript_writer_module,
+        "_chat",
+        _stub_chat_factory(
+            review_mode=True,
+            review_experiment_citations="[@known1; @known2]",
+            review_result_citations="[@known3; @known4]",
+            review_discussion_citations="[@known5; @known6]",
+            review_conclusion_citations="[@known7; @known8]",
+        ),
+    )
+
+    context_paths = _write_review_evidence_bundle(tmp_path)
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Write a submission-ready English review article on Pseudomonas phage.",
+            output_path="out/review.md",
+            context_paths=context_paths,
+            keep_workspace=True,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "unsupported_claims"
+    assert "insufficient_review_evidence_coverage" in str(result["sections"])
+
+    result_row = next(row for row in result["sections"] if row["section"] == "result")
+    coverage = result_row.get("review_evidence_coverage") or {}
+    assert coverage.get("target_supported_citations") == 3
+    assert coverage.get("cited_supported_studies") == 2
+    assert coverage.get("pass") is False
+
+    evaluation_path = tmp_path / str(result_row["evaluation_path"])
+    evaluation_payload = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    assert evaluation_payload["review_evidence_coverage"]["score"] < 0.85
+    assert "supported_study_coverage" in evaluation_payload["review_evidence_coverage"]["shortfalls"]
 
 
 def test_review_pack_partial_always_failed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -919,6 +1082,365 @@ def test_literature_pipeline_falls_back_from_zero_result_natural_language_query(
     assert result["fallback_query_used"]
     assert result["effective_query"] == result["fallback_query_used"]
     assert result["counts"]["records"] == 1
+
+
+def test_literature_pipeline_redirects_single_component_out_dir_under_runtime_lit_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tool_box.tools_impl import literature_pipeline as literature_pipeline_module
+
+    monkeypatch.setattr(literature_pipeline_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(literature_pipeline_module, "_RUNTIME_DIR", tmp_path / "runtime")
+
+    async def _fake_esearch(_client, _query, retmax: int):
+        assert retmax == 2
+        return ["1"]
+
+    async def _fake_efetch(_client, _pmids):
+        return (
+            "<PubmedArticleSet>"
+            "<PubmedArticle>"
+            "<MedlineCitation>"
+            "<PMID>1</PMID>"
+            "<Article>"
+            "<ArticleTitle>Known phage study</ArticleTitle>"
+            "<Abstract><AbstractText>Grounded abstract.</AbstractText></Abstract>"
+            "<Journal><Title>Virology</Title><JournalIssue><PubDate><Year>2025</Year></PubDate></JournalIssue></Journal>"
+            "<AuthorList><Author><LastName>Doe</LastName><Initials>J</Initials></Author></AuthorList>"
+            "</Article>"
+            "</MedlineCitation>"
+            "<PubmedData><ArticleIdList><ArticleId IdType=\"doi\">10.1/example</ArticleId></ArticleIdList></PubmedData>"
+            "</PubmedArticle>"
+            "</PubmedArticleSet>"
+        )
+
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_esearch", _fake_esearch)
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_efetch_xml", _fake_efetch)
+
+    result = asyncio.run(
+        literature_pipeline_module.literature_pipeline_handler(
+            query="phage host interaction",
+            max_results=2,
+            out_dir="plan68_task14",
+            download_pdfs=False,
+            include_europepmc=False,
+            include_biorxiv=False,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["output_dir"] == "runtime/lit_reviews/plan68_task14"
+    assert (tmp_path / "runtime" / "lit_reviews" / "plan68_task14" / "library.jsonl").exists()
+    assert not (tmp_path / "plan68_task14").exists()
+
+
+def test_literature_pipeline_redirects_nested_relative_out_dir_under_runtime_lit_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tool_box.tools_impl import literature_pipeline as literature_pipeline_module
+
+    monkeypatch.setattr(literature_pipeline_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(literature_pipeline_module, "_RUNTIME_DIR", tmp_path / "runtime")
+
+    async def _fake_esearch(_client, _query, retmax: int):
+        assert retmax == 2
+        return ["1"]
+
+    async def _fake_efetch(_client, _pmids):
+        return (
+            "<PubmedArticleSet>"
+            "<PubmedArticle>"
+            "<MedlineCitation>"
+            "<PMID>1</PMID>"
+            "<Article>"
+            "<ArticleTitle>Known phage study</ArticleTitle>"
+            "<Abstract><AbstractText>Grounded abstract.</AbstractText></Abstract>"
+            "<Journal><Title>Virology</Title><JournalIssue><PubDate><Year>2025</Year></PubDate></JournalIssue></Journal>"
+            "<AuthorList><Author><LastName>Doe</LastName><Initials>J</Initials></Author></AuthorList>"
+            "</Article>"
+            "</MedlineCitation>"
+            "<PubmedData><ArticleIdList><ArticleId IdType=\"doi\">10.1/example</ArticleId></ArticleIdList></PubmedData>"
+            "</PubmedArticle>"
+            "</PubmedArticleSet>"
+        )
+
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_esearch", _fake_esearch)
+    monkeypatch.setattr(literature_pipeline_module, "_pubmed_efetch_xml", _fake_efetch)
+
+    result = asyncio.run(
+        literature_pipeline_module.literature_pipeline_handler(
+            query="phage host interaction",
+            max_results=2,
+            out_dir="nested/review_pack_a",
+            download_pdfs=False,
+            include_europepmc=False,
+            include_biorxiv=False,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["output_dir"] == "runtime/lit_reviews/nested/review_pack_a"
+    assert (tmp_path / "runtime" / "lit_reviews" / "nested" / "review_pack_a" / "library.jsonl").exists()
+    assert not (tmp_path / "nested").exists()
+
+
+def test_literature_pipeline_rejects_same_prefix_absolute_out_dir_outside_project(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tool_box.tools_impl import literature_pipeline as literature_pipeline_module
+
+    monkeypatch.setattr(literature_pipeline_module, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(literature_pipeline_module, "_RUNTIME_DIR", tmp_path / "runtime")
+
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-escape" / "lit_review_outside"
+
+    result = asyncio.run(
+        literature_pipeline_module.literature_pipeline_handler(
+            query="phage host interaction",
+            out_dir=str(outside_dir),
+            download_pdfs=False,
+            include_europepmc=False,
+            include_biorxiv=False,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "out_dir_outside_project"
+    assert not outside_dir.exists()
+
+
+def test_review_pack_writer_redirects_single_component_out_dir_under_runtime_lit_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(review_pack_writer_module, "_PROJECT_ROOT", tmp_path)
+
+    captured: Dict[str, Any] = {}
+
+    async def _fake_lit(*args, **kwargs):
+        _ = args
+        captured["out_dir"] = kwargs.get("out_dir")
+        return {
+            "success": True,
+            "evidence_coverage_passed": True,
+            "coverage_summary": "Evidence coverage passed.",
+            "coverage_report_path": "runtime/lit_reviews/lit_review_general/coverage_report.json",
+            "outputs": {
+                "study_cards_jsonl": "runtime/lit_reviews/lit_review_general/study_cards.jsonl",
+                "coverage_report_json": "runtime/lit_reviews/lit_review_general/coverage_report.json",
+                "evidence_md": "runtime/lit_reviews/lit_review_general/evidence.md",
+                "references_bib": "runtime/lit_reviews/lit_review_general/references.bib",
+            },
+        }
+
+    async def _fake_draft(*args, **kwargs):
+        _ = args
+        captured["output_path"] = kwargs.get("output_path")
+        return {
+            "success": True,
+            "output_path": kwargs.get("output_path"),
+            "quality_gate_passed": True,
+            "polish_gate_passed": True,
+            "public_release_ready": True,
+            "release_state": "ready",
+            "release_summary": "Ready.",
+        }
+
+    monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _fake_lit)
+    monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fake_draft)
+
+    result = asyncio.run(
+        review_pack_writer_module.review_pack_writer_handler(
+            topic="Test topic",
+            out_dir="lit_review_general",
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["out_dir"] == str((tmp_path / "runtime" / "lit_reviews" / "lit_review_general").resolve())
+    assert captured["output_path"] == str(
+        (tmp_path / "runtime" / "lit_reviews" / "lit_review_general" / "review_draft.md").resolve()
+    )
+
+
+def test_review_pack_writer_redirects_nested_relative_paths_under_runtime_lit_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(review_pack_writer_module, "_PROJECT_ROOT", tmp_path)
+
+    captured: Dict[str, Any] = {}
+
+    async def _fake_lit(*args, **kwargs):
+        _ = args
+        captured["out_dir"] = kwargs.get("out_dir")
+        return {
+            "success": True,
+            "evidence_coverage_passed": True,
+            "coverage_summary": "Evidence coverage passed.",
+            "coverage_report_path": "runtime/lit_reviews/nested/review_pack_b/coverage_report.json",
+            "outputs": {
+                "study_cards_jsonl": "runtime/lit_reviews/nested/review_pack_b/study_cards.jsonl",
+                "coverage_report_json": "runtime/lit_reviews/nested/review_pack_b/coverage_report.json",
+                "evidence_md": "runtime/lit_reviews/nested/review_pack_b/evidence.md",
+                "references_bib": "runtime/lit_reviews/nested/review_pack_b/references.bib",
+            },
+        }
+
+    async def _fake_draft(*args, **kwargs):
+        _ = args
+        captured["output_path"] = kwargs.get("output_path")
+        return {
+            "success": True,
+            "output_path": kwargs.get("output_path"),
+            "quality_gate_passed": True,
+            "polish_gate_passed": True,
+            "public_release_ready": True,
+            "release_state": "ready",
+            "release_summary": "Ready.",
+        }
+
+    monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _fake_lit)
+    monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fake_draft)
+
+    result = asyncio.run(
+        review_pack_writer_module.review_pack_writer_handler(
+            topic="Test topic",
+            out_dir="nested/review_pack_b",
+            output_path="drafts/review_b.md",
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["out_dir"] == str(
+        (tmp_path / "runtime" / "lit_reviews" / "nested" / "review_pack_b").resolve()
+    )
+    assert captured["output_path"] == str(
+        (tmp_path / "runtime" / "lit_reviews" / "drafts" / "review_b.md").resolve()
+    )
+
+
+def test_review_pack_writer_default_paths_are_passed_to_downstream_as_absolute(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(review_pack_writer_module, "_PROJECT_ROOT", tmp_path)
+
+    captured: Dict[str, Any] = {}
+
+    async def _fake_lit(*args, **kwargs):
+        _ = args
+        captured["out_dir"] = kwargs.get("out_dir")
+        return {
+            "success": True,
+            "evidence_coverage_passed": True,
+            "coverage_summary": "Evidence coverage passed.",
+            "coverage_report_path": "runtime/literature/review_pack_x/coverage_report.json",
+            "outputs": {
+                "study_cards_jsonl": "runtime/literature/review_pack_x/study_cards.jsonl",
+                "coverage_report_json": "runtime/literature/review_pack_x/coverage_report.json",
+                "evidence_md": "runtime/literature/review_pack_x/evidence.md",
+                "references_bib": "runtime/literature/review_pack_x/references.bib",
+            },
+        }
+
+    async def _fake_draft(*args, **kwargs):
+        _ = args
+        captured["output_path"] = kwargs.get("output_path")
+        return {
+            "success": True,
+            "output_path": kwargs.get("output_path"),
+            "quality_gate_passed": True,
+            "polish_gate_passed": True,
+            "public_release_ready": True,
+            "release_state": "ready",
+            "release_summary": "Ready.",
+        }
+
+    monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _fake_lit)
+    monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fake_draft)
+
+    result = asyncio.run(
+        review_pack_writer_module.review_pack_writer_handler(
+            topic="Test topic",
+        )
+    )
+
+    assert result["success"] is True
+    lit_out_dir = Path(captured["out_dir"])
+    draft_output_path = Path(captured["output_path"])
+    assert lit_out_dir.is_absolute()
+    assert lit_out_dir.parent == (tmp_path / "runtime" / "literature")
+    assert lit_out_dir.name.startswith("review_pack_")
+    assert draft_output_path.is_absolute()
+    assert draft_output_path.parent == lit_out_dir
+    assert draft_output_path.name == "review_draft.md"
+
+
+def test_review_pack_writer_rejects_same_prefix_absolute_out_dir_outside_project(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(review_pack_writer_module, "_PROJECT_ROOT", tmp_path)
+
+    async def _unexpected_lit(*args, **kwargs):
+        _ = args, kwargs
+        raise AssertionError("literature_pipeline_handler should not be called")
+
+    async def _unexpected_draft(*args, **kwargs):
+        _ = args, kwargs
+        raise AssertionError("manuscript_writer_handler should not be called")
+
+    monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _unexpected_lit)
+    monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _unexpected_draft)
+
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-escape" / "review_pack_outside"
+
+    result = asyncio.run(
+        review_pack_writer_module.review_pack_writer_handler(
+            topic="Test topic",
+            out_dir=str(outside_dir),
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "out_dir_outside_project"
+    assert not outside_dir.exists()
+
+
+def test_review_pack_writer_rejects_absolute_output_path_outside_project_before_running_downstream(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(review_pack_writer_module, "_PROJECT_ROOT", tmp_path)
+
+    async def _unexpected_lit(*args, **kwargs):
+        _ = args, kwargs
+        raise AssertionError("literature_pipeline_handler should not be called")
+
+    async def _unexpected_draft(*args, **kwargs):
+        _ = args, kwargs
+        raise AssertionError("manuscript_writer_handler should not be called")
+
+    monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _unexpected_lit)
+    monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _unexpected_draft)
+
+    outside_file = tmp_path.parent / f"{tmp_path.name}-escape" / "review_draft.md"
+
+    result = asyncio.run(
+        review_pack_writer_module.review_pack_writer_handler(
+            topic="Test topic",
+            output_path=str(outside_file),
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "output_path_outside_project"
+    assert not outside_file.exists()
+
 
 
 def test_download_pmc_pdf_uses_oa_package_full_text(
@@ -1164,16 +1686,20 @@ def test_review_pack_writer_forwards_session_id_and_uses_session_output_dir(
     assert captured["lit"]["session_id"] == "demo"
     assert captured["draft"]["session_id"] == "demo"
     assert captured["lit"]["download_pdfs"] is True
-    assert captured["lit"]["out_dir"].startswith(
-        "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_"
+    lit_out_dir = Path(captured["lit"]["out_dir"])
+    assert lit_out_dir.is_absolute()
+    assert lit_out_dir.parent == (
+        tmp_path / "runtime" / "session_demo" / "tool_outputs" / "review_pack_writer"
     )
+    assert lit_out_dir.name.startswith("review_pack_")
     assert captured["draft"]["context_paths"][:2] == [
         "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/study_cards.jsonl",
         "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_20260311_000000/coverage_report.json",
     ]
-    assert captured["draft"]["output_path"].startswith(
-        "runtime/session_demo/tool_outputs/review_pack_writer/review_pack_"
-    )
+    draft_output_path = Path(captured["draft"]["output_path"])
+    assert draft_output_path.is_absolute()
+    assert draft_output_path.parent == lit_out_dir
+    assert draft_output_path.name == "review_draft.md"
     assert result["hidden_artifact_prefixes"]
 
 
